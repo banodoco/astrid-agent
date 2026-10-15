@@ -679,9 +679,15 @@ class _ReflowMixin:
         before = [c for c in self.clips(shot=clip.shot_id) if c.track == clip.track and c.data is not clip.data
                   and abs(c.end - old) < 1e-3 and not c.is_audio and not intent.orphan(c.data)]
         if not before and abs(old - lo) < 1e-3:
-            # it opens its chapter: moving it would leave a hole at the chapter start (re-flow moves chapters)
-            self.notes.append(f"{clip.address}: opens its chapter at {lo:.3f} s; its moment ({t:.3f} s) is kept for re-flow, not applied")
-            return False
+            # A chapter-opening cut can still move when an earlier cut owns the
+            # picture span before it: retime() extends that preceding cut to the
+            # new boundary. Without one, keep the existing no-hole protection.
+            cut_id = intent.cut_of(clip.data)
+            has_previous_cut = cut_id and any(group["id"] != cut_id and group["start"] < old - 1e-6
+                                              for group in self._cut_groups())
+            if not has_previous_cut:
+                self.notes.append(f"{clip.address}: opens its chapter at {lo:.3f} s; moving it to {t:.3f} s would leave the picture track uncovered")
+                return False
         end = clip.end
         tag = intent.sequence(clip.data)
         if tag is not None:  # a sequence's first step: the whole sequence moves, its shape intact (re-time fits it)

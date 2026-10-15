@@ -9,6 +9,7 @@ import pytest
 
 from astrid.packs.timeline import cli
 from astrid.sdk import timeline_checkout as tc
+from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline_checkout import Checkout
 
 FPS = 30
@@ -128,6 +129,22 @@ def test_codex_spellings_have_our_aliases():
     assert (parsed.replace_line, parsed.insert_gap_after, parsed.script_gaps) == ("s1", 0.25, True)
 
 
+def test_orphans_sheet_route_prints_and_there_is_no_rehome_verb(monkeypatch, capsys):
+    from astrid.packs.timeline import cli_show
+
+    parsed = _parse("show", "--as", "sheet", "--orphans")
+    assert parsed.presentation == "sheet" and parsed.orphans
+    from tests.sdk.test_timeline_reflow_golden import film
+    orphaned = Checkout(film())
+    orphaned.remove_line("s2")
+    monkeypatch.setattr(cli_show, "show_checkout", lambda parsed, bundle_opener: (orphaned, "WORKING COPY"))
+    assert cli_show.print_sheet(parsed, None) == 0
+    output = capsys.readouterr().out
+    assert output.startswith("film p ") and "orphans" in output and "cut c2" in output
+    with pytest.raises(SystemExit):
+        _parse("rehome")
+
+
 
 # ---- edit on a local checkout file ----------------------------------------------------
 
@@ -140,6 +157,86 @@ def test_edit_at_word_moves_the_clip_and_says_so(local, capsys):
     reloaded = Checkout.load(local)
     rocket = reloaded.clip("a-rocket")
     assert rocket.anchor == '"viral"'
+
+
+def test_edit_cut_on_moves_a_chapter_opening_cut_and_keeps_layer_offset(tmp_path, capsys):
+    data = bundle()
+    a, b = data["shots"]["A"]["internal_timeline"]["clips"], data["shots"]["B"]["internal_timeline"]["clips"]
+    a[0]["app"] = {"cut": "c1", "layer": "plate"}
+    b[0]["app"] = {"cut": "c2", "layer": "plate"}
+    b[1]["at"] = 0.5
+    b[1]["app"] = {"cut": "c2", "layer": "card", "on": "+0.5s", "for": 1.0}
+    path = tmp_path / "cut-on.checkout.json"
+    Checkout(data).save(path)
+
+    assert _run("edit", "--file", str(path), "--cut", "c2", "--on", "now") == 0
+
+    edited = Checkout.load(path)
+    assert edited.clip("c2.plate").start == pytest.approx(6.4, abs=1 / FPS)
+    assert edited.clip("c2.card").start == pytest.approx(6.9, abs=1 / FPS)
+    assert intent.on(edited.clip("c2.card").data) == "+0.5s"
+    assert "now enters on" in capsys.readouterr().out
+
+
+def test_accept_suggestions_previews_then_applies_one_runner_batch(monkeypatch, tmp_path, capsys):
+    from astrid.sdk import timeline_sheet
+    from astrid.sdk.timeline_intent import set_orphan
+
+    data = bundle()
+    a, b = data["shots"]["A"]["internal_timeline"]["clips"], data["shots"]["B"]["internal_timeline"]["clips"]
+    a[0]["app"] = {"cut": "c1", "layer": "plate"}
+    b[0]["app"] = {"cut": "c2", "layer": "plate"}
+    b[1]["at"] = 0.5
+    b[1]["app"] = {"cut": "c2", "layer": "card", "on": "+0.5s", "for": 1.0}
+    tl = Checkout(data)
+    for clip in (tl.clip("c2.plate"), tl.clip("c2.card")):
+        set_orphan(clip.data, "synthetic missing word")
+    path = tmp_path / "accept-suggestions.checkout.json"
+    tl.save(path)
+    rows = [
+        {"cut": "c2", "clip": "c2.plate", "on": '"now"', "reason": "synthetic exact identity"},
+        {"cut": "c2", "clip": "c2.card", "on": '"now"', "reason": "follows the cut"},
+    ]
+    monkeypatch.setattr(timeline_sheet, "rehome_orphan_rows", lambda checkout: rows)
+
+    assert _run("edit", "--file", str(path), "--accept-suggestions") == 0
+
+    output = capsys.readouterr().out
+    assert "re-home suggestion preview" in output and 'c2 → "now"' in output
+    edited = Checkout.load(path)
+    assert edited.clip("c2.plate").start == pytest.approx(6.4, abs=1 / FPS)
+    assert edited.clip("c2.card").start == pytest.approx(6.9, abs=1 / FPS)
+    assert not intent.orphan(edited.clip("c2.plate").data)
+    assert not intent.orphan(edited.clip("c2.card").data)
+
+
+def test_accept_suggestions_lists_and_skips_a_cut_with_a_blank_row(monkeypatch, tmp_path, capsys):
+    from astrid.sdk import timeline_sheet
+    from astrid.sdk.timeline_intent import set_orphan
+
+    data = bundle()
+    a, b = data["shots"]["A"]["internal_timeline"]["clips"], data["shots"]["B"]["internal_timeline"]["clips"]
+    a[0]["app"] = {"cut": "c1", "layer": "plate"}
+    b[0]["app"] = {"cut": "c2", "layer": "plate"}
+    b[1]["at"] = 0.5
+    b[1]["app"] = {"cut": "c2", "layer": "card", "on": "+0.5s", "for": 1.0}
+    tl = Checkout(data)
+    for clip in (tl.clip("c2.plate"), tl.clip("c2.card")):
+        set_orphan(clip.data, "synthetic missing word")
+    path = tmp_path / "skipped-suggestions.checkout.json"
+    tl.save(path)
+    before = tl.document()
+    rows = [
+        {"cut": "c2", "clip": "c2.plate", "on": None, "reason": "bound word is unavailable"},
+        {"cut": "c2", "clip": "c2.card", "on": '"now"', "reason": "fallback phrase"},
+    ]
+    monkeypatch.setattr(timeline_sheet, "rehome_orphan_rows", lambda checkout: rows)
+
+    assert _run("edit", "--file", str(path), "--accept-suggestions") == 3
+
+    output = capsys.readouterr().out
+    assert "skipped c2" in output and "bound word is unavailable" in output
+    assert Checkout.load(path).document() == before
 
 
 def test_edit_nudge_frames_set_and_close_gap(local, capsys):

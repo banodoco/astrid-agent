@@ -603,6 +603,16 @@
         {
           "action": "_StoreTrueAction",
           "default": false,
+          "dest": "accept_suggestions",
+          "nargs": 0,
+          "options": [
+            "--accept-suggestions"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
           "dest": "add_cut",
           "nargs": 0,
           "options": [
@@ -3198,6 +3208,16 @@
           "nargs": null,
           "options": [
             "--occurrence"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "orphans",
+          "nargs": 0,
+          "options": [
+            "--orphans"
           ],
           "required": false
         },

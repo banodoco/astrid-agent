@@ -154,10 +154,15 @@ def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, 
     if sound:
         out += ["", "sound" + " " * 44 + "# under the film, in no cut: asset, for, volume= (the grid: --beats)"]
         out.extend(_align([_sound_row(tl, c) for c in sound]))
-    orphans = tl.orphans()
-    if orphans:
+    orphan_rows = rehome_orphan_rows(tl)
+    if orphan_rows:
         out += ["", "orphans" + " " * 42 + "# moments whose words are gone: re-home or remove"]
-        out.extend(f"  {orphan}" for orphan in orphans)
+        out.extend(_render_orphan_rows(orphan_rows))
+    other_orphans = _non_rehome_orphans(tl, orphan_rows)
+    if other_orphans:
+        if not orphan_rows:
+            out += ["", "orphans" + " " * 42 + "# unresolved moments: edit or remove"]
+        out.extend(f"  # {orphan}" for orphan in other_orphans)
     chapter_names = {row.get("from"): row.get("name") for row in intent.chapters(tl.bundle)}
     order = [g["id"] for g in groups]
     carried = _carried(tl, groups)
@@ -191,6 +196,179 @@ def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, 
         if note.get("hold") == "deliberate":
             out.append("         hold: deliberate")
     return "\n".join(out) + "\n"
+
+
+def render_orphans_sheet(tl: Checkout, *, banner=None, film=None) -> str:
+    """Render the editable orphan-cut fragment used by ``show --as sheet --orphans``."""
+    version = sheet_version(tl)
+    exported = tl.__dict__.setdefault("_exported", {})
+    if version not in exported:
+        exported[version] = copy.deepcopy(tl.bundle)
+        for old in list(exported)[:-5]:
+            exported.pop(old, None)
+    out = [f"film {film or tl.bundle.get('project_id', '')} · {tl.bundle.get('timeline_id', '')} · {_canvas(tl)} · "
+           f"{tl.fps:g} fps · v {version}"]
+    if banner:
+        out.append(banner)
+    out += ["", "orphans" + " " * 42 + "# edit each on value, then apply"]
+    rows = rehome_orphan_rows(tl)
+    if not rows:
+        out.append("  # no orphaned cut layers")
+        return "\n".join(out) + "\n"
+    out.extend(_render_orphan_rows(rows))
+    for orphan in _non_rehome_orphans(tl, rows):
+        out.append(f"  # {orphan}")
+    return "\n".join(out) + "\n"
+
+
+def _render_orphan_rows(rows):
+    out = []
+    cut = None
+    for row in rows:
+        if row["cut"] != cut:
+            cut = row["cut"]
+            out.append(f"  cut {cut}")
+        when = f" on {row['on']}" if row["on"] else " on"
+        detail = f"kept at {row['start']:.2f}–{row['end']:.2f} s; {row['reason']}"
+        out.append(f"    {row['clip']}{when}  # {detail}")
+    return out
+
+
+def rehome_orphan_rows(tl: Checkout) -> list[dict[str, Any]]:
+    """One editable row per orphaned cut clip, with identity-first suggestions."""
+    diagnostics = tl.orphans()
+    clips = list(tl.clips())
+    by_address = {clip.address: clip for clip in clips}
+    found: dict[str, tuple[Any, str]] = {}
+    for line in diagnostics:
+        parts = line.strip().split(None, 1)
+        if not parts:
+            continue
+        address, rest = parts
+        clip = by_address.get(address)
+        if clip is None:
+            # Formula diagnostics append a path to the clip address. Resolve the
+            # longest clip prefix, then leave formula-only findings informational.
+            clip = next((candidate for name, candidate in sorted(by_address.items(), key=lambda item: -len(item[0]))
+                         if address.startswith(name + ".")), None)
+        if clip is None or not intent.cut_of(clip.data):
+            continue
+        if intent.orphan(clip.data) or rest.startswith("on "):
+            found[clip.id] = (clip, rest)
+
+    word_list = tl.words()
+    journal = _prior_word_bindings(tl)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for clip, diagnostic in found.values():
+        cut_id = intent.cut_of(clip.data)
+        suggestion, reason, follows_cut = _orphan_suggestion(tl, clip, word_list, journal)
+        groups.setdefault(cut_id, []).append({
+            "cut": cut_id,
+            "clip": clip.address,
+            "clip_id": clip.id,
+            "on": suggestion,
+            "reason": reason,
+            "follows_cut": follows_cut,
+            "start": clip.start,
+            "end": clip.end,
+        })
+    for cut_id in sorted(groups, key=lambda cid: min(row["start"] for row in groups[cid])):
+        group = sorted(groups[cut_id], key=lambda row: (row["start"], row["clip"]))
+        suggested = [row for row in group if not row["follows_cut"] or row["on"] is not None]
+        suggestions = {row["on"] for row in suggested}
+        if len(suggestions) > 1:
+            summary = ", ".join(f"{row['clip']} → {row['on'] or 'no match'}" for row in group)
+            for row in group:
+                row["on"] = None
+                row["reason"] = f"cut {cut_id} suggestions disagree ({summary}); choose one moment for the whole cut"
+        elif len(suggestions) == 1 and None not in suggestions:
+            suggestion = next(iter(suggestions))
+            for row in group:
+                if row["follows_cut"] and row["on"] is None:
+                    row["on"] = suggestion
+                    row["reason"] = f"follows cut {cut_id} to {suggestion}; layer offset is preserved"
+    return [row for cut_id in sorted(groups, key=lambda cid: min(row["start"] for row in groups[cid]))
+            for row in sorted(groups[cut_id], key=lambda row: (row["start"], row["clip"]))]
+
+
+def _prior_word_bindings(tl):
+    """Read the runner's durable word identities, keyed by the exact clip selection."""
+    try:
+        return tl.log(op="clip.on")
+    except (OSError, ValueError):
+        return []
+
+
+def _orphan_suggestion(tl, clip, words, journal):
+    from astrid.core.timeline import moments as mo
+
+    authored = intent.on(clip.data)
+    follows_cut = not authored
+    if authored:
+        try:
+            follows_cut = mo.parse(authored).kind == "cut_start"
+        except mo.MomentError:
+            pass
+    identity = _journal_word_identity(tl, clip, authored, journal) if authored else None
+    if identity and identity.startswith("word:"):
+        _, segment, index = identity.split(":", 2)
+        matches = [word for word in words if word.segment == segment and word.index == int(index)]
+        if len(matches) == 1:
+            from astrid.sdk.timeline_address import word_address
+
+            return word_address(tl, matches[0]), f"prior bound word {identity} survives once", follows_cut
+        why = f"prior bound word {identity} does not occur exactly once in the new script"
+    else:
+        why = "prior bound word identity is unavailable"
+
+    old_text = clip.text
+    if old_text:
+        moment = mo.Moment("word", text=old_text)
+        matches = mo.find_words(moment, words)
+        if len(matches) == 1:
+            from astrid.sdk.timeline_address import _phrase_address
+
+            return _phrase_address(tl, moment, matches[0]), f"old text {old_text!r} matches one exact phrase", follows_cut
+        if len(matches) > 1:
+            return None, f"old text {old_text!r} matches {len(matches)} phrases; no unique suggestion", follows_cut
+        return None, f"{why}; old text {old_text!r} has no exact phrase match", follows_cut
+    return None, f"{why}; the layer has no text matching a script phrase", follows_cut
+
+
+def _journal_word_identity(tl, clip, authored, records):
+    if not authored:
+        return None
+    from astrid.sdk.timeline.commands import scoped_clip
+
+    try:
+        selected = scoped_clip(tl, clip)
+    except Exception:
+        return None
+    for record in reversed(records):
+        if getattr(record, "outcome", None) != "changed":
+            continue
+        for call in reversed(getattr(record, "calls", ())):
+            if not isinstance(call, dict) or call.get("op") != "clip.on":
+                continue
+            if selected not in (call.get("resolved") or ()):
+                continue
+            bindings = call.get("bindings") or {}
+            moment = (call.get("args") or {}).get("moment")
+            exact = [value for key, value in bindings.items() if key in {moment, authored} and str(value).startswith("word:")]
+            if len(set(exact)) == 1:
+                return exact[0]
+    return None
+
+
+def _non_rehome_orphans(tl, rows=None):
+    rows = rehome_orphan_rows(tl) if rows is None else rows
+    represented = {row["clip"] for row in rows}
+    out = []
+    for line in tl.orphans():
+        address = line.strip().split(None, 1)[0] if line.strip() else ""
+        if address not in represented:
+            out.append(line)
+    return out
 
 
 def _loose_in(tl, lo, hi):
@@ -337,9 +515,10 @@ def _legacy_parse_sheet(text: str):
 
 def parse_sheet(text: str) -> dict[str, Any]:
     """Parse narration, sound, cut headers, notes, and editable layer rows."""
-    sheet: dict[str, Any] = {"lines": {}, "cuts": [], "has_lines_section": False}
+    sheet: dict[str, Any] = {"lines": {}, "cuts": [], "orphans": [], "has_lines_section": False}
     section = None
     cut = None
+    orphan_cut = None
     fps = 30.0
     for number, raw in enumerate(text.splitlines(), 1):
         if raw.startswith("film "):
@@ -364,11 +543,28 @@ def parse_sheet(text: str) -> dict[str, Any]:
             continue
         if body in ("lines", "orphans", "sound"):
             section, cut = body, None
+            orphan_cut = None
             if body == "lines":
                 sheet["has_lines_section"] = True
             continue
+        if section == "orphans":
+            if body.startswith("cut "):
+                orphan_cut = body[4:].strip().lower()
+                if not mo.CUT_ID_RE.fullmatch(orphan_cut):
+                    raise SheetError(f"line {number}: orphan group must be 'cut cNN'; got {body!r}")
+                continue
+            match = re.fullmatch(r"(\S+)\s+on(?:\s+(.*))?", body)
+            if not match:
+                raise SheetError(f"line {number}: an orphan row reads  c22.layer on MOMENT (or leaves on blank)")
+            if orphan_cut is None:
+                raise SheetError(f"line {number}: an orphan row needs a 'cut cNN' group")
+            moment = _canon(match.group(2), number) if match.group(2) else None
+            sheet["orphans"].append({"cut": orphan_cut, "clip": match.group(1), "on": moment,
+                                     "line": number, "text_line": body})
+            continue
         if "┃" in line:
             section = "cuts"
+            orphan_cut = None
             try:
                 cut = _parse_header(line, number)
             except SheetError as exc:
@@ -381,8 +577,6 @@ def parse_sheet(text: str) -> dict[str, Any]:
             except SheetError as exc:
                 raise SheetError(_with_text(str(exc), number, body)) from None
             sheet["lines"][entry["id"]] = entry
-            continue
-        if section == "orphans":
             continue
         if section == "sound" and cut is None:
             try:
@@ -743,7 +937,7 @@ def merge_sheet(sheet: dict[str, Any], base_tl: Any, tl: Any) -> dict[str, Any]:
     base, now = parse_sheet(render_sheet(base_tl)), parse_sheet(render_sheet(tl))
     base_cuts, now_cuts = {c["id"]: c for c in base["cuts"]}, {c["id"]: c for c in now["cuts"]}
     clashes: list[str] = []
-    merged: dict[str, Any] = {"lines": {}, "cuts": [], "version": sheet.get("version")}
+    merged: dict[str, Any] = {"lines": {}, "cuts": [], "orphans": [], "version": sheet.get("version")}
 
     def pick(what: str, b: Any, s: Any, c: Any) -> Any:
         if s == b:
@@ -803,6 +997,17 @@ def merge_sheet(sheet: dict[str, Any], base_tl: Any, tl: Any) -> dict[str, Any]:
                 layers.append(chosen)
         out["layers"] = layers
         merged["cuts"].append(out)
+    if sheet.get("orphans"):
+        base_orphans = {row["clip"]: row for row in base.get("orphans") or []}
+        sheet_orphans = {row["clip"]: row for row in sheet.get("orphans") or []}
+        now_orphans = {row["clip"]: row for row in now.get("orphans") or []}
+        for address in dict.fromkeys([*base_orphans, *sheet_orphans, *now_orphans]):
+            b, s, c = base_orphans.get(address), sheet_orphans.get(address), now_orphans.get(address)
+            shape = lambda row: None if row is None else (row.get("cut"), row.get("on"))
+            chosen = pick(f"orphan {address}", shape(b), shape(s), shape(c))
+            if chosen is not None and chosen != shape(c):
+                source = s if s is not None else c
+                merged["orphans"].append({**source, "cut": chosen[0], "on": chosen[1]})
     if clashes:
         raise SheetError("not applied: since this sheet was exported, these were changed both here and in the sheet: "
                          + "; ".join(clashes[:10]) + (f"; … {len(clashes) - 10} more" if len(clashes) > 10 else "")
@@ -898,6 +1103,7 @@ def _apply_parsed(tl, sheet, before):
     from astrid.sdk.timeline.commands import execute
     for command in sheet.get("commands", []):
         execute(tl, command)
+    _apply_orphan_rows(tl, sheet.get("orphans") or [])
     tl._mcache = None
     if reflow:
         tl.reflow()
@@ -905,6 +1111,52 @@ def _apply_parsed(tl, sheet, before):
         if any(line.segment == segment for line in tl.lines()):
             tl.remove_line(segment)
     return describe_changes(before, tl)
+
+
+def _apply_orphan_rows(tl, rows):
+    if not rows:
+        return
+    from astrid.sdk.timeline.commands import CommandError, execute
+
+    by_cut: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        try:
+            clip = tl.clip(row["clip"])
+        except TimelineEditError as exc:
+            raise SheetError(_with_text(f"line {row['line']}: {exc}", row["line"], row.get("text_line", ""))) from None
+        cut_id = intent.cut_of(clip.data)
+        if cut_id != row["cut"]:
+            raise SheetError(_with_text(f"line {row['line']}: {row['clip']} is not in orphan cut {row['cut']}",
+                                        row["line"], row.get("text_line", "")))
+        by_cut.setdefault(row["cut"], []).append(row)
+
+    current = rehome_orphan_rows(tl)
+    current_by_cut: dict[str, set[str]] = {}
+    for row in current:
+        current_by_cut.setdefault(row["cut"], set()).add(row["clip"])
+    moves = []
+    for cut_id, entries in by_cut.items():
+        actual = current_by_cut.get(cut_id, set())
+        selected = {row["clip"] for row in entries}
+        if selected != actual:
+            line = entries[0]["line"]
+            raise SheetError(_with_text(
+                f"line {line}: {cut_id} has {len(actual)} orphan row(s) now; re-export the current orphan sheet",
+                line, entries[0].get("text_line", "")))
+        suggestions = {row["on"] for row in entries}
+        if None in suggestions or len(suggestions) != 1:
+            continue
+        picture = tl.cut_picture(cut_id)
+        if picture is None:
+            line = entries[0]["line"]
+            raise SheetError(_with_text(f"line {line}: {cut_id} has no picture to move", line,
+                                        entries[0].get("text_line", "")))
+        moves.append({"op": "clip.on", "select": picture.id, "args": {"moment": next(iter(suggestions))}})
+    if moves:
+        try:
+            execute(tl, {"op": "timeline.batch", "select": None, "args": {"commands": moves}})
+        except (TimelineEditError, CommandError) as exc:
+            raise SheetError(str(exc)) from None
 
 
 def _add_cut(tl, cut):

@@ -924,6 +924,9 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
         return refused
     presentation = getattr(parsed, "presentation", None)
     parsed.as_view = presentation or "cuts"
+    if getattr(parsed, "orphans", False) and presentation != "sheet":
+        print("error: --orphans requires --as sheet", file=sys.stderr)
+        return 2
     bundle_opener = getattr(parsed.client.timelines, "open_bundle", None)
     # `show --clip X` is `show TL X` (a layer's record) unless it is the inspection projection's clip id
     selectors = any(getattr(parsed, name, None) for name in ("occurrence", "asset", "track", "cursor", "shot", "detail"))
@@ -2280,6 +2283,8 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
         "time order with cuts, layer entrances and element keyframes between them. code: shots and cuts as a "
         "readable program of element calls with resolved keyframes and each element's source path.",
     )
+    subparser.add_argument("--orphans", action="store_true",
+                           help="With --as sheet: one editable, suggested row per orphaned cut layer, grouped by cut.")
     subparser.add_argument(
         "--occurrence",
         default=None,
@@ -3072,6 +3077,18 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_look import has_look
     from astrid.sdk.timeline_checkout import Checkout
 
+    if getattr(parsed, "accept_suggestions", False) and (getattr(parsed, "command", None) is not None or parsed.dry_run):
+        raise _VerbError("--accept-suggestions previews and applies its own batch; do not combine it with --command or --dry-run", 2)
+    if getattr(parsed, "accept_suggestions", False):
+        parser = argparse.ArgumentParser(add_help=False)
+        _configure_edit(parser)
+        context = {"ref", "project", "file", "draft", "accept_suggestions"}
+        extra_edit = sorted({action.dest for action in parser._actions
+                             if action.option_strings and action.dest not in context | {"help"}
+                             and getattr(parsed, action.dest, action.default) != action.default})
+        if extra_edit:
+            flags = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(extra_edit))
+            raise _VerbError(f"--accept-suggestions is a standalone edit; do not combine it with {flags}", 2)
     if getattr(parsed, "command", None) is not None:
         from astrid.sdk.timeline.commands import run, CommandError, EDIT_FLAG_OPERATIONS
         context = {"command", "dry_run", "file", "project", "draft", "no_sweep"}
@@ -3097,7 +3114,7 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         raise _VerbError("--split and --add-cut need --on MOMENT (where the new cut starts)", 2)
     add_media = parsed.add_media is not None
     timeline_level = bool(parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops or cut_ops
-                          or parsed.replace_asset or film_end_requested(parsed) or crossfade)
+                          or parsed.replace_asset or film_end_requested(parsed) or crossfade or parsed.accept_suggestions)
     selector = parsed.clip is not None or parsed.cut is not None
     if crossfade and (selector or parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops):
         raise _VerbError("--crossfade is a timeline-level operation; run it separately", 2)
@@ -3134,6 +3151,9 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         if not parsed.ref:
             raise _VerbError("name a timeline (timelines edit <timeline> --project P) or pass --file F", 2)
         tl, target = _edit_checkout(parsed), None
+
+    if parsed.accept_suggestions:
+        return _cmd_accept_suggestions(parsed, tl, target)
 
     if parsed.music is not None:
         from astrid.packs.timeline.cli_music import apply_music_policy
@@ -3191,9 +3211,69 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     return sweep_status or verify_status
 
 
+def _cmd_accept_suggestions(parsed: argparse.Namespace, tl: Any, target: str | None) -> int:
+    """Preview and atomically apply one existing ``clip.on`` command per consistent orphan cut."""
+    from astrid.sdk.timeline.commands import run
+    from astrid.sdk.timeline_sheet import rehome_orphan_rows
+
+    rows = rehome_orphan_rows(tl)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["cut"], []).append(row)
+    commands = []
+    print("re-home suggestion preview:")
+    for cut_id, entries in grouped.items():
+        suggestions = {entry["on"] for entry in entries}
+        if len(suggestions) == 1 and None not in suggestions:
+            moment = next(iter(suggestions))
+            picture = tl.cut_picture(cut_id)
+            if picture is None:
+                print(f"  skipped {cut_id}: it has no picture clip")
+                continue
+            print(f"  {cut_id} → {moment} ({len(entries)} orphan row(s))")
+            commands.append({"op": "clip.on", "select": picture.id, "args": {"moment": moment}})
+        else:
+            reasons = "; ".join(f"{entry['clip']}: {entry['reason']}" for entry in entries)
+            print(f"  skipped {cut_id}: {reasons}")
+    if not commands:
+        if not grouped:
+            print("  no orphaned cut suggestions")
+        return 3
+
+    batch = {"op": "timeline.batch", "select": None, "args": {"commands": commands}}
+    preview = run(tl, batch, dry_run=True)
+    print(json.dumps(preview.to_json(), ensure_ascii=False))
+    if not preview.changed:
+        print("no change (the working copy already matches)")
+        return 3
+    before = tl.document()
+    applied = run(tl, batch)
+    if before == tl.document() or not applied.changed:
+        print("no change (the working copy already matches)")
+        return 3
+    report = tl.check()
+    changes = _describe_edit(before, tl.document(), tl)
+    cuts = _edit_cuts(before, tl)
+    for line in _cap(changes):
+        print(line)
+    for line in _cap(_check_lines(report, cuts=cuts)):
+        print(line)
+    tl.save(**({"path": target} if target else {}), quiet=True)
+    print("edited working copy")
+    if target is None:
+        print(f"next: timelines show {parsed.ref} --project {parsed.project or '<project>'} --as sheet --orphans   ·   "
+              f'timelines publish {parsed.ref} --project {parsed.project or "<project>"} -m "..."')
+    else:
+        print(f"next: timelines check {target}   ·   timelines publish {target} -m \"...\"")
+    return 0
+
+
 def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     """Apply the operations in order: timeline-level ops first, then the selected clip (move, length, set, look, swap)."""
     from astrid.sdk.timeline_editing import TimelineEditError
+
+    if parsed.accept_suggestions:
+        raise TimelineEditError("--accept-suggestions is handled as a standalone edit")
 
     line_operation = bool(parsed.replace_line or parsed.insert_line or parsed.from_script)
     line_only_args = bool(
@@ -3549,6 +3629,8 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--insert", type=_parse_insert, default=None, metavar="TIME:SECONDS",
                            help="Insert silence/time at TIME (e.g. 1:02:0.5), moving everything after it later.")
     subparser.add_argument("--keep", action="store_true", help="Accept an orphaned clip where it is (a fixed time, no moment); it stops blocking publish.")
+    subparser.add_argument("--accept-suggestions", action="store_true",
+                           help="Preview, then apply every consistent orphan-cut suggestion; list cuts that need a choice.")
     subparser.add_argument("--clear-asset", dest="clear_asset", action="store_true",
                            help="Empty the clip's asset (it stays on the timeline).")
     subparser.add_argument("--allow-new-params", dest="allow_new_params", action="store_true",

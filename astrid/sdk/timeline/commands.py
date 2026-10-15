@@ -769,7 +769,7 @@ def execute(tl, value):
 # belong to the executable edit-flags entry; mutation flags name their operation.
 EDIT_FLAG_OPERATIONS = {}
 for _operation, _names in {
-    "timeline.edit-flags": "project file draft clip cut near n offset labels timings verify sweep no_sweep music crossfade overlap",
+    "timeline.edit-flags": "project file draft clip cut near n offset labels timings verify sweep no_sweep music crossfade overlap accept_suggestions",
     "timeline.add": "add_media track clip_id",
     "clip.trim": "trim_in trim_out", "clip.slip": "slip",
     "clip.set": "set_values allow_new_params", "clip.clear": "clear_keys",

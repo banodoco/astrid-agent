@@ -95,3 +95,35 @@ The generated flag-to-operation table is `tests/parity/edit-command-flags.json`.
 
 The older explicit `with checkout.edit(label, dry_run=True)` audit API retains
 its existing dry-run audit record. Executable command/CLI previews write none.
+
+## Re-home orphaned cuts
+
+Export one editable row for each orphaned cut layer, grouped by cut:
+
+```bash
+python3 -m astrid timelines show TL --project P --as sheet --orphans > orphans.sheet
+# Edit each row's `on` value, then apply the sheet through the normal edit path.
+python3 -m astrid timelines apply TL --project P orphans.sheet
+```
+
+Each row keeps the orphan at its current place and length until the cut is moved.
+The suggested moment follows this fixed rule:
+
+1. If the exact word identity recorded by the original `clip.on` command occurs
+   exactly once in the current script, suggest that word's moment.
+2. Otherwise, if that layer's old text matches exactly one phrase in the current
+   script, suggest the phrase's start.
+3. Otherwise leave `on` blank and keep the reason on the row. If suggestions for
+   one cut differ, blank every row for that cut.
+
+Never choose an occurrence by nearest time. `--accept-suggestions` prints its
+preview, applies every cut whose rows share one nonblank suggestion, and lists
+cuts that need a human choice:
+
+```bash
+python3 -m astrid timelines edit TL --project P --accept-suggestions
+python3 -m astrid timelines edit TL --project P --cut c22 --on '"viral" in v20b'
+```
+
+The cut and its orphaned layers move together with their offsets. Re-home through
+the sheet, `--accept-suggestions`, or `--cut cNN --on`; there is no `rehome` verb.

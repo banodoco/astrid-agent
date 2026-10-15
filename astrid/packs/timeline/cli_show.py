@@ -44,12 +44,18 @@ def show_checkout(parsed: argparse.Namespace, bundle_opener: Any) -> tuple[Any, 
 def print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     """``show --as sheet``: the cut sheet of the working copy (or the published head)."""
     from astrid.sdk.timeline_address import AddressError, resolve
-    from astrid.sdk.timeline_sheet import SheetError, moment_range, range_cuts, render_sheet
+    from astrid.sdk.timeline_sheet import SheetError, moment_range, range_cuts, render_orphans_sheet, render_sheet
 
     got = show_checkout(parsed, bundle_opener)
     if isinstance(got, int):
         return got
     tl, banner = got
+    if getattr(parsed, "orphans", False):
+        if parsed.range or getattr(parsed, "at", None):
+            print("error: --orphans cannot be combined with --range or --at", file=sys.stderr)
+            return 2
+        print(render_orphans_sheet(tl, banner=banner, film=parsed.project), end="")
+        return 0
     start = end = None
     cuts = None
     try:
@@ -70,7 +76,7 @@ def print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     except (SheetError, AddressError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project), cuts=cuts,
+    print(render_sheet(tl, start=start, end=end, banner=banner, film=parsed.project, cuts=cuts,
                        detail=bool(getattr(parsed, "detail", False))), end="")
     where = f"{parsed.ref} --project {parsed.project}"
     # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1

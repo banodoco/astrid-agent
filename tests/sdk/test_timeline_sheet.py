@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline_checkout import Checkout
-from astrid.sdk.timeline_sheet import SheetError, apply_sheet, moment_range, parse_sheet, render_sheet
+from astrid.sdk.timeline_sheet import (
+    SheetError,
+    apply_sheet,
+    moment_range,
+    parse_sheet,
+    rehome_orphan_rows,
+    render_orphans_sheet,
+    render_sheet,
+)
 
 from tests.sdk.test_timeline_checkout import FPS, bundle
 
@@ -262,6 +271,124 @@ def test_detail_prints_long_values_as_editable_json_and_round_trips():
     assert 'inset={"top":120,"left":64,"right":64,"bottom":40}' in sheet and apply_sheet(tl, sheet) == []
     apply_sheet(tl, sheet.replace('"top":120', '"top":90'))
     assert card.params["inset"]["top"] == 90
+
+
+def _orphan_fixture():
+    from tests.sdk.test_timeline_reflow_golden import film
+
+    return Checkout(film())
+
+
+def test_orphan_sheet_lists_each_layer_and_keeps_its_original_place_and_length():
+    tl = _orphan_fixture()
+    tl.remove_line("s2")
+    before = {c.address: (c.start, c.duration) for c in tl.clips() if c.address.startswith("c2.")}
+
+    sheet = render_orphans_sheet(tl)
+
+    assert "orphans" in sheet and "cut c2" in sheet
+    assert sum(line.startswith("    c2.") for line in sheet.splitlines()) == 3
+    assert all(address in sheet for address in ("c2.field", "c2.live", "c2.dot"))
+    assert "kept at" in sheet and "no exact phrase match" in sheet
+    assert {c.address: (c.start, c.duration) for c in tl.clips() if c.address.startswith("c2.")} == before
+
+
+def test_orphan_suggestions_use_exact_bound_identity_then_unique_text_fallback(monkeypatch):
+    from astrid.sdk.timeline.commands import scoped_clip
+    from astrid.sdk.timeline_intent import set_orphan
+
+    tl = _orphan_fixture()
+    picture = tl.clip("c2.field")
+    live = tl.clip("c2.live")
+    dot = tl.clip("c2.dot")
+    for clip in (picture, live, dot):
+        set_orphan(clip.data, "synthetic missing word")
+    selected = scoped_clip(tl, picture)
+    record = SimpleNamespace(
+        outcome="changed",
+        calls=[{"op": "clip.on", "resolved": [selected], "args": {"moment": '"Live"'},
+                "bindings": {'"Live"': "word:s2:0"}}],
+    )
+    monkeypatch.setattr(tl, "log", lambda **kwargs: [record])
+
+    rows = {row["clip"]: row for row in rehome_orphan_rows(tl)}
+
+    assert set(rows) == {"c2.field", "c2.live", "c2.dot"}
+    assert rows["c2.field"]["on"] == '"Live"'
+    assert "prior bound word word:s2:0 survives once" in rows["c2.field"]["reason"]
+    assert rows["c2.live"]["on"] == '"Live"'  # one exact old-text phrase
+    assert rows["c2.dot"]["on"] == '"Live"'  # relative layer follows the agreed cut anchor
+
+    fallback_tl = _orphan_fixture()
+    fallback = fallback_tl.clip("c2.live")
+    from astrid.sdk.timeline_intent import set_orphan
+    set_orphan(fallback.data, "synthetic missing word")
+    monkeypatch.setattr(fallback_tl, "log", lambda **kwargs: [])
+    fallback_row = rehome_orphan_rows(fallback_tl)[0]
+    assert fallback_row["on"] == '"Live"'
+    assert "old text 'Live.' matches one exact phrase" in fallback_row["reason"]
+
+    original_word_list = tl._word_list
+    live_word = next(word for word in original_word_list() if word.segment == "s2" and word.index == 0)
+    monkeypatch.setattr(tl, "_word_list", lambda: [*original_word_list(), live_word])
+    duplicated = {row["clip"]: row for row in rehome_orphan_rows(tl)}
+    assert duplicated["c2.field"]["on"] is None
+    assert "does not occur exactly once" in duplicated["c2.field"]["reason"]
+
+
+def test_orphan_cut_with_disagreeing_word_suggestions_has_no_suggestion(monkeypatch):
+    from astrid.sdk.timeline.commands import scoped_clip
+    from astrid.sdk.timeline_intent import set_on, set_orphan
+
+    tl = _orphan_fixture()
+    picture, live = tl.clip("c2.field"), tl.clip("c2.live")
+    set_on(live.data, '"back"')
+    for clip in (picture, live):
+        set_orphan(clip.data, "synthetic missing word")
+    calls = []
+    for clip, moment, identity in ((picture, '"Live"', "word:s2:0"), (live, '"back"', "word:s3:1")):
+        calls.append({"op": "clip.on", "resolved": [scoped_clip(tl, clip)], "args": {"moment": moment},
+                      "bindings": {moment: identity}})
+    record = SimpleNamespace(outcome="changed", calls=calls)
+    monkeypatch.setattr(tl, "log", lambda **kwargs: [record])
+
+    rows = rehome_orphan_rows(tl)
+
+    assert len(rows) == 2 and all(row["on"] is None for row in rows)
+    assert all("suggestions disagree" in row["reason"] for row in rows)
+
+    fallback_tl = _orphan_fixture()
+    picture, text_layer = fallback_tl.clip("c2.field"), fallback_tl.clip("c2.live")
+    text_layer.data["params"]["text"] = "back"
+    set_orphan(picture.data, "synthetic missing word")
+    set_orphan(text_layer.data, "synthetic missing word")
+    picture_record = SimpleNamespace(
+        outcome="changed",
+        calls=[{"op": "clip.on", "resolved": [scoped_clip(fallback_tl, picture)],
+                "args": {"moment": '"Live"'}, "bindings": {'"Live"': "word:s2:0"}}],
+    )
+    monkeypatch.setattr(fallback_tl, "log", lambda **kwargs: [picture_record])
+    fallback_rows = rehome_orphan_rows(fallback_tl)
+    assert all(row["on"] is None for row in fallback_rows)
+    assert all("suggestions disagree" in row["reason"] for row in fallback_rows)
+
+
+def test_applying_edited_orphan_sheet_rehomes_the_whole_cut_through_the_runner():
+    import re
+
+    tl = _orphan_fixture()
+    tl.remove_line("s2")
+    sheet = render_orphans_sheet(tl)
+    edited = re.sub(r"(c2\.\S+\s+on)(?=\s+#)", r'\1 "back"', sheet)
+
+    changes = apply_sheet(tl, edited)
+
+    picture = tl.clip("c2.field")
+    assert changes
+    assert picture.start == pytest.approx(tl.word("back").start, abs=1 / FPS)
+    assert tl.clip("c2.live").start == pytest.approx(picture.start, abs=1 / FPS)
+    assert tl.clip("c2.dot").start - picture.start == pytest.approx(0.5, abs=1 / FPS)
+    assert all(not intent.orphan(c.data) for c in (picture, tl.clip("c2.live"), tl.clip("c2.dot")))
 
 
 def test_a_cuts_notes_belong_to_the_cut_when_its_picture_changes():

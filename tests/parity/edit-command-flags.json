@@ -1,6 +1,13 @@
 [
   {
     "flags": [
+      "--accept-suggestions"
+    ],
+    "destination": "accept_suggestions",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
       "--add-cut"
     ],
     "destination": "add_cut",

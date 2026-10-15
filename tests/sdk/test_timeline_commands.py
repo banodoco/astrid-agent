@@ -68,6 +68,21 @@ def test_command_preview_is_populated_replayable_and_writes_nothing(draft):
     assert len(list(store._history_dir(Path(draft.path)).glob("*.json"))) == 1
 
 
+def test_orphan_word_suggestion_reads_scoped_identity_from_runner_journal(draft):
+    from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline_sheet import rehome_orphan_rows
+
+    commands.run(draft, command(op="clip.on", select="c2.card", moment='"now"'))
+    card = draft.clip("c2.card")
+    card.data["params"]["text"] = "work"
+    intent.set_orphan(card.data, "synthetic missing word")
+
+    row = next(row for row in rehome_orphan_rows(draft) if row["clip"] == "c2.card")
+
+    assert row["on"] == '"now"'
+    assert "prior bound word word:s2:1 survives once" in row["reason"]
+
+
 @pytest.mark.parametrize("value", [None, [], {}, {"op":"clip.set","select":2,"args":{}},
     {"op":"not.registered","select":None,"args":{}}, command(x=float("nan")),
     command(op="clip.set-duration", seconds="bad"), command(op="clip.set-duration", seconds=None),
