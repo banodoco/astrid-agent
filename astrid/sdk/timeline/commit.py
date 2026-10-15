@@ -2,8 +2,7 @@
 
 Runtime alone authenticates and accepts. This module only edits detached
 checkouts; it never opens a client, publishes, or persists a local draft.
-The v1 port currently lacks pinned child reads. Shot-bearing revisions are
-therefore an explicit refusal, rather than a fabricated authoring closure.
+Exact pinned child bytes come only from the request-bound revision closure.
 """
 from __future__ import annotations
 
@@ -23,7 +22,8 @@ from astrid.core.timeline.compatibility import (
     require_writable_candidate,
     require_writable_parent,
 )
-from astrid.sdk.timeline import commands, store
+from astrid.sdk.timeline import commands
+from astrid.sdk.timeline.rebase import rebase
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.commands import CommandError
@@ -84,12 +84,12 @@ class RuntimeCommitService:
                         return copy.deepcopy(saved["result"])
                     return self._error(result, "request_id_conflict", "RequestIdConflict: request ID has different content")
             try:
-                if request["scope"]["target"] != "parent":
-                    raise _Refusal("Occurrence identity/fork semantics require the IDENTITY producer")
                 if "commands" not in request["change"]:
                     raise _Refusal("Document reconciliation and verified draft journal commands require the adapt-save producer")
                 base = self._load_revision(runtime_port, request, request["base_revision_id"])
-                candidate, plan, direct = self._apply(base, request["change"]["commands"])
+                occurrence = self._scope_occurrence(request, base)
+                candidate, plan, _direct = self._apply(base, request["change"]["commands"])
+                self._guard_scope(occurrence, plan)
                 # Apply once at the exact base. Never repeat relative commands
                 # on a newer head or generate new IDs during a CAS retry.
                 for attempt in range(3):  # initial acceptance + at most two StaleHead retries
@@ -101,14 +101,17 @@ class RuntimeCommitService:
                     current = copy.deepcopy(candidate)
                     if head["revision_id"] != request["base_revision_id"]:
                         result["rebased_onto"] = head["revision_id"]
-                        current, conflicts = store.three_way(base, onto, candidate, force=False)
-                        if conflicts:
-                            return self._conflict(result, request, conflicts, base, onto, candidate,
-                                                  kind=self._merge_conflict_kind(base, onto, candidate, direct))
+                        rebased = rebase(plan.calls, onto)
+                        if rebased.conflicts:
+                            return self._conflict(result, request, rebased.conflicts, base, onto, candidate)
+                        current, current_plan = rebased.document, rebased.plan
                         try:
-                            self._validate_merged(current, direct)
-                        except (CommandError, AuthoringBundleError, TimelineEditError) as exc:
+                            self._guard_scope(occurrence, current_plan)
+                        except _Refusal as exc:
                             return self._conflict(result, request, [str(exc)], base, onto, candidate, kind="dependent")
+                        result["id_map"] = rebased.id_map
+                    else:
+                        current_plan = plan
                     before = Checkout(copy.deepcopy(onto)).document()
                     after = Checkout(current).document()
                     compiled = compile_authoring_candidate(after).publication
@@ -117,9 +120,10 @@ class RuntimeCommitService:
                         "parent_composition", "shot_revisions", "internal_timeline_revisions"))
                     result.update(canonical_document=after, document_digest=_digest(after))
                     # These are recorder output, not submitted command JSON.
-                    result["change"].update(changes=list(plan.changes),
-                                            commands=[c.to_json() for c in plan.calls],
-                                            direct_writes=self._wire_writes(base, after, direct))
+                    result["change"].update(changes=list(current_plan.changes),
+                                            commands=[c.to_json() for c in current_plan.calls],
+                                            direct_writes=copy.deepcopy(list(current_plan.direct_writes)),
+                                            consequences=copy.deepcopy(list(current_plan.consequences)))
                     if request["dry_run"]:
                         result["status"] = "preview"
                         return result
@@ -168,20 +172,88 @@ class RuntimeCommitService:
     @staticmethod
     def _load_revision(port, request, revision_id):
         try:
-            revision = port.revision(revision_id)
+            if not callable(getattr(port, "revision_closure", None)):
+                raise _Refusal("Exact pinned revision_closure capability is required")
+            closure = port.revision_closure(revision_id)
+            if not isinstance(closure, Mapping) or set(closure) != {
+                    "parent_revision", "shot_revisions", "internal_timeline_revisions"}:
+                raise _Refusal("Invalid exact revision closure shape")
+            revision = closure["parent_revision"]
         except Exception as exc:
             # Preserve typed Runtime authorization/transport errors. Only a
             # typed missing base is converted to the public base_not_found code.
             if getattr(exc, "code", None) == "not_found" and revision_id == request["base_revision_id"]:
                 raise _BaseNotFound(str(exc)) from exc
             raise
-        if (revision["revision_id"], revision["project_id"], revision["timeline_id"]) != (
+        if not isinstance(revision, Mapping) or not isinstance(revision.get("payload"), Mapping):
+            raise _Refusal("Exact parent revision resource is missing its payload")
+        if (revision.get("revision_id"), revision.get("project_id"), revision.get("timeline_id")) != (
                 revision_id, request["project_id"], request["timeline_id"]):
             raise _Refusal("Revision identity does not match the request-bound exact read")
         require_writable_parent(revision["payload"])
-        if revision["payload"].get("occurrences"):
-            raise _Refusal("Pinned shot/internal-timeline closure is unavailable on RuntimeCommitPort v1; exact child reads are required")
-        return open_authoring_bundle(revision, shot_revisions=[], internal_timeline_revisions=[])
+        shots, internals = closure["shot_revisions"], closure["internal_timeline_revisions"]
+        occurrences = revision["payload"].get("occurrences", [])
+        if (not isinstance(occurrences, list) or not isinstance(shots, list) or not isinstance(internals, list)
+                or any(not isinstance(row, Mapping) for row in occurrences + shots + internals)):
+            raise _Refusal("Pinned closure children and occurrences must be detached object arrays")
+        pins = {(row.get("shot_id"), row.get("shot_revision_id")) for row in occurrences}
+        for row in shots:
+            if (row.get("project_id") != request["project_id"] or not isinstance(row.get("payload"), Mapping)
+                    or row["payload"].get("internal_timeline_revision_id") != row.get("internal_timeline_revision_id")):
+                raise _Refusal("Shot closure scope or exact internal revision pin mismatch")
+        if any(row.get("project_id") != request["project_id"] for row in internals):
+            raise _Refusal("Internal closure project scope mismatch")
+        if {(row.get("shot_id"), row.get("revision_id")) for row in shots} != pins or len(shots) != len(pins):
+            raise _Refusal("Shot closure differs from exact parent occurrence pins")
+        internal_pins = {row.get("internal_timeline_revision_id") for row in shots}
+        if {row.get("revision_id") for row in internals} != internal_pins or len(internals) != len(internal_pins):
+            raise _Refusal("Internal closure differs from exact pinned shot dependencies")
+        return open_authoring_bundle(revision, shot_revisions=shots, internal_timeline_revisions=internals)
+
+    @staticmethod
+    def _scope_occurrence(request, base):
+        scope = request["scope"]
+        target = scope["target"]
+        if target == "parent":
+            return None
+        if not isinstance(target, str) or not target.startswith("occurrence:"):
+            raise _Refusal("Unsupported authoring scope")
+        if scope.get("content", "this-occurrence") != "this-occurrence":
+            raise _Refusal("Shared-shot editing requires an explicit admitted identity producer")
+        occurrence = target.split(":", 1)[1]
+        rows = [row for row in base.get("placements", []) if row.get("occurrence_id") == occurrence]
+        if len(rows) != 1:
+            raise _Refusal(f"Unavailable or ambiguous occurrence {occurrence!r}")
+        from astrid.sdk import timeline_intent as intent
+        tl = Checkout(copy.deepcopy(base))
+        selected_shot = rows[0]["shot_id"]
+        def anchors(clips):
+            return {(kind, value) for clip in clips for kind, value in (
+                ("cut", intent.cut_of(clip.data)), ("line", intent.line(clip.data))) if value}
+        own = anchors(c for c in tl.clips() if c.shot_id == selected_shot)
+        other = anchors(c for c in tl.clips() if c.shot_id != selected_shot)
+        if own & other:
+            raise _Refusal("Ambiguous occurrence timing identities: " +
+                           ", ".join(f"{kind}:{value}" for kind, value in sorted(own & other)) +
+                           "; exact occurrence timing support is required")
+        source = base.get("source_mapping", {}).get("shots", {}).get(rows[0]["shot_id"], {})
+        for key, field in (("shot_id", "shot_id"), ("shot_revision_id", "revision_id"),
+                           ("internal_revision_id", "internal_timeline_revision_id")):
+            if key in scope and scope[key] != source.get(field):
+                raise _Refusal(f"Occurrence {occurrence!r} exact base {key} mismatch")
+        return occurrence
+
+    @staticmethod
+    def _guard_scope(occurrence, plan):
+        if occurrence is None:
+            return
+        prefix = f"occurrence:{occurrence}/"
+        for call in plan.calls:
+            if not call.resolved or any(not sid.startswith(prefix) for sid in call.resolved):
+                raise _Refusal("Occurrence scope requires exact targets within that occurrence")
+        for write in (*plan.direct_writes, *plan.consequences):
+            if not write["id"].startswith(prefix):
+                raise _Refusal(f"Occurrence edit affects unsupported outside scope {write['id']!r}")
 
     @staticmethod
     def _check_calls(values):
@@ -235,83 +307,27 @@ class RuntimeCommitService:
             for child in call.args.get("commands", []):
                 RuntimeCommitService._check_media_duration(tl, child)
         elif call.op in {"clip.trim", "clip.slip"}:
-            clip = tl.clip(call.select)
+            clip = commands.recorded_owner(tl, call, "clip") if call.resolved else tl.clip(call.select)
             entry = tl._registry(clip.shot_id).get(str(clip.data.get("asset"))) or {}
             duration = entry.get("duration")
             if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
                 raise _Refusal("Trim/slip requires a pinned source duration; ambient media lookup is unavailable")
 
     @staticmethod
-    def _validate_merged(bundle, direct):
-        tl = Checkout(bundle)
-        RuntimeCommitService._check_detached_media(tl)
-        require_writable_candidate(tl.document())
-        # Resolve derived consequences once on the merged intent, without
-        # replaying a relative command or recording compiler writes as authored.
-        tl._command_depth = 1
-        tl._edit_local_only = True
-        try:
-            tl.resolve()
-            commands.guard_direct_writes(tl, direct)
-            report = tl.check()
-            commands.guard_direct_writes(tl, direct)
-        finally:
-            tl._command_depth = 0
-        if not report.valid or report.blocking:
-            raise _Refusal("; ".join(report.blocking or report.problems or ["Invalid merged candidate"]))
-
-    @staticmethod
-    def _wire_writes(base, after, direct):
-        old = {c.id: c for c in Checkout(copy.deepcopy(base)).clips()}
-        new = {c.id: c for c in Checkout(copy.deepcopy(after)).clips()}
-        writes = {}
-        for clip_id, path in sorted(direct):
-            if clip_id not in old or clip_id not in new:
-                raise _Refusal("Created/deleted direct-write identity requires the IDENTITY producer")
-            before_exists, before = commands._path_state(old[clip_id].data, path)
-            after_exists, value = commands._path_state(new[clip_id].data, path)
-            if not before_exists or not after_exists:
-                # The current result has no ABSENT codec. Describe the actual
-                # containing JSON object instead: omission stays omission and
-                # explicit null stays null, with no synthetic sentinel.
-                path = "params"
-                before_exists, before = commands._path_state(old[clip_id].data, path)
-                after_exists, value = commands._path_state(new[clip_id].data, path)
-                if not before_exists or not after_exists:
-                    raise _Refusal("Absent params container requires the CONTRACT-COMMAND ABSENT producer")
-            writes[(clip_id, path)] = dict(id=clip_id, path=path, before=before, after=value)
-        return [write for (cid, path), write in writes.items()
-                if path == "params" or (cid, "params") not in writes]
-
-    @staticmethod
-    def _merge_conflict_kind(base, head, candidate, direct):
-        # Classify the shared helper's conservative unit conflict from actual
-        # direct-write facts. Different properties of one clip are dependent,
-        # not a claim that their literal property paths overlapped.
-        old, theirs, ours = [{c.id: c for c in Checkout(copy.deepcopy(doc)).clips()}
-                             for doc in (base, head, candidate)]
-        for clip_id, path in direct:
-            if clip_id in old and clip_id not in theirs:
-                return "delete-vs-edit"
-            if clip_id in old and clip_id in theirs and clip_id in ours:
-                b, h, c = [commands._path_state(table[clip_id].data, path)
-                           for table in (old, theirs, ours)]
-                if b != h and c != h:
-                    return "same-property"
-        return "dependent"
-
-    @staticmethod
     def _error(result, code, message, *, status="error"):
+        result.update(accepted_revision_id=None, accepted_publication_id=None, previous_revision_id=None,
+                      runtime_receipt=None, provenance=None, evidence=None)
         result.update(status=status, error=dict(code=code, message=message,
                       hint="No durable acceptance was reported", next_action="Resolve the named dependency or retry the original request unchanged"))
         return result
 
     @staticmethod
     def _conflict(result, request, paths, base, head, candidate, *, kind="same-property"):
-        result.update(status="conflict", error=None, conflicts=[dict(
-            id=request["timeline_id"], path=path, base=copy.deepcopy(base),
-            theirs=copy.deepcopy(head), ours=copy.deepcopy(candidate), kind=kind,
-        ) for path in paths])
+        result.update(status="conflict", error=None, accepted_revision_id=None, accepted_publication_id=None,
+                      previous_revision_id=None, runtime_receipt=None, provenance=None, evidence=None,
+                      conflicts=[copy.deepcopy(path) if isinstance(path, Mapping) else dict(
+                          id=request["timeline_id"], path=path, base=None, theirs=None, ours=None, kind=kind,
+                      ) for path in paths])
         return result
 
 

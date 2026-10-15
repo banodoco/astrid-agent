@@ -1,8 +1,8 @@
 """Focused provider proofs; no Runtime/store/network or historical-film input.
 
-CoreService explicitly substitutes ONLY the unavailable exact-closure read.
-Its tests prove the real runner/compiler/merge on a complete repository fixture,
-not an installed provider or the current Runtime port's ability to read children.
+CoreService substitutes only the closure read with a complete repository fixture.
+The exact-port tests use the admitted detached shape. Neither proves an installed
+Runtime/provider integration.
 """
 from __future__ import annotations
 
@@ -64,6 +64,9 @@ class Port:
                     timeline_id=self.body["timeline_id"], payload=copy.deepcopy(self.payload),
                     content_digest=_digest(self.payload), created_at="fixture")
 
+    def revision_closure(self, revision_id):
+        return dict(parent_revision=self.revision(revision_id), shot_revisions=[], internal_timeline_revisions=[])
+
     def accept(self, prepared):
         self.accepts.append(copy.deepcopy(prepared))
         assert prepared["request_hash"] == _digest(self.body)
@@ -120,7 +123,7 @@ def test_factory_is_fixed_and_has_no_startup_io(monkeypatch):
     service = create_runtime_commit_service()
     assert service.provider_id == "astrid-v1"
     assert type(service.interface_version) is int and service.interface_version == 1
-    assert service.contract_digest == "sha256:c4c4c754b8dac2e1a29e1697edefbd180452d8268c3b9a92760d704765f48a55"
+    assert service.contract_digest == "sha256:cd87ac6ee5d4d2ee1723b0eec9fe19145136a0daef4fffa06c174a4df5f6f6cd"
     assert callable(service.commit)
 
 
@@ -173,8 +176,8 @@ def test_core_exact_base_uses_actual_recorder_compiler_and_direct_inventory(bund
     assert invoked and set(invoked) == {None}
     assert body == original[0] and bundle == original[1]
     recorded = result["change"]["commands"]
-    assert len(recorded) == 1 and recorded[0]["select"] == "a-rocket"
-    assert recorded[0]["version"] and recorded[0]["resolved"] == ["a-rocket"]
+    assert len(recorded) == 2 and recorded[0]["select"] == "a-rocket"
+    assert recorded[0]["version"] and recorded[0]["resolved"] == ["occurrence:occ-A/clip:a-rocket"]
     assert recorded != body["change"]["commands"]
     assert {w["path"] for w in result["change"]["direct_writes"]} == {"params.x"}
     assert Checkout(result["canonical_document"]).clip("a-rocket").get("x") == 240
@@ -193,19 +196,14 @@ def test_core_no_change_does_not_publish(bundle):
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_core_stale_disjoint_clips_use_shared_merge(bundle, monkeypatch, dry_run):
+def test_core_stale_disjoint_clips_use_command_rebase(bundle, monkeypatch, dry_run):
     head = edited(bundle, call(select="b-type", text="head title"))
     body = request(call(x=240), dry_run=dry_run)
     service, port = core(body, bundle, head)
-    original = store.three_way
-    merges = []
-    def merge(*a, **k):
-        merges.append(k)
-        return original(*a, **k)
-    monkeypatch.setattr(store, "three_way", merge)
+    monkeypatch.setattr(store, "three_way", lambda *a, **k: pytest.fail("document merge used for semantic calls"))
     result = service.commit(body, port)
     assert result["status"] == ("preview" if dry_run else "accepted")
-    assert result["rebased_onto"] == "head-1" and merges == [{"force": False}]
+    assert result["rebased_onto"] == "head-1"
     tl = Checkout(result["canonical_document"])
     assert tl.clip("a-rocket").get("x") == 240 and tl.clip("b-type").get("text") == "head title"
     assert len(port.accepts) == (0 if dry_run else 1)
@@ -221,13 +219,14 @@ def test_core_same_property_conflict_never_accepts(bundle, dry_run):
     assert not port.accepts and result["runtime_receipt"] is None
 
 
-def test_core_shared_merge_conservatively_conflicts_different_properties_of_one_clip(bundle):
-    head = edited(bundle, call(y=44))
+def test_core_command_rebase_preserves_different_properties_of_one_clip(bundle):
+    head = edited(bundle, call(y=48))
     body = request(call(x=240))
     service, port = core(body, bundle, head)
     result = service.commit(body, port)
-    assert result["status"] == "conflict" and not port.accepts  # named REBASE debt
-    assert result["conflicts"][0]["kind"] == "dependent"
+    assert result["status"] == "accepted" and len(port.accepts) == 1
+    clip = Checkout(result["canonical_document"]).clip("a-rocket")
+    assert clip.get("x") == 240 and clip.get("y") == 48
 
 
 @pytest.mark.parametrize("stales", [1, 2, 3])
@@ -348,7 +347,8 @@ def test_core_clear_is_omission_after_exact_document_reload_without_absent_senti
     reloaded = Checkout(json.loads(json.dumps(result["canonical_document"])))
     assert "x" not in reloaded.clip("a-rocket").params
     writes = result["change"]["direct_writes"]
-    assert writes == [dict(id="a-rocket", path="params", before={"x": 10}, after={})]
+    assert writes == [dict(id="occurrence:occ-A/clip:a-rocket", path="params.x",
+                           before={"state": "present", "value": 10}, after={"state": "absent"})]
     assert result["change"]["commands"][0]["op"] == "clip.clear"
 
 
@@ -376,9 +376,20 @@ def test_core_merged_compiler_failure_is_dependent_conflict(bundle, monkeypatch)
     body = request(call(x=240), dry_run=True)
     service, port = core(body, bundle, head)
     from astrid.sdk.timeline.commands import CommandError
-    def fail(*a):
-        raise CommandError("merged timing replaced explicit write")
-    monkeypatch.setattr(service, "_validate_merged", fail)
+    apply = service._apply
+    resolve = Checkout.resolve
+    rebasing = False
+    def prepared(*args):
+        nonlocal rebasing
+        value = apply(*args)
+        rebasing = True
+        return value
+    def fail(self):
+        if rebasing:
+            raise CommandError("rebased timing replaced explicit write")
+        return resolve(self)
+    monkeypatch.setattr(service, "_apply", prepared)
+    monkeypatch.setattr(Checkout, "resolve", fail)
     result = service.commit(body, port)
     assert result["status"] == "conflict" and result["conflicts"][0]["kind"] == "dependent"
     assert not port.accepts
@@ -430,3 +441,134 @@ def test_timeline_locks_are_shared_between_factories_and_do_not_block_other_time
         finally:
             release.set()
         assert a.result(5)["status"] == b.result(5)["status"] == "no_change"
+
+
+def exact_closure(bundle, revision_id="rev-0"):
+    """Shape of C's exact detached port result, built from real authoring output."""
+    published = compile_authoring_candidate(bundle).publication
+    parent = dict(revision_id=revision_id, project_id="p", timeline_id="t",
+                  payload=published["parent_composition"], content_digest=_digest(published["parent_composition"]),
+                  created_at="fixture")
+    shots = [{**row, "project_id": "p"} for row in published["shot_revisions"]]
+    internals = [{**row, "project_id": "p"} for row in published["internal_timeline_revisions"]]
+    return dict(parent_revision=parent, shot_revisions=shots, internal_timeline_revisions=internals)
+
+
+@pytest.mark.parametrize("scope", ["parent", "occurrence:occ-A"])
+def test_exact_request_bound_closure_opens_pinned_children_without_revision_fallback(bundle, scope):
+    body = request(call(x=240))
+    body['scope']['target'] = scope
+    port = Port(body)
+    closure = exact_closure(bundle)
+    original = copy.deepcopy(closure)
+    reads = []
+    def closed(rid):
+        reads.append(rid)
+        assert rid == "rev-0"
+        return copy.deepcopy(closure)
+    port.revision_closure = closed
+    port.revision = lambda *a: pytest.fail("unbound parent/child read")
+    result = create_runtime_commit_service().commit(body, port)
+    assert result["status"] == "accepted" and len(port.accepts) == 1 and reads == ["rev-0"]
+    assert Checkout(result["canonical_document"]).clip("a-rocket").get("x") == 240
+    assert closure == original
+
+
+@pytest.mark.parametrize("damage", ["shot-missing", "internal-missing", "extra-shot", "shot-project",
+                                    "internal-project", "shot-pin", "child-digest", "parent-timeline"])
+def test_exact_closure_corruption_never_accepts_or_substitutes_heads(bundle, damage):
+    body = request(call(x=240), dry_run=True)
+    port = Port(body)
+    closure = exact_closure(bundle)
+    if damage == "shot-missing":
+        closure["shot_revisions"].pop()
+    elif damage == "internal-missing":
+        closure["internal_timeline_revisions"].pop()
+    elif damage == "extra-shot":
+        closure["shot_revisions"].append(copy.deepcopy(closure["shot_revisions"][0]))
+    elif damage == "shot-project":
+        closure["shot_revisions"][0]["project_id"] = "other"
+    elif damage == "internal-project":
+        closure["internal_timeline_revisions"][0]["project_id"] = "other"
+    elif damage == "shot-pin":
+        closure["shot_revisions"][0]["internal_timeline_revision_id"] = "unbound"
+    elif damage == "child-digest":
+        closure["internal_timeline_revisions"][0]["content_digest"] = "sha256:" + "0" * 64
+    else:
+        closure["parent_revision"]["timeline_id"] = "other"
+    port.revision_closure = lambda rid: copy.deepcopy(closure)
+    port.head = lambda: pytest.fail("read new head after invalid exact base")
+    result = create_runtime_commit_service().commit(body, port)
+    assert result["status"] == "refused" and not port.accepts
+    assert all(result[key] is None for key in ("previous_revision_id", "accepted_revision_id", "runtime_receipt",
+                                               "provenance", "evidence"))
+
+
+def test_unsupported_occurrence_scope_keeps_explicit_refusal():
+    body = request()
+    body["scope"]["target"] = "occurrence:missing"
+    port = Port(body)
+    result = create_runtime_commit_service().commit(body, port)
+    assert result["status"] == "refused" and not port.accepts
+
+
+def test_stalehead_replays_canonical_nudge_and_not_the_relative_handler(bundle, monkeypatch):
+    from dataclasses import replace
+    entry = commands.REGISTRY['clip.nudge']
+    invocations = []
+    def nudge(owner, seconds=0., *, frames=0):
+        invocations.append((seconds, frames))
+        return entry.handler(owner, seconds, frames=frames)
+    monkeypatch.setitem(commands.REGISTRY, 'clip.nudge', replace(entry, handler=nudge))
+    body = request(call('clip.nudge', frames=9))
+    service, port = core(body, bundle)
+    def race(p, prepared):
+        if len(p.accepts) <= 2:
+            p.current = 'race-' + str(len(p.accepts))
+            p.bundles[p.current] = copy.deepcopy(bundle)
+            raise StaleHead()
+    port.on_accept = race
+    result = service.commit(body, port)
+    assert result['status'] == 'accepted' and len(port.accepts) == 3
+    assert invocations == [(0., 9)]
+    assert all(p['result']['change']['commands'][0]['op'] == 'clip.on' for p in port.accepts)
+    assert len({json.dumps(p['evidence']['commands'], sort_keys=True) for p in port.accepts}) == 1
+
+
+def test_exact_occurrence_scope_uses_current_identity_model_and_refuses_escape(bundle):
+    body = request(call(select='occurrence:occ-A/clip:a-rocket', x=240))
+    body['scope'].update(target='occurrence:occ-A', content='this-occurrence', shot_id='A',
+                         shot_revision_id='rev-shot-A', internal_revision_id='rev-it-A')
+    service, port = core(body, bundle)
+    result = service.commit(body, port)
+    assert result['status'] == 'accepted'
+    assert result['change']['commands'][0]['resolved'] == ['occurrence:occ-A/clip:a-rocket']
+    for damage in ('other-target', 'wrong-pin', 'shared-shot'):
+        changed = copy.deepcopy(body)
+        if damage == 'other-target':
+            changed['change']['commands'] = [call(select='b-type', text='outside')]
+        elif damage == 'wrong-pin':
+            changed['scope']['shot_revision_id'] = 'not-the-pinned-revision'
+        else:
+            changed['scope']['content'] = 'shared-shot'
+        service, port = core(changed, bundle)
+        assert service.commit(changed, port)['status'] == 'refused'
+        assert not port.accepts
+
+
+def test_exact_shared_child_with_duplicate_timing_identities_is_explicit_refusal(bundle):
+    closure = exact_closure(bundle)
+    parent = closure['parent_revision']['payload']
+    occurrence = copy.deepcopy(parent['occurrences'][0])
+    occurrence.update(occurrence_id='occ-copy', placement={'start_ms': 8000})
+    parent['occurrences'].append(occurrence)
+    closure['parent_revision']['content_digest'] = _digest(parent)
+    body = request(call(select='occurrence:occ-copy/clip:a-rocket', x=240))
+    body['scope'].update(target='occurrence:occ-copy', content='this-occurrence')
+    port = Port(body)
+    port.revision_closure = lambda rid: copy.deepcopy(closure)
+    result = create_runtime_commit_service().commit(body, port)
+    assert result['status'] == 'refused' and not port.accepts
+    assert 'Ambiguous occurrence timing identities' in result['error']['message']
+    assert 'cut:c1' in result['error']['message'] and 'line:s1' in result['error']['message']
+    assert result['id_map'] == {}  # no unsupported fork/identity result is invented

@@ -27,6 +27,9 @@ class Plan:
     blocking: tuple[str, ...] = ()
     sweep: tuple[str, ...] = ()
     digests: Mapping[str, str] = field(default_factory=dict)
+    # Internal recorder output feeds CommitChanges; Plan's existing wire schema stays unchanged.
+    direct_writes: tuple = ()
+    consequences: tuple = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -117,8 +120,8 @@ def _restore(tl: Any, bundle: Any, journal_len: int, notes_len: int) -> None:
 
 
 def _plan(label: str, *, changed: bool, changes=(), diff=None, clips=(), cuts=(), digests=None,
-          report: CheckReport | None = None, calls=()) -> Plan:
-    return Plan(label=label, calls=tuple(calls), changed=changed, changes=tuple(changes), diff=diff or {}, clips=tuple(clips),
+          report: CheckReport | None = None, calls=(), direct_writes=(), consequences=()) -> Plan:
+    return Plan(label=label, calls=tuple(calls), direct_writes=tuple(direct_writes), consequences=tuple(consequences), changed=changed, changes=tuple(changes), diff=diff or {}, clips=tuple(clips),
                 cuts=tuple(cuts), lint_delta={"new": list((report.problems or []) if report else []), "resolved": []},
                 blocking=tuple(report.blocking) if report else (), sweep=tuple(cuts), digests=dict(digests or {}))
 
@@ -159,7 +162,10 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
         after_doc = _strip_derived(tl.document())
         digests = {"before": _digest(before_doc), "after": _digest(after_doc)}
         if _store._snapshot(tl) == before_snapshot:
-            tx.plan = _plan(label, changed=False, digests=digests, calls=tx.calls)
+            from astrid.sdk.timeline.commands import finish_recording
+            finish_recording(tl, tx, entry)
+            tx.plan = _plan(label, changed=False, digests=digests, calls=tx.calls,
+                            direct_writes=getattr(tx, "direct_writes", ()), consequences=getattr(tx, "consequences", ()))
             if persist and not dry_run:
                 _record(tl, label, "no-change", reason=reason, before=digests["before"], after=digests["after"], calls=tx.calls)
             if not quiet:
@@ -184,8 +190,11 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
             tl._edit_local_only = local_only
             tl._command_depth -= 1
         guard_direct_writes(tl, guards)
+        from astrid.sdk.timeline.commands import finish_recording
+        finish_recording(tl, tx, entry)
         tx.plan = _plan(label, changed=True, changes=changes, diff=diff, clips=clips, cuts=cuts,
-                        digests=digests, report=tx.report, calls=tx.calls)
+                        digests=digests, report=tx.report, calls=tx.calls,
+                        direct_writes=getattr(tx, "direct_writes", ()), consequences=getattr(tx, "consequences", ()))
         if dry_run:
             _restore(tl, entry, journal_len, notes_len)
             # Explicit legacy SDK audit transactions retain their audit record.

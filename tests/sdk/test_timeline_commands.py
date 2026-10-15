@@ -60,7 +60,7 @@ def test_command_preview_is_populated_replayable_and_writes_nothing(draft):
     assert draft.document() == before
     assert files(root) == disk
     assert preview.calls[0].to_json()["op"] == "clip.set"
-    assert preview.calls[0].resolved == ("a-rocket",)
+    assert preview.calls[0].resolved == ("occurrence:occ-A/clip:a-rocket",)
     committed = commands.run(draft, preview.calls[0])
     assert committed.changed and draft.clip("c1.rocket").get("x") == 120
     assert journal.read(journal.journal_path("p", "t"))[-1].calls
@@ -113,7 +113,7 @@ def test_null_is_a_value_and_clear_removes_presence_including_formula(draft):
     assert preview.changed and "italicWord" in draft.clip("c2.card").params
     commands.run(draft, preview.calls[0])
     assert "italicWord" not in draft.clip("c2.card").params
-    assert not commands.run(draft, preview.calls[0]).changed
+    assert not commands.run(draft, command(op="clip.clear", select="c2.card", keys=["italicWord"])).changed
 
 
 def test_pixels_convert_once_for_add_set_and_replay(draft):

@@ -33,8 +33,9 @@ def test_shared_command(case):
         assert validate_edit_command(value) is value
         parsed = commands.EditCommand.coerce(value)
         assert (parsed.op, parsed.select, dict(parsed.args)) == (value['op'], value['select'], value['args'])
-        # coerce intentionally drops caller-supplied output metadata; D runner owns it.
-        assert parsed.version is None and parsed.resolved == ()
+        # Coercion is lossless. Execution separately verifies recorded metadata.
+        for key, item in value.items():
+            assert parsed.to_json()[key] == item
         assert json.loads(case['raw']) == value
         assert hashlib.sha256(case['raw'].encode()).hexdigest() == case['sha256']
     else:
@@ -75,6 +76,7 @@ def test_backend_actual_rounding_call_site(case):
 
 def test_all_inventory_and_current_edit_flags_have_runtime_fixture_rows():
     from astrid.packs.timeline import cli
+    from astrid.sdk.timeline import checkout  # noqa: F401 — initializes registered SDK operations
     inventory = json.loads((ROOT / 'tests/parity/inventory.json').read_text())
     fixture = json.loads((RUNTIME / 'conformance/fixtures/edit-command-flags.json').read_text())
     table = fixture['rows']
