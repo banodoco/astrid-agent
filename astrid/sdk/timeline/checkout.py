@@ -337,7 +337,8 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
             path.parent.mkdir(parents=True, exist_ok=True)
             tl.save(path)
             _journal.record_or_note(tl, path, kind="checkout", outcome="changed", label="checkout",
-                                         after=_journal.digest(path.read_text(encoding="utf-8")))
+                                         after=_journal.digest(path.read_text(encoding="utf-8")),
+                                         evidence=({"kind": "saved-base-v1", "document": tl.document()},))
         _store.set_current_draft(project_id, timeline_id, name)  # commands that name no draft use this one
         tl.draft_name = name
         return tl
