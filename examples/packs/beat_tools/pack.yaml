@@ -1,0 +1,18 @@
+schema_version: 3
+id: beat_tools
+name: Beat Tools
+version: 0.1.0
+description: Fit one cut's overlays to existing music beat references.
+domain: editorial
+stability: experimental
+support: project
+documentation:
+  kind: skill
+  path: docs/SKILL.md
+extensions:
+  timeline:
+    operations:
+      - extensions/timeline.operation/fit_to_beats.yaml
+resources:
+  - {path: extensions/timeline.operation/fit_to_beats.yaml, kind: operation}
+  - {path: extensions/timeline.operation/fit_to_beats.py, kind: python}

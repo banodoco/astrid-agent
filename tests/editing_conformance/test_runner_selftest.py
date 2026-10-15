@@ -219,9 +219,27 @@ def test_journal_comparison_does_not_hide_calls_labels_or_undo_identity():
 
 def test_repository_scenarios_have_all_three_real_paths():
     from tests.editing_conformance.runner import SCENARIOS
-    scenarios = [load_scenario(p) for p in SCENARIOS.rglob("*.yaml")]
+    scenarios = [load_scenario(p) for p in SCENARIOS.rglob("*.yaml") if p.parent.name != "extensions"]
     # The exact admitted 08a tree already contains 50, although the card says 49.
     assert len(scenarios) == 50
     for scenario in scenarios:
         assert scenario.present() == ["cli", "sheet", "python"]
         assert scenario.runnable() == scenario.present()
+
+
+def test_operation_scenarios_have_a_real_extension_path():
+    from tests.editing_conformance.runner import SCENARIOS
+    scenarios = [load_scenario(p) for p in (SCENARIOS / "extensions").glob("*.yaml")]
+    assert {s.id for s in scenarios} == {
+        "timing.fit-to-beats.overlays", "timing.fit-to-beats.empty", "timing.fit-to-beats.refused",
+    }
+    for scenario in scenarios:
+        assert scenario.present() == scenario.runnable() == ["extension"]
+
+
+@pytest.mark.parametrize("value", ["not-a-spec", {}, {"operation": "fit_to_beats", "pack_roots": ["examples/packs"], "inputs": {}},
+    {"operation": "timeline.operation/p.name", "pack_roots": [], "inputs": {}},
+    {"operation": "timeline.operation/p.name", "pack_roots": ["examples/packs"], "inputs": []}])
+def test_extension_adapter_rejects_malformed_specs(value):
+    with pytest.raises(ScenarioError, match="extension"):
+        _scenario(cli=None, sheet=None, python=None, extension=value)

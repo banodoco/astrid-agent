@@ -1,0 +1,9 @@
+id: timing.fit-to-beats.empty
+source: EXT-ONE
+intent: An empty operation is a no-op and creates no undo step.
+fixture: tiny_beats
+expect: no-change
+extension:
+  operation: timeline.operation/beat_tools.fit_to_beats
+  pack_roots: [examples/packs]
+  inputs: {clips: [], beats: []}

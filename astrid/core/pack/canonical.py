@@ -266,7 +266,8 @@ class CanonicalPackDefinition:
             result["astrid_version"] = self.astrid_version
         if self.schema_version == 3:
             result.pop("content")
-            result.pop("extensions")
+            if not self.extensions:
+                result.pop("extensions")
             result.update({
                 name: _thaw(getattr(self, name))
                 for name in ("actions", "ui", "rendering", "documents")
@@ -829,6 +830,9 @@ def _admit(
     resources = _resolve_resources(root, definition) if resolve_resources else ()
     if resolve_resources and definition.schema_version == 3:
         _validate_rendering_identities(root, definition)
+        if definition.extensions.get("timeline", {}).get("operations"):
+            from astrid.core.pack.operations import validate_operation_declarations
+            validate_operation_declarations(root, definition, resources)
     manifest = ResourceHandle(
         CANONICAL_MANIFEST_NAME,
         root,

@@ -37,12 +37,12 @@ PROJECT = "P"
 TIMELINE = "t"
 RESOLVED = ("p", "t", "rev-0")  # what the patched resolve_ids returns (the fixture's own ids)
 
-PATHS = ("cli", "sheet", "python")
+PATHS = ("cli", "sheet", "python", "extension")
 EXPECTS = ("change", "no-change", "refused")
 CHECKS = ("journal", "runs", "changes", "reports", "equal", "steps", "undo", "redo", "check", "exists", "idempotent")
 AREAS = ("timing", "structure", "look", "audio", "code")
 TOP_KEYS = {"id", "source", "intent", "fixture", "tool", "expect", "idempotent", "cli", "sheet", "python", "check",
-            "xfail"}
+            "xfail", "extension"}
 NO_CHANGE_OK_CODES = (0, 3)  # v1 CLI: 3 means "no change" (it ran)
 XFAIL_KEYS = {"path", "check", "reason"}
 MISSING_KEYS = {"missing"}
@@ -61,6 +61,9 @@ class PathSpec:
     cuts: tuple[str, ...] | None = None  # sheet: only these cuts; None = the whole sheet
     replace: tuple[tuple[str, str], ...] = ()  # sheet: (old, new), old must occur exactly once
     text: str | None = None
+    operation: str | None = None
+    pack_roots: tuple[str, ...] = ()
+    inputs: dict | None = None
     snippet: str | None = None  # python: runs with tl = Checkout.draft(P, t)
 
 
@@ -222,6 +225,18 @@ def _parse_path(name: str, value: Any, where: str) -> PathSpec:
         if not isinstance(value["missing"], str) or not value["missing"].strip():
             raise ScenarioError(f"{where}: {name}: 'missing' needs the reason (with the audit ref)")
         return PathSpec(name=name, missing=value["missing"])
+
+    if name == "extension":
+        if not isinstance(value, dict) or set(value) != {"operation", "pack_roots", "inputs"}:
+            raise ScenarioError(f"{where}: extension requires operation, pack_roots and inputs")
+        if not isinstance(value["operation"], str) or not value["operation"].startswith("timeline.operation/"):
+            raise ScenarioError(f"{where}: extension requires a point-qualified operation identity")
+        if not isinstance(value["inputs"], dict):
+            raise ScenarioError(f"{where}: extension.inputs must be an object")
+        roots = value["pack_roots"]
+        if not isinstance(roots, list) or not roots or not all(isinstance(p, str) and p for p in roots):
+            raise ScenarioError(f"{where}: extension.pack_roots must be explicit paths")
+        return PathSpec(name=name, operation=value["operation"], inputs=value["inputs"], pack_roots=tuple(roots))
 
     if name == "cli":
         if isinstance(value, str) and value.strip():
@@ -497,6 +512,41 @@ def _rerun_python(spec: PathSpec) -> tuple[list[int], str, str | None]:
     return [], stdout, error
 
 
+def _invoke_extension(spec):
+    from astrid.sdk.timeline.tools import resolve_operation, invoke_operation
+    from astrid.sdk.timeline._common import TimelineEditError
+    out, err = io.StringIO(), io.StringIO()
+    error = None
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            operation = resolve_operation(
+                spec.operation, project_root=REPO / "out/extension-harness",
+                extra_pack_roots=tuple(str((REPO / p).resolve()) for p in spec.pack_roots),
+            )
+            preview = invoke_operation(Checkout.draft(PROJECT, TIMELINE), operation, spec.inputs)
+            print(json.dumps(preview.to_json(), sort_keys=True))
+            if not preview.changed:
+                print("no change")
+        except Exception as exc:
+            prefix = "refused:" if isinstance(exc, TimelineEditError) else ""
+            error = f"{prefix}{type(exc).__name__}: {exc}"
+    return out.getvalue(), err.getvalue(), error
+
+
+def _run_extension_path(scenario, spec):
+    with _fresh(scenario.fixture):
+        _checkout()
+        base = _document()
+        stdout, stderr, error = _invoke_extension(spec)
+        second = None
+        if scenario.idempotent and error is None:
+            def again():
+                out, _err, failure = _invoke_extension(spec)
+                return [], out, failure
+            second = _rerun(again)
+        return _finish(scenario, spec.name, [], stdout, stderr, error, base, _undo_redo_python, second)
+
+
 def _finish(scenario: Scenario, name: str, exits: list[int], stdout: str, stderr: str, error: str | None,
             base: str, undo_redo, second: _Rerun | None = None) -> PathResult:
     after = _document()
@@ -536,6 +586,8 @@ def run_case(scenario: Scenario, via: str) -> PathResult:
         return _run_cli_path(scenario, spec)
     if via == "sheet":
         return _run_sheet_path(scenario, spec)
+    if via == "extension":
+        return _run_extension_path(scenario, spec)
     return _run_python_path(scenario, spec)
 
 
@@ -565,7 +617,7 @@ def evaluate(scenario: Scenario, results: dict[str, PathResult]) -> dict[tuple[s
         if scenario.paths[name].missing is not None:
             fail(name, "exists", f"missing: {scenario.paths[name].missing}")
 
-    ref_name = next((n for n in ("python", "cli", "sheet") if n in results), None)
+    ref_name = next((n for n in ("python", "cli", "sheet", "extension") if n in results), None)
     for name, r in results.items():
         _evaluate_path(scenario, r, fail, results[ref_name] if ref_name else None, ref_name)
 

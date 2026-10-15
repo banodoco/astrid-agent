@@ -339,7 +339,7 @@ def _normalize_element_extensions(value: Any, *, path: str) -> dict[str, Any]:
 
 def _normalize_timeline_extensions(value: Any, *, path: str) -> dict[str, Any]:
     data = _require_mapping(value, path)
-    allowed_keys = {"kinds"}
+    allowed_keys = {"kinds", "operations"}
     unknown_keys = sorted(set(data) - allowed_keys)
     if unknown_keys:
         raise PackValidationError(f"{path} has unknown field(s): {', '.join(unknown_keys)}")
@@ -349,6 +349,10 @@ def _normalize_timeline_extensions(value: Any, *, path: str) -> dict[str, Any]:
         normalized["kinds"] = _normalize_timeline_kinds(
             data["kinds"],
             path=f"{path}.kinds",
+        )
+    if "operations" in data:
+        normalized["operations"] = _normalize_rendering_manifest_paths(
+            data["operations"], path=f"{path}.operations"
         )
     return normalized
 

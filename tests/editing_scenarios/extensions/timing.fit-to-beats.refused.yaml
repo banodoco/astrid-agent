@@ -1,0 +1,11 @@
+id: timing.fit-to-beats.refused
+source: EXT-ONE
+intent: A picture bed in a selected run refuses the whole operation before mutation.
+fixture: tiny_beats
+expect: refused
+extension:
+  operation: timeline.operation/beat_tools.fit_to_beats
+  pack_roots: [examples/packs]
+  inputs:
+    clips: [c1.rocket, c1.plate]
+    beats: [beat 1 after c1, beat 2 after c1, beat 3 after c1]

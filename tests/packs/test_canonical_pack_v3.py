@@ -260,7 +260,7 @@ def test_v2_admission_and_manifestless_core_shell_remain_compatible(tmp_path: Pa
     ({"ui": {"tool": {"type": "editor", "entry": "actions/tool.tsx"}}}, "beneath ui"),
     ({"documents": {"note": {"format_version": 1, "schema": "../schema.json"}}}, "documents"),
     ({"content": {}, "actions": {}}, "Additional properties"),
-    ({"extensions": {}, "ui": {}}, "Additional properties"),
+    ({"extensions": {"timeline": {"views": []}}, "ui": {}}, "Additional properties"),
     ({"documentation": {"kind": "skill", "path": "docs/SKILL.md", "name": "duplicate"}}, "documentation"),
     ({"documentation": {"skills": {"main": "docs/SKILL.md"}}}, "documentation"),
     ({"documentation": {"kind": "skill", "path": "skill/SKILL.md"}}, "documentation"),

@@ -88,3 +88,23 @@ exercised. The card's stated 49-file census is retained as a control discrepancy
 not implemented by dropping a scenario. The remaining three cut-placement
 xfails describe the current `Checkout.resolve()` behavior; the RUNNER branch
 does not change that shared timing implementation.
+
+## Admitted operation path
+
+`extension` is a fourth adapter into the same local SDK command runner. It
+requires an exact point-qualified operation, explicit pack roots (relative to
+this repository, or absolute disposable paths), and schema-validated inputs:
+
+```yaml
+extension:
+  operation: timeline.operation/beat_tools.fit_to_beats
+  pack_roots: [examples/packs]
+  inputs:
+    clips: [c1.rocket, c1.label]
+    beats: [beat 1 after c1, beat 2 after c1, beat 3 after c1]
+```
+
+The adapter performs production pack-v3 declaration/admission/discovery before
+invocation. It uses the existing fixture, document, journal, undo/redo and
+idempotence assertions. It does not supply an App, CLI, sheet or remote host.
+Run the bounded examples with `python -m pytest tests/editing_conformance/test_conformance.py -k fit-to-beats`.

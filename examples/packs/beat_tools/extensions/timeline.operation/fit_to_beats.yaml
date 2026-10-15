@@ -1,0 +1,19 @@
+point: timeline.operation
+id: beat_tools.fit_to_beats
+label: Fit to beats
+description: Replace start and end anchors of ordered overlays in one cut with N+1 existing beat references.
+inputs:
+  type: object
+  additionalProperties: false
+  required: [clips, beats]
+  properties:
+    clips:
+      type: array
+      uniqueItems: true
+      items: {type: string, minLength: 1}
+    beats:
+      type: array
+      items: {type: string, pattern: '^(beat|downbeat) '}
+implementation:
+  path: extensions/timeline.operation/fit_to_beats.py
+  function: build

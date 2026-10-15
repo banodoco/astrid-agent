@@ -1,0 +1,19 @@
+id: timing.fit-to-beats.overlays
+source: EXT-ONE
+intent: Fit two ordered overlays to existing beat moments through admitted pack discovery.
+fixture: tiny_beats
+expect: change
+idempotent: true
+extension:
+  operation: timeline.operation/beat_tools.fit_to_beats
+  pack_roots: [examples/packs]
+  inputs:
+    clips: [c1.rocket, c1.label]
+    beats: [beat 1 after c1, beat 2 after c1, beat 3 after c1]
+check:
+  - tl.clip("c1.rocket").start == 0.5
+  - tl.clip("c1.rocket").end == 1.0
+  - tl.clip("c1.label").start == 1.0
+  - tl.clip("c1.label").end == 1.5
+  - tl.clip("c1.rocket").moments["on"] == "beat 1 after c1"
+  - len(tl.cuts) == 2
