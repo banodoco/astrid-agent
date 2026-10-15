@@ -194,6 +194,8 @@ class _TrackDefinitionRequired(TypedDict):
     label: str
 
 class TrackDefinition(_TrackDefinitionRequired, total=False):
+    # Omitted roles retain the shared schema's legacy output behaviour.
+    role: Literal["output", "source"]
     scale: float
     fit: TrackFit
     opacity: float
@@ -391,9 +393,8 @@ _CLIP_ALLOWED = frozenset(
         "shot_id", "shot_occurrence_id", "shot_name",
     }
 )
-_TRACK_ALLOWED = frozenset(
-    {"id", "kind", "label", "scale", "fit", "opacity", "volume", "muted", "blendMode", "app"}
-)
+# Generate the validator/codegen allow-list from the same track declaration.
+_TRACK_ALLOWED = frozenset(TrackDefinition.__annotations__)
 _ASSET_ENTRY_ALLOWED = frozenset(
     {
         "file",

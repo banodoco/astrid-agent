@@ -38,6 +38,7 @@
       "id": "v_manual",
       "kind": "visual",
       "label": "Manual Viewport",
+      "role": "output",
       "scale": 1.0,
       "fit": "manual",
       "opacity": 1.0,

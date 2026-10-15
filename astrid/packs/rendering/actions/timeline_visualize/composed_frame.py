@@ -86,7 +86,12 @@ def _digest_paths(paths: Sequence[tuple[str, Path]]) -> str:
     for label, root, path in candidates:
         try:
             stat = path.stat()
-            signature.update(f"{label}|{path}|{stat.st_size}|{stat.st_mtime_ns}\0".encode("utf-8"))
+            # Extracting/replacing package files can preserve size and mtime.
+            # ctime and inode identity force a fresh content digest in that case.
+            signature.update(
+                f"{label}|{path}|{stat.st_dev}|{stat.st_ino}|{stat.st_size}|"
+                f"{stat.st_mtime_ns}|{stat.st_ctime_ns}\0".encode("utf-8")
+            )
         except OSError:
             signature.update(f"{label}|{path}|missing\0".encode("utf-8"))
     memo_key = signature.hexdigest()
@@ -134,9 +139,6 @@ def renderer_environment_identity() -> str:
         ("capture-provider", checkout / "astrid/packs/rendering/actions/timeline_visualize/composed_frame.py"),
         ("element-catalog", checkout / "astrid/packs/rendering/rendering/elements/catalog.ts"),
         ("rendering-core", checkout / "astrid/core/rendering"),
-        ("remotion-source", checkout / "remotion/src"),
-        ("remotion-config", checkout / "remotion/remotion.config.ts"),
-        ("fonts", checkout / "remotion/public/fonts"),
     ]
     if source_root:
         paths.append(("explicit-source-root", Path(source_root)))
@@ -145,19 +147,14 @@ def renderer_environment_identity() -> str:
         paths.extend((f"project-{label}", root) for label, root in element_source_roots(project.parent))
     paths.append(("remotion-project-source", project / "src"))
     paths.append(("remotion-project-config", project / "remotion.config.ts"))
+    paths.append(("fonts", project / "public/fonts"))
     paths.append(("package-lock", project / "package-lock.json"))
-    paths.append((
-        "generated-effects",
-        project / "node_modules/@banodoco/timeline-composition/typescript/src/effects.generated.ts",
-    ))
     # "-source" labels admit the node_modules files (see _digest_candidates).
-    paths.append((
-        "timeline-composition-source",
-        project / "node_modules/@banodoco/timeline-composition/typescript/src",
-    ))
+    # Hash the installed package bytes, including generated registries and any
+    # compiled/exported entrypoints, rather than its version or src alone.
     paths.append((
         "timeline-composition-package-source",
-        project / "node_modules/@banodoco/timeline-composition/package.json",
+        project / "node_modules/@banodoco/timeline-composition",
     ))
     parts = {
         "renderer": RENDERER_IDENTITY,

@@ -324,6 +324,7 @@ export interface TrackDefinition {
   label: string;
   muted?: boolean;
   opacity?: number;
+  role?: 'output' | 'source';
   scale?: number;
   volume?: number;
 }
@@ -332,4 +333,4 @@ export const _ASSET_ENTRY_ALLOWED = ['content_sha256', 'derivedFrom', 'duration'
 export const _CLIP_ALLOWED = ['app', 'asset', 'at', 'clipType', 'clip_order', 'continuous', 'cropBottom', 'cropLeft', 'cropRight', 'cropTop', 'effects', 'elementRef', 'entrance', 'exit', 'from', 'generation', 'height', 'hold', 'id', 'keyframes', 'label', 'opacity', 'params', 'pool_id', 'shot_id', 'shot_name', 'shot_occurrence_id', 'source_uuid', 'speed', 'text', 'to', 'track', 'transition', 'volume', 'width', 'x', 'y'] as const;
 export const _THEME_OVERRIDES_ALLOWED = ['audio', 'generation', 'pacing', 'visual', 'voice'] as const;
 export const _TIMELINE_TOP_ALLOWED = ['app', 'clips', 'generation_defaults', 'output', 'pinnedShotGroups', 'theme', 'theme_overrides', 'tracks'] as const;
-export const _TRACK_ALLOWED = ['app', 'blendMode', 'fit', 'id', 'kind', 'label', 'muted', 'opacity', 'scale', 'volume'] as const;
+export const _TRACK_ALLOWED = ['app', 'blendMode', 'fit', 'id', 'kind', 'label', 'muted', 'opacity', 'role', 'scale', 'volume'] as const;
