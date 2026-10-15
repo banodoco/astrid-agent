@@ -7,7 +7,7 @@ from typing import Any
 
 # Verbs whose --project is optional: omitted, it is the workspace runtime's current project.
 CURRENT_PROJECT_VERBS = frozenset(
-    {"checkout", "apply", "assets", "check", "discard", "find", "lines", "publish", "redo", "status", "undo"}
+    {"checkout", "apply", "assets", "check", "discard", "find", "lines", "publish", "redo", "status", "undo", "revert", "restore"}
 )
 
 
@@ -43,6 +43,9 @@ class TimelinesParser(argparse.ArgumentParser):
                 if loose and getattr(parsed, dest, "absent") is None:
                     value = loose.pop(0)
                     if dest == "steps":
+                        if getattr(parsed, "command", None) in {"undo", "revert"} and not value.isdigit():
+                            setattr(parsed, dest, value)
+                            continue
                         if not value.isdigit() or int(value) < 1:
                             self.error(f"steps must be a positive integer, got {value!r}")
                         value = int(value)

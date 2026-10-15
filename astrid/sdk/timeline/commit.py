@@ -98,12 +98,20 @@ class RuntimeCommitService:
                     onto = base if head["revision_id"] == request["base_revision_id"] else self._load_revision(
                         runtime_port, request, head["revision_id"])
                     require_writable_candidate(onto)
+                    if head["revision_id"] != request["base_revision_id"]:
+                        result["rebased_onto"] = head["revision_id"]
+                    inverse_conflict = self._inverse_history(runtime_port, request, plan.calls, head, onto, result)
+                    if inverse_conflict is not None and inverse_conflict["conflicts"][0]["kind"] != "dependent":
+                        return inverse_conflict
                     current = copy.deepcopy(candidate)
                     if head["revision_id"] != request["base_revision_id"]:
                         result["rebased_onto"] = head["revision_id"]
                         rebased = rebase(plan.calls, onto)
                         if rebased.conflicts:
-                            return self._conflict(result, request, rebased.conflicts, base, onto, candidate)
+                            conflict = self._conflict(result, request, rebased.conflicts, base, onto, candidate)
+                            if any(call.op == "timeline.inverse" for call in plan.calls):
+                                self._history_choice(conflict, head["publication_id"], None)
+                            return conflict
                         current, current_plan = rebased.document, rebased.plan
                         try:
                             self._guard_scope(occurrence, current_plan)
@@ -112,6 +120,8 @@ class RuntimeCommitService:
                         result["id_map"] = rebased.id_map
                     else:
                         current_plan = plan
+                    if inverse_conflict is not None:
+                        return inverse_conflict
                     before = Checkout(copy.deepcopy(onto)).document()
                     after = Checkout(current).document()
                     compiled = compile_authoring_candidate(after).publication
@@ -312,6 +322,67 @@ class RuntimeCommitService:
             duration = entry.get("duration")
             if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
                 raise _Refusal("Trim/slip requires a pinned source duration; ambient media lookup is unavailable")
+
+    @staticmethod
+    def _history_choice(result, publication, label):
+        result["choices"] = [{"for": conflict["path"], "options": [dict(
+            label=f"Later publication {publication}" + (f" ({label})" if label else "") +
+                  "; use timelines restore for an explicit historical replacement", commands=[])]}
+            for conflict in result["conflicts"]]
+
+    @classmethod
+    def _inverse_history(cls, port, request, calls, head, onto, result):
+        """Guard publication writes, including ABA and same-revision republication.
+
+        C's provider summaries/evidence can prove COMMIT edges. They exclude
+        restore/App events: an unprovable edge is a dependent conflict, never
+        silently treated as disjoint. Public-history staging handles those
+        events; a race after staging still fails closed here.
+        """
+        from astrid.sdk.timeline.inverse import overlaps
+        inverse_calls = [call for call in calls if call.op == "timeline.inverse"]
+        for call in inverse_calls:
+            target = call.args["publication"]
+            if head["publication_id"] == target:
+                continue
+            rows, before, seen = {}, None, set()
+            while target not in rows:
+                read = getattr(port, "revisions", None)
+                page = read(dict(limit=200, **({"before": before} if before else {}))) if callable(read) else []
+                if not page:
+                    break
+                rows.update((row["publication_id"], row) for row in page if row.get("publication_id"))
+                before = page[-1].get("publication_id")
+                if before is None or before in seen:
+                    break
+                seen.add(before)
+            node, visited = head["publication_id"], set()
+            while node != target:
+                row = rows.get(node)
+                if row is None or node in visited or not callable(getattr(port, "evidence", None)):
+                    conflict = cls._conflict(result, request, ["publication ancestry/evidence unavailable"],
+                                             None, onto, None, kind="dependent")
+                    cls._history_choice(conflict, head["publication_id"], "unproven history edge")
+                    return conflict
+                visited.add(node)
+                evidence = port.evidence(row["evidence_digest"])
+                if _digest(evidence) != row["evidence_digest"]:
+                    raise _Refusal("publication evidence digest mismatch")
+                for write in call.args["writes"]:
+                    if any(overlaps((write["id"], write["path"]), (later["id"], later["path"]))
+                           for later in evidence["direct_writes"]):
+                        states = commands.entity_states(Checkout(copy.deepcopy(onto)))
+                        path = dict(kind="same-property", id=write["id"], path=write["path"],
+                                    base=write["before"], theirs=commands.state_at(states, write["id"], write["path"]),
+                                    ours=write["after"])
+                        conflict = cls._conflict(result, request, [path], None, onto, None)
+                        cls._history_choice(conflict, node, row.get("label"))
+                        return conflict
+                previous = rows.get(row.get("previous_publication_id"))
+                if previous is not None and previous["revision_id"] != row.get("previous_revision_id"):
+                    raise _Refusal("inconsistent publication ancestry")
+                node = row.get("previous_publication_id")
+        return None
 
     @staticmethod
     def _error(result, code, message, *, status="error"):

@@ -40,6 +40,9 @@ def _rewrite(call, id_map):
         clips = [sid for sid in rewritten.created if "/clip:" in sid]
         if len(clips) == 1:
             rewritten = replace(rewritten, args={**rewritten.args, "clip_id": clips[0].split("/clip:", 1)[1]})
+    if call.op == "timeline.inverse":
+        rewritten = replace(rewritten, args={**rewritten.args, "writes": [
+            {**write, "id": identity(write["id"])} for write in rewritten.args["writes"]]})
     return commands.EditCommand.coerce(rewritten)
 
 

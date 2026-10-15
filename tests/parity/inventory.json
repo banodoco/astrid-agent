@@ -2502,6 +2502,124 @@
         }
       ]
     },
+    "timelines.restore": {
+      "flags": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "from_ref",
+          "nargs": null,
+          "options": [
+            "--from"
+          ],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "idempotency_key",
+          "nargs": null,
+          "options": [
+            "--idempotency-key"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": true,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "project",
+          "nargs": null,
+          "options": [
+            "--project"
+          ],
+          "required": false
+        }
+      ],
+      "positionals": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "ref",
+          "nargs": null,
+          "options": [],
+          "required": true
+        }
+      ]
+    },
+    "timelines.revert": {
+      "flags": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "draft",
+          "nargs": null,
+          "options": [
+            "--draft"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "project",
+          "nargs": null,
+          "options": [
+            "--project"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "publication",
+          "nargs": null,
+          "options": [
+            "--publication"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "steps_option",
+          "nargs": null,
+          "options": [
+            "--steps"
+          ],
+          "required": false,
+          "type": "_positive_int"
+        }
+      ],
+      "positionals": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "ref",
+          "nargs": null,
+          "options": [],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "steps",
+          "nargs": "?",
+          "options": [],
+          "required": false,
+          "type": "_undo_target"
+        }
+      ]
+    },
     "timelines.script": {
       "flags": [
         {
@@ -3439,6 +3557,16 @@
         {
           "action": "_StoreAction",
           "default": null,
+          "dest": "publication",
+          "nargs": null,
+          "options": [
+            "--publication"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
           "dest": "steps_option",
           "nargs": null,
           "options": [
@@ -3464,7 +3592,7 @@
           "nargs": "?",
           "options": [],
           "required": false,
-          "type": "_positive_int"
+          "type": "_undo_target"
         }
       ]
     },
@@ -4672,7 +4800,7 @@
         },
         "undo": {
           "kind": "callable",
-          "signature": "(self, steps: 'int' = 1) -> 'list[str]'"
+          "signature": "(self, steps: 'int' = 1, *, client=None, publication: 'str | None' = None) -> 'list[str]'"
         },
         "verify": {
           "kind": "callable",

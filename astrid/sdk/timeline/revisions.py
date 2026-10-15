@@ -23,12 +23,13 @@ CANNOT_LIST = (
     "this Runtime cannot list revisions (it serves a composition revision by id and names no parent, "
     "so history cannot walk back from the head)"
 )
+_UNREPORTED_PROVENANCE = object()
 
 
 @dataclass(frozen=True)
 class Revision:
     id: str
-    source: str  # "astrid" (authoring-parent-revision-*), "app" (reigh.editor.timeline.*), "restore" (restore-*), "other"
+    source: str  # publication provenance.source.via; prefix fallback for legacy clients only
     created_at: str | None
     parent: str | None
     message: str | None
@@ -36,9 +37,18 @@ class Revision:
     previous_publication_id: str | None = None
     restored_from_revision_id: str | None = None
     provenance: Mapping[str, Any] | None = None
+    is_current_head: bool | None = None
 
 
-def revision_source(revision_id: str) -> str:
+def revision_source(revision_id: str, provenance: Any = _UNREPORTED_PROVENANCE) -> str:
+    # Publication provenance wins over the immutable content revision's name.
+    # In particular restore republishes old bytes; it does not rename them.
+    if isinstance(provenance, Mapping):
+        source = provenance.get("source")
+        if isinstance(source, Mapping) and _text(source.get("via")):
+            return source["via"]
+    if provenance is not _UNREPORTED_PROVENANCE:
+        return "other"  # explicit unknown migration provenance stays unknown
     for prefix, source in _SOURCE_PREFIXES:
         if revision_id.startswith(prefix):
             return source
@@ -99,7 +109,7 @@ class RuntimeRevisions(RevisionStore):
         summary = data.get("summary") or {}
         return Revision(
             id=_text(summary.get("revision_id")) or revision_id,
-            source=revision_source(revision_id),
+            source=revision_source(revision_id, summary.get("provenance", _UNREPORTED_PROVENANCE)),
             created_at=_text(summary.get("created_at")),
             parent=_text(summary.get("previous_revision_id")),
             publication_id=_text(summary.get("publication_id")),
@@ -132,7 +142,7 @@ class RuntimeRevisions(RevisionStore):
         seen_cursors: set[str] = set()
         page_limit = min(200, max(50, limit))
 
-        while len(out) < limit or current_head is None:
+        while True:
             result = list_revisions(project, timeline, cursor=cursor, limit=page_limit)
             if not getattr(result, "ok", True):
                 error = getattr(result, "error", None)
@@ -160,7 +170,7 @@ class RuntimeRevisions(RevisionStore):
                     raise TimelineEditError("Runtime revision list omitted a revision id")
                 revision = Revision(
                     id=revision_id,
-                    source=revision_source(revision_id),
+                    source=revision_source(revision_id, row.get("provenance", _UNREPORTED_PROVENANCE)),
                     created_at=_text(row.get("created_at")),
                     parent=_text(row.get("previous_revision_id")),
                     publication_id=_text(row.get("publication_id")),
@@ -168,12 +178,25 @@ class RuntimeRevisions(RevisionStore):
                     restored_from_revision_id=_text(row.get("restored_from_revision_id")),
                     provenance=row.get("provenance"),
                     message=_text(row.get("message")),
+                    is_current_head=row.get("is_current_head") is True,
                 )
                 out.append(revision)
                 if row.get("is_current_head") is True:
                     current_head = revision
             if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
                 break
+            if current_head is not None:
+                if current_head.publication_id is None and len(out) >= limit:
+                    break
+                by_id = {r.publication_id: r for r in out if r.publication_id}
+                node, walked = current_head, set()
+                while node.publication_id and node.publication_id not in walked:
+                    walked.add(node.publication_id)
+                    node = by_id.get(node.previous_publication_id)
+                    if node is None:
+                        break
+                if len(walked) >= limit:
+                    break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
@@ -271,6 +294,8 @@ def resolve_revision(project: str, timeline: str, ref: str | None, *, store: Rev
             raise TimelineEditError(
                 f"{timeline}@{ref}: {CANNOT_LIST}; @{ref} needs a revision that names its parent"
             )
+        if revisions and revisions[0].is_current_head is False:
+            raise TimelineEditError(f"{timeline}@{ref}: publication head is unavailable")
         if revisions and revisions[0].publication_id is not None:
             # Positional refs promise ancestry, not adjacent timestamps. Unknown
             # migration links stay unknown even though history displays all events.
@@ -291,7 +316,17 @@ def resolve_revision(project: str, timeline: str, ref: str | None, *, store: Rev
                 f"{timeline}@{ref}: only {len(revisions)} revision(s) back from the head are available "
                 f"({_available(revisions)})"
             )
-        return revisions[steps].id
+        # Legacy clients can walk explicit revision links. List adjacency, even
+        # with a marked head, does not establish a parent relationship.
+        by_revision = {r.id: r for r in revisions}
+        node, seen = revisions[0], {revisions[0].id}
+        for _ in range(steps):
+            previous = by_revision.get(node.parent)
+            if previous is None or previous.id in seen:
+                raise TimelineEditError(f"{timeline}@{ref}: revision ancestry is unavailable; use an explicit revision id")
+            node = previous
+            seen.add(node.id)
+        return node.id
     if ref.startswith("-"):
         raise TimelineEditError(f"{timeline}@{ref}: not a revision ref (use prev, -N with N>0, head, or an id prefix)")
 

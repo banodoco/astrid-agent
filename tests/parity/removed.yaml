@@ -23,3 +23,11 @@
   card: COMMIT
   reason: "Publish retains its existing arguments and adds optional dry_run=False for the single COMMIT preview route; saved requests use authenticated durable envelopes."
   alias: "sdk:Checkout.publish"
+- feature: "argument:timelines.undo:steps"
+  card: UNDO-REVERT
+  reason: "Undo retains positive numeric edit counts and extends the optional positional to exact publication IDs. --steps retains the original positive-integer spelling."
+  alias: "--steps"
+- feature: "sdk:Checkout.undo"
+  card: UNDO-REVERT
+  reason: "Undo retains steps=1 and adds optional client/publication keywords for staging verified publication inverses."
+  alias: "sdk:Checkout.undo"

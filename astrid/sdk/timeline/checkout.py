@@ -255,10 +255,24 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
             raise CommandError("batch requires a non-empty list of EditCommands")
         return [execute(self, command) for command in commands]
 
-    def undo(self, steps: int = 1) -> list[str]:
+    def undo(self, steps: int = 1, *, client=None, publication: str | None = None) -> list[str]:
         """Go back ``steps`` edits of this working copy (``redo`` goes forward). Returns what was undone."""
         if not self.path:
             raise TimelineEditError("only a saved working copy can undo")
+        from astrid.sdk.timeline.saved_intent import read_saved_calls
+        from astrid.sdk.timeline.inverse import publications, stage
+        # Publication undo precedes the old snapshot stack, which can contain
+        # pre-publication edits. Never silently resurrect that obsolete base.
+        known = publications(self.bundle["project_id"], self.bundle["timeline_id"])
+        own = any(value["draft"] == Path(self.path).stem for value in known.values())
+        if publication is not None or (own and not read_saved_calls(self)):
+            if steps != 1:
+                raise TimelineEditError("publication undo accepts one named publication at a time")
+            if client is None:
+                from astrid.sdk import AstridClient
+                with AstridClient.open_from_launcher(start_pack_host=False) as opened:
+                    return stage(self, client=opened, publication=publication)
+            return stage(self, client=client, publication=publication)
         target = Path(self.path)
         history = sorted(_store._history_dir(target).glob("*.json"))
         if not history:
@@ -474,3 +488,6 @@ _commands.register(StepSequence, "sequence", ("fit",))
 _commands.register(Voice, "voice", ("replace", "set_gap_after"))
 
 _commands.register(Checkout, "timeline", ("save", "undo", "redo"), boundary="storage")
+
+from astrid.sdk.timeline.inverse import apply_inverse as _apply_inverse
+_commands.REGISTRY["timeline.inverse"] = _commands.Operation("timeline.inverse", "timeline", "inverse", _apply_inverse)
