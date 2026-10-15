@@ -371,14 +371,15 @@ def test_aliases_keep_numeric_edit_counts_and_reject_zero():
             parser.parse_args([verb, "t", "0", "--project", "p"])
 
 
-def test_structural_inverse_refuses_without_snapshot_replacement(setup):
+def test_removed_entity_inverse_restores_recorded_identity_without_snapshot_replacement(setup):
     draft, runtime, client = setup
+    original = copy.deepcopy(draft.clip("a-rocket").data)
     commands.run(draft, dict(op="clip.remove", select="a-rocket", args={}))
     result = publish(draft, client, "remove a layer")
-    clean = Path(draft.path).read_bytes()
-    with pytest.raises(TimelineEditError, match="structural inverse.*timelines restore"):
-        draft.undo(client=client)
-    assert Path(draft.path).read_bytes() == clean and runtime.current == result["accepted_revision_id"]
+    draft.undo(client=client)
+    restored = publish(draft, client, "restore removed layer by inverse")
+    assert draft.clip("a-rocket").data == original
+    assert restored["accepted_publication_id"] != result["accepted_publication_id"]
 
 
 def test_explicit_unknown_provenance_never_becomes_a_revision_prefix_source():

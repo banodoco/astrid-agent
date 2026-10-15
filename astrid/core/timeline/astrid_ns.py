@@ -19,7 +19,7 @@ CLIP_INTENT_KEYS = frozenset({
     "standin_for", "intended", "sequence", "sequence_index", "sequence_fit",
     "sequence_shape_from", "orphan", "role", "style", "group", "duck",
 })
-FILM_INTENT_KEYS = frozenset({"chapters", "slots", "cut_notes", "formulas", "sequences"})
+FILM_INTENT_KEYS = frozenset({"chapters", "slots", "cut_notes", "formulas", "sequences", "cut_id_high_water"})
 
 
 def _map(value: Any) -> Mapping[str, Any]:

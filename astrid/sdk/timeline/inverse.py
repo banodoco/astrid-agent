@@ -113,6 +113,53 @@ def _entity(tl, sid):
     return matches[0]
 
 
+def _members(tl, sid):
+    """The collection named by a recorded occurrence identity, never an alias."""
+    scope, sep, member = sid.rpartition("/")
+    kind, colon, local = member.partition(":")
+    if not sep or not colon or kind not in {"clip", "track"} or not scope.startswith("occurrence:"):
+        raise commands.CommandError(f"inverse root target is not an occurrence clip/track: {sid!r}")
+    rows = [r for r in tl.bundle["placements"] if r.get("occurrence_id") == scope[len("occurrence:"):]]
+    if len(rows) != 1:
+        raise commands.CommandError(f"inverse occurrence is unavailable or ambiguous: {scope}")
+    return tl.bundle["shots"][rows[0]["shot_id"]]["internal_timeline"].setdefault(kind + "s", []), local
+
+
+def _root(tl, write):
+    sid, state = write["id"], write["after"]
+    if sid.startswith("cut:"):
+        from astrid.sdk import timeline_intent as intent
+        notes = intent._film_w(tl.bundle).setdefault("cut_notes", {})
+        if state["state"] == "absent":
+            notes.pop(sid[4:], None)
+        elif state["value"]:
+            notes[sid[4:]] = copy.deepcopy(state["value"])
+        return  # cut existence is owned by its explicitly recorded clip members
+    members, local = _members(tl, sid)
+    if state["state"] == "absent":
+        members[:] = [row for row in members if row["id"] != local]
+        return
+    payload = state["value"]
+    if not isinstance(payload, dict) or payload.get("id") != local:
+        raise commands.CommandError(f"inverse payload identity does not match {sid}")
+    members[:] = [row for row in members if row["id"] != local]
+    order = write.get("order", [])
+    if order:
+        if len(order) != len(set(order)) or sid not in order or any(
+                not isinstance(value, str) or value.rsplit(":", 1)[0] != sid.rsplit(":", 1)[0] for value in order):
+            raise commands.CommandError("inverse membership order has invalid scoped identities")
+        position = order.index(sid)
+        present = {row["id"]: index for index, row in enumerate(members)}
+        before = [present[value.rsplit(":", 1)[1]] for value in order[:position] if value.rsplit(":", 1)[1] in present]
+        after = [present[value.rsplit(":", 1)[1]] for value in order[position + 1:] if value.rsplit(":", 1)[1] in present]
+        if before and after and max(before) >= min(after):
+            raise commands.SemanticConflict("dependent", sid, "order", order, list(present), payload)
+        index = min(after) if after else max(before) + 1 if before else 0
+    else:
+        index = len(members)
+    members.insert(index, copy.deepcopy(payload))
+
+
 def apply_inverse(self, writes, publication):
     """Apply guarded authored properties, then let the normal compiler resolve consequences."""
     tl = self
@@ -121,14 +168,15 @@ def apply_inverse(self, writes, publication):
     seen = set()
     states = commands.entity_states(tl)
     for write in writes:
-        if not isinstance(write, dict) or set(write) != {"id", "path", "before", "after"}:
+        if not isinstance(write, dict) or set(write) - {"id", "path", "before", "after", "order"} or not {
+                "id", "path", "before", "after"} <= set(write):
             raise commands.CommandError("invalid inverse write")
         sid, path = write["id"], write["path"]
-        if not isinstance(sid, str) or not isinstance(path, str) or not path:
-            raise commands.CommandError("structural inverse requires an admitted identity producer; use timelines restore")
-        keys = _tokens(path)
+        if not isinstance(sid, str) or not isinstance(path, str):
+            raise commands.CommandError("inverse requires a recorded identity and property path")
+        keys = _tokens(path) if path else []
         # Identity/provenance is never editable through a property inverse.
-        if keys[0] in {"id", "shot_id", "occurrence_id", "shot_revision_id"}:
+        if keys and keys[0] in {"id", "shot_id", "occurrence_id", "shot_revision_id"}:
             raise commands.CommandError("inverse cannot rewrite entity identity; use timelines restore")
         if (sid, path) in seen:
             raise commands.CommandError("duplicate inverse write")
@@ -140,17 +188,23 @@ def apply_inverse(self, writes, publication):
         current = commands.state_at(states, sid, path)
         if not commands._same_value(current, write["before"]):
             raise commands.SemanticConflict("same-property", sid, path, write["before"], current, write["after"])
+    from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
+    reservations = cut_reservations(tl.bundle)
     for write in writes:
         path = write["path"]
         path = "app.astrid." + path[7:] if path.startswith("intent.") else path
         try:
-            _write(_entity(tl, write["id"]), path, write["after"])
+            if not path:
+                _root(tl, write)
+            else:
+                _write(_entity(tl, write["id"]), path, write["after"])
         except (KeyError, IndexError, TypeError, AttributeError) as exc:
             raise commands.CommandError(f"inverse path is unavailable: {write['id']}.{path}") from exc
+    retain_cut_reservation_mark(tl.bundle, reservations)
     tl._refresh()
 
 
-def inverse_command(calls, before, after, publication):
+def inverse_command(calls, before, after, publication, *, consequences=()):
     """Coalesce direct authored preconditions: first before, final after.
 
     Compiler consequences are deliberately recomputed. Repeated writes to one
@@ -159,26 +213,67 @@ def inverse_command(calls, before, after, publication):
     """
     from astrid.sdk.timeline.checkout import Checkout
     desired = {}
-    for value in calls:
+    materializers = set()
+    for index, value in enumerate(calls):
         call = commands.EditCommand.coerce(value)
         if any(getattr(call, key) is None for key in ("expect", "authorship", "bindings", "created")):
             raise commands.CommandError("publication lacks recorded command preconditions")
+        if call.op in {"timeline.reflow", "timeline.retime", "timeline.resolve"}:
+            materializers.add(index)
         for key, kind in call.authorship.items():
             if kind != "direct":
                 continue
             if key not in call.expect:
                 raise commands.CommandError("publication lacks an authored precondition")
             sid, path = commands.write_target(key, call.resolved)
-            if not path:
-                raise commands.CommandError("structural inverse requires an admitted identity producer; use timelines restore")
             desired.setdefault((sid, path), copy.deepcopy(call.expect[key]))
-    original = commands.entity_states(Checkout(copy.deepcopy(before)))
-    desired = {(sid, path): commands.state_at(original, sid, path) for sid, path in desired
-               if not any(other_sid == sid and other != path and path.startswith((other + ".", other + "["))
-                          for other_sid, other in desired)}
+    original_tl = Checkout(copy.deepcopy(before))
+    original = commands.entity_states(original_tl)
+    for effect in consequences:
+        if effect.get("cause") not in materializers:
+            continue
+        sid, path = effect["id"], effect["path"]
+        old = original.get(sid, {})
+        if path in {"at", "hold"} and old.get("app", {}).get("astrid", {}).get("on"):
+            continue  # anchored clocks are recomputed from the restored authored inputs
+        desired.setdefault((sid, path), copy.deepcopy(effect["before"]))
+    # Every created entity carries a scoped ID. A following set/remove can
+    # consume it; its absence before this publication still owns the inverse.
+    for value in calls:
+        call = commands.EditCommand.coerce(value)
+        for sid in call.created:
+            desired.setdefault((sid, ""), dict(state="absent"))
+    # Reconstruct overlapping guards from their recorded tagged states. The
+    # exact before closure validates this reconstruction; it never supplies a
+    # missing operation, identity or deleted payload.
+    order_of_guard = {key: index for index, key in enumerate(desired)}
+    for sid, path in list(desired):
+        parents = [other for other_sid, other in desired if other_sid == sid and other != path and
+                   (not other or path.startswith((other + ".", other + "[")))]
+        if parents:
+            parent = min(parents, key=len)
+            state = desired[(sid, parent)]
+            if state["state"] == "present" and order_of_guard[(sid, path)] < order_of_guard[(sid, parent)]:
+                relative = path[len(parent):].lstrip(".") if parent else path
+                _write(state["value"], relative, desired[(sid, path)])
+    desired = {(sid, path): state for (sid, path), state in desired.items()
+               if not any(other_sid == sid and other != path and
+                   (not other or path.startswith((other + ".", other + "["))) for other_sid, other in desired)}
+    for (sid, path), state in desired.items():
+        if not commands._same_value(commands.state_at(original, sid, path), state):
+            raise commands.CommandError(f"recorded inverse precondition does not reconstruct {sid}.{path}")
+    # Reservation maxima belong to IDENTITY, not reversible authored content.
+    desired = {(sid, path): state for (sid, path), state in desired.items() if not (
+        sid == "parent" and path.startswith("config.app.astrid.cut_id_high_water"))}
     states = commands.entity_states(Checkout(copy.deepcopy(after)))
     writes = [dict(id=sid, path=path, before=commands.state_at(states, sid, path), after=state)
               for (sid, path), state in sorted(desired.items())]
+    writes = [w for w in writes if not (w["before"] == w["after"] == {"state": "absent"})]
+    for write in writes:
+        if write["path"] == "" and write["after"]["state"] == "present" and "/" in write["id"]:
+            members, _ = _members(original_tl, write["id"])
+            prefix = write["id"].rsplit(":", 1)[0] + ":"
+            write["order"] = [prefix + row["id"] for row in members]
     if not writes:
         raise commands.CommandError("publication has no invertible authored writes; use timelines restore")
     return dict(op="timeline.inverse", select=None, args=dict(writes=writes, publication=publication))
@@ -215,7 +310,7 @@ def stage(checkout, *, client, publication=None):
         return compile_authoring_candidate(document).publication["parent_composition"]
     if payload(replay) != payload(after):
         raise TimelineEditError("publication commands do not reproduce the exact accepted closure")
-    inverse = inverse_command(actual_calls, before, after, publication)
+    inverse = inverse_command(actual_calls, before, after, publication, consequences=result["change"]["consequences"])
     # Record at the exact post-publication revision. This is the original
     # inverse's base; neither a newer draft nor newer head may redefine it.
     _, plan, _ = RuntimeCommitService._apply(after, [inverse])
@@ -266,7 +361,8 @@ def stage(checkout, *, client, publication=None):
 def authored_paths(calls):
     return {commands.write_target(key, call.resolved)
             for value in calls for call in [commands.EditCommand.coerce(value)]
-            for key, kind in (call.authorship or {}).items() if kind == "direct"}
+            for key, kind in (call.authorship or {}).items() if kind == "direct" or call.op in {
+                "timeline.reflow", "timeline.retime", "timeline.resolve"}}
 
 
 def overlaps(left, right):

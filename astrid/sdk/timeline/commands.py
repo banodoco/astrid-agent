@@ -186,6 +186,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         raise SemanticConflict("delete-vs-edit", command.select or "", "resolved",
                                list(command.resolved), list(selected), None)
     before_entities = entity_states(tl)
+    from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
+    previous_reservations = cut_reservations(tl.bundle)
     check_expectations(tl, command, selected)
     args = copy.deepcopy(dict(command.args))
     if entry.op == "timeline.add" and command.created:
@@ -297,6 +299,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             result = owner
         else:
             result = entry.handler(owner, *sdk_args[0], **sdk_args[1]) if sdk_args is not None else entry.handler(owner, *positional, **args)
+        if cut_reservations(tl.bundle) != previous_reservations:
+            retain_cut_reservation_mark(tl.bundle, previous_reservations)
         if entry.op in {"timeline.batch", "timeline.edit-flags"}:
             pass
         elif entry.op in {"timeline.add-cut", "cut.split"}:
@@ -306,6 +310,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             tl._open_edit.calls[index] = replace(recorded, op="cut.split", select=source, args=split_args, resolved=selected_ids(tl, tl.cut(source), "cut"))
         elif entry.op in {"clip.extend", "clip.hold-for", "clip.for", "clip.set-duration"}:
             tl._open_edit.calls[index] = replace(recorded, op="clip.set-duration", args={"seconds": owner.duration})
+        elif entry.op == "cut.duplicate":
+            tl._open_edit.calls[index] = replace(recorded, args={**canonical, "id": result.id})
         elif entry.op == "clip.remove-layer" and result == [owner.id]:
             tl._open_edit.calls[index] = replace(recorded, op="clip.remove", args={})
         elif entry.op in {"clip.on", "clip.enter-at", "clip.nudge"}:

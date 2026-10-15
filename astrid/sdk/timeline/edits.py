@@ -104,6 +104,9 @@ class _EditMixin:
         else:
             clip.enter_at(word if word and anchor else start)
         if cut_id:
+            if not self._cut_clips(cut_id):
+                from astrid.sdk.timeline.identity import reserve_cut_id
+                reserve_cut_id(self.bundle, cut_id)
             intent.set_cut(new, cut_id)
             if hold is not None:
                 intent.set_for(new, self.quantize(hold))
@@ -142,14 +145,8 @@ class _EditMixin:
             raise TimelineEditError(f"{on!r}: {exc}") from None
 
     def _next_cut_id(self, cut_id: str) -> str:
-        m = re.fullmatch(r"(c\d+)([a-z]?)", cut_id)
-        if not m:
-            raise TimelineEditError(f"{cut_id!r} is not a cut id like c33")
-        taken = {g["id"] for g in self._cut_groups()} | {intent.cut_of(c.data) for c in self.clips() if intent.cut_of(c.data)}
-        for code in range(ord(m.group(2)) + 1 if m.group(2) else ord("a"), ord("z") + 1):
-            if f"{m.group(1)}{chr(code)}" not in taken:
-                return f"{m.group(1)}{chr(code)}"
-        raise TimelineEditError(f"no free cut id after {cut_id}; name it with id=")
+        from astrid.sdk.timeline.identity import next_cut_id
+        return next_cut_id(self.bundle, cut_id)
 
     def _split_cut(self, cut: "Cut", on: Any, *, new_id: str | None, picture: Any) -> "Cut":
         pic = cut.picture
@@ -168,6 +165,8 @@ class _EditMixin:
         new_id = new_id or self._next_cut_id(cid)
         if new_id in {g["id"] for g in self._cut_groups()}:
             raise TimelineEditError(f"there is already a cut {new_id}")
+        from astrid.sdk.timeline.identity import reserve_cut_id
+        reserve_cut_id(self.bundle, new_id)
         old_picture_end = pic.end  # before anything changes: what the new picture must not run past
         data = copy.deepcopy(pic.data)
         data["id"] = self._new_id(f"{new_id}-00-{pic.element}")

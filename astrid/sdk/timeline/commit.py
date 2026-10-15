@@ -271,13 +271,17 @@ class RuntimeCommitService:
         # producer. They must never obtain ambient clients or paths here.
         if not isinstance(values, (list, tuple)):
             raise CommandError("commands must be an array")
-        external = {"timeline.add", "timeline.apply-script", "timeline.insert-line", "voice.replace", "timeline.adopt",
+        external = {"timeline.apply-script", "timeline.insert-line", "voice.replace", "timeline.adopt",
                     "timeline.fill-slot", "timeline.fill-standins", "timeline.replace-asset",
-                    "clip.swap-asset", "timeline.edit-flags", "cut.split", "timeline.add-cut"}
+                    "clip.swap-asset", "timeline.edit-flags"}
         for value in values:
             call = commands.EditCommand.coerce(value)
             if call.op in external or "client" in call.args:
                 raise _Refusal(f"{call.op} requires an admitted scoped media/adapter producer")
+            if call.op == "timeline.add" and any(call.args.get(key) is not None for key in ("asset", "standin")):
+                raise _Refusal("timeline.add with media requires an admitted scoped media/adapter producer")
+            if call.op in {"cut.split", "timeline.add-cut"} and call.args.get("picture") is not None and not isinstance(call.args["picture"], str):
+                raise _Refusal(f"{call.op} with picture replacement requires an admitted scoped media/adapter producer")
             if call.op == "clip.set-beats" and not (isinstance(call.args.get("source"), Mapping)
                     or call.args.get("source") == "keep"):
                 raise _Refusal("Beat files/handles require an admitted scoped media producer")
@@ -294,9 +298,23 @@ class RuntimeCommitService:
         cls._check_detached_media(tl)
         with edit_transaction(tl, "Runtime commit", quiet=True, persist=False) as tx:
             tx.canonical = True
-            for call in calls:
+            def execute(value):
+                call = commands.EditCommand.coerce(value)
+                if call.op == "timeline.batch":
+                    for child in call.args.get("commands", []):
+                        execute(child)
+                    return
+                if call.op in {"cut.split", "timeline.add-cut"} and call.args.get("picture") is not None:
+                    if call.op == "cut.split":
+                        source = commands.recorded_owner(tl, call, "cut") if call.resolved else tl.cut(call.select)
+                    else:
+                        source = tl.cut(tl._cut_on_screen(tl._moment_time(tl._split_moment(call.args["on"], None))))
+                    if call.args["picture"] not in tl._registry(source.shot_id):
+                        raise _Refusal(f"{call.op} picture must be an existing pinned asset key")
                 cls._check_media_duration(tl, call)
                 commands.execute(tl, call)
+            for call in calls:
+                execute(call)
             # Inventory is collected after actual calls and before the compiler.
             direct = commands.direct_writes(tl, tx.calls)
         if tx.plan.blocking or (tx.report is not None and not tx.report.valid):
@@ -339,7 +357,7 @@ class RuntimeCommitService:
         silently treated as disjoint. Public-history staging handles those
         events; a race after staging still fails closed here.
         """
-        from astrid.sdk.timeline.inverse import overlaps
+        from astrid.sdk.timeline.inverse import overlaps, authored_paths
         inverse_calls = [call for call in calls if call.op == "timeline.inverse"]
         for call in inverse_calls:
             target = call.args["publication"]
@@ -368,9 +386,9 @@ class RuntimeCommitService:
                 evidence = port.evidence(row["evidence_digest"])
                 if _digest(evidence) != row["evidence_digest"]:
                     raise _Refusal("publication evidence digest mismatch")
+                paths = authored_paths(evidence["commands"]) | {(w["id"], w["path"]) for w in evidence["direct_writes"]}
                 for write in call.args["writes"]:
-                    if any(overlaps((write["id"], write["path"]), (later["id"], later["path"]))
-                           for later in evidence["direct_writes"]):
+                    if any(overlaps((write["id"], write["path"]), path) for path in paths):
                         states = commands.entity_states(Checkout(copy.deepcopy(onto)))
                         path = dict(kind="same-property", id=write["id"], path=write["path"],
                                     base=write["before"], theirs=commands.state_at(states, write["id"], write["path"]),

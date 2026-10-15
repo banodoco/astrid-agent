@@ -4848,6 +4848,10 @@
         "cut_id": {
           "kind": "property"
         },
+        "detach_audio": {
+          "kind": "callable",
+          "signature": "(self, *, track: 'str' = 'audio') -> \"'Clip'\""
+        },
         "duration": {
           "kind": "property"
         },
@@ -4993,6 +4997,10 @@
       "members": {
         "clips": {
           "kind": "property"
+        },
+        "duplicate": {
+          "kind": "callable",
+          "signature": "(self, at: 'float', *, id: 'str | None' = None) -> \"'Cut'\""
         },
         "duration": {
           "kind": "property"

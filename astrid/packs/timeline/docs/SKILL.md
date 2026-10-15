@@ -107,8 +107,12 @@ write refuses with `same-property`, names the later publication, and points to
 `restore`. The guard includes edits that changed a property and changed it back.
 
 Inverse commands require verified local publication commands and exact Runtime
-closures. Structural edits that require identity reconstruction refuse with a
-restore hint. Unknown publication/evidence links remain conflicts; revision IDs,
+closures. Recorded add/remove, split, duplicate, detach and compound command
+identities can be reversed; deleted payloads come from their tagged command
+preconditions, and IDENTITY reservations survive reversal. Explicit remapping
+preserves dependent commands. Materializer effects use recorded causal writes,
+then pass through the compiler. Media acquisition still requires its admitted
+COMMIT adapter. Unknown publication/evidence links remain conflicts; revision IDs,
 snapshots, prefixes and timestamps do not establish publication ancestry.
 
 For an explicit whole-timeline replacement, use:

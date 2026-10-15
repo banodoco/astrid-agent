@@ -732,6 +732,30 @@ class Clip(_Suggest):
             key["frame"] = int(_num(key.get("frame"))) + delta
         return self
 
+    def detach_audio(self, *, track: str = "audio") -> "Clip":
+        """Detach a media video's audio, preserving source range, speed and gain."""
+        from astrid.sdk.timeline.edits import _media_kind
+        tl = self._tl
+        entry = tl._registry(self.shot_id).get(str(self.asset)) or {}
+        if self.element != "media" or self.is_audio or _media_kind(entry) != "video":
+            raise TimelineEditError("detach_audio requires a media video clip")
+        if not any(t.get("id") == track and t.get("kind") in {"audio", "music", "voice"}
+                   for t in tl._internal(self.shot_id).get("tracks") or []):
+            raise TimelineEditError(f"no audio track {track!r} in shot {self.shot_id}")
+        if self.data.get("volume") == 0:
+            raise TimelineEditError("this video's audio is already muted/detached")
+        data = copy.deepcopy(self.data)
+        data["id"] = tl._new_id(f"{self.id}-audio")
+        data["track"] = track
+        # A detached audio layer has independent duration, rather than becoming
+        # another picture member of the cut; its original anchor still follows.
+        for key in ("cut", "layer", "sequence", "sequence_index"):
+            intent._set_or_drop(data, key, None)
+        self.data["volume"] = 0
+        tl._internal(self.shot_id)["clips"].append(data)
+        return Clip(tl, self.shot_id, data)
+
+
     def remove(self) -> None:
         clips = self._tl._internal(self.shot_id)["clips"]
         clips[:] = [c for c in clips if c is not self.data]
@@ -798,6 +822,43 @@ class Cut(_Suggest):
         if self.id is None:
             raise TimelineEditError(f"cut {self.n} has no id; it cannot keep notes")
         return self._tl.set_cut_note(self.id, why=why, hold=hold)
+
+    def duplicate(self, at: float, *, id: str | None = None) -> "Cut":
+        """Copy this cut and its layers at a timeline time, with fresh identities.
+
+        Absolute placement is explicit; copied layers retain offsets, source
+        ranges, keyframes and opaque data. The original cut remains untouched.
+        """
+        from astrid.sdk.timeline.identity import reserve_cut_id
+        tl = self._tl
+        if not self.id or not self.picture:
+            raise TimelineEditError("duplicate requires a named picture cut")
+        if intent.sequence(self.picture.data):
+            raise TimelineEditError("duplicate a sequence's individual cut instead")
+        members = tl._cut_clips(self.id)
+        target = tl.quantize(at)
+        sid = tl._shot_at(target)
+        if target < 0:
+            raise TimelineEditError("duplicate needs a nonnegative placement")
+        new_id = id or tl._next_cut_id(self.id)
+        reserve_cut_id(tl.bundle, new_id)
+        # Cross-shot asset/track remapping belongs to add/import; fail closed.
+        if sid != self.shot_id:
+            raise TimelineEditError("duplicate within the same shot; cross-shot copy requires asset remapping")
+        delta = target - self.start
+        for clip in members:
+            data = copy.deepcopy(clip.data)
+            data["id"] = tl._new_id(f"{new_id}-{clip.id}")
+            data["at"] = _r(clip.start + delta - tl._shot_start(sid))
+            _set_length(data, clip.duration)
+            for setter in (intent.set_on, intent.set_until, intent.set_orphan):
+                setter(data, None)
+            intent.set_for(data, clip.duration)
+            intent.set_cut(data, new_id)
+            tl._internal(sid)["clips"].append(data)
+        tl._mcache = None
+        return tl.cut(new_id)
+
 
     def split(self, on: Any, *, id: str | None = None, picture: Any = None) -> "Cut":
         """Split this cut at a moment (``'"Building" in v27'``, ``+1.2s`` into the cut): the new cut gets a
@@ -1179,3 +1240,9 @@ for _music_method in (
     "remove", "remove_layer", "keep", "set_look", "tag", "move_to_cut",
 ):
     setattr(Clip, _music_method, _music_source_edit(getattr(Clip, _music_method)))
+
+
+# Exact D IDENTITY handlers consumed by publication inverses (fba136b1007b4aee3e49f78edb874ec36ffc0940).
+from astrid.sdk.timeline import commands as _identity_commands
+_identity_commands.register(Clip, "clip", ("detach_audio",))
+_identity_commands.register(Cut, "cut", ("duplicate",))
