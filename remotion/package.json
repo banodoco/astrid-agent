@@ -15,7 +15,7 @@
     "postinstall": "node scripts/apply-renderer-darwin-cpu-patch.mjs"
   },
   "dependencies": {
-    "@banodoco/timeline-composition": "https://github.com/banodoco/timeline-composition/archive/refs/tags/v0.0.6.tar.gz",
+    "@banodoco/timeline-composition": "file:vendor/timeline-composition",
     "@banodoco/timeline-theme-2rp": "https://github.com/banodoco/timeline-theme-2rp/archive/refs/tags/v0.1.1.tar.gz",
     "@react-three/fiber": "8.18.0",
     "@remotion/cli": "4.0.509",
