@@ -54,6 +54,8 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         self._orphan_reason = "its line was removed"
         self._disk: str | None = None  # the file text this handle loaded (or last saved): what another writer may change
         self.merged: list[str] = []      # what the last save merged in from another writer, in plain words
+        from astrid.sdk.timeline.story import _migrate_legacy
+        _migrate_legacy(self)  # namespace migration only; never retime or journal on load
 
     def _refresh(self) -> None:
         """Rebuild derived checkout state after an edit transaction restores its bundle."""

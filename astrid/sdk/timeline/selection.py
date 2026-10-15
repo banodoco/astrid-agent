@@ -251,6 +251,14 @@ def _chapters(tl: Any) -> tuple[list[dict[str, Any]], dict[str, int]]:
     With labels (``parent.config.chapters``): a cut's chapter is the last label at or before it, as the sheet
     does. Without labels, each shot is a chapter named by the shot. Consecutive equal names are ONE chapter."""
     groups = tl.cut_index.groups(tl)
+    canonical = _range_chapters(tl)
+    if canonical is not None:
+        table = [{"index": k, "number": k + 1, "name": row["range"]["name"],
+                  "id": row["range"]["name"].split()[0]}
+                 for k, row in enumerate(canonical)]
+        index = {g["id"]: k for g in groups for k, row in enumerate(canonical)
+                 if row["start_frame"] <= tl.frame(g["start"]) < row["end_frame"]}
+        return table, index
     order = [g["id"] for g in groups]
     labels = {row.get("from"): row.get("name") for row in intent.chapters(tl.bundle)}
     names: dict[str, str] = {}
@@ -291,6 +299,19 @@ def _chapters(tl: Any) -> tuple[list[dict[str, Any]], dict[str, int]]:
     return table, index
 
 
+def _range_chapters(tl: Any) -> list[dict[str, Any]] | None:
+    """None retains legacy/shot fallback; authored chapters use resolved ranges."""
+    if "ranges" not in intent._film(tl.bundle):
+        return None
+    from astrid.sdk.timeline.story import resolve_ranges
+    rows, findings = resolve_ranges(tl)
+    if findings:
+        raise SelectorError("invalid story ranges: " + "; ".join(f["message"] for f in findings))
+    chapters = [row for row in rows if row["range"]["kind"] == "chapter"]
+    # A preserved legacy label table can coexist with canonical beats.
+    return chapters if chapters or not intent.chapters(tl.bundle) else None
+
+
 def _resolve_chapter(table: list[dict[str, Any]], value: Any) -> int:
     text = str(value).strip()
     listing = " · ".join(f"{ch['id']} ({ch['name']})" for ch in table) or "none (this timeline has no chapters)"
@@ -313,6 +334,10 @@ def _chapter_pred(sel: Selection, value: Any, cut_and_time: Callable[[Any], tupl
     tl = _tl(sel)
     table, index = _chapters(tl)
     want = _resolve_chapter(table, value)
+    canonical = _range_chapters(tl)
+    if canonical is not None:
+        row = canonical[want]
+        return lambda x: row["start_frame"] <= tl.frame(cut_and_time(x)[1]) < row["end_frame"]
 
     def chapter_of(x: Any) -> int | None:
         cid, t = cut_and_time(x)

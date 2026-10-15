@@ -239,18 +239,35 @@ def set_cut_note(bundle: dict[str, Any], cut_id: str, **fields: Any) -> None:
 
 
 def chapters(bundle: Mapping[str, Any]) -> list[dict[str, str]]:
-    """``[{"name": "06 ASTRID", "from": "c30"}, …]``: each chapter starts at a cut."""
+    """Unmigrated legacy labels only; canonical story data is in :func:`ranges`."""
     value = _film(bundle).get("chapters")
     return [dict(row) for row in value if isinstance(row, Mapping)] if isinstance(value, list) else []
 
 
+def ranges(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Detached canonical ``{name, kind, from, to}`` story rows."""
+    import copy
+    value = _film(bundle).get("ranges")
+    return copy.deepcopy(value) if isinstance(value, list) else []
+
+
 def set_chapters(bundle: dict[str, Any], table: list[Mapping[str, Any]]) -> None:
     ns = _film_w(bundle)
+    if "ranges" in ns:
+        value = ns["ranges"]
+        if not isinstance(value, list) or any(not isinstance(row, Mapping) for row in value):
+            raise ValueError("cannot replace chapters: malformed canonical ranges")
+        # The existing compatibility writer replaces chapters, preserving beats.
+        ns["ranges"] = [row for row in value if row.get("kind") != "chapter"]
     if table:
         ns["chapters"] = [dict(row) for row in table]
     else:
         ns.pop("chapters", None)
+        if ns.get("ranges") == []:
+            ns.pop("ranges", None)
         _film_tidy(bundle)
+    from astrid.sdk.timeline.story import migrate_story_ranges
+    migrate_story_ranges(bundle)
 
 
 def orphan(clip):

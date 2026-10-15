@@ -565,6 +565,10 @@ class _CheckMixin:
         blocking += [f"outside {line}" for line in self._outside]
         blocking += [f"type    {line}" for line in self._type_mismatches()]
         blocking += [f"beats   {line}" for line in self._stale_beats()]
+        from astrid.sdk.timeline.story import _migrate_legacy, resolve_ranges
+        _, story_findings = resolve_ranges(self)
+        blocking += [f"story   {f['path']}: {f['message']}" for f in story_findings]
+        problems += [f"story   {f['path']}: {f['message']}" for f in _migrate_legacy(self)]
         spans = self._on_screen()  # one pass over the film for the three readers below
         blocking += [f"picture {line}" for line in self.picture_gaps(spans)]
         empty_blocking, empty_info = self.empty_cuts(spans)

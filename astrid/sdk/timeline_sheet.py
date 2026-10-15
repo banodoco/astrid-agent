@@ -159,6 +159,8 @@ def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, 
         out += ["", "orphans" + " " * 42 + "# moments whose words are gone: re-home or remove"]
         out.extend(f"  {orphan}" for orphan in orphans)
     chapter_names = {row.get("from"): row.get("name") for row in intent.chapters(tl.bundle)}
+    from astrid.sdk.timeline.selection import _chapters, _range_chapters
+    range_table, range_index = _chapters(tl) if _range_chapters(tl) is not None else (None, {})
     order = [g["id"] for g in groups]
     carried = _carried(tl, groups)
     chapter = None
@@ -171,7 +173,10 @@ def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, 
         hi = hi if hi is not None else tl.duration
         picture = group["picture"]
         first = picture or min(group["clips"], key=lambda c: c.start)
-        if chapter_names:
+        if range_table is not None:
+            chapter_index = range_index.get(group["id"])
+            name = range_table[chapter_index]["name"] if chapter_index is not None else None
+        elif chapter_names:
             name = next((chapter_names[cid] for cid in reversed(order[:order.index(group["id"])+1]) if cid in chapter_names), chapter)
         else:
             name = _chapter(tl, first.shot_id)
