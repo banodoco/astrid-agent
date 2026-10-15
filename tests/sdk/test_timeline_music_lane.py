@@ -7,10 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.timeline.authoring_bundle import AuthoringBundleError, _digest
 from astrid.core.timeline.compatibility import ADOPTED_BED_CAPABILITY, TimelineCompatibilityError
 from astrid.packs.rendering.actions.timeline_visualize.layers.base import LayerContext
 from astrid.packs.rendering.actions.timeline_visualize.layers.builtin import render_sync
 from astrid.packs.timeline import cli_show
+from astrid.sdk.authoring_bundle import (
+    open_authoring_bundle,
+    project_audio_lane_for_authoring_bundle,
+)
 from astrid.sdk.timeline.bed_adoption import adopt_music_bed
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.music_beds import collection
@@ -79,6 +84,203 @@ def _render_snapshot(tl):
         "config": config, "registry": {"assets": assets}, "fps": tl.fps,
         "project_id": tl.bundle.get("project_id"), "timeline_id": tl.bundle.get("timeline_id"),
     }
+
+
+def _pinned_lane_bundle(tl):
+    """Reopen the disposable fixture through the real immutable-closure adapter."""
+    bundle = tl.bundle
+    parent = copy.deepcopy(bundle["parent"])
+    parent["occurrences"] = copy.deepcopy(bundle["placements"])
+    shots, internals = [], []
+    for sid, row in bundle["shots"].items():
+        shot_revision = f"fixture-shot-{sid}"
+        internal_revision = f"fixture-internal-{sid}"
+        for placement in parent["occurrences"]:
+            if placement["shot_id"] == sid:
+                placement["shot_revision_id"] = shot_revision
+        payload = copy.deepcopy(row["payload"])
+        payload["internal_timeline_revision_id"] = internal_revision
+        shots.append({
+            "project_id": bundle["project_id"], "shot_id": sid, "revision_id": shot_revision,
+            "content_digest": _digest(payload), "payload": payload,
+            "internal_timeline_revision_id": internal_revision,
+        })
+        internal = copy.deepcopy(row["internal_timeline"])
+        internals.append({
+            "project_id": bundle["project_id"], "timeline_id": sid, "revision_id": internal_revision,
+            "content_digest": _digest(internal), "payload": internal,
+        })
+    return open_authoring_bundle({
+        "project_id": bundle["project_id"], "timeline_id": bundle["timeline_id"],
+        "revision_id": "fixture-parent-r1", "content_digest": _digest(parent), "payload": parent,
+    }, shot_revisions=shots, internal_timeline_revisions=internals)
+
+
+def _bundle_bytes(bundle):
+    return json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def test_pinned_authoring_lane_uses_exact_producer_without_side_effects(monkeypatch, tmp_path):
+    from astrid.sdk.timeline import music_beds, music_lane, store
+    from astrid.sdk.timeline.publish import _PublishMixin
+
+    tl, owners = _adopted_lane_fixture()
+    bundle = _pinned_lane_bundle(tl)
+    before = _bundle_bytes(bundle)
+    expected = project(tl)
+    word_identities = [vars(word) for word in Checkout(copy.deepcopy(bundle)).words()]
+    monkeypatch.chdir(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("projection attempted persistence, HEAD lookup, or materialization")
+
+    monkeypatch.setattr(Checkout, "open", forbidden)
+    monkeypatch.setattr(Checkout, "save", forbidden)
+    monkeypatch.setattr(Checkout, "resolve", forbidden)
+    monkeypatch.setattr(_PublishMixin, "publish", forbidden)
+    monkeypatch.setattr(store, "fetch_bundle", forbidden)
+    monkeypatch.setattr(music_beds, "project", forbidden)
+    monkeypatch.setattr(music_beds, "dematerialize", forbidden)
+    actual_project = music_lane.project
+    calls = []
+    capabilities = {ADOPTED_BED_CAPABILITY}
+
+    def observed(view, *, capabilities):
+        calls.append(capabilities)
+        assert view.bundle is not bundle
+        assert [vars(word) for word in view.words()] == word_identities
+        assert view.bundle["source_mapping"] == bundle["source_mapping"]
+        assert view.path is None and not view._journal and not view._pending_calls
+        result = actual_project(view, capabilities=capabilities)
+        # Even migration/read-helper changes in Checkout cannot reach the caller.
+        view.bundle["parent"]["opaque_read_probe"] = True
+        return result
+
+    monkeypatch.setattr(music_lane, "project", observed)
+    files_before = {str(path.relative_to(tmp_path)): path.read_bytes() if path.is_file() else None
+                    for path in tmp_path.rglob("*")}
+    lane = project_audio_lane_for_authoring_bundle(bundle, capabilities=capabilities)
+    assert calls == [capabilities] and calls[0] is capabilities
+    assert lane == expected
+    assert [row["owner"] for row in lane["arrangements"]] == owners
+    assert [[span["id"] for span in row["spans"]] for row in lane["arrangements"]] == [
+        ["a-music", "a-music:b"], ["arrangement-two", "arrangement-two:b"],
+    ]
+    assert lane["switches"][0]["on"] == {
+        "time_ref": '"SwitchWord" in s1 #1', "center_s": 6.4, "center_frame": 192,
+    }
+    assert lane["switches"][0]["window"] == {
+        "start_s": 5.4, "end_s": 7.4, "start_frame": 162, "end_frame": 222,
+    }
+    assert lane["seams"] == [{
+        "at_s": 2.0, "frame": 60, "action": "repeat", "delta_s": 1.0, "duration_s": 1.0,
+    }]
+    assert _bundle_bytes(bundle) == before
+    assert {str(path.relative_to(tmp_path)): path.read_bytes() if path.is_file() else None
+            for path in tmp_path.rglob("*")} == files_before
+
+
+def test_pinned_authoring_lane_no_bed_and_explicit_caller_capabilities():
+    bundle = _pinned_lane_bundle(tiny())
+    before = _bundle_bytes(bundle)
+    assert project_audio_lane_for_authoring_bundle(bundle, capabilities=()) is None
+    assert _bundle_bytes(bundle) == before
+    with pytest.raises(AuthoringBundleError, match="explicit caller capability"):
+        project_audio_lane_for_authoring_bundle(bundle, capabilities=None)
+    with pytest.raises(TypeError, match="capabilities"):
+        project_audio_lane_for_authoring_bundle(bundle)
+    tl, _ = _adopted_lane_fixture()
+    bundle = _pinned_lane_bundle(tl)
+    before = _bundle_bytes(bundle)
+    with pytest.raises(TimelineCompatibilityError, match="lacks adopted-music-bed"):
+        project_audio_lane_for_authoring_bundle(bundle, capabilities=())
+    assert _bundle_bytes(bundle) == before
+
+
+def test_pinned_authoring_lane_retains_valid_zero_output_arrangement(monkeypatch):
+    from astrid.sdk.timeline import music_beds
+    from tests.sdk.test_music_beds import enrolled
+    from tests.sdk.test_timeline_adopt import adopt_one
+
+    tl = enrolled()
+    tl.ripple_delete(0, 9)
+    tl = adopt_one(tl)
+    bundle = _pinned_lane_bundle(tl)
+    before = _bundle_bytes(bundle)
+    monkeypatch.setattr(music_beds, "project", lambda *a, **k: pytest.fail("materialized on read"))
+    lane = project_audio_lane_for_authoring_bundle(bundle, capabilities={ADOPTED_BED_CAPABILITY})
+    assert lane is not None
+    assert len(lane["arrangements"]) == 1
+    assert lane["arrangements"][0]["owner"] == OWNER
+    assert lane["arrangements"][0]["spans"] == []
+    assert _bundle_bytes(bundle) == before
+
+
+@pytest.mark.parametrize("damage", ["clips", "start", "duration", "edited-parent", "edited-words", "shot-id"])
+def test_pinned_authoring_lane_validates_closure_even_without_a_bed(damage):
+    tl = tiny()
+    if damage == "clips":
+        tl._internal("A")["clips"] = {}
+    elif damage == "start":
+        tl.bundle["placements"][0].pop("placement")
+    elif damage == "duration":
+        tl.bundle["placements"][0].pop("duration_ms")
+    bundle = _pinned_lane_bundle(tl)
+    if damage == "edited-parent":
+        bundle["parent"]["config"]["opaque"] = "uninspected edit"
+    elif damage == "edited-words":
+        bundle["shots"]["A"]["internal_timeline"]["clips"][2]["app"]["astrid"]["words"] = []
+    elif damage == "shot-id":
+        bundle["shots"]["A"]["shot_id"] = "other"
+    before = _bundle_bytes(bundle)
+    with pytest.raises(AuthoringBundleError):
+        project_audio_lane_for_authoring_bundle(bundle, capabilities=())
+    assert _bundle_bytes(bundle) == before
+
+
+@pytest.mark.parametrize("damage", [
+    "parent", "placements", "shots", "source_mapping", "base_parent", "base_parent_payload",
+    "base_placements", "schema_version", "project_id", "timeline_id",
+    "missing-placement", "missing-shot", "missing-shot-source", "missing-placement-source",
+    "missing-source-revision", "missing-words", "missing-output", "missing-output-ownership",
+    "ambiguous-word", "malformed-bed",
+])
+def test_pinned_authoring_lane_refuses_incomplete_or_malformed_closure(damage):
+    from astrid.sdk.timeline.music_beds import MusicBedError
+    from astrid.sdk.timeline.music_lane import AudioLaneError
+
+    tl, _ = _adopted_lane_fixture()
+    if damage in ("missing-words", "ambiguous-word"):
+        words = next(c for c in tl._internal("A")["clips"] if c["id"] == "a-vo")["app"]["astrid"]["words"]
+        words[:] = [word for word in words if word[2] != "SwitchWord"]
+        if damage == "ambiguous-word":
+            words.extend([[5.9, 6.1, "SwitchWord"], [6.2, 6.3, "SwitchWord"]])
+            # An unqualified duplicated word must not choose an arbitrary match.
+            tl.bundle["parent"]["config"]["app"]["astrid"]["bed"]["switches"][0]["on"] = '"SwitchWord" in s1'
+    elif damage == "missing-output":
+        clips = tl._internal("A")["clips"]
+        clips[:] = [c for c in clips if c["id"] != "a-music:b"]
+    elif damage == "missing-output-ownership":
+        tl.bundle["parent"]["config"]["app"]["astrid"]["bed"].pop("outputs")
+    elif damage == "malformed-bed":
+        tl.bundle["parent"]["config"]["app"]["astrid"]["bed"] = None
+    bundle = _pinned_lane_bundle(tl)
+    if damage in bundle:
+        bundle.pop(damage)
+    elif damage == "missing-placement":
+        bundle["placements"].pop()
+    elif damage == "missing-shot":
+        bundle["shots"].pop("B")
+    elif damage == "missing-shot-source":
+        bundle["source_mapping"]["shots"].pop("A")
+    elif damage == "missing-placement-source":
+        bundle["source_mapping"]["placements"].pop("occ-A")
+    elif damage == "missing-source-revision":
+        bundle["source_mapping"]["shots"]["A"].pop("internal_timeline_revision_id")
+    before = _bundle_bytes(bundle)
+    with pytest.raises((AuthoringBundleError, AudioLaneError, MusicBedError)):
+        project_audio_lane_for_authoring_bundle(bundle, capabilities={ADOPTED_BED_CAPABILITY})
+    assert _bundle_bytes(bundle) == before
 
 
 def test_sheet_visualize_and_snapshot_share_the_same_uncapped_lane(monkeypatch, capsys):
