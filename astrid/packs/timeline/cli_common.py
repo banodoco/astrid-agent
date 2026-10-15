@@ -208,10 +208,17 @@ def status_text(parsed: argparse.Namespace, project_id: str, timeline_id: str, h
                 pass
         return 0
     tl = Checkout.load(path)
+    from astrid.sdk.timeline.external import unimported
+    from astrid.sdk.timeline._common import TimelineEditError
+    try:
+        external = [row.id for row in unimported(tl, head, parsed.client)]
+        external_banner = (" · unimported external revisions: " + ", ".join(external)) if external else ""
+    except TimelineEditError as exc:
+        external_banner = f" · unimported external revisions: unknown ({exc})"
     changes = tl.changes()
     clips = len(tl.edits().get("changes") or [])
     show_all = bool(getattr(parsed, "all", False))
-    print(f'WORKING COPY "{name}" · {clips_changed(clips)} vs published {short_rev(tl.base_revision)}'
+    print(f'WORKING COPY "{name}"{external_banner} · {clips_changed(clips)} vs published {short_rev(tl.base_revision)}'
           + (f" (said in {len(changes)} lines: clips that only moved with the film are one line per shift)"
              if clips != len(changes) else ""))
     shown = changes if show_all or len(changes) <= 25 else changes[:25]

@@ -667,13 +667,11 @@ def _legacy_apply_sheet(tl: Checkout, text: str) -> list[str]:
         raise SheetError(f"line {line.get('line', '?')}: «{line.get('text','')}» — {exc}; use a valid clip address and editable field") from exc
 
 
-def apply_sheet(tl: Checkout, text: str) -> list[str]:
-    """Apply a full sheet or fragment atomically and return the checkout's change summary.
+def sheet_commands(tl: Checkout, text: str):
+    """Produce guarded OpCalls from the sheet's declared editable fields."""
+    from astrid.sdk.timeline.transaction import edit_transaction
 
-    A sheet exported from an earlier version merges three-way (what the sheet changed since it was exported,
-    onto what is here now): an edit made after the export is never reverted."""
     parsed = parse_sheet(text)
-    before = Checkout(copy.deepcopy(tl.bundle))
     if parsed.get("version") and parsed["version"] != sheet_version(tl):
         base = find_version(tl, parsed["version"])
         if base is None:
@@ -681,13 +679,50 @@ def apply_sheet(tl: Checkout, text: str) -> list[str]:
                              f"has (it is now {sheet_version(tl)}): re-export the current timeline as a sheet and make "
                              "your change again, so nothing edited since is undone")
         parsed = merge_sheet(parsed, base, tl)
-    try:
-        with tl.step("apply sheet"):
-            return _apply_parsed(tl, parsed, before)
-    except Exception:
-        tl.bundle = before.bundle
-        tl._refresh()
-        raise
+    probe = Checkout(copy.deepcopy(tl.bundle))
+    before = Checkout(copy.deepcopy(tl.bundle))
+    with edit_transaction(probe, "apply sheet", check=False, quiet=True, persist=False) as tx:
+        tx.canonical = True
+        _apply_parsed(probe, parsed, before)
+    return tx.plan.calls if tx.plan.changed else ()
+
+
+def apply_sheet(tl: Checkout, text: str) -> list[str]:
+    """Produce and run sheet edits atomically; stale sheets retain their layer clash guard."""
+    from astrid.sdk.timeline.commands import execute
+    from astrid.sdk.timeline_checkout import describe_changes
+
+    calls = sheet_commands(tl, text)
+    if not calls:
+        return []
+    before = Checkout(copy.deepcopy(tl.bundle))
+    with tl.step("apply sheet"):
+        for call in calls:
+            execute(tl, call)
+    return describe_changes(before, tl)
+
+
+def _sheet_fields(clip, **fields):
+    """Only sheet-owned literal/explicit intent fields; no inferred gesture."""
+    allowed = {"element", "line_text", "cut", "layer", "on", "until", "for"}
+    if set(fields) - allowed:
+        raise SheetError("unknown editable sheet field; re-export the sheet")
+    for key, value in fields.items():
+        if key == "element":
+            clip.data["clipType"] = value
+        elif key == "line_text":
+            intent.set_line_text(clip.data, value)
+        else:
+            {"cut": intent.set_cut, "layer": intent.set_layer, "on": intent.set_on,
+             "until": intent.set_until, "for": intent.set_for}[key](clip.data, value)
+    clip._tl._mcache = None
+
+
+def _fields(clip, **fields):
+    from astrid.sdk.timeline.commands import execute, scoped_clip
+    return execute(clip._tl, dict(op="clip.sheet-fields", select=scoped_clip(clip._tl, clip), args=fields))
+
+
 
 
 def find_version(tl: Any, version: str) -> Any:
@@ -830,7 +865,7 @@ def _apply_parsed(tl, sheet, before):
     for segment, entry in sheet["lines"].items():
         voice = tl.voice(segment)
         if entry["text"] and entry["text"] != voice.text.replace('"', "'"):
-            intent.set_line_text(voice.clips[0].data, entry["text"])
+            _fields(voice.clips[0], line_text=entry["text"])
         if entry["gap"] is not None and (voice.gap_after is None or abs(voice.gap_after-entry["gap"]) > 0.0051):
             voice.set_gap_after(entry["gap"], reflow=False)
             reflow = True
@@ -879,10 +914,10 @@ def _apply_parsed(tl, sheet, before):
                         reflow = True
                     if loose_clip and json.dumps(clip.data, sort_keys=True, default=str) != was:
                         if not intent.until(clip.data) and intent.for_s(clip.data) is None:
-                            intent.set_for(clip.data, tl.quantize(clip.duration))
-                        intent.set_cut(clip.data, cut["id"])
+                            _fields(clip, **{"for": tl.quantize(clip.duration)})
+                        _fields(clip, cut=cut["id"])
                         if name != clip.id:
-                            intent.set_layer(clip.data, name)
+                            _fields(clip, layer=name)
             except (TimelineEditError, mo.MomentError) as exc:
                 said = str(exc)
                 said = said if said.startswith(f"{cut['id']}.{name}") else f"{cut['id']}.{name}: {said}"
@@ -923,7 +958,7 @@ def _add_cut(tl, cut):
     except (TimelineEditError, mo.MomentError) as exc:
         raise SheetError(_with_text(f"line {line}: {cut['id']}: {exc}", line, f"┃ {cut['id']} on {cut['on']}")) from None
     picture = new.picture
-    intent.set_layer(picture.data, plates[0]["name"])
+    _fields(picture, layer=plates[0]["name"])
     tl._mcache = None
     group = {"id": cut["id"], "clips": [], "picture": picture, "start": picture.start}
     existing = {(intent.layer_of(c.data) or c.id): c for c in tl.clips() if intent.cut_of(c.data) == cut["id"]}
@@ -981,7 +1016,7 @@ def _update_layer(tl, clip, layer, *, is_picture):
     data = clip.data
     element = _element(layer["element"], clip.element)
     if element != clip.element:
-        data["clipType"] = element
+        _fields(clip, element=element)
     if layer["track"] != clip.track and not clip.is_audio:
         clip.set_track(layer["track"])
     if (layer["asset"] or None) != (clip.asset or None):
@@ -1025,7 +1060,7 @@ def _update_layer(tl, clip, layer, *, is_picture):
         if has_formula or to_canvas(element, key, current.get(key)) != value:
             clip.set(**{key: value})
     if (layer["on"] is not None or not is_picture) and layer["on"] != intent.on(data):
-        clip.on(layer["on"]) if layer["on"] else tl._place_on(clip, None)
+        clip.on(layer["on"]) if layer["on"] else _fields(clip, on=None)
     same_for = (layer["for"] is None and intent.for_s(data) is None) or (layer["for"] is not None and intent.for_s(data) is not None and abs(layer["for"]-intent.for_s(data)) < 0.5/tl.fps)
     if layer["until"] != intent.until(data) or not same_for:
         if layer["until"]:
@@ -1033,8 +1068,7 @@ def _update_layer(tl, clip, layer, *, is_picture):
         elif layer["for"] is not None:
             clip.hold_for(layer["for"])
         else:
-            intent.set_until(data, None)
-            intent.set_for(data, None)
+            _fields(clip, until=None, **{"for": None})
 
 
 def _add_layer(tl, cut_id, group, layer):
@@ -1057,8 +1091,6 @@ def _add_layer(tl, cut_id, group, layer):
         params["text"] = layer["text"]
     clip = tl.add(element, at=group["start"], asset=layer["asset"], params=params, track=layer["track"], anchor=False,
                   cut=cut_id, layer=layer["name"])
-    intent.set_cut(clip.data, cut_id)
-    intent.set_layer(clip.data, layer["name"])
     tl._mcache = None
     if layer["on"]:
         clip.on(layer["on"])

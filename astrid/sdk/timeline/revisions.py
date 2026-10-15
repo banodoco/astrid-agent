@@ -36,6 +36,7 @@ class Revision:
     previous_publication_id: str | None = None
     restored_from_revision_id: str | None = None
     provenance: Mapping[str, Any] | None = None
+    evidence: Mapping[str, Any] | None = None
 
 
 def revision_source(revision_id: str) -> str:
@@ -106,6 +107,7 @@ class RuntimeRevisions(RevisionStore):
             previous_publication_id=_text(summary.get("previous_publication_id")),
             restored_from_revision_id=_text(summary.get("restored_from_revision_id")),
             provenance=summary.get("provenance"),
+            evidence=summary.get("evidence"),
             message=_text(summary.get("message")),
         )
 
@@ -167,6 +169,7 @@ class RuntimeRevisions(RevisionStore):
                     previous_publication_id=_text(row.get("previous_publication_id")),
                     restored_from_revision_id=_text(row.get("restored_from_revision_id")),
                     provenance=row.get("provenance"),
+                    evidence=row.get("evidence"),
                     message=_text(row.get("message")),
                 )
                 out.append(revision)

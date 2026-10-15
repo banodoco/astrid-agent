@@ -303,7 +303,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             source = split_source if entry.op == "timeline.add-cut" else str(owner.id)
             split_args = {"on": tl._split_moment(canonical["on"], source),
                           "id": result.id, "picture": result.picture.asset if result.picture else None}
-            tl._open_edit.calls[index] = replace(recorded, op="cut.split", select=source, args=split_args, resolved=selected_ids(tl, tl.cut(source), "cut"))
+            tl._open_edit.calls[index] = replace(recorded, op="cut.split", select=source, args=split_args, resolved=(f"cut:{source}",))
         elif entry.op in {"clip.extend", "clip.hold-for", "clip.for", "clip.set-duration"}:
             tl._open_edit.calls[index] = replace(recorded, op="clip.set-duration", args={"seconds": owner.duration})
         elif entry.op == "clip.remove-layer" and result == [owner.id]:
@@ -340,7 +340,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             if command.created is not None and not set(created) <= set(command.created):
                 raise CommandError(f"Replay changed created identities: expected {command.created}, got {created}")
             paths = direct_paths(tl, entry, owner, canonical, before_entities, after_entities, selected)
-            if entry.kind == "timeline" and entry.op != "timeline.add":
+            if entry.kind == "timeline" and entry.op not in {"timeline.add", "timeline.add-cut"}:
                 hit = tuple(sorted({sid for sid, _ in paths if is_scoped_id(sid)}))
                 if command.authorship is not None and hit != command.resolved:
                     raise CommandError(f"Replay changed resolved direct targets: expected {command.resolved}, got {hit}")
@@ -577,6 +577,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     targets = set(selected)
     if entry.kind == "cut":
         targets.update(scoped_clip(tl, clip) for clip in owner.clips)
+        if entry.op == "cut.split":
+            targets.update(set(after) - set(before))
     for sid, path in changes:
         if entry.kind == "timeline" or sid in targets:
             # Authored timing inputs are direct; derived clocks remain consequences.
@@ -907,3 +909,17 @@ def _storage_dispatch(entry, tl, args, kwargs):
         return entry.handler(tl, *args, **kwargs)
     finally:
         tl._storage_call = previous
+
+
+def _sheet_fields_handler(self, **fields):
+    from astrid.sdk.timeline_sheet import _sheet_fields
+    return _sheet_fields(self, **fields)
+
+
+def _external_checkpoint_handler(self, *, document, provenance, base_digest):
+    from astrid.sdk.timeline.external import checkpoint
+    return checkpoint(self, document=document, provenance=provenance, base_digest=base_digest)
+
+
+REGISTRY["clip.sheet-fields"] = Operation("clip.sheet-fields", "clip", "sheet_fields", _sheet_fields_handler)
+REGISTRY["timeline.import-external"] = Operation("timeline.import-external", "timeline", "import_external", _external_checkpoint_handler)

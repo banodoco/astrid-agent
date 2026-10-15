@@ -107,7 +107,8 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         tl.bundle = tl._absorb(raw)
         tl.fps = bundle_fps(tl.bundle) or 30.0
         tl._disk = text
-        return tl
+        from astrid.sdk.timeline.external import load_hand_edit
+        return load_hand_edit(tl)
 
     HISTORY = 60  # edits of a working copy kept for undo
 
@@ -145,7 +146,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         clear_redo = False
         journaled_step: tuple[str, str, str] | None = None  # (label, previous text, step file name) of the step staged now
         if record and target.is_file():
-            previous = target.read_text(encoding="utf-8")
+            previous = getattr(self, "_external_before", None) or target.read_text(encoding="utf-8")
             journal = list(self._journal)
             if previous != text and not journal and not _same_document(target, previous, text):
                 # edited without the API (by hand): one step. A pre-A1 file that differs only by the migration
@@ -181,6 +182,11 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         self._pending_calls = []
         self.path = target
         self._disk = text
+        from astrid.sdk.timeline.external import remember_saved
+        try:
+            remember_saved(target, text)
+        except OSError as exc:
+            self.notes.append(f"saved draft checkpoint not written: {exc}; preserve this file before editing it by hand")
         if journaled_step is not None:  # the journal: one record per undo step (the file and the step are committed now)
             label, before_text, undo_step = journaled_step
             from astrid.sdk.timeline.commands import compact_calls, call_label
@@ -302,6 +308,10 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         return redone
 
     def _reload(self) -> None:
+        # Undo/redo have just written an owned snapshot. Refresh the saved
+        # checkpoint before load so it cannot mistake that write for an import.
+        from astrid.sdk.timeline.external import remember_saved
+        remember_saved(Path(self.path), Path(self.path).read_text(encoding="utf-8"))
         fresh = Checkout.load(self.path)
         self.bundle, self._mcache, self._journal, self._disk = fresh.bundle, None, [], fresh._disk
 

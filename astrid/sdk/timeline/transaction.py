@@ -137,7 +137,7 @@ def _needs_resolve(calls):
     if len(calls) != 1:
         return True
     call = calls[0]
-    return not (call.op in {"timeline.resolve", "timeline.reflow", "timeline.retime"}
+    return not (call.op in {"timeline.resolve", "timeline.reflow", "timeline.retime", "timeline.import-external"}
                 or (call.op == "voice.set-gap-after" and call.args.get("reflow") is False))
 
 

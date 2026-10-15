@@ -2797,7 +2797,7 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
 def _cmd_status(parsed: argparse.Namespace) -> int:
     """Report the canonical head and an existing draft without creating one."""
     from astrid.sdk.timeline import store
-    from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.timeline_checkout import Checkout, TimelineEditError
 
     project_id, timeline_id, current_head = store.resolve_ids(
         parsed.project, parsed.ref, client=parsed.client
@@ -2816,6 +2816,11 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     }
     if path.is_file():
         checkout = Checkout.load(path)
+        from astrid.sdk.timeline.external import unimported
+        try:
+            data["unimported_external_revisions"] = [r.id for r in unimported(checkout, current_head, parsed.client)]
+        except TimelineEditError as exc:
+            data["external_revision_error"] = str(exc)
         changes = checkout.changes()
         edit_diff = checkout.edits()
         base_known, changed_units = _checkout_change_units(checkout)
@@ -2842,6 +2847,12 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
                 },
             }
         )
+    if not parsed.json:
+        external = data.get("unimported_external_revisions")
+        if external:
+            print("unimported external revisions: " + ", ".join(external))
+        elif data.get("external_revision_error"):
+            print("unimported external revisions: unknown (" + data["external_revision_error"] + ")")
     return print_result(DomainResult.success(data), as_json=parsed.json)
 
 
