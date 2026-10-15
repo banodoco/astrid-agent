@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Declared clip content modifier",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "point",
+    "id",
+    "label",
+    "description",
+    "kind",
+    "params",
+    "hosts",
+    "alpha",
+    "support",
+    "implementation"
+  ],
+  "properties": {
+    "point": {
+      "const": "timeline.component"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+    },
+    "kind": {
+      "const": "modifier"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {
+      "type": "object"
+    },
+    "hosts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "composition",
+          "app"
+        ]
+      }
+    },
+    "bounds": {
+      "const": "preserve"
+    },
+    "alpha": {
+      "const": "preserve"
+    },
+    "support": {
+      "const": "preserve"
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "export"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "export": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      }
+    }
+  }
+}

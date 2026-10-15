@@ -1,0 +1,11 @@
+schema_version: 3
+id: clip_looks
+name: Clip Looks
+version: 0.1.0
+documentation: {kind: skill, path: docs/SKILL.md}
+extensions:
+  timeline:
+    components: [extensions/timeline.component/vignette.yaml]
+resources:
+  - {path: extensions/timeline.component/vignette.yaml, kind: component}
+  - {path: extensions/timeline.component/vignette.tsx, kind: typescript}

@@ -1,0 +1,18 @@
+point: timeline.component
+id: clip_looks.vignette
+kind: modifier
+label: Vignette
+description: Darken one clip's edges with a fixed radial falloff while preserving alpha.
+params:
+  type: object
+  additionalProperties: false
+  required: [strength]
+  properties:
+    strength: {type: number, minimum: 0, maximum: 1}
+hosts: [composition, app]
+bounds: preserve
+alpha: preserve
+support: preserve
+implementation:
+  path: extensions/timeline.component/vignette.tsx
+  export: bindVignette
