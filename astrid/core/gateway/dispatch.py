@@ -444,7 +444,9 @@ def _dispatch_product(args: list[str]) -> int:
             state_snapshot={"command": family},
         )
 
-    if any(token in {"-h", "--help"} for token in rest):
+    help_request = any(token in {"-h", "--help"} for token in rest)
+    edit_alias_help = family == "timelines" and rest[:1] == ["edit"] and "--help-all" in rest
+    if help_request or edit_alias_help:
         return run_product_family(family, rest, client=None)
 
     from astrid.sdk.client import AstridClient

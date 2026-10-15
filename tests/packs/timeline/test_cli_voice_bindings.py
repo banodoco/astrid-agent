@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 from pathlib import Path
 
 from astrid.packs.timeline import cli as timeline_cli
@@ -101,6 +102,82 @@ def test_replace_insert_and_from_script_forward_existing_sdk_arguments(monkeypat
     ])
     assert scripted.handler(scripted) == 0
     assert calls == [("script", "script.json", {"takes": "takes", "gaps": True})]
+
+
+def test_edit_flag_aliases_forward_byte_equivalent_sdk_arguments(monkeypatch, capsys) -> None:
+    parser = timeline_cli.build_parser(object())
+    canonical_calls = []
+    checkout = _fake_checkout(canonical_calls)
+    _bind_fake_edit(monkeypatch, checkout)
+
+    canonical = parser.parse_args([
+        "edit", "main", "--project", "p1", "--replace-line", "vo-1", "--take", "take.wav",
+        "--words", "take.words.json", "--text", "New words",
+    ])
+    assert canonical.handler(canonical) == 0
+    canonical_output = capsys.readouterr().out
+
+    alias_calls = []
+    alias_checkout = _fake_checkout(alias_calls)
+    _bind_fake_edit(monkeypatch, alias_checkout)
+    # The alias options resolve to the same consumer fields as the canonical options.
+    alias = parser.parse_args([
+        "edit", "main", "--project", "p1", "--line", "vo-1", "--take", "take.wav",
+        "--words", "take.words.json", "--line-text", "New words",
+    ])
+    assert alias.handler(alias) == 0
+    alias_output = capsys.readouterr().out
+
+    assert canonical_calls == alias_calls
+    assert canonical_output.encode("utf-8") == alias_output.encode("utf-8")
+
+
+def test_gap_and_script_gap_aliases_reach_the_same_consumers(monkeypatch, capsys) -> None:
+    parser = timeline_cli.build_parser(object())
+    calls = []
+    checkout = _fake_checkout(calls)
+    _bind_fake_edit(monkeypatch, checkout)
+
+    canonical_gap = parser.parse_args([
+        "edit", "main", "--project", "p1", "--insert-line", "vo-2", "--after", "vo-1",
+        "--take", "take.wav", "--words", "words.json", "--insert-gap-after", "0.25",
+    ])
+    assert canonical_gap.handler(canonical_gap) == 0
+    canonical_gap_output = capsys.readouterr().out
+    canonical_gap_calls = copy.deepcopy(calls)
+
+    calls.clear()
+    checkout.version = 0
+    _bind_fake_edit(monkeypatch, checkout)
+    alias_gap = parser.parse_args([
+        "edit", "main", "--project", "p1", "--insert-line", "vo-2", "--after", "vo-1",
+        "--take", "take.wav", "--words", "words.json", "--gap", "0.25",
+    ])
+    assert alias_gap.handler(alias_gap) == 0
+    alias_gap_output = capsys.readouterr().out
+    assert calls == canonical_gap_calls
+    assert canonical_gap_output.encode("utf-8") == alias_gap_output.encode("utf-8")
+
+    calls.clear()
+    checkout.version = 0
+    _bind_fake_edit(monkeypatch, checkout)
+    canonical_script = parser.parse_args([
+        "edit", "main", "--project", "p1", "--from-script", "script.json", "--takes", "takes", "--gaps",
+    ])
+    assert canonical_script.handler(canonical_script) == 0
+    canonical_script_output = capsys.readouterr().out
+    canonical_script_calls = copy.deepcopy(calls)
+
+    calls.clear()
+    checkout.version = 0
+    _bind_fake_edit(monkeypatch, checkout)
+    alias_script = parser.parse_args([
+        "edit", "main", "--project", "p1", "--from-script", "script.json", "--takes", "takes", "--script-gaps",
+    ])
+    assert alias_script.handler(alias_script) == 0
+    alias_script_output = capsys.readouterr().out
+    assert calls == canonical_script_calls
+    assert canonical_script_output.encode("utf-8") == alias_script_output.encode("utf-8")
 
 
 def test_repeated_gap_flags_and_script_gap_override_preserve_sdk_rules(monkeypatch) -> None:

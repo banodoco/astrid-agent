@@ -390,43 +390,93 @@ class _CheckMixin:
     def _stale_whys(self) -> list[str]:
         from astrid.sdk.timeline.checkout import Checkout
         """Cuts whose why may no longer say what is there: written when the cut had other layers, or its
-        layers changed (a swap, a replace) since checkout while the why stayed the same. Info, never a block."""
-        from astrid.sdk.timeline_cuts import base_bundle
+        words or picture changed since checkout while the why stayed the same. Info, never a block."""
+        from astrid.sdk.timeline_cuts import base_bundle, build_cut_table
 
         out = []
         notes = self.cut_notes_all()
+        document = self.document()
         try:
-            base = Checkout(base_bundle(self.document()))
+            before_bundle = base_bundle(document)
+            base = Checkout(before_bundle)
             then_groups = {g["id"]: g for g in base.cut_index.groups(base)}
             then_notes = base.cut_notes_all()
-        except Exception:  # noqa: BLE001
-            then_groups, then_notes = {}, {}
+            before_table = build_cut_table(before_bundle)
+            after_table = build_cut_table(document)
 
-        def signature(clips: Iterable[Clip]) -> list[str]:
-            return sorted(f"{intent.layer_of(c.data) or c.id}:{c.element}:{c.asset or ''}" for c in clips)
+            def word_signatures(bundle: Mapping[str, Any], table: Mapping[str, Any]) -> dict[str, tuple]:
+                rows = [row for row in table.get("rows", ()) if row.get("cut_id")]
+                grouped: dict[str, list[tuple[Any, ...]]] = {str(row["cut_id"]): [] for row in rows}
+                words = Checkout(copy.deepcopy(dict(bundle))).words()
+                for word in words:
+                    middle = (word.start + word.end) / 2
+                    row = next((row for row in rows if row["start"] - 1e-6 <= middle < row["end"] - 1e-6), None)
+                    if row is not None:
+                        grouped[str(row["cut_id"])].append((
+                            word.id,
+                            word.text,
+                            round((word.start - row["start"]) * self.fps),
+                            round((word.end - row["start"]) * self.fps),
+                        ))
+                return {cut_id: tuple(items) for cut_id, items in grouped.items()}
+
+            before_words = word_signatures(before_bundle, before_table)
+            after_words = word_signatures(document, after_table)
+            changed_words = {
+                cut_id for cut_id in before_words.keys() | after_words.keys()
+                if before_words.get(cut_id, ()) != after_words.get(cut_id, ())
+            }
+        except Exception:  # noqa: BLE001
+            then_groups, then_notes, changed_words = {}, {}, set()
+
+        def signature(group: Mapping[str, Any]) -> list[str]:
+            import json
+
+            origin = float(group["start"])
+            clips = group["clips"]
+            fields = (
+                "asset", "clipType", "from", "to", "speed", "params", "x", "y", "width", "height",
+                "opacity", "cropTop", "cropBottom", "cropLeft", "cropRight", "entrance", "exit",
+                "transition", "effects", "modifiers", "keyframeOrigin",
+            )
+            rows = []
+            for clip in clips:
+                data = clip.data
+                visual = {name: data[name] for name in fields if name in data}
+                rows.append(json.dumps({
+                    "id": clip.id,
+                    "layer": intent.layer_of(data),
+                    "element": clip.element,
+                    "track": clip.track,
+                    "relative_start_frame": round((clip.start - origin) * self.fps),
+                    "relative_end_frame": round((clip.end - origin) * self.fps),
+                    "visual": visual,
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str))
+            return sorted(rows)
 
         for g in self.cut_index.groups(self):
             note = notes.get(g["id"], {})
             why = note.get("why")
             old = then_groups.get(g["id"])
-            if why and old and then_notes.get(g["id"], {}).get("why") == why and not note.get("why_layers") \
-                    and (signature(old["clips"]) != signature(g["clips"])
-                         or (round(old["start"] * self.fps), len(old["clips"])) != (round(g["start"] * self.fps), len(g["clips"]))
-                         or _span_frames(old["clips"], self.fps) != _span_frames(g["clips"], self.fps)):
-                out.append(f"{g['id']}: its why was written before this change; still true? \"{why}\" "
-                           f"(edit --cut {g['id']} --why …)")
-        for g in self.cut_index.groups(self):
-            note = notes.get(g["id"], {})
-            then = note.get("why_layers")
-            if not then or not note.get("why"):
+            if not why:
                 continue
+            then = note.get("why_layers")
             now = sorted(intent.layer_of(c.data) or c.id for c in g["clips"])
-            if now != list(then):
+            layers_changed = bool(then and now != list(then))
+            picture_changed = bool(old and signature(old) != signature(g))
+            words_changed = str(g["id"]) in changed_words
+            same_authored_note = old and then_notes.get(g["id"], {}).get("why") == why
+            if not (layers_changed or picture_changed or words_changed):
+                continue
+            if layers_changed:
                 gone, new = sorted(set(then) - set(now)), sorted(set(now) - set(then))
                 out.append(f"{g['id']}: its why was written when it had other layers ("
                            + " · ".join(x for x in (f"since added {', '.join(new)}" if new else "",
                                                     f"since removed {', '.join(gone)}" if gone else "") if x)
                            + f"); still true? \"{note['why']}\" (edit --cut {g['id']} --why …)")
+            elif same_authored_note:
+                out.append(f"{g['id']}: its why was written before these words or picture changed; still true? \"{why}\" "
+                           f"(edit --cut {g['id']} --why …)")
         return out
 
     def _note_bare_word(self, moment: Any, clip: Clip) -> None:

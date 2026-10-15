@@ -5,6 +5,7 @@ import argparse
 import copy
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,6 +131,109 @@ def test_address_view_can_print_saved_sprite_provenance(capsys):
     code, out = run(capsys, doc, range="c01.rocket")
     assert code == 0
     assert line in out
+
+
+def test_show_cut_id_range_is_reused_by_the_script_view(capsys):
+    doc = many_cuts(12)
+    clips = doc["shots"]["M"]["internal_timeline"]["clips"]
+    for index, clip in enumerate(clips, start=1):
+        clip["id"] = f"picture-c{index:02d}"
+        clip["app"] = {"cut": f"c{index:02d}", "layer": "picture"}
+
+    code, out = run(capsys, doc, as_view="script", range="c06..c12")
+
+    assert code == 0
+    assert "picture-c06" in out and "picture-c12" in out
+    assert "picture-c05" not in out and "picture-c13" not in out
+    assert "could not convert string to float" not in out
+
+
+def test_show_filter_names_matching_and_excluded_cuts(capsys):
+    code, out = run(capsys, many_cuts(4), range="1..2")
+
+    assert code == 0
+    assert "filter: range 1..2 · 1 of 4 cuts match · 3 cuts excluded outside the selection" in out
+
+
+def test_qualified_show_address_and_bounded_clip_spelling_share_edit_guidance(capsys):
+    doc = bundle()
+    doc["shots"]["A"]["internal_timeline"]["clips"][0]["app"] = {"cut": "c01", "layer": "picture"}
+    doc["shots"]["A"]["internal_timeline"]["clips"][1]["app"] = {"cut": "c01", "layer": "rocket"}
+    bundle_opener = opener(doc)
+
+    def show(*argv):
+        parser = cli.build_parser(None)
+        parsed = parser.parse_args(["show", "--project", "p", "t", *argv])
+        parsed.client = SimpleNamespace(timelines=SimpleNamespace(open_bundle=bundle_opener))
+        assert parsed.handler(parsed) == 0
+        return capsys.readouterr().out
+
+    positional = show("c01.rocket.x")
+    retained_flag = show("--clip", "c01.rocket.x")
+
+    assert positional == retained_flag
+    assert "c01.rocket.x · am-sprite param" in positional
+    assert "next: timelines edit t --project p --clip c01.rocket --set x=VALUE" in positional
+
+
+def test_show_sheet_script_frame_index_and_revision_diff_agree_without_rendering(monkeypatch):
+    from astrid.core.timeline import scene_answers
+    from astrid.sdk.timeline_cuts import diff_bundles
+    from astrid.sdk.timeline_sheet import render_sheet
+
+    doc = bundle()
+    doc["shots"]["A"]["internal_timeline"]["clips"][0]["id"] = "picture-c01"
+    doc["shots"]["A"]["internal_timeline"]["clips"][0]["app"] = {"cut": "c01", "layer": "picture"}
+    doc["shots"]["B"]["internal_timeline"]["clips"][0]["id"] = "picture-c02"
+    doc["shots"]["B"]["internal_timeline"]["clips"][0]["app"] = {"cut": "c02", "layer": "picture"}
+    checkout = Checkout(copy.deepcopy(doc))
+    table = build_cut_table(doc)
+    sheet = render_sheet(checkout)
+    script = render_script(doc)
+    index_rows = checkout.cut_index.rows
+    frame_index = [
+        {
+            "cut_id": row["cut_id"],
+            "start_frame": round(row["start"] * FPS),
+            "end_frame": round(row["end"] * FPS),
+        }
+        for row in index_rows
+    ]
+
+    changed = copy.deepcopy(doc)
+    changed["shots"]["A"]["internal_timeline"]["clips"][0]["asset"] = "Q"
+    revision_diff = diff_bundles(doc, changed)
+
+    calls = []
+
+    class Evaluator:
+        def query_scene(self, *, revision_digest, scene, frames):
+            calls.append((scene, tuple(frames)))
+            return [
+                {"frame": frame, "coverage": "COVERED", "content": "CONTENT", "findings": [], "layers": []}
+                for frame in frames
+            ]
+
+    monkeypatch.setattr(scene_answers, "_client", lambda: Evaluator())
+    first_shot = doc["shots"]["A"]["internal_timeline"]
+    first_middle = (frame_index[0]["start_frame"] + frame_index[0]["end_frame"] - 1) // 2
+    evaluated = scene_answers.frames_at(
+        first_shot,
+        [first_middle],
+        FPS,
+        {"width": 1920, "height": 1080},
+    )
+
+    assert [row["cut_id"] for row in table["rows"]] == ["c01", "c02"]
+    assert [row["cut_id"] for row in frame_index] == ["c01", "c02"]
+    assert [(row["start"], row["end"]) for row in table["rows"]] == [(0.0, 4.0), (4.0, 8.0)]
+    assert all(cut_id in sheet for cut_id in ("c01", "c02"))
+    assert "CUT 1  picture-c01" in script and "CUT 2  picture-c02" in script
+    assert [(row["start_frame"], row["end_frame"]) for row in frame_index] == [(0, 120), (120, 240)]
+    assert revision_diff["changes"][0]["clip_id"] == "picture-c01"
+    assert revision_diff["changes"][0]["before"] == revision_diff["changes"][0]["after"] == [0.0, 4.0]
+    assert [answer["frame"] for answer in evaluated] == [first_middle]
+    assert calls and calls[0][1] == (first_middle,)
 
 
 def test_cut_table_json_lists_every_layer_with_clip_id_and_every_word(capsys):

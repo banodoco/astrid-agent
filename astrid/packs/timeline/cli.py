@@ -3533,6 +3533,68 @@ def _configure_publish(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_publish))
 
 
+def _edit_compact_help(parser: argparse.ArgumentParser) -> str:
+    return "\n".join((
+        f"usage: {parser.prog} [--project PROJECT] [--file FILE] [--draft NAME] [--clip ADDRESS] [OPTIONS] [ref]",
+        "",
+        "Edit one detached timeline working copy. One command is one journaled edit.",
+        "",
+        "Canonical options:",
+        "  --project PROJECT       Owning project (defaults to the current project).",
+        "  --file FILE             Edit a local checkout file.",
+        "  --draft NAME            Select a working copy.",
+        "  --clip ADDRESS          Select a clip or layer address.",
+        "  --on MOMENT             Place or move at a word, cut, beat, or time.",
+        "  --until MOMENT          Set the end anchor.",
+        "  --for SECONDS           Set a literal duration.",
+        "  --nudge SECONDS         Move the selected clip by a time offset.",
+        "  --nudge-frames FRAMES   Move the selected clip by whole frames.",
+        "  --trim-in SECONDS       Set a media clip's source in point.",
+        "  --trim-out SECONDS      Set a media clip's source out point.",
+        "  --slip SECONDS          Move a media source window in place.",
+        "  --set KEY=VALUE         Set a declared element parameter (repeatable).",
+        "  --clear KEY             Remove a parameter so its default applies.",
+        "  --add-media SOURCE      Add an audio source on a named track.",
+        "  --add-cut               Add a picture cut at --on.",
+        "  --split CUT             Split a picture cut at --on.",
+        "  --lift CUT              Lift a picture cut.",
+        "  --replace-line LINE     Replace a narration take and word timings.",
+        "  --insert-line LINE      Insert narration after --after.",
+        "  --remove-line LINE      Remove narration and choose what to do with pictures.",
+        "  --retime                Restore anchored clips to their moments.",
+        "  --insert TIME:SECONDS   Insert silence and move later clips.",
+        "  --crossfade A B         Crossfade two clips on one audio track.",
+        "  --remove                Remove the selected clip or layer.",
+        "  --command JSON          Run one EditCommand/OpCall.",
+        "  --dry-run               Preview without writing the working copy.",
+        "  --verify                Compare changed frames after saving.",
+        "  --help-all              Show every option and retained alias.",
+        "",
+        "Use timelines undo to reverse the last saved edit.",
+        "",
+    ))
+
+
+def _configure_edit_help(subparser: argparse.ArgumentParser) -> None:
+    """Keep routine help compact and expose the complete parser as ``--help-all``."""
+    full_help = subparser.format_help
+    parse_known_args = subparser.parse_known_args
+
+    def parse_edit_args(args=None, namespace=None):
+        tokens = list(sys.argv[1:] if args is None else args)
+        if "--help-all" in tokens:
+            subparser._print_message(full_help(), sys.stdout)
+            subparser.exit()
+        return parse_known_args(args, namespace)
+
+    def compact_help():
+        return _edit_compact_help(subparser)
+
+    subparser._astrid_full_help = full_help
+    subparser.format_help = compact_help
+    subparser.parse_known_args = parse_edit_args
+
+
 def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", nargs="?", default=None,
@@ -3642,6 +3704,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--remove", action="store_true")
     from astrid.packs.timeline.cli_sweep import add_edit_sweep_flags
     add_edit_sweep_flags(subparser)
+    _configure_edit_help(subparser)
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_edit))
 
 

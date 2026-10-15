@@ -227,6 +227,7 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
         return 0
     range_value = getattr(parsed, "range", None)
     provenance_target = None
+    resolved_window = None
     if range_value and not re.fullmatch(r"\s*[\d.:]+\s*\.\.\s*[\d.:]+\s*", str(range_value)):
         # a cut (c30), cut range (c30..c31, inclusive), words ("a".."b") or a layer: the same addresses as everywhere
         from astrid.sdk.timeline_address import AddressError, resolve
@@ -238,22 +239,43 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
             print(f"error: {exc}")
             return 2
         range_value = f"{target.start:.3f}..{max(target.end, target.start + 1e-3):.3f}"
+        resolved_window = (target.start, max(target.end, target.start + 1e-3))
         provenance_target = target
+    elif range_value and "," not in str(range_value):
+        # Resolve the window once, then share it with the table and text view.
+        from astrid.sdk.timeline_cuts import _parse_range
+
+        try:
+            resolved_window = _parse_range(range_value)
+        except ValueError as exc:
+            print(f"error validation_error: {exc}")
+            return 2
     try:
         rows = filter_rows(table, range_value=range_value, shot=getattr(parsed, "shot", None))
     except ValueError as exc:
         print(f"error validation_error: {exc}")
         return 2
+    selection = _filter_summary(parsed, table, rows)
     view = getattr(parsed, "as_view", None) or "cuts"
     if view != "cuts":
-        print("\n".join(banner + [render_view(view, bundle, parsed, rows, title=title, changed=changed)]))
+        if range_value and resolved_window is None:
+            from astrid.sdk.timeline_cuts import _parse_range
+
+            try:
+                resolved_window = _parse_range(range_value)
+            except ValueError as exc:
+                print(f"error validation_error: {exc}")
+                return 2
+        parts = banner + ([selection] if selection else [])
+        parts.append(render_view(view, bundle, parsed, rows, title=title, changed=changed, window=resolved_window))
+        print("\n".join(parts))
         return 0
     try:
         shown, info = page_rows(rows, page=getattr(parsed, "page", None), page_size=getattr(parsed, "page_size", None))
     except ValueError as exc:
         print(f"error validation_error: {exc}")
         return 2
-    lines = banner + [render_cut_table(table, shown, title=title, changed_clip_ids=changed), ""]
+    lines = banner + ([selection] if selection else []) + [render_cut_table(table, shown, title=title, changed_clip_ids=changed), ""]
     if info is not None:
         lines.insert(len(lines) - 1, paging_hint(table, rows, shown, info))
     visual = ["python3", "-m", "astrid", "timelines", "visualize", timeline, "--project", project]
@@ -285,18 +307,31 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
 
 def render_view(
     view: str, bundle: Mapping[str, Any], parsed: argparse.Namespace, rows: list, *, title: str,
-    changed: set[str] | None = None,
+    changed: set[str] | None = None, window: tuple[float, float] | None = None,
 ) -> str:
     """The script or code representation, scoped like the cut table (--range, --shot)."""
-    from astrid.sdk.timeline_cuts import _parse_range
     from astrid.sdk.timeline_views import render_code, render_script
 
-    window = _parse_range(parsed.range) if getattr(parsed, "range", None) else None
     shot_ids = {row["shot_id"] for row in rows} if getattr(parsed, "shot", None) else None
     if view == "script":
         return title + "\n" + render_script(bundle, window=window, shot_ids=shot_ids, changed=changed)
     return render_code(bundle, window=window, shot_ids=shot_ids, header="# " + title.replace("\n  ", "\n# "),
                        full=bool(getattr(parsed, "detail", False)))
+
+
+def _filter_summary(parsed: argparse.Namespace, table: Mapping[str, Any], rows: list[dict[str, Any]]) -> str | None:
+    filters = []
+    if getattr(parsed, "range", None):
+        filters.append(f"range {parsed.range}")
+    if getattr(parsed, "shot", None):
+        filters.append(f"shot {parsed.shot}")
+    if not filters:
+        return None
+    total = len(table.get("rows") or [])
+    matched = len(rows)
+    excluded = total - matched
+    noun = "cut" if excluded == 1 else "cuts"
+    return f"filter: {' and '.join(filters)} · {matched} of {total} cuts match · {excluded} {noun} excluded outside the selection"
 
 
 class JoinRanges(argparse.Action):

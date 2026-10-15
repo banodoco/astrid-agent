@@ -161,6 +161,12 @@ def _resolve_visualize_addresses(parsed: argparse.Namespace) -> str | None:
                 # a layer: show its whole span (where it enters, holds and leaves), not one frame at its entrance
                 parsed.at, parsed.range = None, f"{target.start:.3f}..{target.end:.3f}"
                 notes.append(f"--at {at!r}: the layer {target.address}, {target.start:.2f}–{target.end:.2f} s")
+            elif target.kind == "cut":
+                start_frame = round(target.start * tl.fps)
+                end_frame = round(target.end * tl.fps)
+                frame = start_frame + max(0, (end_frame - start_frame - 1) // 2)
+                parsed.at = f"{frame / tl.fps:.3f}"
+                notes.append(f"--at {at!r}: middle of {target.address}, frame {frame} ({float(parsed.at):.2f} s)")
             else:
                 parsed.at = f"{target.start:.3f}"
                 notes.append(f"--at {at!r}: {target.address} = {target.start:.2f} s")

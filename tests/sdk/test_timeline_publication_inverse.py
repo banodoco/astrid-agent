@@ -203,6 +203,23 @@ def test_undo_and_revert_are_one_cli_handler_and_restore_is_only_new_verb(setup,
     assert read_saved_calls(Checkout.load(draft.path))[0]["args"]["publication"] == publication
 
 
+def test_undo_and_revert_have_byte_equivalent_cli_results(monkeypatch, capsys):
+    class CheckoutFake:
+        def undo(self, steps, *, client, publication):
+            return [f"Undo publication {publication} in {steps} step(s)"]
+
+    parser = cli.build_parser(object())
+    output_bytes = []
+    monkeypatch.setattr(cli, "_edit_checkout", lambda _parsed: CheckoutFake())
+
+    for verb in ("undo", "revert"):
+        args = parser.parse_args([verb, "t", "--project", "p", "pub-1"])
+        assert args.handler(args) == 0
+        output_bytes.append(capsys.readouterr().out.encode("utf-8"))
+
+    assert output_bytes[0] == output_bytes[1]
+
+
 def test_presence_repeated_writes_and_consequences_are_inverted_through_runner(setup):
     draft, runtime, client = setup
     before = copy.deepcopy(draft.clip("c1.rocket").params)

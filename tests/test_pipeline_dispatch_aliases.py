@@ -168,6 +168,19 @@ class PipelineDispatchAliasTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 0)
         self.assertIn("create", stdout.getvalue())
 
+    def test_timeline_edit_help_all_is_session_free(self) -> None:
+        from astrid.sdk.client import AstridClient
+
+        stdout = io.StringIO()
+        with mock.patch.object(AstridClient, "open_from_launcher", side_effect=AssertionError("runtime opened")):
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(gateway.main(["timelines", "edit", "--help-all"]), 0)
+
+        help_text = stdout.getvalue()
+        for spelling in ("--for", "--duration", "--replace-line", "--line", "--insert-gap-after", "--gap",
+                         "--text", "--line-text", "--gaps", "--script-gaps"):
+            self.assertIn(spelling, help_text)
+
     def test_dispatch_helpers_captured_in_top_level_handlers(self) -> None:
         """Characterize: the product/operational handler dict holds the exact
         function references from astrid.core.gateway.dispatch, so patching the
