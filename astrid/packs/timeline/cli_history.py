@@ -11,7 +11,7 @@ from astrid.sdk.timeline.revisions import Revision, RuntimeRevisions, resolve_re
 
 REASON = (
     "earlier revisions: this Runtime cannot list them (Runtime ask: composition revisions need "
-    "parent_revision_id, and a list route)."
+    "previous_revision_id / previous_publication_id, and a list route)."
 )
 
 

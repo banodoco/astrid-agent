@@ -40,3 +40,18 @@ def require_writable_candidate(candidate: Mapping[str, Any]) -> None:
     """Check the pinned head too: removing ``v`` must not bypass compatibility."""
     require_writable_parent(candidate.get("base_parent_payload"), source="pinned head")
     require_writable_parent(candidate.get("parent"), source="candidate")
+    # A legacy payload does not declare a writer capable of preserving a newer
+    # head. Refuse downgrade/removal as well as versions unknown to this writer.
+    def version(parent: Any) -> int:
+        config = parent.get("config") if isinstance(parent, Mapping) else None
+        app = config.get("app") if isinstance(config, Mapping) else None
+        ns = app.get("astrid") if isinstance(app, Mapping) else None
+        return ns.get("v", 0) if isinstance(ns, Mapping) else 0
+
+    base_version = version(candidate.get("base_parent_payload"))
+    candidate_version = version(candidate.get("parent"))
+    if candidate_version < base_version:
+        raise TimelineCompatibilityError(
+            f"candidate: app.astrid.v={candidate_version} is below pinned head "
+            f"app.astrid.v={base_version}; nothing was committed"
+        )

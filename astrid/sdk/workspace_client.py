@@ -440,13 +440,12 @@ class WorkspaceClient:
         idempotency_key: str,
     ) -> Any:
         """Publish one validated parent-composition closure through Runtime."""
-        from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_parent
+        from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_candidate
 
-        expected_head = publication.get("expected_head")
-        if expected_head is not None:
-            self._require_writable_composition_revision(project_id, timeline_id, expected_head)
+        expected_head = publication.get("expected_head", publication.get("expected_head_revision_id"))
+        base = self._require_writable_composition_revision(project_id, timeline_id, expected_head) if expected_head is not None else None
         try:
-            require_writable_parent(publication.get("parent_composition"), source="publication")
+            require_writable_candidate({"base_parent_payload": base, "parent": publication.get("parent_composition")})
         except TimelineCompatibilityError as exc:
             raise WorkspaceClientError(409, "timeline_compatibility", str(exc)) from exc
         return self._call_generated(
@@ -457,7 +456,7 @@ class WorkspaceClient:
             idempotency_key=idempotency_key,
         )
 
-    def _require_writable_composition_revision(self, project_id: str, timeline_id: str, revision: str) -> None:
+    def _require_writable_composition_revision(self, project_id: str, timeline_id: str, revision: str) -> Mapping[str, Any]:
         from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_parent
 
         row = self.get_project_parent_composition_revision(project_id, timeline_id, revision)
@@ -469,6 +468,8 @@ class WorkspaceClient:
         except TimelineCompatibilityError as exc:
             raise WorkspaceClientError(409, "timeline_compatibility", str(exc)) from exc
 
+        return payload
+
     def restore_project_parent_composition_revision(
         self, project_id: str, timeline_id: str, revision: str, *,
         expected_head: str | None, idempotency_key: str,
@@ -478,9 +479,14 @@ class WorkspaceClient:
         The expected head is read by exact revision ID, so a concurrent head
         change is still refused by Runtime's atomic compare-and-swap.
         """
-        if expected_head is not None:
-            self._require_writable_composition_revision(project_id, timeline_id, expected_head)
-        self._require_writable_composition_revision(project_id, timeline_id, revision)
+        from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_candidate
+
+        base = self._require_writable_composition_revision(project_id, timeline_id, expected_head) if expected_head is not None else None
+        candidate = self._require_writable_composition_revision(project_id, timeline_id, revision)
+        try:
+            require_writable_candidate({"base_parent_payload": base, "parent": candidate})
+        except TimelineCompatibilityError as exc:
+            raise WorkspaceClientError(409, "timeline_compatibility", str(exc)) from exc
         return self._call_generated(
             "restore_project_parent_composition_revision", project_id, timeline_id, revision,
             expected_head=expected_head, idempotency_key=idempotency_key,

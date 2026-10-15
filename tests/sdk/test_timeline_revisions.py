@@ -141,7 +141,7 @@ class FakeTimelines:
             return DomainResult.failure(ErrorObject("not_found", "revision not found", {}))
         summary = {"head_revision_id": self.head_id, "revision_id": rid, "message": "cut two"}
         if self.revisions[rid] is not None:
-            summary["parent_revision_id"] = self.revisions[rid]
+            summary["previous_revision_id"] = self.revisions[rid]
         return DomainResult.success({"summary": summary, "native_inspection": {}})
 
 
@@ -284,3 +284,54 @@ def test_runtime_parent_history_refs_and_restore_use_generated_contract():
     assert replayed.ok and replayed.data == restored.data
     assert [call[0] for call in generated.calls].count("restore") == 2
     assert all(call[-2:] == (second_publish, "restore-key") for call in generated.calls if call[0] == "restore")
+
+
+def test_runtime_walks_explicit_publication_ancestry_without_collapsing_repeats():
+    class FakeRuntime:
+        def head(self, project, timeline):
+            return {'revision_id': A, 'publication_id': 'pub-3', 'updated_at': 'now'}
+
+        def list_parent_composition_revisions(self, project, timeline, **kwargs):
+            # Creation order is deliberately misleading; publication ancestry wins.
+            return {'items': [
+                {'revision_id': A, 'publication_id': 'pub-3', 'previous_revision_id': A,
+                 'previous_publication_id': 'pub-2', 'is_current_head': True,
+                 'parent_revision_id': 'not-ancestry', 'provenance': {'source': {'via': 'script'}}},
+                {'revision_id': B, 'publication_id': 'pub-1'},
+                {'revision_id': A, 'publication_id': 'pub-2', 'previous_revision_id': B,
+                 'previous_publication_id': 'pub-1', 'restored_from_revision_id': C},
+            ], 'next_cursor': None}
+
+        def open_composition(self, *args, **kwargs):
+            pytest.fail('compact head and list must not inspect')
+
+    store = RuntimeRevisions(FakeRuntime())
+    assert store.head('P', 'TL') == A
+    walked = store.list('P', 'TL')
+    assert [r.publication_id for r in walked] == ['pub-3', 'pub-2', 'pub-1']
+    assert [r.id for r in walked] == [A, A, B]
+    assert walked[0].parent == A
+    assert walked[1].restored_from_revision_id == C
+    assert walked[0].provenance == {'source': {'via': 'script'}}
+    assert resolve_revision('P', 'TL', 'prev', store=store) == A
+    assert resolve_revision('P', 'TL', '-2', store=store) == B
+    assert resolve_revision('P', 'TL', 'aaaa', store=store) == A
+
+
+def test_runtime_never_walks_publication_parent_revision_id_as_ancestry():
+    class OldRuntime(FakeTimelines):
+        def open_composition(self, *args, **kwargs):
+            result = super().open_composition(*args, **kwargs)
+            result.data['summary']['parent_revision_id'] = B
+            return result
+    assert RuntimeRevisions(OldRuntime({A: None})).list('P', 'TL') is None
+
+
+
+def test_positional_ref_does_not_invent_unknown_migrated_publication_links():
+    store = FakeStore([
+        Revision(A, 'astrid', None, None, None, publication_id='pub-2'),
+        Revision(B, 'astrid', None, None, None, publication_id='pub-1'),
+    ])
+    with pytest.raises(TimelineEditError, match='publication ancestry is unavailable'):
+        resolve_revision('P', 'TL', 'prev', store=store)

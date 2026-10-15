@@ -32,6 +32,10 @@ class Revision:
     created_at: str | None
     parent: str | None
     message: str | None
+    publication_id: str | None = None
+    previous_publication_id: str | None = None
+    restored_from_revision_id: str | None = None
+    provenance: Mapping[str, Any] | None = None
 
 
 def revision_source(revision_id: str) -> str:
@@ -58,8 +62,8 @@ def _text(value: Any) -> str | None:
 class RuntimeRevisions(RevisionStore):
     """Our Runtime: head and get through the timelines client (``open_composition``).
 
-    The projection the client returns does not expose a revision's parent today, so ``parent`` is read
-    from the summary's ``parent_revision_id`` only if a Runtime ever adds it. Until then ``list`` is None.
+    History follows explicit previous_revision_id / previous_publication_id.
+    parent_revision_id names publication linkage and is never interpreted as ancestry.
     """
 
     def __init__(self, client: Any):
@@ -76,8 +80,16 @@ class RuntimeRevisions(RevisionStore):
         return opened.data
 
     def head(self, project: str, timeline: str) -> str:
-        data = self._open(project, timeline, None)
-        head = _text((data.get("summary") or {}).get("head_revision_id"))
+        compact_head = getattr(self._client, "head", None)
+        if callable(compact_head):
+            result = compact_head(project, timeline)
+            if not getattr(result, "ok", True):
+                raise TimelineEditError(f"could not read the head of {timeline!r} in {project!r}")
+            data = getattr(result, "data", result)
+            head = _text(data.get("revision_id")) if isinstance(data, Mapping) else None
+        else:
+            data = self._open(project, timeline, None)
+            head = _text((data.get("summary") or {}).get("head_revision_id"))
         if head is None:
             raise TimelineEditError(f"{timeline!r} in {project!r} has no published head yet")
         return head
@@ -89,7 +101,11 @@ class RuntimeRevisions(RevisionStore):
             id=_text(summary.get("revision_id")) or revision_id,
             source=revision_source(revision_id),
             created_at=_text(summary.get("created_at")),
-            parent=_text(summary.get("parent_revision_id")),
+            parent=_text(summary.get("previous_revision_id")),
+            publication_id=_text(summary.get("publication_id")),
+            previous_publication_id=_text(summary.get("previous_publication_id")),
+            restored_from_revision_id=_text(summary.get("restored_from_revision_id")),
+            provenance=summary.get("provenance"),
             message=_text(summary.get("message")),
         )
 
@@ -111,12 +127,12 @@ class RuntimeRevisions(RevisionStore):
         if limit <= 0:
             return []
         out: list[Revision] = []
-        current_head_id: str | None = None
+        current_head: Revision | None = None
         cursor: str | None = None
         seen_cursors: set[str] = set()
         page_limit = min(200, max(50, limit))
 
-        while len(out) < limit or current_head_id is None:
+        while len(out) < limit or current_head is None:
             result = list_revisions(project, timeline, cursor=cursor, limit=page_limit)
             if not getattr(result, "ok", True):
                 error = getattr(result, "error", None)
@@ -146,21 +162,41 @@ class RuntimeRevisions(RevisionStore):
                     id=revision_id,
                     source=revision_source(revision_id),
                     created_at=_text(row.get("created_at")),
-                    parent=_text(row.get("parent_revision_id")),
+                    parent=_text(row.get("previous_revision_id")),
+                    publication_id=_text(row.get("publication_id")),
+                    previous_publication_id=_text(row.get("previous_publication_id")),
+                    restored_from_revision_id=_text(row.get("restored_from_revision_id")),
+                    provenance=row.get("provenance"),
                     message=_text(row.get("message")),
                 )
                 out.append(revision)
                 if row.get("is_current_head") is True:
-                    current_head_id = revision.id
+                    current_head = revision
             if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
                 break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
-        if current_head_id is not None:
-            head = next((revision for revision in out if revision.id == current_head_id), None)
-            if head is not None:
-                out = [head, *(revision for revision in out if revision.id != head.id)]
+        if current_head is not None:
+            # Walk event identities when available. Repeated revisions must not
+            # collapse, and wall-clock creation order is not history ancestry.
+            if current_head.publication_id is not None:
+                by_publication = {r.publication_id: r for r in out if r.publication_id is not None}
+                walked: list[Revision] = []
+                seen: set[str] = set()
+                node = current_head
+                while node.publication_id is not None and node.publication_id not in seen:
+                    seen.add(node.publication_id)
+                    walked.append(node)
+                    previous = by_publication.get(node.previous_publication_id)
+                    if previous is None:
+                        break
+                    node = previous
+                # A migrated event can have unknown links. Retain every event
+                # rather than inventing ancestry or hiding the historical rows.
+                out = walked + [r for r in out if r.publication_id not in seen]
+            else:
+                out = [current_head, *(r for r in out if r is not current_head)]
         return out[:limit]
 
     def _list_parent_links(self, project: str, timeline: str, *, limit: int = 50) -> list[Revision] | None:
@@ -235,6 +271,21 @@ def resolve_revision(project: str, timeline: str, ref: str | None, *, store: Rev
             raise TimelineEditError(
                 f"{timeline}@{ref}: {CANNOT_LIST}; @{ref} needs a revision that names its parent"
             )
+        if revisions and revisions[0].publication_id is not None:
+            # Positional refs promise ancestry, not adjacent timestamps. Unknown
+            # migration links stay unknown even though history displays all events.
+            by_publication = {r.publication_id: r for r in revisions if r.publication_id is not None}
+            node = revisions[0]
+            seen = {node.publication_id}
+            for _ in range(steps):
+                previous = by_publication.get(node.previous_publication_id)
+                if previous is None or previous.publication_id in seen:
+                    raise TimelineEditError(f"{timeline}@{ref}: publication ancestry is unavailable; use an explicit revision id")
+                if node.parent != previous.id:
+                    raise TimelineEditError(f"{timeline}@{ref}: inconsistent publication ancestry")
+                seen.add(previous.publication_id)
+                node = previous
+            return node.id
         if len(revisions) <= steps:
             raise TimelineEditError(
                 f"{timeline}@{ref}: only {len(revisions)} revision(s) back from the head are available "
@@ -252,7 +303,7 @@ def resolve_revision(project: str, timeline: str, ref: str | None, *, store: Rev
             raise TimelineEditError(
                 f"{timeline}@{ref}: {CANNOT_LIST}, so only a full revision id resolves here ({exc})"
             ) from None
-    found = [r for r in revisions if _matches(r, ref)]
+    found = list({r.id: r for r in revisions if _matches(r, ref)}.values())
     if len(found) == 1:
         return found[0].id
     if not found:

@@ -30,7 +30,7 @@ class FakeTimelines:
             return DomainResult.failure(ErrorObject("not_found", "revision not found", {}))
         summary = {"head_revision_id": A, "revision_id": rid, "created_at": "2026-10-0%dT09:00:00Z" % (len(rid) % 9)}
         if self.parents[rid]:
-            summary["parent_revision_id"] = self.parents[rid]
+            summary["previous_revision_id"] = self.parents[rid]
         return DomainResult.success({"summary": summary, "native_inspection": {}})
 
 
@@ -69,7 +69,7 @@ def test_history_prints_the_head_and_says_earlier_revisions_cannot_be_listed(cap
     assert out[1].split()[0] == "aaaa1111"  # the head row
     assert len(out) == 3
     assert out[2].startswith("earlier revisions: this Runtime cannot list them")
-    assert "parent_revision_id" in out[2]
+    assert "previous_revision_id" in out[2]
 
 
 def test_history_json_when_the_runtime_cannot_list(capsys):

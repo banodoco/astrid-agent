@@ -226,3 +226,27 @@ def test_restore_refuses_wrong_revision_identity_before_commit():
         transport(fake).restore_project_parent_composition_revision("p", "t", "disposable-old",
             expected_head="disposable-head", idempotency_key="disposable-identity")
     assert fake.writes == []
+
+
+@pytest.mark.parametrize('route', ['publish', 'restore'])
+def test_legacy_payload_cannot_downgrade_a_supported_feature_head(route):
+    fake = GeneratedFixture(head_version=1, restored_version=0)
+    with pytest.raises(WorkspaceClientError, match='below pinned head'):
+        if route == 'publish':
+            transport(fake).publish_parent_composition('p', 't', {
+                'expected_head_revision_id': 'disposable-head', 'parent_composition': parent(0),
+            }, idempotency_key='disposable-downgrade')
+        else:
+            transport(fake).restore_project_parent_composition_revision('p', 't', 'disposable-old',
+                expected_head='disposable-head', idempotency_key='disposable-downgrade')
+    assert fake.writes == []
+
+
+def test_publish_old_writer_refuses_feature_bearing_v1_head(monkeypatch):
+    fake = GeneratedFixture()
+    monkeypatch.setattr('astrid.core.timeline.compatibility.SUPPORTED_VERSIONS', frozenset({0}))
+    with pytest.raises(WorkspaceClientError, match=r'app.astrid.v=1'):
+        transport(fake).publish_parent_composition('p', 't', {
+            'expected_head': 'disposable-head', 'parent_composition': parent(0),
+        }, idempotency_key='disposable-old-writer')
+    assert fake.writes == []
