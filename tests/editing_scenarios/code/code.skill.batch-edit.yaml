@@ -1,0 +1,20 @@
+id: code.skill.batch-edit
+source: new
+intent: Preview and apply related clip changes as one ordered timeline batch.
+fixture: cuts-lines
+expect: change
+cli: 'edit --command ''{"op": "timeline.batch", "select": null, "args": {"commands": [{"op": "clip.set", "select": "c1.rocket", "args": {"x": 125}}, {"op": "clip.set", "select": "c1.rocket", "args": {"y": 40}}]}}'''
+sheet:
+  text: 'edit {"op": "clip.set", "select": "c1.rocket", "args": {"x": 125}}
+
+    edit {"op": "clip.set", "select": "c1.rocket", "args": {"y": 40}}
+
+    '
+python: |
+  tl.batch([
+      {"op": "clip.set", "select": "c1.rocket", "args": {"x": 125}},
+      {"op": "clip.set", "select": "c1.rocket", "args": {"y": 40}},
+  ])
+check:
+  - tl.clip("c1.rocket").get("x") == 126
+  - tl.clip("c1.rocket").get("y") == 42

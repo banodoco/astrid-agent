@@ -135,7 +135,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
                   + (f" · {self.merged[0]}" if self.merged else "") + " · tl.check().brief() says what blocks publishing")
         return saved
 
-    def _save_locked(self, target: Path, *, force: bool, record: bool = True) -> Path:
+    def _save_locked(self, target: Path, *, force: bool, record: bool = True, evidence: tuple = ()) -> Path:
         self.merged = []
         if self._disk is not None and self.path and Path(self.path) == target and target.is_file():
             now = target.read_text(encoding="utf-8")
@@ -193,7 +193,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
                 clips, cuts = _clip_changes(before_text, text)
                 _journal.record_working_copy(target, owner=self, kind="save", outcome="changed", label=label,
                                              before=_journal.digest(before_text), after=_journal.digest(text),
-                                             clips=tuple(clips), cuts=tuple(cuts), undo_step=undo_step, calls=tuple(pending_calls))
+                                             clips=tuple(clips), cuts=tuple(cuts), undo_step=undo_step, calls=tuple(pending_calls), evidence=evidence)
             except Exception as exc:  # noqa: BLE001 - the save is committed; only its journal record is missing
                 _journal.note_failure(self, exc)
         return target
@@ -360,6 +360,13 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         _store.set_current_draft(project_id, timeline_id, name)  # commands that name no draft use this one
         tl.draft_name = name
         return tl
+
+    def refresh(self, *, client: Any = None) -> dict[str, Any]:
+        """Reapply only saved commands onto the observed exact Runtime head."""
+        from astrid.sdk.timeline.sync import refresh
+        if client is None:
+            return _store._with_client(None, lambda opened: refresh(self, client=opened))
+        return refresh(self, client=client)
 
     def adopt(self, timeline: str | None = None, *, revision_id: str | None = None, client: Any = None,
               sources: list[str] | None = None, switches: list[dict] | None = None,

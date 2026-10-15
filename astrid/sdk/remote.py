@@ -325,7 +325,7 @@ class _RemoteFamily:
         self._client = client
 
     def _typed(self, operation: str, *args: Any, key: str | None = None, **kwargs: Any) -> DomainResult[Any]:
-        reads = {"get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "list_project_parent_composition_revisions", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "get_preferences", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
+        reads = {"get_project_timeline", "get_project", "list_projects", "current_project", "list_timelines", "list_timeline_history", "list_project_parent_composition_revisions", "diff_timeline", "inspect_timeline", "create_timeline_view", "get_shot", "list_project_shots", "get_reference", "list_project_references", "get_object", "head_object", "list_project_objects", "list_media_relations", "get_task", "list_project_tasks", "list_managed_outputs", "get_managed_output", "get_run", "list_project_runs", "list_events", "list_run_events", "list_generations", "get_generation", "list_variants", "get_document", "list_documents", "get_preferences", "list_project_shot_text_bindings", "get_project_shot_text_binding", "get_project_shot_revision", "get_project_timeline_revision", "get_project_parent_composition_revision", "get_source_frame_thumbnail"}
         if key is None and operation not in reads:
             key = uuid.uuid4().hex
         try:
@@ -363,6 +363,8 @@ class _RemoteFamily:
             elif operation == "get_generation": value = self._client.get_generation(*args, **kwargs)
             elif operation == "get_object": value = self._client.get_object(*args, **kwargs)
             elif operation == "get_project": value = self._client.get_project(*args, **kwargs)
+            elif operation == "get_project_timeline":
+                value = self._client.get_timeline(args[1], project_id=args[0])
             elif operation == "get_project_reference": value = self._client.get_project_reference(*args, **kwargs)
             elif operation == "get_project_shot": value = self._client.get_project_shot(*args, **kwargs)
             elif operation == "get_project_shot_revision": value = self._client.get_project_shot_revision(*args, **kwargs)
@@ -687,6 +689,20 @@ class RemoteTimelines(_RemoteFamily):
     def resolve_scope(self, project=None, ref=None):
         """Resolve the canonical project/timeline pair without reading a document."""
         return self._resolve_timeline(project, ref)
+
+    def head_canonical(self, project_id, timeline_id):
+        """One compact Runtime read for an already resolved canonical scope."""
+        result = self._typed("get_project_timeline", project_id, timeline_id)
+        if not result.ok:
+            return result
+        data = result.data
+        if (not isinstance(data, Mapping) or data.get("project_id") != project_id
+                or data.get("timeline_id") != timeline_id or "head_revision_id" not in data):
+            return DomainResult.failure(ErrorObject("protocol_error", "compact timeline head has wrong scope or no revision identity", {}))
+        # The public metadata API does not expose Runtime's internal head event.
+        # Unknown is explicit; never infer publication identity from a revision.
+        return DomainResult.success(dict(revision_id=data["head_revision_id"],
+                                         publication_id=None, updated_at=None))
 
     def _parent_composition_scope(self, project, ref):
         """Resolve the canonical Runtime IDs required by the composition revision routes."""

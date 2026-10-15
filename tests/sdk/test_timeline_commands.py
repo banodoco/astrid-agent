@@ -52,6 +52,12 @@ def test_registry_covers_every_inventory_and_current_edit_flag():
             assert commands.EDIT_FLAG_OPERATIONS[action.dest] in commands.REGISTRY
 
 
+def test_skill_edit_flag_reference_matches_canonical_sources():
+    from tools.parity.edit_flag_reference import TARGET, render_reference
+
+    assert TARGET.read_text(encoding="utf-8") == render_reference()
+
+
 def test_command_preview_is_populated_replayable_and_writes_nothing(draft):
     root = Path(draft.path).parents[3]
     before, disk = draft.document(), files(root)

@@ -1,0 +1,53 @@
+scenarios:
+  - id: timeline-skill-orientation
+    fixture: tiny-publishable/demo-main
+    commands:
+      - >-
+        python3 -m astrid timelines find main "went" --project demo
+      - >-
+        python3 -m astrid timelines show main c1.rocket --project demo
+      - >-
+        python3 -m astrid timelines show main --project demo --summary
+  - id: timeline-skill-edit-loop
+    fixture: tiny-publishable/demo-main
+    commands:
+      - >-
+        python3 -m astrid timelines checkout main --project demo --draft working
+      - >-
+        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"clip.set","select":"c1.rocket","args":{"x":120}}'
+      - >-
+        python3 -m astrid timelines check main --project demo --draft working
+      - >-
+        python3 -m astrid timelines visualize main --project demo --draft working --mode inputs --plan
+      - >-
+        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"timeline.batch","select":null,"args":{"commands":[{"op":"clip.set","select":"c1.rocket","args":{"x":125}},{"op":"clip.set","select":"c1.rocket","args":{"y":40}}]}}' --dry-run
+      - >-
+        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"timeline.batch","select":null,"args":{"commands":[{"op":"clip.set","select":"c1.rocket","args":{"x":125}},{"op":"clip.set","select":"c1.rocket","args":{"y":40}}]}}'
+  - id: timeline-skill-history-revert
+    fixture: tiny-publishable/demo-main
+    setup_commands:
+      - >-
+        python3 -m astrid timelines checkout main --project demo --draft working
+      - >-
+        python3 -m astrid timelines edit main --project demo --draft working --clip c1.rocket --set x=11
+    commands:
+      - >-
+        python3 -m astrid timelines history main --project demo --limit 10
+      - >-
+        python3 -m astrid timelines log main --project demo --verify
+      - >-
+        python3 -m astrid timelines undo main --project demo --draft working --steps 1
+      - >-
+        python3 -m astrid timelines redo main --project demo --draft working --steps 1
+      - >-
+        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"clip.set","select":"c1.rocket","args":{"x":120}}' --dry-run
+      - >-
+        python3 -m astrid timelines restore main --project demo --from @prev --idempotency-key restore-demo
+  - id: timeline-skill-sync
+    fixture: two-agents/accepted-r1-observed-r2
+    fast_watch_clock: true
+    commands:
+      - >-
+        python3 -m astrid timelines status main --project demo --draft working --watch --poll-seconds 2 --timeout-seconds 3600 --json
+      - >-
+        python3 -m astrid timelines checkout main --project demo --draft working --refresh --json

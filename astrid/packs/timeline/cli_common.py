@@ -223,7 +223,7 @@ def status_text(parsed: argparse.Namespace, project_id: str, timeline_id: str, h
     for line in (report.brief(full=True) if show_all else check_lines(report)):
         print(line)
     if head != tl.base_revision:
-        print(f"the published head moved to {head}; publish will merge (three-way) or report conflicts")
+        print(f"the published head moved to {head}; checkout --refresh replays recorded commands; publish rebases or reports conflicts")
     print(render_line(parsed, project_id, timeline_id, head) if want_render
           else "latest render: --render to look it up (it scans the run history, ~10 s)")
     print(f'next: timelines publish {where} -m "…"' if changes

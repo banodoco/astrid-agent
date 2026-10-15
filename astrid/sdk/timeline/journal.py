@@ -344,9 +344,13 @@ def verify(path: str | Path) -> list[str]:
     target = Path(path)
     if not target.is_file():
         return []
+    return verify_text(target.read_text(encoding="utf-8"))
+
+
+def verify_text(text: str) -> list[str]:
+    """Verify one detached read snapshot, without creating locks or files."""
     problems: list[str] = []
     expected, previous = 1, None
-    text = target.read_text(encoding="utf-8")
     if text and not text.endswith("\n"):
         problems.append("journal ends in an incomplete record (missing newline)")
     for number, line in enumerate(text.splitlines(), 1):
