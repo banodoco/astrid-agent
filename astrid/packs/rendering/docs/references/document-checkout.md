@@ -89,12 +89,13 @@ remain useful for import plans, but the saved revision comparison is the exact
 postpublication change view. Integer `--from-version` / `--to-version` address
 the separate legacy shot/reference snapshot reader and cannot be mixed with
 canonical revision IDs.
-Forward the exact scoped `next_actions`: use `timelines show` to view the timeline and
-`timelines visualize --mode inputs` to visualize its declared layout. Both
-commands read the **current head**, because these commands do not support an
-exact revision option; retain `summary.new_head` as the publication identity.
-Input visualization is a placement diagram. Saving does not verify composed
-pixels or audio playback, and these suggestions do not start a render.
+The receipt's `next_actions` include unpinned `timelines show` and
+`timelines visualize --mode inputs` commands. Both commands support
+`--revision-id`; append `--revision-id <summary.new_head>` to inspect the exact
+published revision even after the head advances. Without that selector, normal
+working-copy/current-head selection applies. Input visualization is a placement
+diagram. Saving does not verify composed pixels or audio playback, and these
+suggestions do not start a render.
 
 ## The control map
 
