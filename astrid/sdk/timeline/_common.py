@@ -13,10 +13,11 @@ from typing import Any
 # (one line each) so a text edit of the content can never match them by accident.
 BASE_KEYS = ("base_parent", "base_parent_payload", "base_placements", "source_mapping")
 SHOT_BASE_PREFIX = "base_"
-DERIVED_PREFIX = "_"          # derived, read-only helpers in the file: stripped before check/publish
+DERIVED_KEYS = frozenset({"_index", "_timeline"})
+DERIVED_PREFIX = "_"  # legacy facade export only; a prefix does not confer ownership
 EDITABLE_NOTE = (
     "Edit `at`/`hold` (shot-relative seconds) or `_timeline` (timeline seconds; check converts it). "
-    "Keys starting with '_' are derived and refreshed on save; base_* and source_mapping are provenance."
+    "Only the checkout _index and clip _timeline helpers are derived; base_* and source_mapping are provenance."
 )
 ELEMENT_TRACK = {
     "am-pixel-wipe": "chrome", "am-type": "type", "am-callout": "fx", "am-discord": "fx", "am-flap": "fx",

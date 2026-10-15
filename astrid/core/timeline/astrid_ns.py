@@ -48,31 +48,52 @@ def film_intent(config: Any) -> dict[str, Any]:
     return out
 
 
-def _keep(ns: MutableMapping[str, Any], key: str, value: Any) -> None:
+def _same_value(left: Any, right: Any) -> bool:
+    """JSON value equality must not conflate booleans with numbers."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        return left.keys() == right.keys() and all(_same_value(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_same_value(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def _keep(ns: MutableMapping[str, Any], key: str, value: Any) -> bool:
     if key not in ns:
         ns[key] = value
-    elif ns[key] != value:
+    elif not _same_value(ns[key], value):
         kept = ns.get(LEGACY)
+        if LEGACY in ns and not isinstance(kept, dict):
+            return False  # opaque collision: leave the legacy source exactly where it was
         if not isinstance(kept, dict):
             kept = ns[LEGACY] = {}
         slot, suffix = key, 1
-        while slot in kept and kept[slot] != value:
+        while slot in kept and not _same_value(kept[slot], value):
             suffix += 1
             slot = f"{key}#{suffix}"
         kept.setdefault(slot, value)
+    return True
+
+
+def _writable_ns(owner: MutableMapping[str, Any]) -> dict[str, Any]:
+    """Writers refuse malformed containers instead of overwriting opaque values."""
+    if "app" in owner and not isinstance(owner["app"], dict):
+        raise ValueError("cannot write Astrid intent: app is not an object")
+    app = owner.setdefault("app", {})
+    if NS in app and not isinstance(app[NS], dict):
+        raise ValueError("cannot write Astrid intent: app.astrid is not an object")
+    return app.setdefault(NS, {})
 
 
 def clip_ns(clip: MutableMapping[str, Any]) -> dict[str, Any]:
     """Get the writable namespace after preserving every legacy collision."""
-    app = clip.get("app")
-    if not isinstance(app, dict):
-        app = clip["app"] = {}
-    ns = app.get(NS)
-    if not isinstance(ns, dict):
-        ns = app[NS] = {}
+    ns = _writable_ns(clip)
+    app = clip["app"]
     for key in tuple(app):
         if key in CLIP_INTENT_KEYS:
-            _keep(ns, key, app.pop(key))
+            if _keep(ns, key, app[key]):
+                app.pop(key)
     return ns
 
 
@@ -93,24 +114,26 @@ def migrate_clip(clip: MutableMapping[str, Any]) -> bool:
     if not keys:
         return False
     ns = app.get(NS)
+    if NS in app and not isinstance(ns, dict):
+        return False
     if not isinstance(ns, dict):
         ns = app[NS] = {}
+    moved = False
     for key in keys:
-        _keep(ns, key, app.pop(key))
-    return True
+        if _keep(ns, key, app[key]):
+            app.pop(key)
+            moved = True
+    return moved
 
 
 def film_ns(config: MutableMapping[str, Any]) -> dict[str, Any]:
-    app = config.get("app")
-    if not isinstance(app, dict):
-        app = config["app"] = {}
-    ns = app.get(NS)
-    if not isinstance(ns, dict):
-        ns = app[NS] = {}
+    ns = _writable_ns(config)
+    app = config["app"]
     for source in (config, app):
         for key in tuple(source):
             if key in FILM_INTENT_KEYS and source is not ns:
-                _keep(ns, key, source.pop(key))
+                if _keep(ns, key, source[key]):
+                    source.pop(key)
     return ns
 
 
@@ -127,8 +150,14 @@ def migrate_film(config: MutableMapping[str, Any]) -> bool:
     keys = [key for key in FILM_INTENT_KEYS if key in config or key in _map(config.get("app"))]
     if not keys:
         return False
-    ns = film_ns(config)
-    return bool(keys)
+    app = config.get("app")
+    if "app" in config and not isinstance(app, dict):
+        return False
+    if isinstance(app, dict) and NS in app and not isinstance(app[NS], dict):
+        return False
+    before = copy.deepcopy(config)
+    film_ns(config)
+    return config != before
 
 
 def migrate_bundle(bundle: MutableMapping[str, Any]) -> bool:
@@ -146,15 +175,16 @@ def migrate_bundle(bundle: MutableMapping[str, Any]) -> bool:
                 for clip in clips:
                     if isinstance(clip, MutableMapping):
                         moved = migrate_clip(clip) or moved
-    parent = bundle.get("parent")
-    config = parent.get("config") if isinstance(parent, MutableMapping) else None
-    if isinstance(config, MutableMapping):
-        moved = migrate_film(config) or moved
-    for field in ("base_parent_payload",):
+    for field in ("parent", "base_parent_payload"):
         payload = bundle.get(field)
         config = payload.get("config") if isinstance(payload, MutableMapping) else None
         if isinstance(config, MutableMapping):
             moved = migrate_film(config) or moved
+        clips = payload.get("clips") if isinstance(payload, Mapping) else None
+        if isinstance(clips, list):
+            for clip in clips:
+                if isinstance(clip, MutableMapping):
+                    moved = migrate_clip(clip) or moved
     return moved
 
 

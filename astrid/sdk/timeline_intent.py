@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Iterable
 
+from astrid.core.timeline import astrid_ns as _ns
+
 
 def _legacy(clip: Mapping[str, Any]) -> Mapping[str, Any]:
     value = clip.get("app")
@@ -21,19 +23,7 @@ def _app(clip: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _app_w(clip: dict[str, Any]) -> dict[str, Any]:
-    app = clip.get("app")
-    if not isinstance(app, dict):
-        app = {}
-        clip["app"] = app
-    nested = app.get("astrid")
-    if not isinstance(nested, dict):
-        nested = {}
-        app["astrid"] = nested
-    # Migrate only recognized intent keys. Opaque collisions stay untouched.
-    for key in _INTENT_KEYS:
-        if key not in nested and key in app:
-            nested[key] = app.pop(key)
-    return nested
+    return _ns.clip_ns(clip)
 
 
 _INTENT_KEYS = frozenset({"on", "until", "for", "cut", "layer", "why", "why_layers",
@@ -50,30 +40,8 @@ def _tidy(clip: dict[str, Any]) -> None:
             clip.pop("app")
 
 def migrate(bundle: dict[str, Any]) -> dict[str, Any]:
-    """Move known flat legacy intent to its namespace on a detached copy."""
-    shots=bundle.get("shots",{})
-    rows=shots.values() if isinstance(shots,Mapping) else shots if isinstance(shots,list) else ()
-    for shot in rows:
-        if not isinstance(shot,dict): continue
-        internal=shot.get("internal_timeline") or shot.get("timeline") or {}
-        clips=internal.get("clips",[]) if isinstance(internal,Mapping) else []
-        for clip in clips:
-            if isinstance(clip,dict):
-                app=clip.get("app")
-                # A read/serialization migration must not manufacture an empty namespace
-                # on clips that have no historical Astrid intent to migrate.
-                if isinstance(app,dict) and any(key in app for key in _INTENT_KEYS): _app_w(clip)
-    parent=bundle.get("parent")
-    config=parent.get("config") if isinstance(parent,dict) else None
-    if isinstance(config,dict):
-        app=config.get("app")
-        if not isinstance(app,dict): app={}; config["app"]=app
-        ns=app.get("astrid")
-        if not isinstance(ns,dict): ns={}; app["astrid"]=ns
-        for key in ("chapters","slots","cut_notes"):
-            if key not in ns and key in app: ns[key]=app.pop(key)
-            if key not in ns and key in config: ns[key]=config.pop(key)
-        if not ns: app.pop("astrid",None)
+    """Migrate the detached copy using the shared, lossless ownership rule."""
+    _ns.migrate_bundle(bundle)
     return bundle
 
 
@@ -173,11 +141,16 @@ def map_timed(clip,fn):
     rows=words(clip)
     if rows: _app_w(clip)["words"]=fn(rows)
 def slots(bundle):
-    parent=bundle.setdefault("parent",{}); config=parent.setdefault("config",{}); app=config.setdefault("app",{}); ns=app.setdefault("astrid",{})
-    value=ns.get("slots",app.get("slots",config.get("slots")))
-    if isinstance(value,dict): return value
-    value={}; ns["slots"]=value
+    value = _film(bundle).get("slots")
+    if isinstance(value, dict):
+        return value
+    ns = _film_w(bundle)
+    if "slots" in ns:
+        raise ValueError("cannot write Astrid slots: existing slots is not an object")
+    value = {}
+    ns["slots"] = value
     return value
+
 def slot(clip):
     value=_get(clip,"slot"); return str(value) if value else None
 def set_slot(clip,slot_id,*,replaces=None):

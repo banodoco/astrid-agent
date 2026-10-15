@@ -243,6 +243,7 @@ class WorkspaceClient:
                 "recover_project_shot", "add_shot_item", "remove_shot_item",
                 "get_project_shot_revision", "get_project_timeline_revision",
                 "get_project_parent_composition_revision",
+                "restore_project_parent_composition_revision",
                 "publish_parent_composition",
                 "replace_parent_composition_media",
                 "promote_project_shot_candidate", "reorder_shot_items",
@@ -421,12 +422,50 @@ class WorkspaceClient:
         idempotency_key: str,
     ) -> Any:
         """Publish one validated parent-composition closure through Runtime."""
+        from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_parent
+
+        expected_head = publication.get("expected_head")
+        if expected_head is not None:
+            self._require_writable_composition_revision(project_id, timeline_id, expected_head)
+        try:
+            require_writable_parent(publication.get("parent_composition"), source="publication")
+        except TimelineCompatibilityError as exc:
+            raise WorkspaceClientError(409, "timeline_compatibility", str(exc)) from exc
         return self._call_generated(
             "publish_parent_composition",
             project_id,
             timeline_id,
             publication,
             idempotency_key=idempotency_key,
+        )
+
+    def _require_writable_composition_revision(self, project_id: str, timeline_id: str, revision: str) -> None:
+        from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_parent
+
+        row = self.get_project_parent_composition_revision(project_id, timeline_id, revision)
+        payload = row.get("payload") if isinstance(row, Mapping) else None
+        if not isinstance(payload, Mapping) or row.get("revision_id") != revision:
+            raise WorkspaceClientError(0, "protocol_error", "composition revision returned no matching identity/payload")
+        try:
+            require_writable_parent(payload, source=f"head/revision {revision}")
+        except TimelineCompatibilityError as exc:
+            raise WorkspaceClientError(409, "timeline_compatibility", str(exc)) from exc
+
+    def restore_project_parent_composition_revision(
+        self, project_id: str, timeline_id: str, revision: str, *,
+        expected_head: str | None, idempotency_key: str,
+    ) -> Any:
+        """Restore an immutable revision after checking both sides of the CAS.
+
+        The expected head is read by exact revision ID, so a concurrent head
+        change is still refused by Runtime's atomic compare-and-swap.
+        """
+        if expected_head is not None:
+            self._require_writable_composition_revision(project_id, timeline_id, expected_head)
+        self._require_writable_composition_revision(project_id, timeline_id, revision)
+        return self._call_generated(
+            "restore_project_parent_composition_revision", project_id, timeline_id, revision,
+            expected_head=expected_head, idempotency_key=idempotency_key,
         )
 
     def replace_parent_composition_media(
@@ -441,6 +480,7 @@ class WorkspaceClient:
         idempotency_key: str,
         timing: str = "preserve-duration",
     ) -> Any:
+        self._require_writable_composition_revision(project_id, timeline_id, expected_head)
         return self._call_generated(
             "replace_parent_composition_media",
             project_id,

@@ -15,7 +15,7 @@ from astrid.core.timeline.cuts import (
 from astrid.sdk.timeline import journal as _journal
 from astrid.sdk.timeline import store as _store
 from astrid.sdk.timeline._common import (EDITABLE_NOTE, TimelineEditError, _num, _r)
-from astrid.sdk.timeline.doc import (_row_start, _set_length, _strip_derived)
+from astrid.sdk.timeline.doc import (_row_start, _set_length, _strip_derived, _timeline_stamp)
 from astrid.sdk.timeline.model import Voice
 
 
@@ -141,7 +141,7 @@ class _PublishMixin:
         return pinned
 
     def document(self) -> dict[str, Any]:
-        """The publishable candidate (derived `_` fields removed)."""
+        """The publishable candidate (owned checkout helpers removed)."""
         doc = _strip_derived(copy.deepcopy(self.bundle))
         intent.migrate(doc)  # the candidate carries intent under app.astrid; unchanged shots reuse their old revisions and the merged candidate is published without a further migration (old revisions are never rewritten)
         return doc
@@ -162,7 +162,8 @@ class _PublishMixin:
             start = self._shot_start(sid)
             for clip in doc["shots"][sid].get("internal_timeline", {}).get("clips", []):
                 cs = start + _num(clip.get("at"))
-                clip["_timeline"] = {"start": _r(cs), "end": _r(cs + clip_duration(clip))}
+                if "_timeline" not in clip:  # a malformed collision belongs to its original owner
+                    clip["_timeline"] = {"start": _r(cs), "end": _r(cs + clip_duration(clip))}
         return {"_index": index, **doc}
 
     def _absorb(self, raw: dict[str, Any]) -> dict[str, Any]:
@@ -176,7 +177,7 @@ class _PublishMixin:
             start = _row_start(row) / 1000.0
             for clip in (shot.get("internal_timeline") or {}).get("clips", []):
                 stamp = clip.get("_timeline")
-                if not isinstance(stamp, Mapping):
+                if not _timeline_stamp(stamp):
                     continue
                 cs = start + _num(clip.get("at"))
                 ce = cs + clip_duration(clip)

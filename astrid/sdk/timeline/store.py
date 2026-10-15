@@ -274,11 +274,24 @@ def publish_bundle(candidate: Mapping[str, Any], idempotency_key: str, *, client
         with AstridClient.open_from_launcher(start_pack_host=False) as c:
             current = head(c)
     base = str((candidate.get("base_parent") or {}).get("revision_id"))
+    from astrid.core.timeline.compatibility import TimelineCompatibilityError, require_writable_candidate
+
+    # A current-head check is required even when this checkout is not stale.
+    # Pin the bundle read to the ID just inspected; the final Runtime CAS
+    # protects a concurrent change after this compatibility check.
+    head_bundle = fetch_bundle(str(candidate["project_id"]), str(candidate["timeline_id"]),
+                               revision_id=current, client=client)
+    if str((head_bundle.get("base_parent") or {}).get("revision_id")) != current:
+        raise TimelineEditError("not published: current head changed during compatibility inspection; retry")
+    try:
+        require_writable_candidate(head_bundle)
+        require_writable_candidate(candidate)
+    except TimelineCompatibilityError as exc:
+        raise TimelineEditError(str(exc)) from exc
     merged_note = None
     if current != base:
         from astrid.sdk.timeline_cuts import base_bundle
 
-        head_bundle = fetch_bundle(str(candidate["project_id"]), str(candidate["timeline_id"]), client=client)
         merged, conflicts = three_way(base_bundle(candidate), head_bundle, candidate, force=force)
         if conflicts and not force:
             names = {c.id: c.address for c in Checkout(copy.deepcopy(dict(candidate))).clips()}

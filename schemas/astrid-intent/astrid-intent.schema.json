@@ -252,6 +252,10 @@
       "$comment": "Object at parent.config['app']['astrid']. Known keys mirror astrid_ns.FILM_INTENT_KEYS.",
       "type": "object",
       "properties": {
+        "v": {
+          "type": "integer",
+          "description": "Astrid writer compatibility version; absent is legacy 0. Writer support is checked at commit."
+        },
         "chapters": {
           "type": "array",
           "description": "Labels over runs of cuts: each chapter starts at a cut.",

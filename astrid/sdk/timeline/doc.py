@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,7 +13,7 @@ from astrid.core.timeline.cuts import (
     clip_duration,
 )
 
-from astrid.sdk.timeline._common import (BASE_KEYS, DERIVED_PREFIX, SHOT_BASE_PREFIX, _num, _r)
+from astrid.sdk.timeline._common import (BASE_KEYS, EDITABLE_NOTE, SHOT_BASE_PREFIX, _num, _r)
 
 
 def _post(value: float, expr: Mapping[str, Any]) -> Any:
@@ -157,12 +158,54 @@ def _set_path(data: dict[str, Any], path: str, value: Any) -> bool:
     return False
 
 
+def _finite_number(value: Any) -> bool:
+    try:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _timeline_stamp(value: Any) -> bool:
+    """Only the exact helper shape is owned; malformed/colliding data stays opaque."""
+    return (isinstance(value, Mapping) and set(value) == {"start", "end"}
+            and all(_finite_number(v) for v in value.values()))
+
+
 def _strip_derived(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: _strip_derived(v) for k, v in value.items() if not str(k).startswith(DERIVED_PREFIX)}
-    if isinstance(value, list):
-        return [_strip_derived(v) for v in value]
-    return value
+    """Remove checkout helpers at their owned paths, never inside opaque values.
+
+    The root index and direct clip clocks are the entire ownership boundary.
+    Parent clips and pinned base copies follow the same rule as shot clips.
+    """
+    doc = copy.deepcopy(value)
+    if not isinstance(doc, dict):
+        return doc
+    index = doc.get("_index")
+    index_notes = {EDITABLE_NOTE,
+                   "Edit `at`/`hold` (shot-relative seconds) or `_timeline` (timeline seconds; check converts it). "
+                   "Keys starting with '_' are derived and refreshed on save; base_* and source_mapping are provenance."}
+    if (isinstance(index, dict) and set(index) == {"note", "fps", "duration_s", "cuts", "words"}
+            and isinstance(index["note"], str) and index["note"] in index_notes
+            and isinstance(index["cuts"], list) and isinstance(index["words"], list)
+            and all(_finite_number(index[k]) for k in ("fps", "duration_s"))):
+        doc.pop("_index")
+
+    def strip_clips(timeline: Any) -> None:
+        clips = timeline.get("clips") if isinstance(timeline, Mapping) else None
+        if isinstance(clips, list):
+            for clip in clips:
+                if isinstance(clip, dict) and _timeline_stamp(clip.get("_timeline")):
+                    clip.pop("_timeline")
+
+    for field in ("parent", "base_parent_payload"):
+        strip_clips(doc.get(field))
+    shots = doc.get("shots")
+    rows = shots.values() if isinstance(shots, Mapping) else shots if isinstance(shots, list) else ()
+    for shot in rows:
+        if isinstance(shot, Mapping):
+            for field in ("internal_timeline", "base_internal_timeline", "timeline"):
+                strip_clips(shot.get(field))
+    return doc
 
 
 def _serialize(doc: Mapping[str, Any]) -> str:

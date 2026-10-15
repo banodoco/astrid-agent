@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from .parent_registry import ParentRegistryError, effective_parent_registry
+from .compatibility import require_writable_candidate
 
 AUTHORING_BUNDLE_SCHEMA_VERSION = 1
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -765,6 +766,7 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
     """
 
     root = _mapping(candidate, "candidate")
+    require_writable_candidate(root)
     if root.get("schema_version") != AUTHORING_BUNDLE_SCHEMA_VERSION:
         raise AuthoringBundleError(
             f"candidate.schema_version must be {AUTHORING_BUNDLE_SCHEMA_VERSION}"

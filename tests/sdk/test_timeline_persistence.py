@@ -255,6 +255,7 @@ def _move_head(head: Path, rev: str, edit) -> None:
     """Someone else published: the head is now ``rev``, the fixture timeline with ``edit`` applied."""
     doc = timeline()
     edit(doc)
+    doc["base_parent"]["revision_id"] = rev  # open_bundle pins the revision that open_composition names
     head.write_text(json.dumps({"revision_id": rev, "bundle": doc}), encoding="utf-8")
 
 
