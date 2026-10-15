@@ -70,8 +70,21 @@ def print_sheet(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     except (SheetError, AddressError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project), cuts=cuts,
-                       detail=bool(getattr(parsed, "detail", False))), end="")
+    from astrid.sdk.timeline.music_lane import project as project_music_lane
+    try:
+        audio_lane = project_music_lane(tl)
+    except ValueError as exc:
+        print(f"error adopted_music_bed: {exc}", file=sys.stderr)
+        return 2
+    sheet = render_sheet(tl, start=start, end=end, banner=banner, film=str(parsed.project), cuts=cuts,
+                         detail=bool(getattr(parsed, "detail", False)), audio_lane=audio_lane)
+    if getattr(parsed, "json", False):
+        return print_result(DomainResult.success({
+            "kind": "timeline-presentation",
+            "timeline_id": tl.bundle.get("timeline_id"),
+            "presentation": {"mode": "sheet", "text": sheet, "audio_lane": audio_lane},
+        }), as_json=True)
+    print(sheet, end="")
     where = f"{parsed.ref} --project {parsed.project}"
     # a hint only on a terminal (to stderr): a redirected sheet stays exactly the sheet, even with 2>&1
     if sys.stdout.isatty():

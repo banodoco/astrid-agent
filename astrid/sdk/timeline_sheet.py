@@ -110,10 +110,15 @@ def _legacy_render_sheet(tl: Checkout, *, start=None, end=None, banner=None, fil
     return "\n".join(out)+"\n"
 
 
-def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, cuts: Iterable[str]|None=None, detail=False):
+def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, cuts: Iterable[str]|None=None,
+                 detail=False, audio_lane=ELIDED):
     groups = tl.cut_index.groups(tl, include_orphans=True)
     if not groups:
-        return "this timeline has no named cuts yet (import its intent first)\n"
+        if audio_lane is ELIDED:
+            from astrid.sdk.timeline.music_lane import project as project_music_lane
+            audio_lane = project_music_lane(tl)
+        empty = "this timeline has no named cuts yet (import its intent first)\n"
+        return empty if audio_lane is None else empty + "\n" + _render_audio_lane(audio_lane, start=start, end=end)
     spans = tl.cut_index.spans()
     wanted = set(cuts) if cuts is not None else None
     picked = [g for g in groups if (wanted is not None and g["id"] in wanted) or
@@ -150,9 +155,17 @@ def render_sheet(tl: Checkout, *, start=None, end=None, banner=None, film=None, 
             gap = tl.voice(seg).gap_after
             out.append((f"  {seg:<{width}}  {texts[seg]:<{text_width}}" +
                         (f"  gap {round(gap, 2):g}" if gap is not None else "")).rstrip())
-    sound = [c for c in sound_clips(tl) if (end is None or c.start < end - 1e-6) and (start is None or c.end > start + 1e-6)]
-    if sound:
+    if audio_lane is ELIDED:
+        from astrid.sdk.timeline.music_lane import project as project_music_lane
+        audio_lane = project_music_lane(tl)
+    generated = {span["id"] for arrangement in (audio_lane or {}).get("arrangements", [])
+                 for span in arrangement.get("spans", [])}
+    sound = [c for c in sound_clips(tl) if c.id not in generated
+             and (end is None or c.start < end - 1e-6) and (start is None or c.end > start + 1e-6)]
+    if sound or audio_lane is not None:
         out += ["", "sound" + " " * 44 + "# under the film, in no cut: asset, for, volume= (the grid: --beats)"]
+        if audio_lane is not None:
+            out.extend(_render_audio_lane(audio_lane, start=start, end=end).rstrip().splitlines())
         out.extend(_align([_sound_row(tl, c) for c in sound]))
     orphans = tl.orphans()
     if orphans:
@@ -214,6 +227,49 @@ def _sound_row(tl, clip):
     timing = f"until {until}" if until else f"for {_length_text(clip.duration, tl.fps)}"
     return [f"{clip.start:6.2f}", clip.track or "sfx", intent.layer_of(clip.data) or clip.id,
             _short(clip.element), clip.asset or "", " ".join(bits), timing]
+
+
+def _render_audio_lane(lane, *, start=None, end=None):
+    """Human rows from the same uncapped model used by machine consumers."""
+    def visible(span):
+        window = span["timeline"]
+        return (end is None or window["start_s"] < end - 1e-6) and (start is None or window["end_s"] > start + 1e-6)
+
+    arrangements = lane.get("arrangements") or []
+    out = [f"  bed   adopted music bed · {lane['owner']} · {len(arrangements)} arrangement(s)"]
+    for arrangement in arrangements:
+        spans = [span for span in arrangement.get("spans", []) if visible(span)]
+        if start is not None or end is not None:
+            if not spans:
+                continue
+        gain = arrangement["gain"]
+        db = "mute" if gain["db"] is None else f"{gain['db']:+.2f} dB"
+        command = arrangement["edit_source"]["command"]
+        out.append(f"    ├─ {arrangement['id']} · {arrangement['asset']} · gain {gain['linear']:g} ({db})")
+        out.append(f"    │  edit authored source: {command}")
+        for span in spans:
+            timing = span["timeline"]
+            source = span["source"]
+            out.append(f"    │   ~{span['id']}  {timing['start_s']:.2f}–{timing['end_s']:.2f}s "
+                       f"[f{timing['start_frame']}–f{timing['end_frame']}] · source "
+                       f"{source['start_s']:.2f}–{source['end_s']:.2f}s · read-only")
+    for switch in lane.get("switches", []):
+        window = switch["window"]
+        if (end is not None and window["start_s"] >= end) or (start is not None and window["end_s"] <= start):
+            continue
+        on = switch["on"]
+        out.append(f"    ↔ {switch['from_arrangement']} → {switch['to_arrangement']} · "
+                   f"on {on['time_ref']} · center {on['center_s']:.2f}s/f{on['center_frame']} · "
+                   f"overlap {window['start_s']:.2f}–{window['end_s']:.2f}s · {switch['curve']}")
+    for seam in lane.get("seams", []):
+        if start is not None and seam["at_s"] < start - 1e-6:
+            continue
+        if end is not None and seam["at_s"] >= end - 1e-6:
+            continue
+        if seam["action"] != "none":
+            out.append(f"    │ seam {seam['at_s']:.2f}s/f{seam['frame']} · {seam['action']} "
+                       f"{seam['duration_s']:.2f}s")
+    return "\n".join(out) + "\n"
 
 
 def _carried(tl, groups):

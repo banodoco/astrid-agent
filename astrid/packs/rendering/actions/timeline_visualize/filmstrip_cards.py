@@ -1702,6 +1702,10 @@ def _contact_overlay_for_layers(snapshot: Mapping, layer_names: Sequence[str], f
 def build_filmstrip_pack(*, out_root: Path, video_path: Path | None = None, snapshot: dict, options: dict, frame_provider=None,
                          asset_files: Mapping[str, str] | None = None) -> dict:
     index = plan_filmstrip(snapshot, options)
+    if isinstance(snapshot.get('audio_lane'), Mapping):
+        # Keep every arrangement/span/switch/seam in the machine index; the
+        # PNG's findings list is intentionally a compact human summary.
+        index['audio_lane'] = deepcopy(dict(snapshot['audio_lane']))
     # Keep the resolved component contract in the frame index itself; the
     # The static surface must not infer visibility from whether optional lanes happen to
     # be present in a legacy snapshot.

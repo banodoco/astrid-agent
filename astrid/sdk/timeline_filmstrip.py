@@ -648,6 +648,14 @@ def build_filmstrip_snapshot(envelope: Mapping, *, client: Any, project: str, ru
             timing_method=inputs.get('timing_method'),
             coverage=inputs.get('speech_coverage'),
         )
+    from astrid.sdk.timeline.music_lane import project_snapshot as project_music_lane_snapshot
+    audio_lane = project_music_lane_snapshot({
+        'config': config,
+        'registry': timeline.get('registry') or inputs.get('registry') or {},
+        'fps': float(fps),
+        'project_id': project,
+        'timeline_id': authority['timeline_id'],
+    })
     result = {'project_slug': project, 'timeline_id': authority['timeline_id'],
         'timeline_name': authority.get('timeline_slug', authority['timeline_id']),
         'render_run_id': run_id, 'video_digest': video_digest,
@@ -662,6 +670,8 @@ def build_filmstrip_snapshot(envelope: Mapping, *, client: Any, project: str, ru
             'script_timing': 'shot_script',
             'script_mapping_available': bool(occurrences and frozen_shots),
             'script_mapping_note': 'Frozen shot script; no word alignment.' if occurrences and frozen_shots else 'Render did not pin shot placements and scripts; rerender for script labels.'}}
+    if audio_lane is not None:
+        result['audio_lane'] = audio_lane
     if audio is not None:
         result['audio'] = audio
     return result
@@ -727,6 +737,34 @@ def prepare_filmstrip(
         except (TypeError, ValueError):
             fps_fraction = Fraction(30, 1)
             duration_frames = 0
+        from astrid.sdk.timeline.music_lane import project_snapshot as project_music_lane_snapshot
+        audio_lane = project_music_lane_snapshot({
+            'config': config, 'registry': registry, 'fps': float(fps_fraction),
+            'project_id': project_id, 'timeline_id': authority.get('timeline_id'),
+        })
+        input_snapshot = {
+            'project_slug': canonical_project, 'timeline_id': authority.get('timeline_id'),
+            'timeline_name': selector or authority.get('timeline_slug') or authority.get('timeline_id'),
+            'fps_rational': [fps_fraction.numerator, fps_fraction.denominator], 'duration_frames': int(duration_frames),
+            'clips': deepcopy(config.get('clips') or []),
+            'pinned_shots': deepcopy(config.get('pinnedShotGroups') or []),
+            'shot_occurrences': _canonical_shot_occurrences(config),
+            'tracks': deepcopy(config.get('tracks') or []),
+            'registry': deepcopy(dict(registry)),
+            'metadata': {
+                'selection': 'render_pinned_input_only',
+                'render_run_id': _identifier(run, 'id', 'run_id'),
+                'authority': deepcopy(dict(authority)),
+                'input_expansion': {'children': deepcopy((authority.get('expansion') or {}).get('children') or []), 'flattened': True},
+                'timeline_identity': {
+                    key: authority.get(key)
+                    for key in ('timeline_id', 'timeline_slug', 'config_version', 'head_event_id', 'head_hash', 'registry_hash')
+                    if authority.get(key) is not None
+                },
+            },
+        }
+        if audio_lane is not None:
+            input_snapshot['audio_lane'] = audio_lane
         return {
             'mode': 'input_only', 'project_id': project_id,
             'timeline_id': _identifier(timeline_row, 'timeline_id', 'id'),
@@ -1023,27 +1061,7 @@ def prepare_filmstrip(
             'timeline_slug': selector or authority.get('timeline_slug') or authority.get('timeline_id'),
             'render_run_id': _identifier(run, 'id', 'run_id'),
             'component_request': components,
-            'input_snapshot': {
-                'project_slug': canonical_project, 'timeline_id': authority.get('timeline_id'),
-                'timeline_name': selector or authority.get('timeline_slug') or authority.get('timeline_id'),
-                'fps_rational': [fps_fraction.numerator, fps_fraction.denominator], 'duration_frames': int(duration_frames),
-                'clips': deepcopy(config.get('clips') or []),
-                'pinned_shots': deepcopy(config.get('pinnedShotGroups') or []),
-                'shot_occurrences': _canonical_shot_occurrences(config),
-                'tracks': deepcopy(config.get('tracks') or []),
-                'registry': deepcopy(dict(registry)),
-                'metadata': {
-                    'selection': 'render_pinned_input_only',
-                    'render_run_id': _identifier(run, 'id', 'run_id'),
-                    'authority': deepcopy(dict(authority)),
-                    'input_expansion': {'children': deepcopy((authority.get('expansion') or {}).get('children') or []), 'flattened': True},
-                    'timeline_identity': {
-                        key: authority.get(key)
-                        for key in ('timeline_id', 'timeline_slug', 'config_version', 'head_event_id', 'head_hash', 'registry_hash')
-                        if authority.get(key) is not None
-                    },
-                },
-            },
+            'input_snapshot': input_snapshot,
         }
     if not exact:
         pins = [{'timeline_id': authority['timeline_id'], 'config_version': authority.get('config_version')}]

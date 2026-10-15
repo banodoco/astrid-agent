@@ -374,6 +374,10 @@ def validate(tl):
             if len(found) > 1 or (found and found[0] != item):
                 raise MusicBedError(f'{owner}: inconsistent supplied music output {item["id"]}; '
                                     f'edit the authored source via tl.clip({owner!r})')
+    # The read-only lane projection consumes the same seam plan that this
+    # validation just checked. Returning it avoids asking the producer to
+    # calculate shared seams a second time.
+    return shared_seams
 
 
 def validate_bundle(bundle):

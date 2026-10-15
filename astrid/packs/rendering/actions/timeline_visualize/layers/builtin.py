@@ -109,10 +109,13 @@ def _offset_note(ctx: LayerContext, t: float, *, context: bool = False) -> str:
 def render_sync(ctx: LayerContext) -> LayerResult:
     """One time axis: words, music beats/hits, sfx, element events and cuts, with offsets."""
     audio = ctx.shared.get("audio")
+    audio_lane = ctx.shared.get("audio_lane")
     # any app.data.* track (not the derived words/beats already drawn) gets its own lane
     extra = [t for t in ctx.tracks if not t.derived and t.kind in ("points", "intervals", "series", "boxes")][:6]
     rows = ([("VO words", 34), ("music", 26), ("sfx", 24)] + ([("audio", 34)] if audio is not None else [])
             + [(f"data:{t.name}", 26) for t in extra])
+    if audio_lane is not None:
+        rows.insert(3, ("adopted bed", 54))
     event_rows = sorted({e.element for e in ctx.events if e.kind != "cut"})
     height = 30 + sum(h for _n, h in rows) + 22 * max(1, len(event_rows)) + 12
     image = ctx.panel(height, title="sync")
@@ -152,6 +155,9 @@ def render_sync(ctx: LayerContext) -> LayerResult:
         draw.rectangle((x0, y + 4, max(ctx.x_of(end), x0 + 3), y + 18), fill=PALETTE["sfx"])
         draw_text(draw, (x0 + 5, y + 3), name, 11, PALETTE["ink"])
     y += rows[2][1]
+    if audio_lane is not None:
+        _draw_adopted_bed_lane(ctx, draw, audio_lane, y, findings)
+        y += 54
     if audio is not None:
         from ..motion.audio import draw_lane
 
@@ -159,7 +165,7 @@ def render_sync(ctx: LayerContext) -> LayerResult:
         draw_text(draw, (10, y + 17), "music up · VO down", 10, PALETTE["muted"])
         draw_lane(draw, audio, x0=ctx.plot_left, x1=ctx.plot_right, y0=y + 2, y1=y + 32,
                   colours={"music": "#5b4a86", "vo": "#5fd4c4", "sfx": PALETTE["hit"]}, silence_colour=PALETTE["warn"])
-        y += rows[3][1]
+        y += rows[4 if audio_lane is not None else 3][1]
     for track in extra:
         _draw_track_lane(ctx, draw, track, y)
         y += 26
@@ -219,6 +225,55 @@ def render_sync(ctx: LayerContext) -> LayerResult:
                 findings.append(f"AUDIO  dead air {ctx.rel(lo)}…{ctx.rel(hi)} ({hi - lo:.2f} s): no VO, music or sfx")
         findings.extend(f"AUDIO  {note}" for note in audio.notes[:2])
     return LayerResult(image, findings[:12], "sync")
+
+
+def _draw_adopted_bed_lane(ctx: LayerContext, draw, lane: Mapping[str, Any], y: float,
+                           findings: list[str]) -> None:
+    """Draw the shared bed model: materialized spans, exact switch windows, and seams."""
+    draw_text(draw, (10, y + 5), "bed", 13, PALETTE["muted"])
+    colours = (PALETTE["enter"], PALETTE["key"], PALETTE["sfx"])
+    for index, arrangement in enumerate(lane.get("arrangements") or []):
+        gain = arrangement.get("gain") or {}
+        db = "mute" if gain.get("db") is None else f"{gain['db']:+.1f}dB"
+        for span in arrangement.get("spans") or []:
+            timing = span.get("timeline") or {}
+            start, end = timing.get("start_s"), timing.get("end_s")
+            if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or not ctx.visible(start, end):
+                continue
+            x0, x1 = ctx.x_of(start), max(ctx.x_of(end), ctx.x_of(start) + 3)
+            draw.rectangle((x0, y + 6, x1, y + 24), fill=colours[index % len(colours)])
+            label = f"~{span['id']} {arrangement.get('asset')} {db}"
+            if text_width(draw, label, 10) <= x1 - x0 - 6:
+                draw_text(draw, (x0 + 3, y + 9), label, 10, PALETTE["bg"])
+            source = span.get("source") or {}
+            findings.append(
+                f"BED   ~{span['id']} {start:.3f}–{end:.3f}s f{timing.get('start_frame')}–f{timing.get('end_frame')} "
+                f"source {source.get('start_s')}–{source.get('end_s')}s gain {gain.get('linear')} ({db}); read-only"
+            )
+    for switch in lane.get("switches") or []:
+        window = switch.get("window") or {}
+        on = switch.get("on") or {}
+        lo, hi, center = window.get("start_s"), window.get("end_s"), on.get("center_s")
+        if not all(isinstance(value, (int, float)) for value in (lo, hi, center)) or not ctx.visible(lo, hi):
+            continue
+        left, right, middle = ctx.x_of(lo), ctx.x_of(hi), ctx.x_of(center)
+        draw.rectangle((left, y + 2, max(left + 2, right), y + 29), outline=PALETTE["downbeat"], width=2)
+        draw.line((middle, y + 1, middle, y + 31), fill=PALETTE["hit"], width=2)
+        draw_text(draw, (middle + 3, y + 31), f"on {on.get('time_ref')}", 10, PALETTE["hit"])
+        findings.append(
+            f"BED   switch {switch.get('id')} center {center:.3f}s/f{on.get('center_frame')} on {on.get('time_ref')}; "
+            f"overlap {lo:.3f}–{hi:.3f}s ({switch.get('curve')})"
+        )
+    for seam in lane.get("seams") or []:
+        at = seam.get("at_s")
+        if not isinstance(at, (int, float)) or seam.get("action") == "none" or not ctx.visible(at):
+            continue
+        x = ctx.x_of(at)
+        draw.line((x, y + 1, x, y + 31), fill=PALETTE["cut"], width=2)
+        draw_text(draw, (x + 2, y + 2), "↻" if seam.get("action") == "repeat" else "⊘", 12, PALETTE["cut"])
+        findings.append(
+            f"BED   seam {at:.3f}s/f{seam.get('frame')} {seam.get('action')} {seam.get('duration_s')}s"
+        )
 
 
 def _draw_track_lane(ctx: LayerContext, draw, track, y: float) -> None:

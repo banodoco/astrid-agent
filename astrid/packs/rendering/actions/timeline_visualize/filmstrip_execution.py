@@ -228,6 +228,8 @@ def execute_input_only(args, authority):
                        "timeline_id": snapshot.get("timeline_id"), "occurrence_id": options.get("occurrence")},
         },
     }
+    if isinstance(snapshot.get("audio_lane"), Mapping):
+        index["audio_lane"] = deepcopy(dict(snapshot["audio_lane"]))
     if index_target is not None:
         index["inspection"]["target"] = index_target
     index["navigation"]["usage"] = _navigation_usage(snapshot, options)
