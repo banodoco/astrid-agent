@@ -160,6 +160,16 @@ def _adapter(entry):
 
 
 def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
+    duplicate_source = None
+    if entry.op == "timeline.add" and "from" in command.args:
+        from astrid.sdk.timeline.gesture_producers import duplicate
+        entry = replace(entry, handler=duplicate)
+        duplicate_source = command.args["from"]
+        if "from_" in command.args:
+            raise CommandError("Use the documented from argument only")
+    if (entry.op == "timeline.split" and command.select and is_scoped_id(command.select)
+            and command.resolved and command.resolved != (command.select,)):
+        raise CommandError("Split selector and recorded owner disagree")
     if entry.boundary == "storage":
         raise CommandError(f"{entry.op} is a storage boundary; use checkout.{entry.method}() or its existing CLI verb")
     if owner is None and command.resolved and entry.kind != "timeline":
@@ -188,6 +198,19 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
     previous_reservations = cut_reservations(tl.bundle)
     before_entities = entity_states(tl)
+    if duplicate_source is not None:
+        if not isinstance(duplicate_source, str) or not is_scoped_id(duplicate_source) or "/clip:" not in duplicate_source:
+            raise CommandError("timeline.add from requires an exact clip ScopedId")
+        # Source ownership and created ownership are separate identities. Guard
+        # the authored source because opaque fields participate in this copy.
+        source = recorded_owner(tl, replace(command, resolved=(duplicate_source,)), "clip")
+        expectations = dict(command.expect or {})
+        expectations.setdefault(duplicate_source + "::", state_at(before_entities, duplicate_source, ""))
+        command = replace(command, expect=expectations)
+    if entry.op == "timeline.split":
+        expectations = dict(command.expect or {})
+        expectations.setdefault(selected[0] + "::", state_at(before_entities, selected[0], ""))
+        command = replace(command, expect=expectations)
     check_expectations(tl, command, selected)
     args = copy.deepcopy(dict(command.args))
     if entry.op == "timeline.add" and command.created:
@@ -198,6 +221,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if command.created and any(sid in before_entities for sid in command.created):
         raise SemanticConflict("dependent", command.select or "", "created", None,
                                list(command.created), "created identity already exists")
+    if duplicate_source is not None:
+        args["from_"] = args.pop("from")
     sig = _signature(entry.handler)
     positional = []
     for key, parameter in sig.parameters.items():
@@ -218,6 +243,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             canonical.update(_plain(value))
         else:
             canonical[key] = _plain(value)
+    if duplicate_source is not None:
+        canonical["from"] = canonical.pop("from_")
     if "music" in canonical:
         canonical["music"] = str(canonical["music"] or tl.music).replace("-", "_")
     if entry.op == "timeline.add" and isinstance(canonical.get("at"), str):
@@ -532,6 +559,12 @@ def entity_states(tl):
     from astrid.sdk.timeline.music_beds import validate_occurrence_ownership
     validate_occurrence_ownership(tl)
     result = {"parent": copy.deepcopy(tl.bundle.get("parent", {}))}
+    for kind, field in (("clip", "clips"), ("track", "tracks")):
+        for item in result["parent"].pop(field, []):
+            sid = f"parent/{kind}:{item['id']}"
+            if sid in result:
+                raise CommandError(f"Duplicate scoped identity {sid}")
+            result[sid] = item
     for row in tl.bundle.get("placements", []):
         sid = str(row.get("shot_id"))
         oid = row.get("occurrence_id")
@@ -577,6 +610,7 @@ def entity_states(tl):
                     raise CommandError(f"{owner}: duplicate generated output")
                 if found:
                     projection[local] = copy.deepcopy(found[0])
+                    result.pop(key, None)
             elif key in result:
                 projection[local] = result.pop(key)
         result[owner] = copy.deepcopy(source.data)
@@ -717,6 +751,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
         return paths
     direct = set()
     targets = set(selected)
+    if entry.op == "timeline.split":
+        targets.update(set(after) - set(before))
     if entry.kind == "cut":
         targets.update(scoped_clip(tl, clip) for clip in owner.clips)
     for sid, path in changes:

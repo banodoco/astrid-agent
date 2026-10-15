@@ -477,3 +477,7 @@ _commands.register(StepSequence, "sequence", ("fit",))
 _commands.register(Voice, "voice", ("replace", "set_gap_after"))
 
 _commands.register(Checkout, "timeline", ("save", "undo", "redo"), boundary="storage")
+
+# Original P3B spelling: a clip split is not a cut split.
+from astrid.sdk.timeline.gesture_producers import split as _split_gesture
+_commands.REGISTRY["timeline.split"] = _commands.Operation("timeline.split", "clip", "split", _split_gesture)

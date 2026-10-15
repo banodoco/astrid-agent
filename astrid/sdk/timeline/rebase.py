@@ -117,6 +117,8 @@ def _rewrite(call, id_map):
                         args={key: time_ref(value) if isinstance(value, str) and key in
                               {"moment", "on", "until", "at", "when", "before", "land"}
                               else copy.deepcopy(value) for key, value in call.args.items()})
+    if call.op == "timeline.add" and "from" in rewritten.args:
+        rewritten = replace(rewritten, args={**rewritten.args, "from": identity(rewritten.args["from"])})
     if call.op == "timeline.add" and rewritten.created:
         clips = [sid for sid in rewritten.created if "/clip:" in sid]
         if len(clips) == 1:

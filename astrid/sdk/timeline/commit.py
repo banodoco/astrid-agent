@@ -261,11 +261,13 @@ class RuntimeCommitService:
         # producer. They must never obtain ambient clients or paths here.
         if not isinstance(values, (list, tuple)):
             raise CommandError("commands must be an array")
-        external = {"timeline.add", "timeline.apply-script", "timeline.insert-line", "voice.replace", "timeline.adopt",
+        external = {"timeline.apply-script", "timeline.insert-line", "voice.replace", "timeline.adopt",
                     "timeline.fill-slot", "timeline.fill-standins", "timeline.replace-asset",
                     "clip.swap-asset", "timeline.edit-flags", "cut.split", "timeline.add-cut"}
         for value in values:
             call = commands.EditCommand.coerce(value)
+            if call.op == "timeline.add" and "from" not in call.args:
+                raise _Refusal("timeline.add requires an admitted scoped media/adapter producer")
             if call.op in external or "client" in call.args:
                 raise _Refusal(f"{call.op} requires an admitted scoped media/adapter producer")
             if call.op == "clip.set-beats" and not (isinstance(call.args.get("source"), Mapping)
@@ -295,7 +297,7 @@ class RuntimeCommitService:
 
     @staticmethod
     def _check_detached_media(tl):
-        for shot_id in tl.bundle.get("shots", {}):
+        for shot_id in (None, *tl.bundle.get("shots", {})):
             if any(isinstance(entry, Mapping) and any(isinstance(entry.get(k), str)
                    for k in ("local_path", "path")) for entry in tl._registry(shot_id).values()):
                 raise _Refusal("Local media paths require an admitted detached inspection producer")

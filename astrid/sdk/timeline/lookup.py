@@ -117,7 +117,8 @@ class _LookupMixin:
     def clips(self) -> Selection:
         """Every clip, in timeline order (a Selection). Call it to filter: ``tl.clips(role="label")``,
         ``tl.clips(chapter="02", element="am-type")``, ``tl.clips("cut=c1 track=sprite")``. ``tl.clips()`` is all."""
-        pool = [Clip(self, sid, c) for sid in self._shot_ids() for c in self._internal(sid)["clips"]]
+        pool = [Clip(self, None, c) for c in self.bundle.get("parent", {}).get("clips", [])]
+        pool.extend(Clip(self, sid, c) for sid in self._shot_ids() for c in self._internal(sid)["clips"])
         return Selection(sorted(pool, key=lambda c: (c.start, c.id)), kind="clip", tl=self)
 
     def clip(self, query: str, *, cut: Any = None, near: Any = None) -> Clip:
@@ -348,6 +349,8 @@ class _LookupMixin:
         return _row_start(self._row(shot_id)) / 1000.0
 
     def _shot_length(self, shot_id: str) -> float:
+        if shot_id is None:
+            return self.duration
         return _num(self._row(shot_id).get("duration_ms")) / 1000.0
 
     def _shot_id(self, shot: Any) -> str:

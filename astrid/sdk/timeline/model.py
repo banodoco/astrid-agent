@@ -671,7 +671,15 @@ class Clip(_Suggest):
                 modifiers.clear_value(self, key)
                 continue
             if key not in declared and key in cf.FIELDS:
-                self.set_look(**{key: None})
+                # Explicit clear removes presence through the shared codec.
+                # set_look's ordinary value validation correctly rejects null
+                # for numeric fields; null must not stand in for this command.
+                try:
+                    cf.read(self.data, key, fps=self._tl.fps, audio=self.is_audio)
+                    cf.write(self.data, key, None, fps=self._tl.fps, audio=self.is_audio)
+                except cf.ClipFieldError as exc:
+                    raise TimelineEditError(f"{self.address}: {exc}") from None
+                self._tl._mcache = None
                 continue
             self._check_param_keys([key])
             full = f"params.{key}"
