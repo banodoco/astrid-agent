@@ -29,3 +29,15 @@ def test_missing_curve_keeps_legacy_linear_gain():
 def test_exponential_speed_names_match_their_gain_shape():
     assert audio_curves.gain("exponential-fast", 0.5) > 0.5
     assert audio_curves.gain("exponential-slow", 0.5) < 0.5
+
+
+def test_exponential_moderate_is_registry_driven_and_keeps_curve_endpoints():
+    name = "exponential-moderate"
+    assert audio_curves.validate(name) == name
+    assert name in audio_curves.names()
+    assert audio_curves.gain(name, 0) == 0
+    assert audio_curves.gain(name, 1) == 1
+    assert audio_curves.gain(name, 0, fade_in=False) == 1
+    assert audio_curves.gain(name, 1, fade_in=False) == 0
+    midpoint = audio_curves.gain(name, 0.5)
+    assert audio_curves.gain("exponential-slow", 0.5) < midpoint < 0.5

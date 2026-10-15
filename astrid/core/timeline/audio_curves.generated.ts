@@ -7,6 +7,10 @@ export const AUDIO_GAIN_CURVES = {
     "exponent": -3.0,
     "kind": "exponential"
   },
+  "exponential-moderate": {
+    "exponent": 1.5,
+    "kind": "exponential"
+  },
   "exponential-slow": {
     "exponent": 3.0,
     "kind": "exponential"
