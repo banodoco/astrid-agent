@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 from banodoco_workspace_client import WorkspaceClient as GeneratedWorkspaceClient
 from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
+from banodoco_workspace_client.generated import CommitRequest, CommitResult
 
 from .pagination import page_pair, paged_rows
 
@@ -236,7 +237,7 @@ class WorkspaceClient:
                 "create_project", "get_project", "update_project", "list_projects",
                 "select_project", "current_project", "create_timeline",
                 "create_timeline_document", "update_timeline_document", "list_timelines",
-                "get_timeline", "get_project_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
+                "get_timeline", "get_project_timeline", "commit_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
                 "recover_timeline", "list_project_shots", "create_project_shot",
                 "inspect_timeline", "create_timeline_view",
                 "get_project_shot", "update_project_shot", "archive_project_shot",
@@ -430,6 +431,15 @@ class WorkspaceClient:
             cursor=cursor,
             limit=limit,
         )
+
+    def commit_timeline(self, body: CommitRequest) -> CommitResult:
+        """Submit a producer-owned command request through Runtime's commit route.
+
+        The producer supplies the complete request, including its stable request
+        and session identity. Preserve it for exact retry; Runtime authenticates
+        the caller and the Astrid provider applies/rebases the commands.
+        """
+        return self._call_generated("commit_timeline", body)
 
     def publish_parent_composition(
         self,
