@@ -276,8 +276,7 @@ def _params(spec: FieldSpec, raw: Any) -> dict[str, Any] | None:
     params = dict(raw)
     if "easing" in params:
         easing = _easing(params.pop("easing"), f"{spec.name}.params.easing")
-        if easing != "linear":
-            params["easing"] = easing
+        params["easing"] = easing
     return params or None
 
 
@@ -286,7 +285,7 @@ def _stored_easing(value: Mapping[str, Any]) -> str | None:
     if not isinstance(params, Mapping) or "easing" not in params:
         return None
     name = _easing_name(str(params["easing"]))
-    return None if name == "linear" else name
+    return name
 
 
 def _animation_value(spec: FieldSpec, raw: Any, fps: float) -> Any:

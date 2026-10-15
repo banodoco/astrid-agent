@@ -432,7 +432,7 @@ def test_clip_without_entrance_passes_validate_timeline(_builtin_text_is_not_an_
         ("entrance", "fade ease=in-out", {"type": "fade", "params": {"easing": "in-out"}}),
         ("entrance", "fade 0.4s ease=in", {"type": "fade", "duration": 0.4, "params": {"easing": "in"}}),
         ("entrance", "fade 12f ease=step", {"type": "fade", "duration": 0.4, "params": {"easing": "step"}}),
-        ("entrance", "fade 12f ease=linear", {"type": "fade", "duration": 0.4}),
+        ("entrance", "fade 12f ease=linear", {"type": "fade", "duration": 0.4, "params": {"easing": "linear"}}),
         ("entrance", "fade 12f ease=inOut", {"type": "fade", "duration": 0.4, "params": {"easing": "in-out"}}),
         ("entrance", "fade 12f ease=in_out", {"type": "fade", "duration": 0.4, "params": {"easing": "in-out"}}),
         ("entrance", "fade 12f ease=OUT", {"type": "fade", "duration": 0.4, "params": {"easing": "out"}}),
@@ -440,13 +440,13 @@ def test_clip_without_entrance_passes_validate_timeline(_builtin_text_is_not_an_
         ("entrance", {"type": "fade", "duration": 0.4, "params": {"easing": "out"}},
          {"type": "fade", "duration": 0.4, "params": {"easing": "out"}}),
         ("entrance", {"type": "fade", "params": {"easing": "inOut"}}, {"type": "fade", "params": {"easing": "in-out"}}),
-        ("entrance", {"type": "fade", "params": {"easing": "linear"}}, {"type": "fade"}),
+        ("entrance", {"type": "fade", "params": {"easing": "linear"}}, {"type": "fade", "params": {"easing": "linear"}}),
         ("fade_in", "8f ease=out", {"type": "fade", "duration": 0.2667, "params": {"easing": "out"}}),
         ("fade_out", "8f ease=in", {"type": "fade", "duration": 0.2667, "params": {"easing": "in"}}),
         ("fade_in", "ease=step", {"type": "fade", "params": {"easing": "step"}}),
     ],
 )
-def test_easing_forms_store_params_only_when_not_linear(name, raw, stored):
+def test_easing_forms_preserve_explicit_params(name, raw, stored):
     path = {"entrance": "entrance", "exit": "exit", "fade_in": "entrance", "fade_out": "exit"}[name]
     assert cf.coerce(name, raw) == (path, stored)
 
@@ -493,7 +493,7 @@ def test_params_easing_is_kept_alongside_other_params():
         ("entrance", "fade 12f ease=out", "fade 12f ease=out"),
         ("entrance", "fade ease=in-out", "fade ease=in-out"),
         ("exit", "fade 12f ease=step", "fade 12f ease=step"),
-        ("entrance", "fade 12f ease=linear", "fade 12f"),
+        ("entrance", "fade 12f ease=linear", "fade 12f ease=linear"),
     ],
 )
 def test_easing_describe_round_trips(name, raw, human):

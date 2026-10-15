@@ -481,6 +481,10 @@ class Clip(_Suggest):
 
         allow_new = bool(params.pop("_allow_new", False))
         declared = set(element_schema(self.element).get("properties") or {})
+        from astrid.sdk.timeline import modifiers
+        for key in list(params):
+            if modifiers.handles(key):
+                self.set_param(key, params.pop(key))
         look: dict[str, Any] = {}
         for key in list(params):  # a clip-level field the element does not declare is written with clip.look
             if key in declared:
@@ -580,7 +584,8 @@ class Clip(_Suggest):
     def _check_param_keys(self, keys: list[str]) -> None:
         from astrid.sdk.timeline_address import element_schema, unknown_params
 
-        tops = [re.split(r"[.\[]", k, maxsplit=1)[0] for k in keys]
+        from astrid.sdk.timeline.modifiers import handles
+        tops = [re.split(r"[.\[]", k, maxsplit=1)[0] for k in keys if not handles(k)]
         timing = [k for k in tops if k in self._TIMING_WORDS and k not in (element_schema(self.element).get("properties") or {})]
         if timing:
             raise TimelineEditError(f"{self.address}: {', '.join(timing)} is not a param: use "
@@ -594,7 +599,14 @@ class Clip(_Suggest):
                                     f"{', '.join(props)} (an undeclared param on purpose: --allow-new-params / .set(..., _allow_new=True))")
 
     def set_param(self, path: str, value: Any) -> "Clip":
-        """Set one param by its address inside the clip (``x``, ``states[3].at``, ``stamp.at``)."""
+        """Set a param, or an ID-addressed modifier instance/property.
+
+        ``modifiers["shade"]`` adds/replaces that instance; append ``.params.x``
+        to edit a property. ``modifiers.order`` takes the ordered instance IDs.
+        """
+        from astrid.sdk.timeline import modifiers
+        if modifiers.handles(path):
+            return modifiers.set_value(self, path, value)
         validate_param_value(self.element, path, value, where=self.address)
         top = re.split(r"[.\[]", path, maxsplit=1)[0]
         formulas = intent.formulas(self.data)
@@ -646,7 +658,11 @@ class Clip(_Suggest):
         """
         from astrid.sdk.timeline_address import element_schema
         declared = element_schema(self.element).get("properties") or {}
+        from astrid.sdk.timeline import modifiers
         for key in keys:
+            if modifiers.handles(key):
+                modifiers.clear_value(self, key)
+                continue
             if key not in declared and key in cf.FIELDS:
                 self.set_look(**{key: None})
                 continue

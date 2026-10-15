@@ -359,6 +359,12 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             for sid, path in changed_paths(before_entities, after_entities):
                 key = write_key(sid, path, call.resolved)
                 authorship.setdefault(key, "consequence")
+                if path in {"music_bed", "music_bed.ripple_basis"}:
+                    # Enrollment consumes an absent basis; subsequent ripples
+                    # consume the previous one. Neither can apply twice.
+                    basis = "music_bed.ripple_basis"
+                    expectations.setdefault(write_key(sid, basis, call.resolved),
+                                            state_at(before_entities, sid, basis))
             # A supplied record is checked, never used to claim unobserved authorship.
             if command.authorship is not None:
                 expected_direct = {key for key, kind in command.authorship.items() if kind == "direct"}
@@ -413,7 +419,11 @@ def is_scoped_id(value):
 
 
 def scoped_clip(tl, clip):
+    if clip.shot_id is None:
+        return f"parent/clip:{clip.id}"
     rows = [row for row in tl.bundle.get("placements", []) if str(row.get("shot_id")) == clip.shot_id]
+    if len(rows) > 1 and getattr(clip, "_occurrence_id", None):
+        rows = [row for row in rows if row.get("occurrence_id") == clip._occurrence_id]
     if len(rows) != 1 or not rows[0].get("occurrence_id"):
         raise CommandError(f"Clip {clip.id!r} has no unambiguous occurrence identity")
     value = f"occurrence:{rows[0]['occurrence_id']}/clip:{clip.id}"
@@ -441,17 +451,71 @@ def recorded_owner(tl, call, kind):
         if not sid.startswith("cut:") or not any(g["id"] == sid[4:] for g in tl._cut_groups()):
             raise SemanticConflict("delete-vs-edit", sid, "", None, None, call.args)
         return tl.cut(sid[4:])
-    clips = {scoped_clip(tl, clip): clip for clip in tl.clips()}
+    states = entity_states(tl)
     for sid in call.resolved:
-        if sid not in clips:
+        if sid not in states:
             raise SemanticConflict("delete-vs-edit", sid, "", None, None, call.args)
-    first = clips[call.resolved[0]]
+    # Resolve the authored carrier through placements, including outputs: [].
+    # F's lookup owns materialization when composed; never select a generated
+    # output merely because it has the same local ID as the authored source.
+    first = authored_owner(tl, call.resolved[0])
     if kind == "clip":
         if len(call.resolved) != 1:
             raise CommandError("clip operation requires exactly one resolved clip")
         return first
     from astrid.sdk import timeline_intent as intent
     return tl.voice(intent.line(first.data)) if kind == "voice" else tl.sequence(first)
+
+
+def music_carriers(tl):
+    config = tl.bundle.get("parent", {}).get("config", {})
+    beds = config.get("app", {}).get("astrid", {}).get("music_beds", {})
+    if not isinstance(beds, dict):
+        raise CommandError("music_beds must be an object")
+    return beds
+
+
+def authored_owner(tl, sid):
+    beds = music_carriers(tl)
+    # F resolves ordinary scoped clips too, carrying the existing ephemeral
+    # occurrence selection until its authoring helper materializes shared shots.
+    try:
+        from astrid.sdk.timeline.music_beds import authored_clip
+    except ModuleNotFoundError as exc:
+        if exc.name != "astrid.sdk.timeline.music_beds":
+            raise
+    else:
+        found = authored_clip(tl, sid)
+        if found is not None:
+            return found
+    if sid in beds:
+        from astrid.sdk.timeline.model import Clip
+        source = beds[sid]["source"]
+        rows = [r for r in tl.bundle.get("placements", [])
+                if sid == f"occurrence:{r.get('occurrence_id')}/clip:{source['id']}"]
+        if sid == f"parent/clip:{source['id']}":
+            return Clip(tl, None, source)
+        if len(rows) != 1:
+            raise CommandError(f"{sid}: ambiguous authored occurrence")
+        shot = str(rows[0]["shot_id"])
+        if sum(str(r.get("shot_id")) == shot for r in tl.bundle["placements"]) != 1:
+            raise CommandError(f"{sid}: materialize occurrence-local authoring shots before mutation")
+        return Clip(tl, shot, source)
+    from astrid.sdk.timeline.model import Clip
+    if sid.startswith("parent/clip:"):
+        rows = tl.bundle.get("parent", {}).get("clips", [])
+        shot = None
+    else:
+        occurrences = [r for r in tl.bundle.get("placements", [])
+                       if sid.startswith(f"occurrence:{r.get('occurrence_id')}/clip:")]
+        if len(occurrences) != 1:
+            raise CommandError(f"{sid}: ambiguous or missing occurrence")
+        shot = str(occurrences[0]["shot_id"])
+        rows = tl._internal(shot)["clips"]
+    found = [row for row in rows if row.get("id") == sid.split("/clip:", 1)[1]]
+    if len(found) != 1:
+        raise CommandError(f"{sid}: missing or duplicate scoped clip")
+    return Clip(tl, shot, found[0])
 
 
 def entity_states(tl):
@@ -463,6 +527,8 @@ def entity_states(tl):
         if not oid:
             # Legacy checkouts can still be read; a selected identity fails closed.
             continue
+        if f"occurrence:{oid}" in result:
+            raise CommandError(f"Duplicate occurrence identity {oid!r}")
         result[f"occurrence:{oid}"] = copy.deepcopy(row)
         shot = tl.bundle.get("shots", {}).get(sid, {})
         result[f"occurrence:{oid}/shot"] = copy.deepcopy(shot.get("payload", {}))
@@ -473,6 +539,45 @@ def entity_states(tl):
                 if key in result:
                     raise CommandError(f"Duplicate scoped identity {key}")
                 result[key] = copy.deepcopy(item)
+    claimed = set()
+    for owner, entry in music_carriers(tl).items():
+        if (not isinstance(entry, dict) or set(entry) != {"owner", "source", "ripple_basis", "outputs"}
+                or entry["owner"] != owner or not isinstance(entry["source"], dict)
+                or not isinstance(entry["source"].get("id"), str) or not entry["source"]["id"]
+                or not isinstance(entry["outputs"], list) or not isinstance(entry["ripple_basis"], list)):
+            raise CommandError(f"{owner}: invalid authored music carrier")
+        if not is_scoped_id(owner) or "/clip:" not in owner:
+            raise CommandError(f"{owner}: invalid authored owner")
+        source = authored_owner(tl, owner)
+        if owner in result and entry["source"]["id"] not in entry["outputs"]:
+            raise CommandError(f"{owner}: authored source collides with an unrelated clip")
+        prefix = owner.rsplit("/clip:", 1)[0] + "/clip:"
+        projection = {}
+        for local in entry["outputs"]:
+            if not isinstance(local, str):
+                raise CommandError(f"{owner}: invalid generated output ID")
+            key = prefix + local
+            if key in claimed or (key != owner and key in music_carriers(tl)):
+                raise CommandError(f"{owner}: generated output ownership collision")
+            claimed.add(key)
+            if owner.startswith("parent/"):
+                found = [c for c in tl.bundle.get("parent", {}).get("clips", []) if c.get("id") == local]
+                if len(found) > 1:
+                    raise CommandError(f"{owner}: duplicate generated output")
+                if found:
+                    projection[local] = copy.deepcopy(found[0])
+            elif key in result:
+                projection[local] = result.pop(key)
+        result[owner] = copy.deepcopy(source.data)
+        result[owner]["music_bed"] = dict(ripple_basis=copy.deepcopy(entry["ripple_basis"]),
+                                           outputs=copy.deepcopy(entry["outputs"]), projection=projection)
+    # Carrier storage is represented once under its authored owner. The parent
+    # snapshot must not claim a second authored entity for the same source.
+    app = result["parent"].get("config", {}).get("app", {}).get("astrid", {})
+    app.pop("music_beds", None)
+    if "clips" in result["parent"]:
+        result["parent"]["clips"] = [c for c in result["parent"]["clips"]
+                                     if f"parent/clip:{c.get('id')}" not in claimed]
     for group in tl._cut_groups():
         result[f"cut:{group['id']}"] = copy.deepcopy(tl.cut_note(group['id']))
     return result
@@ -502,15 +607,29 @@ def changed_paths(before, after):
         if isinstance(left, dict) and isinstance(right, dict):
             for key in sorted(set(left) | set(right)):
                 child = _member_path(path, key)
-                if key not in left or key not in right:
+                if not path and key == "modifiers" and (key not in left or key not in right):
+                    from astrid.sdk.timeline.modifiers import paths
+                    for prop, old, new in paths(left.get(key, []), right.get(key, [])):
+                        yield from walk(old, new, prop)
+                elif key not in left or key not in right:
                     yield child
+                elif not path and key == "modifiers" and isinstance(left[key], list) and isinstance(right[key], list):
+                    from astrid.sdk.timeline.modifiers import paths
+                    for prop, old, new in paths(left[key], right[key]):
+                        yield from walk(old, new, prop)
                 else:
                     yield from walk(left[key], right[key], child)
+        elif (path.startswith("modifiers[") and isinstance(left, list) and isinstance(right, list)
+              and len(left) == len(right)):
+            for index, (old, new) in enumerate(zip(left, right)):
+                yield from walk(old, new, f"{path}[{index}]")
         else:
             yield path
     for sid in sorted(set(before) | set(after)):
         if sid not in before or sid not in after:
             yield sid, ""
+            if "music_bed" in before.get(sid, {}) or "music_bed" in after.get(sid, {}):
+                yield sid, "music_bed"
         else:
             for path in walk(before[sid], after[sid], ""):
                 yield sid, path.replace("app.astrid.", "intent.", 1) if path.startswith("app.astrid.") else path
@@ -521,6 +640,10 @@ def state_at(entities, sid, path):
         return {"state": "absent"}
     path = "app.astrid." + path[7:] if path.startswith("intent.") else path
     exists, value = _path_state(entities[sid], path)
+    if not path and isinstance(value, dict) and "music_bed" in entities[sid]:
+        # Whole-source guards contain authored clip state. Carrier/projection
+        # changes have separate owner-scoped consequence paths and basis guards.
+        value.pop("music_bed", None)
     return dict(state="present", value=value) if exists else dict(state="absent")
 
 
@@ -566,7 +689,13 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
         declared = element_schema(owner.element).get("properties") or {}
         paths = set()
         for key in keys:
-            if key in cf.FIELDS and key not in declared:
+            from astrid.sdk.timeline.modifiers import handles
+            if handles(key):
+                paths.add((sid, key))
+                # Adding/removing an instance changes the list as a consequence.
+                # Only an explicit order edit guards order; ID-addressed edits
+                # remain replayable after an independent reorder.
+            elif key in cf.FIELDS and key not in declared:
                 path = cf.FIELDS[key].stored_at
                 paths.add((sid, path))
             else:
@@ -580,6 +709,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     if entry.kind == "cut":
         targets.update(scoped_clip(tl, clip) for clip in owner.clips)
     for sid, path in changes:
+        if path == "music_bed" or path.startswith("music_bed."):
+            continue
         if entry.kind == "timeline" or sid in targets:
             # Authored timing inputs are direct; derived clocks remain consequences.
             data = after.get(sid, before.get(sid, {}))
@@ -707,6 +838,13 @@ def finish_recording(tl, tx, entry):
         tx.calls[index] = replace(tx.calls[index], created=created)
         for sid, path in changed_paths(previous, compiled):
             causes[(sid, path)] = index
+            if path in {"music_bed", "music_bed.ripple_basis"}:
+                call = tx.calls[index]
+                basis = "music_bed.ripple_basis"
+                key = write_key(sid, basis, call.resolved)
+                expectations = dict(call.expect or {})
+                expectations.setdefault(key, state_at(previous, sid, basis))
+                tx.calls[index] = replace(call, expect=expectations)
         previous = compiled
     final = entity_states(tl)
     if not _same_value(previous, final):
@@ -729,9 +867,24 @@ def finish_recording(tl, tx, entry):
         kind = authorship.get(key, "consequence")
         authorship[key] = kind
         tx.calls[cause] = replace(call, authorship=authorship)
-        write = dict(id=sid, path=path, before=state_at(original, sid, path), after=state_at(final, sid, path))
+        recorded_path = path
+        if path.startswith("modifiers[") and kind != "direct":
+            # A whole-instance/params replacement owns its changed descendants.
+            # Keep the original explicit guard path in the call so authenticated
+            # replay checks exactly the same direct-write set.
+            parents = []
+            for prop, authored in authorship.items():
+                if authored == "direct":
+                    target, parent = write_target(prop, call.resolved)
+                    if target == sid and path.startswith((parent + ".", parent + "[")):
+                        parents.append(parent)
+            if parents:
+                kind, recorded_path = "direct", max(parents, key=len)
+        write = dict(id=sid, path=recorded_path, before=state_at(original, sid, recorded_path),
+                     after=state_at(final, sid, recorded_path))
         if kind == "direct":
-            direct.append(write)
+            if write not in direct:
+                direct.append(write)
         else:
             consequences.append({**write, "cause": cause})
     tx.direct_writes, tx.consequences = direct, consequences
@@ -848,7 +1001,16 @@ def _path_state(data, path):
         offset = match.end()
         key = match.group(1) if match.group(1) is not None else json.loads(match.group(2))
         try:
-            node = node[key]
+            if (isinstance(node, list) and isinstance(key, str) and
+                    path.startswith("modifiers") and match.start() == len("modifiers")):
+                if match.group(1) == "order":
+                    from astrid.sdk.timeline.modifiers import instances
+                    node = list(instances({"modifiers": node}))
+                else:
+                    from astrid.sdk.timeline.modifiers import instances
+                    node = instances({"modifiers": node})[key]
+            else:
+                node = node[key]
         except (KeyError, IndexError, TypeError):
             return False, None
     if offset != len(path):

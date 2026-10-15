@@ -20,9 +20,21 @@ class RebaseResult:
     conflicts: tuple = ()
 
 
+def _identities(call):
+    identities = set(call.resolved) | set(call.created or ()) | set((call.bindings or {}).values())
+    # An authored owner can be referenced only by a basis/projection guard;
+    # consequences are not added to the command's direct resolved targets.
+    for key in set(call.expect or {}) | set(call.authorship or {}):
+        if "::" in key:
+            sid = key.split("::", 1)[0]
+            if commands.is_scoped_id(sid):
+                identities.add(sid)
+    return identities
+
+
 def _rewrite(call, id_map):
     """Rewrite only identities actually present in this record, never opaque text."""
-    identities = set(call.resolved) | set(call.created or ()) | set((call.bindings or {}).values())
+    identities = _identities(call)
     def identity(value):
         if value not in identities:
             return value
@@ -48,7 +60,12 @@ def _rewrite(call, id_map):
         return mapped_moment_text(text) if anchor and identity(anchor) != anchor else text
     def expectation(key, state):
         value = copy.deepcopy(state)
-        prop = key.split("::", 1)[-1]
+        sid, prop = commands.write_target(key, call.resolved)
+        if (not prop and "/clip:" in sid and identity(sid) != sid
+                and value.get("state") == "present" and isinstance(value.get("value"), dict)):
+            old, new = sid.split("/clip:", 1)[1], identity(sid).split("/clip:", 1)[1]
+            if value["value"].get("id") == old:
+                value["value"]["id"] = new
         if (prop in {"intent.on", "intent.until", "app.astrid.on", "app.astrid.until"}
                 and value.get("state") == "present" and isinstance(value.get("value"), str)):
             value["value"] = mapped_moment_text(value["value"])
@@ -95,7 +112,7 @@ def rebase(calls, onto, *, id_map=None):
                 call = commands.EditCommand.coerce(value)
                 if any(getattr(call, field) is None for field in ("expect", "bindings", "created", "authorship")):
                     raise commands.CommandError("Rebase requires a runner-recorded OpCall, including original preconditions")
-                identities = set(call.resolved) | set(call.created or ()) | set((call.bindings or {}).values())
+                identities = _identities(call)
                 used.update((sid, mapping[sid]) for sid in identities if sid in mapping and mapping[sid] != sid)
                 rewritten = _rewrite(call, used)
                 # A created identity colliding with head content (or a retired
