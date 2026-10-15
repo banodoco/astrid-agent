@@ -12,8 +12,14 @@ from types import SimpleNamespace
 
 import pytest
 
-# Reuse the current sibling Runtime when available; never bootstrap providers.
+# Honor the selected import source before looking for a sibling checkout.
+# Worktrees can have an older sibling Runtime above them; prepending it here
+# silently replaces the exact Runtime supplied by the integration PYTHONPATH.
 _runtime = os.environ.get("BANODOCO_RUNTIME_CHECKOUT")
+if not _runtime:
+    _runtime_spec = importlib.util.find_spec("runtime_protocol")
+    if _runtime_spec is not None and _runtime_spec.origin:
+        _runtime = str(Path(_runtime_spec.origin).resolve().parents[1])
 if not _runtime:
     _runtime = next((str(parent / "banodoco-workspace-runtime") for parent in Path(__file__).resolve().parents
                      if (parent / "banodoco-workspace-runtime/runtime_protocol").is_dir()), None)
@@ -191,6 +197,72 @@ def test_real_http_idempotency_race_converges_and_conflicts(runtime, changed_fie
     conflict = runtime.client.tasks.dispatch_admission(changed)
     assert not conflict.ok and conflict.error.code == "conflict"
     assert _count(runtime) == 1
+
+
+def test_real_http_task_identity_wire_contract_rejects_old_fake_shape(runtime, monkeypatch):
+    from runtime_protocol.server import RuntimeHandler
+
+    generated = runtime.client._transport._generated
+    requests = []
+    replies = []
+    request = generated._request
+    send = RuntimeHandler._send
+
+    def capture_request(method, path, **kwargs):
+        if path.startswith("/v1/tasks"):
+            requests.append((method, path, json.loads(kwargs["body"])))
+        return request(method, path, **kwargs)
+
+    def capture(handler, status, payload=None, **kwargs):
+        if handler.path.startswith("/v1/tasks"):
+            replies.append((handler.path, status, copy.deepcopy(kwargs.get("error") or payload)))
+        return send(handler, status, payload, **kwargs)
+
+    monkeypatch.setattr(RuntimeHandler, "_send", capture)
+    monkeypatch.setattr(generated, "_request", capture_request)
+    frozen = _prepare(runtime)
+    first = runtime.client.tasks.dispatch_admission(frozen)
+    assert first.ok and first.receipt is not None
+    assert replies[-1][1] == 201
+    assert set(replies[-1][2]) == {"data", "receipt"}
+    assert replies[-1][2]["receipt"] == first.receipt.as_dict()
+
+    # The old direct-service fake returned only the task resource. It cannot
+    # replace a successful HTTP mutation's actual Runtime-owned receipt.
+    with pytest.raises(_current_generated.ApiError) as invalid:
+        generated._mutation_json(json.dumps(first.data).encode())
+    assert invalid.value.code == "invalid_response"
+
+    changed = copy.deepcopy(frozen)
+    changed["settlement_effect"] = {"effect_type": "fixture.effect", "value": "different"}
+    conflict = runtime.client.tasks.dispatch_admission(changed)
+    assert requests[-1][2]["settlement_effect"] == changed["settlement_effect"]
+    assert not conflict.ok and conflict.error.code == "conflict"
+    assert conflict.receipt is None
+    assert replies[-1][1] == 409 and replies[-1][2]["code"] == "conflict"
+    assert "receipt" not in replies[-1][2]
+
+    service = runtime.daemon.service
+    task_id = first.data["task_id"]
+    epoch = service.health()["runtime_epoch"]
+    service.store.upsert_executor("fake-provider", [CAPABILITY], runtime_epoch=epoch)
+    service.store._claim_task(task_id, "fake-provider", "lease", runtime_epoch=epoch)
+    service.store.fail_task(task_id, "lease", {"message": "fixture failure"})
+    service.register_capability({"capability_id": CAPABILITY,
+        "definition_digest": "sha256:" + "b" * 64, "status": "ready"})
+    retry = runtime.client.tasks.retry(task_id, idempotency_key="retry-obsolete-http")
+    assert not retry.ok and retry.error.code == "conflict"
+    assert "capability digest mismatch" in retry.error.message
+    assert retry.receipt is None
+    assert replies[-1][1] == 409 and replies[-1][2]["code"] == "conflict"
+    assert "receipt" not in replies[-1][2]
+    replay = runtime.client.tasks.dispatch_admission(frozen)
+    assert replay.ok and replay.data["task_id"] == task_id
+    assert replay.receipt == first.receipt
+    assert service.task(task_id)["task"]["status"] == "failed"
+    assert _count(runtime) == 1
+    print(json.dumps({"runtime_source": str(Path(sys.modules[RuntimeDaemon.__module__].__file__).resolve()),
+        "generated_source": str(_generated_path), "requests": requests, "replies": replies}, sort_keys=True))
 
 
 @pytest.mark.parametrize("known_locator", [False, True])
