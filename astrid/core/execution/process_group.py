@@ -16,7 +16,7 @@ from typing import Any
 
 
 from astrid.core.execution.custody_broker import (
-    CustodyError as CleanupUncertainError, ProcessCustody, RetainedCustodyPopen,
+    CustodyError as CleanupUncertainError, CustodyRootBinding, ProcessCustody, RetainedCustodyPopen,
     _darwin_process_records, _ps_lstart_birth,
 )
 
@@ -207,7 +207,7 @@ def process_birth_identity(pid: int | None = None) -> str:
     return info.birth if info is not None else ""
 
 
-def popen_owned_process(argv: list[str], **kwargs: Any) -> subprocess.Popen:
+def popen_owned_process(argv: list[str], *, custody_root: CustodyRootBinding | None = None, **kwargs: Any) -> subprocess.Popen:
     """Launch with retained custody while preserving the requested session."""
     options = dict(kwargs)
     new_session = bool(options.pop("start_new_session", False))
@@ -216,7 +216,7 @@ def popen_owned_process(argv: list[str], **kwargs: Any) -> subprocess.Popen:
         raise CleanupUncertainError("inventory launch selection must be explicit")
     if sys.platform == 'darwin' and options.get('pass_fds'):
         raise CleanupUncertainError('unmatched inherited channels require an admitted pipe consumer')
-    custody = ProcessCustody()
+    custody = ProcessCustody(custody_root=custody_root) if custody_root is not None else ProcessCustody()
     context = {"environment": dict(os.environ if options.get("env") is None else options["env"]), "cwd": str(options.get("cwd") or os.getcwd())} if delegate_inventory else None
     wrapped, registration_env = custody.prepare_launch(argv, start_new_session=new_session, inventory_context=context)
     if registration_env:
@@ -258,9 +258,9 @@ def popen_owned_process(argv: list[str], **kwargs: Any) -> subprocess.Popen:
     return process
 
 
-def popen_owned_group(argv: list[str], **kwargs: Any) -> subprocess.Popen:
+def popen_owned_group(argv: list[str], *, custody_root: CustodyRootBinding | None = None, **kwargs: Any) -> subprocess.Popen:
     """Launch a fresh session with individual incarnation-bound custody."""
-    return popen_owned_process(argv, **{**kwargs, "start_new_session": True})
+    return popen_owned_process(argv, custody_root=custody_root, **{**kwargs, "start_new_session": True})
 
 
 def _group_id(process: subprocess.Popen) -> int:

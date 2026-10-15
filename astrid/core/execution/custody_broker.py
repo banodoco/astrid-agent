@@ -3322,6 +3322,58 @@ def command_inventory_git(args: Sequence[str], *, cwd: Path | None = None) -> An
 _FAILED_LAUNCH_REAP_TIMEOUT_SECONDS = 5.0
 
 
+class CustodyRootBinding:
+    """Host-created storage bound to one live lifecycle/owner incarnation.
+
+    This is an in-memory launch input, never reconstructed from executor JSON,
+    environment or an on-disk record. Missing roots are not recreated.
+    """
+
+    @staticmethod
+    def _identity(path):
+        path = Path(path)
+        try:
+            if not path.is_absolute() or path.resolve(strict=True) != path:
+                raise CustodyError("custody root must be canonical and unsymlinked")
+            value = path.lstat()
+        except OSError as error:
+            raise CustodyError("custody root is missing") from error
+        if (not stat.S_ISDIR(value.st_mode) or value.st_uid != os.getuid()
+                or stat.S_IMODE(value.st_mode) != 0o700):
+            raise CustodyError("custody root must be an owner-only directory")
+        return value.st_dev, value.st_ino, value.st_uid
+
+    def __init__(self, lifecycle_root: Path, *, lifecycle_identity: tuple[int, int, int],
+                 owner_epoch: str):
+        from .process_group import process_birth_identity
+        self.lifecycle_root = Path(lifecycle_root)
+        self.lifecycle_identity = lifecycle_identity
+        if self._identity(self.lifecycle_root) != lifecycle_identity:
+            raise CustodyError("custody lifecycle root was substituted")
+        if not isinstance(owner_epoch, str) or re.fullmatch(r"[0-9a-f]{64}", owner_epoch) is None:
+            raise CustodyError("custody owner epoch is invalid")
+        self.owner_epoch = owner_epoch
+        self.owner_pid, self.owner_birth = os.getpid(), process_birth_identity()
+        if not self.owner_birth:
+            raise CustodyError("custody storage owner incarnation is unavailable")
+        self.root = self.lifecycle_root / ("custody-" + owner_epoch)
+        self.root.mkdir(mode=0o700)  # Never reuse another session's directory.
+        self.root_identity = self._identity(self.root)
+        self.verify()
+        _atomic_owner_json(self.root / "custody-owner.json", {
+            "owner_epoch": owner_epoch, "owner_pid": self.owner_pid,
+            "owner_birth": self.owner_birth, "lifecycle_identity": lifecycle_identity,
+            "custody_identity": self.root_identity,
+        })
+
+    def verify(self):
+        from .process_group import process_birth_identity
+        if (os.getpid() != self.owner_pid or process_birth_identity() != self.owner_birth
+                or self._identity(self.lifecycle_root) != self.lifecycle_identity
+                or self._identity(self.root) != self.root_identity):
+            raise CustodyError("custody root or owner incarnation was substituted")
+
+
 class ProcessCustody:
     """Retain every registered incarnation independently of ancestry/session.
 
@@ -3331,9 +3383,15 @@ class ProcessCustody:
     """
 
     def __init__(self, *, scope_root: Path | None = None, owner_epoch: str | None = None,
-                 command_diagnostics: bool | None = None):
-        self.root = scope_root or Path(tempfile.mkdtemp(prefix="astrid-custody-"))
-        self.owner_epoch = owner_epoch or _digest_bytes(os.urandom(32))
+                 command_diagnostics: bool | None = None,
+                 custody_root: CustodyRootBinding | None = None):
+        if custody_root is not None:
+            if type(custody_root) is not CustodyRootBinding or scope_root is not None or owner_epoch is not None:
+                raise CustodyError("confined custody requires one explicit host root binding")
+            custody_root.verify()
+        self._custody_root = custody_root
+        self.root = custody_root.root if custody_root is not None else (scope_root or Path(tempfile.mkdtemp(prefix="astrid-custody-")))
+        self.owner_epoch = custody_root.owner_epoch if custody_root is not None else (owner_epoch or _digest_bytes(os.urandom(32)))
         self._lock = threading.RLock()
         self.command_diagnostics = (os.environ.get("ASTRID_CUSTODY_COMMAND_DIAGNOSTICS") == "1"
                                     if command_diagnostics is None else command_diagnostics)
@@ -3341,6 +3399,7 @@ class ProcessCustody:
         self._actor_birth: str | None = None
         self._handles: dict[int, tuple[str, Any]] = {}
         self._unadmitted_absent: dict[int, dict[str, Any]] = {}
+        self._observed_candidates: dict[int, dict[str, Any]] = {}
         self._census_sequence = 0
         self._uncertain: BaseException | None = None
         self._launch_broker: RoleBoundCustodyBroker | None = None
@@ -3351,7 +3410,13 @@ class ProcessCustody:
         else:
             self.actor = None
 
+    def _verify_root(self):
+        binding = getattr(self, "_custody_root", None)
+        if binding is not None:
+            binding.verify()
+
     def prepare_launch(self, argv: Sequence[str], *, start_new_session: bool, role: str = "command", inventory_context: Mapping[str, Any] | None = None) -> tuple[list[str], dict[str, str]]:
+        self._verify_root()
         if sys.platform != "darwin":
             if not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")):
                 raise CustodyError("incarnation-bound kernel custody is unavailable")
@@ -3378,6 +3443,7 @@ class ProcessCustody:
     def bind_launch(self, process: Any) -> None:
         self.process = process  # Retain before any seal or observation can fail.
         try:
+            self._verify_root()
             if self._launch_broker is not None:
                 self._launch_broker.close_child_pipes()
                 self._launch_broker._launch_pid = process.pid  # Diagnostic selector only.
@@ -3402,6 +3468,7 @@ class ProcessCustody:
             self._launch_broker.role_authority.begin_spawn()
 
     def settle_launch(self) -> None:
+        self._verify_root()
         if self._launch_broker is not None:
             if self.process is None:
                 raise CustodyError('settlement has no original retained child')
@@ -3425,6 +3492,7 @@ class ProcessCustody:
         with self._lock:
             stage = "birth-check"
             try:
+                self._verify_root()
                 if not birth:
                     raise CustodyError("process registration lacks a birth identity")
                 if pid in getattr(self, "_unadmitted_absent", {}):
@@ -3610,6 +3678,7 @@ class ProcessCustody:
                 raise error from exc
 
     def _write_observed_containment(self) -> None:
+        self._verify_root()
         # This is retained evidence, not a designation or signal capability.
         _atomic_owner_json(self.root / "observed-containment.json", {
             "version": "astrid.observed-process-containment/v1",
@@ -3617,6 +3686,7 @@ class ProcessCustody:
             "complete_descendant_history": "UNPROVED",
             "owner_epoch": self.owner_epoch,
             "unadmitted_candidates": list(self._unadmitted_absent.values()),
+            "observed_candidates": list(getattr(self, "_observed_candidates", {}).values()),
             "capture_failures": getattr(self, "_capture_failure_observations", []),
             **({"command_observations": self._command_observations,
                 "command_diagnostics_truncated": getattr(self, "_command_diagnostics_truncated", False),
@@ -3624,6 +3694,71 @@ class ProcessCustody:
                 "command_diagnostic_persist_error": getattr(self, "_command_diagnostic_persist_error", None)}
                if getattr(self, "command_diagnostics", False) else {}),
         })
+
+    def _collect_census_candidates(self, members, census):
+        # Membership is evidence only. Include children even when the caller's
+        # traversal stopped at a vanished intermediary; never mint handles here.
+        selected = set(members) | set(self._handles) | set(getattr(self, "_unadmitted_absent", {}))
+        selected.update(getattr(self, "_observed_candidates", {}))
+        while True:
+            children = {pid for pid, row in census.items() if row["parent_pid"] in selected}
+            if children <= selected:
+                break
+            selected.update(children)
+        candidates = dict(members)
+        records = self._observed_candidates = getattr(self, "_observed_candidates", {})
+        changed = False
+        for pid, row in census.items():
+            if pid not in selected:
+                continue
+            candidates.setdefault(pid, row["birth_id"])
+            if pid in self._handles:
+                continue
+            previous = records.get(pid)
+            if previous is not None:
+                # Preserve the first precise edge even when a later observation
+                # has the same child identity but has lost its parent row.
+                if previous["identity"] != dict(row) and previous.get("latest_census") != dict(row):
+                    previous["latest_census"] = dict(row)
+                    changed = True
+            else:
+                records[pid] = {"pid": pid, "identity": dict(row),
+                    "parent_edge": {"child_pid": pid, "parent_pid": row["parent_pid"],
+                                    "parent_identity": dict(census[row["parent_pid"]])
+                                    if row["parent_pid"] in census else None},
+                    "observation_sequence": getattr(self, "_census_sequence", 0),
+                    "admitted": False, "capability": "NONE"}
+                changed = True
+        if changed:
+            self._write_observed_containment()
+        return candidates
+
+    def _validate_candidate_chain(self, pid, birth, census):
+        # An old census edge or terminal tombstone is never a live capability.
+        row = census.get(pid)
+        if row is None or row.get("birth_id") != birth:
+            raise CustodyError("live candidate lacks matching census evidence")
+        seen = {pid}
+        parent = row["parent_pid"]
+        while True:
+            ancestor = census.get(parent)
+            if parent in seen or ancestor is None or parent in self._unadmitted_absent:
+                raise CustodyError("census child requires unadmitted absent ancestry")
+            seen.add(parent)
+            if ancestor.get("status") == 5:
+                raise CustodyError("live candidate requires zombie admitted-parent ancestry")
+            if parent in self._handles:
+                if self._handles[parent][0] != ancestor.get("birth_id"):
+                    raise CustodyError("live candidate ancestry incarnation changed")
+                return
+            observed = ordinary_candidate_observation(parent)
+            native = observed.get("native")
+            fields = ("pid", "uid", "parent_pid", "pgid", "start_sec", "start_usec")
+            if (observed.get("outcome") != "LIVE" or not isinstance(native, Mapping)
+                    or observed.get("identity", {}).get("birth_id") != ancestor.get("birth_id")
+                    or any(type(native.get(k)) is not int or native[k] != ancestor.get(k) for k in fields)):
+                raise CustodyError("live candidate ancestry is no longer verifiable")
+            parent = ancestor["parent_pid"]
 
     def _check_unadmitted_census(self, census: Mapping[int, Mapping[str, Any]]) -> None:
         if not census:
@@ -3682,7 +3817,9 @@ class ProcessCustody:
             if sys.platform != "darwin" or getattr(getattr(self, "_launch_broker", None), "role", None) != "command":
                 return
             try:
+                self._verify_root()
                 self.actor.verify()
+                self._collect_census_candidates({}, census)
                 self._check_unadmitted_census(census)
                 if any(pid in census for pid in self._unadmitted_absent):
                     raise CustodyError("observed terminal candidate remains in final census")
@@ -3710,6 +3847,7 @@ class ProcessCustody:
             if self._uncertain is not None:
                 raise CustodyError("custody registration or observation is unresolved") from self._uncertain
             try:
+                self._verify_root()
                 self._unadmitted_absent = getattr(self, "_unadmitted_absent", {})
                 self._census_sequence = getattr(self, "_census_sequence", 0) + 1
                 root_pid = self.process.pid
@@ -3717,6 +3855,7 @@ class ProcessCustody:
                 if root_handle is None or root_handle[1] is not broker:
                     raise CustodyError("ordinary census lacks its retained admitted root")
                 actor = self.actor.verify()
+                members = self._collect_census_candidates(members, census)
                 self._check_unadmitted_census(census)
                 previously_admitted = set(self._handles)
                 # A reconciliation census is an observation too. Account for
@@ -3724,7 +3863,15 @@ class ProcessCustody:
                 for reconciliation_round in range(8):
                     new_absences = []
                     retry_admissions = []
-                    for pid, birth in members.items():
+                    # Observe the whole set before any terminal disposition.
+                    observations = {pid: ordinary_candidate_observation(pid)
+                                    for pid in members
+                                    if pid not in self._handles and pid not in self._unadmitted_absent}
+                    # Live acquisition precedes terminal reconciliation, regardless
+                    # of mapping order. Each live child still needs its own chain.
+                    ordered = sorted(members, key=lambda pid: observations.get(pid, {}).get("outcome") != "LIVE")
+                    for pid in ordered:
+                        birth = members[pid]
                         if pid in self._unadmitted_absent:
                             if birth != self._unadmitted_absent[pid]["birth_id"]:
                                 raise CustodyError("terminal candidate member identity changed")
@@ -3735,11 +3882,13 @@ class ProcessCustody:
                                                         census_round=reconciliation_round,
                                                         new_absences=new_absences,
                                                         fresh_census=fresh_census,
-                                                        retry_admissions=retry_admissions)
+                                                        retry_admissions=retry_admissions,
+                                                        _collected_observation=observations.get(pid))
                     if not new_absences and not retry_admissions:
                         return {pid: birth for pid, birth in members.items()
                                 if pid not in self._unadmitted_absent}
                     fresh = fresh_census()
+                    self._collect_census_candidates({}, fresh)
                     self._check_unadmitted_census(fresh)
                     self._revalidate_post_absence(fresh, new_absences, actor, root_pid, root_handle)
                     fresh_members = self._owned_census_members(fresh)
@@ -3763,9 +3912,29 @@ class ProcessCustody:
     def _register_census_candidate(self, pid, birth, *, census, root_pid, root_handle,
                                    actor, previously_admitted, census_round, new_absences,
                                    fresh_census=None, retry_admissions=None, _capture_retry=False,
-                                   _retry_expected=None):
+                                   _retry_expected=None, _collected_observation=None):
         try:
-            observation = ordinary_candidate_observation(pid) if pid not in self._handles else None
+            observation = (_collected_observation if _collected_observation is not None
+                           else ordinary_candidate_observation(pid)) if pid not in self._handles else None
+            if observation is not None and observation.get("outcome") == "LIVE":
+                row = census.get(pid, {})
+                identity = observation.get("identity", {})
+                native = observation.get("native")
+                fields = ("pid", "uid", "parent_pid", "pgid", "start_sec", "start_usec")
+                if (identity.get("parent_pid") != row.get("parent_pid")
+                        or (isinstance(native, Mapping)
+                            and any(type(native.get(k)) is not int or native[k] != row.get(k) for k in fields))):
+                    raise CustodyError("live candidate differs from observed parent edge or incarnation")
+                ancestry_census = census
+                if census.get(pid, {}).get("parent_pid") != root_pid and fresh_census is not None:
+                    ancestry_census = fresh_census()
+                    self._collect_census_candidates({}, ancestry_census)
+                    original, current = census.get(pid), ancestry_census.get(pid)
+                    fields = ("pid", "uid", "birth_id", "parent_pid", "pgid", "start_sec", "start_usec")
+                    if (not isinstance(current, Mapping)
+                            or any(original.get(k) != current.get(k) for k in fields)):
+                        raise CustodyError("live candidate ancestry or incarnation changed")
+                self._validate_candidate_chain(pid, birth, ancestry_census)
             if _capture_retry:
                 native = observation.get('native') if isinstance(observation, Mapping) else None
                 precise = ('pid', 'uid', 'parent_pid', 'pgid', 'start_sec', 'start_usec')
@@ -3776,6 +3945,11 @@ class ProcessCustody:
                                or native[k] != _retry_expected[k] for k in precise)):
                     raise CustodyError('candidate changed before bounded capture retry')
             self.register(pid, birth, _observation=observation)
+            if (observation is not None and observation.get("outcome") == "LIVE"
+                    and census[pid]["parent_pid"] != root_pid and fresh_census is not None):
+                after = fresh_census()
+                self._collect_census_candidates({}, after)
+                self._validate_candidate_chain(pid, birth, after)
         except CustodyError as error:
             cause = error.__cause__
             capture = getattr(cause, "capture_failure", None)
@@ -3870,6 +4044,7 @@ class ProcessCustody:
                         or self.actor.verify() != actor or self._handles.get(root_pid) != root_handle):
                     raise
                 fresh = fresh_census()
+                self._collect_census_candidates({}, fresh)
                 self._check_unadmitted_census(fresh)
                 current = fresh.get(pid)
                 parent_row = fresh.get(parent)
@@ -3995,9 +4170,6 @@ class ProcessCustody:
                     *ancestry, *([] if parent == root_pid else [dict(census[parent])])]
                 self._revalidate_post_absence(census, [pid], actor, root_pid, root_handle)
             self._write_observed_containment()
-            if any(child_row["parent_pid"] == pid and child not in previously_admitted
-                   for child, child_row in census.items()):
-                raise CustodyError("census child requires unadmitted absent ancestry")
             new_absences.append(pid)
 
     def _revalidate_post_absence(self, census, candidates, actor, root_pid, root_handle):
@@ -4043,6 +4215,7 @@ class ProcessCustody:
 
     def signal(self, pid: int, birth: str, signum: int, *, cleanup_deadline: float | None = None) -> None:
         with self._lock:
+            self._verify_root()
             entry = self._handles.get(pid)
             if entry is None or entry[0] != birth:
                 raise CustodyError("signal lacks a retained exact process capability")
