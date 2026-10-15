@@ -723,6 +723,24 @@ def test_check_flags_offcanvas_mixed_scale_and_damaged_sprite_by_address():
     assert not any("DAMAGED-ART" in line and "hourglass" in line for line in Checkout(data).check().problems)
 
 
+def test_declared_damaged_art_is_shared_by_check_and_lint_without_duplicates():
+    data = bundle()
+    data["shots"]["A"]["internal_timeline"]["registry"]["assets"]["R"]["pixel_provenance"] = {
+        "outline_integrity": {"fraction": 0.70},
+    }
+    expected = "DAMAGED-ART a-rocket: R outline integrity 0.70 (threshold 0.75)"
+    tl = Checkout(data)
+    assert [line for line in tl.check().problems if "DAMAGED-ART" in line] == [expected]
+    assert [line for line in tl.lint() if "DAMAGED-ART" in line] == [expected]
+
+    from astrid.packs.rendering.actions.timeline_visualize.layers.base import check_help
+
+    listing = check_help()
+    assert "rendering-damaged-art" in listing
+    assert "codes DAMAGED-ART" in listing and "severity warn" in listing
+    assert "reads timeline.document+timeline.selected_assets" in listing
+
+
 def _bed_on_beat(data):
     """The music (Q, 4 s) carries a 120 bpm grid; the rocket starts on beat 2 after "went"."""
     data = _with_beats(data)

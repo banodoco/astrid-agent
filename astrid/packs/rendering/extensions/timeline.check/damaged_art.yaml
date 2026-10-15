@@ -1,0 +1,18 @@
+point: timeline.check
+id: rendering.damaged-art
+label: Damaged pixel art
+description: Flag selected pixel sprites with partly damaged outline integrity.
+scope: timeline
+reads:
+  - timeline.document
+  - timeline.selected_assets
+finding:
+  code: DAMAGED-ART
+  severity: warn
+  location: message
+thresholds:
+  no_outline_style_below: 0.10
+  damaged_art_below: 0.75
+implementation:
+  path: extensions/timeline.check/damaged_art.py
+  function: run

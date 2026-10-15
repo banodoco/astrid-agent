@@ -48,7 +48,7 @@ def find_rules(start: Path | None = None) -> Path | None:
 def parse_rules(document: dict[str, Any], *, origin: str = RULES_FILENAME) -> dict[str, Any]:
     """Validate a parsed rules document into ``{params, severity, disable, path}``."""
     known = check_defaults()
-    registry = checks()
+    registry = checks(include_v3=True)
     codes = {code for check in registry.values() for code in check.codes}
     params: dict[str, Any] = {}
     severity: dict[str, str] = {}

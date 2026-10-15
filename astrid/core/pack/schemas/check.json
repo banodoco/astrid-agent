@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Admitted V3 timeline check",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["point", "id", "label", "description", "scope", "reads", "finding", "thresholds", "implementation"],
+  "properties": {
+    "point": {"const": "timeline.check"},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_-]*$"},
+    "label": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "scope": {"enum": ["cut", "timeline"]},
+    "reads": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["timeline.document", "timeline.selected_assets"]}
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[A-Z][A-Z0-9-]*$"},
+        "severity": {"enum": ["error", "warn", "info"]},
+        "location": {"enum": ["scope", "message"]}
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": {"type": "number"}
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "function"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "function": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}
+      }
+    }
+  }
+}

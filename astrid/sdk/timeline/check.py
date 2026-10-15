@@ -34,8 +34,6 @@ def _broken_head() -> list[str]:
 
 
 _ELEMENT_COVERAGE: dict[str, dict] = {}
-_DAMAGED_ART_THRESHOLD = 0.75
-_NO_OUTLINE_STYLE = 0.10  # below this the art has no outline by design (sparks, dots)
 
 
 def _cut_in(table: list[tuple[float, float, str]], t: float) -> str | None:
@@ -289,25 +287,6 @@ class _CheckMixin:
                 notes.append(f"MIXED-SCALE {left.address} (scale {left_scale:g}) and {right.address} "
                              f"(scale {right_scale:g}) are on screen together at {start:.2f}–{end:.2f} s")
 
-        for clip in sprites:
-            if not clip.asset:
-                continue
-            entry = self._sprite_asset_entry(clip)
-            provenance = entry.get("pixel_provenance") if isinstance(entry.get("pixel_provenance"), Mapping) else {}
-            integrity = provenance.get("outline_integrity")
-            if isinstance(integrity, Mapping):
-                integrity = integrity.get("fraction")
-            if integrity is None:
-                integrity = self._native_outline_integrity(entry)
-            try:
-                score = float(integrity)
-            except (TypeError, ValueError):
-                continue
-            # Damage is a partly broken outline (a lossy re-snap). Art drawn with no outline at all
-            # (sparks, dots: integrity near 0) is a style, not damage.
-            if _NO_OUTLINE_STYLE <= score < _DAMAGED_ART_THRESHOLD:
-                notes.append(f"DAMAGED-ART {clip.address}: {clip.asset} outline integrity {score:.2f} "
-                             f"(threshold {_DAMAGED_ART_THRESHOLD:.2f})")
         return blocking, notes
 
     def _sprite_asset_entry(self, clip: Clip) -> Mapping[str, Any]:
@@ -483,7 +462,10 @@ class _CheckMixin:
         selected = [c for c in all_cuts if wanted is None or c["index"] in wanted]
         elements = model.elements_from_occurrences(occurrences)
         order = next((o.get("track_order") for o in occurrences if o.get("track_order")), [])
-        results, timeline_findings = run_checks(selected, elements, self.fps, track_order=order, all_cuts=all_cuts)
+        results, timeline_findings = run_checks(
+            selected, elements, self.fps, track_order=order, all_cuts=all_cuts,
+            include_declared_checks=True, extension_context=timeline_check_host_context(self),
+        )
         lines = [f.line() for f in timeline_findings if f.severity != "info"]
         for cut, findings in results:
             lines += [f.line(cut["start"]) for f in findings if f.severity != "info"]
@@ -552,7 +534,25 @@ class _CheckMixin:
         cut_numbers = sorted({cut.n for cut in self.cuts for clip in cut.clips if clip.id in changed})
         from astrid.sdk.timeline_address import ordinals_to_ids
 
-        lint = [ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)] if cut_numbers else []
+        lint = [ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)]
+        # A CheckReport historically carries asset Check findings in
+        # ``problems`` as well as the complete ``lint`` list. Preserve that
+        # report shape for all manifest-declared Check codes without running
+        # their contributions a second time.
+        from astrid.packs.rendering.actions.timeline_visualize.layers.base import (
+            checks as registered_checks,
+        )
+
+        declared_codes = {
+            code
+            for check in registered_checks(include_v3=True).values()
+            if check.source.endswith("V3")
+            for code in check.codes
+        }
+        declared_problems = [
+            line for line in lint
+            if line.split(maxsplit=1) and line.split(maxsplit=1)[0] in declared_codes
+        ]
         lint_new, lint_old = _new_findings(lint, Checkout(base_bundle(candidate)))
         names = []
         for n in cut_numbers:
@@ -586,9 +586,37 @@ class _CheckMixin:
             problems.append(f"music: the bed ends at {music_end:.2f} s; the film runs {self.duration:.2f} s "
                             f"({self.duration - music_end:.1f} s without music)")
         return CheckReport(valid=valid, validation=validation, summary=summary, lint=lint,
-                           problems=blocking + problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
+                           problems=blocking + problems + declared_problems + list(dict.fromkeys(self.notes)), changed_cuts=cut_numbers,
                            diff=diff, cut_names=names, blocking=blocking, lint_new=lint_new, lint_old=lint_old,
                            addresses={c.id: c.address for c in self.clips() if c.address != c.id})
+
+
+def timeline_check_host_context(checkout: Any, *, host: str = "sdk"):
+    """Bind only the document and assets selected by its sprite clips to V3 Checks."""
+    from astrid.core.pack.checks import CheckHostContext
+
+    def selected_assets():
+        rows = []
+        for clip in checkout.clips(element="am-sprite"):
+            if not clip.asset:
+                continue
+            entry = checkout._sprite_asset_entry(clip)
+            provenance = entry.get("pixel_provenance") if isinstance(entry.get("pixel_provenance"), Mapping) else {}
+            integrity = provenance.get("outline_integrity")
+            if isinstance(integrity, Mapping):
+                integrity = integrity.get("fraction")
+            if integrity is None:
+                # Retains the original offline and _edit_local_only behavior.
+                integrity = checkout._native_outline_integrity(entry)
+            rows.append({
+                "clip_id": clip.id,
+                "address": clip.address,
+                "asset": clip.asset,
+                "outline_integrity": integrity,
+            })
+        return rows
+
+    return CheckHostContext(host=host, document=checkout.bundle, selected_assets=selected_assets)
 
 
 @dataclass

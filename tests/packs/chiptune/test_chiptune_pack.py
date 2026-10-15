@@ -175,6 +175,12 @@ def test_compose_same_seed_is_byte_identical(tmp_path: Path) -> None:
 
 def test_compose_admission_assets_and_sdk_media_handles(tmp_path: Path) -> None:
     capability = get_capability("chiptune.compose", kind="action")
+    declaration = capability.definition["metadata"]["action_declaration"]
+    assert capability.id == "chiptune.compose" and capability.capability_type == "executor"
+    assert declaration["kind"] == "generator"
+    assert declaration["invocation"]["kind"] == "command"
+    assert all(output["type"] == "file" and output.get("path_template")
+               for output in declaration["outputs"])
     declared_inputs = {port.name: port.type for port in capability.inputs}
     declared_outputs = {port.name: port.artifact_type for port in capability.outputs}
     assert declared_inputs == {

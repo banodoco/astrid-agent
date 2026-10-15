@@ -42,12 +42,13 @@ class Finding:
     severity: str = "warn"
     fix: Mapping[str, Any] | None = None
     check: str = ""
+    show_scope: bool = True
 
     def line(self, cut_start: float | None = None) -> str:
-        where = f" cut {self.cut}" if self.cut is not None else " timeline"
+        where = f" cut {self.cut}" if self.cut is not None else (" timeline" if self.show_scope else "")
         rel = f" {self.t - cut_start:+.2f}s" if cut_start is not None and self.t is not None else (
             f" {self.t:.2f}s" if self.t is not None and self.cut is None else "")
-        return f"{self.code:<6}{where}{rel} {self.message}"
+        return f"{self.code:<6}{where}{rel} {self.message}".rstrip()
 
     def as_dict(self) -> dict[str, Any]:
         return {"code": self.code, "severity": self.severity, "cut": self.cut,
@@ -77,17 +78,18 @@ class CheckContext:
     track_order: Sequence[str] = ()
     frames: Mapping[int, Path] = field(default_factory=dict)
     shared: dict[str, Any] = field(default_factory=dict)
+    extension_context: Any | None = None
 
     def param(self, key: str) -> Any:
         return self.params.get(key)
 
     def finding(self, code: str, message: str, *, t: float | None = None, severity: str = "warn",
-                fix: Mapping[str, Any] | None = None) -> Finding:
+                fix: Mapping[str, Any] | None = None, show_scope: bool = True) -> Finding:
         """A finding for this context's cut (``t`` defaults to the cut start)."""
         cut = int(self.cut["index"]) if self.cut else None
         if t is None and self.cut:
             t = float(self.cut["start"])
-        return Finding(code, cut, t, message, severity, fix)
+        return Finding(code, cut, t, message, severity, fix, show_scope=show_scope)
 
 
 @dataclass(frozen=True)
@@ -109,6 +111,8 @@ class Check:
     needs: tuple[str, ...] = ("doc",)
     codes: tuple[str, ...] = ()
     source: str = "built-in"
+    severity: str = "warn"
+    reads: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -180,10 +184,22 @@ def register(layer: Layer) -> Layer:
     return layer
 
 
-def checks() -> dict[str, Check]:
+def checks(*, include_v3: bool = False) -> dict[str, Check]:
     """Every registered check (built-in and pack-provided)."""
     discover()
-    return dict(_CHECKS)
+    registry = dict(_CHECKS)
+    if include_v3:
+        try:
+            from astrid.core.pack.checks import registered_checks
+
+            for check in registered_checks():
+                if check.name in registry:
+                    raise ValueError(f"V3 check {check.name!r} collides with an existing check")
+                registry[check.name] = check
+            _BROKEN.pop("v3/timeline.checks", None)
+        except Exception as exc:  # noqa: BLE001 - bad metadata is visible in the check census
+            _BROKEN["v3/timeline.checks"] = f"{type(exc).__name__}: {exc}"
+    return registry
 
 
 def check_defaults() -> dict[str, Any]:
@@ -320,13 +336,17 @@ def layer_help() -> str:
 
 def check_help(rules: Mapping[str, Any] | None = None) -> str:
     """The ``timelines lint --list-checks`` text (effective values when a rules file is in force)."""
-    registry = checks()
+    registry = checks(include_v3=True)
     overrides = dict((rules or {}).get("params") or {})
     lines = ["Checks (timelines lint runs every doc check; frame checks run in --view motion):"]
     for check in sorted(registry.values(), key=lambda c: c.name):
         tags = [check.scope, "needs " + "+".join(check.needs)]
         if check.codes:
             tags.append("codes " + ",".join(check.codes))
+        if check.reads:
+            tags.append("reads " + "+".join(check.reads))
+        if check.source.endswith("V3"):
+            tags.append("severity " + check.severity)
         if check.source != "built-in":
             tags.append("from " + check.source)
         lines.append(f"  {check.name:<16} {check.help}  [{'; '.join(tags)}]")

@@ -85,6 +85,15 @@ def test_structured_command_retains_existing_controls_without_extra_path(tmp_pat
     assert spec.input_args[0].optional and spec.cwd == "{out}"
 
 
+def test_generator_action_requires_a_managed_file_output(tmp_path: Path) -> None:
+    action = _action()
+    action["kind"] = "generator"
+    root = _pack(tmp_path, files={"actions/echo.py": "def echo(): return None\n"},
+                 actions={"echo": action})
+    with pytest.raises(CanonicalPackValidationError, match="managed file output"):
+        validate_canonical_pack(root)
+
+
 def test_ui_only_uses_the_existing_editor_host(tmp_path: Path) -> None:
     root = _pack(tmp_path, files={"ui/live-scenes/extension.tsx": "export default extension;\n"},
                  ui={"live-scenes": {"type": "editor", "entry": "ui/live-scenes/extension.tsx"}})

@@ -37,6 +37,8 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     from astrid.packs.rendering.actions.timeline_visualize.motion import model
     from astrid.packs.rendering.actions.timeline_visualize.motion.conditions import run_checks
     from astrid.packs.rendering.actions.timeline_visualize.motion.rules import resolve_rules
+    from astrid.sdk.timeline.check import timeline_check_host_context
+    from astrid.sdk.timeline_checkout import Checkout
 
     try:
         rules = resolve_rules(getattr(parsed, "rules", None), search=not getattr(parsed, "no_rules", False))
@@ -77,12 +79,14 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         return 2
     elements = model.elements_from_occurrences(occurrences)
     track_order = next((o.get("track_order") for o in occurrences if o.get("track_order")), [])
+    named = Checkout(copy.deepcopy(dict(bundle)))
     params = dict((rules or {}).get("params") or {})
     if getattr(parsed, "min_text_px", None) is not None:
         params["min_text_px"] = float(parsed.min_text_px)
     results, timeline_findings = run_checks(
         cuts, elements, fps, track_order=track_order, beats=beats, params=params,
         severity=(rules or {}).get("severity"), disable=(rules or {}).get("disable") or (), all_cuts=all_cuts,
+        include_declared_checks=True, extension_context=timeline_check_host_context(named),
     )
     if parsed.json:
         rows = [{**f.as_dict(), "cut_start": cut["start"], "cut_end": cut["end"]}
@@ -112,9 +116,6 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         lines.insert(0, working_banner(working))
     rank = {"error": 0, "warn": 1, "info": 2}
     from astrid.sdk.timeline_address import cut_ids_by_ordinal, name_things, ordinals_to_ids
-    from astrid.sdk.timeline_checkout import Checkout
-
-    named = Checkout(copy.deepcopy(dict(bundle)))
     ordinals = cut_ids_by_ordinal(named)
     # With a working copy, lint shows what is NEW since your checkout; --all shows everything.
     known: set[str] = set()
@@ -122,10 +123,12 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         base_bundle = opened.data["bundle"]
         base_occurrences = occurrences_from_bundle(base_bundle)
         base_cuts = picture_cuts(base_occurrences, fps=fps)
+        base_named = Checkout(copy.deepcopy(dict(base_bundle)))
         base_results, base_timeline = run_checks(
             base_cuts, model.elements_from_occurrences(base_occurrences), fps, track_order=track_order, beats=beats,
             params=params, severity=(rules or {}).get("severity"), disable=(rules or {}).get("disable") or (),
-            all_cuts=base_cuts,
+            all_cuts=base_cuts, include_declared_checks=True,
+            extension_context=timeline_check_host_context(base_named),
         )
         known = {f.line(c["start"]) for c, fs in base_results for f in fs} | {f.line(None) for f in base_timeline}
     already = 0
@@ -152,8 +155,9 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         emit(finding)
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import checks as registered_checks
 
-    ran = sorted(name for name in registered_checks() if name not in set((rules or {}).get("disable") or ())
-                 and "frames" not in registered_checks()[name].needs)
+    all_registered = registered_checks(include_v3=True)
+    ran = sorted(name for name in all_registered if name not in set((rules or {}).get("disable") or ())
+                 and "frames" not in all_registered[name].needs)
     lines.append(f"checks run: {', '.join(ran)} (a check with no line passed or is off: see --list-checks)")
     for cut, findings in results:
         for finding in findings:

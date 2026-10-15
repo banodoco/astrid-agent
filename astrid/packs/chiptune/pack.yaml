@@ -51,6 +51,7 @@
   },
   "actions": {
     "compose": {
+      "kind": "generator",
       "name": "Chiptune Compose",
       "version": "1.0.0",
       "short_description": "Compose a tempo-locked NES-style music cue with bar-snapped sections, a beat grid, and VO ducking.",

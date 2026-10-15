@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from astrid.core.contracts.errors import AstridError
+from astrid.sdk import discover, get_capability, invoke
 from astrid.packs.chiptune.actions._midi import Note
 from astrid.packs.music.actions._analysis import FRAME_S, align_audio, align_midi, track_beats
 
@@ -55,3 +56,24 @@ def test_beat_grid_has_four_beat_downbeats_and_phrase_bars() -> None:
 def test_beat_grid_rejects_silence() -> None:
     with pytest.raises(AstridError, match="no beat accents"):
         track_beats(np.zeros(300, np.float32))
+
+
+def test_music_actions_use_the_existing_v3_action_route_without_dispatch_branches(tmp_path) -> None:
+    action_ids = ("music.align", "music.level", "music.beats")
+    discovered = {action.id for action in discover(kind="action").actions}
+    inputs = {
+        "music.align": {"reference": "reference.wav", "target": "target.wav"},
+        "music.level": {"audio": "source.wav", "from_s": 0.0, "to_s": 1.0},
+        "music.beats": {"audio": "source.wav"},
+    }
+    for action_id in action_ids:
+        capability = get_capability(action_id, kind="action")
+        declaration = capability.definition["metadata"]["action_declaration"]
+        assert action_id in discovered
+        assert capability.capability_type == "executor"
+        assert declaration["invocation"]["kind"] == "command"
+        assert declaration.get("kind") is None
+        result = invoke(action_id, kind="action", inputs=inputs[action_id],
+                        out=tmp_path / action_id.split(".")[-1], dry_run=True)
+        assert result.capability_id == action_id and result.ok
+        assert result.raw_result["dry_run"] is True

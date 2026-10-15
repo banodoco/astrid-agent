@@ -155,13 +155,21 @@ pack guide](../../../../../docs/guides/create-a-pack.md).
 ## First timeline operation: build `fit_to_beats`
 
 This recipe owns the supported **operation** surface: a trusted local Python
-SDK command macro admitted by pack V3. The five Release 3 kinds remain:
-operation `fit_to_beats` (EXT-ONE), view `story_overview` (EXT-VIEW), component
-`vignette` (EXT-COMPONENT), check `DAMAGED-ART` and generator `chiptune.compose`
-(EXT-CHECK-GEN). The latter four are **unsupported by this operation host**;
-their cards supply their actual consumers. Curves, transitions, music actions
-and macros remain EXT-CURVES work. Do not register them as operations merely
-to make them discoverable.
+SDK command macro admitted by pack V3. Release 3 has five distinct kinds, each
+with its own proof card and real example:
+
+| Kind | Proof card | Example |
+| --- | --- | --- |
+| operation | EXT-ONE | `fit_to_beats` |
+| view | EXT-VIEW | `story_overview` |
+| component | EXT-COMPONENT | `vignette` |
+| check | EXT-CHECK-GEN | `DAMAGED-ART` |
+| generator | EXT-CHECK-GEN | `chiptune.compose` |
+
+This recipe implements the operation kind only. The other four are
+**unsupported by this operation host**; their cards supply their actual
+consumers. Curves, transitions, music actions and macros remain EXT-CURVES
+work. Do not register them as operations merely to make them discoverable.
 
 Build in a disposable directory such as
 `out/ext-one-fresh/packs/beat_tools`, whose folder name must match the pack ID.

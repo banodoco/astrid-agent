@@ -529,6 +529,30 @@ def test_dispatch_product_help_does_not_open_client(monkeypatch, capsys) -> None
     assert "astrid timelines show" in capsys.readouterr().out
 
 
+def test_timeline_check_listing_does_not_open_runtime(monkeypatch) -> None:
+    import astrid.core.cli.domain_product as domain_product
+    import astrid.sdk.client as sdk_client
+
+    seen: dict[str, object] = {}
+
+    def _fail_open(cls, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        raise AssertionError("check metadata listing must not open Runtime")
+
+    def _fake_run(family, args, *, client, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        seen["family"] = family
+        seen["args"] = list(args)
+        seen["client"] = client
+        return 0
+
+    monkeypatch.setattr(sdk_client.AstridClient, "open_from_launcher", classmethod(_fail_open))
+    monkeypatch.setattr(domain_product, "run_product_family", _fake_run)
+
+    from astrid.core.gateway import dispatch
+
+    assert dispatch._dispatch_product(["timelines", "lint", "--list-checks"]) == 0
+    assert seen == {"family": "timelines", "args": ["lint", "--list-checks"], "client": None}
+
+
 def test_dispatch_product_rejects_excluded_commands_before_opening(
     monkeypatch,
 ) -> None:

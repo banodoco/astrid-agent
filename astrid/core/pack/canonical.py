@@ -497,6 +497,17 @@ def _normalize_declarations(data: dict[str, Any]) -> dict[str, Mapping[str, Any]
                         names = [port["name"] for port in item[slot]]
                         if len(names) != len(set(names)):
                             raise CanonicalPackValidationError(f"{location}.{slot} contains duplicate port names")
+                if item.get("kind") == "generator":
+                    outputs = item.get("outputs")
+                    managed = [port for port in outputs if isinstance(port, Mapping)
+                               and port.get("type") == "file"
+                               and isinstance(port.get("path_template"), str)
+                               and port["path_template"].strip()] if isinstance(outputs, list) else []
+                    if not managed:
+                        raise CanonicalPackValidationError(
+                            f"{location}.kind=generator requires at least one managed file output "
+                            "with path_template"
+                        )
             elif section == "ui":
                 item["entry"] = _role_path(item["entry"], f"{location}.entry", "ui")
             elif section == "rendering":
@@ -836,6 +847,9 @@ def _admit(
         if definition.extensions.get("timeline", {}).get("components"):
             from astrid.core.pack.components import validate_component_declarations
             validate_component_declarations(root, definition, resources)
+        if definition.extensions.get("timeline", {}).get("checks"):
+            from astrid.core.pack.checks import validate_check_declarations
+            validate_check_declarations(root, definition, resources)
     manifest = ResourceHandle(
         CANONICAL_MANIFEST_NAME,
         root,

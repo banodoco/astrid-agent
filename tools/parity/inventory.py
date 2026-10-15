@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -168,6 +170,30 @@ def _finding_codes(root: Path) -> dict[str, list[str]]:
             match = _CODE_PREFIX.match(prefix)
             if match:
                 check_codes.add(match.group(1))
+
+    # V3 Check codes live in admitted descriptors, not in the host's Python
+    # source. Read only descriptors named by a pack manifest and admitted as
+    # file resources; inventory generation must not import contribution code.
+    packs_root = root / "astrid/packs"
+    for manifest_path in sorted(packs_root.glob("*/pack.yaml")):
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        timeline = manifest.get("extensions", {}).get("timeline", {})
+        declared = timeline.get("checks", ()) if isinstance(timeline, dict) else ()
+        admitted_files = {
+            row.get("path") for row in manifest.get("resources", ())
+            if isinstance(row, dict) and row.get("kind") in {"support", "implementation"}
+        }
+        for descriptor_path in declared:
+            if not isinstance(descriptor_path, str) or descriptor_path not in admitted_files:
+                continue
+            path = (manifest_path.parent / descriptor_path).resolve()
+            if not path.is_relative_to(manifest_path.parent.resolve()) or not path.is_file():
+                continue
+            descriptor = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            finding = descriptor.get("finding", {}) if isinstance(descriptor, dict) else {}
+            code = finding.get("code") if isinstance(finding, dict) else None
+            if isinstance(code, str) and _CODE_PREFIX.fullmatch(code + " "):
+                check_codes.add(code)
     return {"check": sorted(check_codes), "lint": sorted(lint_codes)}
 
 

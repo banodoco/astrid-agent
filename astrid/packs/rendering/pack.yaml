@@ -43,6 +43,10 @@ agent:
 documentation:
   kind: skill
   path: docs/SKILL.md
+extensions:
+  timeline:
+    checks:
+      - extensions/timeline.check/damaged_art.yaml
 actions:
   assemble_timeline:
     name: Assemble Canonical Timeline
@@ -1329,6 +1333,10 @@ ui:
     - kind: support
       path: ui/live-scenes/runtime.ts
 resources:
+- kind: support
+  path: extensions/timeline.check/damaged_art.yaml
+- kind: implementation
+  path: extensions/timeline.check/damaged_art.py
 - kind: support
   path: shared/element_contracts.ts
 - kind: support

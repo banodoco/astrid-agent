@@ -189,6 +189,9 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "kind": {
+            "const": "generator"
+          },
           "description": {
             "$ref": "#/$defs/non_blank"
           },
@@ -604,6 +607,11 @@
           "additionalProperties": false,
           "properties": {
             "components": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/relative_path"}
+            },
+            "checks": {
               "type": "array",
               "uniqueItems": true,
               "items": {"$ref": "#/$defs/relative_path"}
