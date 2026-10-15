@@ -369,7 +369,7 @@ class _TimingEvaluators:
             lo, hi = cut_span[cid]
             until = intent.until(steps[0].data)
             if until:
-                hi = self._resolve_note(until, steps[0], start=lo)
+                hi = self._resolve_note(until, steps[0], start=lo, film_end=intent.until_film_end(steps[0].data))
             if hi is None:
                 hi = max(c.end for c in steps)
             if int(round((hi - lo) * self.fps)) < len(steps):
@@ -397,7 +397,7 @@ class _TimingEvaluators:
                 start = cut_span[cut][0]
             end = None
             if until:
-                end = self._resolve_note(until, clip, start=start)
+                end = self._resolve_note(until, clip, start=start, film_end=intent.until_film_end(clip.data))
             elif length is not None:
                 end = start + length
             elif cut and not clip.is_audio and not later_step and cut in cut_span and (seq is None or is_picture):
@@ -471,8 +471,11 @@ class _TimingEvaluators:
         for clip in targets:
             if t <= clip.start + 0.5 * frame:
                 raise TimelineEditError(f"{clip.address} starts at {clip.start:.2f} s, after the new end ({t:.2f} s)")
+        # Bare end was authored in timeline scope. Pin its pre-edit basis so
+        # storing it on a picture neither gives it cut scope nor reapplies the offset.
+        film_end = end if mo.parse(text).kind == "end" else None
         for clip in targets:
-            intent.set_until(clip.data, text)
+            intent.set_until(clip.data, text, film_end=film_end)
             intent.set_for(clip.data, None)
             _set_length(clip.data, t - clip.start)
         self.retime()
@@ -507,15 +510,17 @@ class _TimingEvaluators:
         except mo.MomentError as exc:
             raise TimelineEditError(str(exc)) from None
 
-    def _moment_time(self, text: str, clip: "Clip | None" = None, *, in_point: bool = False) -> float:
+    def _moment_time(self, text: str, clip: "Clip | None" = None, *, in_point: bool = False,
+                     film_end: float | None = None) -> float:
         try:
-            return self._frame(mo.resolve(mo.parse(text), _MomentContext(self, clip), in_point=in_point))
+            return self._frame(mo.resolve(mo.parse(text), _MomentContext(self, clip, film_end=film_end), in_point=in_point))
         except mo.MomentError as exc:
             raise TimelineEditError(f"{clip.address + ': ' if clip else ''}{exc}") from None
 
-    def _resolve_note(self, text: str, clip: "Clip", *, in_point: bool = False, start: float | None = None) -> float | None:
+    def _resolve_note(self, text: str, clip: "Clip", *, in_point: bool = False, start: float | None = None,
+                      film_end: float | None = None) -> float | None:
         try:
-            return self._moment_time(text, clip, in_point=in_point)
+            return self._moment_time(text, clip, in_point=in_point, film_end=film_end)
         except TimelineEditError as exc:
             pinned = self._pin_nearest(text, clip)
             if pinned is not None:
@@ -624,7 +629,8 @@ class _TimingEvaluators:
                 if not text:
                     continue
                 try:
-                    mo.resolve(mo.parse(text), _MomentContext(self, clip))
+                    basis = intent.until_film_end(clip.data) if field == "until" else None
+                    mo.resolve(mo.parse(text), _MomentContext(self, clip, film_end=basis))
                 except mo.MomentError as exc:
                     why = ("the music has no beat there (the bed ends before it)" if "there is no beat" in str(exc)
                            or "there is no downbeat" in str(exc) else "its word is gone")

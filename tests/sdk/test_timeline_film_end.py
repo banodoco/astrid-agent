@@ -5,6 +5,7 @@ Offline: the tiny fixture (the film is 8 s; shot B is 4-8 s; the last spoken wor
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_checkout import Checkout
+from astrid.sdk.timeline import commands, journal
 
 TINY = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing" / "tiny.json"
 FRAME = 1 / 30
@@ -124,6 +126,64 @@ def test_the_moment_is_stored_so_a_re_flow_keeps_the_new_end():
     tl.film_end(f'{AFTER_NOW} +2.3s')
     tl.retime()
     assert tl.clip("c2.plate").end == pytest.approx(9.0, abs=FRAME)
+    assert tl.duration == pytest.approx(9.0, abs=FRAME)
+
+
+@pytest.mark.parametrize("cut_free", [True, False])
+def test_timeline_end_offset_keeps_its_basis_through_retime_save_and_replay(tmp_path, cut_free):
+    tl = tiny(layer_in_b=True)
+    if cut_free:
+        for clip in tl.clips():
+            intent.set_cut(clip.data, None)
+        assert not tl._cut_groups()
+    original = copy.deepcopy(tl.document())
+    path = tmp_path / "film.checkout.json"
+    tl.save(path, quiet=True)
+    tl.film_end("end +1s")
+    assert tl.duration == pytest.approx(9.0, abs=FRAME)
+    assert tl.clip("b-plate").end == pytest.approx(9.0, abs=FRAME)
+    assert tl.clip("b-glow").end == pytest.approx(9.0, abs=FRAME)
+    assert intent.until(tl.clip("b-plate").data) == "end +1s"
+    tl.save(quiet=True)
+    journal_path = path.with_suffix(path.suffix + ".journal.jsonl")
+    record = journal.read(journal_path)[-1]
+    assert journal.verify(journal_path) == []
+    assert record.calls[0]["bindings"]["end +1s"] == "occurrence:occ-B/clip:b-plate"
+
+    reloaded = Checkout.load(path)
+    for _ in range(2):
+        reloaded.retime()
+        assert reloaded.duration == pytest.approx(9.0, abs=FRAME)
+        assert reloaded.clip("b-plate").end == pytest.approx(9.0, abs=FRAME)
+        assert reloaded.clip("b-glow").end == pytest.approx(9.0, abs=FRAME)
+        assert not reloaded.orphans()
+    if cut_free:
+        assert not reloaded._cut_groups()
+        assert all(intent.cut_of(c.data) is None for c in reloaded.clips())
+
+    replayed = Checkout(original)
+    commands.run(replayed, record.calls[0])
+    replayed.retime()
+    assert replayed.document() == reloaded.document()
+
+
+def test_a_clip_end_still_needs_its_own_cut_after_timeline_film_end():
+    tl = tiny()
+    picture = tl.clip("b-plate")
+    intent.set_cut(picture.data, None)
+    tl.film_end("end +1s")
+    before = copy.deepcopy(tl.document())
+    with pytest.raises(TimelineEditError, match="belongs to no cut"):
+        picture.until("end +1s")
+    assert tl.document() == before
+
+
+def test_replacing_timeline_end_with_an_explicit_cut_end_restores_cut_scope():
+    tl = tiny()
+    tl.film_end("end +1s")
+    tl.clip("b-plate").until("end of c2")
+    tl.retime()
+    assert intent.until_film_end(tl.clip("b-plate").data) is None
     assert tl.duration == pytest.approx(9.0, abs=FRAME)
 
 

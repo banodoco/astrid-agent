@@ -29,7 +29,7 @@ def _app_w(clip: dict[str, Any]) -> dict[str, Any]:
     return _ns.clip_ns(clip)
 
 
-_INTENT_KEYS = frozenset({"on", "until", "for", "cut", "layer", "why", "why_layers",
+_INTENT_KEYS = frozenset({"on", "until", "until_film_end", "for", "cut", "layer", "why", "why_layers",
     "deliberate", "deliberate_hold", "formulas", "segment", "words", "text",
     "gap_after_s", "beats", "beats_label", "slot", "replaces", "standin",
     "standin_intent", "sequence", "sequence_index", "sequence_fit", "orphan", "loop"})
@@ -76,7 +76,13 @@ def set_loop(clip: dict[str, Any], value: "LoopSpec | None") -> None:
 
 def until(clip):
     value = _get(clip, "until"); return str(value) if isinstance(value, str) and value.strip() else None
-def set_until(clip, value): _set(clip, "until", value)
+def until_film_end(clip):
+    """Original timeline end for an ``until`` authored by film_end, independent of cut ownership."""
+    value = _get(clip, "until_film_end")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+def set_until(clip, value, *, film_end=None):
+    _set(clip, "until", value)
+    _set(clip, "until_film_end", film_end if value else None)
 def for_s(clip):
     value = _get(clip, "for"); return float(value) if isinstance(value, (int,float)) and not isinstance(value,bool) else None
 def set_for(clip, value): _set(clip, "for", None if value is None else round(float(value),6))

@@ -13,7 +13,7 @@ from typing import Any
 NS = "astrid"
 LEGACY = "_legacy"
 CLIP_INTENT_KEYS = frozenset({
-    "on", "until", "for", "cut", "layer", "deliberate", "deliberate_hold",
+    "on", "until", "until_film_end", "for", "cut", "layer", "deliberate", "deliberate_hold",
     "why", "why_layers", "formulas", "segment", "words", "text", "gap_after_s",
     "beats", "beats_label", "slot", "replaces", "standin", "standin_intent",
     "standin_for", "intended", "sequence", "sequence_index", "sequence_fit",

@@ -63,13 +63,15 @@ def _validate_dependencies(tl):
         if i + 1 < len(groups):
             link(f"{group['id']}.end", f"{groups[i + 1]['id']}.start")
 
-    def references(text, clip):
+    def references(text, clip, *, film_end=None):
         try:
             moment = mo.parse(text)
         except mo.MomentError:
             return set()  # existing evaluator owns malformed/missing diagnostics
 
         def visit(m):
+            if m.kind == 'end' and film_end is not None:
+                return set()  # fixed timeline-end basis, independent of the clip's owning cut
             if m.kind in ('cut', 'cut_end', 'end', 'cut_start'):
                 if m.cut and m.cut not in aliases:
                     aliases[m.cut] = tl._cut_id(m.cut)
@@ -125,7 +127,7 @@ def _validate_dependencies(tl):
         else:
             link(start, node(first, 'start'))
         if until:
-            link(end, *references(until, first))
+            link(end, *references(until, first, film_end=intent.until_film_end(first.data)))
         elif cid in cut_ids and not clip.is_audio and intent.for_s(first.data) is None:
             link(end, f'{cid}.end')
         else:
@@ -133,7 +135,7 @@ def _validate_dependencies(tl):
         if steps:
             # Steps share the first step's declared span and fit; no artificial
             # last-step -> first-step feedback through their cached durations.
-            span = references(until, first) if until else ({f'{cid}.end'} if cid in cut_ids else set())
+            span = references(until, first, film_end=intent.until_film_end(first.data)) if until else ({f'{cid}.end'} if cid in cut_ids else set())
             if clip is not first:
                 link(start, *span)
             fit = intent.sequence_fit(first.data) or {}

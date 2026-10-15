@@ -107,6 +107,12 @@ def test_moment_reference_grammar_records_words_phrases_occurrences_beats_cuts_o
     assert moments.resolve("end", _MomentContext(words, own=(0.0, 9.0))) == pytest.approx(9.0)
 
 
+@pytest.mark.parametrize("text", ["end", "end +1s", "+1s"])
+def test_clip_relative_moments_refuse_a_clip_with_no_owning_cut(text):
+    with pytest.raises(moments.MomentError, match="belongs to no cut"):
+        moments.resolve(text, _MomentContext(own=None))
+
+
 def test_first_word_picture_anchor_uses_take_in_point_only_without_offset():
     """Source: astrid/core/timeline/moments.py:229-233; astrid/sdk/timeline/model.py:1129-1136."""
     ctx = _MomentContext([_Word("We", "s1", 0, 0.1, 0.2)], line_in=0.05)

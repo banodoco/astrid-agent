@@ -1209,8 +1209,9 @@ class Voice(_Suggest):
 class _MomentContext:
     """What a moment resolves against: the words, the music's beats, the cuts, and the clip's own cut."""
 
-    def __init__(self, tl: "Checkout", clip: Clip | None):  # noqa: F821
+    def __init__(self, tl: "Checkout", clip: Clip | None, *, film_end: float | None = None):  # noqa: F821
         self.tl, self.clip, self.fps = tl, clip, tl.fps
+        self.film_end = film_end
 
     def words(self):
         cache = tl_cache(self.tl)
@@ -1260,6 +1261,8 @@ class _MomentContext:
 
     def own_cut(self):
         """The clip's cut; a moment asked of the film itself (``tl.time("end")``) is relative to the whole film."""
+        if self.film_end is not None:
+            return (0.0, self.film_end)  # stored timeline-level until: never feed its new end back into itself
         return self.tl._own_cut_span(self.clip) if self.clip is not None else (0.0, self.tl.duration)
 
     def line_in_point(self, line: str):

@@ -260,9 +260,9 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     bindings = dict(command.bindings or {})
     capture_argument_bindings(tl, command, owner, bindings)
     original_moment_time = tl._moment_time
-    def bound_moment_time(text, clip=None, *, in_point=False):
-        capture_binding(tl, str(text), clip, bindings)
-        return original_moment_time(text, clip, in_point=in_point)
+    def bound_moment_time(text, clip=None, *, in_point=False, film_end=None):
+        capture_binding(tl, str(text), clip, bindings, film_end=film_end)
+        return original_moment_time(text, clip, in_point=in_point, film_end=film_end)
     tl._moment_time = bound_moment_time
     original_new_id = tl._new_id
     allocated = iter(sid.split("/clip:", 1)[1] for sid in (command.created or ()) if "/clip:" in sid)
@@ -740,11 +740,11 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     return direct
 
 
-def capture_binding(tl, text, clip, bindings):
+def capture_binding(tl, text, clip, bindings, *, film_end=None):
     from astrid.core.timeline import moments as mo
     from astrid.sdk.timeline.model import _MomentContext
     from astrid.sdk import timeline_intent as intent
-    ctx = _MomentContext(tl, clip)
+    ctx = _MomentContext(tl, clip, film_end=film_end)
     from astrid.sdk.timeline._common import WORD_ID_RE
     if WORD_ID_RE.fullmatch(text.strip()):
         word = tl.word(text.strip())
@@ -769,11 +769,18 @@ def capture_binding(tl, text, clip, bindings):
             anchor = f"beat:{beats.index(at)}"
             if moment.base:
                 capture_binding(tl, mo.format_moment(moment.base), clip, bindings)
+        elif moment.kind == "end" and (clip is None or film_end is not None):
+            # The timeline ends with its last picture, even without a named cut.
+            # Use that real ScopedId in the existing anchor vocabulary.
+            shot_ids = tl._shot_ids()
+            last_shot = shot_ids[-1] if shot_ids else None
+            pictures = [c for c in tl.clips() if c.shot_id == last_shot and not c.is_audio
+                        and (c.track == "plate" or c.element in tl.FULL_FRAME)]
+            if not pictures:
+                raise CommandError(f"No stable picture anchor for timeline TimeRef {text!r}")
+            anchor = scoped_clip(tl, max(pictures, key=lambda c: (c.end, c.id)))
         else:
             cut = moment.cut or (intent.cut_of(clip.data) if clip else None)
-            if cut is None and moment.kind == "end":
-                groups = tl._cut_groups()
-                cut = groups[-1]["id"] if groups else None
             cut = tl._cut_id(cut) or cut if cut else None
             if not cut:
                 raise CommandError(f"No stable anchor identity for TimeRef {text!r}")
@@ -820,7 +827,8 @@ def capture_changed_bindings(tl, before, after, bindings):
         for reader in (intent.on, intent.until):
             text = reader(clip.data)
             if text and text != reader(old):
-                capture_binding(tl, text, clip, bindings)
+                basis = intent.until_film_end(clip.data) if reader is intent.until else None
+                capture_binding(tl, text, clip, bindings, film_end=basis)
         for path, expr in intent.formulas(clip.data).items():
             if isinstance(expr, Mapping) and expr.get("moment") and expr != intent.formulas(old).get(path):
                 capture_binding(tl, expr["moment"], clip, bindings)
