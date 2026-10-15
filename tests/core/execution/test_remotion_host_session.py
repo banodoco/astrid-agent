@@ -745,3 +745,223 @@ def test_host_accepts_artifacts_and_temp_inside_exact_scratch(tmp_path, monkeypa
     finally:
         lease.close()
         manager.close()
+
+
+@pytest.mark.parametrize('root_parent', ['configured', 'default-alias'])
+def test_host_custody_actual_owned_chain_binds_sessions_and_warm_owner(tmp_path, monkeypatch, root_parent, record_property):
+    from astrid.core.execution import custody_broker as custody
+    from astrid.core.execution import process_group as groups
+
+    env = environment(tmp_path)
+    worker = Path(env['ASTRID_REMOTION_PROJECT_DIR']) / 'src/astrid-frame-worker.mjs'
+    # The selected fixture executable is Python. Exercise the unmodified host
+    # argv and owned-launch chain, with no Node, Chrome or render operation.
+    worker.write_text('''import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request == {"type": "shutdown"}:
+        print(json.dumps({"ok": True, "exit": True, "shutdown": True}), flush=True)
+        break
+    raise RuntimeError("fixture accepts shutdown only")
+''')
+    real_mkdtemp = custody.tempfile.mkdtemp
+    def guarded_mkdtemp(*args, **kwargs):
+        assert kwargs.get('prefix') != 'astrid-custody-', 'host used global custody fallback'
+        return real_mkdtemp(*args, **kwargs)
+    monkeypatch.setattr(custody.tempfile, 'mkdtemp', guarded_mkdtemp)
+    # Cooperative shutdown and positive original waits must not reach a signal
+    # syscall. Keep the real root actor/token/designation and custody machinery.
+    monkeypatch.setattr(custody, 'signal_audit_token', lambda *a, **k: pytest.fail('fixture reached a signal syscall'))
+    monkeypatch.setattr(custody.ProcessCustody, 'signal', lambda *a, **k: pytest.fail('fixture requested a cleanup signal'))
+    if root_parent == 'default-alias':
+        alias = tmp_path / 'system-temp-alias'
+        alias.symlink_to(tmp_path, target_is_directory=True)
+        monkeypatch.setattr(host.tempfile, 'gettempdir', lambda: str(alias))
+    epochs, roots = [], []
+    for session in range(2):
+        if root_parent == 'configured':
+            manager, events = owner(tmp_path)
+        else:
+            events = []
+            manager = host.HostRemotionSession(
+                track=lambda p: events.append(('track', p)),
+                untrack=lambda p: events.append(('untrack', p)),
+            )
+        first = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+        second = None
+        process = None
+        try:
+            manager._start(first, 'fixture')
+            process = manager.process
+            binding = manager._custody_root
+            retained = process._astrid_custody
+            assert type(binding) is custody.CustodyRootBinding
+            assert type(retained) is custody.ProcessCustody
+            assert retained._custody_root is binding and retained.root == binding.root
+            assert binding.lifecycle_root == manager.root and binding.root.parent == manager.root
+            assert not binding.root.is_relative_to(first.scratch)
+            assert retained.owner_epoch == binding.owner_epoch
+            assert binding.owner_pid == os.getpid()
+            assert binding.owner_birth == groups.process_birth_identity()
+            assert binding.lifecycle_identity == manager._root_identity
+            record = json.loads((binding.root / 'custody-owner.json').read_text())
+            assert record['owner_epoch'] == binding.owner_epoch
+            assert record['owner_pid'] == binding.owner_pid
+            assert record['owner_birth'] == binding.owner_birth
+            if sys.platform == 'darwin':
+                assert list(binding.root.glob('designation-*.json'))
+                assert list(binding.root.glob('*-ledger-*/custody.ledger.json'))
+            else:
+                assert retained._handles[process.pid][0]
+            epochs.append(binding.owner_epoch)
+            roots.append(manager.root)
+            first.close()
+            next_scratch = tmp_path / f'next-scratch-{session}'
+            next_scratch.mkdir()
+            second = manager.lease(env, attempt=tmp_path, scratch=next_scratch)
+            manager._start(second, 'fixture')
+            assert manager.process is process and manager._custody_root is binding
+            assert process.poll() is None and not binding.root.is_relative_to(second.scratch)
+            manager._guard()
+            assert events == [('track', process)]
+            manager.close()
+            assert process.returncode == 0 and manager.process is None
+            assert manager.root is None and manager._custody_root is None
+            assert not roots[-1].exists()
+            assert retained._uncertain is None
+            assert events == [('track', process), ('untrack', process)]
+            if getattr(retained, '_observer', None):
+                retained._observer.join(timeout=2)
+                assert not retained._observer.is_alive()
+            record_property('disposable_helper', json.dumps({
+                'pid': process.pid, 'returncode': process.returncode,
+                'host_owner_pid': binding.owner_pid,
+                'lifecycle_root': str(roots[-1]), 'custody_root': str(binding.root),
+                'lifecycle_identity': binding.lifecycle_identity,
+                'custody_identity': binding.root_identity,
+                'owner_wait_confirmed': True, 'custody_uncertain': False,
+                'lifecycle_retired': not roots[-1].exists(),
+            }))
+        finally:
+            # No signal-based fixture teardown, even if an assertion fails.
+            if process is not None and process.poll() is None:
+                process.stdin.close()
+                process.wait(timeout=5)
+            if manager._timer:
+                manager._timer.cancel()
+            if process is not None:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    stream.close()
+            first.close()
+            if second is not None:
+                second.close()
+    assert len(set(epochs)) == 2 and len(set(roots)) == 2
+
+
+@pytest.mark.parametrize('target', ['lifecycle', 'custody'])
+@pytest.mark.parametrize('fault', ['missing', 'substitution', 'symlink'])
+@pytest.mark.parametrize('entry', ['warm-start', 'guard', 'retirement'])
+def test_host_custody_refuses_changed_roots_before_reuse_or_retirement(tmp_path, monkeypatch, target, fault, entry):
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    processes = fake_native(monkeypatch, manager)
+    lease = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+    manager._start(lease, 'fixture')
+    binding, lifecycle = manager._custody_root, manager.root
+    selected = lifecycle if target == 'lifecycle' else binding.root
+    retained = tmp_path / 'retained-evidence'
+    selected.rename(retained)
+    if fault == 'substitution':
+        selected.mkdir(mode=0o700)
+    elif fault == 'symlink':
+        selected.symlink_to(retained, target_is_directory=True)
+    before = (retained / 'custody-owner.json' if target == 'custody'
+              else retained / binding.root.name / 'custody-owner.json').read_bytes()
+    try:
+        with pytest.raises((RuntimeError, OSError)):
+            if entry == 'warm-start':
+                manager._start(lease, 'fixture')
+            elif entry == 'guard':
+                manager._guard(observe=False)
+            else:
+                manager._retire_root()
+        assert manager.process is processes[0] and len(processes) == 1
+        assert manager._custody_root is binding and manager.root == lifecycle
+        assert (retained / 'custody-owner.json' if target == 'custody'
+                else retained / binding.root.name / 'custody-owner.json').read_bytes() == before
+        if fault == 'missing':
+            assert not selected.exists()
+    finally:
+        manager._closed = True
+        lease.close()
+
+
+@pytest.mark.parametrize('state', ['host', 'custody'])
+def test_host_custody_uncertainty_retains_evidence_on_retirement(tmp_path, monkeypatch, state):
+    from types import SimpleNamespace
+
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    processes = fake_native(monkeypatch, manager)
+    lease = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+    manager._start(lease, 'fixture')
+    binding = manager._custody_root
+    before = (binding.root / 'custody-owner.json').read_bytes()
+    error = RuntimeError('controlled unresolved custody')
+    if state == 'host':
+        manager.uncertain = error
+    else:
+        processes[0]._astrid_custody = SimpleNamespace(_uncertain=error)
+    try:
+        with pytest.raises(RuntimeError, match='unresolved custody evidence'):
+            manager._retire_root()
+        assert manager.root.exists() and binding.root.exists()
+        assert (binding.root / 'custody-owner.json').read_bytes() == before
+        assert manager.process is processes[0]
+    finally:
+        manager._closed = True
+        lease.close()
+
+
+@pytest.mark.parametrize('field', ['owner_pid', 'owner_birth'])
+@pytest.mark.parametrize('entry', ['warm-start', 'guard', 'retirement'])
+def test_host_custody_refuses_changed_owner_incarnation(tmp_path, monkeypatch, field, entry):
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    processes = fake_native(monkeypatch, manager)
+    lease = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+    manager._start(lease, 'fixture')
+    binding = manager._custody_root
+    before = (binding.root / 'custody-owner.json').read_bytes()
+    setattr(binding, field, -1 if field == 'owner_pid' else 'foreign-owner-birth')
+    try:
+        with pytest.raises(RuntimeError, match='owner incarnation'):
+            if entry == 'warm-start':
+                manager._start(lease, 'fixture')
+            elif entry == 'guard':
+                manager._guard(observe=False)
+            else:
+                manager._retire_root()
+        assert manager.process is processes[0] and len(processes) == 1
+        assert (binding.root / 'custody-owner.json').read_bytes() == before
+    finally:
+        manager._closed = True
+        lease.close()
+
+
+def test_host_custody_explicit_symlink_parent_is_not_canonicalized(tmp_path, monkeypatch):
+    env = environment(tmp_path)
+    parent = tmp_path / 'host-parent'
+    parent.mkdir()
+    alias = tmp_path / 'explicit-parent-alias'
+    alias.symlink_to(parent, target_is_directory=True)
+    manager = host.HostRemotionSession(track=lambda p: None, untrack=lambda p: None, root_parent=alias)
+    monkeypatch.setattr(host, 'popen_owned_group', lambda *a, **k: pytest.fail('unsafe explicit root launched'))
+    lease = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+    try:
+        with pytest.raises(RuntimeError, match='canonical and unsymlinked'):
+            manager._start(lease, 'fixture')
+        assert manager.process is None and manager._custody_root is None
+    finally:
+        manager._closed = True
+        lease.close()

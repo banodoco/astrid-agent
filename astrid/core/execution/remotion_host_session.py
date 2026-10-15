@@ -105,6 +105,7 @@ class HostRemotionSession:
         self.closure_binding = closure_binding
         self._account, self._retire = account, retire
         self._root_identity = None
+        self._custody_root = None
         self.root = None
         self.process = None
         self.identity = None
@@ -171,15 +172,28 @@ class HostRemotionSession:
             if identity != self.identity:
                 self._close_original()
             elif self.process.poll() is None:
+                self._guard(observe=False)
                 return
             else:
                 # The original wait and census, not endpoint absence, settle it.
                 self._close_original(already_exited=True)
         if self.root is None:
-            self.root = Path(tempfile.mkdtemp(prefix="astrid-remotion-host-", dir=self._root_parent))
+            # Canonicalize only the host's default system-temp parent (Darwin
+            # commonly exposes /var through an alias). Explicit roots remain
+            # strict inputs to the binding and are never repaired on reuse.
+            parent = self._root_parent if self._root_parent is not None else Path(tempfile.gettempdir()).resolve(strict=True)
+            self.root = Path(tempfile.mkdtemp(prefix="astrid-remotion-host-", dir=parent))
             self.root.chmod(0o700)
             root_stat = self.root.lstat()
             self._root_identity = (root_stat.st_dev, root_stat.st_ino, root_stat.st_uid)
+        # Storage is host-selected and bound to this warm owner incarnation.
+        from .custody_broker import CustodyRootBinding
+        if self._custody_root is None:
+            self._custody_root = CustodyRootBinding(
+                self.root, lifecycle_identity=self._root_identity,
+                owner_epoch=os.urandom(32).hex(),
+            )
+        self._custody_root.verify()
         # Fixed host-known renderer projection; never transport Runtime worker
         # credentials, capability grants, arbitrary NODE_OPTIONS or preloaders.
         environment = {key: lease.environment[key] for key in
@@ -190,6 +204,7 @@ class HostRemotionSession:
         try:
             self.process = popen_owned_group(
                 [str(lease.node), str(lease.project / "src/astrid-frame-worker.mjs")],
+                custody_root=self._custody_root,
                 cwd=str(lease.project), env=build_child_subprocess_env(explicit_env=environment),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
@@ -241,6 +256,8 @@ class HostRemotionSession:
             st = self.root.lstat()
             if self.root.is_symlink() or (st.st_dev, st.st_ino, st.st_uid) != self._root_identity:
                 raise RuntimeError("original host renderer scratch identity changed")
+            if self._custody_root is not None:
+                self._custody_root.verify()
             self._account(self.root)
         if observe and self.process is not None:
             observe_tree(self.process)
@@ -411,12 +428,14 @@ class HostRemotionSession:
         self.process = self.identity = None
 
     def _retire_root(self):
+        if self.uncertain or getattr(getattr(self.process, "_astrid_custody", None), "_uncertain", None):
+            raise RuntimeError("unresolved custody evidence must survive retirement")
         self._guard(observe=False)
         root = self.root
         if root is not None:
             shutil.rmtree(root)
             self._retire(root)
-        self.root = self._root_identity = None
+        self.root = self._root_identity = self._custody_root = None
 
     def close(self):
         with self._lock:
