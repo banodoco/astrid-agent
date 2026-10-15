@@ -260,6 +260,8 @@ def diff_authoring_revisions(before: Mapping[str, Any], after: Mapping[str, Any]
     _diff_values(raw_before, raw_after, "", changes)
     summary = authoring_change_summary(_semantic_candidate(before, after, raw_before, raw_after))
     from_revision, to_revision = before_identity[2], after_identity[2]
+    from .change_intervals import intervals_from_bundles
+    intervals = intervals_from_bundles(before, after)
     return {
         "project_id": before_identity[0],
         "timeline_id": before_identity[1],
@@ -267,6 +269,7 @@ def diff_authoring_revisions(before: Mapping[str, Any], after: Mapping[str, Any]
         "to_revision": to_revision,
         "complete": True,
         "changes": changes,
+        "intervals": intervals,
         "context": _display_context(raw_before, raw_after),
         "raw_change_count": len(changes),
         "summary": summary,

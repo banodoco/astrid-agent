@@ -1296,6 +1296,8 @@ class RemoteTimelines(_RemoteFamily):
                 "protocol_error", f"could not open the timeline closure: {exc}",
                 {"timeline": timeline_id, "revision_id": revision},
             ))
+        from .authoring_revision_diff import retain_revision_closure
+        retain_revision_closure(bundle, parent.data, shots, internals)
         return DomainResult.success({
             "bundle": bundle,
             "project_id": project_id,

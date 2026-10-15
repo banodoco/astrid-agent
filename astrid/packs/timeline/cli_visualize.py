@@ -307,8 +307,11 @@ def _cmd_visualize_diff(parsed: argparse.Namespace) -> int:
     if parsed.json:
         print(json.dumps({"ok": True, "data": {"from": old, "to": new, "page": str(page) if page else None,
                                                 "findings": [f.as_dict() for f in report["findings"]],
+                                                "intervals": report['intervals'],
                                                 "notes": notes}, "error": None}, indent=2))
         return 0
+    from astrid.core.timeline.change_intervals import interval_lines
+    notes.extend(interval_lines(report['intervals']))
     lines = [f"diff page: {page}" if page else "diff page: (none: no changed cuts, --no-capture, or capture failed)",
              f"  {report['before_cuts']} → {report['after_cuts']} cuts · changed {len(report['changed_after'])}, "
              f"removed {sum(1 for r in report['rows'] if r['status'] == 'removed')}"]

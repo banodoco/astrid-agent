@@ -253,7 +253,10 @@ def sweep(client: Any, project: str, timeline: str, *, draft: Any, expected: Ite
         result = {"cuts": rows, "summary": summary, "unexpected": unexpected, "page": str(page),
                   "timing": {"total_s": round(time.monotonic() - started, 1), "captured": sum(map(len, frame_lists.values())),
                              "cuts": len(rows)}, "sampled": sampled, "notes": []}
-        result["lines"] = sweep_lines(result)
+        from astrid.core.timeline.change_intervals import interval_lines, revision_intervals
+        result['intervals'] = revision_intervals(base_snapshot, working_snapshot,
+            evaluated_frames=set(frame_lists['published']) | set(frame_lists['working']))
+        result["lines"] = sweep_lines(result) + interval_lines(result['intervals'])
         return result
     except fl.FastLaneError:
         import shutil

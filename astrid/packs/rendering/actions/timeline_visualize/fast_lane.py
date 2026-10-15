@@ -472,39 +472,13 @@ def _changed_on_screen(configs: Mapping[str, Mapping[str, Any]], frame: int, fps
             and (_look(pub[k]) != _look(work[k]) or _clip_span_frames(pub[k], fps) != _clip_span_frames(work[k], fps))]
 
 
-OPAQUE_KINDS = ("plate", "panel", "card")  # boxes that hide what is under them (sprites and type have holes)
-
-
 def hidden_under(snapshot: Mapping[str, Any], key: str, t: float, fps: float, *, cover: float = 0.9) -> str | None:
-    """The address of a higher, opaque layer covering ``cover`` of this clip's box at ``t``, if any.
+    """Compatibility seam: the shared evaluator does not name an occluding layer.
 
-    Stacking is by track, top first in the timeline's track list (chrome > type > fx > sprite >
-    plate). Plates, panels and cards count as opaque; sprites and type do not.
+    A cached rectangle or component kind cannot establish final opaque support.
+    ``layer_visibility`` supplies the actual visible/false/unknown answer instead.
     """
-    from .motion import model
-    from .motion.sheet import snapshot_elements
-
-    order = [str(tr.get("id")) for tr in (snapshot.get("config") or {}).get("tracks") or snapshot.get("tracks") or ()
-             if isinstance(tr, Mapping)]
-    rank = {track: index for index, track in enumerate(order)}
-    _occurrences, elements = snapshot_elements(snapshot)
-    moment = t + 1e-6
-    target = next((e for e in elements if _short(e.clip.get("id") or e.id) == _short(key) and not e.audio
-                   and e.start - 1e-6 <= moment < e.end - 1e-6), None)
-    if target is None or target.track not in rank:
-        return None
-    rects = [box.rect for box in model.boxes_at(target, moment, fps)]
-    if not rects:
-        return None
-    mine = (min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects))
-    if model.area(mine) <= 0:
-        return None
-    for element in sorted(elements, key=lambda e: rank.get(e.track, 99)):
-        if element is target or element.audio or rank.get(element.track, 99) >= rank[target.track]:
-            continue
-        for box in model.boxes_at(element, moment, fps):
-            if box.kind in OPAQUE_KINDS and model.intersection(box.rect, mine) >= cover * model.area(mine):
-                return clip_address(element.clip) if element.clip else element.short_id
+    del snapshot, key, t, fps, cover
     return None
 
 
@@ -854,6 +828,15 @@ def verify(
                    "box": box if not crop else None, "size": size if not crop else None,
                    "size_of_compare": size, "region": crop, "zoom": zoom_row,
                    "verdict": f"published: {shows[0]} · working copy: {shows[1]} · {line}"}
+            if moment.clip:
+                from astrid.core.timeline.change_intervals import layer_visibility
+                row['visibility'] = {}
+                for side, snapshot in (('published', pair['base_snapshot']), ('working', pair['working_snapshot'])):
+                    candidates = [c['id'] for c in (snapshot.get('config') or {}).get('clips', [])
+                                  if _short(c['id']) == _short(moment.clip)]
+                    row['visibility'][side] = (layer_visibility(snapshot, candidates[0], frame)
+                        if len(candidates) == 1 else {'visible': 'unknown', 'findings': [
+                            {'code': 'ambiguous-layer', 'reason': 'No unique clip identity'}]})
             if labels:
                 row["labelled"] = _labelled_tiles(
                     {"published": pair["base_snapshot"], "working": pair["working_snapshot"]},
@@ -872,7 +855,10 @@ def verify(
                              "end_to_end_s": round(startup_s + time.monotonic() - started, 1)},
                   "notes": notes, "render_runs": {"published": pair["base_run"], "working": pair["working_run"]},
                   "base_media": pair["base_media"], "working_media": pair["working_media"]}
-        result["lines"] = verify_lines(result)
+        from astrid.core.timeline.change_intervals import interval_lines, revision_intervals
+        result['intervals'] = revision_intervals(pair['base_snapshot'], pair['working_snapshot'],
+                                                evaluated_frames=frames)
+        result["lines"] = verify_lines(result) + interval_lines(result['intervals'])
         return result
     except FastLaneError:
         shutil.rmtree(run_dir, ignore_errors=True)

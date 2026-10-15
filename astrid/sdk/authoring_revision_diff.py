@@ -7,6 +7,15 @@ from astrid.core.timeline.authoring_bundle import AuthoringBundleError, open_aut
 from .contracts import DomainResult, ErrorObject
 
 
+def retain_revision_closure(bundle, parent, shots, internals):
+    """Keep verified immutable inputs for rendering/interval consumers in memory."""
+    from copy import deepcopy
+    bundle['immutable_closure'] = deepcopy({
+        'parent': parent, 'shots': shots, 'internal_timelines': internals,
+    })
+    return bundle
+
+
 def read_authoring_revision(reader, project_id, timeline_id, revision_id):
     """Hydrate only the requested pins; validate scope and immutable bytes."""
     def read(operation, *args, expected):
@@ -66,9 +75,7 @@ def read_authoring_revision(reader, project_id, timeline_id, revision_id):
                                        internal_timeline_revisions=internals)
         # Authoring normalization removes source-only fields and remaps shared
         # items. Keep the verified read records in memory for exact raw details.
-        bundle["immutable_closure"] = {
-            "parent": parent.data, "shots": shots, "internal_timelines": internals,
-        }
+        retain_revision_closure(bundle, parent.data, shots, internals)
     except AuthoringBundleError as exc:
         return DomainResult.failure(ErrorObject("integrity_error", str(exc), {
             "project_id": project_id, "timeline_id": timeline_id, "revision_id": revision_id,

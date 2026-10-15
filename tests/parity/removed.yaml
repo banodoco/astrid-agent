@@ -1,4 +1,8 @@
 # Deliberate r4 changes. Keep one reason and the replacement spelling for each.
+- feature: "deliberate: test_fast_lane_words.py::test_a_changed_layer_under_an_opaque_higher_layer_is_named_as_hidden"
+  card: CHANGE-VIEW
+  reason: "Cached component boxes/kinds cannot prove opacity, sprite holes, crop/mask or occlusion. Remove the private hidden-under guess; the actual shared scene answer is explicit unknown offline. The admitted evaluator does not supply an occluder identity."
+  alias: "astrid.core.timeline.change_intervals.layer_visibility"
 - feature: "deliberate: timelines.edit --set KEY=null"
   card: UX-CLEAR
   reason: "Null is refused when the field schema disallows it; clear it explicitly with --clear (F-099, spec-agent §5.2)."

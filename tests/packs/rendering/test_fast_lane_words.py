@@ -178,7 +178,9 @@ def test_a_changed_layer_under_an_opaque_higher_layer_is_named_as_hidden(tmp_pat
     snapshot.update(clips=clips, config={"tracks": snapshot["tracks"], "clips": [dict(c) for c in clips]},
                     occurrences=[{"occurrence_id": occ, "shot_id": "ch01", "shot_name": "01", "start": 0.0, "end": 2.0,
                                   "start_frame": 0, "end_frame": 60}])
-    assert fast_lane.hidden_under(snapshot, "churn", 1.0, FPS) == "c18.board"
+    # Cached component boxes cannot prove opaque support. The shared evaluator
+    # does not currently name an occluder; offline visibility is unknown.
+    assert fast_lane.hidden_under(snapshot, "churn", 1.0, FPS) is None
     assert fast_lane.hidden_under(snapshot, "board", 1.0, FPS) is None  # nothing above it
 
     moved = {**snapshot, "config": {**snapshot["config"],
@@ -189,8 +191,9 @@ def test_a_changed_layer_under_an_opaque_higher_layer_is_named_as_hidden(tmp_pat
     monkeypatch.setattr(fast_lane, "decode_frames", decode_frames)
     result = fast_lane.verify(object(), "demo", "tl", [Moment(1.0, "c18.churn (params) mid-clip", f"{occ}:churn")],
                               draft=_Draft(), root=tmp_path / "root")
-    assert result["rows"][0]["pixels"] == ("pixels: identical to published, but c18.churn changed and is hidden on "
-                                           "this frame (under c18.board)")
+    assert result["rows"][0]["pixels"] == "pixels: identical to published"
+    assert result["rows"][0]['visibility']['working']['visible'] == 'unknown'
+    assert result['intervals']['status'] == 'unknown'
 
 
 def test_check_takes_a_zoom_and_a_region(monkeypatch, capsys):

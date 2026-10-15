@@ -218,6 +218,8 @@ def _markdown(report: Mapping[str, Any], *, project_id: str, timeline_id: str, b
                 f"- **{row['status']}** cut `{cut.get('index', '?')}`: "
                 + ("; ".join(row.get("notes") or []) or "placement changed")
             )
+    from astrid.core.timeline.change_intervals import interval_lines
+    lines.extend(('', *interval_lines(report['intervals'])))
     lines.extend(("", "## Findings", ""))
     findings = report.get("findings") or []
     if not findings:
@@ -258,7 +260,8 @@ def execute_revision_diff(args: Any) -> dict[str, Any]:
         timeline_selector=getattr(args, "timeline_ref", None) or getattr(args, "timeline_slug", None),
     )
     edited = _edited_cut_numbers(getattr(args, "edited", None))
-    report = compare(compiled["before"]["bundle"], compiled["after"]["bundle"], edited=edited)
+    report = compare(compiled["before"]["bundle"], compiled["after"]["bundle"], edited=edited,
+                     interval_inputs=(compiled['before'], compiled['after']))
     report_json = {
         "schema_version": 1,
         "kind": _KIND,

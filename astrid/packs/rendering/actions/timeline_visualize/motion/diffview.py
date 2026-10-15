@@ -75,7 +75,8 @@ def _describe(before: Mapping[str, dict], after: Mapping[str, dict]) -> list[str
     return notes
 
 
-def compare(before: Mapping[str, Any], after: Mapping[str, Any], *, edited: Sequence[int] = ()) -> dict[str, Any]:
+def compare(before: Mapping[str, Any], after: Mapping[str, Any], *, edited: Sequence[int] = (),
+            interval_inputs=None) -> dict[str, Any]:
     """Cut-level diff of two bundles plus SCOPE/RIPPLE findings (cut numbers are the AFTER revision's)."""
     before_cuts, before_keyed, fps = _index(before)
     after_cuts, after_keyed, _fps = _index(after)
@@ -118,7 +119,11 @@ def compare(before: Mapping[str, Any], after: Mapping[str, Any], *, edited: Sequ
         findings.append(Finding("RIPPLE", None, None, f"{len(ripple)} cut(s) moved without changing "
                                 f"({min(numbers)}–{max(numbers)}; shift {', '.join(f'{s:+.2f} s' for s in shifts[:4])})",
                                 "info", None, "diff-scope"))
-    return {"rows": rows, "findings": findings, "before_cuts": len(before_cuts), "after_cuts": len(after_cuts),
+    from astrid.core.timeline.change_intervals import intervals_from_bundles, revision_intervals
+    intervals = (revision_intervals(*interval_inputs) if interval_inputs is not None
+                 else intervals_from_bundles(before, after))
+    return {"rows": rows, "findings": findings, "intervals": intervals,
+            "before_cuts": len(before_cuts), "after_cuts": len(after_cuts),
             "changed_after": [int(r["after"]["index"]) for r in rows if r["after"] and r["status"] in ("changed", "added")],
             "changed_before": [int(r["before"]["index"]) for r in rows if r["before"] and r["status"] in ("changed", "removed")]}
 

@@ -516,6 +516,9 @@ def format_authoring_revision_diff(data: Mapping[str, Any], *, mode: str = "read
     lines = _render_overview(data, classified)
     if mode == "details":
         lines = _render_details(data, classified)
+    if isinstance(data.get('intervals'), Mapping):
+        from .change_intervals import interval_lines
+        lines.extend(('', *interval_lines(data['intervals'])))
     return "\n".join(lines)
 
 
