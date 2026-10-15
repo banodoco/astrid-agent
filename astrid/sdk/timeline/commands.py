@@ -46,6 +46,15 @@ class EditCommand:
             value = value.to_json()
         if not isinstance(value, Mapping):
             raise CommandError("an EditCommand must be an OpCall object")
+        from banodoco_workspace_client.generated import validate_edit_command
+        # Preserve SDK tuple convenience, but the wire itself has JSON arrays.
+        value = dict(value)
+        if isinstance(value.get("resolved"), tuple):
+            value["resolved"] = list(value["resolved"])
+        try:
+            validate_edit_command(value)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from None
         if set(value) - {"op", "select", "args", "version", "resolved"}:
             raise CommandError("unknown EditCommand fields")
         if not isinstance(value.get("op"), str) or "select" not in value or not isinstance(value.get("args"), Mapping):

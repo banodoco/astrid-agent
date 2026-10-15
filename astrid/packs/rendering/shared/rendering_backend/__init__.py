@@ -345,6 +345,11 @@ def _remotion_mux_profile(profile: RenderProfile, *, alpha: bool = False) -> Ren
     )
 
 
+def _js_round(value: float) -> int:
+    """Remotion dimension rounding for positive render dimensions."""
+    return int(value + 0.5)
+
+
 def _remotion_scaled_dimensions(
     profile: RenderProfile, scale: float, *, even: bool = True
 ) -> tuple[int, int]:
@@ -353,18 +358,13 @@ def _remotion_scaled_dimensions(
     if not isinstance(scale, (int, float)) or isinstance(scale, bool) or scale <= 0:
         raise ValueError("Remotion render scale must be a positive number")
 
-    def js_round(value: float) -> int:
-        # Remotion uses JavaScript Math.round, whose positive-number behavior
-        # differs from Python's bankers-rounding at .5.
-        return int(value + 0.5)
-
     def scaled_dimension(source: int) -> int:
         candidate = source
         # Remotion adjusts the authored dimension down until its scaled output
         # is even for the H.264 codecs used by opaque MP4 renders.
-        while even and candidate > 1 and js_round(candidate * scale) % 2:
+        while even and candidate > 1 and _js_round(candidate * scale) % 2:
             candidate -= 1
-        return max(1, js_round(candidate * scale))
+        return max(1, _js_round(candidate * scale))
 
     return scaled_dimension(profile.width), scaled_dimension(profile.height)
 

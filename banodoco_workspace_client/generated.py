@@ -13,12 +13,13 @@ from typing import Any, Callable, Literal, Mapping, TypedDict, NotRequired, Prot
 
 PROTOCOL = "workspace.v1"
 _UNSET = object()
-SCHEMA_DIGEST = "sha256:c4c4c754b8dac2e1a29e1697edefbd180452d8268c3b9a92760d704765f48a55"
+SCHEMA_DIGEST = "sha256:cd87ac6ee5d4d2ee1723b0eec9fe19145136a0daef4fffa06c174a4df5f6f6cd"
 OPERATIONS = ('commitTimeline', 'health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 
 
+EditCommand = TypedDict('EditCommand', {'op': 'str', 'select': 'str | None', 'args': 'dict[str, Any]', 'version': NotRequired['str | None'], 'resolved': NotRequired['list[str]']})
 CommitJson = Any
-CommitCommand = dict[str, Any]
+CommitCommand = EditCommand
 CommitActor = TypedDict('CommitActor', {'kind': "Literal['user', 'agent', 'script']", 'id': 'str'})
 CommitSource = TypedDict('CommitSource', {'via': "Literal['cli', 'python', 'app', 'script']", 'detail': NotRequired['str']})
 CommitScope = TypedDict('CommitScope', {'target': 'str', 'content': NotRequired["Literal['this-occurrence', 'shared-shot']"], 'shot_id': NotRequired['str'], 'shot_revision_id': NotRequired['str'], 'internal_revision_id': NotRequired['str'], 'complete': "list[Literal['clips', 'tracks']]", 'projection_version': 'Literal[1]'})
@@ -65,6 +66,60 @@ class RuntimeAcceptance(Protocol):
     def head(self, project_id: str, timeline_id: str) -> CommitHead: ...
     def revisions(self, project_id: str, timeline_id: str, options: CommitRevisionQuery) -> list[CommitRevisionSummary]: ...
     def evidence(self, digest: str) -> CommitEvidence: ...
+OPCALL_SCHEMA = {'$schema': 'https://json-schema.org/draft/2020-12/schema', '$id': 'https://astrid.local/schemas/change-contract/opcall.schema.json', 'title': 'OpCall', 'description': 'Candidate single EditCommand envelope (SDK executable name: EditCommand). D RUNNER emits canonical OpCalls in Plan.calls and journal calls. Handler ids remain open. This increment is not a schema freeze.', 'type': 'object', 'required': ['op', 'select', 'args'], 'additionalProperties': False, 'properties': {'op': {'type': 'string', 'description': 'Qualified operation id, e.g. timeline.opacity or myteam.stagger.', 'pattern': '^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$'}, 'select': {'type': ['string', 'null'], 'description': 'Authoring selector; executed calls use the canonical stable selector resolved by the runner. null for timeline-level operations.'}, 'args': {'type': 'object', 'description': 'Opaque finite JSON operation arguments in authoring units. Omitted keys, JSON null, explicit clip.clear keys, and ordinary objects (including {$absent:true} or {op:clear}) remain distinct. Only the selected handler interprets these values.', 'additionalProperties': True}, 'version': {'type': ['string', 'null'], 'description': 'The tool version when it ran (filled by the runner).'}, 'resolved': {'type': 'array', 'description': 'Runner-populated stable string identities. The admitted producer uses local identities; globally scoped ScopedId mapping remains unresolved and is not imposed here.', 'items': {'type': 'string'}, 'default': []}}}
+
+def validate_edit_command(value: Any) -> Mapping[str, Any]:
+    """Validate only the OpCall envelope; return the exact unmodified value."""
+    import math
+    import re
+    def finite_json(item):
+        if item is None or isinstance(item, (str, bool, int)):
+            return True
+        if isinstance(item, float):
+            return math.isfinite(item)
+        if isinstance(item, list):
+            return all(finite_json(v) for v in item)
+        if isinstance(item, dict):
+            return all(isinstance(k, str) and finite_json(v) for k, v in item.items())
+        return False
+    if not isinstance(value, dict):
+        raise ValueError("OpCall must be an object")
+    fields = OPCALL_SCHEMA["properties"]
+    if set(value) - set(fields) or not set(OPCALL_SCHEMA["required"]) <= set(value):
+        raise ValueError("OpCall missing or unknown field")
+    try:
+        valid_json = finite_json(value)
+    except RecursionError:
+        valid_json = False
+    if not valid_json:
+        raise ValueError("OpCall requires finite JSON values")
+    types = {"string": lambda v: isinstance(v, str), "null": lambda v: v is None,
+             "object": lambda v: isinstance(v, dict), "array": lambda v: isinstance(v, list)}
+    for key, item in value.items():
+        field = fields[key]
+        kinds = field["type"] if isinstance(field["type"], list) else [field["type"]]
+        if not any(types[kind](item) for kind in kinds):
+            raise ValueError("OpCall invalid " + key)
+        if "pattern" in field and re.search(field["pattern"], item) is None:
+            raise ValueError("OpCall invalid " + key)
+        if "items" in field and any(not types[field["items"]["type"]](v) for v in item):
+            raise ValueError("OpCall invalid " + key)
+    return value
+
+
+def validate_edit_command_bytes(raw: bytes) -> bytes:
+    """Validate without reserializing: whitespace, key order and UTF-8 survive."""
+    import json
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON field: " + key)
+            result[key] = value
+        return result
+    validate_edit_command(json.loads(raw, object_pairs_hook=unique_object))
+    return raw
+
 
 
 @dataclass(frozen=True)

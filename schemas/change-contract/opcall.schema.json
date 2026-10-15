@@ -2,9 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://astrid.local/schemas/change-contract/opcall.schema.json",
   "title": "OpCall",
-  "description": "The one serialized form of a timeline change (API.md section 3.2; R-1: OpCall is the primitive). DRAFT: no producer emits OpCalls yet (journal and Plan carry calls: [] today), so instances are spec-derived, not recorded.",
+  "description": "Candidate single EditCommand envelope (SDK executable name: EditCommand). D RUNNER emits canonical OpCalls in Plan.calls and journal calls. Handler ids remain open. This increment is not a schema freeze.",
   "type": "object",
-  "required": ["op", "select", "args"],
+  "required": [
+    "op",
+    "select",
+    "args"
+  ],
   "additionalProperties": false,
   "properties": {
     "op": {
@@ -13,22 +17,30 @@
       "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$"
     },
     "select": {
-      "type": ["string", "null"],
-      "description": "Selector string or address, as written. null for selection: none."
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Authoring selector; executed calls use the canonical stable selector resolved by the runner. null for timeline-level operations."
     },
     "args": {
       "type": "object",
-      "description": "Canonical JSON values: moments canonical, durations as '3f' or '0.5s', px numbers.",
+      "description": "Opaque finite JSON operation arguments in authoring units. Omitted keys, JSON null, explicit clip.clear keys, and ordinary objects (including {$absent:true} or {op:clear}) remain distinct. Only the selected handler interprets these values.",
       "additionalProperties": true
     },
     "version": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "The tool version when it ran (filled by the runner)."
     },
     "resolved": {
       "type": "array",
-      "description": "Stable uids that select (and clip/cut args) resolved to (filled by the runner).",
-      "items": {"type": "string"},
+      "description": "Runner-populated stable string identities. The admitted producer uses local identities; globally scoped ScopedId mapping remains unresolved and is not imposed here.",
+      "items": {
+        "type": "string"
+      },
       "default": []
     }
   }

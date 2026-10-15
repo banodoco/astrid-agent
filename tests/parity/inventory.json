@@ -683,6 +683,17 @@
           "required": false
         },
         {
+          "action": "_AppendAction",
+          "default": [],
+          "dest": "clear_keys",
+          "metavar": "KEY",
+          "nargs": null,
+          "options": [
+            "--clear"
+          ],
+          "required": false
+        },
+        {
           "action": "_StoreAction",
           "default": null,
           "dest": "clip",
@@ -710,6 +721,16 @@
           "nargs": null,
           "options": [
             "--close-gap-before"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "command",
+          "nargs": null,
+          "options": [
+            "--command"
           ],
           "required": false
         },
@@ -752,6 +773,16 @@
           "nargs": null,
           "options": [
             "--draft"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "dry_run",
+          "nargs": 0,
+          "options": [
+            "--dry-run"
           ],
           "required": false
         },
@@ -4395,6 +4426,10 @@
         "base_revision": {
           "kind": "property"
         },
+        "batch": {
+          "kind": "callable",
+          "signature": "(self, commands: 'list[Mapping[str, Any]]') -> 'list[Any]'"
+        },
         "changed_cut_ids": {
           "kind": "callable",
           "signature": "(self) -> 'list[str]'"
@@ -4467,6 +4502,10 @@
         "edit": {
           "kind": "callable",
           "signature": "(self, label: 'str', *, dry_run: 'bool' = False, check: 'bool' = True, quiet: 'bool' = False, reason: 'str | None' = None)"
+        },
+        "edit_flags": {
+          "kind": "callable",
+          "signature": "(self, flags: 'Mapping[str, Any]', *, client: 'Any' = None) -> 'None'"
         },
         "edits": {
           "kind": "callable",
@@ -4656,6 +4695,10 @@
         },
         "at": {
           "kind": "property"
+        },
+        "clear": {
+          "kind": "callable",
+          "signature": "(self, *keys: 'str') -> \"'Clip'\""
         },
         "clear_asset": {
           "kind": "callable",

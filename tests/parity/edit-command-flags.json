@@ -57,6 +57,13 @@
   },
   {
     "flags": [
+      "--clear"
+    ],
+    "destination": "clear_keys",
+    "operation": "clip.clear"
+  },
+  {
+    "flags": [
       "--clip"
     ],
     "destination": "clip",
@@ -75,6 +82,13 @@
     ],
     "destination": "close_gap_before",
     "operation": "timeline.close-gap"
+  },
+  {
+    "flags": [
+      "--command"
+    ],
+    "destination": "command",
+    "operation": "timeline.batch"
   },
   {
     "flags": [
@@ -103,6 +117,13 @@
     ],
     "destination": "draft",
     "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--dry-run"
+    ],
+    "destination": "dry_run",
+    "operation": "timeline.batch"
   },
   {
     "flags": [
