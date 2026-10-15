@@ -189,3 +189,19 @@ def test_fixture_grant_intersects_actual_shipped_source_ledger(bound):
     assert decision["project_decision"]["allowed"] is True
     assert decision["executable"] is False
     assert decision["code"] == "project_capability_unavailable"
+
+
+@pytest.mark.parametrize("session,credential", [(120, 110), (110, 120)])
+def test_authenticated_host_expiry_ceiling_cannot_be_extended_by_policy(session, credential):
+    from astrid.core.execution.provider_route_grant import ProjectGrantAuthority
+    clock = [100.0]
+    authority = ProjectGrantAuthority(realm="r", browser_session="s", actor_id="a",
+        selected_project="p", clock=lambda: clock[0], session_expiry=session, credential_expiry=credential)
+    handle = authority.issue({"realm": "r", "browser_session": "s", "projects": ["p"],
+        "operations": ["rendering.render"], "expiry": 9999})
+    def decide():
+        return authority.decide(handle, realm="r", browser_session="s", actor_id="a",
+            project_id="p", operation="rendering.render")
+    assert decide()["allowed"]
+    clock[0] = 110
+    assert decide()["code"] == "project_grant_expired"

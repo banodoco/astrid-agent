@@ -162,20 +162,28 @@ class ProjectGrantAuthority:
 
     Constructor bindings must come from an authenticated host session and the
     host's selected project, never from request JSON, tool titles, or MCP config.
-    No current Astrid/Runtime browser-session issuer is wired to this class:
-    Runtime handshake IDs are not retained/authenticated on later operations.
-    Until that contract exists, explicit disposable bindings exercise this core
-    only; this is neither an authentication adapter nor launch enforcement.
+    Runtime's paired-session issuer supplies authenticated bindings after the
+    connector credential boundary. Runtime handshake IDs remain insufficient.
+    This class is policy only; it does not authenticate requests or launch work.
 
     Opaque handles reference immutable host-owned policies. Decisions are reusable
     until expiry. Revocation and filesystem/resource resolution are separate.
     """
 
     def __init__(self, *, realm: str, browser_session: str, actor_id: str,
-                 selected_project: str, clock=time.time) -> None:
+                 selected_project: str, clock=time.time,
+                 session_expiry: float | None = None,
+                 credential_expiry: float | None = None) -> None:
         if not all(_project_binding(v) for v in
                    (realm, browser_session, actor_id, selected_project)):
             raise ProjectGrantError("project_grant_host_binding_missing")
+        limits = (session_expiry, credential_expiry)
+        if any(v is not None for v in limits):
+            if not all(type(v) in (int, float) and math.isfinite(v) and v > clock() for v in limits):
+                raise ProjectGrantError("project_grant_host_expiry_invalid")
+            self._expiry_ceiling = min(limits)
+        else:
+            self._expiry_ceiling = math.inf
         self._realm = realm
         self._browser_session = browser_session
         self._actor_id = actor_id
@@ -210,6 +218,9 @@ class ProjectGrantAuthority:
             expiry = float(expiry)
         except OverflowError as exc:
             raise ProjectGrantError("project_grant_policy_invalid") from exc
+        if not math.isfinite(expiry):
+            raise ProjectGrantError("project_grant_policy_invalid")
+        expiry = min(expiry, self._expiry_ceiling)
         now = float(self._clock())
         if not math.isfinite(expiry) or not math.isfinite(now):
             raise ProjectGrantError("project_grant_policy_invalid")
