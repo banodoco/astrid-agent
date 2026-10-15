@@ -63,11 +63,20 @@ an unprefixed non-empty value is recorded as a human actor ID. `ASTRID_SESSION`
 adds an optional session label. These fields identify journal entries and do
 not grant access.
 
+## History and edit log
+
+```bash
+python3 -m astrid timelines history TL --project P --limit 10
+python3 -m astrid timelines log TL --project P --actor agent:writer --op clip.set
+```
+
+`history` lists Runtime revisions newest-first; Runtime may return only its head if listing is unavailable. `log` reads the local edit journal. Its filters are `--since`, `--actor`, `--op`, `--cut`, `--clip`, `--outcome`, `--json`, and `--verify`.
+
 ## Structured edits and explicit clears
 
 `timelines edit TL --project P --command '<JSON>'` accepts the existing OpCall
-vocabulary. For example, preview a parameter edit without writing a document,
-history step, or journal record:
+vocabulary. Preview the parameter edit without writing a document, history
+step, or journal record. The [structured-edit scenario](../../../../tests/editing_scenarios/code/code.skill.structured-edit.yaml) exercises this OpCall across CLI, sheet, and Python:
 
 ```bash
 python3 -m astrid timelines edit TL --project P --command '{"op":"clip.set","select":"c1.rocket","args":{"x":120}}' --dry-run
@@ -91,7 +100,7 @@ that do not fit its table, including independent audio clips and source trim.
 They use the same registry and join the sheet's single atomic edit. Existing
 cut/layer rows retain their syntax. A take `gap 0` preserves the next take's
 lead-in; use a `timeline.close-gap` command to close silence before a spoken word.
-The generated flag-to-operation table is `tests/parity/edit-command-flags.json`.
+See the [generated flag-to-operation reference](references/edit-command-flags.md), built from the canonical CLI inventory and SDK registry and checked against the parity fixture.
 
 The older explicit `with checkout.edit(label, dry_run=True)` audit API retains
 its existing dry-run audit record. Executable command/CLI previews write none.
@@ -115,7 +124,7 @@ then pass through the compiler. Media acquisition still requires its admitted
 COMMIT adapter. Unknown publication/evidence links remain conflicts; revision IDs,
 snapshots, prefixes and timestamps do not establish publication ancestry.
 
-For an explicit whole-timeline replacement, use:
+Restore replaces the whole Runtime revision; `<revision-id>`, `@prev`, and `@-N` select its source. For an explicit replacement, use:
 
 ```bash
 python3 -m astrid timelines restore TL --project P --from @prev --idempotency-key restore-review-1

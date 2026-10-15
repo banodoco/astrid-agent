@@ -1,0 +1,11 @@
+id: code.skill.structured-edit
+source: new
+intent: Set a clip parameter through a structured edit command.
+fixture: cuts-lines
+expect: change
+cli: edit --command '{"op":"clip.set","select":"c1.rocket","args":{"x":120}}'
+sheet: {text: 'edit {"op":"clip.set","select":"c1.rocket","args":{"x":120}}'}
+python: |
+  tl.clip("c1.rocket").set(x=120)
+check:
+  - tl.clip("c1.rocket").get("x") == 120
