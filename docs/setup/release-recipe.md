@@ -48,6 +48,32 @@ The repeated-occurrence music fixture and within-bar seam scenario now spell
 their unrelated word anchor as `"viral" #1`, because their narration repeats;
 their music ownership, ripple, seam and output assertions are retained.
 
+### Timing behavior notes (REPAIRS-REST)
+
+Trimmed media now follows its declared `until`, `for`, or picture-cut end
+when retimed, including after a word moves. This applies to audio with an
+explicit end declaration as well as visual media. Source in-points stay fixed;
+end lengths convert from timeline seconds to source seconds using speed.
+`trim()` stores the source-window length in `hold`, so playback speed divides
+it exactly once. `slip()` also uses speed when deriving a missing source out.
+Unknown metadata and live clip handles remain intact.
+
+Beat and downbeat references now count only the bed covering their resolved
+base time. They never borrow beats from a later bed or cross a gap. For overlap
+ownership the latest bed start wins, then the lexically smallest shot ID and
+clip ID; intervals include their start and exclude their end. Counts before
+and after use that same owner's grid across its existing generated segments;
+coincident crossfade beats count once. Placed grids retain source trim and
+speed conversion, preserving the half-frame exclusion
+around the base. The existing moment grammar is unchanged.
+
+Disposable scenarios in `tests/sdk/test_timing_repairs_rest.py` cover each
+correction, including equal-start overlap under reversed input order. The
+existing tiny and reflow-golden film fixtures retain byte-identical plain,
+gap, and line-removal reflow output; no golden assertion or fixture changes
+are required for this increment. These are current-source claims, not named
+historical film equivalence or release acceptance.
+
 ### Artifact manifest
 
 The producer handoff must replace only the pending values with the exact

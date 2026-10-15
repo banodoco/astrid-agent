@@ -649,7 +649,7 @@ class _TimingEvaluators:
         if round(start * self.fps) != round(old_start * self.fps):
             clip._set_start(self._frame(start + 1e-6))
             changed = True
-        if end is not None and not clip.is_audio and "from" not in clip.data:
+        if end is not None:
             length = self._frame(end + 1e-6) - clip.start
             if length > 0.5 / self.fps and round(length * self.fps) != round(clip.duration * self.fps):
                 _set_length(clip.data, length)

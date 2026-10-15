@@ -442,9 +442,8 @@ class Clip(_Suggest):
         source_out = (_num(self.data.get("to"), limit) if out_s is None else float(out_s))
         if not math.isfinite(source_in) or not math.isfinite(source_out) or source_in < 0 or source_out > limit or source_out <= source_in:
             raise TimelineEditError(f"{self.address}: source range {source_in:g}–{source_out:g} s must fit inside the file (0–{limit:g} s)")
-        speed = _num(self.data.get("speed"), 1.0) or 1.0
         self.data["from"], self.data["to"] = _r(source_in), _r(source_out)
-        self.data["hold"] = _r((source_out - source_in) / speed)
+        self.data["hold"] = _r(source_out - source_in)
         intent.set_until(self.data, None)
         intent.set_for(self.data, None)
         self._tl._mcache = None
@@ -458,7 +457,8 @@ class Clip(_Suggest):
         limit = self._source_duration()
         original_in = _num(self.data.get("from"))
         source_in = original_in + shift
-        source_out = _num(self.data.get("to"), original_in + self.duration) + shift
+        speed = _num(self.data.get("speed"), 1.0) or 1.0
+        source_out = _num(self.data.get("to"), original_in + self.duration * speed) + shift
         if source_in < 0 or source_out > limit:
             raise TimelineEditError(f"{self.address}: slipping {shift:g} s gives source range {source_in:g}–{source_out:g} s; "
                                     f"the file limit is 0–{limit:g} s")
@@ -1201,9 +1201,44 @@ class _MomentContext:
             cache["words"] = self.tl.words()
         return cache["words"]
 
-    def beats(self, kind: str):
-        out = []
+    def beats_at(self, kind: str, base: float):
+        """One bed owns the base; counts never borrow another bed's grid.
+
+        Latest bed start wins overlaps, then the stable shot/clip identity.
+        The half-open interval makes a seam belong to its incoming bed.
+        """
+        from astrid.sdk.timeline import music_beds
+
+        candidates, seen = [], set()
         for clip in self.tl.clips(audio=True):
+            owned = music_beds.entry_for(clip)
+            if owned:
+                owner, entry = owned
+                if owner in seen:
+                    continue
+                seen.add(owner)
+                source = Clip(self.tl, clip.shot_id, entry['source'])
+                output, _, _ = music_beds.materialize(
+                    entry['source'], entry['ripple_basis'], owner,
+                    start=self.tl._shot_start(clip.shot_id), fps=self.fps)
+                pieces = [Clip(self.tl, clip.shot_id, data) for data in output]
+            else:
+                source, pieces = clip, [clip]
+            if intent.beat_sources(source.data, kind) and any(
+                    c.start - 1e-6 <= base < c.end - 1e-6 for c in pieces):
+                candidates.append(((-source.start, source.shot_id, source.id), pieces))
+        if not candidates:
+            return []
+        _, pieces = min(candidates, key=lambda item: item[0])
+        # Crossfades can expose the same source beat in two output pieces.
+        return sorted(set(self._placed_beats(kind, pieces)))
+
+    def beats(self, kind: str):
+        return self._placed_beats(kind, self.tl.clips(audio=True))
+
+    def _placed_beats(self, kind: str, clips):
+        out = []
+        for clip in clips:
             if clip.track != "music" and not intent.beat_sources(clip.data):
                 continue
             speed = _num(clip.data.get("speed"), 1.0) or 1.0
