@@ -349,7 +349,11 @@ def move(container: MutableMapping[str, Any], clip_id: str, *, track: MutableMap
 
 
 def retime(clip: MutableMapping[str, Any], *, start: int | float | None = None, end: int | float | None = None, ripple: str = "none") -> MutableMapping[str, Any]:
-    """Change one interval; neighbours never move unless ripple is explicit."""
+    """Change one interval; neighbours never move unless ripple is explicit.
+
+    Deprecated compatibility helper (no internal callers). For timeline timing,
+    use the compiler-backed Checkout API. Existing primitive behavior is kept.
+    """
 
     if ripple != "none":
         raise TimelineEditError("only ripple='none' is supported by the primitive; use an explicit sequence for ripple")
@@ -374,6 +378,9 @@ def retime_with_ripple(
     parent_duration: str = "preserve",
 ) -> MutableMapping[str, Any]:
     """Retime one visual clip and shift only later clips on its own track.
+
+    Deprecated compatibility helper (no internal callers); use Checkout for
+    compiler-backed timeline timing. The narrow primitive behavior is retained.
 
     Ripple is deliberately opt-in and narrowly scoped. ``scope='track'`` is
     the only supported scope: audio/voice/music tracks are rejected, and no
@@ -541,7 +548,11 @@ def quantize_interval(
 
 
 def sequence(clips: Sequence[MutableMapping[str, Any]], *, start: int | float = 0, durations: Sequence[int | float] | None = None, gap: int | float = 0) -> Sequence[MutableMapping[str, Any]]:
-    """Place supplied clips consecutively; never shifts unrelated tracks."""
+    """Place supplied clips consecutively; never shifts unrelated tracks.
+
+    Deprecated compatibility helper (no internal callers). For timeline timing,
+    use the compiler-backed Checkout API. Existing primitive behavior is kept.
+    """
 
     if durations is not None and len(durations) != len(clips):
         raise TimelineEditError("durations must match clips")
@@ -556,6 +567,11 @@ def sequence(clips: Sequence[MutableMapping[str, Any]], *, start: int | float = 
 
 
 def align(clips: Sequence[MutableMapping[str, Any]], anchors: Sequence[int | float], *, edge: str = "start") -> Sequence[MutableMapping[str, Any]]:
+    """Deprecated compatibility helper with no internal callers.
+
+    Use compiler-backed Checkout timing for timelines. Primitive alignment is
+    retained unchanged for callers that still operate on standalone clips.
+    """
     if len(clips) != len(anchors) or edge not in {"start", "end", "center"}:
         raise TimelineEditError("align requires equal clips/anchors and a supported edge")
     for clip, anchor in zip(clips, anchors):
@@ -582,7 +598,11 @@ def grid(rows: int, columns: int, *, gap: float = 0.0) -> list[dict[str, float]]
 
 
 def fit_duration(container: MutableMapping[str, Any], *, mode: str = "extend") -> int | float:
-    """Explicitly fit a container's duration to its latest clip end."""
+    """Explicitly fit a container's duration to its latest clip end.
+
+    Deprecated compatibility helper (no internal callers). For timeline timing,
+    use the compiler-backed Checkout API. Existing primitive behavior is kept.
+    """
 
     if mode not in {"extend", "trim"}:
         raise TimelineEditError("mode must be 'extend' or 'trim'")

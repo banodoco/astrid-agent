@@ -1,5 +1,12 @@
 # Timeline authoring bundle capabilities
 
+The standalone `timeline_editing` helpers `retime`, `retime_with_ripple`,
+`sequence`, `align`, and `fit_duration` are deprecated compatibility APIs.
+They have no internal callers and retain their existing behavior and
+signatures. For timeline timing, use `Checkout.retime()`, `reflow()`,
+`resolve()`, and `Checkout.sequence(...).fit(...)`. The time and frame
+conversion helpers remain supported.
+
 The authoring bundle is a detached, exact-head working copy of the existing
 Runtime parent/shot/internal-timeline payloads. It is not a second timeline
 format. Open a pinned closure, use ordinary Python or the thin SDK helpers,

@@ -247,6 +247,13 @@ kind of edit it expresses and mirrors the module's `__all__` export list.
 
 ### Timing and frame policy
 
+The standalone `timeline_editing` helpers `retime`, `retime_with_ripple`,
+`sequence`, `align`, and `fit_duration` are deprecated compatibility APIs.
+They have no internal callers and retain their existing behavior and
+signatures. For timeline timing, use `Checkout.retime()`, `reflow()`,
+`resolve()`, and `Checkout.sequence(...).fit(...)`. The time and frame
+conversion helpers remain supported.
+
 - `move(container, clip_id, track=..., start=..., end=...)` — move one clip.
 - `retime(clip, start=..., end=..., ripple="none")` — change one interval;
   the default leaves later placements where they are.
