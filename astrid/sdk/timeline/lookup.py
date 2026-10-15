@@ -119,6 +119,11 @@ class _LookupMixin:
         ``cut=`` restricts to one cut; otherwise the error lists the choices.
         """
         if isinstance(query, str) and cut is None and near is None:
+            from astrid.sdk.timeline.music_beds import collection, locate
+            managed = collection(self).get(query)
+            if isinstance(managed, dict) and isinstance(managed.get('source'), dict):
+                sid, _ = locate(self, query, managed['source'])
+                return Clip(self, sid, managed['source'])
             # one address, everywhere: c41.mink, a carried alias (c30.cover), a layer name, an asset key, …
             from astrid.sdk.timeline_address import candidates
 

@@ -44,7 +44,7 @@ def film_intent(config: Any) -> dict[str, Any]:
     app = _map(config.get("app"))
     out.update({key: value for key, value in app.items() if key in FILM_INTENT_KEYS})
     ns = _map(app.get(NS))
-    out.update({key: value for key, value in ns.items() if key in FILM_INTENT_KEYS})
+    out.update({key: value for key, value in ns.items() if key in FILM_INTENT_KEYS or key in {"music_beds", "v"}})
     return out
 
 

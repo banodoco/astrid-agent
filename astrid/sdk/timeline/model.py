@@ -919,13 +919,18 @@ def retime_scope(tl):
         yield cut_notes
         return
     tl._scope = []
+    tl._music_pending = {}
     try:
         yield cut_notes
     except BaseException:
         tl._scope = None
+        tl._music_pending = {}
         raise
     records, tl._scope = tl._scope, None
-    cut_notes.extend(tl._apply_bed_cuts(records))
+    try:
+        cut_notes.extend(tl._apply_bed_cuts(records))
+    finally:
+        tl._music_pending = {}
 
 
 def music_keyword(fn):
@@ -1163,3 +1168,14 @@ def tl_cache(tl: "Checkout") -> dict[str, Any]:  # noqa: F821
     if tl._mcache is None:
         tl._mcache = {}
     return tl._mcache
+
+
+# These semantic adapters are installed before Checkout registers the existing
+# Clip operations. The command/transaction runner remains their only boundary.
+from astrid.sdk.timeline.music_beds import source_edit as _music_source_edit
+for _music_method in (
+    "on", "until", "enter_at", "nudge", "hold_for", "for_", "set_duration", "trim", "slip", "extend", "end_at",
+    "set", "set_param", "clear", "set_track", "clear_asset", "swap_asset", "set_beats", "keyframe_at",
+    "remove", "remove_layer", "keep", "set_look", "tag", "move_to_cut",
+):
+    setattr(Clip, _music_method, _music_source_edit(getattr(Clip, _music_method)))

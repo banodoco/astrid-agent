@@ -2,7 +2,8 @@
 
 ``parent.config.app.astrid.v`` is an integer format version, not a list of
 features. Missing declarations are legacy version 0; version 1 is the existing
-namespaced intent format. Readers preserve unknown data, but writers must
+namespaced intent format, and version 2 carries authored music sources.
+Readers preserve unknown data, but writers must
 understand both their candidate and the head they are replacing.
 """
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-SUPPORTED_VERSIONS = frozenset({0, 1})
+SUPPORTED_VERSIONS = frozenset({0, 1, 2})
 
 
 class TimelineCompatibilityError(ValueError):
@@ -22,6 +23,8 @@ def require_writable_parent(parent: Any, *, source: str = "timeline") -> None:
     config = parent.get("config") if isinstance(parent, Mapping) else None
     app = config.get("app") if isinstance(config, Mapping) else None
     ns = app.get("astrid") if isinstance(app, Mapping) else None
+    if isinstance(ns, Mapping) and "music_beds" in ns and ns.get("v", 0) != 2:
+        raise TimelineCompatibilityError(f"{source}: music_beds requires app.astrid.v=2")
     if not isinstance(ns, Mapping) or "v" not in ns:
         return
     version = ns["v"]

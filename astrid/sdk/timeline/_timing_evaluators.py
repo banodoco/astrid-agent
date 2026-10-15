@@ -4,13 +4,13 @@ from __future__ import annotations
 import copy
 import json
 import math
-import statistics
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from astrid.core.timeline import moments as mo
 from astrid.core.timeline.music_edit import plan_keep_end
+from astrid.core.timeline.music_bed import _bar_len, _bed_clusters
 from astrid.sdk import timeline_intent as intent
 from astrid.core.timeline.cuts import (
     clip_duration,
@@ -24,30 +24,6 @@ from astrid.sdk.timeline.units import (_unit_path, element_units, mark_offset_ca
 
 
 _EPS = 1e-6
-
-
-def _bar_len(bars: Sequence[float]) -> float:
-    """The bed's bar: the median gap between its downbeats (source seconds), else 2.0 s."""
-    pts = sorted(float(x) for x in bars)
-    gaps = [b - a for a, b in zip(pts, pts[1:]) if b - a > _EPS]
-    return statistics.median(gaps) if gaps else 2.0
-
-
-def _bed_clusters(records: Sequence[tuple[float, float]], bar: float, frame: float) -> list[tuple[float, float]]:
-    """The changes of one bed, as (film second, net seconds): neighbours less than a bar apart are one cut at the
-    first one's place with their net delta; a net under a frame is no cut."""
-    groups: list[list[tuple[float, float]]] = []
-    for p, d in sorted(records, key=lambda r: r[0]):
-        if groups and p - groups[-1][-1][0] < bar - _EPS:
-            groups[-1].append((p, d))
-        else:
-            groups.append([(p, d)])
-    out = []
-    for group in groups:
-        net = sum(d for _, d in group)
-        if abs(net) >= frame - _EPS:
-            out.append((group[0][0], net))
-    return out
 
 
 def _is_seconds(text: str) -> bool:
@@ -1038,7 +1014,8 @@ class _TimingEvaluators:
         clips = self._internal(sid)["clips"]
         out = []
         for clip in clips:
-            if id(clip) in skip_ids:
+            from astrid.sdk.timeline.music_beds import managed_source
+            if id(clip) in skip_ids or managed_source(self, clip):
                 out.append(clip)
                 continue
             cs = _num(clip.get("at"))
@@ -1091,7 +1068,8 @@ class _TimingEvaluators:
         clips = self._internal(sid)["clips"]
         out = []
         for clip in clips:
-            if id(clip) in skip_ids:
+            from astrid.sdk.timeline.music_beds import managed_source
+            if id(clip) in skip_ids or managed_source(self, clip):
                 out.append(clip)
                 continue
             cs = _num(clip.get("at"))
@@ -1122,6 +1100,8 @@ class _TimingEvaluators:
         """keep_end: note a time change in the open scope (film second ``a``; ``d`` seconds removed over ``a``..``b``
         when < 0, opened at ``a`` when > 0) and move the changes already noted into the timeline after it: one
         after the removed window moves back by ``d``, one inside it moves to ``a``, one after an opening moves on."""
+        from astrid.sdk.timeline import music_beds
+        music_beds.transition(self, a, b, d, skip_ids)
         if self._scope is None or self._music != "keep_end" or abs(d) < 1e-9:
             return
         moved = []
@@ -1143,15 +1123,16 @@ class _TimingEvaluators:
         Returns the notes (also appended to ``notes``)."""
         if not records:
             return []
+        from astrid.sdk.timeline import music_beds
         frame = 1.0 / self.fps
         rows = sorted(self.bundle.get("placements") or [], key=_row_start)
-        out: list[str] = []
+        out: list[str] = music_beds.enroll(self, records)
         for row in rows:
             sid = str(row.get("shot_id"))
             start = _row_start(row) / 1000.0  # a shot keeps its start: the bed's at is shot-relative
             clips = self._internal(sid)["clips"]
             for clip in list(clips):
-                if not self._is_music(sid, clip):
+                if not self._is_music(sid, clip) or music_beds.managed_source(self, clip):
                     continue
                 bars = intent.beat_sources(clip, "downbeat")
                 beats = intent.beat_sources(clip)

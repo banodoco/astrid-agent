@@ -317,6 +317,90 @@
         },
         "_legacy": {
           "$ref": "#/$defs/legacyValues"
+        },
+        "music_beds": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/musicBed"
+          },
+          "description": "Authored source and current unsnapped ripple inputs; outputs are derived ownership mapping. Requires integer format v=2."
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "music_beds"
+            ]
+          },
+          "then": {
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "const": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "musicRipplePoint": {
+      "type": "object",
+      "required": [
+        "at_s",
+        "delta_s"
+      ],
+      "properties": {
+        "at_s": {
+          "type": "number"
+        },
+        "delta_s": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "musicBed": {
+      "type": "object",
+      "required": [
+        "owner",
+        "source",
+        "ripple_basis",
+        "outputs"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        },
+        "ripple_basis": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/musicRipplePoint"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
         }
       },
       "additionalProperties": false

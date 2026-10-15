@@ -283,10 +283,6 @@ def test_split_audio_keeps_the_cut_gap_and_source_skip_rules():
     assert second["at"] == pytest.approx(3.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Known generic seam accumulation across separate re-flows; MUSIC-SEGMENTS owns rebuilding bed segments. This synthetic case does not reproduce the unavailable v11 fixture.",
-)
 def test_music_reflow_does_not_accumulate_a_seam_on_an_existing_seam():
     """Source: astrid/sdk/timeline/reflow.py:1139-1185; owner: MUSIC-SEGMENTS."""
     tl = _tiny(full_music=True)

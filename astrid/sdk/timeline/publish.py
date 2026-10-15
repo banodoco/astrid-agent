@@ -190,4 +190,8 @@ class _PublishMixin:
                     self.notes.append(f"{clip.get('id')}: applied your _timeline edit → at {clip['at']} (shot {sid})")
         bundle = _strip_derived(bundle)
         intent.migrate(bundle)  # checkout: legacy intent moves to app.astrid in the WORKING COPY (its pinned base copies are migrated too, so the move is not an edit)
+        # Validate supplied music projection at the load boundary without
+        # resolving or enrolling ordinary legacy content.
+        from astrid.sdk.timeline.music_beds import validate_bundle
+        validate_bundle(bundle)
         return bundle

@@ -40,7 +40,7 @@ def test_version_declaration_requires_one_integer(version):
         require_writable_parent(parent(version))
 
 
-@pytest.mark.parametrize("version", [0, 1])
+@pytest.mark.parametrize("version", [0, 1, 2])
 def test_known_versions_compile_without_inserting_feature_lists(version):
     work = candidate(version)
     before = copy.deepcopy(work)
@@ -68,10 +68,10 @@ def test_film_intent_schema_accepts_integer_compatibility_metadata():
 @pytest.mark.parametrize("field", ["parent", "base_parent_payload"])
 def test_unknown_feature_version_refuses_core_commit_even_if_candidate_removes_it(field):
     work = candidate()
-    work[field]["config"]["app"]["astrid"]["v"] = 2
+    work[field]["config"]["app"]["astrid"]["v"] = 3
     writes = []
     writer = SimpleNamespace(publish_parent_composition=lambda *a, **kw: writes.append((a, kw)))
-    with pytest.raises(TimelineCompatibilityError, match=r"unknown Astrid feature version app.astrid.v=2"):
+    with pytest.raises(TimelineCompatibilityError, match=r"unknown Astrid feature version app.astrid.v=3"):
         publish_authoring_candidate(work, writer, idempotency_key="disposable-core")
     assert writes == []
 
@@ -107,7 +107,8 @@ def transport(fake):
 
 
 @pytest.mark.parametrize("route", ["publish", "restore", "replace-media"])
-def test_astrid_transport_routes_refuse_writer_lacking_feature_bearing_head(route):
+def test_astrid_transport_routes_refuse_writer_lacking_feature_bearing_head(route, monkeypatch):
+    monkeypatch.setattr("astrid.core.timeline.compatibility.SUPPORTED_VERSIONS", frozenset({0, 1}))
     fake = GeneratedFixture(head_version=2)
     client = transport(fake)
     with pytest.raises(WorkspaceClientError, match=r"app.astrid.v=2"):
@@ -141,9 +142,9 @@ def test_supported_head_publish_preserves_cas_and_initial_publish_needs_no_head(
 
 
 def test_restore_refuses_unknown_feature_in_source_and_preserves_supported_cas():
-    fake = GeneratedFixture(restored_version=2)
+    fake = GeneratedFixture(restored_version=3)
     client = transport(fake)
-    with pytest.raises(WorkspaceClientError, match=r"app.astrid.v=2"):
+    with pytest.raises(WorkspaceClientError, match=r"app.astrid.v=3"):
         client.restore_project_parent_composition_revision("p", "t", "disposable-old",
             expected_head="disposable-head", idempotency_key="disposable-restore")
     assert fake.writes == []
@@ -173,6 +174,8 @@ def test_checkout_publish_inspects_feature_bearing_head_even_without_merge(monke
     if head_version == 1:
         # A legacy writer is missing support for the existing namespace format.
         monkeypatch.setattr("astrid.core.timeline.compatibility.SUPPORTED_VERSIONS", frozenset({0}))
+    else:
+        monkeypatch.setattr("astrid.core.timeline.compatibility.SUPPORTED_VERSIONS", frozenset({0, 1}))
     reads = []
 
     def open_bundle(project, timeline, *, revision_id=None):

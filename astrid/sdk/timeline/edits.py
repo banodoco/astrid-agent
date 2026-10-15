@@ -420,8 +420,14 @@ class _EditMixin:
         for sid in old_by_shot:
             self._register_asset(sid, {"key": key, **new_entry}, replace=True)
         changed = []
+        from astrid.sdk.timeline.music_beds import entry_for, source_edit
         for clip in occurrences:
-            self._follow_media(clip, old_by_shot[clip.shot_id], new_entry, asset)
+            managed = entry_for(clip)
+            if managed and clip.id != managed[1]['source']['id']:
+                continue  # generated spans follow their one authored source
+            def follow(authored):
+                self._follow_media(authored, old_by_shot[authored.shot_id], new_entry, asset)
+            source_edit(follow)(clip)
             changed.append(clip.address)
         return changed
 

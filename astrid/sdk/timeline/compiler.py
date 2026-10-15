@@ -194,7 +194,7 @@ def _validate_dependencies(tl):
 # paths, save state and open edits belong to the caller, never to a compiler copy.
 _STATE = (
     "bundle", "fps", "notes", "report", "_mcache", "_music", "_keep_inside",
-    "_kept", "_outside", "_scope", "_orphan_reason", "_orphan_cuts", "_moved_ends",
+    "_kept", "_outside", "_scope", "_music_pending", "_orphan_reason", "_orphan_cuts", "_moved_ends",
 )
 
 
@@ -285,6 +285,9 @@ def compile_timing(inputs: TimingInputs | Mapping[str, Any], commands: Sequence 
     workspace._scope = _records(workspace._scope, identities)
     workspace._edit_depth = 1  # journal ownership stays with the calling checkout
     workspace._command_depth = 1  # compiler evaluator calls stay below the outer EditCommand boundary
+    from astrid.sdk.timeline import music_beds
+    music_beds.validate(workspace)
+    music_beds.dematerialize(workspace)
     _validate_dependencies(workspace)  # outside legacy partial-state adoption
     values = []
 
@@ -298,13 +301,14 @@ def compile_timing(inputs: TimingInputs | Mapping[str, Any], commands: Sequence 
                 args = (_records(args[0], identities), *args[1:])
             values.append(getattr(workspace, method)(*args, **kwargs))
             _validate_dependencies(workspace)
-    except TimingCycleError:
+    except (TimingCycleError, music_beds.MusicBedError):
         raise  # a cyclic workspace must never be adopted, even for Checkout
     except BaseException as exc:
         _validate_dependencies(workspace)
         if inputs._owner is not None:
             raise _CheckoutCompileError(result(), exc) from exc
         raise
+    music_beds.project(workspace)
     return result()
 
 
