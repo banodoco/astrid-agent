@@ -48,7 +48,7 @@ class FakeStore:
 
 
 def _chain():
-    return [_rev(A), _rev(B), _rev(C), _rev(D)]
+    return [_rev(A, B), _rev(B, C), _rev(C, D), _rev(D)]
 
 
 def test_source_by_prefix():
@@ -220,7 +220,8 @@ def test_runtime_parent_history_refs_and_restore_use_generated_contract():
             assert (project_id, timeline_id) == ("project-id", "timeline-id")
             assert publication["expected_head"] == self.head
             revision_id = first_publish if len(self.rows) == 1 else second_publish
-            self.rows.append({"revision_id": revision_id, "created_at": f"2026-10-0{len(self.rows) + 2}T00:00:00Z"})
+            self.rows.append({"revision_id": revision_id, "previous_revision_id": self.head,
+                              "created_at": f"2026-10-0{len(self.rows) + 2}T00:00:00Z"})
             self.head = revision_id
             return {"new_head": revision_id}
 

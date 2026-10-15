@@ -687,6 +687,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     from astrid.core.timeline import clip_fields as cf
     from astrid.sdk.timeline_address import element_schema
     changes = set(changed_paths(before, after))
+    if entry.op == "timeline.inverse":
+        return {(write["id"], write["path"]) for write in args["writes"]}
     if entry.op in {"timeline.resolve", "timeline.reflow", "timeline.retime"}:
         return set()  # compiler execution is not a claim of direct authorship
     if entry.kind == "clip" and entry.op in {"clip.set", "clip.set-param", "clip.set-look", "clip.clear"}:
@@ -1076,7 +1078,7 @@ def _storage_dispatch(entry, tl, args, kwargs):
     bound = inspect.signature(entry.handler).bind(tl, *args, **kwargs)
     bound.apply_defaults()
     previous = getattr(tl, "_storage_call", None)
-    arguments = {key: _plain(value) for key, value in bound.arguments.items() if key != "self"}
+    arguments = {key: _plain(value) for key, value in bound.arguments.items() if key not in {"self", "client"}}
     tl._storage_call = EditCommand(entry.op, None, arguments, TOOL_VERSION, ())
     try:
         return entry.handler(tl, *args, **kwargs)

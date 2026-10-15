@@ -27,3 +27,11 @@
   card: MOTION
   reason: "Adds the optional curve keyword to the existing fit method; all previous arguments and defaults remain available."
   alias: "sdk:StepSequence.fit"
+- feature: "argument:timelines.undo:steps"
+  card: UNDO-REVERT
+  reason: "Undo retains positive numeric edit counts and extends the optional positional to exact publication IDs. --steps retains the original positive-integer spelling."
+  alias: "--steps"
+- feature: "sdk:Checkout.undo"
+  card: UNDO-REVERT
+  reason: "Undo retains steps=1 and adds optional client/publication keywords for staging verified publication inverses."
+  alias: "sdk:Checkout.undo"

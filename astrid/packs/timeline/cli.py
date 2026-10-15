@@ -3412,7 +3412,8 @@ def _cmd_apply(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_undo(parsed: argparse.Namespace) -> int:
-    tl=_edit_checkout(parsed); labels=tl.undo(parsed.steps)
+    tl=_edit_checkout(parsed)
+    labels=tl.undo(parsed.steps, client=parsed.client, publication=getattr(parsed, "publication", None))
     print("undid "+"; ".join(labels)); return 0
 
 
@@ -3425,7 +3426,21 @@ def _with_steps(handler):
     """``undo TL 3`` and ``undo TL --steps 3`` both mean three edits (default one)."""
     @wraps(handler)
     def run(parsed):
+        if handler is _cmd_undo and isinstance(parsed.steps, str) and not parsed.steps.isdigit() and parsed.steps_option:
+            from astrid.sdk.timeline._common import TimelineEditError
+            raise TimelineEditError("give a publication or an edit count, not both")
         parsed.steps = parsed.steps_option or parsed.steps or 1
+        if isinstance(parsed.steps, str):
+            if parsed.steps.isdigit() and int(parsed.steps) > 0:
+                parsed.steps = int(parsed.steps)
+            elif handler is _cmd_undo:
+                if getattr(parsed, "publication", None):
+                    from astrid.sdk.timeline._common import TimelineEditError
+                    raise TimelineEditError("give the publication once")
+                parsed.publication, parsed.steps = parsed.steps, 1
+            else:
+                from astrid.sdk.timeline._common import TimelineEditError
+                raise TimelineEditError("steps must be a positive integer")
         return handler(parsed)
     return run
 
@@ -3682,9 +3697,21 @@ def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("steps", nargs="?", type=_positive_int, default=None, help="How many edits (default 1).")
+    subparser.add_argument("steps", nargs="?", type=_undo_target if handler is _cmd_undo else _positive_int, default=None,
+                           help="How many edits, or an exact publication ID for undo/revert (default 1).")
+    if handler is _cmd_undo:
+        subparser.add_argument("--publication", help="Stage this publication's inverse from verified local commands.")
     subparser.add_argument("--steps", dest="steps_option", type=_positive_int, default=None, help="The same, as an option.")
     subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _with_steps(handler))))
+
+
+def _configure_restore(subparser: argparse.ArgumentParser) -> None:
+    from astrid.packs.timeline.cli_history import configure_restore
+    configure_restore(subparser)
+
+
+def _undo_target(value):
+    return _positive_int(value) if value.isdigit() else value
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
@@ -3694,7 +3721,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("assets", help="List timeline asset keys, media details, and every clip using each key.", configure=_configure_assets),
     CommandSpec("find", help="Find what you hear or see: addresses and times.", configure=_configure_find),
     CommandSpec("apply", help="Apply a cut sheet to a detached working copy.", configure=_configure_apply),
-    CommandSpec("undo", help="Undo edits to a detached working copy.", configure=lambda p: _configure_history_edit(p, _cmd_undo)),
+    CommandSpec("undo", aliases=("revert",), help="Undo a local edit or stage a clean copy's publication inverse.", configure=lambda p: _configure_history_edit(p, _cmd_undo)),
+    CommandSpec("restore", help="Restore an exact Runtime revision as a new publication.", configure=_configure_restore),
     CommandSpec("redo", help="Redo edits to a detached working copy.", configure=lambda p: _configure_history_edit(p, _cmd_redo)),
     CommandSpec("check", help="Validate a working copy and optionally sweep every cut.", configure=_configure_check),
     CommandSpec("status", help="Show the canonical head and an existing working copy.", configure=_configure_status),
@@ -3781,7 +3809,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
 def build_parser(client: Any) -> argparse.ArgumentParser:
     """Build the ``timelines`` product-family parser stamped with *client*.
 
-    Exactly the supported verbs above are registered — no aliases, no legacy
+    The supported verbs above are registered, including undo's revert alias; no legacy
     migration/push/pull/sync/audit/erase/repair verbs, and no ``copy``
     (reserved for m6) — plus the manifest-declared nested ``shots`` mount
     (``astrid timelines shots <verb>``) embedded from the shots product

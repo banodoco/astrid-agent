@@ -22,6 +22,31 @@ class RebaseResult:
     next_step: str | None = None
 
 
+def _identities(call):
+    identities = set(call.resolved) | set(call.created or ()) | set((call.bindings or {}).values())
+    for key in (*call.expect, *(call.authorship or {})):
+        if "::" in key:
+            identities.add(key.split("::", 1)[0])
+    for anchor in tuple(identities):
+        if anchor.startswith("cut:") and anchor.endswith((":start", ":end")):
+            identities.add(anchor.rsplit(":", 1)[0])
+    if call.op == "timeline.inverse":
+        for write in call.args["writes"]:
+            identities.add(write["id"])
+            identities.update(write.get("order", []))
+            for name in ("before", "after"):
+                state = write[name]
+                if state.get("state") != "present":
+                    continue
+                if write["path"] in {"intent.cut", "app.astrid.cut"} and isinstance(state["value"], str):
+                    identities.add("cut:" + state["value"])
+                if not write["path"] and isinstance(state["value"], dict):
+                    cut = state["value"].get("app", {}).get("astrid", {}).get("cut")
+                    if cut:
+                        identities.add("cut:" + cut)
+    return identities
+
+
 def _mapping(calls, supplied):
     """Admit only used, injective mappings in the existing ScopedId vocabulary."""
     identities = set().union(*(_identities(call) for call in calls))
@@ -54,18 +79,6 @@ def _next_step(conflict):
     return "Resolve the reported dependency or blocking finding, then record the intended command on this head before retrying."
 
 
-def _identities(call):
-    identities = set(call.resolved) | set(call.created or ()) | set((call.bindings or {}).values())
-    # An authored owner can be referenced only by a basis/projection guard;
-    # consequences are not added to the command's direct resolved targets.
-    for key in set(call.expect or {}) | set(call.authorship or {}):
-        if "::" in key:
-            sid = key.split("::", 1)[0]
-            if commands.is_scoped_id(sid):
-                identities.add(sid)
-    return identities
-
-
 def _rewrite(call, id_map):
     """Rewrite only identities actually present in this record, never opaque text."""
     identities = _identities(call)
@@ -78,32 +91,38 @@ def _rewrite(call, id_map):
             cut, edge = value.rsplit(":", 1)
             return id_map.get(cut, cut) + ":" + edge
         return value
-    def mapped_moment_text(text):
+    def moment_text(text):
         from astrid.core.timeline import moments as mo
-        def rewrite_moment(moment):
+        def visit(moment):
             cut = "cut:" + moment.cut if moment.cut else None
             return replace(moment, cut=id_map.get(cut, cut)[4:] if cut else None,
-                           base=rewrite_moment(moment.base) if moment.base else None)
+                           base=visit(moment.base) if moment.base else None)
         original = mo.parse(text)
-        rewritten = rewrite_moment(original)
-        return mo.format_moment(rewritten) if rewritten != original else text
+        mapped = visit(original)
+        return mo.format_moment(mapped) if mapped != original else text
     def time_ref(text):
-        # Only recorded bindings prove that an argument is an authored TimeRef.
-        # Parse the existing grammar; never replace arbitrary text or opaque IDs.
         anchor = (call.bindings or {}).get(text)
-        return mapped_moment_text(text) if anchor and identity(anchor) != anchor else text
-    def expectation(key, state):
-        value = copy.deepcopy(state)
-        sid, prop = commands.write_target(key, call.resolved)
-        if (not prop and "/clip:" in sid and identity(sid) != sid
-                and value.get("state") == "present" and isinstance(value.get("value"), dict)):
-            old, new = sid.split("/clip:", 1)[1], identity(sid).split("/clip:", 1)[1]
-            if value["value"].get("id") == old:
-                value["value"]["id"] = new
-        if (prop in {"intent.on", "intent.until", "app.astrid.on", "app.astrid.until"}
-                and value.get("state") == "present" and isinstance(value.get("value"), str)):
-            value["value"] = mapped_moment_text(value["value"])
-        return value
+        return moment_text(text) if anchor and identity(anchor) != anchor else text
+    def state(path, value, *, sid=None):
+        out = copy.deepcopy(value)
+        if out.get("state") != "present":
+            return out
+        prop = path.split("::", 1)[-1]
+        if prop in {"intent.on", "intent.until", "app.astrid.on", "app.astrid.until"} and isinstance(out["value"], str):
+            out["value"] = moment_text(out["value"])
+        elif prop in {"intent.cut", "app.astrid.cut"} and isinstance(out["value"], str):
+            cut = "cut:" + out["value"]
+            out["value"] = id_map.get(cut, cut)[4:]
+        elif not prop and sid and isinstance(out["value"], dict) and "/" in sid:
+            out["value"]["id"] = identity(sid).rsplit(":", 1)[1]
+            intent = out["value"].get("app", {}).get("astrid", {})
+            if intent.get("cut"):
+                cut = "cut:" + intent["cut"]
+                intent["cut"] = id_map.get(cut, cut)[4:]
+            for key in ("on", "until"):
+                if isinstance(intent.get(key), str):
+                    intent[key] = moment_text(intent[key])
+        return out
     def path(key):
         if "::" not in key:
             return key
@@ -112,7 +131,8 @@ def _rewrite(call, id_map):
     rewritten = replace(call, resolved=tuple(identity(sid) for sid in call.resolved),
                         created=tuple(identity(sid) for sid in call.created or ()),
                         bindings={time_ref(text): identity(sid) for text, sid in (call.bindings or {}).items()},
-                        expect={path(key): expectation(key, value) for key, value in call.expect.items()},
+                        expect={path(key): state(key.split("::", 1)[-1], value,
+                            sid=commands.write_target(key, call.resolved)[0]) for key, value in call.expect.items()},
                         authorship={path(key): value for key, value in (call.authorship or {}).items()},
                         args={key: time_ref(value) if isinstance(value, str) and key in
                               {"moment", "on", "until", "at", "when", "before", "land"}
@@ -122,17 +142,23 @@ def _rewrite(call, id_map):
         if len(clips) == 1:
             rewritten = replace(rewritten, args={**rewritten.args, "clip_id": clips[0].split("/clip:", 1)[1]})
     if call.op in {"cut.split", "cut.duplicate"} and rewritten.args.get("id"):
-        old = "cut:" + str(rewritten.args["id"])
-        rewritten = replace(rewritten, args={**rewritten.args, "id": id_map.get(old, old)[4:]})
+        cut = "cut:" + rewritten.args["id"]
+        rewritten = replace(rewritten, args={**rewritten.args, "id": id_map.get(cut, cut)[4:]})
+    if call.op == "timeline.inverse":
+        rewritten = replace(rewritten, args={**rewritten.args, "writes": [
+            {**write, "id": identity(write["id"]),
+             "before": state(write["path"], write["before"], sid=write["id"]),
+             "after": state(write["path"], write["after"], sid=write["id"]),
+             **({"order": [identity(sid) for sid in write["order"]]} if "order" in write else {})}
+            for write in call.args["writes"]]})
     return commands.EditCommand.coerce(rewritten)
 
 
 def rebase(calls, onto, *, id_map=None):
     """Replay recorded calls through the runner, preserving guards and anchor IDs.
 
-    Ordinary occurrence edits retain their scoped identities. Created identities
-    that collide are forked here and returned in the existing id_map; callers
-    may also supply a previously established map. No document merge or
+    The map is supplied by a real identity producer; ordinary occurrence edits
+    retain their scoped identities and return an empty map. No document merge or
     selector fallback participates. Both inputs are detached and remain unchanged.
     """
     try:
