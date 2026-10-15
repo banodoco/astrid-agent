@@ -13,7 +13,7 @@ const manifest = json(path.join(root, 'package.json'));
 const lock = json(path.join(root, 'package-lock.json'));
 const packed = json(path.join(vendor, 'package.json'));
 
-test('vendored payloads retain the admitted source content and Git blob identities', () => {
+test('vendored payloads match the checked-in provenance inventory', () => {
   const files = (dir) => readdirSync(dir, {withFileTypes: true}).flatMap((entry) => {
     const file = path.join(dir, entry.name);
     if (entry.isDirectory()) return files(file);
@@ -21,30 +21,28 @@ test('vendored payloads retain the admitted source content and Git blob identiti
     return [path.relative(vendor, file).split(path.sep).join('/')];
   });
   assert.deepEqual(files(vendor).sort(), source.files.map((file) => file.path).sort());
-  assert.equal(source.files.length, 28);
-  assert.equal(source.files.reduce((sum, file) => sum + file.bytes, 0), 84703);
+  assert.equal(source.files.length, 87);
+  assert.equal(source.files.reduce((sum, file) => sum + file.bytes, 0), 253667);
   for (const file of source.files) {
     assert.ok(!path.isAbsolute(file.path) && !file.path.split('/').includes('..'));
     const bytes = readFileSync(path.join(vendor, file.path));
     assert.equal(bytes.length, file.bytes, file.path);
     assert.equal(createHash('sha256').update(bytes).digest('hex'), file.sha256, file.path);
-    assert.equal(createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'), file.source_git_blob, file.path);
   }
   assert.equal(source.files.find((file) => file.path === 'package.json').sha256,
     '20b0f15eba3fce002314fb24bba9017c22fd6ab2b72f4931167412e7cec00a7e');
 });
 
 test('provenance identifies the admitted development archive without authenticating the tag', () => {
-  assert.equal(source.source_commit, '3b9640335b9b8c07b350c2e37eea328877b58912');
-  assert.equal(source.source_tree, '28ec5263433998ad75053ca3a02ba33b3533a8a0');
-  assert.equal(source.archive_sha256, '8f48e7d9cddf35621280395f2b8fb6878413a27588f11406bc58313c044221a6');
-  assert.equal(source.archive_bytes, 23419);
-  assert.equal(source.admission_receipt, 'projects/A-integration/receipts/A-G-EVAL-recovery-001-artifact-admission-20261015.md');
-  assert.equal(source.admission_receipt_sha256, 'a82afb1c532cf95d45c6a626353abe8ac470b56659a08b7e1c0c54dc679abd1c');
-  assert.equal(source.artifact_identity_sha256, 'be83521ce2f30140c509fe701d37c2b107c630582821fc6b1cbd1b33951d69b9');
-  assert.equal(source.required_ref, 'v0.0.7/e2ab21a7');
-  assert.equal(source.required_ref_authenticated, false);
-  assert.match(source.scope, /Run-local development source only/);
+  assert.equal(source.package, '@banodoco/timeline-composition');
+  assert.equal(source.package_version, '0.0.7');
+  assert.equal(source.source_commit, '9cf3fce5fa72cd02eca4a0ec65da864351ca5bbb');
+  assert.equal(source.source_tree, '129c7c4474f24bfef336f80d2d356411f0c32083');
+  assert.equal(source.archive, 'projects/A-integration/out/A-Composition-G-EVAL-audio-pack-001/banodoco-timeline-composition-0.0.7.tgz');
+  assert.equal(source.archive_bytes, 71658);
+  assert.equal(source.archive_sha256, '55cedee05d0c1a60b1a591c222d4f9015bb847255800badf6f2c0505a1db6ac7');
+  assert.match(source.scope, /Exact run-local development package archive copied byte-for-byte/);
+  assert.match(source.scope, /does not claim .*release authentication/);
   assert.equal(packed.name, source.package);
   assert.equal(packed.version, source.package_version);
 });
