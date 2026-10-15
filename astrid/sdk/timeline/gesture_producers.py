@@ -109,3 +109,57 @@ def split(self, at: Any) -> Clip:
         intent.set_for(data, tl.quantize(end - point))
     tl._internal(clip.shot_id)["clips"].append(data)
     return Clip(tl, clip.shot_id, data)
+
+
+class _Track:
+    """Ephemeral view of an existing track; identity comes from the document."""
+
+    def __init__(self, tl, shot_id, scoped_id, data):
+        self._tl, self.shot_id, self.scoped_id, self.data = tl, shot_id, scoped_id, data
+        self.id = data["id"]
+
+
+def track_owner(tl, sid):
+    from astrid.sdk.timeline import commands
+
+    if not isinstance(sid, str) or not commands.is_scoped_id(sid) or "/track:" not in sid:
+        raise TimelineEditError("Track removal requires an exact track ScopedId")
+    prefix, local = sid.split("/track:", 1)
+    if prefix == "parent":
+        shot = None
+    elif prefix.startswith("occurrence:"):
+        rows = [
+            r
+            for r in tl.bundle.get("placements", [])
+            if "occurrence:" + str(r.get("occurrence_id")) == prefix
+        ]
+        if len(rows) != 1:
+            raise TimelineEditError(f"Unavailable or ambiguous track owner {prefix!r}")
+        shot = str(rows[0]["shot_id"])
+    else:
+        raise TimelineEditError("Select an occurrence or parent track, not shared-shot content")
+    tracks = [t for t in tl._internal(shot).get("tracks", []) if t.get("id") == local]
+    if len(tracks) != 1:
+        raise TimelineEditError(f"Unavailable or ambiguous track {sid!r}")
+    owner = _Track(tl, shot, sid, tracks[0])
+    tl._require_independent_clip(owner)
+    return owner
+
+
+def remove_track(self):
+    """Remove an empty selected track; never infer moves or cascaded deletion."""
+    internal = self._tl._internal(self.shot_id)
+    users = [c["id"] for c in internal.get("clips", []) if c.get("track") == self.id]
+    from astrid.sdk.timeline import commands
+
+    prefix = self.scoped_id.split("/track:", 1)[0] + "/clip:"
+    users.extend(
+        owner
+        for owner, entry in commands.music_carriers(self._tl).items()
+        if owner.startswith(prefix) and entry["source"].get("track") == self.id
+    )
+    if users:
+        raise TimelineEditError(
+            f"Track {self.scoped_id} is occupied by {', '.join(users)}; move or remove those clips explicitly first"
+        )
+    internal["tracks"][:] = [t for t in internal["tracks"] if t is not self.data]

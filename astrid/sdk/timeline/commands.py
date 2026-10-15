@@ -167,15 +167,18 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         duplicate_source = command.args["from"]
         if "from_" in command.args:
             raise CommandError("Use the documented from argument only")
-    if (entry.op == "timeline.split" and command.select and is_scoped_id(command.select)
+    if (entry.op in {"timeline.split", "timeline.remove"} and command.select and is_scoped_id(command.select)
             and command.resolved and command.resolved != (command.select,)):
-        raise CommandError("Split selector and recorded owner disagree")
+        raise CommandError("Selector and recorded owner disagree")
     if entry.boundary == "storage":
         raise CommandError(f"{entry.op} is a storage boundary; use checkout.{entry.method}() or its existing CLI verb")
     if owner is None and command.resolved and entry.kind != "timeline":
         owner = recorded_owner(tl, command, entry.kind)
     if owner is None and entry.kind == "clip" and command.select and is_scoped_id(command.select):
         owner = recorded_owner(tl, replace(command, resolved=(command.select,)), "clip")
+    if owner is None and entry.kind == "track":
+        from astrid.sdk.timeline.gesture_producers import track_owner
+        owner = track_owner(tl, command.select)
     if owner is None:
         if entry.kind == "timeline":
             if command.select is not None:
@@ -203,7 +206,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             raise CommandError("timeline.add from requires an exact clip ScopedId")
         # Source ownership and created ownership are separate identities. Guard
         # the authored source because opaque fields participate in this copy.
-        source = recorded_owner(tl, replace(command, resolved=(duplicate_source,)), "clip")
+        recorded_owner(tl, replace(command, resolved=(duplicate_source,)), "clip")
         expectations = dict(command.expect or {})
         expectations.setdefault(duplicate_source + "::", state_at(before_entities, duplicate_source, ""))
         command = replace(command, expect=expectations)
@@ -469,6 +472,8 @@ def scoped_clip(tl, clip):
 def selected_ids(tl, owner, kind):
     if kind == "timeline":
         return ()
+    if kind == "track":
+        return (owner.scoped_id,)
     if kind == "clip":
         return (scoped_clip(tl, owner),)
     if kind == "cut":
@@ -480,6 +485,14 @@ def selected_ids(tl, owner, kind):
 
 
 def recorded_owner(tl, call, kind):
+    if kind == "track":
+        from astrid.sdk.timeline.gesture_producers import track_owner
+        if len(call.resolved) != 1:
+            raise CommandError("Track removal requires exactly one recorded track")
+        sid = call.resolved[0]
+        if sid not in entity_states(tl):
+            raise SemanticConflict("delete-vs-edit", sid, "", None, None, call.args)
+        return track_owner(tl, sid)
     if kind == "cut":
         sid = call.resolved[0]
         if not sid.startswith("cut:") or not any(g["id"] == sid[4:] for g in tl._cut_groups()):
@@ -560,7 +573,7 @@ def entity_states(tl):
     validate_occurrence_ownership(tl)
     result = {"parent": copy.deepcopy(tl.bundle.get("parent", {}))}
     for kind, field in (("clip", "clips"), ("track", "tracks")):
-        for item in result["parent"].pop(field, []):
+        for item in result["parent"].get(field, []):
             sid = f"parent/{kind}:{item['id']}"
             if sid in result:
                 raise CommandError(f"Duplicate scoped identity {sid}")
@@ -721,6 +734,10 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     from astrid.core.timeline import clip_fields as cf
     from astrid.sdk.timeline_address import element_schema
     changes = set(changed_paths(before, after))
+    if entry.op == "timeline.add" and "from" in args:
+        # The cloned entity is authored directly; its container array is a
+        # consequence. Retain that array in state for older recorded guards.
+        return {(sid, path) for sid, path in changes if sid not in before and "/clip:" in sid}
     if entry.op in {"timeline.resolve", "timeline.reflow", "timeline.retime"}:
         return set()  # compiler execution is not a claim of direct authorship
     if entry.kind == "clip" and entry.op in {"clip.set", "clip.set-param", "clip.set-look", "clip.clear"}:

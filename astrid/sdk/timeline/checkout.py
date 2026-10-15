@@ -481,3 +481,6 @@ _commands.register(Checkout, "timeline", ("save", "undo", "redo"), boundary="sto
 # Original P3B spelling: a clip split is not a cut split.
 from astrid.sdk.timeline.gesture_producers import split as _split_gesture
 _commands.REGISTRY["timeline.split"] = _commands.Operation("timeline.split", "clip", "split", _split_gesture)
+
+from astrid.sdk.timeline.gesture_producers import remove_track as _remove_track_gesture
+_commands.REGISTRY["timeline.remove"] = _commands.Operation("timeline.remove", "track", "remove", _remove_track_gesture)

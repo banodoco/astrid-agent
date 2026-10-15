@@ -95,9 +95,9 @@ def _rewrite(call, id_map):
     def expectation(key, state):
         value = copy.deepcopy(state)
         sid, prop = commands.write_target(key, call.resolved)
-        if (not prop and "/clip:" in sid and identity(sid) != sid
+        if (not prop and any(token in sid for token in ("/clip:", "/track:")) and identity(sid) != sid
                 and value.get("state") == "present" and isinstance(value.get("value"), dict)):
-            old, new = sid.split("/clip:", 1)[1], identity(sid).split("/clip:", 1)[1]
+            old, new = sid.rsplit(":", 1)[1], identity(sid).rsplit(":", 1)[1]
             if value["value"].get("id") == old:
                 value["value"]["id"] = new
         if (prop in {"intent.on", "intent.until", "app.astrid.on", "app.astrid.until"}
