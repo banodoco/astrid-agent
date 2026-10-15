@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline_checkout import Checkout
 from astrid.sdk.timeline.model import retime_scope
@@ -133,6 +134,8 @@ def test_changes_far_apart_in_one_operation_make_two_seams():
 
 def test_changes_within_a_bar_are_one_seam_with_the_net_delta():
     tl = tiny()  # no downbeats in the fixture: a bar is 2.0 s
+    # Splitting and repeating the take also repeats "viral"; choose explicitly.
+    intent.set_on(tl.clip('a-rocket').data, '"viral" #1')
     with retime_scope(tl):
         tl.ripple_delete(1.0, 1.2)  # -0.2 s at 1.0 s
         tl.insert_time(1.1, 0.5)  # +0.5 s at 1.1 s: 0.1 s from the first

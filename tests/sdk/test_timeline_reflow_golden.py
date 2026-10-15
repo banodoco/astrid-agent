@@ -12,6 +12,7 @@ import copy
 import pytest
 
 from astrid.sdk import timeline_intent as intent
+from astrid.sdk.timeline.compiler import TimingAmbiguityError
 from astrid.sdk.timeline_checkout import Checkout, describe_changes
 
 FPS = 30
@@ -282,6 +283,12 @@ def test_change_description_names_old_and_new_moment_references():
     voice.data["app"]["astrid"]["words"] = [
         [0.1, 0.3, "So"], [0.4, 0.6, "work"], [0.7, 0.8, "to"], [0.9, 1.4, "work"]
     ]
+    # REPAIRS-STRUCT: cached time no longer chooses the second occurrence.
+    declared = copy.deepcopy(after.bundle)
+    with pytest.raises(TimingAmbiguityError, match='"work" in s3 #2'):
+        after.retime()
+    assert after.bundle == declared
+    intent.set_on(after.clip('c3.card').data, '"work" in s3 #2')
     after.retime()
 
     lines = describe_changes(before, after)

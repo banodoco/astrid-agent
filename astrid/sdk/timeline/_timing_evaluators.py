@@ -18,7 +18,7 @@ from astrid.core.timeline.cuts import (
 )
 
 from astrid.sdk.timeline._common import (LOGICAL_PX, TimelineEditError, _norm, _num, _r)
-from astrid.sdk.timeline.doc import (_clock, _get_path, _post, _read_words, _row_start, _set_length, _set_path, _set_row_start, _split_audio, _trim_end, _trim_front)
+from astrid.sdk.timeline.doc import (_clock, _post, _read_words, _row_start, _set_length, _set_path, _set_row_start, _split_audio, _trim_end, _trim_front)
 from astrid.sdk.timeline.model import (Clip, Voice, Word, _MomentContext, music_keyword, music_policy, retime_scope)
 from astrid.sdk.timeline.selection import Selection
 from astrid.sdk.timeline.units import (_unit_path, element_units, mark_offset_canvas)
@@ -523,50 +523,8 @@ class _TimingEvaluators:
         try:
             return self._moment_time(text, clip, in_point=in_point)
         except TimelineEditError as exc:
-            pinned = self._pin_nearest(text, clip)
-            if pinned is not None:
-                field = "on" if intent.on(clip.data) == text else "until"
-                (intent.set_on if field == "on" else intent.set_until)(clip.data, pinned)
-                self.notes.append(f"{clip.address}: {text} is now said more than once; pinned to {pinned}, the one nearest it")
-                try:
-                    return self._moment_time(pinned, clip, in_point=in_point)
-                except TimelineEditError:
-                    pass
             self.notes.append(str(exc))
             return None
-
-    def _pin_nearest(self, text: str, clip: "Clip", at: float | None = None) -> str | None:
-        """A word moment that became ambiguous (a new line says the same word): its scoped form for the
-        occurrence nearest the clip's current time, or None if it is not an ambiguity."""
-        try:
-            moment = mo.parse(text)
-        except mo.MomentError:
-            return None
-        if moment.kind in ("beat", "downbeat") and moment.base is not None and moment.base.kind == "word":
-            # beat 2 after "Astrid": pin the word to the occurrence just before the clip
-            base = moment.base
-            if base.n is not None or base.line is not None:
-                return None
-            hits = mo.find_words(base, self.words())
-            if len(hits) < 2:
-                return None
-            earlier = [r for r in hits if r[0].start <= clip.start + 1e-6] or hits
-            run = max(earlier, key=lambda r: r[0].start)
-            from astrid.sdk.timeline_address import _phrase_address
-
-            pinned_base = mo.parse(_phrase_address(self, base, run))
-            return mo.format_moment(mo.Moment(moment.kind, n=moment.n, direction=moment.direction, base=pinned_base,
-                                              offset_s=moment.offset_s, offset_frames=moment.offset_frames))
-        if moment.kind != "word" or moment.n is not None:
-            return None
-        hits = mo.find_words(moment, self.words())
-        if len(hits) < 2:
-            return None
-        anchor_t = (at if at is not None else clip.start) - moment.offset_s - moment.offset_frames / self.fps
-        run = min(hits, key=lambda r: abs((r[-1].end if moment.edge == "end" else r[0].start) - anchor_t))
-        from astrid.sdk.timeline_address import _phrase_address
-
-        return _phrase_address(self, moment, run)
 
     def _place_on(self, clip: "Clip", moment: Any) -> None:
         if isinstance(moment, (int, float)) and not isinstance(moment, bool):
@@ -822,26 +780,8 @@ class _TimingEvaluators:
                 try:
                     value = self._evaluate(clip, expr, by_id, words, slots, path)
                 except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as exc:
-                    previous_at = None  # a param's moment: pin to the occurrence nearest where the param was
-                    current = _get_path(clip.data, path)
-                    if isinstance(expr, Mapping) and isinstance(current, (int, float)) and not isinstance(current, bool):
-                        previous_at = clip.start + (current / self.fps if expr.get("as") == "clip_frame" else
-                                                    0.0 if expr.get("as") == "timeline_seconds" else current)
-                        if expr.get("as") == "timeline_seconds":
-                            previous_at = float(current)
-                    pinned = self._pin_nearest(expr.get("moment"), clip, previous_at) if isinstance(expr, Mapping) and expr.get("moment") else None
-                    if pinned is not None:
-                        expr = {**expr, "moment": pinned}
-                        intent.set_formula(clip.data, path, expr)
-                        self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: now pinned to {pinned}, the one nearest it")
-                        try:
-                            value = self._evaluate(clip, expr, by_id, words, slots, path)
-                        except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as again:
-                            self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {again} (kept its last value)")
-                            continue
-                    else:
-                        self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {exc} (kept its last value)")
-                        continue
+                    self.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {exc} (kept its last value)")
+                    continue
                 unit = expr.get("as") if isinstance(expr, Mapping) else None
                 length = clip.duration * (self.fps if unit == "clip_frame" else 1.0)
                 if isinstance(expr, Mapping) and expr.get("moment") and unit in ("clip_frame", "clip_seconds") \

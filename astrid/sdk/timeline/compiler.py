@@ -28,12 +28,18 @@ class TimingCycleError(TimelineEditError):
         super().__init__(f"{self.code}: {' -> '.join(self.path)}")
 
 
-def _validate_dependencies(tl):
+class TimingAmbiguityError(TimelineEditError):
+    """A stored declaration needs an explicit occurrence, never a cached-time guess."""
+
+    code = "AMBIGUOUS_REFERENCE"
+
+
+def _validate_dependencies(tl, *, picture_end_beds=()):
     """Inspect declarations without reordering or evaluating the legacy timing pass.
 
     Start/end nodes keep references to a cut's end distinct from its start.
-    The terminal cut end is the stored film-duration basis, as in MomentContext;
-    it is deliberately not fed back from the picture it is used to size.
+    The film end follows its pictures. Only a terminal picture's literal extent
+    (including the legacy until="end" import) is a compatibility basis.
     """
     from astrid.core.timeline import moments as mo
     from astrid.sdk import timeline_intent as intent
@@ -51,6 +57,7 @@ def _validate_dependencies(tl):
              min(g['clips'], key=lambda c: (c.start, c.id)) for g in groups}
     base_ids = {id(c.data) for c in bases.values()}
     aliases = {}
+    terminal = groups[-1]['id'] if groups else None
 
     def node(clip, edge):
         return f"{nodes[id(clip.data)]}.{edge}"
@@ -62,8 +69,16 @@ def _validate_dependencies(tl):
         link(f"{group['id']}.start", node(bases[group['id']], 'start'))
         if i + 1 < len(groups):
             link(f"{group['id']}.end", f"{groups[i + 1]['id']}.start")
+        else:
+            link(f"{group['id']}.end", 'film.pictureEnd')
 
-    def references(text, clip):
+    last_shot = tl._shot_ids()[-1] if tl._shot_ids() else None
+    for clip in clips:
+        if clip.shot_id == last_shot and not clip.is_audio \
+                and (clip.track == 'plate' or clip.element in tl.FULL_FRAME):
+            link('film.pictureEnd', node(clip, 'end'))
+
+    def references(text, clip, field='', *, terminal_basis=False):
         try:
             moment = mo.parse(text)
         except mo.MomentError:
@@ -77,15 +92,21 @@ def _validate_dependencies(tl):
                 if cid not in cut_ids:
                     return set()
                 edge = 'end' if m.kind in ('cut_end', 'end') else 'start'
+                if terminal_basis and m is moment and cid == terminal and edge == 'end' \
+                        and m.kind in ('end', 'cut_end') and not m.offset_s and not m.offset_frames:
+                    return {node(clip, 'terminalExtent')}
                 return {f'{cid}.{edge}'}
             if m.kind == 'word':
                 hits = mo.find_words(m, words)
                 if m.n is not None:
                     hits = hits[m.n - 1:m.n] if m.n > 0 else []
                 elif len(hits) > 1:
-                    # Match the evaluator's nearest-occurrence compatibility rule.
-                    at = clip.start - moment.offset_s - moment.offset_frames / tl.fps
-                    hits = [min(hits, key=lambda r: abs((r[-1].end if m.edge == 'end' else r[0].start) - at))]
+                    from astrid.sdk.timeline_address import _phrase_address
+
+                    choices = '; '.join(_phrase_address(tl, m, run) for run in hits)
+                    raise TimingAmbiguityError(
+                        f'{TimingAmbiguityError.code}: {clip.address}.{field}: {text} '
+                        f'is ambiguous; choose {choices}. Add in <line> or #n; cached timing cannot choose an occurrence.')
                 return {node(by_word[w.shot_id, w.clip_id], 'start')
                         for run in hits for w in (run[-1] if m.edge == 'end' else run[0],)
                         if (w.shot_id, w.clip_id) in by_word}
@@ -95,6 +116,13 @@ def _validate_dependencies(tl):
                     if bed.is_audio and (bed.track == 'music' or intent.beat_sources(bed.data)) \
                             and intent.beat_sources(bed.data, m.kind):
                         deps.update((node(bed, 'start'), node(bed, 'end')))
+                        if id(bed.data) in picture_end_beds:
+                            # Only a plan changed by this picture-end command
+                            # consumes that end. A previously stored numeric ripple
+                            # basis and a plays_on call add no such dependency.
+                            segments = node(bed, 'segments')
+                            link(segments, 'film.pictureEnd')
+                            deps.add(segments)
                 return deps
             return set()
 
@@ -116,36 +144,48 @@ def _validate_dependencies(tl):
         tag = intent.sequence(clip.data)
         steps = sequences.get(tag[0], []) if tag else []
         first = steps[0] if steps else clip
+        terminal_picture = cid == terminal and first.shot_id == last_shot and not first.is_audio \
+            and (first.track == 'plate' or first.element in tl.FULL_FRAME)
+        if terminal_picture:
+            link(node(first, 'terminalExtent'), node(first, 'start'))
         on, until = intent.on(first.data), intent.until(first.data)
+        if clip is not first:
+            # Later members retain their declarations even though sequence
+            # layout owns their span. Do not silently accept an ambiguous one.
+            for field, text in (('on', intent.on(clip.data)), ('until', intent.until(clip.data))):
+                if text:
+                    references(text, clip, field)
         if clip is first:
             if on:
-                link(start, *references(on, clip))
+                link(start, *references(on, clip, 'on'))
             elif cid in cut_ids and id(clip.data) not in base_ids and not clip.is_audio:
                 link(start, f'{cid}.start')
         else:
             link(start, node(first, 'start'))
         if until:
-            link(end, *references(until, first))
+            link(end, *references(until, first, 'until', terminal_basis=terminal_picture))
         elif cid in cut_ids and not clip.is_audio and intent.for_s(first.data) is None:
-            link(end, f'{cid}.end')
+            link(end, node(first, 'terminalExtent') if terminal_picture else f'{cid}.end')
         else:
             link(end, start)
         if steps:
             # Steps share the first step's declared span and fit; no artificial
             # last-step -> first-step feedback through their cached durations.
-            span = references(until, first) if until else ({f'{cid}.end'} if cid in cut_ids else set())
+            span = references(until, first, 'until', terminal_basis=terminal_picture) if until else (
+                {node(first, 'terminalExtent') if terminal_picture else f'{cid}.end'} if cid in cut_ids else set())
             if clip is not first:
                 link(start, *span)
             fit = intent.sequence_fit(first.data) or {}
             land = fit.get('land')
             deps = set()
             if isinstance(land, str):
-                deps = references(land, first)
+                deps = references(land, first, 'sequence_fit.land', terminal_basis=terminal_picture)
             elif isinstance(land, Mapping):  # retained {word, text} fit form
                 try:
                     word = tl._as_word(str(land.get('word') or '')) or tl.word(str(land.get('text')))
                 except TimelineEditError:
-                    pass  # leave the existing lookup failure to the evaluator
+                    if land.get('text'):
+                        references(mo.Moment('word', text=str(land['text'])), first, 'sequence_fit.land')
                 else:
                     if (word.shot_id, word.clip_id) in by_word:
                         deps.add(node(by_word[word.shot_id, word.clip_id], 'start'))
@@ -154,18 +194,23 @@ def _validate_dependencies(tl):
                 if clip is not first:
                     link(start, *deps)
         for path, expr in intent.formulas(clip.data).items():
-            if path not in ('at', 'hold', 'from', 'to', 'speed') or not isinstance(expr, Mapping):
-                continue  # element params do not write clip timing
+            if not isinstance(expr, Mapping):
+                continue
             if expr.get('orphan'):
                 continue  # a lost spoken identity keeps its cache, not a new edge
             target = start if path == 'at' else end
             if 'moment' in expr:
-                link(target, *references(expr['moment'], clip))
+                deps = references(expr['moment'], clip, path)
+                if path not in ('at', 'hold', 'from', 'to', 'speed'):
+                    continue  # validate ambiguity, but params do not write timing
+                link(target, *deps)
                 if expr.get('as', 'clip_seconds') != 'timeline_seconds':
                     link(target, start)
             elif 'word' in expr:
                 word = next((w for w in words if w.id == expr['word']), None)
-                if word and (word.shot_id, word.clip_id) in by_word:
+                if (word is None or (expr.get('text') and mo._norm(word.text) != mo._norm(expr['text']))) and expr.get('text'):
+                    references(mo.Moment('word', text=str(expr['text'])), clip, path)
+                if path in ('at', 'hold', 'from', 'to', 'speed') and word and (word.shot_id, word.clip_id) in by_word:
                     link(target, node(by_word[word.shot_id, word.clip_id], 'start'))
 
     # Iterative DFS avoids imposing a recursion-depth limit on valid long chains.
@@ -302,10 +347,16 @@ def compile_timing(inputs: TimingInputs | Mapping[str, Any], commands: Sequence 
         for method, args, kwargs in calls:
             if method == "_apply_bed_cuts":
                 args = (_records(args[0], identities), *args[1:])
+            from astrid.sdk.timeline.model import music_policy
+            follows_picture = method == 'film_end' and music_policy(kwargs.get('music') or workspace._music) == 'keep_end'
+            old_basis = {owner: copy.deepcopy(entry['ripple_basis'])
+                         for owner, entry in music_beds.collection(workspace).items()} if follows_picture else {}
             values.append(getattr(workspace, method)(*args, **kwargs))
-            _validate_dependencies(workspace)
-    except (TimingCycleError, music_beds.MusicBedError):
-        raise  # a cyclic workspace must never be adopted, even for Checkout
+            picture_end_beds = {id(entry['source']) for owner, entry in music_beds.collection(workspace).items()
+                                if follows_picture and entry['ripple_basis'] != old_basis.get(owner, [])}
+            _validate_dependencies(workspace, picture_end_beds=picture_end_beds)
+    except (TimingCycleError, TimingAmbiguityError, music_beds.MusicBedError):
+        raise  # a structural refusal must never adopt partial Checkout state
     except BaseException as exc:
         _validate_dependencies(workspace)
         if inputs._owner is not None:

@@ -23,6 +23,33 @@ does not create a new review or completion counter.
 
 ## Release manifest
 
+### Timing behavior notes (REPAIRS-STRUCT)
+
+The timing compiler now refuses music/film feedback and terminal self-cycles
+with `CYCLE` and the complete directed path. The editorial film end follows
+its pictures; a keep-end music segment plan feeding a placed beat that sizes
+those pictures is a feedback cycle. A terminal picture or sequence imported
+with literal `until="end"` retains its own duration as a compatibility basis;
+the canonical sequence fit `land="end"` keeps the same behavior.
+
+Existing ambiguous word references now refuse with `AMBIGUOUS_REFERENCE`,
+the owning clip/field and explicit occurrence choices (`in <line>` or `#n`).
+This covers on/until, beat bases, sequence land and moment formulas. Resolving
+no longer rewrites declarations to the occurrence nearest cached seconds.
+Explicit references and take-swap word-identity alignment retain their meaning.
+
+The sole intentional golden assertion change in this increment is
+`test_change_description_names_old_and_new_moment_references` in
+`tests/sdk/test_timeline_reflow_golden.py`: introducing a second "work" first
+refuses; explicitly choosing `"work" in s3 #2` then produces the same reference
+change description. No golden fixture bytes change. These notes describe a
+source increment, not an accepted release or historical film equivalence.
+The repeated-occurrence music fixture and within-bar seam scenario now spell
+their unrelated word anchor as `"viral" #1`, because their narration repeats;
+their music ownership, ripple, seam and output assertions are retained.
+
+### Artifact manifest
+
 The producer handoff must replace only the pending values with the exact
 artifact filenames, versions, source SHA/ref and SHA-256 digests. The shape is
 deliberately explicit so a receipt can be compared without repeating a full
