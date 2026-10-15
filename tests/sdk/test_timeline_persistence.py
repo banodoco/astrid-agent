@@ -480,6 +480,25 @@ def test_publish_after_a_restart_refuses_a_clip_both_sides_changed(world):
 
 # ---------------------------------------------------------------- 6. discard persists
 
+def test_publish_force_keeps_mine_and_disjoint_head_changes(world):
+    """Named REBASE parity: force keeps our clash and the head's other edit."""
+    with world.writer("force-writer") as writer:
+        writer.do("draft")
+        writer.do("set", clip="a-rocket", params={"x": 120})
+        writer.do("save")
+
+        def upstream(bundle):
+            _clip(bundle, "a-rocket")["params"]["x"] = 99
+            _clip(bundle, "b-type")["params"]["text"] = "from upstream"
+
+        world.move_head("rev-force", upstream)
+        result = writer.do("publish", force=True)
+    published = Checkout(result["candidate"])
+    assert result["runtime_touched"] is True  # disposable transport, never a service
+    assert "with force" in result["merged"]
+    assert published.clip("a-rocket").get("x") == 120
+    assert published.clip("b-type").get("text") == "from upstream"
+
 def test_a_discard_in_one_process_leaves_the_next_process_with_no_working_copy(world):
     with world.writer("A") as a:
         a.do("draft")

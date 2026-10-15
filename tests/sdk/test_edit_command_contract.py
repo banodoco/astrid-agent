@@ -93,3 +93,92 @@ def test_all_inventory_and_current_edit_flags_have_runtime_fixture_rows():
             assert mapping[flag]['operation'] == commands.EDIT_FLAG_OPERATIONS[action.dest]
             assert mapping[flag]['operation'] in commands.REGISTRY
     # No equality assertion on REGISTRY: adding an operation stays legal.
+
+
+@pytest.mark.parametrize('exchange', FIXTURE['exchanges'], ids=lambda c: c['id'])
+def test_shared_exchange_exact_calls_refuse_without_recorded_replay_metadata(exchange, tmp_path):
+    """Protocol specimens are not invented into accepted executable histories."""
+    from astrid.sdk.timeline.checkout import Checkout
+    from astrid.sdk.timeline.rebase import rebase
+
+    tl = Checkout(json.loads((ROOT / 'tests/fixtures/timeline_editing/tiny_publishable.json').read_text()))
+    path = tmp_path / 'shared-exchange.json'
+    tl.save(path, quiet=True)
+    before = tl.document(), path.read_bytes(), copy.deepcopy(exchange)
+    # Request and result both carry these exact calls. Their parent target is
+    # absent from the available closure, so apply must refuse without an undo.
+    for side in ('request', 'result'):
+        calls = exchange[side]['change']['commands']
+        for value in calls:
+            with pytest.raises(commands.SemanticConflict, match='delete-vs-edit'):
+                commands.run(tl, value)
+        result = rebase(calls, tl.document())
+        assert result.conflicts[0]['kind'] == 'dependent'
+        assert 'runner-recorded' in result.conflicts[0]['ours']
+        assert result.next_step and result.document is None
+        with pytest.raises(commands.TimelineEditError, match='nothing to undo'):
+            tl.undo()
+    assert tl.document() == before[0] and path.read_bytes() == before[1]
+    assert exchange == before[2]
+
+
+def test_shared_conflict_values_through_apply_inverse_and_rebase(tmp_path):
+    """Exercise the executable conflict witness, not its opaque specimen document."""
+    from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline.checkout import Checkout
+    from astrid.sdk.timeline.rebase import rebase
+
+    exchange = next(row for row in FIXTURE['exchanges'] if row['id'] == 'EXCHANGE-CONFLICT')
+    witness = exchange['result']['conflicts'][0]
+    original = copy.deepcopy(exchange)
+    document = json.loads((ROOT / 'tests/fixtures/timeline_editing/tiny_publishable.json').read_text())
+    # Materialize the specimen's existing occurrence/clip address on synthetic
+    # repository data; no shared fixture or command is rewritten.
+    occurrence, clip_id = witness['id'].split('/clip:')
+    document['placements'][0]['occurrence_id'] = occurrence.removeprefix('occurrence:')
+    clip = next(c for c in document['shots']['A']['internal_timeline']['clips'] if c['id'] == 'a-rocket')
+    clip['id'] = clip_id
+    intent.set_on(clip, witness['base'])
+    tl = Checkout(document)
+    tl.save(tmp_path / 'conflict.json', quiet=True)
+    base = tl.document()
+    ours = dict(op='clip.on', select=witness['id'], args={'moment': witness['ours']})
+    plan = commands.run(tl, ours)
+    assert intent.on(tl.clip(clip_id).data) == witness['ours']
+    tl.undo()
+    assert intent.on(tl.clip(clip_id).data) == witness['base']
+    head = Checkout(copy.deepcopy(base))
+    commands.run(head, dict(op='clip.on', select=witness['id'], args={'moment': witness['theirs']}))
+    result = rebase(plan.calls, head.document())
+    actual = result.conflicts[0]
+    assert {key: actual[key] for key in ('id', 'path', 'kind')} == {
+        key: witness[key] for key in ('id', 'path', 'kind')}
+    assert actual['base'] == dict(state='present', value=witness['base'])
+    assert actual['theirs'] == dict(state='present', value=witness['theirs'])
+    assert actual['ours'] == {'moment': witness['ours']}
+    assert result.next_step and exchange == original
+
+
+def test_shared_clear_command_apply_inverse_and_accepted_rebase(tmp_path):
+    from astrid.sdk.timeline.checkout import Checkout
+    from astrid.sdk.timeline.rebase import rebase
+
+    case = next(row for row in FIXTURE['command_cases'] if row['id'] == 'CMD-CLEAR')
+    original = copy.deepcopy(case)
+    document = json.loads((ROOT / 'tests/fixtures/timeline_editing/tiny_publishable.json').read_text())
+    clip = next(c for c in document['shots']['A']['internal_timeline']['clips'] if c['id'] == 'a-rocket')
+    clip.update(clipType='am-type', params={'text': 'Word', 'italicWord': 'Word'})
+    tl = Checkout(document)
+    tl.save(tmp_path / 'shared-clear.json', quiet=True)
+    base = tl.document()
+    # Execute the exact shared call, including its authoring selector.
+    plan = commands.run(tl, case['value'])
+    assert 'italicWord' not in tl.clip('a-rocket').params
+    applied = tl.document()
+    tl.undo()
+    assert tl.clip('a-rocket').params['italicWord'] == 'Word'
+    # The runner adds original guards; rebase never manufactures them.
+    result = rebase(plan.calls, base)
+    assert not result.conflicts and result.id_map == {}
+    assert result.document == applied
+    assert case == original
