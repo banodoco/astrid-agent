@@ -193,6 +193,32 @@ def test_plain_first_word_and_picture_timerefs_keep_different_targets_and_follow
     assert [r["start_frame"] for r in story_overview(tl.bundle, revision_id="rev-0")["ranges"]] == [135, 138]
 
 
+def test_opening_cut_boundary_stays_pinned_while_first_word_beat_follows_narration():
+    bundle = film()
+    bundle["parent"]["config"]["chapters"] = [{"name": "opening", "from": "c1"}]
+    assert migrate_story_ranges(bundle) == []
+    assert intent.chapters(bundle) == []
+    set_ranges(bundle, [*intent.ranges(bundle), row("word", "beat", '"It"', 'after "It"')])
+    # Normalize through the actual migration path before taking the idempotence
+    # snapshot: set_ranges alone validates a copy, not legacy clip app fields.
+    once = copy.deepcopy(bundle)
+    assert migrate_story_ranges(bundle) == [] and bundle == once
+    before = story_overview(bundle, revision_id="rev-0")
+    assert [r["start_frame"] for r in before["ranges"]] == [0, 3]
+    assert not any(f["code"] == "unresolved-anchor" for f in before["findings"])
+
+    tl = Checkout(bundle)
+    tl.voice("s1").clips[0].nudge(0.5)
+    group = next(g for g in tl.cut_index.groups(tl) if g["id"] == "c1")
+    assert group["start"] == 0.0 and not group["orphan"]
+    assert group["picture"] is not None and not intent.orphan(group["picture"].data)
+    assert tl.frame(tl._moment_time('"It"', group["picture"], in_point=True)) == 15
+    assert tl.frame(tl.time('"It"')) == 18
+    after = story_overview(tl.bundle, revision_id="rev-0")
+    assert [r["start_frame"] for r in after["ranges"]] == [0, 18]
+    assert not any(f["code"] == "unresolved-anchor" for f in after["findings"])
+
+
 def test_invalid_canonical_ranges_block_checks_and_refuse_selector_fallback():
     from astrid.sdk.timeline.api import SelectorError
     bundle = film()

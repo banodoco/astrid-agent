@@ -53,16 +53,18 @@ def _frame(tl, ref):
         if anchor.cut:
             cid = tl._cut_id(anchor.cut) or anchor.cut
             group = next((g for g in tl.cut_index.groups(tl, include_orphans=True) if g["id"] == cid), None)
-            if group and (group["orphan"] or group["picture"] is None or intent.orphan(group["picture"].data)):
+            if group and (group["orphan"] or group["picture"] is None or intent.orphan(group["picture"].data)
+                          or cid in getattr(tl, "_orphan_cuts", ())):
                 raise mo.MomentError(f"cut {cid!r} has no resolved live picture anchor")
             if group and group["picture"] is not None:
                 pic = group["picture"]
                 on = intent.on(pic.data)
                 if on:
-                    target = tl._moment_time(on, pic, in_point=True)
-                    cached = mo.floor_frame(group["start"], tl.fps)
-                    if int(round(target * tl.fps)) != int(round(cached * tl.fps)):
-                        raise mo.MomentError(f"cut {cid!r} picture timing is unresolved")
+                    # Validate the declaration, but do not equate its word
+                    # target with the compiled cut boundary. The compiler can
+                    # pin an opening picture while narration moves. The shared
+                    # MomentContext below resolves the live CutIndex start.
+                    tl._moment_time(on, pic, in_point=True)
         if anchor.base is not None:
             supported(anchor.base)
     supported(moment)
