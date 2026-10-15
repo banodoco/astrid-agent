@@ -917,6 +917,10 @@ def _cmd_show(parsed: argparse.Namespace) -> int:
     document is a mutable storage projection and cannot be presented as the
     current editor state when the native Runtime inspection route is absent.
     """
+    if getattr(parsed, "list_views", False) or (getattr(parsed, "presentation", None) not in
+            (None, "cuts", "script", "code", "sheet")):
+        from astrid.packs.timeline.cli_views import contributed_view
+        return contributed_view(parsed, getattr(parsed, "presentation", None))
     from astrid.packs.timeline.cli_history import show_ref
 
     refused = show_ref(parsed)  # TL@prev: the revision before the head
@@ -2241,6 +2245,8 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_show(subparser: argparse.ArgumentParser) -> None:
+    from astrid.packs.timeline.cli_parser import ViewChoices
+
     subparser.epilog = (
         "Next: use `timelines visualize` for composed pixels. For edits, use the "
         "timeline_editing skill's checkout → edit → check → visualize → publish recipe. "
@@ -2267,18 +2273,20 @@ def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--page-size", type=int, default=None, help="Cuts per page (default: all cuts).")
     subparser.add_argument("--at", default=None, help="The one cut on screen at SECONDS or m:ss (or a word): its clips, the words around it, next cuts.")
     subparser.add_argument("--clips", action="store_true", default=False, help="With --shot N: every clip in that chapter, one line each.")
+    subparser.add_argument("--list-views", action="store_true", help="List declared read-only extension views without execution.")
     subparser.add_argument("--published", action="store_true", default=False,
                            help="Read the published head, ignoring the unpublished working copy (when one exists).")
     subparser.add_argument("--draft", default=None, help="Which working copy (default: the current one, last checked out).")
     subparser.add_argument(
         "--as",
         dest="presentation",
-        choices=("cuts", "script", "code", "sheet"),
+        choices=ViewChoices(("cuts", "script", "code", "sheet")),
         default=None,
         help="cuts (default): one row per cut. sheet: the cut sheet, an A/V script you can edit and "
         "`timelines apply` (with --range \"word\"..\"word\" or A..B seconds or c30..c31). script: the words in "
         "time order with cuts, layer entrances and element keyframes between them. code: shots and cuts as a "
-        "readable program of element calls with resolved keyframes and each element's source path.",
+        "readable program of element calls with resolved keyframes and each element's source path. "
+        "Or use a full timeline.view/<pack>.<key> from --list-views for read-only extension inspection.",
     )
     subparser.add_argument(
         "--occurrence",
@@ -2395,6 +2403,8 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
+    from astrid.packs.timeline.cli_parser import ViewChoices
+
     subparser.epilog = (
         "Next: use `timelines show` for authored rows and timing. For edits, use the "
         "timeline_editing skill's checkout → edit → check → visualize → publish recipe. "
@@ -2466,7 +2476,7 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--view",
-        choices=("filmstrip", "contact", "overview", "motion", "diff"),
+        choices=ViewChoices(("filmstrip", "contact", "overview", "motion", "diff")),
         default=None,
         help=(
             "Usually leave this out and use --preset (or just give a window). filmstrip: Rendered paired filmstrip "
@@ -2475,7 +2485,8 @@ def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
             "480x270. motion: one cut (--cut N) as a motion sheet you can judge as stills: frame strip, onion skins, "
             "motion curves, word/beat/sfx sync, stillness, lip-sync and findings (<= 60 frames at 480x270). "
             "diff: immutable revision diff, before/after tiles of only the cuts an edit changed, and the SCOPE "
-            "condition; needs --before-revision-id/--after-revision-id (or --from/--to)."
+            "condition; needs --before-revision-id/--after-revision-id (or --from/--to). "
+            "A full timeline.view/<pack>.<key> from --list-views prints its schema-driven read-only projection."
         ),
     )
     subparser.add_argument(

@@ -3192,6 +3192,16 @@
           "type": "int"
         },
         {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "list_views",
+          "nargs": 0,
+          "options": [
+            "--list-views"
+          ],
+          "required": false
+        },
+        {
           "action": "_StoreAction",
           "default": null,
           "dest": "occurrence",
@@ -3763,6 +3773,16 @@
           "nargs": 0,
           "options": [
             "--list-layers"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "list_views",
+          "nargs": 0,
+          "options": [
+            "--list-views"
           ],
           "required": false
         },

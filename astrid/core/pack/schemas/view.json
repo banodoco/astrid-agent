@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Read-only timeline view",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "point",
+    "id",
+    "label",
+    "description",
+    "read_model",
+    "reads",
+    "schema"
+  ],
+  "properties": {
+    "point": {
+      "const": "timeline.view"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "read_model": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "reads": {
+      "const": [
+        "project",
+        "timeline",
+        "revision_id"
+      ]
+    },
+    "schema": {
+      "type": "object"
+    }
+  }
+}

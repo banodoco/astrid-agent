@@ -524,3 +524,13 @@ def render_code(
     for name in sorted(used):
         legend.append(f"#   {name:<14} {element_source(name) or '(not in this checkout)'}")
     return "\n".join(legend + body)
+
+
+# Canonical V3 contributed views share this public inspection surface.
+from astrid.core.pack.views import (  # noqa: E402,F401
+    UnsupportedView,
+    discover_views,
+    read_view,
+    render_view_text,
+    resolve_view,
+)

@@ -467,3 +467,53 @@ source/dependency tuples, elapsed timings and concrete stumbles. Retain failed
 attempts. The independent fresh author must create their own pack from this
 recipe, without opening the implementation sample, implementation tests or
 XHARD witness; their exercise is a separate dispatch after recipe freeze.
+
+
+## Read-only timeline view recipe (EXT-VIEW)
+
+Build a V3 pack in a disposable directory whose folder name matches its `id`.
+Record build start/end and stumbles; the independent fresh-agent exercise belongs
+to the manager. A view contains **data only**, with no Python or browser entry.
+
+1. Add `extensions.timeline.views: [extensions/timeline.view/story_overview.yaml]`
+   to `pack.yaml` and declare that exact path as a file in `resources`. Supply
+   ordinary V3 pack metadata and `documentation: {kind: skill, path: docs/SKILL.md}`.
+   Use a small dedicated pack (for example `story_views`), so its admitted closure
+   does not contain the generated editor catalog that will project its digest.
+2. In the descriptor declare `point: timeline.view`, an owner-qualified
+   `id: story_views.story_overview`, `label`, `description` (help),
+   `read_model: story_overview`, and exactly
+   `reads: [project, timeline, revision_id]`. `schema` is an inline JSON Schema
+   for the producer result; references must remain local (`#...`). Declare every
+   result field without inventing derived rows. I's producer returns
+   `{project_id,timeline_id,revision_id,content_digest,fps,ranges,legacy_chapters,findings}`.
+   Each range has `{range,start_frame,end_frame}`; `range` is the original
+   `{name,kind,from,to}` (including malformed originals when findings explain them),
+   frame edges may be null, and findings have `{code,path,message}`.
+3. Validate using `python3 -m astrid.core.pack.cli validate <pack-dir> --json`.
+   Discover with `astrid.sdk.timeline_views.discover_views(extra_pack_roots=(... ,))`
+   or `resolve_view("timeline.view/<pack>.story_overview", ...)`. Bare names and
+   cross-point names refuse. Discovery never imports contribution code.
+4. `read_view(view, project=P, timeline=T, revision_id=R, host=...)` re-admits
+   the closure and validates the returned schema, revision and content identity.
+   The local `astrid.core.pack.views.TimelineReadModels(client)` host calls the
+   actual I `open_story_overview` API; an unavailable producer/client refuses
+   with `unsupported`. A browser cannot invoke Python or open a substitute host.
+5. The generic CLI routes are `timelines show T --project P --as <full-view-id>`
+   and `timelines visualize T --project P --view <full-view-id>`; both accept
+   `--revision-id R` and `--json`. `--list-views` lists declarations without
+   starting Runtime. They resolve aliases to the host's canonical IDs and pin
+   the returned revision before the producer read. These schema-driven views
+   print structured/text inspection; they request no thumbnails or media reads.
+6. Regenerate the existing editor catalog with
+   `python3 scripts/gen_editor_extension_catalog.py`. Its
+   `ASTRID_TIMELINE_VIEW_CATALOG` projects the same declaration and digest for
+   the App's generic extension panel. It lists schema/help/read inputs and
+   reports typed `unsupported` on execution until A/C provide a real exact-revision
+   read transport. Fixtures are not Runtime transport evidence.
+
+Prove valid chapters/beats, unknown/invalid anchors, exact identity and stale
+refusals, closure changes, discovery without execution, and unchanged document
+plus zero journal/write effects for every admitted view. Keep results and
+findings intact. Do not register a second evaluator/registry, invent row IDs,
+read arbitrary files, write a timeline, save, publish or launch a service.

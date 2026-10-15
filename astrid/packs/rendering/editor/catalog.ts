@@ -16,6 +16,116 @@ export const ASTRID_EDITOR_EXTENSION_CATALOG: readonly AstridEditorExtensionDesc
   { packId: 'rendering', entryPath: 'ui/live-scenes/extension.tsx', extension: editorExtension0 },
 ]);
 
+// Declaration-only read views; browser read execution requires a host transport.
+export const ASTRID_TIMELINE_VIEW_CATALOG = [
+  {
+    "descriptor": {
+      "description": "Resolved chapters and story beats, half-open frame ranges and unresolved findings at one exact revision.",
+      "id": "story_views.story_overview",
+      "label": "Story overview",
+      "point": "timeline.view",
+      "read_model": "story_overview",
+      "reads": [
+        "project",
+        "timeline",
+        "revision_id"
+      ],
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "content_digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "path",
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fps": {
+            "exclusiveMinimum": 0,
+            "type": "number"
+          },
+          "legacy_chapters": {
+            "items": {},
+            "type": "array"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "ranges": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "end_frame": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "range": {
+                  "title": "Authored range"
+                },
+                "start_frame": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "range",
+                "start_frame",
+                "end_frame"
+              ],
+              "type": "object"
+            },
+            "title": "Chapter and beat ranges",
+            "type": "array"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "timeline_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "timeline_id",
+          "revision_id",
+          "content_digest",
+          "fps",
+          "ranges",
+          "legacy_chapters",
+          "findings"
+        ],
+        "type": "object"
+      }
+    },
+    "identity": "timeline.view/story_views.story_overview",
+    "implementation_digest": "c2868792d5443ad6a1f703193c4e67a30c0efc450ed961e0301152133cd9c85a"
+  }
+] as const;
+
 export const ASTRID_EDITOR_EXTENSIONS: readonly ReighExtension[] = Object.freeze(
   ASTRID_EDITOR_EXTENSION_CATALOG.map(({ extension }) => extension),
 );

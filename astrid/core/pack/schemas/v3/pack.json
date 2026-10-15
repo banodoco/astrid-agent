@@ -603,6 +603,11 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "views": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/relative_path"}
+            },
             "components": {
               "type": "array",
               "uniqueItems": true,

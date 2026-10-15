@@ -833,6 +833,9 @@ def _admit(
         if definition.extensions.get("timeline", {}).get("operations"):
             from astrid.core.pack.operations import validate_operation_declarations
             validate_operation_declarations(root, definition, resources)
+        if definition.extensions.get("timeline", {}).get("views"):
+            from astrid.core.pack.views import validate_view_declarations
+            validate_view_declarations(root, definition, resources)
         if definition.extensions.get("timeline", {}).get("components"):
             from astrid.core.pack.components import validate_component_declarations
             validate_component_declarations(root, definition, resources)

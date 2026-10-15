@@ -587,6 +587,7 @@ def add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
                            help="Frame size for the window presets, e.g. 960x540 (alias of --resolution).")
     subparser.add_argument("--plan", action="store_true",
                            help="Resolve the view, window, frame count and page layout without capturing (about a second).")
+    subparser.add_argument("--list-views", action="store_true", help="List declared read-only extension views without execution.")
     subparser.add_argument("--list-layers", dest="list_layers", action="store_true",
                            help="List the registered visualize layers (built-in and pack-contributed) and exit.")
     subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
@@ -619,6 +620,10 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
     from astrid.sdk.contracts import DomainResult, ErrorObject
     from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import inspection_options
 
+    if getattr(parsed, "list_views", False) or getattr(parsed, "view", None) not in (
+            None, "filmstrip", "contact", "overview", "motion", "diff"):
+        from astrid.packs.timeline.cli_views import contributed_view
+        return contributed_view(parsed, getattr(parsed, "view", None))
     cli = _cli()
     if getattr(parsed, "list_layers", False):
         from astrid.packs.rendering.actions.timeline_visualize.layers import layer_help

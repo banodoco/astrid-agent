@@ -62,6 +62,11 @@ def _dispatch_projects(args: list[str]) -> int:
 
 
 def _dispatch_timelines(args: list[str]) -> int:
+    if args and args[0] in {"show", "visualize"} and "--list-views" in args:
+        # Declaration inspection needs no Runtime client or workspace lifecycle.
+        from astrid.packs.timeline.cli import build_parser
+        parsed = build_parser(None).parse_args(args)
+        return int(parsed.handler(parsed))
     if args and args[0] == "inspect":
         from astrid.packs.timeline.cli import offline_inspect_main
         return offline_inspect_main(args[1:])

@@ -60,3 +60,15 @@ class TimelinesParser(argparse.ArgumentParser):
                 )
             parsed.project = project
         return parsed
+
+
+class ViewChoices(tuple):
+    """Keep built-in help/census while admitting point-qualified declarations.
+
+    Parsing never discovers packs or executes contribution code. Resolution
+    belongs to the generic view consumer, which refuses unknown identities.
+    """
+    def __contains__(self, value):
+        return super().__contains__(value) or (
+            isinstance(value, str) and value.startswith("timeline.view/")
+        )

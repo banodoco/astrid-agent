@@ -10,7 +10,7 @@ from astrid.core.pack import (
     load_pack_manifest,
     pack_editor_entry_paths,
 )
-from scripts.gen_editor_extension_catalog import DEFAULT_OUTPUT, generate
+from scripts.gen_editor_extension_catalog import DEFAULT_OUTPUT, _editor_entries, generate
 
 PACK_ROOT = Path(__file__).resolve().parents[1] / "astrid" / "packs" / "rendering"
 
@@ -18,11 +18,9 @@ PACK_ROOT = Path(__file__).resolve().parents[1] / "astrid" / "packs" / "renderin
 def test_rendering_pack_declares_one_resolvable_editor_entry() -> None:
     pack = load_pack_manifest(PACK_ROOT / "pack.yaml")
 
-    assert pack.extensions["editor"] == {
-        "entries": ["editor/live-scenes/extension.tsx"],
-    }
-    entries = pack_editor_entry_paths(pack)
-    assert entries == (PACK_ROOT / "editor/live-scenes/extension.tsx",)
+    assert pack.ui["live-scenes"]["entry"] == "ui/live-scenes/extension.tsx"
+    entries = _editor_entries(pack)
+    assert entries == (PACK_ROOT / "ui/live-scenes/extension.tsx",)
     assert entries[0].is_file()
 
 
@@ -31,8 +29,8 @@ def test_generated_catalog_is_current_and_pack_derived() -> None:
     actual = DEFAULT_OUTPUT.read_text(encoding="utf-8")
 
     assert actual == generated
-    assert "./live-scenes/extension" in actual
-    assert "editor/live-scenes/extension.tsx" in actual
+    assert "../ui/live-scenes/extension" in actual
+    assert "ui/live-scenes/extension.tsx" in actual
 
 
 def test_editor_entry_discovery_rejects_paths_outside_pack() -> None:

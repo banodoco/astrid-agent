@@ -1,0 +1,14 @@
+schema_version: 3
+id: story_views
+name: Story Views
+version: 0.1.0
+description: Read-only chapters and story beats from an exact timeline revision.
+domain: editorial
+stability: experimental
+support: core
+documentation: {kind: skill, path: docs/SKILL.md}
+extensions:
+  timeline:
+    views: [extensions/timeline.view/story_overview.yaml]
+resources:
+- {path: extensions/timeline.view/story_overview.yaml, kind: view}

@@ -1,0 +1,67 @@
+point: timeline.view
+id: story_views.story_overview
+label: Story overview
+description: Resolved chapters and story beats, half-open frame ranges and unresolved
+  findings at one exact revision.
+read_model: story_overview
+reads:
+- project
+- timeline
+- revision_id
+schema:
+  type: object
+  additionalProperties: false
+  required:
+  - project_id
+  - timeline_id
+  - revision_id
+  - content_digest
+  - fps
+  - ranges
+  - legacy_chapters
+  - findings
+  properties:
+    project_id: &id001
+      type: string
+    timeline_id: *id001
+    revision_id: *id001
+    content_digest:
+      type: string
+      pattern: ^[a-f0-9]{64}$
+    fps:
+      type: number
+      exclusiveMinimum: 0
+    ranges:
+      title: Chapter and beat ranges
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required:
+        - range
+        - start_frame
+        - end_frame
+        properties:
+          range:
+            title: Authored range
+          start_frame: &id002
+            type:
+            - integer
+            - 'null'
+          end_frame: *id002
+    legacy_chapters:
+      type: array
+      items: {}
+    findings:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required:
+        - code
+        - path
+        - message
+        properties:
+          code: *id001
+          path: *id001
+          message: *id001

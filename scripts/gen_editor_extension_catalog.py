@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -89,7 +90,15 @@ def _module_spec(pack_root: Path, entry: Path, output: Path, pack_id: str) -> st
 
 def generate(output: Path = DEFAULT_OUTPUT) -> str:
     rows: list[tuple[str, str, Path, str]] = []
+    views = []
     for pack in discover_packs():
+        if pack.schema_version == "3" and pack.extensions.get("timeline", {}).get("views"):
+            from astrid.core.pack.views import POINT, _declarations
+            admitted = validate_canonical_pack(pack.root)
+            views.extend(dict(identity=f"{POINT}/{payload['id']}",
+                              implementation_digest=digest, descriptor=payload)
+                         for _, payload, digest in _declarations(
+                             admitted.root, admitted.definition, admitted.resources))
         for entry in _editor_entries(pack):
             entry_path = entry.relative_to(pack.root).as_posix()
             rows.append(
@@ -131,6 +140,9 @@ def generate(output: Path = DEFAULT_OUTPUT) -> str:
             "export const ASTRID_EDITOR_EXTENSION_CATALOG: readonly AstridEditorExtensionDescriptor[] = Object.freeze([",
             *[f"{descriptor}," for descriptor in descriptors],
             "]);",
+            "",
+            "// Declaration-only read views; browser read execution requires a host transport.",
+            "export const ASTRID_TIMELINE_VIEW_CATALOG = " + json.dumps(sorted(views, key=lambda v: v['identity']), ensure_ascii=False, sort_keys=True, indent=2) + " as const;",
             "",
             "export const ASTRID_EDITOR_EXTENSIONS: readonly ReighExtension[] = Object.freeze(",
             "  ASTRID_EDITOR_EXTENSION_CATALOG.map(({ extension }) => extension),",
