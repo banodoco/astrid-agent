@@ -13,11 +13,15 @@ import re
 from dataclasses import dataclass, replace
 from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
-from astrid.sdk.timeline._common import TimelineEditError
+from astrid.sdk import timeline_intent as intent
+from astrid.sdk.timeline._common import TIME_RE, TimelineEditError
+from astrid.sdk.timeline.doc import _trim_end, _trim_front
 from astrid.version import __version__ as TOOL_VERSION
 
+if TYPE_CHECKING:
+    from astrid.sdk.timeline.model import Clip
 
 class CommandError(TimelineEditError):
     """A typed, expected refusal. Programming errors are deliberately not coerced."""
@@ -160,10 +164,11 @@ def _adapter(entry):
 
 
 def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
+    if entry.op == "timeline.add" and ("media" in command.args or isinstance(command.args.get("track"), Mapping)):
+        entry = replace(entry, kind="track", handler=add_project_media if "media" in command.args else add_track)
     duplicate_source = None
     if entry.op == "timeline.add" and "from" in command.args:
-        from astrid.sdk.timeline.gesture_producers import duplicate
-        entry = replace(entry, handler=duplicate)
+        entry = replace(entry, handler=duplicate_clip_source)
         duplicate_source = command.args["from"]
         if "from_" in command.args:
             raise CommandError("Use the documented from argument only")
@@ -172,13 +177,12 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         raise CommandError("Selector and recorded owner disagree")
     if entry.boundary == "storage":
         raise CommandError(f"{entry.op} is a storage boundary; use checkout.{entry.method}() or its existing CLI verb")
-    if owner is None and command.resolved and entry.kind != "timeline":
+    if owner is None and command.resolved and entry.kind != "timeline" and not (entry.kind == "track" and entry.op == "timeline.add"):
         owner = recorded_owner(tl, command, entry.kind)
     if owner is None and entry.kind == "clip" and command.select and is_scoped_id(command.select):
         owner = recorded_owner(tl, replace(command, resolved=(command.select,)), "clip")
     if owner is None and entry.kind == "track":
-        from astrid.sdk.timeline.gesture_producers import track_owner
-        owner = track_owner(tl, command.select)
+        owner = track_owner(tl, command.select, new=entry.op == "timeline.add" and "track" in command.args)
     if owner is None:
         if entry.kind == "timeline":
             if command.select is not None:
@@ -195,7 +199,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         else:
             owner = tl.sequence(command.select)
     selected = selected_ids(tl, owner, entry.kind)
-    if command.resolved and entry.kind != "timeline" and selected != command.resolved:
+    if command.resolved and entry.kind != "timeline" and not (entry.op == "timeline.add" and "media" in command.args) and selected != command.resolved:
         raise SemanticConflict("delete-vs-edit", command.select or "", "resolved",
                                list(command.resolved), list(selected), None)
     from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
@@ -214,9 +218,15 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         expectations = dict(command.expect or {})
         expectations.setdefault(selected[0] + "::", state_at(before_entities, selected[0], ""))
         command = replace(command, expect=expectations)
-    check_expectations(tl, command, selected)
+    if entry.op == "clip.remove" and selected and "music_bed" in before_entities.get(selected[0], {}):
+        expectations = dict(command.expect or {})
+        expectations.setdefault(selected[0] + "::music_bed", state_at(before_entities, selected[0], "music_bed"))
+        command = replace(command, expect=expectations)
+    if entry.kind == "track":
+        command = guard_track_call(tl, command, owner)
+    check_expectations(tl, command, command.resolved if entry.op == "timeline.add" and "media" in command.args else selected)
     args = copy.deepcopy(dict(command.args))
-    if entry.op == "timeline.add" and command.created:
+    if entry.op == "timeline.add" and command.created and not isinstance(command.args.get("track"), Mapping):
         clips = [sid for sid in command.created if "/clip:" in sid]
         if len(clips) != 1:
             raise CommandError("timeline.add requires exactly one recorded created clip")
@@ -248,6 +258,9 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             canonical[key] = _plain(value)
     if duplicate_source is not None:
         canonical["from"] = canonical.pop("from_")
+    if entry.kind == "track" and entry.op == "timeline.set":
+        canonical["values"] = dict(args.get("values", {}))
+        canonical["clear"] = list(args.get("clear", []))
     if "music" in canonical:
         canonical["music"] = str(canonical["music"] or tl.music).replace("-", "_")
     if entry.op == "timeline.add" and isinstance(canonical.get("at"), str):
@@ -285,14 +298,18 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     resolved = selected
     selector = None if entry.kind == "timeline" else str(
         getattr(owner, "id", None) or getattr(owner, "segment", None) or getattr(owner, "seq_id", None) or command.select)
+    if entry.kind == "track":
+        selector = owner.scoped_id
     recorded = replace(command, select=selector, args=canonical, version=command.version or TOOL_VERSION,
                        resolved=resolved)
     bindings = dict(command.bindings or {})
     capture_argument_bindings(tl, command, owner, bindings)
     original_moment_time = tl._moment_time
-    def bound_moment_time(text, clip=None, *, in_point=False):
-        capture_binding(tl, str(text), clip, bindings)
-        return original_moment_time(text, clip, in_point=in_point)
+    def bound_moment_time(text, clip=None, *, in_point=False, film_end=None):
+        capture_binding(tl, str(text), clip, bindings, film_end=film_end)
+        if film_end is None:
+            return original_moment_time(text, clip, in_point=in_point)
+        return original_moment_time(text, clip, in_point=in_point, film_end=film_end)
     tl._moment_time = bound_moment_time
     original_new_id = tl._new_id
     allocated = iter(sid.split("/clip:", 1)[1] for sid in (command.created or ()) if "/clip:" in sid)
@@ -329,6 +346,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             result = owner
         else:
             result = entry.handler(owner, *sdk_args[0], **sdk_args[1]) if sdk_args is not None else entry.handler(owner, *positional, **args)
+        if entry.op == "timeline.inverse":
+            undo_media_registry_consequences(tl, before_entities)
         # Retain legacy reservations before a structural handler's deletions
         # disappear. This also covers ripple's direct list edits, without
         # changing the timing implementation or turning no-op setters into edits.
@@ -366,7 +385,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
                     spec = cf.FIELDS[normalized_key]
                     fields[normalized_key] = spec.from_stored(stored, fps=tl.fps) if isinstance(stored, dict) else stored
                 tl._open_edit.calls[index] = replace(recorded, op="clip.set-look", args=fields)
-        elif entry.op == "timeline.add":
+        elif entry.op == "timeline.add" and not isinstance(canonical.get("track"), Mapping):
             from astrid.sdk import timeline_intent as intent
             canonical["clip_id"] = result.id
             canonical["at"] = intent.on(result.data) or result.start
@@ -486,7 +505,6 @@ def selected_ids(tl, owner, kind):
 
 def recorded_owner(tl, call, kind):
     if kind == "track":
-        from astrid.sdk.timeline.gesture_producers import track_owner
         if len(call.resolved) != 1:
             raise CommandError("Track removal requires exactly one recorded track")
         sid = call.resolved[0]
@@ -694,6 +712,9 @@ def changed_paths(before, after):
 
 
 def state_at(entities, sid, path):
+    if path == "track_order" and "/track:" in sid:
+        prefix = sid.split("/track:", 1)[0] + "/track:"
+        return dict(state="present", value=[key for key in entities if key.startswith(prefix)])
     if sid not in entities:
         return {"state": "absent"}
     path = "app.astrid." + path[7:] if path.startswith("intent.") else path
@@ -734,6 +755,18 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     from astrid.core.timeline import clip_fields as cf
     from astrid.sdk.timeline_address import element_schema
     changes = set(changed_paths(before, after))
+    if entry.op == "clip.remove" and selected and "music_bed" in before.get(selected[0], {}):
+        return {(selected[0], ""), (selected[0], "music_bed")}
+    if entry.op == "timeline.inverse":
+        return {(write["id"], write["path"]) for write in args["writes"]}
+    if entry.kind == "track":
+        if entry.op == "timeline.set":
+            return {(selected[0], path) for path in set(args.get("values") or {}) | set(args.get("clear") or [])}
+        if entry.op == "timeline.add" and "media" in args:
+            return {(sid, path) for sid, path in changes if sid not in before and "/clip:" in sid}
+        if entry.op == "timeline.reorder":
+            return {(selected[0], "track_order")}
+        return {(selected[0], "")}
     if entry.op == "timeline.add" and "from" in args:
         # The cloned entity is authored directly; its container array is a
         # consequence. Retain that array in state for older recorded guards.
@@ -793,11 +826,11 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     return direct
 
 
-def capture_binding(tl, text, clip, bindings):
+def capture_binding(tl, text, clip, bindings, *, film_end=None):
     from astrid.core.timeline import moments as mo
-    from astrid.sdk.timeline.model import _MomentContext
     from astrid.sdk import timeline_intent as intent
-    ctx = _MomentContext(tl, clip)
+    from astrid.sdk.timeline.model import _MomentContext
+    ctx = _MomentContext(tl, clip) if film_end is None else _MomentContext(tl, clip, film_end=film_end)
     from astrid.sdk.timeline._common import WORD_ID_RE
     if WORD_ID_RE.fullmatch(text.strip()):
         word = tl.word(text.strip())
@@ -840,8 +873,8 @@ def capture_binding(tl, text, clip, bindings):
 
 
 def capture_argument_bindings(tl, call, owner, bindings):
-    from astrid.sdk.timeline.model import Clip
     from astrid.sdk.timeline._common import TIME_RE
+    from astrid.sdk.timeline.model import Clip
     clip = owner if isinstance(owner, Clip) else owner.steps[0] if call.op == "sequence.fit" else None
     for key in ("moment", "on", "until", "at", "when", "before", "land"):
         value = call.args.get(key)
@@ -1135,3 +1168,534 @@ def _storage_dispatch(entry, tl, args, kwargs):
         return entry.handler(tl, *args, **kwargs)
     finally:
         tl._storage_call = previous
+
+
+# Scoped structural producers share the one registry, recorder and rebase path.
+def _literal_source(clip):
+    from astrid.sdk.timeline import commands
+
+    sid = commands.scoped_clip(clip._tl, clip)
+    if (
+        sid in commands.music_carriers(clip._tl)
+        or intent.on(clip.data)
+        or intent.until(clip.data)
+        or intent.cut_of(clip.data)
+        or intent.sequence(clip.data)
+        or intent.line(clip.data)
+        or intent.formulas(clip.data)
+        or intent.loop(clip.data)
+        or intent.orphan(clip.data)
+    ):
+        raise TimelineEditError(
+            "Structural gesture touches tied/grouped content; choose keep, detach, adjust offset or re-anchor explicitly"
+        )
+    if any(key in clip.data for key in ("keyframes", "modifiers", "keyframeOrigin")):
+        raise TimelineEditError(
+            "Animated structural copy/split needs an explicit animation partition contract"
+        )
+    if clip.data.get("hold") is not None and any(key in clip.data for key in ("from", "to")):
+        raise TimelineEditError(
+            "Combined hold and source range needs an explicit media split/copy contract"
+        )
+    clip._tl._require_independent_clip(clip)
+    return sid
+
+
+def duplicate_clip_source(
+    self, *, from_: str, at: Any, track: str | None = None, clip_id: str | None = None
+) -> Clip:
+    """Copy an exact source within its recorded owner; placement is explicit."""
+    tl = self
+    from astrid.sdk.timeline import commands
+
+    if not commands.is_scoped_id(from_) or "/clip:" not in from_:
+        raise TimelineEditError("timeline.add from requires an exact clip ScopedId")
+    source = commands.recorded_owner(
+        tl, commands.EditCommand("timeline.add", None, {}, resolved=(from_,)), "clip"
+    )
+    _literal_source(source)
+    start = tl.quantize(
+        tl._moment_time(at, source)
+        if isinstance(at, str) and not TIME_RE.fullmatch(at.strip())
+        else tl.time(at)
+    )
+    if start < 0 or (source.shot_id is not None and tl._shot_at(start) != source.shot_id):
+        raise TimelineEditError(
+            "Duplicate within the source owner; cross-owner insertion requires explicit asset/track mapping"
+        )
+    data = copy.deepcopy(source.data)
+    data["id"] = clip_id or tl._new_id(source.id)
+    data["at"] = start - tl._shot_start(source.shot_id)
+    if track is not None:
+        if not any(t.get("id") == track for t in tl._internal(source.shot_id).get("tracks", [])):
+            raise TimelineEditError(f"No existing track {track!r} in the source owner")
+        data["track"] = track
+    # This form is intentionally literal: anchored placement needs its own
+    # explicit intent choice rather than detaching an authored source silently.
+    if isinstance(at, str):
+        if not TIME_RE.fullmatch(at.strip()):
+            raise TimelineEditError(
+                "Anchored duplicate placement requires an explicit intent choice"
+            )
+    tl._internal(source.shot_id).setdefault("clips", []).append(data)
+    from astrid.sdk.timeline.model import Clip
+
+    return Clip(tl, source.shot_id, data)
+
+
+def split_clip(self, at: Any) -> Clip:
+    """Split one literal clip, keeping its identity on the left and minting right."""
+    clip = self
+    _literal_source(clip)
+    tl = clip._tl
+    point = tl.quantize(
+        tl._moment_time(at, clip)
+        if isinstance(at, str) and not TIME_RE.fullmatch(at.strip())
+        else tl.time(at)
+    )
+    if not clip.start < point < clip.end:
+        raise TimelineEditError("Split point must be strictly inside the selected clip")
+    end = clip.end
+    offset = tl.quantize(point - clip.start)
+    data = copy.deepcopy(clip.data)
+    data["id"] = tl._new_id(clip.id)
+    _trim_front(data, offset)
+    data["at"] = point - tl._shot_start(clip.shot_id)
+    _trim_end(clip.data, offset)
+    if intent.for_s(clip.data) is not None:
+        intent.set_for(clip.data, offset)
+        intent.set_for(data, tl.quantize(end - point))
+    tl._internal(clip.shot_id)["clips"].append(data)
+    from astrid.sdk.timeline.model import Clip
+
+    return Clip(tl, clip.shot_id, data)
+
+
+class _Track:
+    """Ephemeral view of an existing track; identity comes from the document."""
+
+    def __init__(self, tl, shot_id, scoped_id, data):
+        self._tl, self.shot_id, self.scoped_id, self.data = tl, shot_id, scoped_id, data
+        self.id = data["id"]
+
+
+def track_owner(tl, sid, *, new=False):
+    from astrid.sdk.timeline import commands
+
+    if not isinstance(sid, str) or not commands.is_scoped_id(sid) or "/track:" not in sid:
+        raise TimelineEditError("Track removal requires an exact track ScopedId")
+    prefix, local = sid.split("/track:", 1)
+    if prefix == "parent":
+        shot = None
+    elif prefix.startswith("occurrence:"):
+        rows = [
+            r
+            for r in tl.bundle.get("placements", [])
+            if "occurrence:" + str(r.get("occurrence_id")) == prefix
+        ]
+        if len(rows) != 1:
+            raise TimelineEditError(f"Unavailable or ambiguous track owner {prefix!r}")
+        shot = str(rows[0]["shot_id"])
+    else:
+        raise TimelineEditError("Select an occurrence or parent track, not shared-shot content")
+    tracks = [t for t in tl._internal(shot).get("tracks", []) if t.get("id") == local]
+    if new and not tracks:
+        tracks = [{"id": local}]
+    if len(tracks) != 1:
+        raise TimelineEditError(f"Unavailable or ambiguous track {sid!r}")
+    owner = _Track(tl, shot, sid, tracks[0])
+    tl._require_independent_clip(owner)
+    return owner
+
+
+def track_users(tl, owner):
+    """Authoritative authored references, including durable zero-output owners."""
+    internal = tl._internal(owner.shot_id)
+    users = [c["id"] for c in internal.get("clips", []) if c.get("track") == owner.id]
+    prefix = owner.scoped_id.split("/track:", 1)[0] + "/clip:"
+    users.extend(
+        sid
+        for sid, entry in music_carriers(tl).items()
+        if sid.startswith(prefix) and entry["source"].get("track") == owner.id
+    )
+    if owner.shot_id is None:
+        users.extend(
+            "occurrence:" + str(row.get("occurrence_id"))
+            for row in tl.bundle.get("placements", [])
+            if row.get("track") == owner.id or row.get("placement", {}).get("track") == owner.id
+        )
+    for container in (internal, internal.get("config", {})):
+        users.extend(
+            "pinned-group:" + str(group.get("shotId"))
+            for group in container.get("pinnedShotGroups", [])
+            if group.get("trackId") == owner.id
+        )
+    return sorted(set(users))
+
+
+def remove_track(self):
+    """Remove an empty track after explicit authored-content/reference edits."""
+    internal = self._tl._internal(self.shot_id)
+    users = track_users(self._tl, self)
+    if users:
+        raise CommandError(
+            f"Track {self.scoped_id} is occupied by {', '.join(users)}; move or remove those references explicitly first"
+        )
+    if sum(t.get("kind") == self.data.get("kind") for t in internal.get("tracks", [])) <= 1:
+        raise CommandError("Cannot remove the last track of its kind")
+    internal["tracks"][:] = [t for t in internal["tracks"] if t is not self.data]
+
+
+def unused_track_removals(tl, select):
+    """Plan clear-unused as ordinary guarded removals using authored references.
+
+    This helper consumes the authoritative detached document, never UI spans.
+    Acceptance/rebase recheck each empty-track removal in the same transaction.
+    """
+    owner = track_owner(tl, select)
+    prefix = owner.scoped_id.split("/track:", 1)[0] + "/track:"
+    tracks = tl._internal(owner.shot_id).get("tracks", [])
+    referenced = {
+        row["id"] for row in tracks if track_users(tl, track_owner(tl, prefix + row["id"]))
+    }
+    retained = set(referenced) | {row["id"] for row in tracks if row["id"] in {"V1", "A1"}}
+    for kind in {row["kind"] for row in tracks}:
+        if not any(row["kind"] == kind and row["id"] in retained for row in tracks):
+            retained.add(next(row["id"] for row in tracks if row["kind"] == kind))
+    return [
+        dict(
+            op="timeline.remove",
+            select=prefix + row["id"],
+            args={},
+            expect={prefix + row["id"] + "::": dict(state="present", value=copy.deepcopy(row))},
+        )
+        for row in tracks
+        if row["id"] not in retained
+    ]
+
+
+_TRACK_FIELDS = {"label", "role", "scale", "fit", "opacity", "volume", "muted", "blendMode"}
+
+
+def _track_path(path):
+    if not isinstance(path, str) or not (
+        path in _TRACK_FIELDS
+        or path.startswith("app.")
+        and all(re.fullmatch(r"[A-Za-z0-9_-]+", p) for p in path.split("."))
+    ):
+        raise CommandError(f"Unsupported or structural track property {path!r}")
+
+
+def _validate_track_value(path, value):
+    import math
+
+    _track_path(path)
+    if path.startswith("app."):
+        return  # JSON values, including null and clear-shaped objects, are opaque data.
+    enums = {
+        "role": {"output", "source"},
+        "fit": {"contain", "cover", "manual"},
+        "blendMode": {
+            "darken",
+            "hard-light",
+            "lighten",
+            "multiply",
+            "normal",
+            "overlay",
+            "screen",
+            "soft-light",
+        },
+    }
+    if path in enums:
+        valid = isinstance(value, str) and value in enums[path]
+    elif path == "label":
+        valid = isinstance(value, str)
+    elif path == "muted":
+        valid = isinstance(value, bool)
+    else:
+        valid = (
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        )
+    if not valid:
+        raise CommandError(f"Invalid track {path} value {value!r}")
+
+
+def guard_track_call(tl, command, owner):
+    expectations = dict(command.expect or {})
+    sid = owner.scoped_id
+    if command.op == "timeline.add":
+        if isinstance(command.args.get("track"), Mapping):
+            if expectations.get(sid + "::") != {"state": "absent"}:
+                raise CommandError("Track add requires whole-entity :: absent expectation")
+        elif "media" in command.args:
+            local = command.args.get("clip_id")
+            if (
+                not isinstance(local, str)
+                or not local
+                or not is_scoped_id(sid.split("/track:")[0] + "/clip:" + local)
+            ):
+                raise CommandError("Media add requires a reserved clip_id")
+            key = sid.split("/track:")[0] + "/clip:" + local + "::"
+            if expectations.get(key) != {"state": "absent"}:
+                raise CommandError("Media add requires whole-entity :: absent expectation")
+    elif command.op == "timeline.set":
+        values, clear = command.args.get("values", {}), command.args.get("clear", [])
+        if (
+            not isinstance(values, Mapping)
+            or not isinstance(clear, list)
+            or any(not isinstance(p, str) for p in clear)
+        ):
+            raise CommandError("Track set requires values object and clear array")
+        for path in set(values) | set(clear):
+            if path not in expectations and sid + "::" + path not in expectations:
+                raise CommandError(f"Track set requires captured tagged expectation for {path}")
+    elif command.op == "timeline.reorder":
+        expected = command.args.get("expected_order")
+        key = sid + "::track_order"
+        tagged = dict(state="present", value=expected)
+        if key in expectations and not _same_value(expectations[key], tagged):
+            raise CommandError("Reorder expectation disagrees with expected_order")
+        expectations[key] = tagged
+    elif command.op == "timeline.remove":
+        expectations.setdefault(sid + "::", state_at(entity_states(tl), sid, ""))
+    return replace(command, expect=expectations)
+
+
+def add_track(self, *, track):
+    if (
+        not isinstance(track, Mapping)
+        or track.get("id") != self.id
+        or track.get("kind") not in {"audio", "visual"}
+        or "label" not in track
+    ):
+        raise CommandError(
+            "Track add requires a complete row matching the selected id, kind and label"
+        )
+    for key in _TRACK_FIELDS & set(track):
+        _validate_track_value(key, track[key])
+    if "app" in track and not isinstance(track["app"], Mapping):
+        raise CommandError("Track app metadata must be an object")
+    tracks = self._tl._internal(self.shot_id).setdefault("tracks", [])
+    if any(row.get("id") == self.id for row in tracks):
+        raise CommandError("Track identity already exists")
+    self.data = copy.deepcopy(dict(track))
+    tracks.append(self.data)
+    return self
+
+
+def set_track(self, *, values=None, clear=None):
+    values, clear = dict(values or {}), list(clear or [])
+    paths = list(values) + clear
+    if len(clear) != len(set(clear)) or set(values) & set(clear):
+        raise CommandError("Track values and clear conflict or contain duplicate clear paths")
+    for path in paths:
+        _track_path(path)
+    if "label" in clear:
+        raise CommandError("Required track label cannot be cleared")
+    if any(
+        a != b and (a.startswith(b + ".") or b.startswith(a + ".")) for a in paths for b in paths
+    ):
+        raise CommandError("Overlapping track property paths")
+    for path, value in values.items():
+        _validate_track_value(path, value)
+    for path in paths:
+        data = self.data
+        parts = path.split(".")
+        for part in parts[:-1]:
+            if part not in data:
+                if path in clear:
+                    data = None
+                    break
+                data[part] = {}
+            if not isinstance(data[part], dict):
+                raise CommandError(f"Track metadata parent {part!r} is not an object")
+            data = data[part]
+        if data is not None:
+            if path in clear:
+                data.pop(parts[-1], None)
+            else:
+                data[parts[-1]] = copy.deepcopy(values[path])
+    return self
+
+
+def reorder_tracks(self, *, order, expected_order):
+    tl = self._tl
+    prefix = self.scoped_id.split("/track:")[0] + "/track:"
+    tracks = tl._internal(self.shot_id).get("tracks", [])
+    current = [prefix + t["id"] for t in tracks]
+    for items in (order, expected_order):
+        if (
+            not isinstance(items, list)
+            or any(not isinstance(s, str) for s in items)
+            or len(items) != len(set(items))
+            or set(items) != set(current)
+        ):
+            raise CommandError("Track order must be a complete unique same-owner permutation")
+    if current != expected_order:
+        raise SemanticConflict(
+            "same-property", self.scoped_id, "track_order", expected_order, current, order
+        )
+    rows = {prefix + t["id"]: t for t in tracks}
+    tracks[:] = [rows[sid] for sid in order]
+    return self
+
+
+def add_project_media(self, *, media, at, clip_id, media_record, duration=None, source_range=None):
+    import math
+
+    tl = self._tl
+
+    def positive(value):
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+        )
+
+    intrinsic = media_record["entry"].get("duration_seconds")
+    if intrinsic is not None and not positive(intrinsic):
+        raise CommandError("Media intrinsic duration must be finite and positive")
+    media_type = media_record["entry"].get("media_type", "")
+    if not isinstance(media_type, str) or media_type.split("/")[0] not in {
+        "audio",
+        "video",
+        "image",
+    }:
+        raise CommandError("Unsupported selected media type")
+    start = tl.quantize(tl.time(at))
+    local_start = start - tl._shot_start(self.shot_id)
+    if local_start < 0 or self.shot_id is not None and local_start >= tl._shot_length(self.shot_id):
+        raise CommandError("Media insertion time is outside selected occurrence")
+    if media_type.startswith("audio/") and not positive(intrinsic):
+        raise CommandError("SFX requires finite positive intrinsic duration")
+    if source_range is not None:
+        if not isinstance(source_range, list) or len(source_range) != 2:
+            raise CommandError("source_range must contain source in/out seconds")
+        left, right = source_range
+        if (
+            not positive(right)
+            or not isinstance(left, (int, float))
+            or isinstance(left, bool)
+            or not math.isfinite(left)
+            or left < 0
+            or left >= right
+            or intrinsic is None
+            or right > intrinsic
+        ):
+            raise CommandError("Invalid intrinsic source range")
+        if duration is not None and duration != right - left:
+            raise CommandError("Duration contradicts source range")
+        duration = right - left
+    else:
+        left, right = 0, duration
+        if duration is None and media_type.startswith("audio/"):
+            duration = right = intrinsic
+    if not positive(duration) or intrinsic is not None and right > intrinsic:
+        raise CommandError("Media needs explicit positive duration within intrinsic range")
+    if media_type.startswith("image/") and source_range is not None:
+        raise CommandError("Still images require explicit duration")
+    entry = dict(
+        media_id=media_record["object_id"],
+        content_sha256=media_record["object_id"].removeprefix("sha256:"),
+        type=media_type,
+        duration=intrinsic,
+        format=copy.deepcopy(media_record["entry"]),
+        generationId=media_record["generation_id"],
+        variantId=media_record["variant_id"],
+        authoring_metadata={key: copy.deepcopy(media_record[key]) for key in ("generation", "variant")},
+    )
+    key = media["asset"]
+    if not isinstance(key, str) or not key:
+        raise CommandError("Media asset key must be a nonempty string")
+    assets = tl._registry(self.shot_id)
+    if key in assets and (
+        not isinstance(assets[key], Mapping)
+        or any(not _same_value(assets[key].get(field), value) for field, value in entry.items())
+    ):
+        raise CommandError("Owner asset-key identity collision")
+    registry_inserted = key not in assets
+    assets.setdefault(key, entry)
+    row = dict(
+        id=clip_id,
+        clipType="media",
+        track=self.id,
+        asset=key,
+        at=local_start,
+        hold=tl.quantize(duration),
+        params={},
+    )
+    if registry_inserted:
+        from astrid.sdk.timeline.commit import _digest
+
+        row["app"] = {
+            "astrid": {"media_registry_insert": {"asset": key, "entry_digest": _digest(entry)}}
+        }
+    if not media_type.startswith("image/"):
+        row.update({"from": left, "to": right})
+    if any(c.get("id") == clip_id for c in tl._internal(self.shot_id).get("clips", [])):
+        raise CommandError("Reserved media clip identity already exists")
+    tl._internal(self.shot_id).setdefault("clips", []).append(row)
+    from astrid.sdk.timeline.model import Clip
+
+    return Clip(tl, self.shot_id, row)
+
+
+def undo_media_registry_consequences(tl, before):
+    """Reverse only the removed insertion's still-unreferenced registry effect.
+
+    The accepted authored clip carries consequence provenance; no project media
+    is deleted. A changed entry or any remaining owner reference retains it.
+    The canonical publication inverse invokes this inside its transaction.
+    """
+    from astrid.sdk.timeline.commit import _digest
+
+    after = entity_states(tl)
+
+    def refers(value, key):
+        if isinstance(value, Mapping):
+            return any(
+                (name in {"asset", "assetId"} and child == key) or refers(child, key)
+                for name, child in value.items()
+            )
+        return isinstance(value, list) and any(refers(child, key) for child in value)
+
+    for sid, row in before.items():
+        if "/clip:" not in sid or sid in after:
+            continue
+        mark = row.get("app", {}).get("astrid", {}).get("media_registry_insert")
+        if (
+            not isinstance(mark, Mapping)
+            or set(mark) != {"asset", "entry_digest"}
+            or row.get("asset") != mark["asset"]
+        ):
+            continue
+        scope = sid.split("/clip:", 1)[0]
+        if scope == "parent":
+            shot = None
+        else:
+            matches = [
+                r
+                for r in tl.bundle.get("placements", [])
+                if "occurrence:" + str(r.get("occurrence_id")) == scope
+            ]
+            if len(matches) != 1:
+                continue
+            shot = matches[0]["shot_id"]
+        internal = tl._internal(shot)
+        assets = internal.get("registry", {}).get("assets", {})
+        key = mark["asset"]
+        if key not in assets or _digest(assets[key]) != mark["entry_digest"]:
+            continue
+        sources = [
+            internal,
+            *[
+                entry["source"]
+                for owner, entry in music_carriers(tl).items()
+                if owner.startswith(scope + "/clip:")
+            ],
+        ]
+        if shot is not None:
+            sources.append(tl.bundle["shots"][shot].get("payload", {}))
+        if not any(refers(value, key) for value in sources):
+            del assets[key]

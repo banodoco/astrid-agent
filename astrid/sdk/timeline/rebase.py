@@ -56,13 +56,49 @@ def _next_step(conflict):
 
 def _identities(call):
     identities = set(call.resolved) | set(call.created or ()) | set((call.bindings or {}).values())
-    # An authored owner can be referenced only by a basis/projection guard;
-    # consequences are not added to the command's direct resolved targets.
-    for key in set(call.expect or {}) | set(call.authorship or {}):
+    for key in (*call.expect, *(call.authorship or {})):
         if "::" in key:
-            sid = key.split("::", 1)[0]
-            if commands.is_scoped_id(sid):
-                identities.add(sid)
+            identities.add(key.split("::", 1)[0])
+    for anchor in tuple(identities):
+        if anchor.startswith("cut:") and anchor.endswith((":start", ":end")):
+            identities.add(anchor.rsplit(":", 1)[0])
+    if call.op == "timeline.adopt" and call.args.get("sources"):
+        identities.update(call.args["sources"])
+    for key, state in call.expect.items():
+        _, prop = commands.write_target(key, call.resolved)
+        if prop == "music_bed" and state.get("state") == "present":
+            metadata = state["value"]
+            if "arrangements" in metadata:
+                identities.add(metadata["owner"])
+                identities.update(a["owner"] for a in metadata["arrangements"])
+    if call.op == "timeline.inverse":
+        for write in call.args["writes"]:
+            identities.add(write["id"])
+            identities.update(write.get("order", []))
+            for name in ("before", "after"):
+                state = write[name]
+                if state.get("state") != "present":
+                    continue
+                if write["path"] == "music_bed" and "arrangements" in state["value"]:
+                    identities.add(state["value"]["owner"])
+                    identities.update(a["owner"] for a in state["value"]["arrangements"])
+                if write["path"] in {"intent.cut", "app.astrid.cut"} and isinstance(state["value"], str):
+                    identities.add("cut:" + state["value"])
+                if not write["path"] and isinstance(state["value"], dict):
+                    cut = state["value"].get("app", {}).get("astrid", {}).get("cut")
+                    if cut:
+                        identities.add("cut:" + cut)
+    if call.select and commands.is_scoped_id(call.select):
+        identities.add(call.select)
+    if call.op == "timeline.reorder":
+        identities.update(call.args.get("order", []))
+        identities.update(call.args.get("expected_order", []))
+    if call.op == "timeline.inverse":
+        for write in call.args["writes"]:
+            if write["path"] == "track_order":
+                for state in (write["before"], write["after"]):
+                    if state["state"] == "present":
+                        identities.update(state["value"])
     return identities
 
 
@@ -78,54 +114,87 @@ def _rewrite(call, id_map):
             cut, edge = value.rsplit(":", 1)
             return id_map.get(cut, cut) + ":" + edge
         return value
-    def mapped_moment_text(text):
+    def moment_text(text):
         from astrid.core.timeline import moments as mo
-        def rewrite_moment(moment):
+        def visit(moment):
             cut = "cut:" + moment.cut if moment.cut else None
             return replace(moment, cut=id_map.get(cut, cut)[4:] if cut else None,
-                           base=rewrite_moment(moment.base) if moment.base else None)
+                           base=visit(moment.base) if moment.base else None)
         original = mo.parse(text)
-        rewritten = rewrite_moment(original)
-        return mo.format_moment(rewritten) if rewritten != original else text
+        mapped = visit(original)
+        return mo.format_moment(mapped) if mapped != original else text
     def time_ref(text):
-        # Only recorded bindings prove that an argument is an authored TimeRef.
-        # Parse the existing grammar; never replace arbitrary text or opaque IDs.
         anchor = (call.bindings or {}).get(text)
-        return mapped_moment_text(text) if anchor and identity(anchor) != anchor else text
-    def expectation(key, state):
-        value = copy.deepcopy(state)
-        sid, prop = commands.write_target(key, call.resolved)
-        if (not prop and any(token in sid for token in ("/clip:", "/track:")) and identity(sid) != sid
-                and value.get("state") == "present" and isinstance(value.get("value"), dict)):
-            old, new = sid.rsplit(":", 1)[1], identity(sid).rsplit(":", 1)[1]
-            if value["value"].get("id") == old:
-                value["value"]["id"] = new
-        if (prop in {"intent.on", "intent.until", "app.astrid.on", "app.astrid.until"}
-                and value.get("state") == "present" and isinstance(value.get("value"), str)):
-            value["value"] = mapped_moment_text(value["value"])
-        return value
+        return moment_text(text) if anchor and identity(anchor) != anchor else text
+    def state(path, value, *, sid=None):
+        out = copy.deepcopy(value)
+        if out.get("state") != "present":
+            return out
+        prop = path.split("::", 1)[-1]
+        if prop in {"intent.on", "intent.until", "app.astrid.on", "app.astrid.until"} and isinstance(out["value"], str):
+            out["value"] = moment_text(out["value"])
+        elif prop == "track_order" and isinstance(out["value"], list):
+            out["value"] = [identity(sid) for sid in out["value"]]
+        elif prop in {"intent.cut", "app.astrid.cut"} and isinstance(out["value"], str):
+            cut = "cut:" + out["value"]
+            out["value"] = id_map.get(cut, cut)[4:]
+        elif prop == "music_bed" and isinstance(out["value"], dict) and "arrangements" in out["value"]:
+            metadata = out["value"]
+            metadata["owner"] = identity(metadata["owner"])
+            metadata["arrangements"] = [{**a, "owner": identity(a["owner"])} for a in metadata["arrangements"]]
+            metadata["switches"] = [{**s, "on": time_ref(s["on"])} for s in metadata["switches"]]
+        elif not prop and sid and isinstance(out["value"], dict) and "/" in sid:
+            out["value"]["id"] = identity(sid).rsplit(":", 1)[1]
+            intent = out["value"].get("app", {}).get("astrid", {})
+            if intent.get("cut"):
+                cut = "cut:" + intent["cut"]
+                intent["cut"] = id_map.get(cut, cut)[4:]
+            for key in ("on", "until"):
+                if isinstance(intent.get(key), str):
+                    intent[key] = moment_text(intent[key])
+        return out
     def path(key):
         if "::" not in key:
             return key
         sid, prop = key.split("::", 1)
         return f"{identity(sid)}::{prop}"
-    rewritten = replace(call, resolved=tuple(identity(sid) for sid in call.resolved),
+    rewritten = replace(call, select=identity(call.select) if call.select else None, resolved=tuple(identity(sid) for sid in call.resolved),
                         created=tuple(identity(sid) for sid in call.created or ()),
                         bindings={time_ref(text): identity(sid) for text, sid in (call.bindings or {}).items()},
-                        expect={path(key): expectation(key, value) for key, value in call.expect.items()},
+                        expect={path(key): state(key.split("::", 1)[-1], value,
+                            sid=commands.write_target(key, call.resolved)[0]) for key, value in call.expect.items()},
                         authorship={path(key): value for key, value in (call.authorship or {}).items()},
                         args={key: time_ref(value) if isinstance(value, str) and key in
                               {"moment", "on", "until", "at", "when", "before", "land"}
                               else copy.deepcopy(value) for key, value in call.args.items()})
+    if call.op == "timeline.reorder":
+        rewritten = replace(rewritten, args={**rewritten.args,
+            **{key: [identity(sid) for sid in call.args[key]] for key in ("order", "expected_order")}})
+    if call.op == "timeline.add" and isinstance(rewritten.args.get("track"), dict):
+        tracks = [sid for sid in rewritten.created if "/track:" in sid]
+        if len(tracks) == 1:
+            rewritten = replace(rewritten, args={**rewritten.args, "track": {**rewritten.args["track"], "id": tracks[0].rsplit(":", 1)[1]}})
     if call.op == "timeline.add" and "from" in rewritten.args:
         rewritten = replace(rewritten, args={**rewritten.args, "from": identity(rewritten.args["from"])})
+    if call.op == "timeline.adopt" and call.args.get("sources"):
+        rewritten = replace(rewritten, args={**rewritten.args,
+            "sources": [identity(sid) for sid in call.args["sources"]],
+            "alignment": {identity(sid): copy.deepcopy(value) for sid, value in (call.args.get("alignment") or {}).items()},
+            "switches": [{**switch, "on": time_ref(switch["on"])} for switch in call.args.get("switches") or []]})
     if call.op == "timeline.add" and rewritten.created:
         clips = [sid for sid in rewritten.created if "/clip:" in sid]
         if len(clips) == 1:
             rewritten = replace(rewritten, args={**rewritten.args, "clip_id": clips[0].split("/clip:", 1)[1]})
     if call.op in {"cut.split", "cut.duplicate"} and rewritten.args.get("id"):
-        old = "cut:" + str(rewritten.args["id"])
-        rewritten = replace(rewritten, args={**rewritten.args, "id": id_map.get(old, old)[4:]})
+        cut = "cut:" + rewritten.args["id"]
+        rewritten = replace(rewritten, args={**rewritten.args, "id": id_map.get(cut, cut)[4:]})
+    if call.op == "timeline.inverse":
+        rewritten = replace(rewritten, args={**rewritten.args, "writes": [
+            {**write, "id": identity(write["id"]),
+             "before": state(write["path"], write["before"], sid=write["id"]),
+             "after": state(write["path"], write["after"], sid=write["id"]),
+             **({"order": [identity(sid) for sid in write["order"]]} if "order" in write else {})}
+            for write in call.args["writes"]]})
     return commands.EditCommand.coerce(rewritten)
 
 

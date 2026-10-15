@@ -478,9 +478,13 @@ _commands.register(Voice, "voice", ("replace", "set_gap_after"))
 
 _commands.register(Checkout, "timeline", ("save", "undo", "redo"), boundary="storage")
 
-# Original P3B spelling: a clip split is not a cut split.
-from astrid.sdk.timeline.gesture_producers import split as _split_gesture
-_commands.REGISTRY["timeline.split"] = _commands.Operation("timeline.split", "clip", "split", _split_gesture)
+# Scoped producer adapters use the canonical command registry.
+_commands.REGISTRY["timeline.split"] = _commands.Operation("timeline.split", "clip", "split", _commands.split_clip)
+_commands.REGISTRY["timeline.remove"] = _commands.Operation("timeline.remove", "track", "remove", _commands.remove_track)
+_commands.REGISTRY["timeline.set"] = _commands.Operation("timeline.set", "track", "set", _commands.set_track)
+_commands.REGISTRY["timeline.reorder"] = _commands.Operation("timeline.reorder", "track", "reorder", _commands.reorder_tracks)
 
-from astrid.sdk.timeline.gesture_producers import remove_track as _remove_track_gesture
-_commands.REGISTRY["timeline.remove"] = _commands.Operation("timeline.remove", "track", "remove", _remove_track_gesture)
+# Preserve A's admitted canonical publication inverse adapter.
+from astrid.sdk.timeline.inverse import apply_inverse as _apply_inverse  # noqa: E402
+
+_commands.REGISTRY["timeline.inverse"] = _commands.Operation("timeline.inverse", "timeline", "inverse", _apply_inverse)

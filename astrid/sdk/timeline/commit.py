@@ -23,10 +23,10 @@ from astrid.core.timeline.compatibility import (
     require_writable_parent,
 )
 from astrid.sdk.timeline import commands
-from astrid.sdk.timeline.rebase import rebase
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.commands import CommandError
+from astrid.sdk.timeline.rebase import rebase
 from astrid.sdk.timeline.transaction import edit_transaction
 from astrid.version import __version__
 from banodoco_workspace_client.contract_metadata import SCHEMA_DIGEST
@@ -88,7 +88,8 @@ class RuntimeCommitService:
                     raise _Refusal("Document reconciliation and verified draft journal commands require the adapt-save producer")
                 base = self._load_revision(runtime_port, request, request["base_revision_id"])
                 occurrence = self._scope_occurrence(request, base)
-                candidate, plan, _direct = self._apply(base, request["change"]["commands"])
+                captured = self._capture_media(runtime_port, request, request["change"]["commands"])
+                candidate, plan, _direct = self._apply(base, captured)
                 self._guard_scope(occurrence, plan)
                 # Apply once at the exact base. Never repeat relative commands
                 # on a newer head or generate new IDs during a CAS retry.
@@ -98,6 +99,9 @@ class RuntimeCommitService:
                     onto = base if head["revision_id"] == request["base_revision_id"] else self._load_revision(
                         runtime_port, request, head["revision_id"])
                     require_writable_candidate(onto)
+                    inverse_conflict = self._inverse_history(runtime_port, request, plan.calls, head, onto, result)
+                    if inverse_conflict is not None:
+                        return inverse_conflict
                     current = copy.deepcopy(candidate)
                     if head["revision_id"] != request["base_revision_id"]:
                         result["rebased_onto"] = head["revision_id"]
@@ -168,6 +172,56 @@ class RuntimeCommitService:
                 return self._error(result, "bad_request", str(exc), status="refused")
             except (ConnectionError, TimeoutError):
                 raise
+
+    @classmethod
+    def _capture_media(cls, port, request, values):
+        """Detach exact project selections once, before base application/rebase.
+
+        Runtime independently checks the original request selections at atomic
+        acceptance. Recorded input is evidence, never a fresh catalog selector.
+        """
+        if not isinstance(values, (list, tuple)):
+            raise CommandError("commands must be an array")
+        captured = []
+        for value in values:
+            call = commands.EditCommand.coerce(value)
+            if "media_record" in call.args:
+                raise _Refusal("Submitted commands cannot supply trusted media_record")
+            args = copy.deepcopy(dict(call.args))
+            if call.op == "timeline.batch":
+                args["commands"] = cls._capture_media(port, request, args.get("commands", []))
+            if call.op == "timeline.add" and "media" in args:
+                media = args["media"]
+                if not isinstance(media, Mapping) or set(media) != {"asset", "generation_id", "variant_id", "object_id", "catalog_digest"}:
+                    raise _Refusal("Exact project media selection is required")
+                import re
+                if not isinstance(media.get("object_id"), str) or re.fullmatch(r"sha256:[0-9a-f]{64}", media["object_id"]) is None:
+                    raise _Refusal("Selected media requires an exact object digest")
+                selection = copy.deepcopy(dict(media))
+                if any(not isinstance(v, str) or not v for v in media.values()):
+                    raise _Refusal("Media identity fields must be nonempty strings")
+                read = getattr(port, "selected_media", None)
+                if not callable(read):
+                    raise _Refusal("Request-bound selected_media capability is required")
+                selected = copy.deepcopy(read(selection))
+                fields = {"realm_id", "project_id", "asset", "generation_id", "variant_id", "object_id",
+                          "generation", "variant", "entry", "catalog_digest"}
+                if not isinstance(selected, Mapping) or set(selected) != fields:
+                    raise _Refusal("Invalid detached selected_media result")
+                if any(selected.get(k) != v for k, v in selection.items()) or selected.get("project_id") != request["project_id"]:
+                    raise _Refusal("Selected media identity/project membership mismatch")
+                if not isinstance(selected["realm_id"], str) or not selected["realm_id"]:
+                    raise _Refusal("Selected media realm binding is missing")
+                record = {k: v for k, v in selected.items() if k != "catalog_digest"}
+                if _digest(record) != media["catalog_digest"]:
+                    raise _Refusal("Selected media catalog digest changed")
+                if any(not isinstance(selected[k], Mapping) for k in ("generation", "variant", "entry")):
+                    raise _Refusal("Selected media metadata must be detached objects")
+                if selected["entry"].get("object_id") != media["object_id"]:
+                    raise _Refusal("Selected entry object identity mismatch")
+                args["media_record"] = selected
+            captured.append({**call.to_json(), "args": args})
+        return captured
 
     @staticmethod
     def _load_revision(port, request, revision_id):
@@ -263,13 +317,17 @@ class RuntimeCommitService:
             raise CommandError("commands must be an array")
         external = {"timeline.apply-script", "timeline.insert-line", "voice.replace", "timeline.adopt",
                     "timeline.fill-slot", "timeline.fill-standins", "timeline.replace-asset",
-                    "clip.swap-asset", "timeline.edit-flags", "cut.split", "timeline.add-cut"}
+                    "clip.swap-asset", "timeline.edit-flags"}
         for value in values:
             call = commands.EditCommand.coerce(value)
-            if call.op == "timeline.add" and "from" not in call.args:
-                raise _Refusal("timeline.add requires an admitted scoped media/adapter producer")
-            if call.op in external or "client" in call.args:
+            local_adoption = (call.op == "timeline.adopt" and call.args.get("sources") is not None
+                              and call.args.get("timeline") is None and call.args.get("revision_id") is None)
+            if (call.op in external and not local_adoption) or "client" in call.args:
                 raise _Refusal(f"{call.op} requires an admitted scoped media/adapter producer")
+            if call.op == "timeline.add" and any(call.args.get(key) is not None for key in ("asset", "standin")):
+                raise _Refusal("timeline.add with media requires an admitted scoped media/adapter producer")
+            if call.op in {"cut.split", "timeline.add-cut"} and call.args.get("picture") is not None and not isinstance(call.args["picture"], str):
+                raise _Refusal(f"{call.op} with picture replacement requires an admitted scoped media/adapter producer")
             if call.op == "clip.set-beats" and not (isinstance(call.args.get("source"), Mapping)
                     or call.args.get("source") == "keep"):
                 raise _Refusal("Beat files/handles require an admitted scoped media producer")
@@ -317,6 +375,67 @@ class RuntimeCommitService:
             duration = entry.get("duration")
             if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
                 raise _Refusal("Trim/slip requires a pinned source duration; ambient media lookup is unavailable")
+
+    @staticmethod
+    def _history_choice(result, publication, label):
+        result["choices"] = [{"for": conflict["path"], "options": [dict(
+            label=f"Later publication {publication}" + (f" ({label})" if label else "") +
+                  "; use timelines restore for an explicit historical replacement", commands=[])]}
+            for conflict in result["conflicts"]]
+
+    @classmethod
+    def _inverse_history(cls, port, request, calls, head, onto, result):
+        """Guard publication writes, including ABA and same-revision republication.
+
+        C's provider summaries/evidence can prove COMMIT edges. They exclude
+        restore/App events: an unprovable edge is a dependent conflict, never
+        silently treated as disjoint. Public-history staging handles those
+        events; a race after staging still fails closed here.
+        """
+        from astrid.sdk.timeline.inverse import authored_paths, overlaps
+        inverse_calls = [call for call in calls if call.op == "timeline.inverse"]
+        for call in inverse_calls:
+            target = call.args["publication"]
+            if head["publication_id"] == target:
+                continue
+            rows, before, seen = {}, None, set()
+            while target not in rows:
+                read = getattr(port, "revisions", None)
+                page = read(dict(limit=200, **({"before": before} if before else {}))) if callable(read) else []
+                if not page:
+                    break
+                rows.update((row["publication_id"], row) for row in page if row.get("publication_id"))
+                before = page[-1].get("publication_id")
+                if before is None or before in seen:
+                    break
+                seen.add(before)
+            node, visited = head["publication_id"], set()
+            while node != target:
+                row = rows.get(node)
+                if row is None or node in visited or not callable(getattr(port, "evidence", None)):
+                    conflict = cls._conflict(result, request, ["publication ancestry/evidence unavailable"],
+                                             None, onto, None, kind="dependent")
+                    cls._history_choice(conflict, head["publication_id"], "unproven history edge")
+                    return conflict
+                visited.add(node)
+                evidence = port.evidence(row["evidence_digest"])
+                if _digest(evidence) != row["evidence_digest"]:
+                    raise _Refusal("publication evidence digest mismatch")
+                paths = authored_paths(evidence["commands"]) | {(w["id"], w["path"]) for w in evidence["direct_writes"]}
+                for write in call.args["writes"]:
+                    if any(overlaps((write["id"], write["path"]), path) for path in paths):
+                        states = commands.entity_states(Checkout(copy.deepcopy(onto)))
+                        path = dict(kind="same-property", id=write["id"], path=write["path"],
+                                    base=write["before"], theirs=commands.state_at(states, write["id"], write["path"]),
+                                    ours=write["after"])
+                        conflict = cls._conflict(result, request, [path], None, onto, None)
+                        cls._history_choice(conflict, node, row.get("label"))
+                        return conflict
+                previous = rows.get(row.get("previous_publication_id"))
+                if previous is not None and previous["revision_id"] != row.get("previous_revision_id"):
+                    raise _Refusal("inconsistent publication ancestry")
+                node = row.get("previous_publication_id")
+        return None
 
     @staticmethod
     def _error(result, code, message, *, status="error"):
