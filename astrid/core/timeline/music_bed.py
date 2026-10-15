@@ -74,7 +74,7 @@ class _Span:
     fade_out: float | None = None
 
 
-def materialize(source, basis, owner, *, start=0.0, fps=30.0, bars=(), beats=()):
+def materialize(source, basis, owner, *, start=0.0, fps=30.0, bars=(), beats=(), fixed_seams=None, seams_out=None):
 
     speed = float(source.get('speed') or 1)
     if not math.isfinite(speed) or speed <= 0:
@@ -85,7 +85,9 @@ def materialize(source, basis, owner, *, start=0.0, fps=30.0, bars=(), beats=())
     spans = [_Span(at, lo, hi)] if hi > lo + EPS else []
     changed = False
     notes = []
-    for point, delta in _bed_clusters([(p['at_s'], p['delta_s']) for p in basis], _bar_len(bars), 1 / fps):
+    changes = (fixed_seams if fixed_seams is not None else
+               _bed_clusters([(p['at_s'], p['delta_s']) for p in basis], _bar_len(bars), 1 / fps))
+    for point, delta in changes:
         index = next((i for i, s in enumerate(spans)
                       if (s.at < point or (delta < 0 and abs(s.at - point) < EPS))
                       and point < s.at + (s.hi - s.lo) / speed - EPS), None)
@@ -94,13 +96,15 @@ def materialize(source, basis, owner, *, start=0.0, fps=30.0, bars=(), beats=())
         span = spans[index]
         seam, seam_source = point, span.lo + (point - span.at) * speed
         kind = None
-        for label, points in (('bar', bars), ('beat', beats)):
+        for label, points in (() if fixed_seams is not None else (('bar', bars), ('beat', beats))):
             candidates = [p for p in points if span.lo - EPS <= p <= seam_source + EPS]
             if candidates:
                 candidate = max(candidates)
                 if span.at + (candidate - span.lo) / speed >= span.at + .5 - EPS:
                     seam, seam_source, kind = span.at + (candidate - span.lo) / speed, candidate, label
                 break
+        if seams_out is not None:
+            seams_out.append((seam, delta))
         overlap = min(.25, 2 * (seam - span.at))
         half = overlap / 2
         second_at = seam - half

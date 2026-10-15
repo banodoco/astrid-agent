@@ -6,12 +6,13 @@ records operations nor owns transactions, retry state or a second undo stack.
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from contextlib import contextmanager
 from functools import wraps
 
 from astrid.core.timeline import astrid_ns
-from astrid.core.timeline.music_bed import canonical_basis, materialize as _materialize, move_point
+from astrid.core.timeline.music_bed import canonical_basis, move_point
+from astrid.core.timeline.music_bed import materialize as _materialize
 from astrid.sdk.timeline._common import TimelineEditError
 
 
@@ -40,6 +41,124 @@ def collection(tl, *, create=False):
     return beds
 
 
+
+def adopted(tl):
+    """The sole persisted adopted authority, or None (never create on read)."""
+    config = (tl.bundle.get('parent') or {}).get('config') or {}
+    ns = (config.get('app') or {}).get('astrid') or {}
+    bed = ns.get('bed')
+    if bed is not None and not isinstance(bed, dict):
+        raise MusicBedError('app.astrid.bed must be an object')
+    return bed
+
+
+class _ArrangementSource(MutableMapping):
+    """Transient legacy-shaped view. Every assignment writes to the bed itself.
+
+    Consumers must snapshot with dict(view), not serialize this Python object.
+    Shared basis identity is intentional: never aggregate it across these views.
+    """
+    def __init__(self, bed, arrangement):
+        self.bed, self.arrangement = bed, arrangement
+
+    def __iter__(self):
+        return iter(('owner', 'source', 'ripple_basis', 'outputs'))
+
+    def __len__(self):
+        return 4
+
+    def __getitem__(self, key):
+        if key in ('owner', 'source'):
+            return self.arrangement[key]
+        if key == 'ripple_basis':
+            return self.bed[key]
+        if key == 'outputs':
+            return self.bed[key][self.arrangement['id']]
+        raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        if key in ('owner', 'source'):
+            self.arrangement[key] = value
+        elif key == 'ripple_basis':
+            self.bed[key] = value
+        elif key == 'outputs':
+            self.bed[key][self.arrangement['id']] = value
+        else:
+            raise KeyError(key)
+
+    def __delitem__(self, key):
+        raise MusicBedError('remove an arrangement through its authored transaction')
+
+
+def sources(tl):
+    """Logical owner -> source accessor for F and D. Views are write-through.
+
+    Legacy collection() retains its original writable-dict API for enrollment.
+    This enumeration never persists compatibility carriers under music_beds.
+    """
+    result = dict(collection(tl))
+    bed = adopted(tl)
+    if bed is not None:
+        if not isinstance(bed.get('arrangements'), list):
+            raise MusicBedError('bed.arrangements must be a list')
+        for arrangement in bed['arrangements']:
+            if not isinstance(arrangement, dict) or not isinstance(arrangement.get('owner'), str):
+                raise MusicBedError('malformed bed arrangement')
+            owner = arrangement['owner']
+            if owner in result:
+                raise MusicBedError(f'{owner}: duplicate authored music authority')
+            result[owner] = _ArrangementSource(bed, arrangement)
+    return result
+
+
+def _resolved_source(tl, owner, source):
+    from astrid.sdk.timeline.bed_adoption import _placement
+    sid, _ = locate(tl, owner, source)
+    resolved = copy.deepcopy(source)
+    resolved['at'] = round(_placement(tl, owner, source) - tl._shot_start(sid), 6)
+    return resolved
+
+
+def _shared_seams(tl):
+    bed = adopted(tl)
+    if bed is None:
+        return None
+    reference = next(a for a in bed['arrangements'] if a['owner'] == bed['owner'])
+    ref_sid, _ = locate(tl, bed['owner'], reference['source'])
+    seams = []
+    planning_source = _resolved_source(tl, bed['owner'], reference['source'])
+    # The reference defines seam choices across the common musical coordinate,
+    # including later arrangements after the reference clip stops sounding.
+    # Extend only this transient planning interval; emitted audio always uses
+    # the intact source's own bounds. No second clock is persisted.
+    from astrid.core.timeline.cuts import clip_duration
+    ends = [tl._shot_start(locate(tl, a['owner'], a['source'])[0]) +
+            float(a['source'].get('at') or 0) + clip_duration(a['source'])
+            for a in bed['arrangements']]
+    start = tl._shot_start(ref_sid) + float(planning_source.get('at') or 0)
+    reference_end = start + clip_duration(planning_source)
+    horizon = max(ends)
+    if horizon > reference_end + 1e-6:
+        horizon += sum(abs(p['delta_s']) for p in bed['ripple_basis'])
+        planning_source.pop('hold', None)
+        planning_source.pop('duration', None)
+        planning_source['to'] = float(planning_source.get('from') or 0) + (horizon - start) * float(planning_source.get('speed') or 1)
+    materialize(planning_source, bed['ripple_basis'], bed['owner'],
+                start=tl._shot_start(ref_sid), fps=tl.fps, seams_out=seams)
+    return seams
+
+
+def _materialize_entry(tl, owner, entry, *, shared_seams=None):
+    sid, _ = locate(tl, owner, entry['source'])
+    kwargs = {}
+    if isinstance(entry, _ArrangementSource):
+        kwargs['fixed_seams'] = _shared_seams(tl) if shared_seams is None else shared_seams
+    source = (_resolved_source(tl, owner, entry['source'])
+              if isinstance(entry, _ArrangementSource) else entry['source'])
+    return materialize(source, entry['ripple_basis'], owner,
+                       start=tl._shot_start(sid), fps=tl.fps, **kwargs)
+
+
 def validate_occurrence_ownership(tl):
     """Refuse ambiguous shared ownership before command/entity recording."""
     rows = tl.bundle.get('placements') or []
@@ -58,8 +177,11 @@ def prepare(tl):
     Legacy closure-less shared input must supply distinct occurrence identities.
     """
     from collections import Counter
+
     from astrid.core.timeline.authoring_bundle import (
-        _authoring_shot_id, _copy_shot_for_placement, _remap_known_item_references,
+        _authoring_shot_id,
+        _copy_shot_for_placement,
+        _remap_known_item_references,
     )
 
     rows = tl.bundle.get('placements') or []
@@ -100,8 +222,8 @@ def prepare(tl):
                 mapping['placements'][row['occurrence_id']]['shot_id']
             except (KeyError, TypeError):
                 raise MusicBedError('shared input has incomplete authoring source mapping') from None
-        owned = {owner: _remap_known_item_references(entry, item_ids)
-                 for owner, entry in collection(tl).items()
+        owned = {owner: _remap_known_item_references(dict(entry), item_ids)
+                 for owner, entry in sources(tl).items()
                  if owner == f"occurrence:{row['occurrence_id']}/clip:{entry['source']['id']}"}
         copies.append((row, sid, new_sid, shot, mapped_source, owned))
     for row, sid, new_sid, shot, mapped_source, owned in copies:
@@ -110,7 +232,8 @@ def prepare(tl):
         if isinstance(mapping, dict):
             mapping['shots'][new_sid] = mapped_source
             mapping['placements'][row['occurrence_id']]['shot_id'] = new_sid
-        collection(tl).update(owned)
+        for owner, value in owned.items():
+            sources(tl)[owner]['source'] = value['source']
         base = tl.bundle.get('base_placements', {}).get(row['occurrence_id'])
         if base is not None:
             base['shot_id'] = new_sid
@@ -149,7 +272,7 @@ def locate(tl, owner, source):
 def authored_clip(tl, query):
     """F lookup seam; D's command/entity hook consumes the same source state."""
     from astrid.sdk.timeline.model import Clip
-    beds = collection(tl)
+    beds = sources(tl)
     matches = [(owner, entry) for owner, entry in beds.items()
                if owner == query or (entry.get('source') or {}).get('id') == query]
     if len(matches) > 1:
@@ -179,8 +302,8 @@ def authored_clip(tl, query):
 
 
 def entry_for(clip):
-    for owner, entry in collection(clip._tl).items():
-        if not isinstance(entry, dict):
+    for owner, entry in sources(clip._tl).items():
+        if not isinstance(entry, Mapping):
             raise MusicBedError(f'{owner}: malformed music bed')
         source = entry.get('source') or {}
         if not isinstance(source, dict) or not isinstance(entry.get('outputs'), list):
@@ -193,10 +316,12 @@ def entry_for(clip):
 
 
 def validate(tl):
+    from astrid.sdk.timeline.bed_adoption import validate_adopted
+    shared_seams = validate_adopted(tl)
     claimed = set()
     authored = set()
-    for owner, entry in collection(tl).items():
-        if not isinstance(entry, dict) or set(entry) != {'owner', 'source', 'ripple_basis', 'outputs'} \
+    for owner, entry in sources(tl).items():
+        if not isinstance(entry, Mapping) or set(entry) != {'owner', 'source', 'ripple_basis', 'outputs'} \
                 or entry['owner'] != owner or not isinstance(entry['source'], dict) \
                 or not isinstance(entry['source'].get('id'), str) \
                 or not isinstance(entry['ripple_basis'], list) or not isinstance(entry['outputs'], list) \
@@ -207,7 +332,7 @@ def validate(tl):
             if basis != entry['ripple_basis']:
                 raise ValueError('ripple_basis is not canonical')
             sid, clips = locate(tl, owner, entry['source'])
-            expected, _, _ = materialize(entry['source'], basis, owner, start=tl._shot_start(sid), fps=tl.fps)
+            expected, _, _ = _materialize_entry(tl, owner, entry, shared_seams=shared_seams)
         except (ValueError, TypeError, KeyError) as exc:
             raise MusicBedError(f'{owner}: malformed music bed: {exc}') from None
         source_key = sid, entry['source']['id']
@@ -239,7 +364,7 @@ def validate_bundle(bundle):
 def dematerialize(tl, only=None):
     """Use authored sources for dependency/beat evaluation, never output pieces."""
     tl._music_output_owners = {}
-    for owner, entry in collection(tl).items():
+    for owner, entry in sources(tl).items():
         if only is not None and owner != only:
             continue
         sid, clips = locate(tl, owner, entry['source'])
@@ -252,11 +377,13 @@ def dematerialize(tl, only=None):
 
 
 def project(tl):
-    for owner, entry in collection(tl).items():
+    from astrid.sdk.timeline.bed_adoption import refresh_projections
+    refresh_projections(tl)
+    shared_seams = _shared_seams(tl)
+    for owner, entry in sources(tl).items():
         sid, clips = locate(tl, owner, entry['source'])
         try:
-            output, _, _ = materialize(entry['source'], entry['ripple_basis'], owner,
-                                        start=tl._shot_start(sid), fps=tl.fps)
+            output, _, _ = _materialize_entry(tl, owner, entry, shared_seams=shared_seams)
         except (ValueError, TypeError) as exc:
             raise MusicBedError(f'{owner}: {exc}') from None
         # Source/output mapping is explicit; names never confer ownership.
@@ -271,19 +398,24 @@ def project(tl):
 
 
 def managed_source(tl, data):
-    return any(entry['source'] is data for entry in collection(tl).values())
+    return any(entry['source'] is data for entry in sources(tl).values())
 
 
 def transition(tl, a, b, delta, skip_ids):
     """Transform current inputs once, at the evaluator's real boundary change."""
-    from astrid.sdk.timeline.model import Clip
     from astrid.sdk import timeline_intent as intent
 
     keep_end = tl._scope is not None and tl._music == 'keep_end'
     if abs(delta) < 1e-9:
         return
     skipped = {owner for identity, owner in getattr(tl, '_music_output_owners', {}).items() if identity in skip_ids}
-    beds = collection(tl)
+    beds = sources(tl)
+    bed = adopted(tl)
+    if keep_end and bed is not None:
+        flags = [owner in skipped or id(entry['source']) in skip_ids for owner, entry in beds.items()
+                 if isinstance(entry, _ArrangementSource)]
+        if any(flags) and not all(flags):
+            raise MusicBedError('partial adopted-bed exclusion would fork its shared basis')
     # Save intact pre-edit sources only for this open scope. This temporary
     # compiler state disappears when the scope closes; it is never serialized.
     pending = getattr(tl, '_music_pending', {})
@@ -313,7 +445,7 @@ def transition(tl, a, b, delta, skip_ids):
         excluded = owner in skipped or id(source) in skip_ids
         points = entry['ripple_basis']
         # plays_on leaves both the current audio mapping and basis unchanged.
-        if keep_end and not excluded:
+        if keep_end and not excluded and (not isinstance(entry, _ArrangementSource) or owner == entry.bed['owner']):
             points = [dict(at_s=move_point(p['at_s'], a, b, delta), delta_s=p['delta_s']) for p in points]
             if old_start < a < end:
                 points.append(dict(at_s=a, delta_s=delta))
@@ -338,7 +470,7 @@ def enroll(tl, records):
     beds = collection(tl)
     notes = []
     for owner, (sid, source, original_data, origin) in getattr(tl, '_music_pending', {}).items():
-        if owner in beds:
+        if owner in sources(tl):
             continue
         basis = canonical_basis([dict(at_s=p, delta_s=d) for p, d, skip in records if id(original_data) not in skip])
         source['at'] = round(float(source.get('at') or 0) + origin - tl._shot_start(sid), 6)
@@ -390,6 +522,8 @@ def source_edit(method):
         owner, entry = found
         if clip.id != entry['source']['id']:
             raise MusicBedError(f'{clip.id}: generated music span is read-only; edit authored source via tl.clip({owner!r})')
+        if isinstance(entry, _ArrangementSource):
+            return _edit_arrangement(method, clip, owner, entry, args, kwargs)
         validate(clip._tl)
         from astrid.sdk.timeline.model import Clip
         tl = clip._tl
@@ -422,30 +556,45 @@ def occurrence_changes(bundle):
     from astrid.sdk.timeline.checkout import Checkout
     tl = object.__new__(Checkout)
     tl.bundle = bundle
+    tl._mcache = None
     from astrid.core.timeline.cuts import bundle_fps
     tl.fps = bundle_fps(bundle) or 30.0
-    if not collection(tl):
+    if not sources(tl):
         yield
         return
     before = copy.deepcopy(bundle)
     validate(tl)
     starts = {owner: tl._shot_start(locate(tl, owner, entry['source'])[0])
-              for owner, entry in collection(tl).items()}
+              for owner, entry in sources(tl).items()}
     try:
         yield
-        beds = collection(tl)
+        beds = sources(tl)
+        shifted_beds = {}
         for owner in list(starts):
             entry = beds[owner]
             rows = [row for row in bundle.get('placements', [])
                     if owner == f"occurrence:{row.get('occurrence_id')}/clip:{entry['source']['id']}"]
             if owner.startswith('occurrence:') and not rows:
                 # The shot helper already removed that occurrence's container.
-                del beds[owner]
+                if isinstance(entry, _ArrangementSource):
+                    raise MusicBedError('remove adopted occurrences through the bed authored-owner command')
+                del collection(tl)[owner]
                 continue
             sid, _ = locate(tl, owner, entry['source'])
             shift = tl._shot_start(sid) - starts[owner]
+            if isinstance(entry, _ArrangementSource):
+                previous = shifted_beds.setdefault(id(entry.bed), shift)
+                if previous != shift and entry['ripple_basis']:
+                    raise MusicBedError('occurrence move requires incompatible shared bed basis shifts')
+                continue
             entry['ripple_basis'] = canonical_basis([
                 dict(at_s=p['at_s'] + shift, delta_s=p['delta_s']) for p in entry['ripple_basis']])
+        if adopted(tl) is not None:
+            bed = adopted(tl)
+            shift = shifted_beds.get(id(bed), 0)
+            bed['ripple_basis'] = canonical_basis([dict(at_s=p['at_s'] + shift, delta_s=p['delta_s']) for p in bed['ripple_basis']])
+            from astrid.sdk.timeline.bed_adoption import refresh_projections
+            refresh_projections(tl)
         project(tl)
         validate(tl)
     except BaseException:
@@ -459,7 +608,8 @@ def duplicate_occurrence_beds(bundle, source_sid, new_sid, occurrence_id):
     from astrid.sdk.timeline.checkout import Checkout
     tl = object.__new__(Checkout)
     tl.bundle = bundle
-    beds = collection(tl)
+    tl._mcache = None
+    beds = sources(tl)
     originals = [(owner, entry) for owner, entry in list(beds.items())
                  if locate(tl, owner, entry['source'])[0] == source_sid]
     for owner, entry in originals:
@@ -472,7 +622,7 @@ def duplicate_occurrence_beds(bundle, source_sid, new_sid, occurrence_id):
         item_ids = {old.get('item_id', old.get('id')): new.get('item_id', new.get('id'))
                     for old, new in zip(old_items, new_items)
                     if old.get('item_id', old.get('id')) and new.get('item_id', new.get('id'))}
-        cloned = copy.deepcopy(entry)
+        cloned = copy.deepcopy(dict(entry))
         cloned['source'] = _remap_authoring_item_refs(cloned['source'], item_ids)
         cloned['owner'] = new_owner
         shift = tl._shot_start(new_sid) - tl._shot_start(source_sid)
@@ -485,4 +635,36 @@ def duplicate_occurrence_beds(bundle, source_sid, new_sid, occurrence_id):
         index = min((i for i, c in enumerate(clips) if c.get('id') in owned), default=len(clips))
         clips[:] = [c for c in clips if c.get('id') not in owned]
         clips.insert(index, cloned['source'])
-        beds[new_owner] = cloned
+        collection(tl, create=True)[new_owner] = cloned
+
+
+def _edit_arrangement(method, clip, owner, entry, args, kwargs):
+    """Source-compatible Clip hook; command recording remains D-owned."""
+    from astrid.sdk.timeline.bed_adoption import refresh_projections
+    from astrid.sdk.timeline.model import Clip
+    tl, bed = clip._tl, entry.bed
+    validate(tl)
+    # Evaluate intact sources through today's ordinary timing methods. No
+    # transient carrier is serialized, and the caller's transaction owns rollback.
+    for arrangement in bed['arrangements']:
+        dematerialize(tl, only=arrangement['owner'])
+    ns = astrid_ns.film_ns(tl.bundle['parent']['config'])
+    del ns['bed']
+    sid, clips = locate(tl, owner, entry['source'])
+    authored = Clip(tl, sid, entry['source'])
+    old_start = float(authored.data.get('at') or 0)
+    try:
+        result = method(authored, *args, **kwargs)
+        if not any(c is authored.data for c in clips):
+            raise MusicBedError('remove adopted sources through the bed authored-owner command')
+        shift = float(authored.data.get('at') or 0) - old_start
+        if shift and bed['ripple_basis']:
+            if len(bed['arrangements']) > 1:
+                raise MusicBedError('source move would change the shared bed basis; move the bed as one authored edit')
+            bed['ripple_basis'] = canonical_basis([dict(at_s=p['at_s'] + shift, delta_s=p['delta_s']) for p in bed['ripple_basis']])
+        entry['source'] = authored.data
+    finally:
+        ns['bed'] = bed
+    refresh_projections(tl)
+    project(tl)
+    return clip if result is authored else result
