@@ -112,7 +112,7 @@ class SchemaContractTest(unittest.TestCase):
         self.assertEqual(
             clip_keys,
             set(timeline._CLIP_ALLOWED)
-            - {"app", "derived_output", "elementRef", "keyframes", "label", "shot_id", "shot_occurrence_id", "shot_name"},
+            - {"app", "derived_output", "elementRef", "keyframeOrigin", "keyframes", "label", "shot_id", "shot_occurrence_id", "shot_name"},
         )
         self.assertEqual(track_keys, set(timeline._TRACK_ALLOWED) - {"app"})
         self.assertEqual(theme_overrides_keys, set(timeline._THEME_OVERRIDES_ALLOWED))

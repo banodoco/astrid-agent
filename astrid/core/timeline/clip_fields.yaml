@@ -18,6 +18,18 @@
 #   since: the first composition version that honours it (default 0.0.0)
 version: 1
 fields:
+  keyframe_origin:
+    type: number
+    unit: seconds
+    store: keyframeOrigin
+    default: null
+    applies: visual
+    write: "0"
+    notes: "Key-time zero relative to clip start; trim and speed do not affect it. Absent: App timeline-seconds, sprite local-frame legacy domains."
+    schema: {type: number}
+    render:
+      element: {status: works}
+
   opacity:
     type: number
     unit: fraction
@@ -222,4 +234,4 @@ fields:
 
 # Names the clip owns at the top level. The element validator refuses these as
 # element params. freeze, pan, rotate and mute are reserved but not declared yet.
-reserved: [opacity, fade_in, fade_out, entrance, exit, crop_top, crop_right, crop_bottom, crop_left, speed, freeze, pan, rotate, volume, mute, transition]
+reserved: [keyframe_origin, opacity, fade_in, fade_out, entrance, exit, crop_top, crop_right, crop_bottom, crop_left, speed, freeze, pan, rotate, volume, mute, transition]

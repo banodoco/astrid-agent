@@ -1,5 +1,6 @@
 import type {CSSProperties, ReactElement} from 'react';
 import {Img, useCurrentFrame} from 'remotion';
+import {spriteKeyframeFrame} from '@banodoco/timeline-composition/theme-api';
 import {
   LOGICAL_PX,
   elementSource,
@@ -60,7 +61,7 @@ export default function AmSprite(props: ElementComponentProps): ReactElement | n
   const fps = props.fps;
   const scale = integerIn(params.scale, 1, 24, 6);
   const stepFrames = integerIn(params.stepFrames, 2, 3, 2);
-  const sf = stepStart(frame, stepFrames);
+  const sf = stepStart(spriteKeyframeFrame(props.clip, frame, fps), stepFrames);
 
   // Active keyframe: the last one at or before this step. Keyframes apply
   // as held poses, so the sprite never interpolates between them.

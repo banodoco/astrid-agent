@@ -257,6 +257,9 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
         for field in ("id", "at", "track"):
             if field not in clip:
                 raise ValueError(f"clips[{index}].{field} is required")
+        if "keyframeOrigin" in clip:
+            from astrid.core.timeline.clip_fields import declare_keyframe_origin
+            declare_keyframe_origin(clip, "sprite-frames")
         clip_type = clip.get("clipType", "media")
         if not isinstance(clip_type, str):
             raise ValueError(f"clips[{index}].clipType must be a string")

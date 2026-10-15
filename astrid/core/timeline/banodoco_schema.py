@@ -381,7 +381,7 @@ _CLIP_ALLOWED = frozenset(
         "volume", "x", "y", "width", "height", "cropTop", "cropBottom",
         "cropLeft", "cropRight", "opacity", "params", "text", "entrance", "exit",
         "continuous", "transition", "effects", "source_uuid", "generation",
-        "pool_id", "clip_order", "app", "label", "keyframes",
+        "pool_id", "clip_order", "app", "label", "keyframes", "keyframeOrigin",
         # Revision-pinned Astrid element identity. This is editor-owned
         # metadata projected to the Remotion fields during managed render.
         "elementRef",
@@ -496,7 +496,8 @@ def _known_timeline_payload(config: Mapping[str, Any]) -> dict[str, Any]:
         key: value for key, value in config.items() if key in _TIMELINE_TOP_ALLOWED
     }
     known.pop("app", None)
-    render_provenance_fields = {"shot_id", "shot_occurrence_id", "shot_name", "elementRef"}
+    # These clip fields are validated locally, before the older shared schema.
+    locally_validated_clip_fields = {"shot_id", "shot_occurrence_id", "shot_name", "elementRef", "keyframeOrigin"}
     for collection in ("clips", "tracks"):
         entries = known.get(collection)
         if not isinstance(entries, list):
@@ -506,7 +507,7 @@ def _known_timeline_payload(config: Mapping[str, Any]) -> dict[str, Any]:
                 {
                     key: value for key, value in entry.items()
                     if key != "app" and not (
-                        collection == "clips" and key in render_provenance_fields
+                        collection == "clips" and key in locally_validated_clip_fields
                     )
                 }
                 if isinstance(entry, Mapping)

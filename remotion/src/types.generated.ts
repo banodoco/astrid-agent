@@ -251,6 +251,7 @@ export interface SharedTimelineClip {
   height?: number;
   hold?: number;
   id?: string;
+  keyframeOrigin?: number;
   keyframes?: Record<string, unknown>;
   label?: string;
   opacity?: number;
@@ -329,7 +330,7 @@ export interface TrackDefinition {
 }
 
 export const _ASSET_ENTRY_ALLOWED = ['content_sha256', 'derivedFrom', 'duration', 'etag', 'file', 'fps', 'generationId', 'media_id', 'origin', 'resolution', 'thumbnailUrl', 'type', 'url', 'url_expires_at', 'variantId'] as const;
-export const _CLIP_ALLOWED = ['app', 'asset', 'at', 'clipType', 'clip_order', 'continuous', 'cropBottom', 'cropLeft', 'cropRight', 'cropTop', 'effects', 'elementRef', 'entrance', 'exit', 'from', 'generation', 'height', 'hold', 'id', 'keyframes', 'label', 'opacity', 'params', 'pool_id', 'shot_id', 'shot_name', 'shot_occurrence_id', 'source_uuid', 'speed', 'text', 'to', 'track', 'transition', 'volume', 'width', 'x', 'y'] as const;
+export const _CLIP_ALLOWED = ['app', 'asset', 'at', 'clipType', 'clip_order', 'continuous', 'cropBottom', 'cropLeft', 'cropRight', 'cropTop', 'effects', 'elementRef', 'entrance', 'exit', 'from', 'generation', 'height', 'hold', 'id', 'keyframeOrigin', 'keyframes', 'label', 'opacity', 'params', 'pool_id', 'shot_id', 'shot_name', 'shot_occurrence_id', 'source_uuid', 'speed', 'text', 'to', 'track', 'transition', 'volume', 'width', 'x', 'y'] as const;
 export const _THEME_OVERRIDES_ALLOWED = ['audio', 'generation', 'pacing', 'visual', 'voice'] as const;
 export const _TIMELINE_TOP_ALLOWED = ['app', 'clips', 'generation_defaults', 'output', 'pinnedShotGroups', 'theme', 'theme_overrides', 'tracks'] as const;
 export const _TRACK_ALLOWED = ['app', 'blendMode', 'fit', 'id', 'kind', 'label', 'muted', 'opacity', 'scale', 'volume'] as const;

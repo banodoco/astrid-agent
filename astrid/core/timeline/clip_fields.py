@@ -38,6 +38,20 @@ class ClipFieldError(ValueError):
     """A clip look value does not match its declared contract."""
 
 
+def declare_keyframe_origin(clip: Mapping[str, Any], source: str) -> dict[str, Any]:
+    """Declare an existing key domain, retaining every key byte/value and trim.
+
+    The shared Composition adapter reads this offset. No origin is inferred from
+    media ``from``, ``to`` or ``speed``. Calling again preserves an explicit origin.
+    """
+    if source not in ("app-seconds", "sprite-frames"):
+        raise ClipFieldError(f"unknown keyframe source {source!r}")
+    origin = clip.get("keyframeOrigin", -clip.get("at", 0) if source == "app-seconds" else 0)
+    if isinstance(origin, bool) or not isinstance(origin, (int, float)) or not math.isfinite(origin):
+        raise ClipFieldError("keyframeOrigin must be finite seconds relative to clip start")
+    return dict(clip, keyframeOrigin=origin)
+
+
 @dataclass(frozen=True)
 class FieldSpec:
     name: str

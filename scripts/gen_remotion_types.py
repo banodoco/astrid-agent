@@ -216,6 +216,9 @@ def _render_type(annotation: Any) -> str:
 
 def _render_interface(name: str, typed_dict: type[Any]) -> str:
     hints = get_type_hints(typed_dict, include_extras=True)
+    # This locally validated clip field extends the installed shared schema.
+    if name == "SharedTimelineClip":
+        hints = dict(hints, keyframeOrigin=float)
     required_keys = set(typed_dict.__required_keys__)
     field_names = sorted(hints)
     lines = [f"export interface {name} {{"]
