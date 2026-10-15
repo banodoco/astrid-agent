@@ -7,19 +7,76 @@ bootstrap metadata binds that launch, never grants an arbitrary descriptor.
 import hashlib
 import json
 import os
-from pathlib import Path
 import secrets
 import select
 import stat
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from .process_group import process_birth_identity
 
 LIMIT = 8 * 1024 * 1024
 PREFIX = b'\x1eASTRID_REMOTION_PIPE '
 VERSION = 'astrid.remotion.pipe/v1'
+_executor_client_required = False
+_installed_executor_client = None
+_installed_executor_channel = None
+
+
+@dataclass(frozen=True)
+class ExecutorSelection:
+    project: str
+    node: str
+    cli: str
+    attempt: str
+    renderer: str
+    generation: int
+    digest: str
+
+
+def _selection(binding, digest):
+    """Validate metadata lexically; only the retained host may inspect these paths."""
+    if not isinstance(binding, dict):
+        raise ValueError('invalid renderer pipe bootstrap binding')
+    admission = binding.get('admission')
+    selection = binding.get('selection')
+    if (binding.get('purpose') != 'rendering.timeline_visualize'
+            or not isinstance(admission, dict)
+            or admission.get('capability_id') != 'rendering.timeline_visualize'
+            or not isinstance(admission.get('capability_digest'), str) or not admission['capability_digest']
+            or type(binding.get('pid')) is not int or binding['pid'] != os.getpid()
+            or not binding.get('birth') or binding['birth'] != process_birth_identity()):
+        raise ValueError('renderer pipe bootstrap differs from original executor incarnation or capability')
+    if (not isinstance(selection, dict) or set(selection) != {'projectDir', 'nodeExecutable', 'remotionCli'}
+            or type(binding.get('generation')) is not int or binding['generation'] < 1
+            or any(not isinstance(binding.get(key), str) or not binding[key]
+                   for key in ('attempt', 'lease', 'channel', 'selected_renderer', 'launch_digest', 'executable'))):
+        raise ValueError('invalid renderer pipe selection binding')
+    for value in (*selection.values(), binding['attempt']):
+        if (not isinstance(value, str) or '\0' in value or not Path(value).is_absolute()
+                or '..' in Path(value).parts or str(Path(value)) != value):
+            raise ValueError('renderer pipe selection requires canonical host paths')
+    if selection['remotionCli'] != str(Path(selection['projectDir']) / 'node_modules/@remotion/cli/remotion-cli.js'):
+        raise ValueError('renderer pipe CLI differs from host project')
+    return ExecutorSelection(selection['projectDir'], selection['nodeExecutable'], selection['remotionCli'],
+                             binding['attempt'], binding['selected_renderer'], binding['generation'], digest)
+
+
+def executor_selection(client):
+    """Return only the currently installed pipe selection; removal never enables local mode."""
+    if _executor_client_required:
+        if (client is None or client is not _installed_executor_client
+                or client.channel is not _installed_executor_channel):
+            raise ValueError('renderer pipe installed binding is absent or replaced')
+        return client.channel.validate_binding()
+    # Existing internal-invocation context only restricts use; it grants no
+    # authority and cannot enable a pipe or a local renderer.
+    if os.environ.get('ASTRID_INTERNAL_INVOCATION') == '1':
+        raise ValueError('renderer pipe bootstrap is required in an executor')
+    return None
 
 
 def _encode(value):
@@ -78,7 +135,7 @@ def _line(fd, *, timeout=300):
 
 class ExecutorPipeChannel:
     """recv/sendall interface for the existing HostRemotionClient/parser."""
-    def __init__(self, binding, read_fd=0, write_fd=1):
+    def __init__(self, binding, bootstrap, read_fd=0, write_fd=1):
         for fd in (read_fd, write_fd):
             if not stat.S_ISFIFO(os.fstat(fd).st_mode):
                 raise ValueError('renderer executor requires standard pipes')
@@ -86,22 +143,47 @@ class ExecutorPipeChannel:
         os.set_inheritable(self.read_fd, False)
         os.set_inheritable(self.write_fd, False)
         self.binding, self.sequence, self.pending = binding, 0, bytearray()
+        self._bootstrap = _encode(bootstrap)
+        self._selection = _selection(bootstrap, binding)
         self.closed = False
+        self.failed = False
+
+    def validate_binding(self):
+        from .remotion_host_session import host_remotion_client
+        if (self.closed or self.failed or _installed_executor_client is None
+                or host_remotion_client() is not _installed_executor_client
+                or _installed_executor_client.channel is not self
+                or hashlib.sha256(self._bootstrap).hexdigest() != self.binding
+                or _selection(_decode(self._bootstrap), self.binding) != self._selection):
+            raise ValueError('renderer pipe installed binding is invalidated')
+        return self._selection
 
     def sendall(self, raw):
+        self.validate_binding()
         frame = _decode(raw)
         if set(frame) != {'identity', 'request'} or self.pending:
             raise ValueError('invalid renderer pipe request state')
         self.sequence += 1
         frame['_rendererPipe'] = {'binding': self.binding, 'sequence': self.sequence}
-        _write(self.write_fd, PREFIX+_encode(frame), deadline=time.monotonic()+300)
+        try:
+            _write(self.write_fd, PREFIX+_encode(frame), deadline=time.monotonic()+300)
+        except BaseException:
+            self.failed = True
+            raise
 
     def recv(self, count):
+        self.validate_binding()
         if not self.pending:
-            raw = _line(self.read_fd)
-            response = _decode(raw)
-            if response.get('_rendererPipe') != {'binding': self.binding, 'sequence': self.sequence}:
-                raise ValueError('renderer pipe response binding or sequence differs')
+            try:
+                raw = _line(self.read_fd)
+                response = _decode(raw)
+                metadata = response.get('_rendererPipe')
+                if (not isinstance(metadata, dict) or type(metadata.get('sequence')) is not int
+                        or metadata != {'binding': self.binding, 'sequence': self.sequence}):
+                    raise ValueError('renderer pipe response binding or sequence differs')
+            except BaseException:
+                self.failed = True
+                raise
             # Preserve the actual wire bytes for the original response parser.
             self.pending.extend(raw)
         answer = bytes(self.pending[:count])
@@ -118,6 +200,8 @@ class ExecutorPipeChannel:
 def install_executor_client():
     """Trusted worker bootstrap, before any admitted executor code runs."""
     from . import remotion_host_session as host
+    global _executor_client_required, _installed_executor_client, _installed_executor_channel
+    _executor_client_required = True
     if host.host_remotion_client() is not None:
         raise RuntimeError('renderer client already installed')
     bootstrap = _decode(_line(0, timeout=30))
@@ -131,8 +215,11 @@ def install_executor_client():
             or binding.get('birth') != process_birth_identity()
             or binding.get('executable') != str(Path(sys.executable).resolve())):
         raise ValueError('renderer pipe bootstrap differs from original executor incarnation')
-    channel = ExecutorPipeChannel(digest)
+    _selection(binding, digest)
+    channel = ExecutorPipeChannel(digest, binding)
     host._client = host.HostRemotionClient(channel)
+    _installed_executor_client = host._client
+    _installed_executor_channel = channel
     # Ordinary pack print output stays separate from the reserved stdout pipe.
     sys.stdout = sys.stderr
     return host._client
@@ -154,6 +241,8 @@ class HostPipeBridge:
                         'attempt': str(lease.attempt), 'lease': secrets.token_hex(24),
                         'channel': secrets.token_hex(24), 'generation': self.generation,
                         'selected_renderer': hashlib.sha256(_encode(lease.selected_identity)).hexdigest(),
+                        'selection': {'projectDir': str(lease.project), 'nodeExecutable': str(lease.node),
+                                      'remotionCli': str(lease.cli)},
                         'launch_digest': launch_digest, 'pid': process.pid, 'birth': birth,
                         'executable': str(Path(sys.executable).resolve())}
         self.digest = hashlib.sha256(_encode(self.binding)).hexdigest()
@@ -196,6 +285,7 @@ class HostPipeBridge:
         # All original lease admission/native ownership still lives behind the
         # existing private host socket; this is not a callback renderer backend.
         response = self.original.request(frame['identity'], frame['request'], _read)
+        self._guard()
         if self.process.poll() is None and not self.cancelled.is_set():
             response = {**response, '_rendererPipe': {'binding': self.digest, 'sequence': self.sequence}}
             _write(self.process.stdin.fileno(), _encode(response), deadline=time.monotonic()+300, guard=self._guard)

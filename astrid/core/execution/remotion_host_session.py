@@ -5,24 +5,24 @@ executor inherits it, and the host fixes the executable and helper directory.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
-import hashlib
-import shutil
-import stat
 import os
 import select
+import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
 
 from astrid.core.subprocess_env import build_child_subprocess_env
-from .process_group import popen_owned_group, observe_tree, verify_tree_absent, release_group
+
+from .process_group import observe_tree, popen_owned_group, release_group, verify_tree_absent
 from .remotion_frame_owner import RemotionFrameOwner
 
 _LIMIT = 8 * 1024 * 1024
@@ -266,7 +266,7 @@ class HostRemotionSession:
         if (not isinstance(request.get("compositionId"), str) or not request["compositionId"]
                 or type(request.get("port")) is not int or not 0 < request["port"] < 65536):
             raise ValueError("renderer composition or port is invalid")
-        if request["type"] == "evaluate" and request["compositionId"] != "AstridTrackEvaluation":
+        if request["type"] in {"evaluate", "validate"} and request["compositionId"] != "AstridTrackEvaluation":
             raise ValueError("renderer evaluation composition is not admitted")
         if request.get("projectDir") != str(lease.project) or request.get("nodeExecutable") != str(lease.node):
             raise ValueError("renderer task changed host-selected executable or project")
@@ -308,7 +308,7 @@ class HostRemotionSession:
             if set(frame) != {"identity", "request"} or not isinstance(frame["identity"], str):
                 raise ValueError("invalid renderer lease request")
             request = frame["request"]
-            if not isinstance(request, dict) or request.get("type") not in {"render", "evaluate", "release"}:
+            if not isinstance(request, dict) or request.get("type") not in {"render", "evaluate", "validate", "release"}:
                 raise ValueError("unsupported renderer lease operation")
             if request["type"] == "release":
                 if set(request) != {"type", "force"} or type(request["force"]) is not bool:
@@ -317,13 +317,22 @@ class HostRemotionSession:
                     self._close_original()
                 return {"ok": True, "released": True, "exit": bool(request.get("force"))}
             self._validate_request(lease, request)
-            # The executor contract deliberately excludes browserExecutable.
-            # Only the host can add the selected, identity-checked native input.
-            if lease.browser is not None:
-                request = {**request, "browserExecutable": str(lease.browser)}
+            admitted_request = request
             try:
+                if request["type"] == "validate":
+                    # Cache reuse still checks the original owner/scratch and
+                    # full lease admission, without allocating a native child.
+                    self._guard()
+                    return {"ok": True, "validated": True}
+                # The executor contract deliberately excludes browserExecutable.
+                # Only the host adds the selected, identity-checked native input.
+                if lease.browser is not None:
+                    request = {**request, "browserExecutable": str(lease.browser)}
                 self._start(lease, frame["identity"])
-                return self._exchange(request)
+                response = self._exchange(request)
+                if request["type"] == "evaluate":
+                    self._validate_request(lease, admitted_request)
+                return response
             except BaseException as error:
                 # A failed transport/start never authorizes replacement.
                 if self.process is not None and self.uncertain is None:

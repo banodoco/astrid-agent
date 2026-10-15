@@ -28,6 +28,8 @@ def answer(frame=0, **changes):
 
 @pytest.fixture
 def owner(tmp_path, monkeypatch):
+    # This injected transport models trusted-local construction.
+    monkeypatch.delenv('ASTRID_INTERNAL_INVOCATION', raising=False)
     calls = []
     project = tmp_path / 'selected-project'
     component = tmp_path / 'astrid/packs/example/elements/effects/card/component.tsx'
@@ -49,7 +51,8 @@ def owner(tmp_path, monkeypatch):
             assert set(props) == {'scene', 'frames'}
             calls.append((identity, props))
             return {'ok': True, 'evaluation': [answer(frame) for frame in props['frames']]}
-    monkeypatch.setattr(evaluation, 'host_remotion_client', lambda: Transport())
+    transport = Transport()
+    monkeypatch.setattr(evaluation, 'host_remotion_client', lambda: transport)
     client = evaluation.RemotionEvaluationClient(project_dir=project, node_executable=sys.executable,
         attempt_root=tmp_path, renderer_closure=closure)
     previous = scene.use_client(client)
@@ -112,7 +115,7 @@ def test_missing_visibility_fields_refuse_instead_of_being_cached(owner, monkeyp
     class Bad:
         def request(self, identity, request, parser):
             return {'ok': True, 'evaluation': [{'frame': 0, 'layers': []}]}
-    monkeypatch.setattr(evaluation, 'host_remotion_client', lambda: Bad())
+    monkeypatch.setattr(client._client, 'request', Bad().request)
     with pytest.raises(FrameOwnerError, match='evaluation_response_invalid'):
         scene.frames_at(CONFIG, [0], 10, CANVAS)
     assert not client._cache

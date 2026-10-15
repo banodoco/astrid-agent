@@ -2,11 +2,10 @@
 import io
 import json
 import os
-from pathlib import Path
-import socket
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -184,6 +183,7 @@ def test_raw_primary_and_cleanup_fields_cross_inherited_channel(tmp_path, monkey
 def test_two_public_command_workers_settle_task_leases_then_host_drains_original(tmp_path, monkeypatch):
     """Actual host command dispatch + managed task release, without Chrome/Runtime."""
     from types import SimpleNamespace
+
     from astrid.core.execution import generic_host
     from astrid.core.execution.generic_host import GenericPackHost, _ManagedTaskAdapter
     env = environment(tmp_path)
@@ -230,6 +230,16 @@ assert reply['ok'] is True, reply
     monkeypatch.setattr(generic_host, "_command_worker_pythonpath", lambda record, path: path)
     monkeypatch.setattr(generic_host, "_network_sandbox_argv", lambda argv, *a: argv)
     monkeypatch.setattr(running_host, "_child_environment", lambda *a, **kw: ({**os.environ, **env, "PYTHONDONTWRITEBYTECODE":"1", "PYTHONPATH":str(Path(generic_host.__file__).resolve().parents[3])}, {}))
+    def disposable_launch(argv, **kw):
+        assert kw.get('inherited_fds', ()) == ()
+        child_env = dict(kw['environment'])
+        return SimpleNamespace(argv=tuple(argv), cwd=kw['cwd'], environment=tuple(sorted(child_env.items())),
+            subprocess_options=lambda: {'cwd': str(kw['cwd']), 'env': child_env,
+                'stdin': subprocess.PIPE, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE,
+                'close_fds': True, 'pass_fds': ()})
+    # This test models host custody with a disposable Python helper. Actual
+    # confinement and descriptor admission are exercised in their own tests.
+    monkeypatch.setattr(running_host, '_workload_launch_plan', disposable_launch)
     replies, task_pids = [], []
     original = None
     try:
@@ -262,7 +272,9 @@ assert reply['ok'] is True, reply
 
 
 def test_actual_frame_session_uses_inherited_host_lease_not_legacy_namespace(tmp_path, monkeypatch):
-    from astrid.packs.rendering.rendering.renderers.remotion.run import PersistentRemotionFrameSession
+    from astrid.packs.rendering.rendering.renderers.remotion.run import (
+        PersistentRemotionFrameSession,
+    )
     calls = []
     class Client:
         def request(self, identity, value, parser):
@@ -539,7 +551,11 @@ def test_hosted_owner_rejects_invalid_budgets_before_native_start(tmp_path, monk
 
 
 def test_hosted_request_uses_existing_owner_and_preserves_query_reply(tmp_path, monkeypatch):
-    from astrid.core.execution.remotion_frame_owner import RemotionFrameOwner, RetainedHostBackend, UnsupportedContext
+    from astrid.core.execution.remotion_frame_owner import (
+        RemotionFrameOwner,
+        RetainedHostBackend,
+        UnsupportedContext,
+    )
     manager, _ = owner(tmp_path)
     assert isinstance(manager.frame_owner, RemotionFrameOwner)
     assert isinstance(manager.frame_owner.backend, RetainedHostBackend)
@@ -573,6 +589,7 @@ def test_hosted_request_uses_existing_owner_and_preserves_query_reply(tmp_path, 
 
 def test_hosted_owner_bounded_admission_and_revoked_waiter(tmp_path, monkeypatch):
     import time
+
     from astrid.core.execution.remotion_frame_owner import FrameOwnerError
     manager, _ = owner(tmp_path)
     env = environment(tmp_path)

@@ -1,10 +1,11 @@
 """Trusted closure binding over disposable package/receipt bytes only."""
 import hashlib
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
+
 from astrid.core.execution import remotion_closure as closure
 from astrid.core.execution import remotion_host_session as host
 
@@ -97,6 +98,7 @@ def test_new_binding_requires_verified_exact_installation(roots,tmp_path,change)
 
 def test_trusted_closure_binding_follows_existing_host_claim_slot(roots):
     from types import SimpleNamespace
+
     from astrid.core.execution.generic_host import GenericPackHost
     binding=closure.RemotionClosureBinding.admit(**roots[3])
     parent=GenericPackHost(pack_roots=[],client=SimpleNamespace(fork_for_host_slot=lambda:None),remotion_closure_binding=binding)
@@ -106,3 +108,37 @@ def test_trusted_closure_binding_follows_existing_host_claim_slot(roots):
         assert slot._remotion_host_session is None
     finally:
         slot.shutdown();parent.shutdown()
+
+
+@pytest.mark.parametrize('edge', ['cache-validation', 'during-evaluation'])
+def test_original_owner_rechecks_admitted_closure_for_evaluation_and_cache(roots, tmp_path, monkeypatch, edge):
+    project, installed, receipt, args = roots
+    binding = closure.RemotionClosureBinding.admit(**args)
+    monkeypatch.setattr(host, '_host_browser_executable', lambda: None)
+    owner = host.HostRemotionSession(track=lambda p: None, untrack=lambda p: None, closure_binding=binding)
+    lease = owner.lease({'ASTRID_REMOTION_PROJECT_DIR': str(project),
+                         'ASTRID_NODE_EXECUTABLE': str(Path(sys.executable).resolve())}, attempt=tmp_path)
+    (tmp_path/'props.json').write_text('{}')
+    request = {'type': 'evaluate', 'projectDir': str(project), 'compositionId': 'AstridTrackEvaluation',
+        'nodeExecutable': str(lease.node), 'remotionCli': str(lease.cli),
+        'propsPath': str(tmp_path/'props.json'), 'outputDir': str(tmp_path/'unused'),
+        'frames': [0], 'resolution': None, 'port': 31500, 'environment': {}}
+    exchanges = []
+    monkeypatch.setattr(owner, '_start', lambda *args: None)
+    def exchange(value):
+        exchanges.append(value)
+        if edge == 'during-evaluation':
+            (project/'vendor/timeline-composition/evaluation.ts').write_text('changed')
+        return {'ok': True, 'evaluation': [{'frame': 0, 'layers': []}]}
+    monkeypatch.setattr(owner, '_exchange', exchange)
+    try:
+        if edge == 'cache-validation':
+            assert owner.request(lease, {'identity': 'same', 'request': request})['ok'] is True
+            (project/'vendor/timeline-composition/evaluation.ts').write_text('changed')
+            request = {**request, 'type': 'validate'}
+        with pytest.raises(ValueError, match='closure input changed'):
+            owner.request(lease, {'identity': 'same', 'request': request})
+        assert len(exchanges) == 1 and owner.process is None
+    finally:
+        lease.close()
+        owner.close()
