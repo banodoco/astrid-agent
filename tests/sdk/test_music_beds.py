@@ -10,7 +10,7 @@ import pytest
 from astrid.core.timeline.music_bed import canonical_basis, move_point
 from astrid.sdk.timeline.compiler import compile_timing
 from astrid.sdk.timeline.music_beds import MusicBedError, collection, materialize
-from astrid.sdk.timeline_checkout import Checkout
+from astrid.sdk.timeline_checkout import Checkout, TimelineEditError
 from astrid.sdk.timeline.model import retime_scope
 
 TINY = Path(__file__).resolve().parents[1] / 'fixtures/timeline_editing/tiny.json'
@@ -687,7 +687,7 @@ def test_empty_owner_collisions_and_invalid_structural_move_refuse_atomically():
     sid = tl.bundle['placements'][0]['shot_id']
     tl._internal(sid)['clips'].append(source)
     before = json.dumps(tl.bundle, sort_keys=True)
-    with pytest.raises(MusicBedError, match='collides'):
+    with pytest.raises(TimelineEditError, match='collides'):
         tl.resolve()
     assert json.dumps(tl.bundle, sort_keys=True) == before
 

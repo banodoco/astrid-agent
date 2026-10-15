@@ -4,6 +4,83 @@
       "flags": [],
       "positionals": []
     },
+    "timelines.adopt": {
+      "flags": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "alignment",
+          "nargs": null,
+          "options": [
+            "--alignment"
+          ],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "basis",
+          "nargs": null,
+          "options": [
+            "--basis"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "dry_run",
+          "nargs": 0,
+          "options": [
+            "--dry-run"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "file",
+          "nargs": null,
+          "options": [
+            "--file"
+          ],
+          "required": true
+        },
+        {
+          "action": "_AppendAction",
+          "default": null,
+          "dest": "source",
+          "nargs": null,
+          "options": [
+            "--source"
+          ],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "switches",
+          "nargs": null,
+          "options": [
+            "--switches"
+          ],
+          "required": false
+        }
+      ],
+      "positionals": [
+        {
+          "action": "_StoreAction",
+          "choices": [
+            "music-bed"
+          ],
+          "default": null,
+          "dest": "kind",
+          "nargs": null,
+          "options": [],
+          "required": true
+        }
+      ]
+    },
     "timelines.apply": {
       "flags": [
         {

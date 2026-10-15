@@ -3673,6 +3673,11 @@ def _configure_apply(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_apply)))
 
 
+def _configure_adopt_music(subparser):
+    from astrid.packs.timeline.cli_music import configure_adopt
+    configure_adopt(subparser)
+
+
 def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref")
@@ -3683,6 +3688,7 @@ def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec("adopt", help="Preflight adoption of authored music sources as one bed.", configure=_configure_adopt_music),
     CommandSpec("checkout", help="Create or open a detached editable working copy.", configure=_configure_checkout),
     CommandSpec("edit", help="Edit a detached timeline working copy.", configure=_configure_edit),
     CommandSpec("assets", help="List timeline asset keys, media details, and every clip using each key.", configure=_configure_assets),
