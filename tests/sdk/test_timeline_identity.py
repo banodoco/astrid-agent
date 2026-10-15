@@ -31,7 +31,7 @@ def test_reservation_survives_remove_save_reload(tl):
     call = apply(tl, 'cut.split', 'c1', on=2.0)
     assert 'cut:c1a' in call.created
     old = tl.cut('c1a').picture.id
-    tl.cut('c1a').picture.remove()
+    tl.cut('c1a').lift(layers='remove')
     tl.save(quiet=True)
     fresh = Checkout.load(tl.path)
     assert fresh._next_cut_id('c1') == 'c1b'
@@ -179,8 +179,7 @@ def test_fixed_seed_full_transition_sequences_do_not_reissue_cut_ids(tl, seed):
         rng.shuffle(transitions)
         for action in transitions:
             if action == 'remove':
-                for c in list(tl._cut_clips(new.id)):
-                    c.remove()
+                tl.cut(new.id).lift(layers='remove')
             elif action == 'save':
                 tl.save(quiet=True)
             elif action == 'reload':
@@ -203,8 +202,7 @@ def test_fixed_seed_full_transition_sequences_do_not_reissue_cut_ids(tl, seed):
 
 
 def test_add_cannot_recreate_a_reserved_removed_cut(tl):
-    for c in list(tl._cut_clips('c2')):
-        c.remove()
+    tl.cut('c2').lift(layers='remove')
     before = tl.document()
     with pytest.raises(TimelineEditError, match='reserved'):
         tl.add('am-type', at=5.0, hold=1.0, cut='c2', params={'text': 'synthetic'})

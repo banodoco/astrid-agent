@@ -1,6 +1,8 @@
 """Checkout: check, lint, picture gaps, stale notes, verify; plus CheckReport and describe_changes."""
 from __future__ import annotations
 
+from astrid.core.timeline.cut_index import cut_index
+
 import copy
 import dataclasses
 import json
@@ -11,10 +13,7 @@ from typing import Any, Iterable, Mapping
 
 from astrid.core.timeline import moments as mo
 from astrid.sdk import timeline_intent as intent
-from astrid.core.timeline.cuts import (
-    occurrences_from_bundle,
-    picture_cuts,
-)
+from astrid.core.timeline.cuts import occurrences_from_bundle
 
 from astrid.sdk.timeline import store as _store
 from astrid.sdk.timeline._common import TimelineEditError
@@ -144,7 +143,7 @@ class _CheckMixin:
         """Each cut's picture span: from its first to its last plate-track clip (a cut with no plate: its window)."""
         windows: dict[str, tuple[float, float]] = {}
         spans = self._cut_spans()
-        for g in self._cut_groups():
+        for g in self.cut_index.groups(self):
             beds = [c for c in g["clips"] if c.track == "plate" and not c.is_audio]
             if beds:
                 windows[g["id"]] = (min(c.start for c in beds), max(c.end for c in beds))
@@ -372,7 +371,7 @@ class _CheckMixin:
         notes = self.cut_notes_all()
         try:
             base = Checkout(base_bundle(self.document()))
-            then_groups = {g["id"]: g for g in base._cut_groups()}
+            then_groups = {g["id"]: g for g in base.cut_index.groups(base)}
             then_notes = base.cut_notes_all()
         except Exception:  # noqa: BLE001
             then_groups, then_notes = {}, {}
@@ -380,7 +379,7 @@ class _CheckMixin:
         def signature(clips: Iterable[Clip]) -> list[str]:
             return sorted(f"{intent.layer_of(c.data) or c.id}:{c.element}:{c.asset or ''}" for c in clips)
 
-        for g in self._cut_groups():
+        for g in self.cut_index.groups(self):
             note = notes.get(g["id"], {})
             why = note.get("why")
             old = then_groups.get(g["id"])
@@ -390,7 +389,7 @@ class _CheckMixin:
                          or _span_frames(old["clips"], self.fps) != _span_frames(g["clips"], self.fps)):
                 out.append(f"{g['id']}: its why was written before this change; still true? \"{why}\" "
                            f"(edit --cut {g['id']} --why …)")
-        for g in self._cut_groups():
+        for g in self.cut_index.groups(self):
             note = notes.get(g["id"], {})
             then = note.get("why_layers")
             if not then or not note.get("why"):
@@ -478,7 +477,7 @@ class _CheckMixin:
         except Exception as exc:  # the visualize pack is optional for editing
             return head + [f"(lint unavailable here: {exc})"]
         occurrences = occurrences_from_bundle(self.bundle)
-        all_cuts = picture_cuts(occurrences, fps=self.fps)
+        all_cuts = cut_index(occurrences, fps=self.fps).rows
         wanted = set(cuts) if cuts is not None else None
         selected = [c for c in all_cuts if wanted is None or c["index"] in wanted]
         elements = model.elements_from_occurrences(occurrences)

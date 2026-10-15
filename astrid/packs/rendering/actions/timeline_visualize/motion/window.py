@@ -20,7 +20,8 @@ import math
 from fractions import Fraction
 from typing import Any, Mapping, Sequence
 
-from astrid.core.timeline.cuts import find_cut, occurrences_from_snapshot, picture_cuts
+from astrid.core.timeline.cuts import occurrences_from_snapshot
+from astrid.core.timeline.cut_index import resolve_cut, cut_index
 
 from . import model
 
@@ -53,12 +54,12 @@ def preset_settings(name: str | None) -> dict[str, Any]:
 def resolve_window(snapshot: Mapping[str, Any], options: Mapping[str, Any], fps: float, total: int) -> dict[str, Any]:
     """The window to show: ``{start, end, cut, cuts_in, preset, strategy, label}`` (``cut`` is a real cut or a stand-in)."""
     occurrences = occurrences_from_snapshot(snapshot)
-    cuts = picture_cuts(occurrences, fps=fps)
+    cuts = cut_index(occurrences, fps=fps).rows
     duration = total / fps
     preset = options.get("preset") or ("cut" if options.get("cut") else "scan")
     settings = preset_settings(preset)
     if options.get("cut"):
-        cut = dict(find_cut(cuts, options["cut"]))
+        cut = dict(resolve_cut(cuts, options["cut"]))
         start, end = float(cut["start"]), float(cut["end"])
         if preset == "cut":
             return {"start": start, "end": end, "cut": cut, "cuts_in": [cut["index"]], "preset": preset,

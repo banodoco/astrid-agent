@@ -990,6 +990,31 @@
         },
         {
           "action": "_StoreAction",
+          "choices": [
+            "remove",
+            "stay"
+          ],
+          "default": null,
+          "dest": "layers",
+          "nargs": null,
+          "options": [
+            "--layers"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "lift",
+          "metavar": "CUT",
+          "nargs": null,
+          "options": [
+            "--lift"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
           "default": null,
           "dest": "line_text",
           "nargs": null,
@@ -1344,6 +1369,20 @@
           "nargs": 0,
           "options": [
             "--verify"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "choices": [
+            "orphan",
+            "remove"
+          ],
+          "default": null,
+          "dest": "visuals",
+          "nargs": null,
+          "options": [
+            "--visuals"
           ],
           "required": false
         },
@@ -1708,6 +1747,82 @@
         }
       ],
       "positionals": []
+    },
+    "timelines.lift": {
+      "flags": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "draft",
+          "nargs": null,
+          "options": [
+            "--draft"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "dry_run",
+          "nargs": 0,
+          "options": [
+            "--dry-run"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "file",
+          "nargs": null,
+          "options": [
+            "--file"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "choices": [
+            "remove",
+            "stay"
+          ],
+          "default": "stay",
+          "dest": "layers",
+          "nargs": null,
+          "options": [
+            "--layers"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "project",
+          "nargs": null,
+          "options": [
+            "--project"
+          ],
+          "required": false
+        }
+      ],
+      "positionals": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "cut_id",
+          "nargs": null,
+          "options": [],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "ref",
+          "nargs": null,
+          "options": [],
+          "required": true
+        }
+      ]
     },
     "timelines.lines": {
       "flags": [
@@ -4471,6 +4586,9 @@
           "kind": "callable",
           "signature": "(self) -> 'str'"
         },
+        "cut_index": {
+          "kind": "property"
+        },
         "cut_note": {
           "kind": "callable",
           "signature": "(self, cut: 'Any') -> 'dict[str, Any]'"
@@ -4621,7 +4739,7 @@
         },
         "remove_line": {
           "kind": "callable",
-          "signature": "(self, segment: 'str') -> 'list[str]'"
+          "signature": "(self, segment: 'str', *, visuals: 'str' = 'orphan') -> 'list[str]'"
         },
         "replace_asset": {
           "kind": "callable",
@@ -4886,6 +5004,10 @@
         },
         "layers": {
           "kind": "property"
+        },
+        "lift": {
+          "kind": "callable",
+          "signature": "(self, *, layers: 'str' = 'stay') -> \"'Cut'\""
         },
         "picture": {
           "kind": "property"

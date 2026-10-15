@@ -815,7 +815,7 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
             try:
                 if window not in (None, ""):
                     t = float(window)
-                    here = next((g["id"] for g in draft._cut_groups()
+                    here = next((g["id"] for g in draft.cut_index.groups(draft)
                                  if g["start"] - 1e-6 <= t < (draft._cut_spans()[g["id"]][1] or draft.duration)), None)
             except (TypeError, ValueError):
                 here = None

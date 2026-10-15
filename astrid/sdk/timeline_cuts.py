@@ -397,7 +397,8 @@ def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
     Rows are :func:`astrid.core.timeline.cuts.picture_cuts`, the one cut
     definition ``visualize``, ``lint`` and ``editorial.pacing`` also use.
     """
-    from astrid.core.timeline.cuts import occurrences_from_bundle, picture_cuts
+    from astrid.core.timeline.cuts import occurrences_from_bundle
+    from astrid.core.timeline.cut_index import cut_index
 
     fps = _fps(bundle)
     occurrences = occurrences_from_bundle(bundle)
@@ -423,7 +424,7 @@ def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
         words_by_occurrence[occurrence_id] = words
         voice_by_occurrence[occurrence_id] = [s for s in occurrence["spans"] if s["audio"] and s["end"] > s["start"]]
     rows: list[dict[str, Any]] = []
-    for cut in picture_cuts(occurrences, fps=fps):
+    for cut in cut_index(occurrences, fps=fps).rows:
         win_start, win_end = cut["start"], cut["end"]
         base = cut["clip"]
         layers = [
@@ -446,6 +447,10 @@ def build_cut_table(bundle: Mapping[str, Any]) -> dict[str, Any]:
         text = " ".join(t for _s, _e, t in said if t) if said and all(t for _s, _e, t in said) else None
         rows.append({
             "index": cut["index"],
+            "cut_id": cut.get("cut_id"),
+            "intersections": dict(start=cut["start"], end=cut["end"],
+                                  visual=[s["id"] for s in cut["layers"]],
+                                  audio=[s["id"] for s in cut["audio"]]),
             "start": cut["start"],
             "end": cut["end"],
             "duration": cut["duration"],

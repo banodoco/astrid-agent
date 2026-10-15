@@ -3032,7 +3032,7 @@ def _edit_label(parsed: argparse.Namespace) -> str:
     parts = []
     for name in ("clip", "cut", "add_media", "track", "clip_id", "trim_in", "trim_out", "slip", "on", "until",
                  "for_seconds", "at_word", "at", "nudge", "nudge_frames", "extend", "swap_asset", "replace_asset",
-                 "beats", "split", "cut_id", "picture", "why", "hold", "replace_line", "insert_line", "remove_line",
+                 "beats", "split", "lift", "layers", "cut_id", "picture", "why", "hold", "replace_line", "insert_line", "remove_line", "visuals",
                  "from_script", "close_gap_before", "film_end", "insert", "crossfade"):
         value = getattr(parsed, name, None)
         if value not in (None, False, "", [], ()):
@@ -3094,11 +3094,12 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     if getattr(parsed, "overlap", None) is not None and not crossfade:
         raise _VerbError("--over requires --crossfade A B", 2)
     cut_ops = bool(parsed.split or parsed.add_cut)
+    lift_op = bool(parsed.lift)
     if cut_ops and parsed.on is None:
         raise _VerbError("--split and --add-cut need --on MOMENT (where the new cut starts)", 2)
     add_media = parsed.add_media is not None
     timeline_level = bool(parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops or cut_ops
-                          or parsed.replace_asset or film_end_requested(parsed) or crossfade)
+                          or parsed.replace_asset or film_end_requested(parsed) or crossfade or lift_op)
     selector = parsed.clip is not None or parsed.cut is not None
     if crossfade and (selector or parsed.retime or parsed.close_gap_before or parsed.insert or voice_ops):
         raise _VerbError("--crossfade is a timeline-level operation; run it separately", 2)
@@ -3239,6 +3240,9 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     if parsed.add_media is not None:
         _add_media(tl, parsed)
         return
+    if parsed.lift:
+        tl.cut(parsed.lift).lift(layers=parsed.layers or "stay")
+        return
     if parsed.split:
         tl.cut(parsed.split).split(parsed.on, id=parsed.cut_id, picture=parsed.picture)
         return
@@ -3267,7 +3271,7 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     if parsed.gap_after:
         tl.reflow()  # one re-flow for all of them
     if parsed.remove_line:
-        tl.remove_line(parsed.remove_line)
+        tl.remove_line(parsed.remove_line, **({"visuals": parsed.visuals} if parsed.visuals else {}))
     from astrid.packs.timeline.cli_film import apply_film_end
 
     apply_film_end(tl, parsed)
@@ -3291,7 +3295,11 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
             raise _VerbError("--why and --hold are about a cut: use --cut cNN", 2)
         tl.set_cut_note(parsed.cut, why=parsed.why, hold=parsed.hold)
     if parsed.remove:
-        clip.remove_layer()
+        from astrid.sdk import timeline_intent as intent
+        if intent.sequence(clip.data):
+            clip.remove_layer()
+        else:
+            clip.remove()
         return
     if parsed.keep:
         clip.keep()
@@ -3460,6 +3468,31 @@ def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_checkout))
 
 
+def _configure_lift(subparser: argparse.ArgumentParser) -> None:
+    _add_project_arg(subparser, required=False)
+    subparser.add_argument("ref", help="Timeline id or slug with a working copy.")
+    subparser.add_argument("cut_id", help="Stable cut id or display ordinal to lift.")
+    subparser.add_argument("--layers", choices=("stay", "remove"), default="stay")
+    subparser.add_argument("--draft", default=None)
+    subparser.add_argument("--file", default=None, help="Detached authoring bundle.")
+    subparser.add_argument("--dry-run", action="store_true")
+    subparser.set_defaults(handler=_as_timeline_verb(_cmd_lift))
+
+
+def _cmd_lift(parsed: argparse.Namespace) -> int:
+    # A verb alias for the same edit-flags/command runner, with all defaults
+    # supplied by the authoritative parser rather than a second save path.
+    argv = ["edit", parsed.ref, "--lift", parsed.cut_id, "--layers", parsed.layers]
+    if parsed.project:
+        argv += ["--project", parsed.project]
+    for flag in ("draft", "file"):
+        if getattr(parsed, flag, None):
+            argv += ["--" + flag, getattr(parsed, flag)]
+    if parsed.dry_run:
+        argv += ["--dry-run"]
+    return _cmd_edit(build_parser(None).parse_args(argv))
+
+
 def _configure_status(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", help="Timeline id or slug to inspect.")
@@ -3530,6 +3563,8 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--at-word", dest="at_word", default=None, help="Start the clip at this word.")
     subparser.add_argument("--n", type=int, default=None, help="Which occurrence of --at-word (1-based).")
     subparser.add_argument("--offset", type=float, help="Seconds after the word or time.")
+    subparser.add_argument("--lift", metavar="CUT", help="Lift this cut's picture; the preceding picture holds over it.")
+    subparser.add_argument("--layers", choices=("stay", "remove"), default=None, help="With --lift: re-home layers or remove them (default: stay).")
     subparser.add_argument("--split", metavar="CUT", help="Split this cut at --on MOMENT.")
     subparser.add_argument("--add-cut", action="store_true", help="Add a cut at --on MOMENT (see --after).")
     subparser.add_argument("--cut", help="Cut number or id; alone, the cut's picture clip.")
@@ -3564,6 +3599,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     add_timings_flag(subparser)
     subparser.add_argument("--gap-after", action="append", default=[], metavar="LINE=SECONDS",
                            help="Set the declared silence after a line; repeat to set several lines.")
+    subparser.add_argument("--visuals", choices=("orphan", "remove"), default=None, help="With --remove-line: keep affected picture cuts as orphans or lift them.")
     subparser.add_argument("--remove-line", metavar="LINE", help="Remove a narration line.")
     narration = subparser.add_mutually_exclusive_group()
     narration.add_argument("--replace-line", "--line", metavar="LINE", help="Replace one line's selected take and word timings.")
@@ -3684,6 +3720,7 @@ def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None
 
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("checkout", help="Create or open a detached editable working copy.", configure=_configure_checkout),
+    CommandSpec("lift", help="Lift a cut's picture and hold the previous picture.", configure=_configure_lift),
     CommandSpec("edit", help="Edit a detached timeline working copy.", configure=_configure_edit),
     CommandSpec("assets", help="List timeline asset keys, media details, and every clip using each key.", configure=_configure_assets),
     CommandSpec("find", help="Find what you hear or see: addresses and times.", configure=_configure_find),

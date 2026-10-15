@@ -7,10 +7,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from astrid.core.timeline import moments as mo
 from astrid.sdk import timeline_intent as intent
-from astrid.core.timeline.cuts import (
-    occurrences_from_bundle,
-    picture_cuts,
-)
 
 from astrid.sdk.timeline._common import (AUDIO_KINDS, TIME_RE, TimelineEditError, WORD_ID_RE, _norm, _num, _r)
 from astrid.sdk.timeline.doc import (_read_words, _row_start)
@@ -70,48 +66,37 @@ class _LookupMixin:
         return _r(max((c.end for c in self.cuts), default=0.0))
 
     @property
+    def cut_index(self):
+        """The shared derived index; direct bundle edits invalidate its digest."""
+        import hashlib
+        import json
+        from astrid.core.timeline.cut_index import bundle_cut_index
+        digest = hashlib.sha256(json.dumps(self.bundle, sort_keys=True, default=str).encode()).hexdigest()
+        digest = (digest, id(self.bundle), tuple(id(c.data) for c in self.clips()))
+        cached = self.__dict__.get('_derived_cut_index')
+        if cached is None or cached[0] != digest:
+            cached = (digest, bundle_cut_index(self.bundle))
+            self._derived_cut_index = cached
+        return cached[1]
+
+    @property
     def cuts(self) -> Selection:
-        """Every cut, in order (a Selection: ``tl.cuts(chapter="02")``, ``tl.cuts["c08"]``)."""
-        return Selection((Cut(self, raw) for raw in picture_cuts(occurrences_from_bundle(self.bundle), fps=self.fps)),
-                         kind="cut", tl=self)
+        """Every derived cut, including picture gaps and authored orphans."""
+        return Selection((Cut(self, raw) for raw in self.cut_index.rows), kind="cut", tl=self)
 
     def cut(self, selector: Any) -> Cut:
-        """A cut by number (1-based, as show prints), ``"@62.5"``/``"1:02"`` (the cut on screen then), or picture clip id."""
-        cuts = self.cuts
-        if isinstance(selector, int) or (isinstance(selector, str) and selector.strip().isdigit()):
-            n = int(selector)
-            if not 1 <= n <= len(cuts):
-                raise TimelineEditError(f"cut {n} does not exist; this timeline has cuts 1–{len(cuts)}")
-            return cuts[n - 1]
+        """A stable id, display ordinal, picture clip id, or timeline time."""
         text = str(selector).strip()
-        if mo.CUT_ID_RE.match(text.lower()):
-            text = self._cut_id(text) or text  # c1 is c01
-            group = next((g for g in self._cut_groups() if g["id"] == text.lower()), None)
-            if group is None:
-                # Status excludes orphan cuts from the live picture list; exact
-                # identity lookup must still expose the authored orphan content.
-                members = self._cut_clips(text.lower())
-                if members:
-                    picture = self.cut_picture(text.lower()) or members[0]
-                    return Cut(self, dict(index=len(cuts) + 1, shot_id=picture.shot_id,
-                                          start=min(c.start for c in members), end=max(c.end for c in members),
-                                          clip=picture.data, layers=[{"clip": c.data} for c in members if c.data is not picture.data]))
-                ids = [g["id"] for g in self._cut_groups()]
-                raise TimelineEditError(f"no cut {text}; cuts are {', '.join(ids) or 'not named in this timeline'}")
-            if group["picture"] is not None:
-                for cut in cuts:
-                    if any(step.data is group["picture"].data for step in cut.steps):
-                        return cut
-        if TIME_RE.match(text) or isinstance(selector, float):
-            t = self.time(selector if not isinstance(selector, float) else selector)
-            for cut in cuts:
-                if cut.start - 1e-6 <= t < cut.end - 1e-6:
-                    return cut
-            raise TimelineEditError(f"no cut is on screen at {t:.3f} s (the timeline is {self.duration:.3f} s)")
-        for cut in cuts:
-            if any(c.id == text or c.id.startswith(text) for c in cut.steps):
-                return cut
-        raise TimelineEditError(f"no cut matches {selector!r}; pass 1–{len(cuts)}, a time like '1:02' or a picture clip id")
+        if isinstance(selector, int) or text.isdigit():
+            pass  # ordinals are inputs, never stored timing seconds
+        elif mo.CUT_ID_RE.match(text.lower()):
+            text = self._cut_id(text) or text.lower()
+        elif TIME_RE.match(text) or isinstance(selector, float):
+            text = f"@{self.time(selector)}"
+        try:
+            return Cut(self, self.cut_index.resolve(text))
+        except ValueError as exc:
+            raise TimelineEditError(str(exc)) from None
 
     @property
     def clips(self) -> Selection:
@@ -253,18 +238,8 @@ class _LookupMixin:
         return find(self, query, text=text, asset=asset)
 
     def cut_count(self) -> str:
-        """One way to count cuts everywhere: the named cuts (what you address), and the pictures if a
-        sequence (a time-lapse) shows several pictures in one cut."""
-        named, cuts = len(self._cut_groups()), self.cuts
-        pictures = len(cuts)
-        if not named or pictures == named:
-            return f"{named} cuts" if named else f"{pictures} cuts"
-        ids = [intent.cut_of(c.picture.data) if c.picture else None for c in cuts]
-        unnamed = sum(1 for i in ids if not i)
-        steps = pictures - unnamed - len({i for i in ids if i})
-        why = " · ".join(x for x in (f"{steps} more from sequence steps" if steps else "",
-                                     f"{unnamed} without a cut id" if unnamed else "") if x)
-        return f"{named} cuts ({pictures} pictures" + (f": {why})" if why else ")")
+        """The same window count printed by table, visualize, and lint."""
+        return f"{len(self.cut_index.rows)} cuts"
 
     def _cut_on_screen(self, t: float) -> str | None:
         """The cut id on screen at ``t`` (None when the timeline names no cuts)."""
@@ -285,14 +260,14 @@ class _LookupMixin:
         m = re.fullmatch(r"c0*(\d+)([a-z]?)", str(text).strip().lower())
         if not m:
             return None
-        ids = [g["id"] for g in self._cut_groups()] + [cid for cid in {intent.cut_of(c.data) for c in self.clips()} if cid]
+        ids = [g["id"] for g in self.cut_index.groups(self, include_orphans=True)]
         if str(text).strip().lower() in ids:
             return str(text).strip().lower()
         return next((cid for cid in ids if (mm := re.fullmatch(r"c0*(\d+)([a-z]?)", cid))
                      and (mm.group(1), mm.group(2)) == (m.group(1), m.group(2))), None)
 
     def _no_cut(self, cut_id: str) -> str:
-        ids = [g["id"] for g in self._cut_groups()]
+        ids = [g["id"] for g in self.cut_index.groups(self)]
         plain = [c for c in ids if re.fullmatch(r"c\d+", c)]
         extra = [c for c in ids if c not in plain]
         span = (f"{plain[0]}…{plain[-1]}" if len(plain) > 1 else ", ".join(plain)) + (f" (+ {', '.join(extra)})" if extra else "")
@@ -301,25 +276,11 @@ class _LookupMixin:
     def _cut_spans(self, skip: Iterable[str] = ()) -> dict[str, tuple[float, float | None]]:
         """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last).
         Cuts in ``skip`` (orphans) don't end the cut before them."""
-        skip = set(skip) | set(getattr(self, "_orphan_cuts", set()) or ())
-        groups = [g for g in self._cut_groups() if g["id"] not in skip]
-        return {g["id"]: (g["start"], groups[k + 1]["start"] if k + 1 < len(groups) else None) for k, g in enumerate(groups)}
+        return self.cut_index.timing_spans(self, skip)
 
     def _cut_groups(self) -> list[dict[str, Any]]:
-        """Clips grouped by cut id, in time order; each group's picture is its bed clip (first step)."""
-        groups: dict[str, list[Clip]] = {}
-        for clip in self.clips():
-            cid = intent.cut_of(clip.data)
-            if cid:
-                groups.setdefault(cid, []).append(clip)
-        out = []
-        for cid, clips in groups.items():
-            if all(intent.orphan(c.data) for c in clips):
-                continue  # a cut kept only as orphans is not a cut until it is re-homed
-            beds = sorted((c for c in clips if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
-            out.append({"id": cid, "clips": clips, "picture": beds[0] if beds else None,
-                        "start": beds[0].start if beds else min(c.start for c in clips)})
-        return sorted(out, key=lambda g: (g["start"], g["id"]))
+        """Compatibility reader; production consumers use the index directly."""
+        return self.cut_index.groups(self)
 
     def _is_picture(self, clip: "Clip") -> bool:
         cut = intent.cut_of(clip.data)

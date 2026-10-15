@@ -317,10 +317,11 @@ def build_rhythm(
     notes: list[str] = []
     records: list[dict[str, Any]] = []
     chapters: list[dict[str, Any]] = []
-    from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle, picture_cuts
+    from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle
+    from astrid.core.timeline.cut_index import cut_index
 
     shared_cuts: dict[str, list[dict[str, Any]]] = {}
-    for cut in picture_cuts(occurrences_from_bundle(bundle), fps=bundle_fps(bundle)):
+    for cut in cut_index(occurrences_from_bundle(bundle), fps=bundle_fps(bundle)).rows:
         shared_cuts.setdefault(cut["occurrence_id"], []).append(cut)
 
     for occurrence in (_map(item) for item in _list(bundle.get("placements")) if isinstance(item, Mapping)):

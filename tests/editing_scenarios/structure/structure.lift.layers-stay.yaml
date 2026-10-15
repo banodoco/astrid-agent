@@ -1,0 +1,14 @@
+id: structure.lift.layers-stay
+source: CUTS spec-timing 6.3
+intent: Lift c2, extend c1's picture, and stay its layers while leaving cut-free music unchanged.
+fixture: cuts-reserved
+expect: change
+cli: lift c2 --layers stay
+sheet:
+  text: 'edit {"op":"cut.lift","select":"c2","args":{"layers":"stay"}}'
+python: |
+  tl.cut("c2").lift(layers="stay")
+check:
+  - abs(tl.duration - 8.0) < 1e-6
+  - abs(tl.clip("c1.plate").end - 8.0) < 1e-6
+  - all(c.cut_id is None for c in tl.clips(audio=True))

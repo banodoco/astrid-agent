@@ -27,6 +27,7 @@ class _Client:
 
 
 VERBS = {
+    "lift": ["lift", "main", "c2"],
     "checkout": ["checkout", "main"],
     "apply": ["apply", "main", "sheet.txt"],
     "assets": ["assets", "main"],

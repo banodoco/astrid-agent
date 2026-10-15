@@ -27,3 +27,7 @@
   card: MOTION
   reason: "Adds the optional curve keyword to the existing fit method; all previous arguments and defaults remain available."
   alias: "sdk:StepSequence.fit"
+- feature: "sdk:Checkout.remove_line"
+  card: CUTS
+  reason: "Adds optional visuals=orphan|remove; the existing segment argument, music policy, and default orphan behavior remain accepted (spec-timing 6.3)."
+  alias: "sdk:Checkout.remove_line"

@@ -1,0 +1,294 @@
+{
+  "base": "8c1580fad59066deeb51111f975a8da34359045b",
+  "tree": "cf42c117848fb70f3ea4472e69ccf73efc5cab32",
+  "calls": [
+    {
+      "path": "astrid/core/timeline/cuts.py",
+      "line": 141,
+      "source": "def picture_cuts(occurrences: Iterable[Mapping[str, Any]], *, fps: float = 30.0) -> list[dict[str, Any]]:"
+    },
+    {
+      "path": "astrid/core/timeline/cuts.py",
+      "line": 217,
+      "source": "def find_cut(cuts: Sequence[Mapping[str, Any]], selector: Any) -> Mapping[str, Any]:"
+    },
+    {
+      "path": "astrid/packs/editorial/shared/rhythm.py",
+      "line": 323,
+      "source": "    for cut in picture_cuts(occurrences_from_bundle(bundle), fps=bundle_fps(bundle)):"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/filmstrip_cards.py",
+      "line": 747,
+      "source": "    cuts = picture_cuts(occurrences, fps=float(fps))"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/diffview.py",
+      "line": 43,
+      "source": "    cuts = picture_cuts(occurrences, fps=fps)"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/diffview.py",
+      "line": 128,
+      "source": "    cuts = picture_cuts(occurrences_from_bundle(bundle), fps=bundle_fps(bundle))"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/sheet.py",
+      "line": 44,
+      "source": "    cuts = picture_cuts(occurrences, fps=fps)"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/sheet.py",
+      "line": 45,
+      "source": "    return dict(find_cut(cuts, selector))"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/sheet.py",
+      "line": 114,
+      "source": "    cuts = picture_cuts(occurrences, fps=fps)"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/window.py",
+      "line": 56,
+      "source": "    cuts = picture_cuts(occurrences, fps=fps)"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/motion/window.py",
+      "line": 61,
+      "source": "        cut = dict(find_cut(cuts, options[\"cut\"]))"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/sweep.py",
+      "line": 56,
+      "source": "    before_cuts = picture_cuts(occurrences_from_snapshot(published), fps=fps)"
+    },
+    {
+      "path": "astrid/packs/rendering/actions/timeline_visualize/sweep.py",
+      "line": 57,
+      "source": "    after_cuts = picture_cuts(occurrences_from_snapshot(working), fps=fps)"
+    },
+    {
+      "path": "astrid/packs/timeline/cli_common.py",
+      "line": 151,
+      "source": "    named = len(tl._cut_groups())"
+    },
+    {
+      "path": "astrid/packs/timeline/cli_visualize.py",
+      "line": 818,
+      "source": "                    here = next((g[\"id\"] for g in draft._cut_groups()"
+    },
+    {
+      "path": "astrid/packs/timeline/cli_working.py",
+      "line": 64,
+      "source": "    all_cuts = picture_cuts(occurrences, fps=fps)"
+    },
+    {
+      "path": "astrid/packs/timeline/cli_working.py",
+      "line": 68,
+      "source": "            cuts = [find_cut(all_cuts, parsed.cut)]"
+    },
+    {
+      "path": "astrid/packs/timeline/cli_working.py",
+      "line": 124,
+      "source": "        base_cuts = picture_cuts(base_occurrences, fps=fps)"
+    },
+    {
+      "path": "astrid/sdk/timeline/_timing_evaluators.py",
+      "line": 227,
+      "source": "        holding = next((g[\"id\"] for g in reversed(self._cut_groups()) if g[\"start\"] <= first + 1e-6), None)"
+    },
+    {
+      "path": "astrid/sdk/timeline/_timing_evaluators.py",
+      "line": 336,
+      "source": "        groups = self._cut_groups()"
+    },
+    {
+      "path": "astrid/sdk/timeline/_timing_evaluators.py",
+      "line": 358,
+      "source": "            group = next(g for g in self._cut_groups() if g[\"id\"] == cid)"
+    },
+    {
+      "path": "astrid/sdk/timeline/check.py",
+      "line": 147,
+      "source": "        for g in self._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/check.py",
+      "line": 375,
+      "source": "            then_groups = {g[\"id\"]: g for g in base._cut_groups()}"
+    },
+    {
+      "path": "astrid/sdk/timeline/check.py",
+      "line": 383,
+      "source": "        for g in self._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/check.py",
+      "line": 393,
+      "source": "        for g in self._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/check.py",
+      "line": 481,
+      "source": "        all_cuts = picture_cuts(occurrences, fps=self.fps)"
+    },
+    {
+      "path": "astrid/sdk/timeline/checkout.py",
+      "line": 407,
+      "source": "        order = [g[\"id\"] for g in self._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline/commands.py",
+      "line": 458,
+      "source": "        if not sid.startswith(\"cut:\") or not any(g[\"id\"] == sid[4:] for g in tl._cut_groups()):"
+    },
+    {
+      "path": "astrid/sdk/timeline/commands.py",
+      "line": 590,
+      "source": "    for group in tl._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/commands.py",
+      "line": 773,
+      "source": "                groups = tl._cut_groups()"
+    },
+    {
+      "path": "astrid/sdk/timeline/compiler.py",
+      "line": 42,
+      "source": "    groups = tl._cut_groups()"
+    },
+    {
+      "path": "astrid/sdk/timeline/edits.py",
+      "line": 166,
+      "source": "        if new_id in {g[\"id\"] for g in self._cut_groups()}:"
+    },
+    {
+      "path": "astrid/sdk/timeline/edits.py",
+      "line": 238,
+      "source": "        for g in self._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/edits.py",
+      "line": 260,
+      "source": "        for g in self._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 75,
+      "source": "        return Selection((Cut(self, raw) for raw in picture_cuts(occurrences_from_bundle(self.bundle), fps=self.fps)),"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 89,
+      "source": "            group = next((g for g in self._cut_groups() if g[\"id\"] == text.lower()), None)"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 99,
+      "source": "                ids = [g[\"id\"] for g in self._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 258,
+      "source": "        named, cuts = len(self._cut_groups()), self.cuts"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 288,
+      "source": "        ids = [g[\"id\"] for g in self._cut_groups()] + [cid for cid in {intent.cut_of(c.data) for c in self.clips()} if cid]"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 295,
+      "source": "        ids = [g[\"id\"] for g in self._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 305,
+      "source": "        groups = [g for g in self._cut_groups() if g[\"id\"] not in skip]"
+    },
+    {
+      "path": "astrid/sdk/timeline/lookup.py",
+      "line": 308,
+      "source": "    def _cut_groups(self) -> list[dict[str, Any]]:"
+    },
+    {
+      "path": "astrid/sdk/timeline/model.py",
+      "line": 1248,
+      "source": "        for g in self.tl._cut_groups():"
+    },
+    {
+      "path": "astrid/sdk/timeline/selection.py",
+      "line": 253,
+      "source": "    groups = tl._cut_groups()"
+    },
+    {
+      "path": "astrid/sdk/timeline/selection.py",
+      "line": 331,
+      "source": "    ids = [g[\"id\"] for g in tl._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline/selection.py",
+      "line": 345,
+      "source": "            ids = [g[\"id\"] for g in tl._cut_groups()][lo:hi + 1]"
+    },
+    {
+      "path": "astrid/sdk/timeline/transaction.py",
+      "line": 82,
+      "source": "    order = [group[\"id\"] for group in after._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline_address.py",
+      "line": 581,
+      "source": "    order = [g[\"id\"] for g in tl._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline_cuts.py",
+      "line": 426,
+      "source": "    for cut in picture_cuts(occurrences, fps=fps):"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 72,
+      "source": "    groups=tl._cut_groups()"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 114,
+      "source": "    groups = tl._cut_groups()"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 568,
+      "source": "    order = [g[\"id\"] for g in tl._cut_groups()]"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 590,
+      "source": "        existing={g[\"id\"] for g in tl._cut_groups()}"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 625,
+      "source": "                if at is None: at=next((g[\"start\"] for g in tl._cut_groups() if g[\"id\"]==line.get(\"cut\")),0)"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 655,
+      "source": "            group=next((g for g in tl._cut_groups() if g[\"id\"]==cut),None)"
+    },
+    {
+      "path": "astrid/sdk/timeline_sheet.py",
+      "line": 839,
+      "source": "    groups = {g[\"id\"]: g for g in tl._cut_groups()}"
+    }
+  ],
+  "inventory": "spec-timing \u00a76.1 plus opus-feature-parity \u00a73; absent relocated paths recorded in run-owned base-inventory.md",
+  "new_verb": "timelines lift",
+  "aliases": [
+    "edit --lift",
+    "--cut N",
+    "--cuts",
+    "--edited"
+  ]
+}

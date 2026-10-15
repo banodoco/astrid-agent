@@ -148,7 +148,7 @@ def checkout_summary(parsed: argparse.Namespace, tl: Any, *, existed: bool) -> l
             name = current_draft(project_id, timeline_id)
         except Exception:  # noqa: BLE001 - the name is cosmetic here
             name = "main"
-    named = len(tl._cut_groups())
+    named = len(tl.cut_index.groups(tl))
     summary = (f"{tl.cut_count()} · {len(tl.clips())} clips · {len(tl.words())} words" if named else cuts_summary(tl))
     where = f"{parsed.ref} --project {parsed.project}"
     fresh = bool(getattr(parsed, "fresh", False))

@@ -155,22 +155,40 @@ def picture_cuts(occurrences: Iterable[Mapping[str, Any]], *, fps: float = 30.0)
         spans = list(occurrence.get("spans") or [])
         bed = picture_bed(spans, occurrence.get("track_order") or ())
         visual = [s for s in spans if not s["audio"] and s["end"] - s["start"] > 0]
-        bed_spans = sorted((s for s in visual if s["track"] == bed), key=lambda s: (s["start"], s["id"]))
+        bed_spans = sorted((s for s in visual if s["track"] == bed and
+                            not (read_app(s["clip"]).get("orphan") and s["track"] != "plate")), key=lambda s: (s["start"], s["id"]))
         windows: list[tuple[float, float, Mapping[str, Any] | None, list[Mapping[str, Any]]]] = []
         cursor = start
+        consumed = set()
         for span in bed_spans:
-            sequence = sequence_id(span["clip"])
-            previous = windows[-1] if windows else None
-            if (sequence and previous is not None and previous[2] is not None
-                    and sequence_id(previous[2]["clip"]) == sequence and span["start"] <= previous[1] + half):
-                # One editorial cut: consecutive picture clips of one sequence
-                # (a time-lapse or stepped animation built clip by clip).
-                windows[-1] = (previous[0], max(previous[1], span["end"]), previous[2], previous[3] + [span])
-                cursor = max(cursor, span["end"])
+            if id(span) in consumed:
                 continue
+            sequence = sequence_id(span["clip"])
+            cid = read_app(span["clip"]).get("cut")
+            if sequence and cid:
+                # A named sequence can range across another cut (c17 → c19
+                # over c18). Do not break it into windows at the intervening cut.
+                members = [s for s in bed_spans if sequence_id(s["clip"]) == sequence
+                           and read_app(s["clip"]).get("cut") == cid]
+            else:
+                members = [span]
+            consumed.update(id(s) for s in members)
+            span_end = max(s["end"] for s in members)
+            previous = windows[-1] if windows else None
+            if (sequence and not cid and previous is not None and previous[2] is not None
+                    and not read_app(previous[2]["clip"]).get("cut")
+                    and sequence_id(previous[2]["clip"]) == sequence and span["start"] <= previous[1] + half):
+                windows[-1] = (previous[0], max(previous[1], span_end), previous[2], previous[3] + members)
+                cursor = max(cursor, span_end)
+                continue
+            windows.append((span["start"], span_end, span, members))
+            cursor = max(cursor, span_end)
+        # Physical coverage, rather than the envelope of a spanning sequence,
+        # determines gaps. An incomplete sequence must not hide a black interval.
+        cursor = start
+        for span in bed_spans:
             if span["start"] > cursor + half:
                 windows.append((cursor, span["start"], None, []))
-            windows.append((span["start"], span["end"], span, [span]))
             cursor = max(cursor, span["end"])
         if not bed_spans or cursor < end - half:
             windows.append((cursor, end, None, []))
@@ -317,6 +335,22 @@ def occurrences_from_bundle(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
             "shot": shot,
             "registry": _map(_map(internal.get("registry")).get("assets")),
         })
+    # Timeline-owned sound is cut-free and intersects every placed occurrence.
+    # It does not create a picture window or become the first cut's member.
+    parent = _map(bundle.get("parent"))
+    kinds = _track_kinds(parent.get("tracks") or _map(parent.get("config")).get("tracks"))
+    sound = []
+    for clip in _list(parent.get("clips")):
+        if not isinstance(clip, Mapping):
+            continue
+        span = _span(clip, _num(clip.get("at")), kinds,
+                     kind="audio" if str(clip.get("kind") or "").lower() in AUDIO_KINDS else None)
+        if span['audio']:
+            # Parent and shot clip ids have independent scopes.
+            span['id'] = "parent:" + span['id']
+            sound.append(span)
+    for occurrence in occurrences:
+        occurrence['spans'].extend(sound)
     return occurrences
 
 
@@ -347,6 +381,12 @@ def occurrences_from_snapshot(snapshot: Mapping[str, Any]) -> list[dict[str, Any
         for item in _list(snapshot.get("occurrences"))
         if isinstance(item, Mapping) and item.get("occurrence_id") is not None
     }
+    # Flattened captures can leave timeline-owned audio outside shot scopes.
+    # Share those spans across picture occurrences instead of inventing an
+    # audio-only picture cut.
+    global_sound = []
+    if len(groups) > 1 and "" in groups and all(s['audio'] for s in groups[""]):
+        global_sound = groups.pop("")
     occurrences: list[dict[str, Any]] = []
     for key, spans in groups.items():
         window = _map(windows.get(key))
@@ -362,4 +402,6 @@ def occurrences_from_snapshot(snapshot: Mapping[str, Any]) -> list[dict[str, Any
             "spans": spans,
             "track_order": track_order,
         })
+    for occurrence in occurrences:
+        occurrence['spans'].extend(global_sound)
     return occurrences

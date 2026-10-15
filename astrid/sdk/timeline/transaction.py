@@ -79,7 +79,7 @@ def _affected_cuts(before: Any, after: Any) -> list[str]:
                 cut_id = intent.cut_of(clip.data) if clip is not None else None
                 if cut_id:
                     affected.add(cut_id)
-    order = [group["id"] for group in after._cut_groups()]
+    order = [group["id"] for group in after.cut_index.groups(after)]
     return sorted(affected, key=lambda cut_id: order.index(cut_id) if cut_id in order else len(order))
 
 
