@@ -74,6 +74,36 @@ class _Span:
     fade_out: float | None = None
 
 
+def allocate_output_ids(output, occupied, *, established=()):
+    """Allocate fresh derived aliases without displacing any authored identity.
+
+    The input is a newly materialized plan. Reserve all its preferred aliases
+    first so a fallback cannot steal a later span's established identity.
+    """
+    occupied = set(occupied)
+    if output and output[0]['id'] in occupied:
+        raise ValueError('authored source ID collision')
+    reserved = occupied | {clip['id'] for clip in output} | set(established)
+    for i, clip in enumerate(output[1:], 1):
+        preferred = clip['id']
+        previous = established[i] if i < len(established) else ''
+        suffix = previous.removeprefix(preferred + '-')
+        if (previous == preferred or (previous.startswith(preferred + '-')
+                                      and suffix.isdecimal() and str(int(suffix)) == suffix and int(suffix) >= 2)) \
+                and previous not in occupied:
+            # The carrier records an already allocated alias. Keep it even if
+            # the unrelated clip that originally occupied the base is removed.
+            clip['id'] = previous
+        elif preferred in occupied:
+            n = 2
+            while f'{preferred}-{n}' in reserved:
+                n += 1
+            clip['id'] = f'{preferred}-{n}'
+            reserved.add(clip['id'])
+        occupied.add(clip['id'])
+    return output
+
+
 def materialize(source, basis, owner, *, start=0.0, fps=30.0, bars=(), beats=(), fixed_seams=None, seams_out=None):
 
     speed = float(source.get('speed') or 1)

@@ -5,6 +5,7 @@ Offline: the tiny fixture (the film is 8 s; shot B is 4-8 s; the last spoken wor
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -144,7 +145,14 @@ def test_a_new_music_piece_never_reuses_an_id_the_shot_already_has():
         "id": "a-music:b", "clipType": "am-sprite", "track": "sprite", "asset": "R", "at": 0.0, "hold": 0.5,
         "params": {}, "app": {"cut": "c1", "layer": "left-over"}})
     tl = Checkout(data)
+    control_data = copy.deepcopy(data)
+    control_data['shots']['A']['internal_timeline']['clips'][-1]['id'] = 'unrelated-visual'
+    control = Checkout(control_data)
+    control.film_end(f'{AFTER_NOW} +2.3s')
     tl.film_end(f'{AFTER_NOW} +2.3s')
     ids = [c["id"] for c in tl.document()["shots"]["A"]["internal_timeline"]["clips"]]
     assert len(ids) == len(set(ids))
+    # The ordinary cut-following retime is identical with either alias; ID
+    # allocation must not introduce any additional change to the visual.
+    assert tl.clip('a-music:b').data == {**control.clip('unrelated-visual').data, 'id': 'a-music:b'}
     assert len(bed(tl)) == 2 and bed(tl)[-1].end == pytest.approx(9.0, abs=FRAME)

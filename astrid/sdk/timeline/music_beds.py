@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from functools import wraps
 
 from astrid.core.timeline import astrid_ns
-from astrid.core.timeline.music_bed import canonical_basis, move_point
+from astrid.core.timeline.music_bed import allocate_output_ids, canonical_basis, move_point
 from astrid.core.timeline.music_bed import materialize as _materialize
 from astrid.sdk.timeline._common import TimelineEditError
 
@@ -149,14 +149,34 @@ def _shared_seams(tl):
 
 
 def _materialize_entry(tl, owner, entry, *, shared_seams=None):
-    sid, _ = locate(tl, owner, entry['source'])
+    sid, clips = locate(tl, owner, entry['source'])
     kwargs = {}
     if isinstance(entry, _ArrangementSource):
         kwargs['fixed_seams'] = _shared_seams(tl) if shared_seams is None else shared_seams
     source = (_resolved_source(tl, owner, entry['source'])
               if isinstance(entry, _ArrangementSource) else entry['source'])
-    return materialize(source, entry['ripple_basis'], owner,
-                       start=tl._shot_start(sid), fps=tl.fps, **kwargs)
+    return _materialize_clips(tl, sid, clips, source, entry['ripple_basis'], owner,
+                              owned=entry['outputs'], **kwargs)
+
+
+def _materialize_clips(tl, sid, clips, source, basis, owner, *, owned=(), **kwargs):
+    output, report, changed = materialize(source, basis, owner,
+                                         start=tl._shot_start(sid), fps=tl.fps, **kwargs)
+    unrelated = [c for c in clips if c is not source and c.get('id') not in owned]
+    preferred = {c['id'] for c in output}
+    from astrid.sdk import timeline_intent as intent
+    for clip in unrelated:
+        if clip.get('id') in preferred and (
+                intent._app(clip).get('split_from') == source['id'] or
+                (clip.get('asset') == source.get('asset') and tl._is_audio(sid, clip))):
+            # A possible pre-existing audio fragment has no recorded ownership.
+            # Renaming around it would silently accept ambiguous source data.
+            raise MusicBedError(f'{owner}: ambiguous music output ID collision')
+    try:
+        allocate_output_ids(output, {c.get('id') for c in unrelated}, established=owned)
+    except ValueError as exc:
+        raise MusicBedError(f'{owner}: {exc}') from None
+    return output, report, changed
 
 
 def validate_occurrence_ownership(tl):
@@ -433,7 +453,24 @@ def transition(tl, a, b, delta, skip_ids):
                 snapshot = copy.deepcopy(clip.data)
                 if _timeline_stamp(snapshot.get('_timeline')):
                     snapshot.pop('_timeline')
-                pending.setdefault(owner, (clip.shot_id, snapshot, clip.data, tl._shot_start(clip.shot_id)))
+                pending.setdefault(owner, (clip.shot_id, snapshot, clip.data, tl._shot_start(clip.shot_id), False))
+        # Capture the current edit's explicit removal before _close_in_shot
+        # consumes it. Keep this proof with the pending source across the private
+        # compiler copy; neither it nor the pending snapshot is persisted.
+        for owner, (sid, snapshot, data, origin, removed) in list(pending.items()):
+            if removed or delta >= 0 or getattr(tl, '_keep_inside', False) or intent.orphan(data) or intent.sequence(data):
+                continue
+            start = tl._shot_start(sid)
+            row = next(row for row in tl.bundle['placements'] if str(row['shot_id']) == sid)
+            ra, rb = max(a - start, 0.), min(b - start, float(row['duration_ms']) / 1000.)
+            cs = float(data.get('at') or 0)
+            from astrid.core.timeline.cuts import clip_duration
+            ce = cs + clip_duration(data)
+            if (rb > ra and any(c is data for c in tl._internal(sid)['clips'])
+                    and id(data) not in skip_ids and cs >= ra - 1e-6 and cs < rb - 1e-6
+                    and ce > ra + 1e-6 and ce <= rb + .5 / tl.fps
+                    and not tl._anchor_survives(sid, data, tl._doomed_cuts(sid, ra, rb, skip_ids))):
+                pending[owner] = sid, snapshot, data, origin, True
         tl._music_pending = pending
     for owner, entry in beds.items():
         sid, _ = locate(tl, owner, entry['source'])
@@ -469,20 +506,20 @@ def transition(tl, a, b, delta, skip_ids):
 def enroll(tl, records):
     beds = collection(tl)
     notes = []
-    for owner, (sid, source, original_data, origin) in getattr(tl, '_music_pending', {}).items():
+    for owner, (sid, source, original_data, origin, removed) in getattr(tl, '_music_pending', {}).items():
         if owner in sources(tl):
-            continue
-        basis = canonical_basis([dict(at_s=p, delta_s=d) for p, d, skip in records if id(original_data) not in skip])
-        source['at'] = round(float(source.get('at') or 0) + origin - tl._shot_start(sid), 6)
-        output, report, changed = materialize(source, basis, owner, start=tl._shot_start(sid), fps=tl.fps)
-        if not changed:
             continue
         clips = tl._internal(sid)['clips']
         original = [c for c in clips if c.get('id') == source['id']]
-        if len(original) != 1:
+        if not original and removed:
+            continue  # the recorded window removed this exact pending source
+        if len(original) != 1 or original[0] is not original_data:
             raise MusicBedError(f'{owner}: source disappeared before music enrollment')
-        if any(c.get('id') in {p['id'] for p in output} and c is not original[0] for c in clips):
-            raise MusicBedError(f'{owner}: deterministic music output ID collision')
+        basis = canonical_basis([dict(at_s=p, delta_s=d) for p, d, skip in records if id(original_data) not in skip])
+        source['at'] = round(float(source.get('at') or 0) + origin - tl._shot_start(sid), 6)
+        _, report, changed = _materialize_clips(tl, sid, clips, source, basis, owner, owned=[source['id']])
+        if not changed:
+            continue
         beds = collection(tl, create=True)
         beds[owner] = dict(owner=owner, source=source, ripple_basis=basis, outputs=[source['id']])
         # Keep source in the working list until the compiler emits the plan.

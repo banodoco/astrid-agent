@@ -185,8 +185,32 @@ def test_ripple_inverse_restores_each_recorded_deleted_member_and_timing(setup):
     before = draft.document()
     after, plan, _ = apply(before, call("timeline.ripple-delete", start=0, end=4))
     assert len(Checkout(after).clips()) < len(Checkout(before).clips())
-    restored, _, _ = apply(after, backward(before, after, plan))
+    assert apply(before, *plan.calls)[0] == after
+    restored, undo, _ = apply(after, backward(before, after, plan))
     assert {c.id: c.data for c in Checkout(restored).clips()} == {c.id: c.data for c in Checkout(before).clips()}
+    assert Checkout(restored).clip('b-vo').start == Checkout(before).clip('b-vo').start
+    redone, _, _ = apply(restored, backward(after, restored, undo))
+    assert {c.id: c.data for c in Checkout(redone).clips()} == {c.id: c.data for c in Checkout(after).clips()}
+    assert Checkout(redone).clip('b-vo').start == Checkout(after).clip('b-vo').start
+
+
+def test_music_alias_allocation_replays_and_inverts_exact_ids_and_payloads(setup):
+    draft, _runtime, _client = setup
+    tl = Checkout(draft.document())
+    tl.clip('a-music').data['to'] = 8.
+    unrelated = dict(id='a-music:b', clipType='am-sprite', track='sprite', asset='R',
+                     at=0., hold=.5, params={})
+    tl._internal('A')['clips'].append(copy.deepcopy(unrelated))
+    tl.insert_time(2, 1)
+    before = tl.document()
+    after, plan, _ = apply(before, call('timeline.insert-time', at=2, seconds=1))
+    assert Checkout(after).clip('a-music:b').data == unrelated
+    assert Checkout(after).clip('a-music:b-2').track == 'music'
+    assert apply(before, *plan.calls)[0] == after
+    restored, undo, _ = apply(after, backward(before, after, plan))
+    assert {c.id: c.data for c in Checkout(restored).clips()} == {c.id: c.data for c in Checkout(before).clips()}
+    redone, _, _ = apply(restored, backward(after, restored, undo))
+    assert {c.id: c.data for c in Checkout(redone).clips()} == {c.id: c.data for c in Checkout(after).clips()}
 
 
 def test_root_payload_remaps_declared_cut_relation_but_not_opaque_text(setup):

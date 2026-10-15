@@ -211,6 +211,105 @@ def test_collision_and_ambiguous_physical_occurrence_refuse_atomically():
     assert tl.document() == before
 
 
+@pytest.mark.parametrize('count', [1, 3])
+def test_unrelated_aliases_allocate_stably_through_compile_save_undo_redo(tmp_path, count):
+    from astrid.sdk.timeline.identity import retain_cut_reservations
+    tl = tiny()
+    retain_cut_reservations(tl.bundle)
+    unrelated = [dict(id='a-music:b' + (f'-{n}' if n > 1 else ''),
+                      clipType='am-sprite', track='sprite', asset='R', at=0., hold=.5,
+                      params={})
+                 for n in range(1, count + 1)]
+    tl._internal('A')['clips'].extend(copy.deepcopy(unrelated))
+    before = tl.document()
+    path = tmp_path / 'collision.checkout.json'
+    tl.save(path, quiet=True)
+    tl.insert_time(2, 1)
+    assert entry(tl)['outputs'] == ['a-music', f'a-music:b-{count + 1}']
+    for clip in unrelated:
+        assert tl.clip(clip['id']).data == clip
+    after = tl.document()
+    assert compile_timing(after).bundle == after
+    assert compile_timing(after).bundle == after
+    tl.resolve()
+    assert tl.document() == after
+    tl.save(quiet=True)
+    loaded = Checkout.load(path)
+    assert loaded.document() == after
+    loaded.undo()
+    assert loaded.document() == before
+    loaded.redo()
+    assert loaded.document() == after
+    ids = entry(loaded)['outputs'][:]
+    for clip in unrelated:
+        loaded.clip(clip['id']).remove()
+    assert entry(loaded)['outputs'] == ids
+    before = loaded.document()
+    assert compile_timing(before).bundle == before
+
+
+@pytest.mark.parametrize('damage', ['missing', 'replacement', 'duplicate'])
+def test_unexplained_pending_source_loss_or_alias_replacement_refuses_atomically(damage):
+    tl = tiny()
+    before = tl.document()
+    with pytest.raises(MusicBedError, match='source disappeared'):
+        with tl.edit('damaged pending source', quiet=True):
+            with retime_scope(tl):
+                tl.insert_time(2, 1)
+                clips = tl._internal('A')['clips']
+                source = next(c for c in clips if c['id'] == 'a-music')
+                if damage != 'duplicate':
+                    clips.remove(source)
+                if damage != 'missing':
+                    clips.append(copy.deepcopy(source))
+    assert tl.document() == before
+    assert tl._scope is None and not getattr(tl, '_music_pending', {})
+
+
+def test_deleted_pending_source_does_not_authorize_replacement_alias():
+    tl = tiny()
+    tl.clip('a-music').data['to'] = 2.
+    before = tl.document()
+    with pytest.raises(MusicBedError, match='source disappeared'):
+        with tl.edit('replace removed pending source', quiet=True):
+            with retime_scope(tl):
+                tl.ripple_delete(0, 4)
+                tl._internal('A')['clips'].append(dict(id='a-music', clipType='am-sprite',
+                                                      track='sprite', at=0., hold=1.))
+    assert tl.document() == before
+
+
+def test_partial_removal_does_not_authorize_pending_source_loss():
+    tl = tiny()
+    before = tl.document()
+    with pytest.raises(MusicBedError, match='source disappeared'):
+        with tl.edit('lost source spanning the removal', quiet=True):
+            with retime_scope(tl):
+                tl.ripple_delete(2, 3)
+                clips = tl._internal('A')['clips']
+                clips[:] = [c for c in clips if c['id'] != 'a-music']
+    assert tl.document() == before
+
+
+def test_multi_span_plan_allocates_around_occupied_hashed_identity():
+    tl = tiny()
+    owner = 'occurrence:occ-A/clip:a-music'
+    basis = [dict(at_s=2., delta_s=1.), dict(at_s=6., delta_s=1.)]
+    expected = materialize(tl.clip('a-music').data, basis, owner)[0]
+    assert len(expected) == 3
+    unrelated = dict(id=expected[1]['id'], clipType='am-sprite', track='sprite',
+                     asset='R', at=0., hold=.5, params={})
+    tl._internal('A')['clips'].append(copy.deepcopy(unrelated))
+    tl.insert_time(2, 1)
+    tl.insert_time(6, 1)
+    assert entry(tl)['outputs'] == ['a-music', expected[1]['id'] + '-2', expected[2]['id']]
+    assert tl.clip(unrelated['id']).data == unrelated
+    before = tl.document()
+    assert compile_timing(before).bundle == before
+    tl.resolve()
+    assert tl.document() == before
+
+
 def test_unmanaged_resolve_keeps_clip_dictionary_bytes_and_does_not_enroll():
     tl = tiny()
     before = json.dumps(tl.clip('a-music').data, separators=(',', ':'))
