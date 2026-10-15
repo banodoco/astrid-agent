@@ -333,6 +333,35 @@ def build_filter_graph(
             )
             spine = spine_out
 
+    from astrid.core.timeline.audio_envelope import compile_legacy, ffmpeg_expression
+    from astrid.packs.rendering.rendering.renderers.ffmpeg.support import effective_gain
+
+    fps = timeline_canvas(timeline_data)[2]
+    envelopes = [compile_legacy(clip, fps) for clip in audio_clips]
+    if any(envelope is not None for envelope in envelopes):
+        # Per-sample evaluation after source trim/resampling, before placement.
+        # Mixing is unnormalised: base track/clip gains retain their meaning.
+        labels = []
+        for index, (clip, envelope) in enumerate(zip(audio_clips, envelopes)):
+            inp = asset_index[str(clip["asset"])]
+            start, end = float(clip.get("from", 0)), float(clip["to"])
+            base = effective_gain(tracks[str(clip["track"])], clip)
+            expression = ffmpeg_expression(envelope) if envelope is not None else "1"
+            delay = math.floor(float(clip.get("at", 0)) * inputs.audio_sample_rate + 0.5)
+            label = f"env{index}"
+            filters.append(
+                f"[{inp}:a]atrim=start={start:.9f}:end={end:.9f},asetpts=PTS-STARTPTS,"
+                f"aformat=sample_rates={inputs.audio_sample_rate}:channel_layouts=stereo,"
+                f"aeval=exprs='val(ch)*({base:.17g})*({expression})':c=same,"
+                f"adelay={delay}S:all=1[{label}]"
+            )
+            labels.append(f"[{label}]")
+        duration = max(float(clip.get("at", 0)) + clip_duration_seconds(clip) for clip in video_clips)
+        filters.append("".join(labels) + f"amix=inputs={len(labels)}:normalize=0:dropout_transition=0,"
+                       f"apad=whole_len={math.floor(duration * inputs.audio_sample_rate + 0.5)},"
+                       f"atrim=end_sample={math.floor(duration * inputs.audio_sample_rate + 0.5)}[aout]")
+        return filters, copy_video_input
+
     audio_labels: list[str] = []
     cursor = 0.0
     audio_index = 0

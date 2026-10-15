@@ -25,9 +25,9 @@ from astrid.core.rendering.contracts import (
     SupportReport,
 )
 from astrid.core.rendering.profile import _mp4_time_base
+from astrid.core.timeline.audio_envelope import compile_legacy
 from astrid.packs.rendering.rendering.renderers.ffmpeg import audio_reactive_colour
 from astrid.packs.rendering.rendering.renderers.ffmpeg.text import (
-    _finite_number,
     _parse_color,
     _parse_fades,
     _parse_text_shadow,
@@ -197,6 +197,7 @@ def _validate_track_semantics(track: Mapping[str, Any]) -> list[str]:
 def _validate_clip_semantics(
     clip: Mapping[str, Any],
     track: Mapping[str, Any],
+    fps: float = 30,
 ) -> list[str]:
     reasons: list[str] = []
     clip_id = clip.get("id")
@@ -248,20 +249,37 @@ def _validate_clip_semantics(
         except ValueError as exc:
             reasons.append(str(exc))
 
+    if "audio" in clip:
+        try:
+            compile_legacy(clip, fps)
+            if track.get("kind") != "audio":
+                reasons.append(f"ENVELOPE_UNRENDERED: Clip {clip_id!r} needs an audio track")
+        except (ValueError, TypeError) as exc:
+            reasons.append(str(exc))
+
+    app = clip.get("app")
+    app = app if isinstance(app, Mapping) else {}
+    namespace = app.get("astrid")
+    namespace = namespace if isinstance(namespace, Mapping) else {}
+    authored_duck = namespace.get("duck", app.get("duck"))
+    audio = clip.get("audio")
+    envelope = audio.get("envelope") if isinstance(audio, Mapping) else None
+    if authored_duck is not None and not (isinstance(envelope, Mapping) and envelope.get("duck")):
+        reasons.append(f"DUCK_UNRENDERED: Clip {clip_id!r} requires compiled narration projection")
+
     params = clip.get("params")
     if params is not None and not isinstance(params, Mapping):
         reasons.append(f"Clip {clip_id!r} params must be an object")
     elif isinstance(params, Mapping):
-        fades = [
-            name
-            for name in ("fadeIn", "fadeOut")
-            if name in params and _nonempty(params.get(name))
-        ]
-        if fades:
-            reasons.append(
-                f"Clip {clip_id!r} uses unsupported audio fades: {', '.join(fades)}"
-            )
-        other_params = sorted(set(params) - {"fadeIn", "fadeOut"})
+        audio_keys = {"fadeIn", "fadeOut", "fadeInCurve", "fadeOutCurve"}
+        if track.get("kind") == "audio":
+            try:
+                compile_legacy(clip, fps)  # curve/plan validation; actual fps belongs to command
+            except ValueError as exc:
+                reasons.append(str(exc))
+        elif any(params.get(name) for name in audio_keys):
+            reasons.append(f"ENVELOPE_UNRENDERED: Clip {clip_id!r} audio envelope needs an audio track")
+        other_params = sorted(set(params) - audio_keys)
         if other_params and clip.get("clipType") == "media":
             reasons.append(
                 f"Clip {clip_id!r} uses unsupported media params: {', '.join(other_params)}"
@@ -299,6 +317,7 @@ def _validate_clip_semantics(
 def _validate_text_semantics(
     clip: Mapping[str, Any],
     track: Mapping[str, Any],
+    fps: float = 30,
 ) -> list[str]:
     """Text-only semantics: content, window, no source, color/shadow parity."""
     reasons: list[str] = []
@@ -420,7 +439,11 @@ def structural_reasons(
             reasons.append(
                 f"Clip {clip_id!r} has unsupported clip kind {clip_type!r}"
             )
-        reasons.extend(_validate_clip_semantics(raw_clip, track))
+        try:
+            fps = _canvas(timeline_data)[2]
+        except ValueError:
+            fps = 30  # the canvas validator separately reports malformed clocks
+        reasons.extend(_validate_clip_semantics(raw_clip, track, fps))
 
     if reactive_count:
         if reactive_count != 1:
@@ -522,7 +545,11 @@ def structural_reasons(
         audio_cursor = 0.0
         for bounds in audio_ranges:
             clip_id = bounds.clip.get("id")
-            if bounds.at < audio_cursor - _TIMELINE_EPSILON_SECONDS:
+            if bounds.at < audio_cursor - _TIMELINE_EPSILON_SECONDS and not any(
+                "audio" in item.clip or any(
+                    (item.clip.get("params") or {}).get(name) for name in ("fadeIn", "fadeOut")
+                ) for item in audio_ranges
+            ):
                 reasons.append(
                     f"Overlapping audio at clip {clip_id!r}: starts at {bounds.at:.6f}, previous audio ends at {audio_cursor:.6f}"
                 )

@@ -336,7 +336,7 @@ def test_png_overlay_command_preserves_current_text_audio_input_order(tmp_path: 
         ("opacity", "non-default opacity"),
         ("discarded_visual_audio", "embedded audio"),
         ("overlapping_audio", "Overlapping audio"),
-        ("fade", "audio fades"),
+        ("fade", "ENVELOPE_UNRENDERED"),
         ("missing_source", "source is missing"),
         ("missing_video_stream", "no video stream"),
         ("missing_audio_stream", "no audio stream"),
@@ -411,7 +411,7 @@ def test_support_fails_closed_for_every_unsupported_semantic(
             }
         )
     elif case == "fade":
-        timeline_data["clips"][1]["params"] = {"fadeIn": 0.2}
+        timeline_data["clips"][1]["params"] = {"fadeIn": 0.2, "fadeInCurve": "unknown"}
     elif case == "missing_source":
         missing_files.add("video.mp4")
     elif case == "missing_video_stream":
@@ -608,6 +608,9 @@ def test_visual_only_protocol_result_declares_none(tmp_path: Path) -> None:
             "_render_provenance_payload",
             return_value={"registry_hash": "test-registry"},
         ),
+        # Provenance is already stubbed here; do not discover installed packs
+        # under the process-wide subprocess mock (which treats Git as FFmpeg).
+        mock.patch.object(ffmpeg.remotion_backend, "_effective_registry_state", return_value={}),
         mock.patch.object(ffmpeg, "validate_render_result"),
     ):
         result = ffmpeg._protocol_render(_request(tmp_path), workspace=tmp_path)
@@ -738,6 +741,9 @@ def test_audio_reactive_support_gain_and_protocol_provenance_fragments(
             "_render_provenance_payload",
             return_value={"registry_hash": "test-registry"},
         ),
+        # Provenance is already stubbed here; do not discover installed packs
+        # under the process-wide subprocess mock (which treats Git as FFmpeg).
+        mock.patch.object(ffmpeg.remotion_backend, "_effective_registry_state", return_value={}),
         mock.patch.object(ffmpeg, "validate_render_result"),
     ):
         result = ffmpeg._protocol_render(_request(tmp_path), workspace=tmp_path)
@@ -982,3 +988,23 @@ def test_support_fails_closed_for_text_semantics(
     assert report.supported is False
     assert any(reason in item for item in report.reasons)
     assert report.alternatives == ["rendering.remotion"]
+
+
+def test_audio_legacy_fades_compile_to_sample_filter_once(tmp_path):
+    timeline_data = _timeline()
+    timeline_data["clips"][1]["params"] = {"fadeIn": .2, "fadeOut": .3, "fadeInCurve": "equal-power"}
+    report = _evaluate(tmp_path, timeline_data, _assets(tmp_path))
+    assert report.supported
+    argv = command.build_render_command(_request(tmp_path), tmp_path)
+    filters = argv[argv.index("-filter_complex") + 1]
+    assert "aeval=exprs=" in filters and "sin(" in filters
+    assert "afade=" not in filters and "volume=" not in filters
+    assert "amix=inputs=1:normalize=0" in filters
+
+
+def test_authored_duck_without_runtime_projection_refuses(tmp_path):
+    timeline_data = _timeline()
+    timeline_data["clips"][1]["app"] = {"astrid": {"duck": {"under": "voice", "by": "-10dB", "attack": "6f", "release": "12f"}}}
+    report = _evaluate(tmp_path, timeline_data, _assets(tmp_path))
+    assert not report.supported
+    assert any("DUCK_UNRENDERED" in reason for reason in report.reasons)

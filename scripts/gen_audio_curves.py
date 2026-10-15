@@ -1,10 +1,11 @@
 """Generate the TypeScript mirror of the audio curve registry (astrid/core/timeline/audio_curves.json).
 
-The pinned v0.0.6 reference snapshot stays byte-identical to upstream; the renderer package
-consumes this mirror when it integrates fade curves."""
+Pass --composition-root to synchronize the admitted packaged renderer projection;
+--check verifies both targets without writing them."""
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -23,4 +24,16 @@ def render() -> str:
 
 
 if __name__ == "__main__":
-    TARGET.write_text(render(), encoding="utf-8")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--composition-root", type=Path)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    targets = [TARGET]
+    if args.composition_root:
+        targets.append(args.composition_root / "typescript/src/lib/audio-curves.generated.ts")
+    for target in targets:
+        if args.check:
+            if not target.exists() or target.read_text(encoding="utf-8") != render():
+                raise SystemExit(f"stale audio curves: {target}")
+        else:
+            target.write_text(render(), encoding="utf-8")
