@@ -16,6 +16,7 @@ from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.music_beds import collection
 from astrid.sdk.timeline.music_beds import project as materialize_beds
 from astrid.sdk.timeline.music_lane import project, project_snapshot
+from astrid.sdk.timeline_filmstrip import build_filmstrip_snapshot
 from astrid.sdk.timeline_sheet import render_sheet
 from tests.sdk.test_music_beds import tiny
 from tests.sdk.test_timeline_adopt import OWNER
@@ -154,3 +155,49 @@ def test_sheet_visualize_and_snapshot_share_the_same_uncapped_lane(monkeypatch, 
 
     with pytest.raises(TimelineCompatibilityError, match="lacks adopted-music-bed"):
         project(tl, capabilities=())
+
+
+def test_filmstrip_builder_projects_the_same_adopted_audio_lane():
+    tl, _owners = _adopted_lane_fixture()
+    timeline_snapshot = _render_snapshot(tl)
+    original_snapshot = copy.deepcopy(timeline_snapshot)
+    expected = project(tl)
+    envelope = {
+        "authority_context": {
+            "timeline_id": timeline_snapshot["timeline_id"],
+            "timeline_slug": "fixture",
+            "expansion": {"occurrences": [], "shots": []},
+        },
+        "inputs": {
+            "profile": {"fps_rational": [30, 1]},
+            "timeline_snapshot": timeline_snapshot,
+        },
+    }
+
+    result = build_filmstrip_snapshot(
+        envelope,
+        client=None,
+        project=timeline_snapshot["project_id"],
+        run_id="fixture-run",
+        video_digest="sha256:" + "d" * 64,
+    )
+
+    lane = result["audio_lane"]
+    assert lane == expected
+    assert [[span["id"] for span in row["spans"]] for row in lane["arrangements"]] == [
+        [span["id"] for span in row["spans"]] for row in expected["arrangements"]
+    ]
+    assert lane["switches"][0]["on"] == {
+        "time_ref": '"SwitchWord" in s1 #1', "center_s": 6.4, "center_frame": 192,
+    }
+    assert lane["switches"][0]["window"] == {
+        "start_s": 5.4, "end_s": 7.4, "start_frame": 162, "end_frame": 222,
+    }
+    assert lane["arrangements"][0]["spans"][0]["source"] == {
+        "start_s": 0.0, "end_s": 2.125,
+    }
+    assert lane["arrangements"][0]["gain"]["linear"] == pytest.approx(1.0)
+    assert lane["seams"] == [{
+        "at_s": 2.0, "frame": 60, "action": "repeat", "delta_s": 1.0, "duration_s": 1.0,
+    }]
+    assert timeline_snapshot == original_snapshot
