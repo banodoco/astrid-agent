@@ -44,7 +44,7 @@ PRE_SPLIT_CHECKOUT_MEMBERS = ['open', 'load', 'HISTORY', 'SAY_SAVED', 'save', '_
  '_pin_nearest', '_place_on', '_own_cut_span', 'orphans', '_cut_clips', 'cut_picture', '_cut_id', '_no_cut',
  '_cut_spans', '_cut_groups', '_is_picture', '_move_within_shot', '_place', '_fit_sequences', 'resolve',
  '_evaluate', 'slots', 'slot_clips', 'fill_slot', 'fill_standins', 'lint', '_type_mismatches', 'check',
- 'publish', '_publish_narration', 'narration', 'narration_changes', 'pin_narration', 'document', '_shot_ids',
+ 'publish', 'narration', 'narration_changes', 'pin_narration', 'document', '_shot_ids',
  '_row', '_shot_start', '_shot_length', '_shot_id', '_internal', '_track_kind', '_is_audio', '_shot_at',
  '_cut_at', '_as_word', '_pick', '_new_id', '_registry', '_follow_media', '_attach_beats', '_stale_beats',
  '_register_asset', '_corner', '_shift_after', '_shot_sequences', '_relay_steps', '_sequences_across',
@@ -114,6 +114,8 @@ def test_all_is_unchanged():
 
 
 def test_checkout_keeps_its_members_and_mixins():
+    # The retired second narration writer is deliberately absent from COMMIT.
+    assert not hasattr(Checkout, "_publish_narration")
     missing = [n for n in PRE_SPLIT_CHECKOUT_MEMBERS if not hasattr(Checkout, n)]
     assert missing == []
     mro_names = [c.__name__ for c in Checkout.__mro__]

@@ -210,37 +210,26 @@ def test_publish_forwards_key_and_force_to_sdk_once(tmp_path, monkeypatch, capsy
     assert calls == [("edit", {"idempotency_key": "edit-42", "client": parsed.client, "force": True})]
 
 
-def test_publish_partial_narration_error_preserves_receipt_and_does_not_retry(tmp_path, monkeypatch, capsys) -> None:
+def test_publish_unavailable_preserves_runtime_result_and_does_not_retry(tmp_path, monkeypatch, capsys) -> None:
     parser = timeline_cli.build_parser(object())
     path = tmp_path / "draft.json"
     path.write_text("draft", encoding="utf-8")
     monkeypatch.setattr("astrid.sdk.timeline_checkout.find_draft", lambda *_args, **_kwargs: path)
-    receipt = {
-        "old_head": "head-1",
-        "new_head": "head-2",
-        "narration_pinned": [],
-        "narration_error": "binding CAS conflict",
-    }
+    receipt = {"status": "error", "request_id": "saved-request", "error": {
+        "code": "runtime_unavailable", "message": "retry this saved request"}}
     calls = []
 
     class FakeCheckout:
-        @staticmethod
-        def load(_path):
-            return FakeCheckout()
-
         def publish(self, _message, **_kwargs):
-            calls.append(True)
+            calls.append(_kwargs)
             return dict(receipt)
 
     monkeypatch.setattr(Checkout, "load", classmethod(lambda _cls, _path: FakeCheckout()))
-    parsed = parser.parse_args(["publish", "main", "--project", "p1", "--idempotency-key", "edit-43", "-m", "edit"])
-
+    parsed = parser.parse_args(["publish", "main", "--project", "p1", "-m", "edit"])
     assert parsed.handler(parsed) == 1
     payload = _json_result(capsys)
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "partial_publication"
+    assert payload["ok"] is False and payload["error"]["code"] == "runtime_unavailable"
     assert payload["error"]["details"]["receipt"] == receipt
-    assert payload["idempotency_key"] == "edit-43"
-    assert calls == [True]
-
+    assert calls == [{"idempotency_key": None, "client": parsed.client, "force": False}]
+    assert payload["idempotency_key"] == "saved-request"
 

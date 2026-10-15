@@ -19,3 +19,7 @@
   card: TL-LIFECYCLE
   reason: "Draft expiry is deliberate lifecycle cleanup; list unpublished edits in status before expiry."
   alias: "draft lifecycle expiry"
+- feature: "sdk:Checkout.publish"
+  card: COMMIT
+  reason: "Publish retains its existing arguments and adds optional dry_run=False for the single COMMIT preview route; saved requests use authenticated durable envelopes."
+  alias: "sdk:Checkout.publish"

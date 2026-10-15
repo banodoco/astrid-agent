@@ -2086,6 +2086,16 @@
         {
           "action": "_StoreTrueAction",
           "default": false,
+          "dest": "dry_run",
+          "nargs": 0,
+          "options": [
+            "--dry-run"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
           "dest": "force",
           "nargs": 0,
           "options": [
@@ -4595,7 +4605,7 @@
         },
         "publish": {
           "kind": "callable",
-          "signature": "(self, message: 'str' = '', *, idempotency_key: 'str | None' = None, client: 'Any' = None, force: 'bool' = False) -> 'dict[str, Any]'"
+          "signature": "(self, message: 'str' = '', *, idempotency_key: 'str | None' = None, client: 'Any' = None, force: 'bool' = False, dry_run: 'bool' = False) -> 'dict[str, Any]'"
         },
         "quantize": {
           "kind": "callable",

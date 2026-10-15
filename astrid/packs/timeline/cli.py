@@ -62,7 +62,6 @@ import json
 import re
 import shlex
 import sys
-import uuid
 from functools import wraps
 from collections.abc import Mapping
 from fractions import Fraction
@@ -2867,27 +2866,29 @@ def _cmd_publish(parsed: argparse.Namespace) -> int:
             as_json=parsed.json,
         )
     checkout = Checkout.load(path)
-    key = parsed.idempotency_key or f"timeline-publish-{uuid.uuid4().hex}"
-    receipt = checkout.publish(
-        parsed.message,
-        idempotency_key=key,
-        client=parsed.client,
-        force=parsed.force,
-    )
-    if receipt.get("narration_error"):
-        from astrid.sdk.contracts import ErrorObject
-
-        return print_result(
-            DomainResult.failure(
-                ErrorObject(
-                    "partial_publication",
-                    "timeline structure was published, but narration binding is pending",
-                    {"receipt": receipt},
-                ),
-                idempotency_key=key,
-            ),
-            as_json=parsed.json,
+    key = parsed.idempotency_key
+    from astrid.sdk.workspace_client import WorkspaceClientError
+    try:
+        receipt = checkout.publish(
+            parsed.message,
+            idempotency_key=key,
+            client=parsed.client,
+            force=parsed.force,
+            **({"dry_run": True} if getattr(parsed, "dry_run", False) else {}),
         )
+    except WorkspaceClientError as exc:
+        from astrid.sdk.contracts import ErrorObject
+        return print_result(DomainResult.failure(ErrorObject(
+            exc.code, str(exc), {"details": exc.details, "retry": "repeat publish to resolve the saved request"}),
+            idempotency_key=key or ""), as_json=parsed.json)
+    key = receipt.get("request_id", key) or ""
+    if receipt.get("status") in {"error", "refused", "conflict"}:
+        from astrid.sdk.contracts import ErrorObject
+        error = receipt.get("error") or {}
+        return print_result(DomainResult.failure(ErrorObject(
+            error.get("code", receipt["status"]),
+            error.get("message", "timeline commit requires correction"),
+            {"receipt": receipt}), idempotency_key=key), as_json=parsed.json)
     return print_result(
         DomainResult.success(receipt, idempotency_key=key), as_json=parsed.json
     )
@@ -3478,7 +3479,8 @@ def _configure_publish(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
     subparser.add_argument("-m", "--message", dest="message", required=True, help="What changed (the revision message).")
     _add_idempotency_key(subparser)
-    subparser.add_argument("--force", action="store_true", help="Resolve overlapping edits in favor of this draft.")
+    subparser.add_argument("--force", action="store_true", help="Retained spelling; guarded COMMIT refuses forced expectation overrides.")
+    subparser.add_argument("--dry-run", action="store_true", help="Preview through COMMIT without reserving a publish intent.")
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_publish))
 

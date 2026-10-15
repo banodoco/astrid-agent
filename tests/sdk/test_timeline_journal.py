@@ -157,33 +157,18 @@ def test_an_exception_is_an_edit_record_rolled_back_with_its_message(draft):
     assert _text(draft) == text
 
 
-def test_publish_records_the_message_as_reason_and_the_new_head_as_evidence(draft, monkeypatch):
-    with draft.edit("move"):
-        draft.clip("c1.rocket").set(x=90)
-    published: dict = {}
+def test_publish_forwards_to_one_saved_commit_producer(draft, monkeypatch):
+    from astrid.sdk.timeline import saved_publish
 
-    def fake_publish(document, key, client=None, force=False):
-        published["doc"] = copy.deepcopy(document)
-        return {"old_head": "rev-0", "new_head": "rev-1", "structure": "changed"}
-
-    def fake_fetch(project, timeline, revision_id=None, client=None):
-        head = copy.deepcopy(published["doc"])
-        for key in ("source_mapping", "base_placements", "base_parent_payload"):
-            head.pop(key, None)
-        for shot in head["shots"].values():
-            shot["base_internal_timeline"] = copy.deepcopy(shot.get("internal_timeline"))
-            shot["base_payload"] = copy.deepcopy(shot.get("payload"))
-        head["base_parent"] = {"revision_id": "rev-1"}
-        return head
-
-    monkeypatch.setattr(_store, "publish_bundle", fake_publish)
-    monkeypatch.setattr(_store, "fetch_bundle", fake_fetch)
-    monkeypatch.setattr(draft, "_publish_narration", lambda key, client=None: {})
-    draft.publish("move the rocket")
-    rec = _records()[-1]
-    assert (rec.kind, rec.outcome, rec.label) == ("publish", "changed", "publish")
-    assert rec.reason == "move the rocket"
-    assert rec.evidence == ({"kind": "revision", "id": "rev-1"},)
+    calls = []
+    expected = {"status": "accepted", "request_id": "fixture"}
+    def producer(checkout, message, **options):
+        calls.append((checkout, message, options))
+        return expected
+    monkeypatch.setattr(saved_publish, "publish_saved", producer)
+    client = object()
+    assert draft.publish("move the rocket", client=client, idempotency_key="fixture") is expected
+    assert calls == [(draft, "move the rocket", dict(client=client, idempotency_key="fixture", force=False, dry_run=False))]
 
 
 def test_the_actor_comes_from_astrid_actor_and_astrid_session(draft, monkeypatch):

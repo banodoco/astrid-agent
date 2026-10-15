@@ -211,53 +211,54 @@ def test_the_undo_label_joins_the_labels_of_the_edits_in_the_save(draft):
     assert "set" in label and "; " in label and len(label) <= 160
 
 
-def test_publish_resets_the_base_so_nothing_is_left_to_publish(draft, monkeypatch):
-    """AUDIT bug 6: after publish the working copy is the new head, with no changes and the new base."""
+def _commit_fixture(tmp_path, monkeypatch):
+    from tests.sdk.test_timeline_saved_publish import RuntimeFixture
+    from astrid.sdk.timeline.saved_publish import _exact
+
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    runtime = RuntimeFixture()
+    base = _exact(runtime.client(), dict(project_id="p", timeline_id="t", base_revision_id="rev-0"), "rev-0")
+    monkeypatch.setattr(_store, "resolve_ids", lambda *a, **kw: ("p", "t", "rev-0"))
+    monkeypatch.setattr(_store, "fetch_bundle", lambda *a, **kw: copy.deepcopy(base))
+    return Checkout.draft("p", "t"), runtime
+
+
+def test_publish_resets_the_base_so_nothing_is_left_to_publish(tmp_path, monkeypatch):
+    """AUDIT bug 6: the exact accepted revision becomes the clean base."""
+    draft, runtime = _commit_fixture(tmp_path, monkeypatch)
     with draft.edit("move"):
         draft.clip("c1.rocket").set(x=90)
     assert draft.changes() != []
-    published: dict = {}
-
-    def fake_publish(document, key, client=None, force=False):
-        published["doc"] = copy.deepcopy(document)
-        return {"old_head": "rev-0", "new_head": "rev-1", "structure": "changed"}
-
-    def fake_fetch(project, timeline, revision_id=None, client=None):
-        head = copy.deepcopy(published["doc"])  # the head is what was published: its base is its own content
-        for key in ("source_mapping", "base_placements", "base_parent_payload"):
-            head.pop(key, None)
-        for shot in head["shots"].values():
-            shot["base_internal_timeline"] = copy.deepcopy(shot.get("internal_timeline"))
-            shot["base_payload"] = copy.deepcopy(shot.get("payload"))
-        head["base_parent"] = {"revision_id": "rev-1"}
-        return head
-
-    monkeypatch.setattr(_store, "publish_bundle", fake_publish)
-    monkeypatch.setattr(_store, "fetch_bundle", fake_fetch)
-    monkeypatch.setattr(draft, "_publish_narration", lambda key, client=None: {})
-    receipt = draft.publish("move the rocket")
-    assert receipt["new_head"] == "rev-1"
+    receipt = draft.publish("move the rocket", client=runtime.client())
+    assert receipt["accepted_revision_id"] == "accepted-1"
     assert draft.changes() == []
-    assert draft.base_revision == "rev-1"
+    assert draft.base_revision == "accepted-1"
     assert draft._journal == []
     assert _x(draft) == 90
 
 
-def test_a_failed_head_reread_after_publish_keeps_the_old_base_and_says_so(draft, monkeypatch):
+def test_a_failed_head_reread_after_publish_keeps_the_old_base_and_says_so(tmp_path, monkeypatch):
+    """The former head-reread path now verifies only the exact receipt revision.
+
+    An unavailable required read keeps the envelope pending; retry obtains the
+    stored acceptance and finalizes without publishing twice or reading head.
+    """
+    from astrid.sdk.workspace_client import WorkspaceClientError
+    draft, runtime = _commit_fixture(tmp_path, monkeypatch)
     with draft.edit("move"):
         draft.clip("c1.rocket").set(x=90)
-    before_doc = draft.document()
-
-    def fake_publish(document, key, client=None, force=False):
-        return {"old_head": "rev-0", "new_head": "rev-1", "structure": "changed"}
-
-    def broken_fetch(project, timeline, revision_id=None, client=None):
-        raise RuntimeError("runtime unreachable")
-
-    monkeypatch.setattr(_store, "publish_bundle", fake_publish)
-    monkeypatch.setattr(_store, "fetch_bundle", broken_fetch)
-    monkeypatch.setattr(draft, "_publish_narration", lambda key, client=None: {})
-    receipt = draft.publish("move the rocket")  # the publish itself does not fail
-    assert receipt["new_head"] == "rev-1"
-    assert draft.document() == before_doc
-    assert any("could not re-read the new head" in note for note in draft.notes)
+    before_doc, before_bytes = draft.document(), Path(draft.path).read_bytes()
+    client = runtime.client()
+    exact = client.get_project_parent_composition_revision
+    def unavailable(project, timeline, revision):
+        if revision == "accepted-1":
+            raise WorkspaceClientError(503, "runtime_unavailable", "exact accepted revision unavailable")
+        return exact(project, timeline, revision)
+    monkeypatch.setattr(client, "get_project_parent_composition_revision", unavailable)
+    with pytest.raises(WorkspaceClientError, match="exact accepted revision unavailable"):
+        draft.publish("move the rocket", client=client)
+    assert draft.document() == before_doc and Path(draft.path).read_bytes() == before_bytes
+    runtime.current = "later-head-must-not-be-read"
+    result = draft.publish(client=runtime.client())
+    assert result["accepted_revision_id"] == draft.base_revision == "accepted-1"
+    assert len(runtime.publications) == 1

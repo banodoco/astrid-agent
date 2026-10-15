@@ -79,82 +79,108 @@ def _read_saved_calls(checkout):
     # journal snapshot so a concurrent normal writer cannot change the proof.
     path = journal.journal_path(project, timeline)
     with store._file_lock(target), journal._locked(path):
-        if not path.is_file() or not path.stat().st_size:
-            _refuse("Saved intent journal is missing or empty")
-        problems = journal.verify(path)
-        if problems:
-            _refuse("Saved intent journal is damaged: " + "; ".join(problems))
-        # Do not use journal.read's intentionally forgiving log parser.
-        rows = [_finite_json(line) for line in path.read_text(encoding="utf-8").splitlines()]
-        text = target.read_bytes().decode("utf-8")
-        _finite_json(text)
-        identities = set()
-        selected = []
-        for row in rows:
-            identity = row.get("id")
-            if (row.get("v") != journal.VERSION or not isinstance(identity, str) or not identity
-                    or identity in identities):
-                _refuse("Saved intent journal has ambiguous record identity or version")
-            identities.add(identity)
-            if row.get("project") != project or row.get("timeline") != timeline:
-                _refuse("Saved intent journal has a wrong project/timeline scope")
-            if not isinstance(row.get("draft"), str) or not row["draft"]:
-                _refuse("Saved intent journal has ambiguous draft scope")
-            if row["draft"] == target.stem:
-                selected.append(row)
-        if not selected or selected[0].get("kind") != "checkout":
-            _refuse("Saved intent has no initial checkout anchor")
-        anchor = selected[0]
-        if sum(row.get("kind") == "checkout" for row in selected) != 1:
-            _refuse("Saved intent has ambiguous checkout lifetimes")
-        bases = [item for item in anchor.get("evidence", [])
-                 if isinstance(item, Mapping) and item.get("kind") == "saved-base-v1"]
-        if len(bases) != 1 or not isinstance(bases[0].get("document"), dict):
-            _refuse("Saved intent checkout lacks exact saved base provenance")
-        base = copy.deepcopy(bases[0]["document"])
-        if (base.get("project_id") != project or base.get("timeline_id") != timeline
-                or not isinstance(base.get("base_parent"), dict)
-                or not base["base_parent"].get("revision_id")
-                or not isinstance(base.get("base_parent_payload"), dict)):
-            _refuse("Saved intent cannot anchor the exact saved base identity/payload")
-        if (anchor.get("outcome") != "changed" or anchor.get("before") is not None
-                or anchor.get("calls") != [] or not anchor.get("after")
-                or journal.document_digest(base) != anchor["after"]):
-            _refuse("Saved intent checkout digest does not anchor its base")
-        replay = Checkout(base)
-        if journal.digest(_serialize(replay._annotated())) != anchor["after"]:
-            _refuse("Saved intent base cannot round-trip as the recorded checkout")
-        after = anchor["after"]
-        calls = []
-        from astrid.sdk.timeline.commit import RuntimeCommitService
+        return _read_saved_calls_locked(checkout, target, path)
 
-        for row in selected[1:]:
-            # These are audit-only transactions; none persisted a document.
-            if row.get("kind") == "edit" and row.get("outcome") in {
-                    "no-change", "dry-run", "rolled-back", "refused"}:
-                continue
-            if row.get("kind") != "save" or row.get("outcome") != "changed":
-                _refuse(f"Saved intent cannot replay {row.get('kind')!r} history")
-            if not row.get("before") or not row.get("after") or row["before"] != after:
-                _refuse("Saved intent has missing or discontinuous document digests")
-            saved = row.get("calls")
-            if not isinstance(saved, list) or (row["before"] != row["after"] and not saved):
-                _refuse("Saved intent material save has no commands")
-            for call in saved:
-                parsed = EditCommand.coerce(call)
-                if any(getattr(parsed, key) is None for key in ("expect", "bindings", "created", "authorship")):
-                    _refuse("Saved intent requires original runner-recorded command guards")
-            # Reuse the existing I/O-free replay policy and transaction runner.
-            # Its strict media/adapter refusals remain implementation boundaries.
-            document, _plan, _direct = RuntimeCommitService._apply(replay.document(), saved)
-            replay = Checkout(document)
-            replay._sync_film_length()  # the existing final save normalization
-            if journal.digest(_serialize(replay._annotated())) != row["after"]:
-                _refuse("Saved intent commands do not reproduce the recorded save digest")
-            after = row["after"]
-            calls.extend(copy.deepcopy(saved))
-        if journal.digest(text) != after or _serialize(replay._annotated()) != text:
-            _refuse("Saved intent current draft bytes do not match the recorded command result")
-        if checkout._disk != text or _serialize(checkout._annotated()) != text:
-            _refuse("Saved intent handle is stale, unsaved, or contains manual helper edits")
-        return tuple(calls)
+
+def _read_saved_calls_locked(checkout, target, path):
+    """Internal entry point for the producer already holding draft then journal."""
+    project, timeline = checkout.bundle.get("project_id"), checkout.bundle.get("timeline_id")
+    if not path.is_file() or not path.stat().st_size:
+        _refuse("Saved intent journal is missing or empty")
+    problems = journal.verify(path)
+    if problems:
+        _refuse("Saved intent journal is damaged: " + "; ".join(problems))
+    # Do not use journal.read's intentionally forgiving log parser.
+    rows = [_finite_json(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    text = target.read_bytes().decode("utf-8")
+    _finite_json(text)
+    identities = set()
+    selected = []
+    for row in rows:
+        identity = row.get("id")
+        if (row.get("v") != journal.VERSION or not isinstance(identity, str) or not identity
+                or identity in identities):
+            _refuse("Saved intent journal has ambiguous record identity or version")
+        identities.add(identity)
+        if row.get("project") != project or row.get("timeline") != timeline:
+            _refuse("Saved intent journal has a wrong project/timeline scope")
+        if not isinstance(row.get("draft"), str) or not row["draft"]:
+            _refuse("Saved intent journal has ambiguous draft scope")
+        if row["draft"] == target.stem:
+            selected.append(row)
+    if not selected or selected[0].get("kind") != "checkout":
+        _refuse("Saved intent has no initial checkout anchor")
+    checkpoints = [i for i, row in enumerate(selected) if any(
+        isinstance(item, Mapping) and item.get("kind") == "publish-checkpoint-v1"
+        for item in row.get("evidence", []))]
+    if checkpoints:
+        from astrid.sdk.timeline.saved_publish import _state
+        _state(selected)  # checkpoints require a linked durable intent/result
+    anchor_index = checkpoints[-1] if checkpoints else 0
+    anchor = selected[anchor_index]
+    if sum(row.get("kind") == "checkout" for row in selected) != 1:
+        _refuse("Saved intent has ambiguous checkout lifetimes")
+    bases = [item for item in anchor.get("evidence", [])
+             if isinstance(item, Mapping) and item.get("kind") == "saved-base-v1"]
+    if len(bases) != 1 or not isinstance(bases[0].get("document"), dict):
+        _refuse("Saved intent checkout lacks exact saved base provenance")
+    base = copy.deepcopy(bases[0]["document"])
+    if (base.get("project_id") != project or base.get("timeline_id") != timeline
+            or not isinstance(base.get("base_parent"), dict)
+            or not base["base_parent"].get("revision_id")
+            or not isinstance(base.get("base_parent_payload"), dict)):
+        _refuse("Saved intent cannot anchor the exact saved base identity/payload")
+    if (anchor.get("outcome") != "changed" or (anchor_index == 0 and anchor.get("before") is not None)
+            or anchor.get("calls") != [] or not anchor.get("after")
+            or journal.document_digest(base) != anchor["after"]):
+        _refuse("Saved intent checkout digest does not anchor its base")
+    replay = Checkout(base)
+    if journal.digest(_serialize(replay._annotated())) != anchor["after"]:
+        _refuse("Saved intent base cannot round-trip as the recorded checkout")
+    after = anchor["after"]
+    calls = []
+    from astrid.sdk.timeline.commit import RuntimeCommitService
+
+    for row in selected[anchor_index + 1:]:
+        if row.get("kind") == "publish" and row.get("calls") == [] and row.get("evidence") and all(
+                isinstance(item, Mapping) and item.get("kind") in {
+                    "publish-intent-v1", "publish-result-v1"}
+                for item in row["evidence"]):
+            continue
+        # Some surfaces retain both an edit audit and its durable save.
+        # Only an exact duplicate of a proved save may be ignored; it cannot
+        # substitute for a missing save or add a second command application.
+        if row.get("kind") == "edit" and row.get("outcome") == "changed" and any(
+                saved.get("kind") == "save" and saved.get("outcome") == "changed" and
+                all(saved.get(key) == row.get(key) for key in ("before", "after", "calls"))
+                for saved in selected[anchor_index + 1:]):
+            continue
+        # These are audit-only transactions; none persisted a document.
+        if row.get("kind") == "edit" and row.get("outcome") in {
+                "no-change", "dry-run", "rolled-back", "refused"}:
+            continue
+        if row.get("kind") != "save" or row.get("outcome") != "changed":
+            _refuse(f"Saved intent cannot replay {row.get('kind')!r} history")
+        if not row.get("before") or not row.get("after") or row["before"] != after:
+            _refuse("Saved intent has missing or discontinuous document digests")
+        saved = row.get("calls")
+        if not isinstance(saved, list) or (row["before"] != row["after"] and not saved):
+            _refuse("Saved intent material save has no commands")
+        for call in saved:
+            parsed = EditCommand.coerce(call)
+            if any(getattr(parsed, key) is None for key in ("expect", "bindings", "created", "authorship")):
+                _refuse("Saved intent requires original runner-recorded command guards")
+        # Reuse the existing I/O-free replay policy and transaction runner.
+        # Its strict media/adapter refusals remain implementation boundaries.
+        document, _plan, _direct = RuntimeCommitService._apply(replay.document(), saved)
+        replay = Checkout(document)
+        replay._sync_film_length()  # the existing final save normalization
+        if journal.digest(_serialize(replay._annotated())) != row["after"]:
+            _refuse("Saved intent commands do not reproduce the recorded save digest")
+        after = row["after"]
+        calls.extend(copy.deepcopy(saved))
+    if journal.digest(text) != after or _serialize(replay._annotated()) != text:
+        _refuse("Saved intent current draft bytes do not match the recorded command result")
+    if checkout._disk != text or _serialize(checkout._annotated()) != text:
+        _refuse("Saved intent handle is stale, unsaved, or contains manual helper edits")
+    return tuple(calls)
