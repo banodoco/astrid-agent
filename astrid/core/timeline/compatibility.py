@@ -14,7 +14,7 @@ from typing import Any
 SUPPORTED_VERSIONS = frozenset({0, 1, 2})
 # Explicit capabilities are independent of the integer storage format.
 ADOPTED_BED_CAPABILITY = "adopted-music-bed"
-WRITER_CAPABILITIES = frozenset()  # D enables this after authored-owner integration.
+WRITER_CAPABILITIES = frozenset({ADOPTED_BED_CAPABILITY})
 
 
 class TimelineCompatibilityError(ValueError):

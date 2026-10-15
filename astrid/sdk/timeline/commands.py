@@ -371,6 +371,25 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
                     basis = "music_bed.ripple_basis"
                     expectations.setdefault(write_key(sid, basis, call.resolved),
                                             state_at(before_entities, sid, basis))
+            from astrid.sdk.timeline.music_beds import adopted
+            bed = adopted(tl)
+            if bed is not None and (entry.kind == "timeline" or
+                    any(sid in {a["owner"] for a in bed["arrangements"]} for sid in selected)):
+                basis = "music_bed.ripple_basis"
+                expectations.setdefault(write_key(bed["owner"], basis, call.resolved),
+                                        state_at(before_entities, bed["owner"], basis))
+            if entry.op == "timeline.adopt" and canonical.get("sources"):
+                for sid in canonical["sources"]:
+                    expectations.setdefault(write_key(sid, "music_bed", call.resolved),
+                                            state_at(before_entities, sid, "music_bed"))
+                    expectations.setdefault(write_key(sid, "", call.resolved),
+                                            state_at(before_entities, sid, ""))
+            if entry.op == "timeline.inverse":
+                for write in canonical["writes"]:
+                    if write["path"] == "music_bed":
+                        sid = write["id"]
+                        expectations.setdefault(write_key(sid, "music_bed", call.resolved),
+                                                state_at(before_entities, sid, "music_bed"))
             # A supplied record is checked, never used to claim unobserved authorship.
             if command.authorship is not None:
                 expected_direct = {key for key, kind in command.authorship.items() if kind == "direct"}
@@ -475,11 +494,8 @@ def recorded_owner(tl, call, kind):
 
 
 def music_carriers(tl):
-    config = tl.bundle.get("parent", {}).get("config", {})
-    beds = config.get("app", {}).get("astrid", {}).get("music_beds", {})
-    if not isinstance(beds, dict):
-        raise CommandError("music_beds must be an object")
-    return beds
+    from astrid.sdk.timeline.music_beds import sources
+    return sources(tl)
 
 
 def authored_owner(tl, sid, *, selected=False):
@@ -529,8 +545,13 @@ def authored_owner(tl, sid, *, selected=False):
 
 def entity_states(tl):
     """Detached authored state keyed by actual occurrence identities, never aliases."""
-    from astrid.sdk.timeline.music_beds import validate_occurrence_ownership
+    from astrid.sdk.timeline.music_beds import adopted, validate_occurrence_ownership
+    from astrid.sdk.timeline.bed_adoption import validate_adopted
     validate_occurrence_ownership(tl)
+    validate_adopted(tl)
+    bed = adopted(tl)
+    arrangements = {a["owner"]: a for a in bed["arrangements"]} if bed else {}
+    adopted_projection = {}
     result = {"parent": copy.deepcopy(tl.bundle.get("parent", {}))}
     for row in tl.bundle.get("placements", []):
         sid = str(row.get("shot_id"))
@@ -551,8 +572,9 @@ def entity_states(tl):
                     raise CommandError(f"Duplicate scoped identity {key}")
                 result[key] = copy.deepcopy(item)
     claimed = set()
-    for owner, entry in music_carriers(tl).items():
-        if (not isinstance(entry, dict) or set(entry) != {"owner", "source", "ripple_basis", "outputs"}
+    carriers = music_carriers(tl)
+    for owner, entry in carriers.items():
+        if (not isinstance(entry, Mapping) or set(entry) != {"owner", "source", "ripple_basis", "outputs"}
                 or entry["owner"] != owner or not isinstance(entry["source"], dict)
                 or not isinstance(entry["source"].get("id"), str) or not entry["source"]["id"]
                 or not isinstance(entry["outputs"], list) or not isinstance(entry["ripple_basis"], list)):
@@ -568,7 +590,7 @@ def entity_states(tl):
             if not isinstance(local, str):
                 raise CommandError(f"{owner}: invalid generated output ID")
             key = prefix + local
-            if key in claimed or (key != owner and key in music_carriers(tl)):
+            if key in claimed or (key != owner and key in carriers):
                 raise CommandError(f"{owner}: generated output ownership collision")
             claimed.add(key)
             if owner.startswith("parent/"):
@@ -580,12 +602,28 @@ def entity_states(tl):
             elif key in result:
                 projection[local] = result.pop(key)
         result[owner] = copy.deepcopy(source.data)
-        result[owner]["music_bed"] = dict(ripple_basis=copy.deepcopy(entry["ripple_basis"]),
-                                           outputs=copy.deepcopy(entry["outputs"]), projection=projection)
+        if owner in arrangements:
+            adopted_projection[arrangements[owner]["id"]] = projection
+        else:
+            result[owner]["music_bed"] = dict(ripple_basis=copy.deepcopy(entry["ripple_basis"]),
+                                               outputs=copy.deepcopy(entry["outputs"]), projection=projection)
+    if bed is not None:
+        # The reference source survives reordering and empty output lists. This
+        # is a detached semantic view, never a second persisted bed authority.
+        result[bed["owner"]]["music_bed"] = dict(
+            owner=bed["owner"],
+            arrangements=[dict(id=a["id"], owner=a["owner"]) for a in bed["arrangements"]],
+            switches=copy.deepcopy(bed["switches"]),
+            ripple_basis=copy.deepcopy(bed["ripple_basis"]),
+            outputs=copy.deepcopy(bed["outputs"]),
+            projections={a["id"]: {k: copy.deepcopy(a[k]) for k in
+                         ("asset", "source_offset_s", "rate", "gain")} for a in bed["arrangements"]},
+            projection=adopted_projection)
     # Carrier storage is represented once under its authored owner. The parent
     # snapshot must not claim a second authored entity for the same source.
     app = result["parent"].get("config", {}).get("app", {}).get("astrid", {})
     app.pop("music_beds", None)
+    app.pop("bed", None)
     if "clips" in result["parent"]:
         result["parent"]["clips"] = [c for c in result["parent"]["clips"]
                                      if f"parent/clip:{c.get('id')}" not in claimed]
@@ -622,6 +660,9 @@ def changed_paths(before, after):
                     from astrid.sdk.timeline.modifiers import paths
                     for prop, old, new in paths(left.get(key, []), right.get(key, [])):
                         yield from walk(old, new, prop)
+                elif key == "music_bed" and ("arrangements" in (left.get(key) or {}) or
+                                              "arrangements" in (right.get(key) or {})):
+                    yield from walk(left.get(key, {}), right.get(key, {}), child)
                 elif key not in left or key not in right:
                     yield child
                 elif not path and key == "modifiers" and isinstance(left[key], list) and isinstance(right[key], list):
@@ -688,7 +729,17 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     from astrid.sdk.timeline_address import element_schema
     changes = set(changed_paths(before, after))
     if entry.op == "timeline.inverse":
-        return {(write["id"], write["path"]) for write in args["writes"]}
+        direct = set()
+        for write in args["writes"]:
+            sid, path = write["id"], write["path"]
+            if path == "music_bed" and any("arrangements" in states.get(sid, {}).get("music_bed", {})
+                                            for states in (before, after)):
+                direct.update((sid, "music_bed." + key) for key in
+                              ("owner", "arrangements", "switches", "ripple_basis")
+                              if state_at(before, sid, "music_bed." + key) != state_at(after, sid, "music_bed." + key))
+            else:
+                direct.add((sid, path))
+        return direct
     if entry.op in {"timeline.resolve", "timeline.reflow", "timeline.retime"}:
         return set()  # compiler execution is not a claim of direct authorship
     if entry.kind == "clip" and entry.op in {"clip.set", "clip.set-param", "clip.set-look", "clip.clear"}:
@@ -723,6 +774,9 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
         targets.update(scoped_clip(tl, clip) for clip in owner.clips)
     for sid, path in changes:
         if path == "music_bed" or path.startswith("music_bed."):
+            if entry.op == "timeline.adopt" and args.get("sources") and path in {
+                    "music_bed", "music_bed.owner", "music_bed.arrangements", "music_bed.switches"}:
+                direct.add((sid, path))
             continue
         if entry.kind == "timeline" or sid in targets:
             # Authored timing inputs are direct; derived clocks remain consequences.
@@ -814,6 +868,13 @@ def capture_argument_bindings(tl, call, owner, bindings):
 
 def capture_changed_bindings(tl, before, after, bindings):
     from astrid.sdk import timeline_intent as intent
+    from astrid.sdk.timeline.music_beds import adopted
+    bed = adopted(tl)
+    if bed is not None and before.get(bed["owner"], {}).get("music_bed", {}).get("switches") != bed["switches"]:
+        from astrid.sdk.timeline._common import TIME_RE
+        for switch in bed["switches"]:
+            if not TIME_RE.fullmatch(switch["on"].strip()):
+                capture_binding(tl, switch["on"], authored_owner(tl, bed["owner"]), bindings)
     for clip in tl.clips():
         sid = scoped_clip(tl, clip)
         if before.get(sid) == after.get(sid):

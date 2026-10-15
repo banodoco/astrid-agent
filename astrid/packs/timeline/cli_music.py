@@ -25,7 +25,7 @@ def apply_music_policy(tl: Any, parsed: argparse.Namespace) -> None:
 
 
 def configure_adopt(parser):
-    """Current source supports detached preflight; D supplies the command join."""
+    """Transfer authored sources through the existing timeline.adopt command."""
     parser.add_argument('kind', choices=['music-bed'])
     parser.add_argument('--file', required=True, help='Explicit working-copy file.')
     parser.add_argument('--source', action='append', required=True, help='Ordered source ScopedId; repeat for each arrangement.')
@@ -42,19 +42,17 @@ def run_adopt(parsed):
     from pathlib import Path
 
     from astrid.sdk.timeline._common import TimelineEditError
-    from astrid.sdk.timeline.bed_adoption import adopt_music_bed
     from astrid.sdk.timeline.checkout import Checkout
     try:
         tl = Checkout.load(parsed.file)
-        candidate = adopt_music_bed(tl.document(), parsed.source,
+        from astrid.sdk.timeline import commands
+        args = dict(sources=parsed.source,
             switches=json.loads(Path(parsed.switches).read_text()) if parsed.switches else [],
             alignment=json.loads(Path(parsed.alignment).read_text()),
             common_basis=json.loads(Path(parsed.basis).read_text()) if parsed.basis else None)
-        if not parsed.dry_run:
-            raise TimelineEditError('adopt music-bed: this writer cannot edit adopted music beds; '
-                                    'use an arrangement-aware writer or --dry-run to validate without saving')
-        bed = candidate['parent']['config']['app']['astrid']['bed']
-        print(json.dumps(dict(dry_run=True, arrangements=len(bed['arrangements']), owner=bed['owner']), sort_keys=True))
+        plan = commands.run(tl, dict(op='timeline.adopt', select=None, args=args), dry_run=parsed.dry_run)
+        print(json.dumps(dict(dry_run=parsed.dry_run, changed=plan.changed,
+                              arrangements=len(parsed.source)), sort_keys=True))
         return 0
     except (OSError, ValueError, TimelineEditError) as exc:
         print(str(exc), file=sys.stderr)

@@ -4624,7 +4624,7 @@
         },
         "adopt": {
           "kind": "callable",
-          "signature": "(self, timeline: 'str', *, revision_id: 'str | None' = None, client: 'Any' = None) -> 'list[str]'"
+          "signature": "(self, timeline: 'str | None' = None, *, revision_id: 'str | None' = None, client: 'Any' = None, sources: 'list[str] | None' = None, switches: 'list[dict] | None' = None, alignment: 'dict | None' = None, common_basis: 'list[dict] | None' = None) -> 'list[str]'"
         },
         "apply_script": {
           "kind": "callable",

@@ -35,3 +35,7 @@
   card: UNDO-REVERT
   reason: "Undo retains steps=1 and adds optional client/publication keywords for staging verified publication inverses."
   alias: "sdk:Checkout.undo"
+- feature: "sdk:Checkout.adopt"
+  card: BED-ADOPT
+  reason: "Retains timeline/revision/client adoption and adds optional authored music sources, switches, alignment and common_basis through the same timeline.adopt OpCall."
+  alias: "sdk:Checkout.adopt"

@@ -30,6 +30,15 @@ def _identities(call):
     for anchor in tuple(identities):
         if anchor.startswith("cut:") and anchor.endswith((":start", ":end")):
             identities.add(anchor.rsplit(":", 1)[0])
+    if call.op == "timeline.adopt" and call.args.get("sources"):
+        identities.update(call.args["sources"])
+    for key, state in call.expect.items():
+        _, prop = commands.write_target(key, call.resolved)
+        if prop == "music_bed" and state.get("state") == "present":
+            metadata = state["value"]
+            if "arrangements" in metadata:
+                identities.add(metadata["owner"])
+                identities.update(a["owner"] for a in metadata["arrangements"])
     if call.op == "timeline.inverse":
         for write in call.args["writes"]:
             identities.add(write["id"])
@@ -38,6 +47,9 @@ def _identities(call):
                 state = write[name]
                 if state.get("state") != "present":
                     continue
+                if write["path"] == "music_bed" and "arrangements" in state["value"]:
+                    identities.add(state["value"]["owner"])
+                    identities.update(a["owner"] for a in state["value"]["arrangements"])
                 if write["path"] in {"intent.cut", "app.astrid.cut"} and isinstance(state["value"], str):
                     identities.add("cut:" + state["value"])
                 if not write["path"] and isinstance(state["value"], dict):
@@ -113,6 +125,11 @@ def _rewrite(call, id_map):
         elif prop in {"intent.cut", "app.astrid.cut"} and isinstance(out["value"], str):
             cut = "cut:" + out["value"]
             out["value"] = id_map.get(cut, cut)[4:]
+        elif prop == "music_bed" and isinstance(out["value"], dict) and "arrangements" in out["value"]:
+            metadata = out["value"]
+            metadata["owner"] = identity(metadata["owner"])
+            metadata["arrangements"] = [{**a, "owner": identity(a["owner"])} for a in metadata["arrangements"]]
+            metadata["switches"] = [{**s, "on": time_ref(s["on"])} for s in metadata["switches"]]
         elif not prop and sid and isinstance(out["value"], dict) and "/" in sid:
             out["value"]["id"] = identity(sid).rsplit(":", 1)[1]
             intent = out["value"].get("app", {}).get("astrid", {})
@@ -137,6 +154,11 @@ def _rewrite(call, id_map):
                         args={key: time_ref(value) if isinstance(value, str) and key in
                               {"moment", "on", "until", "at", "when", "before", "land"}
                               else copy.deepcopy(value) for key, value in call.args.items()})
+    if call.op == "timeline.adopt" and call.args.get("sources"):
+        rewritten = replace(rewritten, args={**rewritten.args,
+            "sources": [identity(sid) for sid in call.args["sources"]],
+            "alignment": {identity(sid): copy.deepcopy(value) for sid, value in (call.args.get("alignment") or {}).items()},
+            "switches": [{**switch, "on": time_ref(switch["on"])} for switch in call.args.get("switches") or []]})
     if call.op == "timeline.add" and rewritten.created:
         clips = [sid for sid in rewritten.created if "/clip:" in sid]
         if len(clips) == 1:

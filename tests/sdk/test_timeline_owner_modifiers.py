@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from astrid.sdk.timeline import commands, modifiers
+from astrid.sdk.timeline import commands, modifiers, music_beds
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.rebase import rebase
 from astrid.sdk.timeline.transaction import edit_transaction
@@ -173,7 +173,7 @@ def test_authored_music_entity_and_guards_never_require_outputs(bundle, outputs)
 def test_shared_local_source_ids_keep_scoped_replay_and_compaction(bundle):
     owner = carrier_bundle(bundle)
     other = 'occurrence:occ-B/clip:bed'
-    beds = commands.music_carriers(Checkout(bundle))
+    beds = music_beds.collection(Checkout(bundle))
     beds[other] = copy.deepcopy(beds[owner]); beds[other]['owner'] = other
     after, plan = apply(bundle, dict(op='clip.set', select=owner, args={'x': 240}))
     assert commands.compact_calls(plan.calls, Checkout(after)) == plan.calls
@@ -204,7 +204,7 @@ def test_music_rebase_maps_owner_without_changing_opaque_values(bundle):
     owner = carrier_bundle(bundle)
     _, plan = apply(bundle, dict(op='clip.set', select=owner, args={'x': 240}))
     head = copy.deepcopy(bundle)
-    beds = commands.music_carriers(Checkout(head))
+    beds = music_beds.collection(Checkout(head))
     new = 'occurrence:occ-B/clip:forked-bed'
     clone = beds.pop(owner); clone['owner'] = new; clone['source']['id'] = 'forked-bed'
     clone['source']['params']['opaque'] = owner
@@ -306,7 +306,7 @@ def test_modifier_property_path_with_quoted_nested_key_refuses_atomically(bundle
 def test_shared_authored_alias_and_duplicate_occurrence_refuse_atomically(bundle):
     owner = carrier_bundle(bundle)
     other = 'occurrence:occ-B/clip:bed'
-    beds = commands.music_carriers(Checkout(bundle))
+    beds = music_beds.collection(Checkout(bundle))
     beds[other] = copy.deepcopy(beds[owner]); beds[other]['owner'] = other
     tl = Checkout(bundle); before = tl.document()
     with pytest.raises(commands.TimelineEditError):
@@ -411,7 +411,7 @@ def test_rebase_rewrites_consequence_only_owner_and_schema_owned_source_id(bundl
 def test_removed_authored_source_has_separate_carrier_consequences(bundle, monkeypatch):
     owner = carrier_bundle(bundle, ['bed', 'bed:b'])
     def remove(self):
-        bed = commands.music_carriers(self._tl).pop(owner)
+        bed = music_beds.collection(self._tl).pop(owner)
         clips = self._tl._internal(self.shot_id)['clips']
         clips[:] = [c for c in clips if c['id'] not in bed['outputs']]
     monkeypatch.setitem(commands.REGISTRY, 'clip.remove', commands.Operation('clip.remove', 'clip', 'remove', remove))
@@ -435,7 +435,7 @@ def test_rebase_consumes_id_map_for_consequence_only_owner(bundle, monkeypatch):
     _, plan = apply(bundle, dict(op='timeline.resolve', select=None, args={}))
     assert plan.calls[0].resolved == ()
     assert old + '::music_bed.ripple_basis' in plan.calls[0].expect
-    head = copy.deepcopy(bundle); beds = commands.music_carriers(Checkout(head))
+    head = copy.deepcopy(bundle); beds = music_beds.collection(Checkout(head))
     new = 'occurrence:occ-B/clip:bed'; bed = beds.pop(old); bed['owner'] = new; beds[new] = bed
     result = rebase(plan.calls, head, id_map={old: new})
     assert not result.conflicts and result.id_map == {old: new}

@@ -160,6 +160,82 @@ def _root(tl, write):
     members.insert(index, copy.deepcopy(payload))
 
 
+def _music_writes(tl, writes, states):
+    """Translate the existing owner-scoped semantic view back to I's authority.
+
+    The transaction owns rollback. Source dictionaries remain ordinary clips;
+    generated output and checked projections are rebuilt by I, never restored
+    as another writable source.
+    """
+    from astrid.sdk.timeline import music_beds
+    carriers = music_beds.sources(tl)
+    affected = {w["id"] for w in writes if w["id"] in carriers or
+                w["path"] == "music_bed" or w["path"].startswith("music_bed.")}
+    if not affected:
+        return set()
+    music_beds.validate(tl)
+    desired = copy.deepcopy(states)
+    handled = set()
+    for index, write in enumerate(writes):
+        if write["id"] not in affected:
+            continue
+        handled.add(index)
+        sid, path, state = write["id"], write["path"], write["after"]
+        if not path:
+            if state["state"] == "absent":
+                desired.pop(sid, None)
+            else:
+                metadata = desired.get(sid, {}).get("music_bed")
+                desired[sid] = copy.deepcopy(state["value"])
+                if metadata is not None:
+                    desired[sid]["music_bed"] = metadata
+        else:
+            path = "app.astrid." + path[7:] if path.startswith("intent.") else path
+            _write(desired[sid], path, state)
+    music_beds.dematerialize(tl)
+    ns = tl.bundle['parent']['config'].setdefault('app', {}).setdefault('astrid', {})
+    ns.pop('bed', None)
+    if 'music_beds' in ns:
+        ns['music_beds'] = {}
+    # Every formerly managed source is now present as an ordinary clip. This
+    # also makes removing the last metadata field an exact storage transfer.
+    restored_sources = {}
+    referenced = {a['owner'] for data in desired.values() if isinstance(data, dict)
+                  for a in data.get('music_bed', {}).get('arrangements', [])}
+    for sid in affected | set(carriers) | referenced:
+        if sid not in desired:
+            raise commands.CommandError('remove adopted sources through their authored owner')
+        source = copy.deepcopy(desired[sid])
+        source.pop('music_bed', None)
+        _, clips = music_beds.locate(tl, sid, source)
+        matches = [c for c in clips if c.get('id') == source['id']]
+        if len(matches) != 1:
+            raise commands.CommandError(f'{sid}: inverse source is unavailable or ambiguous')
+        matches[0].clear()
+        matches[0].update(source)
+        restored_sources[sid] = matches[0]
+    for sid, data in desired.items():
+        meta = data.get('music_bed') if isinstance(data, dict) else None
+        if not meta:
+            continue
+        if 'arrangements' in meta:
+            if 'bed' in ns or meta.get('owner') != sid:
+                raise commands.CommandError('inverse requires one stable bed reference owner')
+            arrangements = []
+            for ref in meta['arrangements']:
+                source = restored_sources[ref['owner']]
+                arrangements.append({**ref, 'source': source, **meta['projections'][ref['id']]})
+            ns['bed'] = dict(owner=sid, arrangements=arrangements,
+                            switches=copy.deepcopy(meta['switches']),
+                            ripple_basis=copy.deepcopy(meta['ripple_basis']),
+                            outputs=copy.deepcopy(meta['outputs']))
+        else:
+            source = restored_sources[sid]
+            ns.setdefault('music_beds', {})[sid] = dict(owner=sid, source=source,
+                ripple_basis=copy.deepcopy(meta['ripple_basis']), outputs=copy.deepcopy(meta['outputs']))
+    return handled
+
+
 def apply_inverse(self, writes, publication):
     """Apply guarded authored properties, then let the normal compiler resolve consequences."""
     tl = self
@@ -190,7 +266,10 @@ def apply_inverse(self, writes, publication):
             raise commands.SemanticConflict("same-property", sid, path, write["before"], current, write["after"])
     from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
     reservations = cut_reservations(tl.bundle)
-    for write in writes:
+    handled = _music_writes(tl, writes, states)
+    for index, write in enumerate(writes):
+        if index in handled:
+            continue
         path = write["path"]
         path = "app.astrid." + path[7:] if path.startswith("intent.") else path
         try:
@@ -202,6 +281,14 @@ def apply_inverse(self, writes, publication):
             raise commands.CommandError(f"inverse path is unavailable: {write['id']}.{path}") from exc
     retain_cut_reservation_mark(tl.bundle, reservations)
     tl._refresh()
+    if handled:
+        # Other inverse writes may restore clocks/anchors consumed by the bed.
+        # Rebuild once after all authored inputs are restored, in this transaction.
+        from astrid.sdk.timeline import music_beds
+        from astrid.sdk.timeline.bed_adoption import refresh_projections
+        refresh_projections(tl)
+        music_beds.project(tl)
+        music_beds.validate(tl)
 
 
 def inverse_command(calls, before, after, publication, *, consequences=()):
@@ -220,6 +307,11 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
             raise commands.CommandError("publication lacks recorded command preconditions")
         if call.op in {"timeline.reflow", "timeline.retime", "timeline.resolve"}:
             materializers.add(index)
+        for key, state in call.expect.items():
+            sid, path = commands.write_target(key, call.resolved)
+            if (path == "music_bed" and (call.op == "timeline.inverse" or
+                    (call.op == "timeline.adopt" and call.args.get("sources")))) or path == "music_bed.ripple_basis":
+                desired.setdefault((sid, path), copy.deepcopy(state))
         for key, kind in call.authorship.items():
             if kind != "direct":
                 continue

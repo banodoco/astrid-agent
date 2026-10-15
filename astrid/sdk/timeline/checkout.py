@@ -360,14 +360,33 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         tl.draft_name = name
         return tl
 
-    def adopt(self, timeline: str, *, revision_id: str | None = None, client: Any = None) -> list[str]:
+    def adopt(self, timeline: str | None = None, *, revision_id: str | None = None, client: Any = None,
+              sources: list[str] | None = None, switches: list[dict] | None = None,
+              alignment: dict | None = None, common_basis: list[dict] | None = None) -> list[str]:
         """Make this working copy equal another timeline's head (or ``revision_id``): its cuts, narration
         (lines, takes, words), clips with all their intent, assets and the music's beats, chapters and slots.
 
         The working copy keeps its own timeline, shots and base, so ``changes()``, ``check()``, status and
-        the three-way publish guard work as for any edit (one undo step). Returns what changed, in words."""
+        the three-way publish guard work as for any edit (one undo step). Returns what changed, in words.
+
+        With ``sources=[ScopedId, ...]``, transfer those authored music sources
+        into one adopted bed using explicit alignment and ordered switches.
+        Both forms use the same timeline.adopt command and transaction."""
         from astrid.sdk.timeline_adopt import adopt_content, adopt_summary
 
+        if sources is not None:
+            if timeline is not None or revision_id is not None:
+                raise TimelineEditError("adopt selects either a timeline or authored music sources")
+            from astrid.sdk.timeline.bed_adoption import adopt_music_bed
+            candidate = adopt_music_bed(self.document(), sources, switches=switches or [],
+                alignment=alignment, common_basis=common_basis)
+            from astrid.core.timeline.compatibility import require_writable_candidate
+            require_writable_candidate(candidate)
+            self.bundle = candidate
+            self._mcache = None
+            return ["adopted authored music sources"]
+        if timeline is None or any(value is not None for value in (switches, alignment, common_basis)):
+            raise TimelineEditError("adopt requires a timeline or authored music sources")
         project = str(self.bundle.get("project_id") or "")
         source = _store.fetch_bundle(project, timeline, revision_id=revision_id, client=client)
         before = Checkout(copy.deepcopy(self.bundle))

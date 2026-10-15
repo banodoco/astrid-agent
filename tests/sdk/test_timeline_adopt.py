@@ -356,7 +356,7 @@ def test_time_reference_resolves_moves_orphans_and_requires_explicit_rehome():
     assert switch_windows(result) == [(5.7, 7.7)]
 
 
-def test_adopt_cli_preflight_and_writer_capability_refusal(tmp_path, capsys):
+def test_adopt_cli_preflight_and_writer_capability_refusal(tmp_path, capsys, monkeypatch):
     from astrid.packs.timeline.cli import build_parser
     tl = enrolled()
     path = tmp_path / 'source.json'
@@ -371,9 +371,11 @@ def test_adopt_cli_preflight_and_writer_capability_refusal(tmp_path, capsys):
     assert parsed.handler(parsed) == 0
     assert 'dry_run' in capsys.readouterr().out
     assert path.read_bytes() == original
+    from astrid.core.timeline import compatibility
+    monkeypatch.setattr(compatibility, 'WRITER_CAPABILITIES', frozenset())
     parsed = parser.parse_args(args)
     assert parsed.handler(parsed) == 2
-    assert 'cannot edit adopted music beds' in capsys.readouterr().err
+    assert 'capability' in capsys.readouterr().err
     assert path.read_bytes() == original
 
 
@@ -432,11 +434,11 @@ def test_actual_clip_source_edit_hook_is_gated_and_regenerates_when_capable(monk
     from astrid.core.timeline import compatibility
     tl = adopt_one(enrolled())
     before = copy.deepcopy(tl.bundle)
+    monkeypatch.setattr(compatibility, 'WRITER_CAPABILITIES', frozenset())
     with pytest.raises(TimelineEditError, match='capability'):
         tl.clip(OWNER).set_look(volume=.2)
     assert tl.bundle == before
-    # Explicitly model the arrangement-aware caller; the current default stays
-    # closed until D joins semantic recording/replay, which this test cannot prove.
+    # The joined arrangement-aware writer consumes the same ordinary source hook.
     monkeypatch.setattr(compatibility, 'WRITER_CAPABILITIES', {compatibility.ADOPTED_BED_CAPABILITY})
     tl.clip(OWNER).set_look(volume=.2)
     assert adopted(tl)['arrangements'][0]['gain'] == .2

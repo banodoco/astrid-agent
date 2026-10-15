@@ -276,7 +276,9 @@ class RuntimeCommitService:
                     "clip.swap-asset", "timeline.edit-flags"}
         for value in values:
             call = commands.EditCommand.coerce(value)
-            if call.op in external or "client" in call.args:
+            local_adoption = (call.op == "timeline.adopt" and call.args.get("sources") is not None
+                              and call.args.get("timeline") is None and call.args.get("revision_id") is None)
+            if (call.op in external and not local_adoption) or "client" in call.args:
                 raise _Refusal(f"{call.op} requires an admitted scoped media/adapter producer")
             if call.op == "timeline.add" and any(call.args.get(key) is not None for key in ("asset", "standin")):
                 raise _Refusal("timeline.add with media requires an admitted scoped media/adapter producer")
