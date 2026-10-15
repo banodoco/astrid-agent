@@ -20,6 +20,7 @@ from astrid.sdk.timeline._common import (LOGICAL_PX, TimelineEditError, _norm, _
 from astrid.sdk.timeline.doc import (_clock, _get_path, _post, _read_words, _row_start, _set_length, _set_path, _set_row_start, _split_audio, _trim_end, _trim_front)
 from astrid.sdk.timeline.model import (Clip, Voice, Word, _MomentContext, music_keyword, music_policy, retime_scope)
 from astrid.sdk.timeline.selection import Selection
+from astrid.sdk.timeline.sequence_fit import allocate_fit_frames, fit_curve_progress
 from astrid.sdk.timeline.units import (_unit_path, element_units, mark_offset_canvas)
 
 
@@ -395,8 +396,8 @@ class _TimingEvaluators:
                 hi = self._resolve_note(until, steps[0], start=lo)
             if hi is None:
                 hi = max(c.end for c in steps)
-            if hi - lo < len(steps) / self.fps:
-                continue
+            if int(round((hi - lo) * self.fps)) < len(steps):
+                raise TimelineEditError(f"sequence {seq_id}: span is too short for {len(steps)} required steps")
             before = [(c.start, c.end) for c in steps]
             self._relay_steps([c.data for c in steps], lo - self._shot_start(steps[0].shot_id), hi - lo, ratios[seq_id])
             for c, (a, b) in zip(steps, before):
@@ -725,8 +726,9 @@ class _TimingEvaluators:
         for seq_id, steps in groups.items():
             steps.sort(key=lambda c: intent.sequence(c.data)[1])
             fit = intent.sequence_fit(steps[0].data)
-            if not fit:
+            if not fit or "land" not in fit:
                 continue
+            progress = fit_curve_progress(str(fit.get("curve", "linear")))
             spec = fit.get("land")
             start, end = steps[0].start, steps[-1].end
             total = int(round((end - start) * self.fps))
@@ -743,9 +745,13 @@ class _TimingEvaluators:
             life = int(round((land_t - start) * self.fps)) + int(fit.get("offset_frames") or 0)
             cycle = list(fit.get("cycle") or [steps[0].asset])
             lead = [int(n) for n in fit.get("lead") or []]
+            race_frames = [int(n) for n in fit.get("race") or [2]]
+            if any(n < 1 for n in lead + race_frames):
+                raise TimelineEditError(f"sequence {seq_id}: lead and race steps need at least one frame")
+            if life < sum(lead) or life >= total:
+                raise TimelineEditError(f"sequence {seq_id}: span is too short for its lead, race and landing")
             plan = [(cycle[i % len(cycle)], n) for i, n in enumerate(lead)]
             left = life - sum(lead)
-            race_frames = [int(n) for n in fit.get("race") or [2]]
             race: list[int] = []
             k = 0
             while left > 0:
@@ -753,8 +759,10 @@ class _TimingEvaluators:
                 race.append(min(n, left))
                 left -= race[-1]
                 k += 1
+            if race:
+                race = allocate_fit_frames(race, life - sum(lead), progress)
             plan += [(cycle[(len(cycle) - 1 - (len(race) - 1 - i)) % len(cycle)], n) for i, n in enumerate(race)]
-            plan.append((fit.get("then") or cycle[-1], max(1, total - sum(n for _a, n in plan))))
+            plan.append((fit.get("then") or cycle[-1], total - life))
             current = [(c.asset, int(round(c.duration * self.fps))) for c in steps]
             if current == plan:
                 continue
@@ -838,6 +846,8 @@ class _TimingEvaluators:
                                          f"(0–{length:g}): re-home it on a moment inside {clip.start:.2f}–{clip.end:.2f} s")
                 if _set_path(clip.data, path, value):
                     changes.append(f"{clip.id}.{path} = {json.dumps(value)[:60]}")
+        from astrid.sdk.timeline.loops import resolve_loops
+        changes += resolve_loops(self)
         return changes
 
     def _evaluate(self, clip: Clip, expr: Any, by_id: Mapping[str, Word], words: Sequence[Word], slots: Mapping[str, Any],
@@ -949,22 +959,16 @@ class _TimingEvaluators:
     def _relay_steps(self, steps: list[dict[str, Any]], at: float, length: float, frames: list[int] | None = None) -> None:
         """Lay a sequence's steps end to end from ``at`` (shot seconds) over ``length``, keeping their
         frame ratios (``frames``, else their lengths now; each at least one frame): one unit."""
+        recipe = intent.sequence_fit(steps[0]) or {}
+        frames = (recipe.get("weights") if "land" not in recipe else None) or frames
         frames = frames or [max(1, int(round(clip_duration(c) * self.fps))) for c in steps]
-        total = max(len(steps), int(round(length * self.fps)))
-        scaled = [n * total / max(1, sum(frames)) for n in frames]
-        plan = [max(1, int(x)) for x in scaled]
-        order = sorted(range(len(steps)), key=lambda i: scaled[i] - int(scaled[i]), reverse=True)
-        k = 0
-        while sum(plan) < total:  # largest remainders first
-            plan[order[k % len(order)]] += 1
-            k += 1
-        k = 0
-        while sum(plan) > total:  # never below one frame
-            i = max(range(len(plan)), key=lambda j: plan[j])
-            if plan[i] <= 1:
-                break
-            plan[i] -= 1
-            k += 1
+        if len(frames) != len(steps):
+            raise TimelineEditError("sequence fit weights must match its membership")
+        # Generated recipes own a race-only curve in _fit_sequences. The
+        # full-span relay preserves lead/landing and the already rounded race.
+        progress = None if "land" in recipe else fit_curve_progress(str(recipe.get("curve", "linear")))
+        total = int(round(length * self.fps))
+        plan = allocate_fit_frames(frames, total, progress)
         frame = int(round(at * self.fps))
         for clip, n in zip(steps, plan):
             clip["at"] = _r(frame / self.fps)

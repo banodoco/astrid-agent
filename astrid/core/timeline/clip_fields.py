@@ -30,7 +30,10 @@ _DB_RE = re.compile(rf"\s*({_NUMBER})\s*dB\s*", re.IGNORECASE)
 _DUR_RE = re.compile(rf"\s*({_NUMBER})\s*([fFsS]?)\s*")
 _MUTE_WORDS = frozenset({"-inf", "-infdb", "mute"})
 _EASINGS = ("linear", "in", "out", "in-out", "step")
-_EASE_ALIASES = {"inout": "in-out", "in_out": "in-out"}
+_EASE_ALIASES = {
+    "inout": "in-out", "in_out": "in-out",
+    "ease-in": "in", "ease-out": "out", "ease-in-out": "in-out",
+}
 _CROP_SUM_MAX = 0.99
 
 

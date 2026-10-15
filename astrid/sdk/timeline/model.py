@@ -845,17 +845,25 @@ class StepSequence(_Suggest):
         return [max(1, int(round(c.duration * self._tl.fps))) for c in self.steps]
 
     def fit(self, on: Any = None, until: Any = None, *, shape: Sequence[int] | None = None, shape_from: Any = None,
-            client: Any = None) -> "StepSequence":
-        from astrid.sdk.timeline.checkout import Checkout
+            client: Any = None, curve: str | None = None) -> "StepSequence":
         """Fit the whole sequence into a span, keeping its shape (each step's share; its acceleration).
 
         ``on``: where it (and its cut) starts; ``until``: where it ends (``c19``, ``after "x" in w17``; it
         is kept, so a re-flow fits it again). ``shape``: frame counts per step; ``shape_from``: another
         timeline (``"almost-ready-round0"`` or ``"TL@REV"``) whose same sequence has the shape to restore
-        (a sequence torn by an earlier re-flow). Default: the shape it has now."""
+        (a sequence torn by an earlier re-flow). Default: the shape it has now.
+        ``curve`` persists a named fit curve with the original weights; re-fitting
+        never derives a new shape from rounded output. Linear retains the legacy allocator."""
+        from astrid.sdk.timeline.checkout import Checkout
+        from astrid.sdk.timeline.sequence_fit import fit_curve_name, fit_curve_progress
+
         steps = self.steps
         if not steps:
             raise TimelineEditError(f"no sequence {self.id!r}")
+        named_curve = fit_curve_name(curve) if curve is not None else None
+        if named_curve is not None:
+            fit_curve_progress(named_curve)  # fail before changing the recipe if no function is admitted
+        recipe = intent.sequence_fit(steps[0].data) or {}
         frames = list(shape) if shape else None
         if shape_from is not None:
             name, _, rev = str(shape_from).partition("@")
@@ -872,6 +880,11 @@ class StepSequence(_Suggest):
                                 f"{name}@{other_rev.removeprefix('authoring-parent-revision-')[:8]}" if other_rev else name)
         elif shape is not None:
             intent._set_or_drop(steps[0].data, "sequence_shape_from", "a given shape")
+        if named_curve is not None or ("weights" in recipe and frames is not None):
+            # Persist the authored weights, never infer them from an already curved layout.
+            recipe = {"weights": frames if frames is not None else recipe.get("weights", self.frames),
+                      "curve": named_curve or recipe.get("curve", "linear")}
+            intent.set_sequence_fit(steps[0].data, recipe)
         if frames is not None:  # set the shape now: the re-lay keeps it
             first = steps[0]
             self._tl._relay_steps([c.data for c in steps], first.start - self._tl._shot_start(first.shot_id),
@@ -1117,9 +1130,21 @@ class _MomentContext:
             cache["words"] = self.tl.words()
         return cache["words"]
 
-    def beats(self, kind: str):
+    def beats(self, kind: str, *, bed: str | None = None):
         out = []
-        for clip in self.tl.clips(audio=True):
+        clips = list(self.tl.clips(audio=True))
+        selected = {bed} if bed is not None else None
+        if selected is not None:
+            # Music edits already retain their source bed through split_from.
+            # Follow that ancestry; never infer bed membership from asset/BPM.
+            while True:
+                more = {c.id for c in clips if intent._app(c.data).get('split_from') in selected}
+                if more <= selected:
+                    break
+                selected.update(more)
+        for clip in clips:
+            if selected is not None and clip.id not in selected:
+                continue
             if clip.track != "music" and not intent.beat_sources(clip.data):
                 continue
             speed = _num(clip.data.get("speed"), 1.0) or 1.0

@@ -19,3 +19,7 @@
   card: TL-LIFECYCLE
   reason: "Draft expiry is deliberate lifecycle cleanup; list unpublished edits in status before expiry."
   alias: "draft lifecycle expiry"
+- feature: "sdk:StepSequence.fit"
+  card: MOTION
+  reason: "Adds the optional curve keyword to the existing fit method; all previous arguments and defaults remain available."
+  alias: "sdk:StepSequence.fit"

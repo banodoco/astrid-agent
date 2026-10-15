@@ -6,7 +6,10 @@ all writes target ``app.astrid`` and leave unrelated metadata intact.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Iterable
+from typing import Any, Iterable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from astrid.sdk.timeline.loops import LoopSpec
 
 from astrid.core.timeline import astrid_ns as _ns
 
@@ -29,7 +32,7 @@ def _app_w(clip: dict[str, Any]) -> dict[str, Any]:
 _INTENT_KEYS = frozenset({"on", "until", "for", "cut", "layer", "why", "why_layers",
     "deliberate", "deliberate_hold", "formulas", "segment", "words", "text",
     "gap_after_s", "beats", "beats_label", "slot", "replaces", "standin",
-    "standin_intent", "sequence", "sequence_index", "sequence_fit", "orphan"})
+    "standin_intent", "sequence", "sequence_index", "sequence_fit", "orphan", "loop"})
 
 
 def _tidy(clip: dict[str, Any]) -> None:
@@ -59,6 +62,18 @@ def _set_or_drop(clip: dict[str, Any], key: str, value: Any) -> None:
 def on(clip):
     value = _get(clip, "on"); return str(value) if isinstance(value, str) and value.strip() else None
 def set_on(clip, value): _set(clip, "on", value)
+
+def loop(clip: Mapping[str, Any]) -> "LoopSpec | None":
+    return _get(clip, "loop")
+
+def set_loop(clip: dict[str, Any], value: "LoopSpec | None") -> None:
+    """Author phase separately from onset; resolve emits sprite params.loop."""
+    import copy
+    _set(clip, "loop", None if value is None else copy.deepcopy(value))
+    # Clearing the authored recipe also removes its computed consumer output.
+    if value is None and isinstance(clip.get('params'), dict):
+        clip['params'].pop('loop', None)
+
 def until(clip):
     value = _get(clip, "until"); return str(value) if isinstance(value, str) and value.strip() else None
 def set_until(clip, value): _set(clip, "until", value)

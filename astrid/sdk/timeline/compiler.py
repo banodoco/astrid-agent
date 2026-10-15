@@ -153,6 +153,16 @@ def _validate_dependencies(tl):
                 link(end, *deps)
                 if clip is not first:
                     link(start, *deps)
+        loop = intent.loop(clip.data)
+        if isinstance(loop, Mapping):
+            phase = loop.get('phase')
+            if isinstance(phase, Mapping) and isinstance(phase.get('ref'), str):
+                link(f'{nodes[id(clip.data)]}.loop', *references(phase['ref'], clip))
+            period = loop.get('period')
+            if isinstance(period, Mapping) and 'bed' in period:
+                for bed in clips:
+                    if bed.id == period['bed']:
+                        link(f'{nodes[id(clip.data)]}.loop', node(bed, 'start'), node(bed, 'end'))
         for path, expr in intent.formulas(clip.data).items():
             if path not in ('at', 'hold', 'from', 'to', 'speed') or not isinstance(expr, Mapping):
                 continue  # element params do not write clip timing

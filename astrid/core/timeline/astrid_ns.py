@@ -17,7 +17,7 @@ CLIP_INTENT_KEYS = frozenset({
     "why", "why_layers", "formulas", "segment", "words", "text", "gap_after_s",
     "beats", "beats_label", "slot", "replaces", "standin", "standin_intent",
     "standin_for", "intended", "sequence", "sequence_index", "sequence_fit",
-    "sequence_shape_from", "orphan", "role", "style", "group", "duck",
+    "sequence_shape_from", "orphan", "role", "style", "group", "duck", "loop",
 })
 FILM_INTENT_KEYS = frozenset({"chapters", "slots", "cut_notes", "formulas", "sequences"})
 

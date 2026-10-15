@@ -4930,7 +4930,7 @@
       "members": {
         "fit": {
           "kind": "callable",
-          "signature": "(self, on: 'Any' = None, until: 'Any' = None, *, shape: 'Sequence[int] | None' = None, shape_from: 'Any' = None, client: 'Any' = None) -> \"'StepSequence'\""
+          "signature": "(self, on: 'Any' = None, until: 'Any' = None, *, shape: 'Sequence[int] | None' = None, shape_from: 'Any' = None, client: 'Any' = None, curve: 'str | None' = None) -> \"'StepSequence'\""
         },
         "frames": {
           "kind": "property"

@@ -451,6 +451,15 @@ def test_easing_forms_store_params_only_when_not_linear(name, raw, stored):
     assert cf.coerce(name, raw) == (path, stored)
 
 
+@pytest.mark.parametrize("alias, canonical", [
+    ("ease-in", "in"), ("ease-out", "out"), ("ease-in-out", "in-out"),
+])
+@pytest.mark.parametrize("structured", [False, True])
+def test_easing_explicit_spec_aliases(alias, canonical, structured):
+    raw = {"type": "fade", "params": {"easing": alias}} if structured else f"fade ease={alias}"
+    assert cf.coerce("entrance", raw) == ("entrance", {"type": "fade", "params": {"easing": canonical}})
+
+
 @pytest.mark.parametrize(
     "name, raw",
     [
