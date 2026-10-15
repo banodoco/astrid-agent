@@ -432,7 +432,7 @@ def test_clip_without_entrance_passes_validate_timeline(_builtin_text_is_not_an_
         ("entrance", "fade ease=in-out", {"type": "fade", "params": {"easing": "in-out"}}),
         ("entrance", "fade 0.4s ease=in", {"type": "fade", "duration": 0.4, "params": {"easing": "in"}}),
         ("entrance", "fade 12f ease=step", {"type": "fade", "duration": 0.4, "params": {"easing": "step"}}),
-        ("entrance", "fade 12f ease=linear", {"type": "fade", "duration": 0.4}),
+        ("entrance", "fade 12f ease=linear", {"type": "fade", "duration": 0.4, "params": {"easing": "linear"}}),
         ("entrance", "fade 12f ease=inOut", {"type": "fade", "duration": 0.4, "params": {"easing": "in-out"}}),
         ("entrance", "fade 12f ease=in_out", {"type": "fade", "duration": 0.4, "params": {"easing": "in-out"}}),
         ("entrance", "fade 12f ease=OUT", {"type": "fade", "duration": 0.4, "params": {"easing": "out"}}),
@@ -440,7 +440,7 @@ def test_clip_without_entrance_passes_validate_timeline(_builtin_text_is_not_an_
         ("entrance", {"type": "fade", "duration": 0.4, "params": {"easing": "out"}},
          {"type": "fade", "duration": 0.4, "params": {"easing": "out"}}),
         ("entrance", {"type": "fade", "params": {"easing": "inOut"}}, {"type": "fade", "params": {"easing": "in-out"}}),
-        ("entrance", {"type": "fade", "params": {"easing": "linear"}}, {"type": "fade"}),
+        ("entrance", {"type": "fade", "params": {"easing": "linear"}}, {"type": "fade", "params": {"easing": "linear"}}),
         ("fade_in", "8f ease=out", {"type": "fade", "duration": 0.2667, "params": {"easing": "out"}}),
         ("fade_out", "8f ease=in", {"type": "fade", "duration": 0.2667, "params": {"easing": "in"}}),
         ("fade_in", "ease=step", {"type": "fade", "params": {"easing": "step"}}),
@@ -502,7 +502,7 @@ def test_params_easing_is_kept_alongside_other_params():
         ("entrance", "fade 12f ease=out", "fade 12f ease=out"),
         ("entrance", "fade ease=in-out", "fade ease=in-out"),
         ("exit", "fade 12f ease=step", "fade 12f ease=step"),
-        ("entrance", "fade 12f ease=linear", "fade 12f"),
+        ("entrance", "fade 12f ease=linear", "fade 12f ease=linear"),
     ],
 )
 def test_easing_describe_round_trips(name, raw, human):
@@ -513,6 +513,41 @@ def test_easing_describe_round_trips(name, raw, human):
     again: dict = {}
     cf.write(again, name, described[name])
     assert again == clip
+
+
+@pytest.mark.parametrize("reference,params,expected", [
+    ("ease-in-out", "inOut", "in-out"), ("linear", "linear", "linear"),
+    ("ease-out", "out", "out"),
+])
+def test_easing_reference_and_params_agree_after_alias_normalization(reference, params, expected):
+    raw = {"type": "fade", "easing": reference, "params": {"easing": params, "distance": 60}}
+    assert cf.coerce("entrance", raw)[1] == {"type": "fade", "params": {"easing": expected, "distance": 60}}
+    assert raw["easing"] == reference and raw["params"]["easing"] == params
+
+
+def test_easing_reference_conflict_refuses_without_mutating_clip_or_input():
+    raw = {"type": "fade", "easing": "linear", "params": {"easing": "out"}}
+    clip = {"entrance": {"type": "fade"}}
+    with pytest.raises(cf.ClipFieldError, match="conflicting reference.easing and params.easing"):
+        cf.write(clip, "entrance", raw)
+    assert clip == {"entrance": {"type": "fade"}}
+    assert raw == {"type": "fade", "easing": "linear", "params": {"easing": "out"}}
+
+
+def test_explicit_linear_reference_round_trip_preserves_absent_easing_distinction():
+    legacy = cf.coerce("entrance", {"type": "fade"})[1]
+    explicit = cf.coerce("entrance", {"type": "fade", "easing": "linear"})[1]
+    assert legacy == {"type": "fade"}
+    assert explicit == {"type": "fade", "params": {"easing": "linear"}}
+    clip = {"entrance": explicit}
+    assert cf.coerce("entrance", cf.describe(clip)["entrance"])[1] == explicit
+    assert cf.describe({"entrance": {"type": "fade", "easing": "linear"}})["entrance"] == "fade ease=linear"
+
+
+def test_describe_refuses_conflicting_easing_spellings():
+    clip = {"entrance": {"type": "fade", "easing": "linear", "params": {"easing": "out"}}}
+    with pytest.raises(cf.ClipFieldError, match="conflicting reference.easing and params.easing"):
+        cf.describe(clip)
 
 
 @pytest.mark.parametrize(

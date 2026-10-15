@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from astrid.core.timeline import audio_curves
+from astrid.core.timeline import audio_curves, motion_curves
 
 FPS_DEFAULT = 30
 _YAML_PATH = Path(__file__).with_name("clip_fields.yaml")
@@ -29,11 +29,7 @@ _NUM_RE = re.compile(rf"\s*({_NUMBER})\s*")
 _DB_RE = re.compile(rf"\s*({_NUMBER})\s*dB\s*", re.IGNORECASE)
 _DUR_RE = re.compile(rf"\s*({_NUMBER})\s*([fFsS]?)\s*")
 _MUTE_WORDS = frozenset({"-inf", "-infdb", "mute"})
-_EASINGS = ("linear", "in", "out", "in-out", "step")
-_EASE_ALIASES = {
-    "inout": "in-out", "in_out": "in-out",
-    "ease-in": "in", "ease-out": "out", "ease-in-out": "in-out",
-}
+_EASINGS = tuple(motion_curves.MOTION_CURVES)
 _CROP_SUM_MAX = 0.99
 
 
@@ -265,8 +261,10 @@ def _gain(raw: Any, spec: FieldSpec) -> float:
 
 
 def _easing_name(text: str) -> str:
-    key = text.strip().lower()
-    return _EASE_ALIASES.get(key, key)
+    try:
+        return motion_curves.motion_curve_name(text)
+    except ValueError:
+        return text.strip().lower()
 
 
 def _easing(raw: Any, label: str) -> str:
@@ -292,30 +290,35 @@ def _params(spec: FieldSpec, raw: Any) -> dict[str, Any] | None:
         raise ClipFieldError(f"{spec.name}.params must be an object, e.g. {{'easing': 'out'}}")
     params = dict(raw)
     if "easing" in params:
-        easing = _easing(params.pop("easing"), f"{spec.name}.params.easing")
-        if easing != "linear":
-            params["easing"] = easing
+        params["easing"] = _easing(params["easing"], f"{spec.name}.params.easing")
     return params or None
 
 
 def _stored_easing(value: Mapping[str, Any]) -> str | None:
     params = value.get("params")
-    if not isinstance(params, Mapping) or "easing" not in params:
-        return None
-    name = _easing_name(str(params["easing"]))
-    return None if name == "linear" else name
+    reference = _easing(value["easing"], "animation.easing") if "easing" in value else None
+    authored = _easing(params["easing"], "animation.params.easing") if isinstance(params, Mapping) and "easing" in params else None
+    if reference is not None and authored is not None and reference != authored:
+        raise ClipFieldError("animation: conflicting reference.easing and params.easing")
+    return reference if reference is not None else authored
 
 
 def _animation_value(spec: FieldSpec, raw: Any, fps: float) -> Any:
     if raw is None or (isinstance(raw, str) and raw.strip().lower() == "none"):
         return None
     if isinstance(raw, Mapping):
-        extra = set(raw) - {"type", "duration", "intensity", "params"}
+        extra = set(raw) - {"type", "duration", "intensity", "params", "easing"}
         if extra:
             raise ClipFieldError(f"{spec.name} has unknown key {sorted(extra)[0]!r}; allowed: type, duration")
         name = raw.get("type")
         duration = None if raw.get("duration") is None else _seconds(raw["duration"], fps, f"{spec.name}.duration")
         extras = {key: raw[key] for key in ("intensity", "params") if key in raw}
+        if "easing" in raw:
+            easing = _easing(raw["easing"], f"{spec.name}.easing")
+            params = _params(spec, extras.get("params", {})) or {}
+            if "easing" in params and params["easing"] != easing:
+                raise ClipFieldError(f"{spec.name}: conflicting reference.easing and params.easing")
+            extras["params"] = {**params, "easing": easing}
     elif isinstance(raw, str):
         tokens, easing = _take_ease(spec, raw.split())
         if not tokens or len(tokens) > 2:

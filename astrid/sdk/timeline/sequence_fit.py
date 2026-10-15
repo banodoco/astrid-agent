@@ -7,45 +7,30 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 
-from astrid.core.timeline.clip_fields import _easing_name
+from functools import partial
+
+from astrid.core.timeline.motion_curves import MOTION_CURVES, motion_curve_inverse, motion_curve_name
 from astrid.sdk.timeline._common import TimelineEditError
 
 
 def fit_curve_name(value: str) -> str:
-    name = _easing_name(value)
-    if name == "step":
-        raise TimelineEditError("sequence fit curve 'step' has no inverse progress")
-    if name not in {"linear", "in", "out", "in-out"}:
-        raise TimelineEditError(f"unknown sequence fit curve {value!r}")
+    try:
+        name = motion_curve_name(value)
+    except ValueError as exc:
+        raise TimelineEditError(str(exc)) from exc
+    if not MOTION_CURVES[name]["inverse"]:
+        raise TimelineEditError(f"sequence fit curve {name!r} has no inverse progress")
     return name
 
 
-def fit_curve_progress(value: str) -> Callable[[float], float] | None:
-    """Resolve an admitted named function; never select a curve family by guesswork."""
+def fit_curve_inverse(value: str) -> Callable[[float], float] | None:
+    """Resolve the declared analytic inverse; linear keeps its legacy allocator."""
     name = fit_curve_name(value)
-    if name != "linear":
-        raise TimelineEditError(f"sequence fit curve {value!r} is unavailable in this build; use linear")
-    return None
-
-
-def _inverse_progress(progress: Callable[[float], float], p: float) -> float:
-    """Invert a continuous, strictly increasing unit-interval progress function."""
-    if p <= 0:
-        return 0.0
-    if p >= 1:
-        return 1.0
-    lo, hi = 0.0, 1.0
-    for _ in range(64):
-        mid = (lo + hi) / 2
-        if progress(mid) < p:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
+    return None if name == "linear" else partial(motion_curve_inverse, name)
 
 
 def allocate_fit_frames(weights: Sequence[float], total: int,
-                        progress: Callable[[float], float] | None = None) -> list[int]:
+                        inverse: Callable[[float], float] | None = None) -> list[int]:
     """Allocate exactly ``total`` frames, retaining one frame per required step.
 
     With no progress transform this is the existing largest-remainder allocator.
@@ -61,11 +46,11 @@ def allocate_fit_frames(weights: Sequence[float], total: int,
     whole = sum(weights)
     if not math.isfinite(whole):
         raise TimelineEditError("sequence fit weights must have a finite sum")
-    if progress is not None:
+    if inverse is not None:
         frame, cumulative, plan = 0, 0.0, []
         for i, weight in enumerate(weights[:-1]):
             cumulative += weight
-            ideal = total * _inverse_progress(progress, cumulative / whole)
+            ideal = total * inverse(cumulative / whole)
             boundary = min(total - (len(weights) - i - 1), max(frame + 1, math.floor(ideal + 0.5)))
             plan.append(boundary - frame)
             frame = boundary

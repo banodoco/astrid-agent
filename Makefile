@@ -74,6 +74,15 @@ renderer-parity:
 parity-guard:
 	@$(PY) -m pytest -q tests/parity/test_parity.py
 
+# Canonical declaration -> Python and shared Composition TypeScript primitives.
+# COMPOSITION_ROOT optionally updates/checks an admitted renderer checkout.
+.PHONY: generate-motion-curves check-motion-curves
+generate-motion-curves:
+	@$(PY) scripts/gen_motion_curves.py $(if $(COMPOSITION_ROOT),--composition-root "$(COMPOSITION_ROOT)")
+
+check-motion-curves:
+	@$(PY) scripts/gen_motion_curves.py --check $(if $(COMPOSITION_ROOT),--composition-root "$(COMPOSITION_ROOT)")
+
 # --- Full mirror of the CI deploy job (slow). Run before a release / when in doubt. ---
 ci: check editable wheel ci-mirror
 	@echo "✅ make ci: full CI deploy mirror passed — deploy should be green"

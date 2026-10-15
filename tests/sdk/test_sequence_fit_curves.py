@@ -8,7 +8,7 @@ import pytest
 
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline.sequence_fit import _inverse_progress, allocate_fit_frames
+from astrid.sdk.timeline.sequence_fit import allocate_fit_frames, fit_curve_inverse
 from astrid.sdk.timeline_checkout import Checkout
 from test_timeline_checkout import FPS, bundle
 from test_timeline_reflow_golden import _film_with_a_time_lapse
@@ -107,43 +107,43 @@ def test_generated_invalid_or_undersized_span_rejects_atomically(recipe):
 @pytest.mark.parametrize("mechanism", ["fixed", "generated"])
 def test_step_curve_rejects_noninvertible_progress(mechanism):
     tl = _generated(curve="step") if mechanism == "generated" else Checkout(_film_with_a_time_lapse())
+    before = tl.document()
     with pytest.raises(TimelineEditError, match="has no inverse progress"):
         tl.resolve() if mechanism == "generated" else tl.sequence("c3.step-02").fit(curve="step")
+    assert tl.document() == before
 
 
-@pytest.mark.parametrize("curve", ["in", "out", "in-out", "inOut", "ease-in", "ease-out", "ease-in-out"])
-def test_named_non_linear_curve_needs_admitted_function_identity(curve):
+@pytest.mark.parametrize("curve,canonical", [("in", "in"), ("out", "out"), ("in-out", "in-out"),
+    ("inOut", "in-out"), ("inout", "in-out"), ("in_out", "in-out"),
+    ("ease-in", "in"), ("ease-out", "out"), ("ease-in-out", "in-out")])
+def test_named_curve_fixed_membership_uses_declared_analytic_inverse(curve, canonical):
     tl = Checkout(_film_with_a_time_lapse())
-    with pytest.raises(TimelineEditError, match="is unavailable in this build; use linear"):
-        tl.sequence("c3.step-02").fit(curve=curve)
+    seq = tl.sequence("c3.step-02")
+    weights = [30, 15, 9, 6, 30]
+    seq.fit(until="end", shape=weights, curve=curve)
+    expected = allocate_fit_frames(weights, 90, fit_curve_inverse(canonical))
+    assert seq.frames == expected
+    assert intent.sequence_fit(seq.steps[0].data) == {"weights": weights, "curve": canonical}
+    assert seq.steps[-1].end == pytest.approx(9.0)
+    assert min(seq.frames) >= 1
+    before = tl.document()
+    tl.retime()
+    assert tl.document() == before
 
 
-def test_inverse_math_uses_existing_cubic_helper_equation_without_naming_it_a_fit_curve():
-    # Equation copied from elements/_shared/am.tsx easeOutCubic; this is a math
-    # check only. No source contract maps the authored name 'out' to that helper.
-    def progress(t):
-        return 1 - (1 - t) ** 3
-    assert _inverse_progress(progress, 0) == 0
-    assert _inverse_progress(progress, 1) == 1
-    assert _inverse_progress(progress, 0.875) == pytest.approx(0.5)
-    # normalized cumulative weights 7/8 -> inverse 1/2 -> boundary frame 4.
-    assert allocate_fit_frames([7, 1], 8, progress) == [4, 4]
-    assert allocate_fit_frames([1, 1, 100], 3, progress) == [1, 1, 1]
-    assert sum(allocate_fit_frames([1, 2, 3], 17, progress)) == 17
+@pytest.mark.parametrize("curve,weights,total,expected", [
+    ("in", [1, 3], 8, [4, 4]), ("out", [3, 1], 8, [4, 4]),
+    ("in-out", [1, 6, 1], 8, [2, 4, 2]),
+    ("out", [1, 1, 100], 3, [1, 1, 1]),
+])
+def test_named_inverse_boundaries_round_deterministically_and_keep_minima(curve, weights, total, expected):
+    assert allocate_fit_frames(weights, total, fit_curve_inverse(curve)) == expected
+    assert sum(expected) == total and min(expected) >= 1
 
 
-def test_generated_injected_inverse_math_curves_race_only_through_retime_and_refit(monkeypatch):
-    # Test-only injection of the existing am.tsx easeOutCubic equation. This
-    # exercises the consumer math, not an admitted binding of authored 'out'.
-    from astrid.sdk.timeline import _timing_evaluators as evaluator
-
-    original = evaluator.fit_curve_progress
-
-    def injected_progress(name):
-        return (lambda t: 1 - (1 - t) ** 3) if name == "out" else original(name)
-
-    monkeypatch.setattr(evaluator, "fit_curve_progress", injected_progress)
-    tl = _generated(curve="out")
+@pytest.mark.parametrize("curve", ["in", "out", "in-out"])
+def test_generated_named_inverse_curves_race_only_through_retime_and_refit(curve):
+    tl = _generated(curve=curve)
     for clip in tl.clips():
         if intent.sequence(clip.data):
             intent.set_cut(clip.data, "c1")  # exercise retime's cut-sequence relay
@@ -151,7 +151,10 @@ def test_generated_injected_inverse_math_curves_race_only_through_retime_and_ref
     seq = tl.sequence("seq-00")
     before = seq.frames
     assert before[0] == 12  # authored lead is outside the race transform
-    assert before[1] == 2   # cubic inverse at cumulative weight 6/27 rounds to frame 2
+    # The declared race has 27 frames and weights [6,4,2,...,2,1].
+    race_weights = [6, 4] + [2] * 8 + [1]
+    assert before[1:-1] == allocate_fit_frames(race_weights, 27, fit_curve_inverse(curve))
+    assert sum(before[1:-1]) == 27
     assert seq.steps[-1].start == pytest.approx(tl.word("viral").start)
     assert seq.steps[-1].end == pytest.approx(4.0)
     assert min(before) >= 1 and sum(before) == 120
@@ -169,3 +172,12 @@ def test_generated_injected_inverse_math_curves_race_only_through_retime_and_ref
     assert seq.steps[-1].end == pytest.approx(5.0)
     assert sum(seq.frames) == 150
     assert tl.resolve() == []
+
+
+@pytest.mark.parametrize("curve", ["in", "out", "in-out"])
+def test_named_curve_undersized_fixed_span_refuses_atomically(curve):
+    tl = Checkout(_film_with_a_time_lapse())
+    before = tl.document()
+    with pytest.raises(TimelineEditError, match="too short for 5 required steps"):
+        tl.sequence("c3.step-02").fit(until="+0.1s", curve=curve)
+    assert tl.document() == before

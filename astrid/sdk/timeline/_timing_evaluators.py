@@ -20,7 +20,7 @@ from astrid.sdk.timeline._common import (LOGICAL_PX, TimelineEditError, _norm, _
 from astrid.sdk.timeline.doc import (_clock, _get_path, _post, _read_words, _row_start, _set_length, _set_path, _set_row_start, _split_audio, _trim_end, _trim_front)
 from astrid.sdk.timeline.model import (Clip, Voice, Word, _MomentContext, music_keyword, music_policy, retime_scope)
 from astrid.sdk.timeline.selection import Selection
-from astrid.sdk.timeline.sequence_fit import allocate_fit_frames, fit_curve_progress
+from astrid.sdk.timeline.sequence_fit import allocate_fit_frames, fit_curve_inverse
 from astrid.sdk.timeline.units import (_unit_path, element_units, mark_offset_canvas)
 
 
@@ -728,7 +728,7 @@ class _TimingEvaluators:
             fit = intent.sequence_fit(steps[0].data)
             if not fit or "land" not in fit:
                 continue
-            progress = fit_curve_progress(str(fit.get("curve", "linear")))
+            inverse = fit_curve_inverse(str(fit.get("curve", "linear")))
             spec = fit.get("land")
             start, end = steps[0].start, steps[-1].end
             total = int(round((end - start) * self.fps))
@@ -760,7 +760,7 @@ class _TimingEvaluators:
                 left -= race[-1]
                 k += 1
             if race:
-                race = allocate_fit_frames(race, life - sum(lead), progress)
+                race = allocate_fit_frames(race, life - sum(lead), inverse)
             plan += [(cycle[(len(cycle) - 1 - (len(race) - 1 - i)) % len(cycle)], n) for i, n in enumerate(race)]
             plan.append((fit.get("then") or cycle[-1], total - life))
             current = [(c.asset, int(round(c.duration * self.fps))) for c in steps]
@@ -966,9 +966,9 @@ class _TimingEvaluators:
             raise TimelineEditError("sequence fit weights must match its membership")
         # Generated recipes own a race-only curve in _fit_sequences. The
         # full-span relay preserves lead/landing and the already rounded race.
-        progress = None if "land" in recipe else fit_curve_progress(str(recipe.get("curve", "linear")))
+        inverse = None if "land" in recipe else fit_curve_inverse(str(recipe.get("curve", "linear")))
         total = int(round(length * self.fps))
-        plan = allocate_fit_frames(frames, total, progress)
+        plan = allocate_fit_frames(frames, total, inverse)
         frame = int(round(at * self.fps))
         for clip, n in zip(steps, plan):
             clip["at"] = _r(frame / self.fps)

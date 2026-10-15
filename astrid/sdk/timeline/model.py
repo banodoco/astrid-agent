@@ -855,14 +855,14 @@ class StepSequence(_Suggest):
         ``curve`` persists a named fit curve with the original weights; re-fitting
         never derives a new shape from rounded output. Linear retains the legacy allocator."""
         from astrid.sdk.timeline.checkout import Checkout
-        from astrid.sdk.timeline.sequence_fit import fit_curve_name, fit_curve_progress
+        from astrid.sdk.timeline.sequence_fit import fit_curve_name, fit_curve_inverse
 
         steps = self.steps
         if not steps:
             raise TimelineEditError(f"no sequence {self.id!r}")
         named_curve = fit_curve_name(curve) if curve is not None else None
         if named_curve is not None:
-            fit_curve_progress(named_curve)  # fail before changing the recipe if no function is admitted
+            fit_curve_inverse(named_curve)  # validate before changing the recipe
         recipe = intent.sequence_fit(steps[0].data) or {}
         frames = list(shape) if shape else None
         if shape_from is not None:

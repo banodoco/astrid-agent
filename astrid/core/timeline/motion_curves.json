@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "curves": {
+    "linear": {"family": "linear", "inverse": true, "aliases": []},
+    "in": {"family": "quadratic-in", "inverse": true, "aliases": ["ease-in"]},
+    "out": {"family": "quadratic-out", "inverse": true, "aliases": ["ease-out"]},
+    "in-out": {"family": "quadratic-in-out", "inverse": true, "aliases": ["inOut", "inout", "in_out", "ease-in-out"]},
+    "step": {"family": "hold-until-end", "inverse": false, "aliases": []}
+  }
+}
