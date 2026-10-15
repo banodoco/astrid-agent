@@ -19,6 +19,7 @@ type VisualClipProps = {
   track: TrackDefinition;
   assetEntry?: AssetRegistryEntry;
   fps: number;
+  applyOpacity?: boolean;
 };
 
 const toRenderableFileUrl = (file: string | undefined): string | null => {
@@ -33,7 +34,7 @@ const toRenderableFileUrl = (file: string | undefined): string | null => {
   return staticFile(file);
 };
 
-export const VisualClip: FC<VisualClipProps> = ({clip, track, assetEntry, fps}) => {
+export const VisualClip: FC<VisualClipProps> = ({clip, track, assetEntry, fps, applyOpacity = true}) => {
   const {width: compositionWidth, height: compositionHeight} = useVideoConfig();
   const fileUrl = toRenderableFileUrl(assetEntry?.file);
   if (!fileUrl || !assetEntry) {
@@ -54,7 +55,8 @@ export const VisualClip: FC<VisualClipProps> = ({clip, track, assetEntry, fps}) 
   const effectiveVolume = track.muted
     ? 0
     : getSanitizedVolume(track.volume ?? 1) * getSanitizedVolume(clip.volume ?? 1);
-  const opacity = useFadeOpacity(clip, fps) * (clip.opacity ?? 1);
+  const fadedOpacity = useFadeOpacity(clip, fps) * (clip.opacity ?? 1);
+  const opacity = applyOpacity ? fadedOpacity : undefined;
   const mixBlendMode = track.blendMode && track.blendMode !== 'normal' ? track.blendMode : undefined;
   const isImage = assetEntry.type?.startsWith('image');
 

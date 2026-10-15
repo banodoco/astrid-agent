@@ -57,3 +57,20 @@ export {
   DEFAULT_THEME,
 } from "./ThemeContext";
 export type { Theme, RuntimeTheme } from "./ThemeContext";
+
+export {keyframeOrigin, timelineKeyframeTime, spriteKeyframeFrame, declareKeyframeOrigin} from './lib/keyframe-origin';
+export type {KeyframeClock} from './lib/keyframe-origin';
+export {loopPhase, positiveModulo, spriteSheetIndex} from './lib/beat-loop';
+export type {ResolvedLoop} from './lib/beat-loop';
+
+export {MODIFIER_REGISTRY, composeModifiers, declareModifier, ModifierAdmissionError} from './modifiers';
+export {mediaModifierBounds} from './lib/modifier-bounds';
+export type {
+  ClipModifierReference, ModifierBounds, ModifierContext, ModifierDeclaration,
+  ModifierDefinition, ModifierFinding, ModifierProps, ModifierRegistry,
+} from './modifier-types';
+
+export {interpolateKeyframeInterval} from './lib/keyframe-easing';
+export type {KeyframeValue} from './lib/keyframe-easing';
+export {motionCurveName, motionCurveProgress, motionCurveInverse} from './lib/motion-curves.generated';
+export type {MotionCurveName} from './lib/motion-curves.generated';
