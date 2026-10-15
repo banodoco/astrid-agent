@@ -25,7 +25,16 @@ def test_status_absent_draft_reports_head_without_creating(tmp_path, monkeypatch
     assert parsed.handler(parsed) == 0
     payload = _json_result(capsys)
     assert payload["ok"] is True
-    assert payload["data"] == {
+    data = dict(payload["data"])
+    sync = {key: data.pop(key) for key in ("base_state", "observed_head", "observed_publication_id", "accepted_revision", "accepted_state", "unimported_external_revisions", "external_state", "conflicts", "conflict_state", "choices", "sync_error")}
+    assert sync["observed_head"] == data["current_head"]
+    assert sync["accepted_revision"] is None
+    if data["working_copy"] == "absent":
+        assert data.pop("base_revision") is None
+        assert sync["accepted_state"] == sync["external_state"] == sync["conflict_state"] == "absent"
+    else:
+        assert sync["accepted_state"] == sync["external_state"] == sync["conflict_state"] == "unknown"
+    assert data == {
         "timeline_id": "t1",
         "current_head": "head-2",
         "draft": "main",
@@ -75,7 +84,16 @@ def test_status_existing_draft_reports_base_head_changes_and_check(tmp_path, mon
     assert parsed.handler(parsed) == 0
     payload = _json_result(capsys)
     assert payload["ok"] is True
-    assert payload["data"] == {
+    data = dict(payload["data"])
+    sync = {key: data.pop(key) for key in ("base_state", "observed_head", "observed_publication_id", "accepted_revision", "accepted_state", "unimported_external_revisions", "external_state", "conflicts", "conflict_state", "choices", "sync_error")}
+    assert sync["observed_head"] == data["current_head"]
+    assert sync["accepted_revision"] is None
+    if data["working_copy"] == "absent":
+        assert data.pop("base_revision") is None
+        assert sync["accepted_state"] == sync["external_state"] == sync["conflict_state"] == "absent"
+    else:
+        assert sync["accepted_state"] == sync["external_state"] == sync["conflict_state"] == "unknown"
+    assert data == {
         "timeline_id": "t1",
         "current_head": "head-3",
         "draft": "working",

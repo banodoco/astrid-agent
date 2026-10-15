@@ -113,19 +113,26 @@ def _locked(checkout):
     path = Path(checkout.path)
     log = journal.journal_path(checkout.bundle["project_id"], checkout.bundle["timeline_id"])
     with store._file_lock(path), journal._locked(log):
-        if not log.is_file() or journal.verify(log):
-            raise SavedIntentError("publish journal is missing or damaged; run timelines log --verify")
-        rows = [_finite_json(line) for line in log.read_text(encoding="utf-8").splitlines()]
-        ids = [row.get("id") for row in rows if isinstance(row, dict)]
-        if (len(ids) != len(rows) or len(set(ids)) != len(ids) or
-                any(not isinstance(i, str) or not i for i in ids) or
-                any(row.get("v") != journal.VERSION or not isinstance(row.get("draft"), str)
-                    or not row["draft"] for row in rows)):
-            raise SavedIntentError("publish journal has ambiguous identities/version/draft scope")
-        if any(row.get("project") != checkout.bundle["project_id"] or
-               row.get("timeline") != checkout.bundle["timeline_id"] for row in rows):
-            raise SavedIntentError("publish journal has wrong project/timeline scope")
-        yield path, log, [row for row in rows if row.get("draft") == path.stem]
+        rows = read_rows(checkout, log.read_text(encoding="utf-8") if log.is_file() else "")
+        yield path, log, rows
+
+
+def read_rows(checkout, text):
+    """Validate a detached journal snapshot for this exact draft scope."""
+    if not text or journal.verify_text(text):
+        raise SavedIntentError("publish journal is missing or damaged; run timelines log --verify")
+    rows = [_finite_json(line) for line in text.splitlines()]
+    ids = [row.get("id") for row in rows if isinstance(row, dict)]
+    if (len(ids) != len(rows) or len(set(ids)) != len(ids) or
+            any(not isinstance(i, str) or not i for i in ids) or
+            any(row.get("v") != journal.VERSION or not isinstance(row.get("draft"), str)
+                or not row["draft"] for row in rows)):
+        raise SavedIntentError("publish journal has ambiguous identities/version/draft scope")
+    if any(row.get("project") != checkout.bundle["project_id"] or
+           row.get("timeline") != checkout.bundle["timeline_id"] for row in rows):
+        raise SavedIntentError("publish journal has wrong project/timeline scope")
+    return [row for row in rows if row.get("draft") == Path(checkout.path).stem]
+
 
 
 def _state(rows):
@@ -168,11 +175,20 @@ def _state(rows):
 
 
 def _append(log, checkout, evidence, *, outcome="custody", before=None, after=None, reason=None):
+    # Acceptance identity comes only from the verified Runtime receipt.
+    actor = dict(kind="unknown", id="unknown", session=None)
+    for item in evidence:
+        if item.get("kind") == "publish-result-v1" and item.get("document") is not None:
+            publisher = (item["result"].get("runtime_receipt") or {}).get("publisher")
+            if isinstance(publisher, str) and publisher.startswith(("agent:", "human:")):
+                kind, _, identity = publisher.partition(":")
+                if identity:
+                    actor = dict(kind=kind, id=identity, session=None)
     return journal._append_locked(
         log, project=checkout.bundle["project_id"], timeline=checkout.bundle["timeline_id"],
         draft=Path(checkout.path).stem, kind="publish", outcome=outcome, label="publish",
         # Local environment assertions never become publisher identity.
-        actor=dict(kind="unknown", id="unknown", session=None),
+        actor=actor,
         source=dict(via="publish", detail="saved COMMIT"), before=before, after=after,
         evidence=evidence, reason=reason)
 

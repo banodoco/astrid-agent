@@ -147,6 +147,22 @@ def _read_saved_calls_locked(checkout, target, path):
                     "publish-intent-v1", "publish-result-v1"}
                 for item in row["evidence"]):
             continue
+        refreshes = [e for e in row.get("evidence", []) if isinstance(e, Mapping) and e.get("kind") == "saved-refresh-v1"]
+        if refreshes:
+            from astrid.sdk.timeline.rebase import rebase
+            bases = [e for e in row["evidence"] if isinstance(e, Mapping) and e.get("kind") == "saved-base-v1"]
+            if (len(refreshes) != 1 or len(bases) != 1 or row.get("kind") != "save"
+                    or row.get("outcome") != "changed" or row.get("before") != after):
+                _refuse("Saved refresh has ambiguous base or discontinuous provenance")
+            refreshed = rebase(calls, bases[0]["document"], id_map=refreshes[0].get("id_map"))
+            if refreshed.conflicts or [c.to_json() for c in refreshed.plan.calls] != row.get("calls"):
+                _refuse("Saved refresh does not replay the original recorded commands")
+            replay = Checkout(refreshed.document)
+            replay._sync_film_length()
+            if journal.digest(_serialize(replay._annotated())) != row.get("after"):
+                _refuse("Saved refresh commands do not reproduce the recorded result")
+            after, calls = row["after"], copy.deepcopy(row["calls"])
+            continue
         # Some surfaces retain both an edit audit and its durable save.
         # Only an exact duplicate of a proved save may be ignored; it cannot
         # substitute for a missing save or add a second command application.

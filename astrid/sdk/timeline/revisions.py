@@ -40,6 +40,20 @@ class Revision:
     is_current_head: bool | None = None
 
 
+def publisher_identity(provenance: Any) -> str | None:
+    """Display the accepted authenticated publisher; never promote asserted_actor."""
+    if not isinstance(provenance, Mapping):
+        return None
+    publisher = provenance.get("publisher")
+    if isinstance(publisher, str) and publisher:
+        return publisher
+    if isinstance(publisher, Mapping):
+        kind, identity = publisher.get("kind"), publisher.get("id")
+        if kind in {"agent", "human"} and isinstance(identity, str) and identity:
+            return f"{kind}:{identity}"
+    return None
+
+
 def revision_source(revision_id: str, provenance: Any = _UNREPORTED_PROVENANCE) -> str:
     # Publication provenance wins over the immutable content revision's name.
     # In particular restore republishes old bytes; it does not rename them.
@@ -88,6 +102,22 @@ class RuntimeRevisions(RevisionStore):
                 raise TimelineEditError(f"could not read the head of {timeline!r} in {project!r}: {detail}")
             raise TimelineEditError(f"no revision {revision_id!r} on {timeline!r} in {project!r}: {detail}")
         return opened.data
+
+    def head_state(self, project: str, timeline: str) -> dict[str, Any]:
+        """Compact head only: callers supply canonical IDs; never open a closure."""
+        read = getattr(self._client, "head_canonical", None) or getattr(self._client, "head", None)
+        if not callable(read):
+            raise TimelineEditError("this Runtime client has no compact head API")
+        result = read(project, timeline)
+        data = getattr(result, "data", result)
+        if not getattr(result, "ok", True) or not isinstance(data, Mapping):
+            raise TimelineEditError("could not read compact Runtime head")
+        revision = data.get("revision_id")
+        if revision is not None and not _text(revision):
+            raise TimelineEditError("invalid compact Runtime revision identity")
+        if "revision_id" not in data:
+            raise TimelineEditError("compact Runtime head omitted revision identity")
+        return {key: data.get(key) for key in ("revision_id", "publication_id", "updated_at")}
 
     def head(self, project: str, timeline: str) -> str:
         compact_head = getattr(self._client, "head", None)
