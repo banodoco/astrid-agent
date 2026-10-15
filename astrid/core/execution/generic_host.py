@@ -601,15 +601,11 @@ class _ManagedWanChildAdapter:
         self._diagnostic: Any = None
 
     def start(self) -> None:
-        # This retained engine requires a regular-file ownership lock, whereas
-        # the current immutable launch contract admits only pipe descriptors.
-        # Moving that lock into this host alone is insufficient: current
-        # verify_tree_absent proves the retained observed set and original
-        # group, not an exhaustive history of untrusted setsid descendants.
-        # test_wan_custody_limits preserves the real-process counterexample
-        # and the trampoline's inherited socket. Neither is Wan release proof.
-        # Do not keep an unrestricted engine fallback while that contract is
-        # unresolved. The attempt workload paths below consume WP1 directly.
+        # The native creation-control experiment below supplies a narrower
+        # real-launch policy, not an admitted engine or crash-recovery proof.
+        # In particular, losing the designated cleanup actor still prevents
+        # safe settlement/reacquisition. Keep the original descendant canaries
+        # and refusal until those independent obligations are demonstrated.
         raise HostError("retained Wan launch has no compatible confinement descriptor contract")
 
     def _write(self, frame: Mapping[str, Any], deadline: float) -> None:
@@ -1916,6 +1912,7 @@ class _ConfinementPolicy:
     environment: _SandboxEnvironmentPolicy
     network: _SandboxNetworkPolicy = field(default_factory=_SandboxNetworkPolicy)
     pass_fds: tuple[int, ...] = ()
+    workload_process_creation: bool = True
 
 
 @dataclass(frozen=True)
@@ -1931,12 +1928,36 @@ class _ConfinedLaunchPlan:
     cwd: Path
     environment: tuple[tuple[str, str], ...]
     pass_fds: tuple[int, ...]
+    retained_process_only: bool = False
 
     def subprocess_options(self) -> dict[str, Any]:
-        return {"cwd": str(self.cwd), "env": dict(self.environment),
+        options: dict[str, Any] = {"cwd": str(self.cwd), "env": dict(self.environment),
                 "close_fds": True, "pass_fds": self.pass_fds,
                 "stdin": subprocess.PIPE, "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE}
+        if self.retained_process_only:
+            # No command-inventory IPC may mint helpers outside this topology.
+            # Only popen_owned_{process,group} consumes this private option.
+            options["_delegate_inventory"] = False
+        return options
+
+
+def _wan_creation_control_launch_plan(
+    argv: Sequence[str], *, policy: _ConfinementPolicy,
+    parent_environment: Mapping[str, str] | None = None,
+) -> _ConfinedLaunchPlan:
+    """Bounded native experiment at the retained Wan owned-launch seam.
+
+    Host code selects this function; no engine spec, MCP/config or environment
+    switch can weaken it. Production start remains held for engine admission
+    and recoverable ownership. No helper operation has yet been admitted.
+    """
+    if type(policy) is not _ConfinementPolicy:
+        raise HostError("required confinement policy is missing or invalid")
+    return _confined_launch_plan(
+        argv, policy=replace(policy, workload_process_creation=False),
+        parent_environment=parent_environment,
+    )
 
 
 def _confined_launch_plan(
@@ -1952,6 +1973,8 @@ def _confined_launch_plan(
     """
     if type(policy) is not _ConfinementPolicy:
         raise HostError("required confinement policy is missing or invalid")
+    if type(policy.workload_process_creation) is not bool:
+        raise HostError("invalid confinement process creation policy")
 
     def items(value: Any, name: str) -> tuple:
         if type(value) is not tuple:
@@ -2038,6 +2061,8 @@ def _confined_launch_plan(
         raise HostError("caller broker endpoint is not authorized by host policy")
     if broker is not None:
         network.append(broker)
+    if not policy.workload_process_creation and (network or policy.pass_fds):
+        raise HostError("retained process policy has no admitted delegation channels")
 
     if type(policy.environment) is not _SandboxEnvironmentPolicy:
         raise HostError("invalid confinement environment policy")
@@ -2080,7 +2105,12 @@ def _confined_launch_plan(
     sandbox = shutil.which("/usr/bin/sandbox-exec")
     if sandbox != "/usr/bin/sandbox-exec":
         raise HostError("required confinement needs the host sandbox-exec backend")
-    rules = ["(version 1)", "(deny default)", "(allow process*)", "(allow sysctl-read)"]
+    process_rules = (["(allow process*)"] if policy.workload_process_creation else
+                     ["(allow process-exec)", "(deny process-fork)"])
+    # SETEXEC of this same process retains Seatbelt. The existing authenticated
+    # monotonic birth fence handles exec token changes during live custody.
+    # No mach-lookup, IPC, socket, process-fork or broad process grant is added.
+    rules = ["(version 1)", "(deny default)", *process_rules, "(allow sysctl-read)"]
     # Nonrecursive bootstrap metadata exceptions, shared with the spike model.
     ancestors = sorted({p for resource in (*reads, *writes, private, *bootstrap_roots, *file_aliases)
                         for p in resource.parents}, key=str)
@@ -2094,7 +2124,8 @@ def _confined_launch_plan(
     rules.extend(f'(allow network-outbound (remote tcp "{p}"))' for p in dict.fromkeys(network))
     profile = "\n".join(rules) + "\n"
     return _ConfinedLaunchPlan((sandbox, "-p", profile, str(executable), *argv[1:]),
-                               working, tuple(sorted(env.items())), descriptors)
+                               working, tuple(sorted(env.items())), descriptors,
+                               retained_process_only=not policy.workload_process_creation)
 
 
 def _filesystem_sandbox_profile(policy: _FilesystemSandboxPolicy, attempt: Path) -> str:
