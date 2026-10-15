@@ -1,0 +1,14 @@
+id: structure.lift.layers-remove
+source: CUTS spec-timing 6.3
+intent: Lift c2, extend c1's picture, and remove its layers while leaving cut-free music unchanged.
+fixture: cuts-reserved
+expect: change
+cli: lift c2 --layers remove
+sheet:
+  text: 'edit {"op":"cut.lift","select":"c2","args":{"layers":"remove"}}'
+python: |
+  tl.cut("c2").lift(layers="remove")
+check:
+  - abs(tl.duration - 8.0) < 1e-6
+  - abs(tl.clip("c1.plate").end - 8.0) < 1e-6
+  - all(c.cut_id is None for c in tl.clips(audio=True))

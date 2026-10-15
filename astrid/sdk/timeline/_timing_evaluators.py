@@ -224,15 +224,17 @@ class _TimingEvaluators:
         before[new["id"]] = gap_new
         out = [f"inserted line {segment} at {first:.3f} s ({new_words[-1][1] - new_words[0][0]:.3f} s of speech)"]
         out += self.reflow(gaps=before)
-        holding = next((g["id"] for g in reversed(self._cut_groups()) if g["start"] <= first + 1e-6), None)
+        holding = next((g["id"] for g in reversed(self.cut_index.groups(self)) if g["start"] <= first + 1e-6), None)
         if holding:
             out.append(f"  {segment} has no cut of its own yet: {holding}'s picture holds over it "
                        f"(re-home an orphan cut onto it: --cut cNN --on '\"{new_words[0][2]}\" in {segment}')")
         return out
 
     @music_keyword
-    def remove_line(self, segment: str) -> list[str]:
-        """Remove a VO line, what is on screen only for it, and its silence; everything after moves up."""
+    def remove_line(self, segment: str, *, visuals: str = "orphan") -> list[str]:
+        """Remove a line and its gap; orphan its picture cuts or lift them with visuals=remove."""
+        if visuals not in {"orphan", "remove"}:
+            raise TimelineEditError("visuals must be orphan or remove")
         line = Voice(self, segment)
         lines = self.lines()
         index = next(i for i, v in enumerate(lines) if v.segment == segment)
@@ -242,8 +244,49 @@ class _TimingEvaluators:
             end = self._frame(lines[index + 1].clips[0].start)
         else:
             end = line.speech_end + (line.gap_after or 0.0)
+        if visuals == "remove":
+            doomed = set()
+            # A picture opening on this line belongs to the visual choice
+            # even when its tail extends beyond the spoken removal window.
+            for group in self.cut_index.groups(self):
+                picture = group['picture']
+                on = intent.on(picture.data) if picture else None
+                if not on:
+                    continue
+                try:
+                    moment = mo.parse(on)
+                    while moment.base is not None:
+                        moment = moment.base
+                    runs = mo.find_words(moment, self.words()) if moment.kind == 'word' else []
+                except mo.MomentError:
+                    runs = []
+                if runs and all(all(word.segment == segment for word in run) for run in runs):
+                    doomed.add(group['id'])
+            for sid in self._shot_ids():
+                offset = self._shot_start(sid)
+                doomed.update(self.cut_index.doomed_cuts(self, sid, start-offset, end-offset))
+            for cid in reversed([g['id'] for g in self.cut_index.groups(self) if g['id'] in doomed]):
+                groups = self.cut_index.groups(self)
+                if groups and groups[0]['id'] == cid:
+                    # A removed opening line has no preceding picture to hold.
+                    # The surviving next picture becomes the opener after ripple.
+                    for member in self._cut_clips(cid):
+                        member._remove_raw()
+                    next_id = groups[1]['id'] if len(groups) > 1 else None
+                    chapters = intent.chapters(self.bundle)
+                    intent.set_chapters(self.bundle, [dict(ch, **{'from': next_id}) if ch.get('from') == cid else ch
+                                                       for ch in chapters if ch.get('from') != cid or next_id])
+                else:
+                    held = self._lift_cut(self.cut(cid), layers="remove")
+                    following = next((g['id'] for g in self.cut_index.groups(self)
+                                      if g['start'] > held.start + .5/self.fps), None)
+                    # The lifted hold follows the surviving boundary through
+                    # ripple, rather than keeping a pre-delete literal end.
+                    intent.set_until(held.picture.data, following)
+                    if following is None:
+                        intent.set_for(held.picture.data, max(1/self.fps, held.duration - (end-start)))
         for clip in line.clips:
-            clip.remove()
+            clip._remove_raw()
         self._kept = []
         self._orphan_reason = f"line {segment} was removed"
         notes_before = len(self.notes)
@@ -333,7 +376,7 @@ class _TimingEvaluators:
         moved: dict[int, tuple[str, float, float]] = {}
         self._moved_ends: dict[str, tuple[float, float]] = {}
         self._mcache = None
-        groups = self._cut_groups()
+        groups = self.cut_index.groups(self)
         orphan_cuts: set[str] = set()
         sequences: dict[str, list[Clip]] = {}
         for clip in self.clips():
@@ -355,7 +398,7 @@ class _TimingEvaluators:
                 self._mcache = None
         cut_span = self._cut_spans(skip=orphan_cuts)
         for cid in orphan_cuts:
-            group = next(g for g in self._cut_groups() if g["id"] == cid)
+            group = next(g for g in self.cut_index.groups(self) if g["id"] == cid)
             cut_span[cid] = (group["start"], group["picture"].end if group["picture"] else None)
         self._orphan_cuts = orphan_cuts
         self._mcache = {"cuts": cut_span}
@@ -747,7 +790,7 @@ class _TimingEvaluators:
             rows = self._internal(sid)["clips"]
             at = _num(template.get("at"))
             for c in steps:
-                c.remove()
+                c._remove_raw()
             frame = 0
             for i, (asset, n) in enumerate(plan):
                 new = copy.deepcopy(template)
@@ -971,25 +1014,7 @@ class _TimingEvaluators:
     def _doomed_cuts(self, sid: str, ra: float, rb: float, skip_ids: set[int]) -> set[str]:
         """Cuts whose every picture clip in this shot lies wholly inside the window [ra, rb] and would be removed
         with it: an anchored clip on such a cut has nothing left to follow."""
-        from astrid.core.timeline import onscreen
-        from astrid.sdk.timeline.check import element_coverage_cached
-
-        tol = 0.5 / self.fps
-        dying: dict[str, bool] = {}
-        clips = self._internal(sid)["clips"]
-        elements = element_coverage_cached({c["clipType"] for c in clips if c.get("clipType")})
-        for clip in clips:
-            cid = intent.cut_of(clip)
-            if not cid or self._is_audio(sid, clip):
-                continue
-            # a picture (or a background plate, which still covers the canvas), decided by element data
-            if onscreen.role_of(clip, clip.get("track"), elements) not in ("picture", "background"):
-                continue
-            cs = _num(clip.get("at"))
-            ce = cs + clip_duration(clip)
-            dies = id(clip) not in skip_ids and not intent.orphan(clip) and cs >= ra - tol and ce <= rb + tol
-            dying[cid] = dying.get(cid, True) and dies
-        return {cid for cid, dies in dying.items() if dies}
+        return self.cut_index.doomed_cuts(self, sid, ra, rb, skip_ids)
 
     def _anchor_survives(self, sid: str, clip: dict[str, Any], doomed: set[str]) -> bool:
         """Whether a clip's anchor still exists now: its moment still resolves, else its cut is not doomed."""

@@ -39,7 +39,7 @@ def _validate_dependencies(tl):
     from astrid.sdk import timeline_intent as intent
 
     clips = list(tl.clips())
-    groups = tl._cut_groups()
+    groups = tl.cut_index.groups(tl)
     graph = {}
     addresses = Counter(c.address for c in clips)
     cut_ids = {g['id'] for g in groups}

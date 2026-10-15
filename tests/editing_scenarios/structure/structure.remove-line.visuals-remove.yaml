@@ -1,0 +1,14 @@
+id: structure.remove-line.visuals-remove
+source: CUTS spec-timing 6.3
+intent: Remove a narration line and lift its picture cut instead of leaving its visual members as orphans.
+fixture: cuts-lines
+expect: change
+cli: edit --remove-line s2 --visuals remove
+sheet:
+  text: 'edit {"op":"timeline.remove-line","select":null,"args":{"segment":"s2","visuals":"remove"}}'
+python: |
+  tl.remove_line("s2", visuals="remove")
+check:
+  - not tl._cut_clips("c2")
+  - not any(line.segment == "s2" for line in tl.lines())
+  - all(c.cut_id is None for c in tl.clips(audio=True))

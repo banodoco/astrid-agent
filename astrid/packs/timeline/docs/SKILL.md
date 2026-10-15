@@ -95,3 +95,14 @@ The generated flag-to-operation table is `tests/parity/edit-command-flags.json`.
 
 The older explicit `with checkout.edit(label, dry_run=True)` audit API retains
 its existing dry-run audit record. Executable command/CLI previews write none.
+
+## Cut structure
+
+Split through `timelines edit TL --project P --split c07 --on MOMENT`. Lift
+through `timelines lift TL c24 --project P --layers stay` (or `--layers remove`).
+The preceding picture holds across the lifted span, and chapter starts move to
+the preceding cut. A picture `--remove` is refused with the lift spelling.
+To keep a cut as a generation or replacement slot, clear its picture asset;
+lift merges its boundary into the preceding cut. Narrated removal accepts `--remove-line n22 --visuals remove` to lift affected
+picture cuts, or `--visuals orphan` to retain and flag them. Display ordinals remain valid
+inputs; commands store stable cut ids. See [the derived cut index](../../../../docs/cut-index.md).

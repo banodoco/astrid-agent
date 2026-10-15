@@ -94,8 +94,7 @@ def test_removing_a_line_keeps_its_cut_as_orphans_the_music_ending_and_blocks_pu
 def test_rehoming_the_orphans_unblocks_the_check():
     tl = Checkout(film())
     tl.remove_line("s2")
-    for name in ("c2.field", "c2.live", "c2.dot"):
-        tl.clip(name).remove()
+    tl.cut("c2").lift(layers="remove")
     tl.clip("c3.card").set(delay=0.2)  # a fixed value replaces the orphaned formula
     assert tl.orphans() == []
     check = tl.check()
@@ -125,7 +124,9 @@ def test_an_orphan_can_be_kept_or_rehomed_on_a_new_word():
     tl.remove_line("s2")
     tl.clip("c2.live").on('"back"')  # re-homed: it now enters on a word of the next line
     tl.clip("c2.dot").keep()         # accepted where it is
-    tl.clip("c2.field").remove()
+    # Keep the orphan-layer fixture's c2 identity while simulating a
+    # missing imported picture; public lift deliberately re-homes layers.
+    tl.clip("c2.field")._remove_raw()
     tl.clip("c3.card").set(delay=0.2)
     assert tl.orphans() == []
     assert tl.clip("c2.live").start == pytest.approx(tl.word("back").start, abs=1 / FPS)
@@ -232,7 +233,9 @@ def test_a_picture_gap_blocks_publishing_and_says_what_is_left_on_screen():
     tl = Checkout(film())
     tl.resolve()
     assert tl.picture_gaps() == []
-    tl.clip("c2.field").remove()
+    # Simulate an admitted document with a missing picture. The public
+    # remove command refuses this; lift would fill the gap being tested.
+    tl.clip("c2.field")._remove_raw()
     gaps = tl.picture_gaps()
     assert len(gaps) == 1 and gaps[0].startswith("4.000–6.000 s") and "c2.live" in gaps[0]
     assert any(line.startswith("picture") for line in tl.check().blocking)

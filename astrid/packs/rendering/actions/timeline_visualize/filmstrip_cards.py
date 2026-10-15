@@ -739,12 +739,13 @@ def total_frames_of(snapshot: Mapping) -> int:
 
 def picture_cut_frames(snapshot: Mapping, fps: Fraction, total: int) -> list[dict]:
     """The shared picture cuts (``astrid.core.timeline.cuts``) on this render's frame clock."""
-    from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot, picture_cuts
+    from astrid.core.timeline.cuts import cut_sample_time, occurrences_from_snapshot
+    from astrid.core.timeline.cut_index import cut_index
 
     from .motion.model import elements_from_occurrences, words
 
     occurrences = occurrences_from_snapshot(snapshot)
-    cuts = picture_cuts(occurrences, fps=float(fps))
+    cuts = cut_index(occurrences, fps=float(fps)).rows
     spoken = words(elements_from_occurrences(occurrences))
     rows = []
     for cut in cuts:

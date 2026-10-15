@@ -455,7 +455,7 @@ def selected_ids(tl, owner, kind):
 def recorded_owner(tl, call, kind):
     if kind == "cut":
         sid = call.resolved[0]
-        if not sid.startswith("cut:") or not any(g["id"] == sid[4:] for g in tl._cut_groups()):
+        if not sid.startswith("cut:") or not any(g["id"] == sid[4:] for g in tl.cut_index.groups(tl)):
             raise SemanticConflict("delete-vs-edit", sid, "", None, None, call.args)
         return tl.cut(sid[4:])
     states = entity_states(tl)
@@ -587,7 +587,7 @@ def entity_states(tl):
     if "clips" in result["parent"]:
         result["parent"]["clips"] = [c for c in result["parent"]["clips"]
                                      if f"parent/clip:{c.get('id')}" not in claimed]
-    for group in tl._cut_groups():
+    for group in tl.cut_index.groups(tl):
         result[f"cut:{group['id']}"] = copy.deepcopy(tl.cut_note(group['id']))
     return result
 
@@ -770,7 +770,7 @@ def capture_binding(tl, text, clip, bindings):
         else:
             cut = moment.cut or (intent.cut_of(clip.data) if clip else None)
             if cut is None and moment.kind == "end":
-                groups = tl._cut_groups()
+                groups = tl.cut_index.groups(tl)
                 cut = groups[-1]["id"] if groups else None
             cut = tl._cut_id(cut) or cut if cut else None
             if not cut:
@@ -951,11 +951,12 @@ for _operation, _names in {
     "clip.set-look": "entrance exit fade_in fade_out opacity volume gain_db",
     "clip.on": "on", "clip.enter-at": "at at_word", "clip.until": "until",
     "clip.set-duration": "for_seconds", "clip.extend": "extend", "clip.nudge": "nudge nudge_frames",
+    "cut.lift": "lift layers",
     "timeline.close-gap": "close_gap_before", "cut.split": "split cut_id picture", "timeline.add-cut": "add_cut after",
     "timeline.set-cut-note": "why hold", "sequence.fit": "fit_sequence shape_from",
     "timeline.film-end": "film_end", "timeline.retime": "retime", "timeline.insert-time": "insert",
     "clip.keep": "keep", "clip.clear-asset": "clear_asset", "clip.set-beats": "beats",
-    "voice.set-gap-after": "gap_after", "timeline.remove-line": "remove_line",
+    "voice.set-gap-after": "gap_after", "timeline.remove-line": "remove_line visuals",
     "voice.replace": "replace_line take words line_text", "timeline.insert-line": "insert_line insert_gap_after",
     "timeline.apply-script": "from_script takes script_gaps", "clip.swap-asset": "swap_asset",
     "timeline.replace-asset": "replace_asset", "clip.remove-layer": "remove",

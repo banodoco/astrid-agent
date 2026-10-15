@@ -1,0 +1,13 @@
+id: structure.remove.picture-refused
+source: CUTS spec-timing 6.3
+intent: Explicit picture removal refuses atomically and directs every front end to lift.
+fixture: tiny
+expect: refused
+cli: edit --clip c2.plate --remove
+sheet:
+  text: 'edit {"op":"clip.remove","select":"c2.plate","args":{}}'
+python: |
+  tl.clip("c2.plate").remove()
+check:
+  - tl.clip("c2.plate") is not None
+  - abs(tl.duration - 8.0) < 1e-6

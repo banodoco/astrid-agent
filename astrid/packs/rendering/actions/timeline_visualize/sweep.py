@@ -51,10 +51,11 @@ def plan_sweep(published: Mapping[str, Any], working: Mapping[str, Any], fps: fl
     """Pair cut samples by cut identity and relative position, including re-flowed cuts."""
     if not math.isfinite(float(fps)) or float(fps) <= 0:
         raise ValueError("fps must be a positive finite number")
-    from astrid.core.timeline.cuts import occurrences_from_snapshot, picture_cuts
+    from astrid.core.timeline.cuts import occurrences_from_snapshot
+    from astrid.core.timeline.cut_index import cut_index
 
-    before_cuts = picture_cuts(occurrences_from_snapshot(published), fps=fps)
-    after_cuts = picture_cuts(occurrences_from_snapshot(working), fps=fps)
+    before_cuts = cut_index(occurrences_from_snapshot(published), fps=fps).rows
+    after_cuts = cut_index(occurrences_from_snapshot(working), fps=fps).rows
     before, after = dict(_keyed(before_cuts)), dict(_keyed(after_cuts))
     rows: list[dict[str, Any]] = []
     for key in sorted(set(before) | set(after), key=lambda item: min(

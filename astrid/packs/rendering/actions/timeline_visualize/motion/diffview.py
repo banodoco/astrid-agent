@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from astrid.core.timeline.astrid_ns import read_app
-from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle, picture_cuts
+from astrid.core.timeline.cuts import bundle_fps, occurrences_from_bundle
+from astrid.core.timeline.cut_index import cut_index
 
 from ..layers.base import Finding
 
@@ -40,7 +41,7 @@ def _index(bundle: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, d
     occurrences = occurrences_from_bundle(bundle)
     fps = bundle_fps(bundle)
     by_occurrence = {o["occurrence_id"]: o for o in occurrences}
-    cuts = picture_cuts(occurrences, fps=fps)
+    cuts = cut_index(occurrences, fps=fps).rows
     keyed = {}
     for cut in cuts:
         key = (cut.get("sequence") or {}).get("id") or cut.get("clip_id") or f"{cut['occurrence_id']}@{cut['start']}"
@@ -125,7 +126,7 @@ def compare(before: Mapping[str, Any], after: Mapping[str, Any], *, edited: Sequ
 
 def frames_by_cut(pack_root: Path, bundle: Mapping[str, Any]) -> dict[int, Path]:
     """Captured contact tiles of a bundle's pack, keyed by the cut number they show."""
-    cuts = picture_cuts(occurrences_from_bundle(bundle), fps=bundle_fps(bundle))
+    cuts = cut_index(occurrences_from_bundle(bundle), fps=bundle_fps(bundle)).rows
     index = json.loads((Path(pack_root) / "frame-index.json").read_text(encoding="utf-8"))
     found = {}
     for card in index.get("cards") or ():

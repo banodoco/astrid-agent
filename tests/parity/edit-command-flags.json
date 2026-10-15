@@ -255,6 +255,20 @@
   },
   {
     "flags": [
+      "--layers"
+    ],
+    "destination": "layers",
+    "operation": "cut.lift"
+  },
+  {
+    "flags": [
+      "--lift"
+    ],
+    "destination": "lift",
+    "operation": "cut.lift"
+  },
+  {
+    "flags": [
       "--line-text",
       "--text"
     ],
@@ -486,6 +500,13 @@
     ],
     "destination": "verify",
     "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--visuals"
+    ],
+    "destination": "visuals",
+    "operation": "timeline.remove-line"
   },
   {
     "flags": [

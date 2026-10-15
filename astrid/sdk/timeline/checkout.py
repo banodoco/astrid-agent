@@ -59,6 +59,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         """Rebuild derived checkout state after an edit transaction restores its bundle."""
         self.fps = bundle_fps(self.bundle) or 30.0
         self._mcache = None
+        self.__dict__.pop('_derived_cut_index', None)
 
     # ---- open / save ------------------------------------------------------
     @classmethod
@@ -404,7 +405,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
                 for clip in (a, b):
                     if clip is not None and intent.cut_of(clip.data):
                         cut_ids.add(intent.cut_of(clip.data))
-        order = [g["id"] for g in self._cut_groups()]
+        order = [g["id"] for g in self.cut_index.groups(self)]
         return sorted(cut_ids, key=lambda c: order.index(c) if c in order else len(order))
 
     def log(self, **filters: Any) -> list[_journal.JournalRecord]:
@@ -472,7 +473,7 @@ _commands.register(Checkout, "timeline", (
     "add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
     "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut", "set_cut_note", "replace_asset",
     "reflow", "retime", "resolve", "film_end", "batch", "edit_flags"))
-_commands.register(Cut, "cut", ("split", "set_note", "shorten"))
+_commands.register(Cut, "cut", ("split", "set_note", "shorten", "lift"))
 _commands.register(StepSequence, "sequence", ("fit",))
 _commands.register(Voice, "voice", ("replace", "set_gap_after"))
 

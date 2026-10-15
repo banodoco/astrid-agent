@@ -1,0 +1,15 @@
+id: structure.address.orphan-cut
+source: CUTS spec-timing 6.2
+intent: Orphan members keep their exact stable cut and layer address when their picture is absent.
+fixture: cuts-orphan
+expect: no-change
+cli: edit --clip c06.cover --set x=60
+sheet:
+  text: 'edit {"op":"clip.set","select":"c06.cover","args":{"x":60}}'
+python: |
+  assert tl.cut("c06").id == "c06"
+  assert tl.clip("c06.cover").id
+check:
+  - tl.cut("c06").id == "c06"
+  - tl.cut("c06").picture is None
+  - tl.clip("c06.cover").id in [c.id for c in tl.cut("c06").layers]

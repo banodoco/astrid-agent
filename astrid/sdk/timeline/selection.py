@@ -250,7 +250,7 @@ def _chapters(tl: Any) -> tuple[list[dict[str, Any]], dict[str, int]]:
 
     With labels (``parent.config.chapters``): a cut's chapter is the last label at or before it, as the sheet
     does. Without labels, each shot is a chapter named by the shot. Consecutive equal names are ONE chapter."""
-    groups = tl._cut_groups()
+    groups = tl.cut_index.groups(tl)
     order = [g["id"] for g in groups]
     labels = {row.get("from"): row.get("name") for row in intent.chapters(tl.bundle)}
     names: dict[str, str] = {}
@@ -328,7 +328,7 @@ def _chapter_pred(sel: Selection, value: Any, cut_and_time: Callable[[Any], tupl
 
 def _cut_index(tl: Any, text: str) -> int:
     cid = tl._cut_id(text)
-    ids = [g["id"] for g in tl._cut_groups()]
+    ids = [g["id"] for g in tl.cut_index.groups(tl)]
     if cid is None or cid not in ids:
         raise SelectorError(f"no cut {text!r}; cuts are {', '.join(ids) or 'not named in this timeline'}")
     return ids.index(cid)
@@ -342,7 +342,7 @@ def _cut_targets(sel: Selection, value: Any) -> list[Any]:
         if isinstance(value, str) and ".." in value:
             a, b = (part.strip() for part in value.split("..", 1))
             lo, hi = sorted((_cut_index(tl, a), _cut_index(tl, b)))
-            ids = [g["id"] for g in tl._cut_groups()][lo:hi + 1]
+            ids = [g["id"] for g in tl.cut_index.groups(tl)][lo:hi + 1]
             return [tl.cut(cid) for cid in ids]
         if isinstance(value, str) and "," in value:
             value = [p.strip() for p in value.split(",") if p.strip()]

@@ -780,6 +780,12 @@ class Clip(_Suggest):
         return Clip(tl, self.shot_id, data)
 
     def remove(self) -> None:
+        if not self.is_audio and any(self.data is step.data for cut in self._tl.cuts for step in cut.steps):
+            raise TimelineEditError("lift the cut (`lift c24`), or set its asset".replace("c24", self.cut_id or str(self._tl._cut_at(self.start))))
+        self._remove_raw()
+
+    def _remove_raw(self) -> None:
+        """Internal removal for explicit structural operations (lift/ripple/replacement)."""
         clips = self._tl._internal(self.shot_id)["clips"]
         clips[:] = [c for c in clips if c is not self.data]
 
@@ -831,11 +837,11 @@ class Cut(_Suggest):
     def id(self) -> str | None:
         """The cut id of its picture (``c08``), or None."""
         pic = self.picture
-        return intent.cut_of(pic.data) if pic else None
+        return self.raw.get("cut_id") or (intent.cut_of(pic.data) if pic else None)
 
     @property
     def clips(self) -> Selection:
-        return Selection(([self.picture] if self.picture else []) + self.layers, kind="clip", tl=self._tl)
+        return Selection(self.steps + self.layers, kind="clip", tl=self._tl)
 
     def layer(self, query: str) -> Clip:
         return self._tl._pick(self.clips, query, where=f"cut {self.n}")
@@ -889,6 +895,10 @@ class Cut(_Suggest):
         the new cut), and layers already carried stay carried. The new id is the next free one after this
         cut's (c33 → c33a), or ``id=``. Returns the new cut."""
         return self._tl._split_cut(self, on, new_id=id, picture=picture)
+
+    def lift(self, *, layers: str = "stay") -> "Cut":
+        """Remove this picture, holding the preceding picture over its span."""
+        return self._tl._lift_cut(self, layers=layers)
 
     @property
     def words(self) -> Selection:
@@ -1245,7 +1255,7 @@ class _MomentContext:
 
     def cut_start(self, cut_id: str) -> float:
         cut_id = self.tl._cut_id(cut_id) or cut_id
-        for g in self.tl._cut_groups():
+        for g in self.tl.cut_index.groups(self.tl):
             if g["id"] == cut_id:
                 return g["start"]
         raise mo.MomentError(self.tl._no_cut(cut_id))

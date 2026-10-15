@@ -61,7 +61,7 @@ def clip_target(tl: Any, clip: Any, note: str | None = None) -> Target:
 
 
 def cut_target(tl: Any, cut_id: str) -> Target:
-    spans = tl._cut_spans()
+    spans = tl.cut_index.spans()
     lo, hi = spans[cut_id]
     return Target("cut", cut_id, lo, hi if hi is not None else tl.duration, cut=cut_id)
 
@@ -102,7 +102,7 @@ def candidates(tl: Any, text: Any, *, prefer: str = "thing") -> list[Target]:
     lowered = raw.lower()
     if mo.CUT_ID_RE.match(lowered):
         lowered = tl._cut_id(lowered) or lowered  # c1 is c01
-        if lowered in tl._cut_spans():
+        if lowered in tl.cut_index.spans():
             return [cut_target(tl, lowered)]
         orphans = tl._cut_clips(lowered)
         if orphans:  # an orphaned cut (its line was removed): still addressable, to re-home or remove
@@ -166,7 +166,7 @@ def _clip_address(tl: Any, cut_id: str, layer: str) -> list[Target]:
     hits = [c for c in tl.clips() if intent.cut_of(c.data) == cut_id and intent.layer_of(c.data) == layer]
     if hits:
         return [clip_target(tl, c) for c in hits]
-    spans = tl._cut_spans()
+    spans = tl.cut_index.spans()
     if cut_id not in spans:
         return []
     lo, hi = spans[cut_id]
@@ -264,7 +264,7 @@ def _nothing(tl: Any, raw: str) -> str:
 
     layers = sorted({intent.layer_of(c.data) for c in tl.clips() if intent.layer_of(c.data)})
     words = sorted({re.sub(r"[^\w']", "", w.text.lower()) for w in tl.words()})
-    close = difflib.get_close_matches(raw.lower().strip('"'), layers + words + list(tl._cut_spans()), n=5)
+    close = difflib.get_close_matches(raw.lower().strip('"'), layers + words + list(tl.cut_index.spans()), n=5)
     return (f"nothing in this timeline is called {raw!r}" + (f"; did you mean {', '.join(close)}?" if close else "")
             + " (a layer c41.mink, a cut c30, a word \"Building\" in v27, a time 93.5, an asset key, or on-screen text)")
 
@@ -578,7 +578,7 @@ def _chapter_of(tl: Any, cut_id: str | None) -> str | None:
     if not cut_id:
         return None
     labels = {row.get("from"): row.get("name") for row in intent.chapters(tl.bundle)}
-    order = [g["id"] for g in tl._cut_groups()]
+    order = [g["id"] for g in tl.cut_index.groups(tl)]
     if cut_id not in order:
         return None
     return next((labels[c] for c in reversed(order[:order.index(cut_id) + 1]) if c in labels), None)
@@ -687,7 +687,7 @@ class SpokenSuggestion:
 
 
 def _cut_at(tl: Any, t: float) -> str | None:
-    spans = sorted(((lo, hi if hi is not None else tl.duration, cid) for cid, (lo, hi) in tl._cut_spans().items()))
+    spans = sorted(((lo, hi if hi is not None else tl.duration, cid) for cid, (lo, hi) in tl.cut_index.spans().items()))
     return next((cid for lo, hi, cid in reversed(spans) if lo - 1e-6 <= t < hi - 1e-6), None)
 
 
@@ -761,9 +761,9 @@ def find(tl: Any, query: str | None = None, *, text: str | None = None, asset: s
         raise TimelineEditError(f"no role {role!r}; the roles are: {', '.join(sorted(_roles(tl)))}")
     if (element or role) and not (query or text or asset):
         found = [_layer_hit(c) for c in tl.clips()]
-    elif query and mo.CUT_ID_RE.match(query.strip().lower()) and (tl._cut_id(query.strip()) in tl._cut_spans()):
+    elif query and mo.CUT_ID_RE.match(query.strip().lower()) and (tl._cut_id(query.strip()) in tl.cut_index.spans()):
         cid = tl._cut_id(query.strip())
-        lo, hi = tl._cut_spans()[cid]
+        lo, hi = tl.cut_index.spans()[cid]
         hi = hi if hi is not None else tl.duration
         found.append(Found("cut", cid, lo, hi, cut=cid, detail=f"{len([c for c in tl.clips() if intent.cut_of(c.data) == cid])} layer(s)",
                            clips=_on_screen(tl, lo, hi)))

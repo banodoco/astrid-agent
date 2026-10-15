@@ -6,6 +6,8 @@ Each handler is argument parsing plus one SDK call; the logic lives in astrid.sd
 """
 from __future__ import annotations
 
+from astrid.core.timeline.cut_index import cut_index, resolve_cut
+
 import argparse
 import copy
 import json
@@ -29,9 +31,7 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     print_broken_header("check")  # a check that could not load is named first, never silently absent
     from astrid.core.timeline.cuts import (
         bundle_fps,
-        find_cut,
         occurrences_from_bundle,
-        picture_cuts,
     )
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import check_help
     from astrid.packs.rendering.actions.timeline_visualize.motion import model
@@ -61,11 +61,11 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
         bundle = working["bundle"]
     fps = bundle_fps(bundle)
     occurrences = occurrences_from_bundle(bundle)
-    all_cuts = picture_cuts(occurrences, fps=fps)
+    all_cuts = cut_index(occurrences, fps=fps).rows
     cuts = all_cuts
     try:
         if getattr(parsed, "cut", None):
-            cuts = [find_cut(all_cuts, parsed.cut)]
+            cuts = [resolve_cut(all_cuts, parsed.cut)]
         elif getattr(parsed, "range", None):
             from astrid.sdk.timeline_cuts import _parse_range
 
@@ -121,7 +121,7 @@ def _cmd_lint(parsed: argparse.Namespace) -> int:
     if working is not None and not parsed.all:
         base_bundle = opened.data["bundle"]
         base_occurrences = occurrences_from_bundle(base_bundle)
-        base_cuts = picture_cuts(base_occurrences, fps=fps)
+        base_cuts = cut_index(base_occurrences, fps=fps).rows
         base_results, base_timeline = run_checks(
             base_cuts, model.elements_from_occurrences(base_occurrences), fps, track_order=track_order, beats=beats,
             params=params, severity=(rules or {}).get("severity"), disable=(rules or {}).get("disable") or (),
