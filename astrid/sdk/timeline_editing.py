@@ -777,42 +777,50 @@ def duplicate_authoring_shot(
 ) -> MutableMapping[str, Any]:
     """Duplicate a bundle shot with independent payload/placement identities."""
 
-    return add_authoring_shot(
-        bundle,
-        template_shot_id=shot_id,
-        shot_id=new_shot_id or _next_id("shot"),
-        occurrence_id=occurrence_id or _next_id("occurrence"),
-        start_ms=start_ms,
-    )
+    from astrid.sdk.timeline.music_beds import occurrence_changes, duplicate_occurrence_beds
+    with occurrence_changes(bundle):
+        shot = add_authoring_shot(
+            bundle,
+            template_shot_id=shot_id,
+            shot_id=new_shot_id or _next_id("shot"),
+            occurrence_id=occurrence_id or _next_id("occurrence"),
+            start_ms=start_ms,
+        )
+        row = next(row for row in bundle['placements'] if row['shot_id'] == shot['shot_id'])
+        duplicate_occurrence_beds(bundle, shot_id, shot['shot_id'], row['occurrence_id'])
+    return shot
+
 
 
 def remove_authoring_shot(bundle: MutableMapping[str, Any], shot_id: str) -> MutableMapping[str, Any]:
     """Remove a shot and its placements from a detached bundle."""
 
-    shots = bundle.get("shots")
-    mapping = bundle.get("source_mapping")
-    if not isinstance(shots, MutableMapping) or not isinstance(mapping, MutableMapping):
-        raise TimelineEditError("bundle is not an authoring bundle")
-    shot = _authoring_shot(bundle, shot_id)
-    del shots[shot_id]
-    source_shots = mapping.get("shots")
-    if isinstance(source_shots, MutableMapping):
-        source_shots.pop(shot_id, None)
-    placements = bundle.get("placements")
-    if isinstance(placements, list):
-        removed_ids = {
-            row.get("occurrence_id") for row in placements
-            if isinstance(row, Mapping) and row.get("shot_id") == shot_id
-        }
-        bundle["placements"] = [
-            row for row in placements
-            if not (isinstance(row, Mapping) and row.get("shot_id") == shot_id)
-        ]
-        source_placements = mapping.get("placements")
-        if isinstance(source_placements, MutableMapping):
-            for occurrence_id in removed_ids:
-                source_placements.pop(occurrence_id, None)
-    return shot
+    from astrid.sdk.timeline.music_beds import occurrence_changes
+    with occurrence_changes(bundle):
+        shots = bundle.get("shots")
+        mapping = bundle.get("source_mapping")
+        if not isinstance(shots, MutableMapping) or not isinstance(mapping, MutableMapping):
+            raise TimelineEditError("bundle is not an authoring bundle")
+        shot = _authoring_shot(bundle, shot_id)
+        del shots[shot_id]
+        source_shots = mapping.get("shots")
+        if isinstance(source_shots, MutableMapping):
+            source_shots.pop(shot_id, None)
+        placements = bundle.get("placements")
+        if isinstance(placements, list):
+            removed_ids = {
+                row.get("occurrence_id") for row in placements
+                if isinstance(row, Mapping) and row.get("shot_id") == shot_id
+            }
+            bundle["placements"] = [
+                row for row in placements
+                if not (isinstance(row, Mapping) and row.get("shot_id") == shot_id)
+            ]
+            source_placements = mapping.get("placements")
+            if isinstance(source_placements, MutableMapping):
+                for occurrence_id in removed_ids:
+                    source_placements.pop(occurrence_id, None)
+        return shot
 
 
 def move_occurrence_group(
@@ -830,67 +838,69 @@ def move_occurrence_group(
     their authored timing.
     """
 
-    placements = _list(bundle.get("placements"), "authoring bundle placements")
-    target_id = _id(occurrence_id, "occurrence id")
-    anchor_id = _id(before_occurrence_id, "before occurrence id")
-    if target_id == anchor_id:
-        raise TimelineEditError("an occurrence cannot be moved before itself")
+    from astrid.sdk.timeline.music_beds import occurrence_changes
+    with occurrence_changes(bundle):
+        placements = _list(bundle.get("placements"), "authoring bundle placements")
+        target_id = _id(occurrence_id, "occurrence id")
+        anchor_id = _id(before_occurrence_id, "before occurrence id")
+        if target_id == anchor_id:
+            raise TimelineEditError("an occurrence cannot be moved before itself")
 
-    indexed: dict[str, MutableMapping[str, Any]] = {}
-    for index, value in enumerate(placements):
-        row = _mapping(value, f"placements[{index}]")
-        row_id = _id(row.get("occurrence_id"), f"placements[{index}].occurrence_id")
-        if row_id in indexed:
-            raise TimelineEditError(f"duplicate occurrence id: {row_id}")
-        indexed[row_id] = row
-    if target_id not in indexed:
-        raise TimelineEditError(f"occurrence not found: {target_id}")
-    if anchor_id not in indexed:
-        raise TimelineEditError(f"before occurrence not found: {anchor_id}")
+        indexed: dict[str, MutableMapping[str, Any]] = {}
+        for index, value in enumerate(placements):
+            row = _mapping(value, f"placements[{index}]")
+            row_id = _id(row.get("occurrence_id"), f"placements[{index}].occurrence_id")
+            if row_id in indexed:
+                raise TimelineEditError(f"duplicate occurrence id: {row_id}")
+            indexed[row_id] = row
+        if target_id not in indexed:
+            raise TimelineEditError(f"occurrence not found: {target_id}")
+        if anchor_id not in indexed:
+            raise TimelineEditError(f"before occurrence not found: {anchor_id}")
 
-    start_values: list[float] = []
-    durations: dict[str, float] = {}
-    for row in placements:
-        occurrence = indexed[row["occurrence_id"]]
-        placement = _mapping(occurrence.get("placement"), f"{occurrence['occurrence_id']}.placement")
-        start = placement.get("start_ms")
-        duration = occurrence.get("duration_ms")
-        if (isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start)
-                or isinstance(duration, bool) or not isinstance(duration, (int, float))
-                or not math.isfinite(duration) or duration <= 0):
-            raise TimelineEditError("group move requires finite starts and positive durations")
-        start_values.append(float(start))
-        durations[occurrence["occurrence_id"]] = float(duration)
-    if any(start_values[i] < start_values[i - 1] + durations[placements[i - 1]["occurrence_id"]] - 1e-6
-           for i in range(1, len(placements))):
-        raise TimelineEditError("group move requires non-overlapping occurrence placements")
+        start_values: list[float] = []
+        durations: dict[str, float] = {}
+        for row in placements:
+            occurrence = indexed[row["occurrence_id"]]
+            placement = _mapping(occurrence.get("placement"), f"{occurrence['occurrence_id']}.placement")
+            start = placement.get("start_ms")
+            duration = occurrence.get("duration_ms")
+            if (isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start)
+                    or isinstance(duration, bool) or not isinstance(duration, (int, float))
+                    or not math.isfinite(duration) or duration <= 0):
+                raise TimelineEditError("group move requires finite starts and positive durations")
+            start_values.append(float(start))
+            durations[occurrence["occurrence_id"]] = float(duration)
+        if any(start_values[i] < start_values[i - 1] + durations[placements[i - 1]["occurrence_id"]] - 1e-6
+               for i in range(1, len(placements))):
+            raise TimelineEditError("group move requires non-overlapping occurrence placements")
 
-    reordered = list(placements)
-    target_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == target_id)
-    anchor_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == anchor_id)
-    if target_index == anchor_index - 1:
+        reordered = list(placements)
+        target_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == target_id)
+        anchor_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == anchor_id)
+        if target_index == anchor_index - 1:
+            return bundle
+        target = reordered.pop(target_index)
+        anchor_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == anchor_id)
+        reordered.insert(anchor_index, target)
+
+        # Keep the authored leading and inter-placement gaps attached to their
+        # timeline slots while assigning the reordered durations. This preserves
+        # the final end time even when frame quantization left small gaps.
+        gaps = [
+            start_values[index] - (
+                start_values[index - 1] + durations[placements[index - 1]["occurrence_id"]]
+            )
+            for index in range(1, len(placements))
+        ]
+        cursor = start_values[0]
+        for index, row in enumerate(reordered):
+            _mapping(row.get("placement"), f"{row['occurrence_id']}.placement")["start_ms"] = cursor
+            cursor += durations[row["occurrence_id"]]
+            if index < len(reordered) - 1:
+                cursor += gaps[index]
+        bundle["placements"] = reordered
         return bundle
-    target = reordered.pop(target_index)
-    anchor_index = next(i for i, row in enumerate(reordered) if row["occurrence_id"] == anchor_id)
-    reordered.insert(anchor_index, target)
-
-    # Keep the authored leading and inter-placement gaps attached to their
-    # timeline slots while assigning the reordered durations. This preserves
-    # the final end time even when frame quantization left small gaps.
-    gaps = [
-        start_values[index] - (
-            start_values[index - 1] + durations[placements[index - 1]["occurrence_id"]]
-        )
-        for index in range(1, len(placements))
-    ]
-    cursor = start_values[0]
-    for index, row in enumerate(reordered):
-        _mapping(row.get("placement"), f"{row['occurrence_id']}.placement")["start_ms"] = cursor
-        cursor += durations[row["occurrence_id"]]
-        if index < len(reordered) - 1:
-            cursor += gaps[index]
-    bundle["placements"] = reordered
-    return bundle
 
 
 __all__ = [

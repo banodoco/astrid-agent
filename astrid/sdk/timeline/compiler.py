@@ -286,6 +286,7 @@ def compile_timing(inputs: TimingInputs | Mapping[str, Any], commands: Sequence 
     workspace._edit_depth = 1  # journal ownership stays with the calling checkout
     workspace._command_depth = 1  # compiler evaluator calls stay below the outer EditCommand boundary
     from astrid.sdk.timeline import music_beds
+    music_beds.prepare(workspace)
     music_beds.validate(workspace)
     music_beds.dematerialize(workspace)
     _validate_dependencies(workspace)  # outside legacy partial-state adoption

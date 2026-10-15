@@ -235,6 +235,13 @@ class Clip(_Suggest):
     @property
     def start(self) -> float:
         """Timeline seconds."""
+        oid = getattr(self, '_occurrence_id', None)
+        if oid is not None:
+            from astrid.sdk.timeline.doc import _row_start
+            rows = [row for row in self._tl.bundle.get('placements', []) if row.get('occurrence_id') == oid]
+            if len(rows) != 1:
+                raise TimelineEditError(f'{oid}: missing or duplicate occurrence identity')
+            return _r(_row_start(rows[0]) / 1000.0 + self.at)
         return _r(self._tl._shot_start(self.shot_id) + self.at)
 
     @property

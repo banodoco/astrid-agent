@@ -119,16 +119,16 @@ class _LookupMixin:
         ``cut=`` restricts to one cut; otherwise the error lists the choices.
         """
         if isinstance(query, str) and cut is None and near is None:
-            from astrid.sdk.timeline.music_beds import collection, locate
-            managed = collection(self).get(query)
-            if isinstance(managed, dict) and isinstance(managed.get('source'), dict):
-                sid, _ = locate(self, query, managed['source'])
-                return Clip(self, sid, managed['source'])
+            from astrid.sdk.timeline.music_beds import authored_clip
+            managed = authored_clip(self, query)
+            if managed is not None:
+                return managed
             # one address, everywhere: c41.mink, a carried alias (c30.cover), a layer name, an asset key, …
             from astrid.sdk.timeline_address import candidates
 
             found = [t for t in candidates(self, query, prefer="thing") if t.kind == "clip"]
             if len(found) == 1:
+                self._require_independent_clip(found[0].clip)
                 return found[0].clip
             if len(found) > 1:
                 listing = "\n  ".join(str(t) for t in found[:12]) + (f"\n  … {len(found) - 12} more" if len(found) > 12 else "")
@@ -335,6 +335,8 @@ class _LookupMixin:
         raise TimelineEditError(f"no shot {shot_id!r} is placed in this timeline")
 
     def _shot_start(self, shot_id: str) -> float:
+        if shot_id is None:
+            return 0.0
         return _row_start(self._row(shot_id)) / 1000.0
 
     def _shot_length(self, shot_id: str) -> float:
@@ -355,6 +357,8 @@ class _LookupMixin:
         raise TimelineEditError(f"no shot matches {shot!r}; shots: " + ", ".join(ids))
 
     def _internal(self, shot_id: str) -> dict[str, Any]:
+        if shot_id is None:
+            return self.bundle['parent']
         shot = self.bundle["shots"][shot_id]
         internal = shot.setdefault("internal_timeline", {})
         internal.setdefault("clips", [])
@@ -404,6 +408,7 @@ class _LookupMixin:
         for hits in tiers:
             unique = list({id(c.data): c for c in hits}.values())
             if len(unique) == 1:
+                self._require_independent_clip(unique[0])
                 return unique[0]
             if len(unique) > 1:
                 listing = "\n  ".join(f"{c.address:<18} {c.element:<14} {c.start:7.3f}–{c.end:.3f} s" for c in unique[:12])
@@ -411,6 +416,11 @@ class _LookupMixin:
                 raise TimelineEditError(f"{text!r} matches {len(unique)} clips in {where}; name one:\n  {listing}{more}")
         raise TimelineEditError(f"no clip in {where} matches {text!r} (by id, asset, element or text); "
                                 f"list them with tl.clips() or `timelines show --as script`")
+
+    def _require_independent_clip(self, clip):
+        if sum(str(row.get('shot_id')) == clip.shot_id for row in self.bundle.get('placements', [])) > 1:
+            from astrid.sdk.timeline.music_beds import MusicBedError
+            raise MusicBedError(f'{clip.id}: ambiguous shared input; use occurrence-local closure and ScopedId')
 
     def _new_id(self, element: str) -> str:
         existing = {c.id for c in self.clips()}
