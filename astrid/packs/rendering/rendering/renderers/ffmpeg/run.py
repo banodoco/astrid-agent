@@ -125,6 +125,8 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
         timeline_data = json.loads(timeline_path.read_text(encoding="utf-8"))
         if not isinstance(timeline_data, dict):
             raise ValueError("timeline must contain a JSON object")
+        from astrid.core.rendering.compiled_audio import attach_compiled_audio
+        timeline_data = attach_compiled_audio(timeline_data, request.compiled_audio, request.timeline_authority)
         assets = timeline.load_registry(assets_path)
     except Exception as exc:  # noqa: BLE001 - support reports normalize adapter failures
         return _support_load_failure(str(exc) or type(exc).__name__)

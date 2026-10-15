@@ -1212,6 +1212,8 @@ def _execute_remotion(
     materialized_root: Path | None = None,
     staging_parent: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
+    compiled_audio: Mapping[str, Any] | None = None,
+    timeline_authority: Mapping[str, Any] | None = None,
     composition_clip_types: frozenset[str] = frozenset(),
     encode_aac_at_stitch: bool = False,
     frame_numbers: Sequence[int] | None = None,
@@ -1240,6 +1242,8 @@ def _execute_remotion(
                 materialized_root=materialized_root,
                 staging_parent=staging_parent,
                 materialized_objects=materialized_objects,
+                compiled_audio=compiled_audio,
+                timeline_authority=timeline_authority,
                 composition_clip_types=composition_clip_types,
                 encode_aac_at_stitch=encode_aac_at_stitch,
                 frame_numbers=frame_numbers,
@@ -1279,6 +1283,8 @@ def _execute_remotion(
                 materialized_root=materialized_root,
                 staging_parent=staging_parent,
                 materialized_objects=materialized_objects,
+                compiled_audio=compiled_audio,
+                timeline_authority=timeline_authority,
                 composition_clip_types=composition_clip_types,
                 encode_aac_at_stitch=encode_aac_at_stitch,
                 frame_numbers=frame_numbers,
@@ -1308,6 +1314,8 @@ def _execute_remotion_locked(
     materialized_root: Path | None = None,
     staging_parent: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
+    compiled_audio: Mapping[str, Any] | None = None,
+    timeline_authority: Mapping[str, Any] | None = None,
     composition_clip_types: frozenset[str] = frozenset(),
     encode_aac_at_stitch: bool = False,
     frame_numbers: Sequence[int] | None = None,
@@ -1324,7 +1332,11 @@ def _execute_remotion_locked(
     # EFFECT_REGISTRY must agree.  A catalog effect that the registry cannot
     # mount would otherwise pass validation and silently drop to the base
     # plate; fail closed here with an actionable diagnostic.
-    timeline_data = _serialize_timeline(timeline_path)
+    from astrid.core.rendering.compiled_audio import attach_compiled_audio
+    from astrid.core.rendering.envelope_pcm import requires_envelope_pcm
+    timeline_data = attach_compiled_audio(
+        json.loads(timeline_path.read_text(encoding="utf-8")), compiled_audio, timeline_authority,
+        renderer_config=_serialize_timeline(timeline_path))
     _validate_renderer_effect_registry(project_dir, timeline_data)
     registry_state = _effective_registry_state(theme_path)
     _require_free_space(provenance_out_path.parent, min_free_gb)
@@ -1353,7 +1365,7 @@ def _execute_remotion_locked(
                     materialized_objects=materialized_objects,
                     materialized_root=materialized_root,
                     allow_derived_files=materialized_root is not None,
-                    reuse_materialized_paths=materialized_root is not None,
+                    reuse_materialized_paths=materialized_root is not None and not requires_envelope_pcm(timeline_data),
                     staging_parent=staging_parent,
                 )
             )
@@ -1374,11 +1386,13 @@ def _execute_remotion_locked(
             # ``theme_path`` is either the host's absolute materialized
             # document or None, which selects the intentional built-in style.
             theme_for_props = _resolved_theme_for_render(timeline_path, theme_path)
+            render_timeline = attach_compiled_audio(
+                json.loads(timeline_path.read_text(encoding="utf-8")), compiled_audio, timeline_authority,
+                renderer_config=_serialize_timeline(timeline_path, default_theme=str(theme_for_props.get("id") or "banodoco-default")))
+            from astrid.core.rendering.envelope_pcm import prepare_envelope_pcm
+            render_timeline = prepare_envelope_pcm(render_timeline, materializer, asset_server)
             merged_props = {
-                "timeline": _serialize_timeline(
-                    timeline_path,
-                    default_theme=str(theme_for_props.get("id") or "banodoco-default"),
-                ),
+                "timeline": render_timeline,
                 "assets": resolved_registry,
                 "theme": theme_for_props,
                 "review": review,
@@ -1644,6 +1658,8 @@ def capture_remotion_frames(
     theme_path: Path | None = None,
     materialized_root: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
+    compiled_audio: Mapping[str, Any] | None = None,
+    timeline_authority: Mapping[str, Any] | None = None,
     staging_parent: Path | None = None,
     frame_resolution: tuple[int, int] | None = None,
     frame_session: PersistentRemotionFrameSession | None = None,
@@ -1677,6 +1693,8 @@ def capture_remotion_frames(
                 materialized_root=materialized_root,
                 staging_parent=staging_parent,
                 materialized_objects=materialized_objects,
+                compiled_audio=compiled_audio,
+                timeline_authority=timeline_authority,
                 frame_numbers=numbers,
                 frame_output_dir=output_dir,
                 frame_resolution=frame_resolution,
@@ -1779,7 +1797,8 @@ def support(request: RenderRequest, *, workspace: Path) -> SupportReport:
     timeline_data: dict[str, Any] | None = None
     assets_data: dict[str, Any] | None = None
     try:
-        timeline_data = _serialize_timeline(timeline_path)
+        from astrid.core.rendering.compiled_audio import attach_compiled_audio
+        timeline_data = attach_compiled_audio(json.loads(timeline_path.read_text(encoding="utf-8")), request.compiled_audio, request.timeline_authority, renderer_config=_serialize_timeline(timeline_path))
     except Exception as exc:  # noqa: BLE001 - support report normalizes renderer failures
         reasons.append(f"timeline is not renderable: {exc}")
     try:
@@ -1983,6 +2002,8 @@ def _protocol_render(request: RenderRequest, *, workspace: Path) -> RenderResult
                 materialized_root=request.materialized_root,
                 staging_parent=workspace,
                 materialized_objects=request.materialized_objects,
+                compiled_audio=request.compiled_audio,
+                timeline_authority=request.timeline_authority,
             )
             os.replace(staged_video, output_path)
         finally:

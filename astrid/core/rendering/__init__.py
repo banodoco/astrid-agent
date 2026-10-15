@@ -4,18 +4,20 @@ from .contracts import (
     Attachment,
     AudioOwnership,
     BackendConfig,
+    CompiledAudio,
     FrameWindow,
+    RendererError,
     RenderPlan,
     RenderProfile,
     RenderRequest,
     RenderResult,
-    RendererError,
     SupportReport,
     VideoArtifact,
 )
 
 __all__ = [
     "RenderRequest",
+    "CompiledAudio",
     "SupportReport",
     "RenderPlan",
     "FrameWindow",

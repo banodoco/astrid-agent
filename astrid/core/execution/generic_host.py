@@ -6439,6 +6439,8 @@ class GenericPackHost:
         # Once its derived files are created, do not forward the authoring
         # document as an undeclared child argument.
         values.pop("timeline_snapshot", None)
+        if isinstance(snapshot, Mapping) and snapshot.get("compiled_audio") is not None:
+            values["compiled_audio"] = snapshot["compiled_audio"]
         snapshot_registry = snapshot.get("registry") if isinstance(snapshot, Mapping) else None
         snapshot_config = snapshot.get("config") if isinstance(snapshot, Mapping) else None
         if isinstance(snapshot_config, Mapping) and "timeline" not in values:
@@ -7665,6 +7667,12 @@ class GenericPackHost:
             authority_path.parent.mkdir(parents=True, exist_ok=True)
             authority_path.write_text(filmstrip_authority, encoding="utf-8")
             values["filmstrip_authority"] = str(authority_path)
+        compiled_audio = values.get("compiled_audio")
+        if isinstance(compiled_audio, Mapping):
+            compiled_path = (attempt / "inputs" / "compiled-audio.json").resolve()
+            compiled_path.parent.mkdir(parents=True, exist_ok=True)
+            compiled_path.write_text(json.dumps(compiled_audio, sort_keys=True), encoding="utf-8")
+            values["compiled_audio"] = str(compiled_path)
         timeline_authority = values.get("timeline_authority")
         if isinstance(timeline_authority, Mapping) or (
             isinstance(timeline_authority, str) and len(timeline_authority) > 8192

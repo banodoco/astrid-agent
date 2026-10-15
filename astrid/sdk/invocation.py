@@ -978,7 +978,7 @@ def _validate_managed_speech_inputs(values: Mapping[str, Any]) -> None:
 
 def _validate_render_input_mode(inputs: Mapping[str, Any]) -> bool:
     """Select file mode without resolving scope or granting file authority."""
-    for name in ("timeline_authority", "timeline_snapshot"):
+    for name in ("timeline_authority", "timeline_snapshot", "compiled_audio"):
         if name in inputs:
             raise CapabilityValidationError(
                 f"caller-supplied {name} is not accepted; canonical render authority is host-owned"
@@ -1420,6 +1420,7 @@ def _prepare_managed_render_inputs(
             },
         )
         validate_managed_render_snapshot(snapshot)
+        snapshot = snapshot.compile_audio()
     except ManagedRenderValidationError as exc:
         raise CapabilityValidationError(str(exc), details=exc.details) from exc
     except ValueError as exc:
@@ -1480,7 +1481,9 @@ def _prepare_managed_render_inputs(
             "timeline_snapshot": {
                 "config": dict(snapshot.config),
                 "registry": dict(snapshot.registry),
+                "compiled_audio": snapshot.compiled_audio,
             },
+            "compiled_audio": snapshot.compiled_audio,
             "timeline_authority": authority,
         }
     )

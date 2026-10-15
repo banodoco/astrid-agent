@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -34,6 +35,8 @@ def validate(envelope: Mapping[str, Any], *, host: str = "ffmpeg") -> None:
         raise AudioEnvelopeError(f"unsupported sample consumer {host!r}", duck=bool(envelope.get("duck")))
     if not isinstance(envelope, Mapping) or set(envelope) - {"keyframes", "multiply", "minimum", "duck"}:
         raise AudioEnvelopeError("invalid compiled envelope")
+    if "duck" in envelope and not isinstance(envelope["duck"], bool):
+        raise AudioEnvelopeError("duck marker must be boolean")
     points = envelope.get("keyframes")
     if not isinstance(points, list) or not points:
         raise AudioEnvelopeError("envelope requires ordered keyframes")
@@ -180,3 +183,29 @@ def ffmpeg_expression(envelope: Mapping[str, Any], time: str = "t") -> str:
             minimum = f"min({minimum},{child})"
         expression = f"({expression})*({minimum})"
     return expression
+
+
+def compile_audio_values(clip, *, fps, words, clip_at, duck_rule=None):
+    """Value-only producer shared by the SDK adapter and frozen render admission."""
+    envelope = compile_legacy(clip, fps)
+    if duck_rule is not None:
+        if not isinstance(duck_rule, Mapping) or duck_rule.get("under") != "voice":
+            raise AudioEnvelopeError("duck requires the existing voice narration selector", duck=True)
+        def seconds(value):
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)([fs])", str(value))
+            if not match:
+                raise AudioEnvelopeError("duck attack/release require frame or second durations", duck=True)
+            return float(match[1]) / (fps if match[2] == "f" else 1)
+        by = re.fullmatch(r"(-\d+(?:\.\d+)?)dB", str(duck_rule.get("by")))
+        if not by:
+            raise AudioEnvelopeError("duck by requires negative dB", duck=True)
+        if not words:
+            raise AudioEnvelopeError("pinned narration word context is missing", duck=True)
+        duck = compile_duck(words, by_db=float(by[1]), attack=seconds(duck_rule.get("attack")),
+                            release=seconds(duck_rule.get("release")), clip_at=clip_at)
+        if envelope is None:
+            envelope = duck
+        else:
+            envelope.setdefault("multiply", []).append(duck)
+            envelope["duck"] = True
+    return {"envelope": envelope} if envelope is not None else None

@@ -878,6 +878,10 @@ actions:
       name: expected_version
       required: false
       type: integer
+    - description: Host-compiled transient audio bound to the admitted snapshot.
+      name: compiled_audio
+      required: false
+      type: json
     - description: Kernel-resolved timeline identity and content hashes stamped into
         render provenance.
       name: timeline_authority
@@ -1068,6 +1072,9 @@ actions:
           optional: true
         - input: keep_previous_renders
           flag: --keep-previous-renders
+          optional: true
+        - input: compiled_audio
+          flag: --compiled-audio
           optional: true
         - input: timeline_authority
           flag: --timeline-authority

@@ -1088,6 +1088,8 @@ class RenderService:
                 recovery_command="write the timeline as a JSON object and retry",
                 details={"timeline_path": str(timeline_path)},
             )
+        from .compiled_audio import attach_compiled_audio, payload as audio_payload
+        attached_audio = attach_compiled_audio(timeline_data, request.compiled_audio, request.timeline_authority)
         materialized = self._window_timeline(
             timeline_data,
             segment.window,
@@ -1103,12 +1105,39 @@ class RenderService:
                 "z": segment.layer.z,
                 "alpha": segment.layer.z > 0,
             }
+        window_audio = None
+        window_authority = request.timeline_authority
+        if request.compiled_audio is not None:
+            # Use the service's exact existing clip projection/identity, shifting
+            # gain coordinates by the visible leading cut in timeline seconds.
+            import copy
+            envelopes = {}
+            fps = Fraction(*segment.window.fps_rational)
+            start = Fraction(segment.window.start_frame, 1) / fps
+            end = Fraction(segment.window.end_frame, 1) / fps
+            target_ids = {c["id"] for c in materialized["clips"]}
+            def shift(envelope, offset):
+                envelope = copy.deepcopy(envelope)
+                for point in envelope["keyframes"]:
+                    point["at"] -= offset
+                for operation in ("multiply", "minimum"):
+                    if operation in envelope:
+                        envelope[operation] = [shift(child, offset) for child in envelope[operation]]
+                return envelope
+            for clip in attached_audio["clips"]:
+                projected = self._window_clip(clip, start=start, end=end, window=segment.window)
+                if projected is not None and projected["id"] in target_ids and "audio" in clip:
+                    offset = float(max(start, self._timeline_number(clip.get("at", 0), "clip.at")) - self._timeline_number(clip.get("at", 0), "clip.at"))
+                    envelopes[projected["id"]] = {"envelope": shift(clip["audio"]["envelope"], offset)}
+            window_audio = audio_payload(materialized, request.timeline_authority, envelopes)
+            from .compiled_audio import digest as audio_digest
+            window_authority = {**request.timeline_authority, "compiled_audio_digest": audio_digest(window_audio)}
         materialized_path = (
             workspace / "segment-inputs" / f"{index:04d}-timeline.json"
         )
         write_json_atomic(materialized_path, materialized)
         return (
-            replace(request, timeline_path=str(materialized_path), window=None),
+            replace(request, timeline_path=str(materialized_path), window=None, compiled_audio=window_audio, timeline_authority=window_authority),
             {"materialized_timeline": sha256_file(materialized_path)},
         )
 
@@ -1526,6 +1555,10 @@ class RenderService:
             timeline_path=request.timeline_path,
             assets_registry_path=request.assets_registry_path,
             output_name=request.output_name,
+            compiled_audio=request.compiled_audio,
+            timeline_authority=request.timeline_authority,
+            materialized_root=request.materialized_root,
+            materialized_objects=request.materialized_objects,
             audio=support_audio,
             profile=plan.profile,
             backend_config=request.backend_config,

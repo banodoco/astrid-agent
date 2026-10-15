@@ -188,6 +188,8 @@ def resolve_render_command_inputs(
     if not isinstance(timeline_data, dict):
         raise ValueError("timeline must contain a JSON object")
     registry = timeline.load_registry(assets_path)
+    from astrid.core.rendering.compiled_audio import attach_compiled_audio
+    timeline_data = attach_compiled_audio(timeline_data, normalized.compiled_audio, normalized.timeline_authority)
     validate_ffmpeg_media_timeline(timeline_data)
     return RenderCommandInputs(
         timeline_path=timeline_path,

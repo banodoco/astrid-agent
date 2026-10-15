@@ -409,6 +409,7 @@ def render(
     backend_config: Mapping[str, Mapping[str, Any]] | None = None,
     profile: Mapping[str, Any] | None = None,
     timeline_authority: Mapping[str, Any] | None = None,
+    compiled_audio: Mapping[str, Any] | None = None,
     materialized_root: Path | None = None,
     materialized_objects: Mapping[str, str] | None = None,
     media_dependency: Path | None = None,
@@ -467,6 +468,8 @@ def render(
                 if materialized_root is None
                 else str(Path(materialized_root).expanduser().resolve())
             ),
+            "compiled_audio": compiled_audio,
+            "timeline_authority": timeline_authority,
             "materialized_objects": dict(materialized_objects or {}),
         }
     )
@@ -513,6 +516,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--media-dependency", type=Path)
     parser.add_argument("--materialized-root", type=Path)
     parser.add_argument("--materialized-objects", default=None)
+    parser.add_argument("--compiled-audio", default=None)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--selector",
@@ -591,6 +595,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _parse_backend_config(args.backend_config)
         profile = _parse_profile(args.profile)
         timeline_authority = _parse_profile(args.timeline_authority)
+        compiled_audio = _parse_profile(args.compiled_audio)
         materialized_objects = _parse_profile(args.materialized_objects)
         if materialized_objects is not None and not isinstance(materialized_objects, Mapping):
             raise ValueError("--materialized-objects must be a JSON object")
@@ -614,6 +619,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     backend_config=config,
                     profile=profile,
                     timeline_authority=timeline_authority,
+                    compiled_audio=compiled_audio,
                     materialized_root=args.materialized_root,
                     materialized_objects=materialized_objects,
                     media_dependency=args.media_dependency,
@@ -635,6 +641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 backend_config=config,
                 profile=profile,
                 timeline_authority=timeline_authority,
+                compiled_audio=compiled_audio,
                 materialized_root=args.materialized_root,
                 materialized_objects=materialized_objects,
                 media_dependency=args.media_dependency,

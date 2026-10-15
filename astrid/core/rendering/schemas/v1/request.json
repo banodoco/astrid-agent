@@ -74,11 +74,71 @@
       "$ref": "#/definitions/stringMap"
     },
     "materialized_root": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "minLength": 1
     },
     "materialized_objects": {
       "$ref": "#/definitions/stringMap"
+    },
+    "timeline_authority": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "compiled_audio": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_context_digest",
+            "timeline_config_digest",
+            "curve_registry_digest",
+            "schema_version",
+            "clips"
+          ],
+          "properties": {
+            "source_context_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "timeline_config_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "curve_registry_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "schema_version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "clips": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "envelope"
+                ],
+                "properties": {
+                  "envelope": {
+                    "$ref": "#/definitions/audioEnvelope"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "allOf": [
@@ -374,6 +434,60 @@
       "additionalProperties": {
         "type": "string",
         "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]*[^ \\t\\n\\r\\f\\v\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff][\\s\\S]*(?![\\s\\S])"
+      }
+    },
+    "audioEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyframes"
+      ],
+      "properties": {
+        "keyframes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "at",
+              "value"
+            ],
+            "properties": {
+              "at": {
+                "type": "number"
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0
+              },
+              "curve": {
+                "enum": [
+                  "linear",
+                  "equal-power",
+                  "exponential-fast",
+                  "exponential-slow",
+                  "s-curve"
+                ]
+              }
+            }
+          }
+        },
+        "duck": {
+          "type": "boolean"
+        },
+        "multiply": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/audioEnvelope"
+          }
+        },
+        "minimum": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/audioEnvelope"
+          }
+        }
       }
     }
   },

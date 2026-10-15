@@ -5,11 +5,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
 from astrid.core import timeline
+from astrid.core.rendering.contracts import CompiledAudio
 from astrid.core._shared.jsonio import write_json_atomic
 from astrid.core.foundation.hash import validate_digest
 from astrid.core.timeline.duration import render_clock
@@ -700,7 +701,13 @@ class ManagedRenderSnapshot:
     materialized_registry_hash: str
     expansion: Mapping[str, Any] | None = None
     composition_graph: Mapping[str, Any] | None = None
+    compiled_audio: CompiledAudio | None = None
     authoring_preview: Mapping[str, Any] | None = None
+
+    def compile_audio(self) -> "ManagedRenderSnapshot":
+        """Finalize derived audio after all occurrence/timing projection, before admission."""
+        from astrid.core.rendering.compiled_audio import compile_snapshot_audio
+        return replace(self, compiled_audio=compile_snapshot_audio(self.config, self.authority()))
 
     def authority(self) -> dict[str, Any]:
         result = {
@@ -717,6 +724,9 @@ class ManagedRenderSnapshot:
             "registry_hash": self.registry_hash,
             "materialized_registry_hash": self.materialized_registry_hash,
         }
+        if self.compiled_audio is not None:
+            from astrid.core.rendering.compiled_audio import digest
+            result["compiled_audio_digest"] = digest(self.compiled_audio)
         if self.authoring_preview is None:
             # Canonical snapshots resolve head_event_id from the verified exact
             # parent revision. Keep that pin explicit in the admitted envelope.
@@ -1164,6 +1174,8 @@ def materialize_managed_render_snapshot(
     write_json_atomic(timeline_path, dict(snapshot.config))
     write_json_atomic(registry_path, dict(snapshot.registry))
     write_json_atomic(authority_path, authority)
+    if snapshot.compiled_audio is not None:
+        write_json_atomic(destination / "compiled-audio.json", dict(snapshot.compiled_audio))
     return timeline_path, registry_path, authority
 
 

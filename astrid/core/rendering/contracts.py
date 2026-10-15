@@ -8,15 +8,26 @@ execution behavior.
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal, NoReturn, TypeAlias
+from typing import Any, ClassVar, Literal, NoReturn, TypeAlias, TypedDict
 
 from astrid.core.foundation.hash import canonical_json_digest, sha256_file
+
+
+class CompiledAudio(TypedDict):
+    """Transient envelope output bound to an admitted source snapshot."""
+
+    schema_version: int
+    source_context_digest: str
+    timeline_config_digest: str
+    curve_registry_digest: str
+    clips: dict[str, dict[str, Any]]
 
 
 SCHEMA_VERSION = 1
@@ -744,8 +755,10 @@ class RenderRequest:
     profile: RenderProfile | None = None
     backend_config: BackendConfig = field(default_factory=dict)
     metadata: dict[str, str] = field(default_factory=dict)
-    # Explicit host-owned execution handoff. Values are attempt-local paths;
-    # they are never authority or durable media locators.
+    # Derived gain and admitted source identity remain outside canonical documents.
+    compiled_audio: CompiledAudio | None = None
+    timeline_authority: Mapping[str, Any] | None = None
+    # Host-owned attempt paths, never durable media locators.
     materialized_root: str | None = None
     materialized_objects: dict[str, str] = field(default_factory=dict)
 
@@ -756,6 +769,12 @@ class RenderRequest:
                 f"{self.schema_version!r}; expected integer {SCHEMA_VERSION}",
                 details={"received": self.schema_version, "supported": [SCHEMA_VERSION]},
             )
+        from .compiled_audio import validate_payload
+
+        if self.compiled_audio is not None:
+            object.__setattr__(self, "compiled_audio", validate_payload(self.compiled_audio))
+        if self.timeline_authority is not None:
+            object.__setattr__(self, "timeline_authority", copy.deepcopy(dict(_require_mapping(self.timeline_authority, "timeline_authority"))))
         version = self.schema_version
         object.__setattr__(self, "schema_version", version)
         object.__setattr__(self, "timeline_path", _require_string(self.timeline_path, "timeline_path"))
@@ -794,6 +813,8 @@ class RenderRequest:
     def to_dict(self) -> dict[str, Any]:
         return _json_safe_mapping(
             {
+                **({"compiled_audio": self.compiled_audio} if self.compiled_audio is not None else {}),
+                **({"timeline_authority": self.timeline_authority} if self.timeline_authority is not None else {}),
                 "schema_version": self.schema_version,
                 "timeline_path": self.timeline_path,
                 "assets_registry_path": self.assets_registry_path,
@@ -826,6 +847,8 @@ class RenderRequest:
                 "metadata",
                 "materialized_root",
                 "materialized_objects",
+                "compiled_audio",
+                "timeline_authority",
             }
             _validate_object_keys(
                 data,
@@ -842,6 +865,8 @@ class RenderRequest:
                 )
             return cls(
                 schema_version=version,
+                compiled_audio=data.get("compiled_audio"),
+                timeline_authority=data.get("timeline_authority"),
                 timeline_path=data["timeline_path"],
                 assets_registry_path=data.get("assets_registry_path"),
                 output_name=data["output_name"],
@@ -870,6 +895,8 @@ class RenderRequest:
         selected = self.backend_config.get(qualified)
         return RenderRequest(
             schema_version=self.schema_version,
+            compiled_audio=self.compiled_audio,
+            timeline_authority=self.timeline_authority,
             timeline_path=self.timeline_path,
             assets_registry_path=self.assets_registry_path,
             output_name=self.output_name,

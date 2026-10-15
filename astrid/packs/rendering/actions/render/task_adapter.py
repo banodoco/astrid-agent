@@ -243,7 +243,15 @@ def _decode_spec(task: Any) -> tuple[str, Mapping[str, Any], Mapping[str, Any], 
     params = spec.get("params")
     if not isinstance(params, Mapping):
         raise RenderExportRefused("render_export task params must be an object")
-    return project_slug, config, registry, dict(params)
+    if {"compiled_audio", "timeline_authority"} & params.keys():
+        raise RenderExportRefused("render_export compiled audio and authority are snapshot-owned")
+    params = dict(params)
+    if snapshot.get("compiled_audio") is not None:
+        params["compiled_audio"] = snapshot["compiled_audio"]
+        params["timeline_authority"] = spec.get("timeline_authority") or snapshot.get("authority")
+        from astrid.core.rendering.compiled_audio import attach_compiled_audio
+        attach_compiled_audio(config, params["compiled_audio"], params["timeline_authority"])
+    return project_slug, config, registry, params
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -386,6 +394,9 @@ class RenderExportTaskAdapter:
                 "materialized_root": str(owned_inputs_dir),
                 "materialized_objects": dict(raw_materialized),
             }
+            if params.get("compiled_audio") is not None:
+                renderer_inputs["compiled_audio"] = params["compiled_audio"]
+                renderer_inputs["timeline_authority"] = params.get("timeline_authority")
             if expected_version is not None:
                 renderer_inputs["expected_version"] = expected_version
             render_env = nullcontext()
