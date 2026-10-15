@@ -1,0 +1,13 @@
+{
+  "$provenance": "invalid on purpose: resolved IDs use the current scoped identity vocabulary",
+  "instance": {
+    "op": "timeline.opacity",
+    "select": "clip=a-rocket",
+    "args": {
+      "opacity": 0.6
+    },
+    "resolved": [
+      "c12.label-1"
+    ]
+  }
+}

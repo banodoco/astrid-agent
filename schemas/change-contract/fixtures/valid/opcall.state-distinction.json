@@ -1,0 +1,55 @@
+{
+  "$provenance": "spec-derived: WS-SAVE §§3.1–3.2; proves tagged absence, present null, clear, and opaque user objects remain distinct",
+  "instance": {
+    "op": "timeline.set",
+    "select": "c08.app",
+    "args": {
+      "intent.on": {
+        "op": "clear"
+      },
+      "literal.null": null,
+      "opaque.marker": {
+        "$absent": true
+      },
+      "opaque.clear-shaped": {
+        "op": "clear"
+      }
+    },
+    "expect": {
+      "intent.on": {
+        "state": "absent"
+      },
+      "literal.null": {
+        "state": "present",
+        "value": null
+      },
+      "opaque.marker": {
+        "state": "present",
+        "value": {
+          "$absent": true
+        }
+      },
+      "opaque.clear-shaped": {
+        "state": "present",
+        "value": {
+          "op": "clear"
+        }
+      }
+    },
+    "bindings": {
+      "\"viral\"": "word:n21:4",
+      "beat 2 after \"viral\"": "beat:2",
+      "cut:c22:start": "cut:c22:start"
+    },
+    "created": [
+      "parent/clip:new-layer"
+    ],
+    "authorship": {
+      "intent.on": "direct",
+      "time.compiled_at": "consequence"
+    },
+    "resolved": [
+      "occurrence:O1/clip:c08-app"
+    ]
+  }
+}
