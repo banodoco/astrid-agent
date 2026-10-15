@@ -14,10 +14,9 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from astrid.core.timeline import clip_fields
+from astrid.core.timeline import clip_fields, element_roles
 from astrid.core.timeline.astrid_ns import read_app
 from astrid.core.timeline.duration import clip_end_frame, clip_start_frame
 
@@ -77,76 +76,22 @@ class _Layer:
 # ---------------------------------------------------------------- element metadata
 
 
-_PACKS_ROOT = Path(__file__).resolve().parents[2] / "packs"
+# Compatibility entry points: declaration-only logic lives in element_roles.
+# Keep the historical root/cache seam for existing onscreen callers and tests.
+_PACKS_ROOT = element_roles._PACKS_ROOT
 _COVERAGE_CACHE: dict[str, dict] = {}
-# Sealed S0's V3 rendering-element declarations omit these metadata values,
-# though the frozen donor declarations used them to determine frame coverage.
-# Keep this narrow semantic projection here until those unowned declarations
-# are joined; a declaration present in the V3 manifest always takes priority.
-_COVERAGE_COMPAT = {
-    "am-snap-plate": {"coverage": "picture", "background_unless": ["asset", "params.src"]},
-    "am-footage": {"coverage": "picture"},
-    "am-presenter": {"coverage": "picture"},
-}
+_COVERAGE_COMPAT = element_roles._COVERAGE_COMPAT
+role_of = element_roles.role_of
+_has_value = element_roles._has_value
 
 
 def element_coverage(element_ids: Iterable[str]) -> dict[str, dict]:
-    """``metadata.coverage`` (+ ``background_unless``) per element id; ``{}`` when an element declares none.
-
-    Reads each element's ``element.yaml`` directly (cached per process): loading the whole element
-    registry cost 2-4 s per CLI process, and check() runs on every edit.
-    """
+    """Compatibility access to the declaration-only role metadata reader."""
     return {element_id: _coverage_of(element_id) for element_id in element_ids}
 
 
 def _coverage_of(element_id: str) -> dict:
-    if element_id in _COVERAGE_CACHE:
-        return _COVERAGE_CACHE[element_id]
-    import yaml
-
-    found: dict = {}
-    # Receiving V3 packs put renderer-owned manifests under
-    # ``<pack>/rendering/elements``; older packs use ``<pack>/elements``.
-    paths = set(_PACKS_ROOT.glob(f"*/elements/**/{element_id}/element.yaml"))
-    paths.update(_PACKS_ROOT.glob(f"*/rendering/elements/**/{element_id}/element.yaml"))
-    for path in sorted(paths):
-        try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001 - an unreadable manifest just means "declares nothing"
-            continue
-        meta = doc.get("metadata") if isinstance(doc.get("metadata"), Mapping) else {}
-        if meta.get("coverage") is not None:
-            found = {"coverage": meta["coverage"]}
-            if "background_unless" in meta:
-                found["background_unless"] = list(meta["background_unless"] or [])
-        break
-    if not found and element_id in _COVERAGE_COMPAT:
-        found = dict(_COVERAGE_COMPAT[element_id])
-    _COVERAGE_CACHE[element_id] = found
-    return found
-
-
-def _has_value(clip: Mapping[str, Any], path: str) -> bool:
-    node: Any = clip
-    for part in path.split("."):
-        if not isinstance(node, Mapping) or part not in node:
-            return False
-        node = node[part]
-    return node is not None and node != ""
-
-
-def role_of(clip: Mapping[str, Any], track: Any, elements: Mapping[str, Mapping[str, Any]]) -> str:
-    """picture | background | content | none, from the element's declared coverage, else the track convention."""
-    meta = elements.get(clip.get("clipType")) or {}
-    coverage = meta.get("coverage")
-    if coverage is not None:
-        if coverage == "picture" and "background_unless" in meta:
-            unless = meta.get("background_unless") or []
-            if not any(_has_value(clip, path) for path in unless):
-                return "background"
-        return str(coverage)
-    track_id = track if isinstance(track, str) else (track or {}).get("id")
-    return "picture" if track_id == "plate" else "content"
+    return element_roles._coverage_of(element_id, packs_root=_PACKS_ROOT, cache=_COVERAGE_CACHE)
 
 
 # ---------------------------------------------------------------- building the layers
