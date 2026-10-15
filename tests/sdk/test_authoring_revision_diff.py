@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.timeline.authoring_bundle import open_authoring_bundle
 from astrid.packs.timeline.cli import _cmd_diff, _configure_diff
 from astrid.sdk.contracts import DomainResult, ErrorObject
 from astrid.sdk.remote import RemoteTimelines
@@ -100,12 +102,39 @@ def test_legacy_pair_remains_explicit_and_preserves_target_reference():
     assert reader.calls == [('diff_timeline', ('main-slug',), {'from_version': 1, 'to_version': 2})]
 
 
-def test_cli_revision_pair_parses_and_forwards_exact_identity_without_mutation(monkeypatch):
+def test_cli_revision_pair_parses_and_forwards_exact_identity_without_mutation(capsys):
     parser = argparse.ArgumentParser()
     _configure_diff(parser)
     parsed = parser.parse_args(['main-slug', '--project', 'project-slug', '--from-revision', 'parent-1', '--to-revision', 'parent-2', '--json'])
     calls = []
-    parsed.client = SimpleNamespace(timelines=SimpleNamespace(diff=lambda *args, **kwargs: calls.append((args, kwargs)) or DomainResult.success({})))
-    monkeypatch.setattr('astrid.packs.timeline.cli.print_result', lambda result, **kwargs: 0)
+    bundles = {}
+    for revision_id in ('parent-1', 'parent-2'):
+        parent, shots, internals = _closure(shared=True)
+        parent['revision_id'] = revision_id
+        bundles[revision_id] = open_authoring_bundle(
+            parent, shot_revisions=shots, internal_timeline_revisions=internals,
+        )
+    original_bundles = copy.deepcopy(bundles)
+    original_selectors = (parsed.project, parsed.ref, parsed.from_revision, parsed.to_revision)
+
+    def open_bundle(project, ref, *, revision_id=None):
+        calls.append(((project, ref), {'revision_id': revision_id}))
+        return DomainResult.success({
+            'bundle': bundles[revision_id], 'project_id': 'project-1',
+            'timeline_id': 'main', 'revision_id': revision_id,
+            'head_revision_id': 'future-parent-99', 'is_current_head': False,
+        })
+
+    parsed.client = SimpleNamespace(timelines=SimpleNamespace(open_bundle=open_bundle))
     assert _cmd_diff(parsed) == 0
-    assert calls == [(('project-slug', 'main-slug'), {'from_revision': 'parent-1', 'to_revision': 'parent-2'})]
+    assert calls == [
+        (('project-slug', 'main-slug'), {'revision_id': 'parent-1'}),
+        (('project-slug', 'main-slug'), {'revision_id': 'parent-2'}),
+    ]
+    assert (parsed.project, parsed.ref, parsed.from_revision, parsed.to_revision) == original_selectors
+    assert bundles == original_bundles
+    result = json.loads(capsys.readouterr().out)
+    assert result['ok'] is True
+    assert result['data']['from_revision'] == 'parent-1'
+    assert result['data']['to_revision'] == 'parent-2'
+    assert result['data']['timeline_id'] == 'main'
