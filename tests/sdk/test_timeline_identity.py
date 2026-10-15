@@ -157,12 +157,10 @@ def test_history_owner_can_join_reservations_without_replacing_content(tl):
 
 
 class ReissuedCutId(AssertionError):
-    """Only the known storage invariant may be an expected failure."""
+    """A cut identity was reissued across a real storage transition."""
 
 
-# This strict expected failure is the explicit COMMIT-owned integration seam.
-# Do not turn it green with a second writer, a patched undo or a fake algorithm.
-@pytest.mark.xfail(strict=True, raises=ReissuedCutId, reason='COMMIT-owned Checkout.undo restores old reservation bytes; IDENTITY-COMMIT-undo-coordination-001')
+# The real history writer retains reservations; keep every transition unmasked.
 @pytest.mark.parametrize('seed', range(200))
 def test_fixed_seed_full_transition_sequences_do_not_reissue_cut_ids(tl, seed):
     rng = random.Random(20261015 + seed)

@@ -20,6 +20,7 @@ from astrid.sdk.timeline._common import (TimelineEditError, _Suggest)
 from astrid.sdk.timeline.check import (_CheckMixin, describe_changes)
 from astrid.sdk.timeline.doc import _serialize
 from astrid.sdk.timeline.edits import _EditMixin
+from astrid.sdk.timeline.identity import retain_cut_reservations
 from astrid.sdk.timeline.lookup import _LookupMixin
 from astrid.sdk.timeline.model import (Clip, Cut, StepSequence, Voice)
 from astrid.sdk.timeline.publish import _PublishMixin
@@ -271,6 +272,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
             current = state
             step.unlink()
             undone.append(label)
+        current = _serialize(retain_cut_reservations(json.loads(current), json.loads(start)))
         target.write_text(current, encoding="utf-8")
         self._reload()
         _journal.record_or_note(self, target, kind="undo", outcome="changed", label="; ".join(undone)[:160],
@@ -294,6 +296,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
             current = state
             step.unlink()
             redone.append(label)
+        current = _serialize(retain_cut_reservations(json.loads(current), json.loads(start)))
         target.write_text(current, encoding="utf-8")
         self._reload()
         _journal.record_or_note(self, target, kind="redo", outcome="changed", label="; ".join(redone)[:160],

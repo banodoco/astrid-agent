@@ -56,6 +56,8 @@ def test_two_edits_in_one_transaction_are_one_undo_step_that_restores_both(draft
     assert _history(draft) == ["two sets"]
     undone = draft.undo(1)
     assert undone == ["two sets"]
+    # Authored content returns exactly; legacy cut reservations are retained.
+    base["parent"]["config"]["app"]["astrid"]["cut_id_high_water"] = {"number": 2, "suffixes": {}}
     assert draft.document() == base
 
 
@@ -114,6 +116,7 @@ def test_nested_edits_join_the_outer_transaction(draft):
         draft.clip("c1.rocket").set(y=44)
     assert _history(draft) == ["outer"]
     assert draft.undo(1) == ["outer"]
+    base["parent"]["config"]["app"]["astrid"]["cut_id_high_water"] = {"number": 2, "suffixes": {}}
     assert draft.document() == base
 
 
@@ -188,6 +191,7 @@ def test_two_api_calls_then_one_save_are_one_undo_step(draft):
     assert len(_history(draft)) == 1
     assert _x(draft) == 120
     assert draft.undo(1)
+    base["parent"]["config"]["app"]["astrid"]["cut_id_high_water"] = {"number": 2, "suffixes": {}}
     assert draft.document() == base
     with pytest.raises(TimelineEditError, match="nothing to undo"):
         draft.undo(1)

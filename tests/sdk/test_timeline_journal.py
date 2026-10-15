@@ -14,6 +14,7 @@ from astrid.sdk import timeline_checkout as tc
 from astrid.sdk.timeline import journal
 from astrid.sdk.timeline import store as _store
 from astrid.sdk.timeline.checkout import Checkout
+from astrid.sdk.timeline.identity import KEY, cut_reservations
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing" / "tiny_publishable.json"
 
@@ -108,6 +109,61 @@ def test_undo_and_redo_are_recorded_with_both_digests(draft):
     rec = _records()[-1]
     assert (rec.kind, rec.label) == ("redo", "move")
     assert rec.before == _digest(undone) and rec.after == _digest(_text(draft))
+
+
+@pytest.mark.parametrize("undo_steps", [1, 2])
+def test_undo_redo_retains_retired_cut_ids_and_digests_restored_content(draft, undo_steps):
+    def content(tl):
+        document = tl.document()
+        document["parent"]["config"]["app"]["astrid"].pop(KEY, None)
+        return document
+
+    original = content(draft)
+    with draft.edit("split a"):
+        assert draft.cut("c1").split(2.0).id == "c1a"
+    split_a = content(draft)
+    with draft.edit("split b"):
+        assert draft.cut("c1").split(1.0).id == "c1b"
+    split_b = content(draft)
+    reserved = cut_reservations(draft.bundle)
+    assert reserved["suffixes"]["1"] == 2
+
+    def restore(method, steps, expected, labels):
+        nonlocal draft
+        before, count = _text(draft), len(_records())
+        assert getattr(draft, method)(steps) == labels
+        written = _text(draft)
+        records = _records()
+        assert len(records) == count + 1
+        rec = records[-1]
+        assert (rec.kind, rec.outcome, rec.label) == (method, "changed", "; ".join(labels))
+        assert rec.calls[0]["op"] == f"timeline.{method}"
+        assert (rec.before, rec.after) == (_digest(before), _digest(written))
+        assert content(draft) == expected
+        assert cut_reservations(draft.bundle) == reserved
+        assert draft._disk == written
+        draft = Checkout.load(draft.path)
+        assert content(draft) == expected
+        assert cut_reservations(draft.bundle) == reserved
+        assert draft._disk == written
+
+    restore("undo", undo_steps, split_a if undo_steps == 1 else original,
+            ["split b"] if undo_steps == 1 else ["split b", "split a"])
+    # With two undos, this older redo snapshot only reserved c1a when written.
+    restore("redo", 1, split_b if undo_steps == 1 else split_a,
+            ["split b"] if undo_steps == 1 else ["split a"])
+    if undo_steps == 2:
+        restore("redo", 1, split_b, ["split b"])
+    restore("undo", 2, original, ["split b", "split a"])
+    with pytest.raises(tc.TimelineEditError, match="reserved"):
+        draft.cut("c1").split(2.0, id="c1a")
+    with pytest.raises(tc.TimelineEditError, match="reserved"):
+        draft.cut("c1").split(2.0, id="c1b")
+    with draft.edit("fresh split"):
+        assert draft.cut("c1").split(2.0).id == "c1c"
+    assert Checkout.load(draft.path)._next_cut_id("c1") == "c1d"
+    assert [r.kind for r in _records()].count("checkout") == 1
+    assert journal.verify(_journal_file()) == []
 
 
 def test_a_fresh_checkout_and_a_discard_are_recorded(tmp_path, monkeypatch):

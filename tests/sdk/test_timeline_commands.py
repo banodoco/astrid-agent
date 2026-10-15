@@ -229,6 +229,9 @@ def test_history_boundaries_are_runner_entries_and_keep_multi_step_undo_redo(dra
     commands.run(draft, command(x=120))
     commands.run(draft, command(y=300))
     after = draft.document()
+    # History restores content while materializing legacy cut reservations.
+    for expected in (before, after):
+        expected["parent"]["config"]["app"]["astrid"]["cut_id_high_water"] = {"number": 2, "suffixes": {}}
     assert draft.undo(2) and draft.document() == before
     assert draft.redo(2) and draft.document() == after
     records = journal.read(journal.journal_path("p", "t"))
