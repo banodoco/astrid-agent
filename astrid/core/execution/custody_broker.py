@@ -1035,12 +1035,39 @@ class RetainedChildActor:
     Nonchild recovery must instead replay an explicit durable relinquishment.
     """
 
-    def __init__(self, child: subprocess.Popen[bytes], actor: AuthenticatedCleanupActor) -> None:
+    def __init__(self, child: subprocess.Popen[bytes], actor: AuthenticatedCleanupActor,
+                 *, parent: AuthenticatedCleanupActor | None = None) -> None:
         pinned = actor.verify()
         if child.pid != pinned["pid"] or child.poll() is not None:
             raise CustodyError("cleanup actor is not this live retained child")
         self._child = child
         self._pinned = pinned
+        self._parent = None
+        if parent is not None:
+            identity = actor._identity_provider(child.pid)
+            parent_identity = parent.verify()
+            if (not isinstance(child, RetainedCustodyPopen) or identity is None
+                    or parent_identity['pid'] != os.getpid()
+                    or identity.get('parent_pid') != parent_identity['pid']):
+                raise CustodyError('recovery requires the original retained direct-child parent')
+            self._parent = parent_identity
+
+    def prove_parent_wait(self, expected, parent):
+        """Stricter recovery evidence; a cached Popen exit is insufficient."""
+        if (self._parent is None or self._parent['pid'] != os.getpid()
+                or parent.verify() != self._parent
+                or dict(expected) != self._pinned
+                or not isinstance(self._child, RetainedCustodyPopen)):
+            raise CustodyError('reservation recovery has no authenticated retained parent')
+        self.prove_exit(expected)
+        outcome = self._child._custody_wait_outcome
+        if (outcome is None or outcome.get('pid') != self._pinned['pid']
+                or not (os.WIFEXITED(outcome['status']) or os.WIFSIGNALED(outcome['status']))
+                or os.waitstatus_to_exitcode(outcome['status']) != outcome.get('returncode')
+                or outcome['returncode'] != self._child.returncode):
+            raise CustodyError('reservation recovery has no positive native parent wait')
+        return {'producer': 'retained-parent-native-wait', 'parent': dict(self._parent),
+                'old_actor': dict(self._pinned), 'wait': dict(outcome)}
 
     def prove_exit(self, expected: Mapping[str, object]) -> None:
         if dict(expected) != self._pinned or self._child.poll() is None:
@@ -1072,7 +1099,8 @@ class RetainedCustodyPopen(subprocess.Popen):
 class _UnspawnedReservation:
     """Owner-local evidence invalidated before entering the Popen producer."""
 
-    def __init__(self, authority, record):
+    def __init__(self, authority, record, actor):
+        self.actor = actor
         self.authority = authority
         self.record = authority._semantic(record)
         self.unattempted = True
@@ -1395,6 +1423,7 @@ class RoleCustodyAuthority:
             record = {"version": DESIGNATION_VERSION, "role": self.role, "generation": generation,
                       "owner_epoch": owner_epoch, "state": "pending", "actor": actor.verify(),
                       "target": {"admission_id": admission_id}, "transitions": transitions}
+            record['transitions'] = [*transitions, self._spawn_transition(record, 'never-exported')]
             self._commit(record, initial=True)
             # The new generation starts without a prior live admission session.
             self._initial_capture_witness = None
@@ -1409,17 +1438,51 @@ class RoleCustodyAuthority:
             self._ready_committed = False
             self._anchor_requires_resume = False
             self._admission_resume = None
-            self._unspawned_reservation = _UnspawnedReservation(self, record)
+            self._unspawned_reservation = _UnspawnedReservation(self, record, actor)
+
+    @staticmethod
+    def _spawn_transition(record, status):
+        return {'transition_id': 'spawn-' + str(record['generation']) + '-' + status,
+                'intent': {'action': 'spawn-authority', 'role': record['role'],
+                           'generation': record['generation'], 'owner_epoch': record['owner_epoch'],
+                           'requester': record['actor'], 'target': record['target']},
+                'ack': {'status': status}}
+
+    def _never_exported(self, record):
+        # Old/missing/uncertain records cannot acquire this new recovery right.
+        # Exactly one generation-bound entry must be the entire current suffix.
+        entries = [entry for entry in record['transitions']
+                   if entry.get('intent', {}).get('generation') == record['generation']]
+        expected = self._spawn_transition(record, 'never-exported')
+        return (record['state'] == 'pending' and set(record['target']) == {'admission_id'}
+                and _canonical(entries) == _canonical([expected])
+                and _canonical(record['transitions'][-1:]) == _canonical([expected]))
 
     def begin_spawn(self) -> None:
-        """Invalidate no-spawn evidence BEFORE invoking a creation producer.
+        """Durably fence recovery BEFORE any export or creation producer.
 
-        A Popen exception is ambiguous and cannot restore this evidence.
+        No exception (including Popen failure) restores never-exported state.
+        This lock also serializes a late creation attempt against retirement.
         """
-        proof = self._unspawned_reservation
-        if proof is None:
-            raise CustodyError('spawn attempt has no retained reservation')
-        proof.unattempted = False
+        with self._guard(exclusive=True):
+            proof = self._unspawned_reservation
+            if proof is None or self._ledger_broken:
+                raise CustodyError('spawn attempt has no retained reservation')
+            record = self._read_current()
+            self._check_actor(record, proof.actor, proof.record['generation'])
+            if (record['state'] not in {'pending', 'active'}
+                    or record['owner_epoch'] != proof.record['owner_epoch']):
+                raise CustodyError('spawn attempt has a terminal or changed reservation')
+            exported = self._spawn_transition(proof.record, 'may-have-exported')
+            if not proof.unattempted:
+                if exported not in record['transitions']:
+                    raise CustodyError('spawn authority durable fence is unavailable')
+                return
+            if not self._never_exported(record) or self._semantic(record) != proof.record:
+                raise CustodyError('spawn authority has uncertain reservation provenance')
+            proof.unattempted = False  # Failed/uncertain writes cannot restore local proof.
+            record['transitions'].append(exported)
+            self._commit(record)  # file + directory fsync before capability escapes.
 
     def retain_child(self, *, actor: AuthenticatedCleanupActor, generation: int,
                      child: subprocess.Popen, identity_provider) -> RetainedLaunchChild:
@@ -1434,11 +1497,14 @@ class RoleCustodyAuthority:
     def settle(self, *, actor: AuthenticatedCleanupActor, generation: int,
                owner_epoch: str, expected_target: Mapping[str, object], transition_id: str,
                retained_child: RetainedLaunchChild | None = None,
-               unspawned: _UnspawnedReservation | None = None) -> dict[str, object]:
+               unspawned: _UnspawnedReservation | None = None,
+               dead_actor: RetainedChildActor | None = None) -> dict[str, object]:
         """Durably settle one exact child wait or retire its unattempted owner.
 
         An exact committed transition may be replayed without recreating lost
         wait evidence. An uncommitted wait lost with its owner stays unresolved.
+        A surviving pinned parent may retire only a durable never-exported
+        reservation with its original positive native wait for the old actor.
         """
         if (type(generation) is not int or generation < 1
                 or not isinstance(transition_id, str) or not transition_id or len(transition_id) > 256
@@ -1457,17 +1523,32 @@ class RoleCustodyAuthority:
                         raise CustodyError('custody settlement replay conflicts with durable intent')
                     return dict(entry['ack'])
             record = self._read_current()
-            self._check_actor(record, actor, generation)
+            if dead_actor is None:
+                self._check_actor(record, actor, generation)
+            elif (action != 'retire-unspawned' or record['generation'] != generation
+                  or unspawned is not None):
+                raise CustodyError('reservation recovery has a stale generation or wrong target')
+            # Authenticate again under the same authority lock as proof/commit.
+            if actor.verify() != requester:
+                raise CustodyError('custody settlement actor changed')
             if (record['owner_epoch'] != owner_epoch or self._reference(record)['target'] != dict(expected_target)
                     or record['state'] not in {'active', 'pending'}):
                 raise CustodyError('custody settlement target or owner differs')
             if action == 'retire-unspawned':
-                if (record['state'] != 'pending' or unspawned is None
-                        or unspawned is not self._unspawned_reservation
-                        or unspawned.authority is not self or not unspawned.unattempted
-                        or unspawned.record != self._semantic(record)):
-                    raise CustodyError('reservation has no positive existing-owner no-spawn evidence')
-                evidence = {'producer': 'existing-launch-owner-before-spawn', 'admission_id': expected_target['admission_id']}
+                if self._ledger_broken or not self._never_exported(record):
+                    raise CustodyError('reservation has no durable never-exported no-spawn evidence')
+                if dead_actor is not None:
+                    if not isinstance(dead_actor, RetainedChildActor):
+                        raise CustodyError('reservation recovery has no retained parent proof')
+                    evidence = dead_actor.prove_parent_wait(record['actor'], actor)
+                    evidence['admission_id'] = expected_target['admission_id']
+                else:
+                    if (unspawned is None or unspawned is not self._unspawned_reservation
+                            or unspawned.authority is not self or not unspawned.unattempted
+                            or unspawned.record != self._semantic(record)):
+                        raise CustodyError('reservation has no positive existing-owner no-spawn evidence')
+                    evidence = {'producer': 'existing-launch-owner-before-spawn',
+                                'admission_id': expected_target['admission_id']}
                 status = 'retired'
             else:
                 if not isinstance(retained_child, RetainedLaunchChild) or unspawned is not None:
@@ -2160,13 +2241,16 @@ class RoleBoundCustodyBroker:
 
     @property
     def child_pipe_fds(self) -> tuple[int, ...]:
+        if self.child_pipe_binding and not getattr(self, '_child_pipes_closed', False):
+            self.role_authority.begin_spawn()
         return tuple(item['fd'] for item in self.child_pipe_binding)
 
     def close_child_pipes(self) -> None:
         if not getattr(self, '_child_pipes_closed', False):
             self._child_pipes_closed = True
-            for fd in self.child_pipe_fds:
-                os.close(fd)
+            # Closing private endpoints is not an export (including after retirement).
+            for item in self.child_pipe_binding:
+                os.close(item['fd'])
 
     def retained_pipe_actor(self) -> AuthenticatedCleanupActor:
         if (self.operation_channel is None or not self._release_sent
