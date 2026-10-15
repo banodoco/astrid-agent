@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         "comfy_wrap.run",
         _run,
         argv=argv,
-        recovery_command="astrid executors run comfy_wrap.run --prompt 'your prompt' --out path/to/output.png",
+        recovery_command="invoke comfy_wrap.run through astrid.sdk.invoke with its declared prompt and output inputs",
     )
 
 

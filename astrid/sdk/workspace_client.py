@@ -35,7 +35,7 @@ __all__ = [
 
 _DOCUMENT_CONTENT_UNSET = object()
 
-RECONFIGURE_ACTION = "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`"
+RECONFIGURE_ACTION = "reconfigure the workspace runtime with `banodoco-local up --profile astrid`"
 
 
 def _reconfigure(field: str, message: str) -> "WorkspaceClientError":

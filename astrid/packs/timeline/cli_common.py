@@ -150,11 +150,11 @@ def checkout_summary(parsed: argparse.Namespace, tl: Any, *, existed: bool) -> l
         + ("" if existed and not fresh else " · a new working copy, made from the published head"),
         "show, visualize, lint and diff now read this working copy (--published for the live version)",
         "next:",
-        f"  read     timelines show {where} --as sheet --range c30..c31     (cut ids, \"words\" or seconds)",
+        f"  read     timelines show {where} --as sheet --range START..END",
         f"  edit     change a line of that sheet, then  timelines apply {where} FILE",
-        f"           or  timelines edit {where} --clip c30.cover --until Astrid",
-        f'           or  Python: tl = Checkout.draft("{parsed.project}", "{parsed.ref}"); tl.clip("c30.cover").until("Astrid"); tl.save()',
-        f"  look     timelines visualize {where} --preset motion --at Astrid   (--compare published: before/after)",
+        f"           or  timelines edit {where} --clip ADDRESS --until MOMENT",
+        f'           or  Python: tl = Checkout.draft("{parsed.project}", "{parsed.ref}"); tl.clip("ADDRESS").until("MOMENT"); tl.save()',
+        f"  look     timelines visualize {where} --at MOMENT   (--compare published: before/after)",
         f'  publish  timelines status {where}   ·   timelines publish {where} -m "what changed"',
     ]
 
@@ -165,7 +165,7 @@ def render_line(parsed: argparse.Namespace, project_id: str, timeline_id: str, h
 
     found = latest_render(parsed.client, project_id=project_id, timeline_id=timeline_id)
     if not found:
-        return "latest render: none found (timelines render TL --project P)"
+        return "latest render: none found (use timelines render with this timeline and project)"
     when = str(found.get("created_at") or "")[:16].replace("T", " ")
     what = "a working copy (draft)" if found.get("candidate") else None
     if what is None and found.get("revision") == head:

@@ -31,6 +31,15 @@ def test_installed_pack_without_cli_mapping_is_honest(capsys: pytest.CaptureFixt
     assert "PackCommandSpec" not in output
 
 
+def test_pixel_pack_lists_actions_and_sdk_invocation(capsys: pytest.CaptureFixture[str]) -> None:
+    from astrid.core.gateway.hivemind import dispatch
+
+    assert dispatch("pixel", []) == 0
+    output = capsys.readouterr().out
+    assert "pixel.cutout, pixel.snap, pixel.sprites, pixel.strip" in output
+    assert 'sdk.invoke("pixel.cutout", kind="action"' in output
+
+
 def test_hivemind_parser_preserves_json_before_or_after_subcommand() -> None:
     from astrid.core.gateway.hivemind import _parser
 

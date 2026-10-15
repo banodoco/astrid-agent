@@ -52,14 +52,16 @@ def run_find(parsed: argparse.Namespace) -> int:
         tl = Checkout.load(parsed.file)
     else:
         if not parsed.ref:
-            return fail("name a timeline (timelines find TL ...) or pass --file F", 2)
+            return fail("name a timeline and query, or pass --file FILE", 2)
         path = None if parsed.published else find_draft(parsed.project, parsed.ref, parsed.draft, client=parsed.client)
         tl = Checkout.load(path) if path else Checkout.open(parsed.project, parsed.ref, client=parsed.client)
     from astrid.sdk.timeline_address import AddressError
 
     if not (parsed.query or parsed.text or parsed.asset or parsed.element or parsed.role):
-        return fail('say what to find: timelines find TL "the conclusion" · --text "Astrid." · --asset ROCKET '
+        return fail('say what to find: timelines find <timeline> "phrase" · --text "visible text" · --asset KEY '
                     '· --element callout · --role label', 2)
+    timeline_ref = str(parsed.ref or tl.bundle.get("timeline_id") or "TIMELINE")
+    project_ref = str(parsed.project or tl.bundle.get("project_id") or "PROJECT")
     try:
         hits = find(tl, parsed.query, text=parsed.text, asset=parsed.asset, line=parsed.line, cut=parsed.cut,
                     last=parsed.last, element=parsed.element, role=parsed.role)
@@ -70,19 +72,19 @@ def run_find(parsed: argparse.Namespace) -> int:
             return fail(f"no clip matches element={parsed.element!r} role={parsed.role!r}", 1)
         if parsed.query and not parsed.text and not parsed.asset:
             message = suggest_find_miss(
-                tl, parsed.query, timeline=str(parsed.ref or "TL"), project=str(parsed.project or "P"),
+                tl, parsed.query, timeline=timeline_ref, project=project_ref,
                 line=parsed.line, cut=parsed.cut,
             )
             if message:
                 return fail(message, 1)
         return fail(_nothing(tl, parsed.query or parsed.text or parsed.asset), 1)
-    for line in describe_found(tl, hits, timeline=str(parsed.ref or "TL"), project=str(parsed.project or "P")):
+    for line in describe_found(tl, hits, timeline=timeline_ref, project=project_ref):
         print(line)
     return 0
 
 
 def suggest_find_miss(
-    tl: Any, query: str, *, timeline: str = "TL", project: str = "P",
+    tl: Any, query: str, *, timeline: str = "TIMELINE", project: str = "PROJECT",
     line: str | None = None, cut: str | None = None,
 ) -> str | None:
     """Format nearby spoken phrases for a failed exact query, if any are useful."""

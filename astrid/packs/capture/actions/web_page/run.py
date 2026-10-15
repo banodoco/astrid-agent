@@ -142,7 +142,7 @@ def _require_host_admission(url: str) -> dict[str, Any]:
     if not proxy:
         raise AstridError(
             "capture requires a host-managed broker admission",
-            recovery_command="run capture.web_page through the Astrid host with a declared HTTPS route",
+            recovery_command="run capture.web_page through the configured host with a declared HTTPS route",
         )
     policy = _json_env(POLICY_ENV)
     admission = _json_env(ADMISSION_ENV)

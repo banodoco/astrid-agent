@@ -172,7 +172,7 @@ def test_run_sdk_and_main_preserve_contracts(
     assert code == 0
     assert (
         captured.err
-        == "[astrid] running unledgered — invoke through executors run or the SDK to persist a run record\n"
+        == "[astrid] running unledgered — use astrid.sdk.invoke to persist a run record\n"
     )
     assert captured.out == f"manifest={result.run_dir / 'manifest.json'}\n"
 

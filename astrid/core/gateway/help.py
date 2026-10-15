@@ -124,7 +124,7 @@ Contributor authentication (reserved):
 External tools:
   hivemind    [managed pack] search current messages and resources
   installed pack routes are discovered from pack manifests; packs without a
-  declared CLI command remain available through ``astrid agent``
+  declared CLI command remain available through ``astrid.sdk.invoke``
 
 Nested mounts (manifest-owned):
   timelines shots       [pack: shots] project-level reusable shot list/create/show/add/remove/reorder

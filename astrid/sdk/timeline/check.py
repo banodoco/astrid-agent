@@ -649,15 +649,15 @@ class CheckReport:
                 by_cut[address.split(".")[0]] = by_cut.get(address.split(".")[0], 0) + 1
             shown_blocking = [f"  ! {len(blocking)} orphan(s) in {len(by_cut)} cut(s): "
                               + ", ".join(f"{cut} ({n})" for cut, n in by_cut.items()),
-                              "    each one: timelines status TL --project P --all   ·   the sheet's orphans section"]
+                              "    each one: timelines status <timeline> --project <project> --text --all · the sheet's orphans section"]
         lint = [f"  {line}" for line in new] if full or len(new) <= 12 else (
-            [f"  {line}" for line in new[:12]] + [f"  … {len(new) - 12} more new finding(s) (timelines check TL --all)"])
+            [f"  {line}" for line in new[:12]] + [f"  … {len(new) - 12} more new finding(s) (timelines check <timeline> --all)"])
         tail = []
         if old or elsewhere:
             tail.append("  (" + " · ".join(x for x in (
                 f"{elsewhere} more on other cuts" if elsewhere else "",
                 f"{old} lint finding(s) were already there before your changes" if old else "") if x)
-                + ": timelines check TL --all)")
+                + ": timelines check <timeline> --all)")
         return [head] + shown_blocking + [f"  · {p}" for p in notes[:12]] + lint + tail
 
     def full_text(self) -> str:
@@ -691,7 +691,7 @@ class CheckReport:
             return line.replace("app changed", "intent changed: moments, cut, words").replace(", app,", ", intent,")
         lines += [plain(line) for line in rest[:10]] + ([f"  … {len(rest) - 10} more clip lines"] if len(rest) > 10 else [])
         if kinds or len(rest) > 10:
-            lines.append("  (every line: timelines check TL --all · timelines diff TL)")
+            lines.append("  (every line: timelines check <timeline> --all · timelines diff <timeline>)")
         orphans = sum(1 for p in self.blocking if p.startswith("orphan"))
         lines.append(f"  {orphans} orphan(s) · {len(self.blocking)} to fix before publishing")
         lines += self.brief()[1:]

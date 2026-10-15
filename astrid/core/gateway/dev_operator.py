@@ -298,7 +298,7 @@ def _require_linked_serve_worktree(dev: Path, serve: Path) -> None:
     if serve == dev:
         raise DevOperatorError(
             "the runtime serves the dev tree itself; promote needs a separate serve worktree",
-            next_action="git -C <dev> worktree add --detach ../Astrid-serve HEAD, then re-point the source profile",
+            next_action="create a detached serve worktree from the selected revision, then point the source profile to it",
             state="unavailable",
         )
     common_dev = Path(_git(dev, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()

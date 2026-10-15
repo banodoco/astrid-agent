@@ -38,19 +38,17 @@ optional theme, then produces `hype.timeline.json`, `hype.assets.json`,
 and `hype.metadata.json` — the three-file input to rendering.render.
 
 For edits to an existing runtime-owned timeline, route through the
-[timeline editing skill](../../rendering/docs/SKILL.md). That skill owns the
-canonical inspect → edit → validate → save loop, Remotion rendering, and
-timeline effects. The orchestrators and `cut` executor here remain for their
-stated creation/assembly workflows; do not invent a second timeline editing
-path here.
+[timeline editing skill](../../timeline/docs/SKILL.md). That skill owns the
+current find → show → edit → see → publish loop. The orchestrators and `cut`
+executor here remain for their stated creation/assembly workflows; do not
+invent a second timeline editing path here.
 
 ## Existing timeline editing
 
-Use the [timeline editing skill](../../rendering/docs/SKILL.md) for all
-existing Runtime timeline inspection, visualisation, detached edits, validation,
-publication, Remotion rendering, and effects. This pack only owns the
-production orchestrators and the arrangement-to-Remotion `cut` executor listed
-above.
+Use the [timeline editing skill](../../timeline/docs/SKILL.md) for all
+existing Runtime timeline discovery, inspection, detached edits, validation,
+visualization, and publication. This pack only owns the production
+orchestrators and the arrangement-to-Remotion `cut` executor listed above.
 
 ## Synchronize draft voiceover
 
@@ -94,7 +92,7 @@ speech does not fit. `timing_policy="ripple"` fits affected shots to measured sp
 later placements and parent visual layers. Ripple rejects overlapping shots,
 nonzero source offsets, non-unit speed, audio layers that would need stretching,
 and parameterized layers without an explicit stretch declaration. No preview
-render is made. Use the [timeline editing skill](../../rendering/docs/SKILL.md)
+render is made. Use the [timeline editing skill](../../timeline/docs/SKILL.md)
 for the underlying timeline structure, timing, and publication contract.
 
 ## When to use

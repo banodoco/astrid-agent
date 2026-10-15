@@ -170,20 +170,38 @@ def _search(parsed: argparse.Namespace, spec: PackCommandSpec) -> int:
         return print_result(_error_result(exc), as_json=getattr(parsed, "json", False))
 
 
+def _pack_cli_guidance(pack: str) -> str:
+    """Describe declared SDK actions when an installed pack has no CLI route."""
+    actions: tuple[str, ...] = ()
+    try:
+        from astrid.core.pack.discovery import discover_pack_metadata
+
+        entry = next((item for item in discover_pack_metadata() if item.id == pack), None)
+        if entry is not None:
+            actions = tuple(f"{pack}.{name}" for name in entry.pack.actions)
+    except Exception:  # pragma: no cover - minimal installs may omit discovery deps
+        actions = ()
+
+    lines = [f"astrid {pack}: no declared CLI commands."]
+    if actions:
+        lines.extend((
+            f"Available actions: {', '.join(actions)}",
+            "Invoke an action from Python:",
+            "  import astrid.sdk as sdk",
+            f'  result = sdk.invoke("{actions[0]}", kind="action", project="<project>", inputs={{...}})',
+        ))
+    else:
+        lines.append("Invoke a declared capability from Python with astrid.sdk.invoke(...).")
+    return "\n".join(lines)
+
+
 def dispatch(pack: str, args: list[str]) -> int:
     specs = tuple(spec for spec in PACK_COMMANDS if spec.pack == pack)
     if not specs and (not args or any(token in {"-h", "--help"} for token in args)):
-        print(
-            f"astrid {pack}: installed pack has no declared CLI commands yet. "
-            "Use `astrid agent` for capability routing; its declared capabilities remain available."
-        )
+        print(_pack_cli_guidance(pack))
         return 0
     if not specs:
-        print(
-            f"astrid {pack}: installed pack has no declared CLI commands yet. "
-            "Use `astrid agent` for capability routing; its declared capabilities remain available.",
-            file=sys.stderr,
-        )
+        print(_pack_cli_guidance(pack), file=sys.stderr)
         return 2
     parser = _parser(pack)
     if not args:

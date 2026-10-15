@@ -48,8 +48,8 @@ class _PublishMixin:
                 receipt.update(self._publish_narration(key, client=client))
             except TimelineEditError as exc:  # the structure IS published: say so, and how to finish
                 receipt["narration_error"] = (f"{exc}. The cut is published (head {receipt.get('new_head')}); only the "
-                                              "narration binding is behind: timelines checkout TL --fresh, then "
-                                              "timelines publish TL -m \"narration\" pins it")
+                                              "narration binding is behind: check out the current timeline head, then "
+                                              "publish a narration revision with a message")
         if self.path:  # publish resets the base: this working copy is the new head, with no changes (AUDIT bug 6)
             before = _journal.document_digest(self.document())
             self._reset_base(client=client)
@@ -66,7 +66,7 @@ class _PublishMixin:
             head = _store.fetch_bundle(str(self.bundle["project_id"]), str(self.bundle["timeline_id"]), client=client)
         except Exception as exc:  # noqa: BLE001 - the publish stands; the working copy keeps its old base
             self.notes.append(f"published, but this working copy could not re-read the new head ({exc}); "
-                              "its base is still the old one: timelines checkout TL --fresh")
+                              "its base is still the old one: check out the current timeline head before editing again")
             return
         old, old_journal = self.bundle, list(self._journal)
         self.bundle, self._mcache, self._journal, self._disk = head, None, [], None

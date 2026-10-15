@@ -445,7 +445,7 @@ def _mp4_timescale(profile: RenderProfile) -> int:
                 "MP4 finalization requires a reciprocal integer video time base; "
                 f"received {profile.time_base[0]}/{profile.time_base[1]}"
             ),
-            recovery_command="resolve the canonical MP4 profile with Astrid's profile resolver",
+            recovery_command="select an MP4 profile supported by the configured renderer",
             details={"time_base": list(profile.time_base)},
         )
     return reciprocal.numerator

@@ -383,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
         render_astrid_error(
             AstridError(
                 f"vibecomfy.validate: {exc}",
-                recovery_command="python3 -m astrid executors run vibecomfy.validate --help",
+                recovery_command="invoke vibecomfy.validate through astrid.sdk.invoke with its declared inputs",
             )
         )
         return 1

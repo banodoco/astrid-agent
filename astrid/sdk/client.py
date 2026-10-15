@@ -69,7 +69,7 @@ def _protocol_error(field: str, message: str, *, actual_digest: str | None = Non
         "field": field,
         "expected_schema_digest": SCHEMA_DIGEST,
         "expected_component_manifest": COMPONENT_MANIFEST_SHA256,
-        "next_action": "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`",
+        "next_action": "reconfigure the workspace runtime with `banodoco-local up --profile astrid`",
     }
     if actual_digest is not None:
         details["actual_schema_digest"] = actual_digest
@@ -90,7 +90,7 @@ def _identity_error(field: str, message: str) -> Any:
         message,
         {
             "field": field,
-            "next_action": "reconfigure the Astrid runtime with `banodoco-local up --profile astrid`",
+            "next_action": "reconfigure the workspace runtime with `banodoco-local up --profile astrid`",
         },
     )
 

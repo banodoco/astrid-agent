@@ -1,0 +1,16 @@
+id: timing.skill.on-word
+source: h1 T1
+intent: Start the c1 rocket on the spoken word "went".
+fixture: tiny
+expect: change
+idempotent: true
+cli: edit --clip c1.rocket --on '"went"'
+sheet:
+  cuts: [c1]
+  replace:
+    - ['on "viral"', 'on "went"']
+python: |
+  tl.clip("c1.rocket").on('"went"')
+check:
+  - abs(tl.clip("c1.rocket").start - 0.9) < 1e-3
+  - tl.clip("c1.rocket").anchor == '"went"'

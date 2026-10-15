@@ -35,9 +35,9 @@ The detailed contracts are maintained in these authoritative guides:
   for quick orientation; when executor, orchestrator, or element manifests
   change, regenerate it with
   [`scripts/gen_capability_index.py`](../../../../../scripts/gen_capability_index.py).
-- [Video editing skill](../../../video_editing/docs/SKILL.md) — existing timeline
-  editing route; the [rendering skill](../../../rendering/docs/SKILL.md) is the
-  downstream render/evidence compatibility layer.
+- [Timeline editing skill](../../../timeline/docs/SKILL.md) — the current route
+  for finding, inspecting, editing, previewing, and publishing an existing
+  timeline; rendering remains a downstream evidence step.
 
 The runnable starter source is
 [`astrid/core/pack/cli_basic.py`](../../../../../astrid/core/pack/cli_basic.py);

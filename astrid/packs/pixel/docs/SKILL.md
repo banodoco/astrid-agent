@@ -41,6 +41,11 @@ sizes at `scale`, and each sprite's dark-outline boundary fraction.
 
 ## Other entrypoints
 
+`python3 -m astrid pixel` lists the declared actions:
+`pixel.cutout`, `pixel.snap`, `pixel.sprites`, and `pixel.strip`. Invoke an
+action with `astrid.sdk.invoke(capability_id, kind="action", project=...,
+inputs={...})`; the example above shows the full form for `pixel.sprites`.
+
 | Action | Use |
 | --- | --- |
 | `pixel.snap` | Snap one image to its drawn lattice (`auto_grid: true`) or an explicit grid; optional palette and nearest-neighbour preview. A grid over 20% coarser than the detected art is refused unless `allow_lossy: true`. |

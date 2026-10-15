@@ -70,8 +70,7 @@ def warn_if_unledgered() -> None:
 
     if not os.environ.get(ASTRID_PROJECT_RUN):
         print(
-            "[astrid] running unledgered — invoke through executors run"
-            " or the SDK to persist a run record",
+            "[astrid] running unledgered — use astrid.sdk.invoke to persist a run record",
             file=sys.stderr,
         )
 
@@ -94,7 +93,7 @@ def run_pack_main(
         return render_astrid_error(
             AstridError(
                 str(exc),
-                recovery_command=recovery_command or f"python3 -m astrid executors run {capability_id} --help",
+                recovery_command=recovery_command or "invoke the declared capability through astrid.sdk.invoke with its declared inputs",
                 state_snapshot=snapshot,
             )
         )

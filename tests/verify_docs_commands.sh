@@ -95,20 +95,8 @@ while IFS= read -r cmd_prefix; do
     continue
   fi
 
-  # doctor: run directly (safe health check)
-  if [ "$cmd_prefix" = "python3 -m astrid doctor" ] || \
-     [ "$cmd_prefix" = "python3 -m astrid doctor --json" ]; then
-    echo -n "  RUN   $cmd_prefix ... "
-    if OPENAI_API_KEY="${OPENAI_API_KEY:-docs-command-smoke}" "$PYTHON_BIN" -m astrid doctor >/dev/null 2>&1; then
-      echo "OK"
-    else
-      echo "FAILED (exit=$?)"
-      FAILED=1
-    fi
-    continue
-  fi
-
-  # All other commands: verify subcommand path exists via --help
+  # Help parsing verifies the documented path and flags without connecting to
+  # the runtime or requiring workspace credentials/configuration.
   echo -n "  HELP  $cmd_prefix ... "
   command_args="${cmd_prefix#python3 }"
   read -r -a command_argv <<< "$command_args"
@@ -133,3 +121,11 @@ else
   echo "Some verifications FAILED." >&2
   exit 1
 fi
+
+echo ""
+echo "=== Verify commands and frontmatter in authored skills ==="
+PYTHON_BIN="$PYTHON_BIN" "$PYTHON_BIN" "$SCRIPT_DIR/verify_skill_cli_commands.py"
+
+echo ""
+echo "=== Verify CLI guidance strings ==="
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -m pytest -q "$SCRIPT_DIR/test_cli_guidance.py"

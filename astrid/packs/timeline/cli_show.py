@@ -97,7 +97,9 @@ def print_address(parsed: argparse.Namespace, bundle_opener: Any) -> int:
             return 2
     print(banner)
     for k, target in enumerate(targets):
-        text = describe_target(tl, target, timeline=str(parsed.ref), project=str(parsed.project),
+        timeline_ref = str(parsed.ref or tl.bundle.get("timeline_id") or "TIMELINE")
+        project_ref = str(parsed.project or tl.bundle.get("project_id") or "PROJECT")
+        text = describe_target(tl, target, timeline=timeline_ref, project=project_ref,
                                full=bool(getattr(parsed, "full", False)), keys=getattr(parsed, "keys", None))
         print(text if k == len(targets) - 1 else text.split("\nnext:")[0])
     return 0

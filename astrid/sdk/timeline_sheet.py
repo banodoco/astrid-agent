@@ -670,7 +670,7 @@ def apply_sheet(tl: Checkout, text: str) -> list[str]:
         base = find_version(tl, parsed["version"])
         if base is None:
             raise SheetError(f"this sheet was exported from version {parsed['version']}, which this working copy no longer "
-                             f"has (it is now {sheet_version(tl)}): re-export it (timelines show TL --as sheet) and make "
+                             f"has (it is now {sheet_version(tl)}): re-export the current timeline as a sheet and make "
                              "your change again, so nothing edited since is undone")
         parsed = merge_sheet(parsed, base, tl)
     try:
@@ -797,7 +797,7 @@ def merge_sheet(sheet: dict[str, Any], base_tl: Any, tl: Any) -> dict[str, Any]:
     if clashes:
         raise SheetError("not applied: since this sheet was exported, these were changed both here and in the sheet: "
                          + "; ".join(clashes[:10]) + (f"; … {len(clashes) - 10} more" if len(clashes) > 10 else "")
-                         + ". Re-export (timelines show TL --as sheet) and make your change again.")
+                         + ". Re-export the current timeline as a sheet and make your change again.")
     return merged
 
 

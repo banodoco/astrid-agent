@@ -373,7 +373,7 @@ def _safe_note(box: dict[str, Any]) -> str:
     return "inside title-safe" if over[side] <= 2 else f"{over[side]:.0f} px outside title-safe ({side})"
 
 
-def describe_target(tl: Any, target: Target, *, timeline: str = "TL", project: str = "P", full: bool = False,
+def describe_target(tl: Any, target: Target, *, timeline: str = "TIMELINE", project: str = "PROJECT", full: bool = False,
                     keys: Any = None) -> str:
     """The complete record of a target, as plain text: nothing truncated, every time resolved."""
     import json
@@ -958,7 +958,7 @@ def _find_assets(tl: Any, raw: str) -> list[Found]:
     return out
 
 
-def describe_found(tl: Any, found: list[Found], *, timeline: str = "TL", project: str = "P") -> list[str]:
+def describe_found(tl: Any, found: list[Found], *, timeline: str = "TIMELINE", project: str = "PROJECT") -> list[str]:
     """Plain lines: each hit's address and place, and the clips there (address, element, start–end).
     Values are printed in full (up to VALUE_LIMIT characters); a longer one says how to see the rest."""
     lines: list[str] = []

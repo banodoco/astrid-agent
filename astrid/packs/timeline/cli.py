@@ -2243,7 +2243,7 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
 def _configure_show(subparser: argparse.ArgumentParser) -> None:
     subparser.epilog = (
         "Next: use `timelines visualize` for composed pixels. For edits, use the "
-        "timeline_editing document-checkout recipe (checkout → edit → check → publish). "
+        "timeline_editing skill's checkout → edit → check → visualize → publish recipe. "
         "Use `timelines visualize --help` for the visual controls."
     )
     _add_project_arg(subparser, required=False)
@@ -2397,7 +2397,7 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
 def _configure_visualize(subparser: argparse.ArgumentParser) -> None:
     subparser.epilog = (
         "Next: use `timelines show` for authored rows and timing. For edits, use the "
-        "timeline_editing document-checkout recipe (checkout → edit → check → publish). "
+        "timeline_editing skill's checkout → edit → check → visualize → publish recipe. "
         "Use this help page for component, sampling, frame, and resolution controls."
     )
     _add_project_arg(subparser, required=False)
@@ -3149,7 +3149,7 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         if target is None:
             verify_status = _print_verify(parsed, tl, before)
         else:
-            print("verify  needs a working copy of a timeline (timelines edit TL --project P ...), not --file")
+            print("verify needs a working copy; check out the timeline before editing, not --file")
     sweep_status = 0
     if target is None:
         from astrid.packs.timeline.cli_sweep import auto_sweep_after_edit, touched_cuts

@@ -21,7 +21,7 @@ Choose the route by the requested result. Read only that route's guidance:
 | Request | Start here |
 | --- | --- |
 | Find a project, inspect a run, or open a render | The CLI recipes below |
-| Change timing, text, layout, effects, or existing timeline clips, then render | [Timeline editing](../../rendering/docs/SKILL.md) |
+| Find, inspect, edit, preview, or publish an existing timeline | [Timeline editing](../../timeline/docs/SKILL.md) |
 | Generate images, video, or audio (including Foley); understand, assemble, compare, or publish work | [Creative work](creative-work/SKILL.md), then the relevant pack |
 | Reuse a character or other saved subject | [References](../../media/docs/references.md) |
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
@@ -148,11 +148,9 @@ python3 -m astrid timelines recover <timeline> --project <project> --json
 python3 -m astrid media references list --project <project> --include-archived --json
 ```
 
-Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
-timeline work. Whole-document timeline saves are retired; edits are published
-through the detached authoring bundle. Read the [timeline editing skill](../../rendering/docs/SKILL.md)
-for the canonical authoring, Remotion, visualization, effects, and playback
-route. Use `tasks` and `runs` to inspect or manage admitted work:
+Use the [timeline editing skill](../../timeline/docs/SKILL.md) for the current
+find → show → edit → see → publish loop. Use `tasks` and `runs` to inspect or
+manage admitted work:
 
 ```bash
 python3 -m astrid tasks list --project demo --json

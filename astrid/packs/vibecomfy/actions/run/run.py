@@ -680,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                 return render_astrid_error(
                     AstridError(
                         "vibecomfy.run: --out is required for run",
-                        recovery_command="python3 -m astrid executors run vibecomfy.run --help",
+                        recovery_command="invoke vibecomfy.run through astrid.sdk.invoke with its declared inputs",
                     )
                 )
             _run_and_settle(
@@ -700,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         error = exc if isinstance(exc, AstridError) else AstridError(
             f"vibecomfy.run: {exc}",
-            recovery_command="python3 -m astrid executors run vibecomfy.run --help",
+            recovery_command="invoke vibecomfy.run through astrid.sdk.invoke with its declared inputs",
         )
         render_astrid_error(error)
         return 1

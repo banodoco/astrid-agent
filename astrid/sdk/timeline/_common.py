@@ -64,8 +64,8 @@ class _Suggest:
         close = difflib.get_close_matches(name, names, n=3, cutoff=0.5)
         hint = self._SYNONYMS.get(name)
         said = (f"; for that use {hint}" if hint else "") + (f"; did you mean {', '.join(close)}?" if close else "")
-        raise AttributeError(f"{type(self).__name__} has no {name!r}{said} (all of them: references/editing.md, "
-                             "the method table)")
+        raise AttributeError(f"{type(self).__name__} has no {name!r}{said} "
+                             "(check the timeline editing skill's SDK guidance)")
 
 
 def _norm(text: Any) -> str:

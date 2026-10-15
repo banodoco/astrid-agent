@@ -42,9 +42,9 @@ keeping the low-resolution badge readable.
 | Transcribe, detect scenes/shots, arrange clips, review, or validate editorial work | [editorial](../../../editorial/docs/SKILL.md) | `editorial.transcribe`, `editorial.scenes`, `editorial.shots`, `editorial.arrange`, `editorial.validate` |
 | Trim or repair media, or search/download GIFs | [media](../../../media/docs/SKILL.md) | `media.clip_extract`, `media.speech_repair_lavasr`, `media.gif_search` |
 | Assemble a production video, talk, thumbnail, logo grid, or image animation | [video editing](../../../video_editing/docs/SKILL.md) | `video_editing.hype`, `video_editing.event_talks`, `video_editing.thumbnail_maker` |
-| Author, inspect, edit, preview, or render a runtime timeline | [timeline editing](../../../rendering/docs/SKILL.md) | `timelines show`/`timelines visualize` inspect the pinned composition; `rendering.render` creates Remotion or other renderer output |
+| Find, inspect, edit, preview, or publish a runtime timeline | [timeline editing](../../../timeline/docs/SKILL.md) | `timelines find`/`timelines show` locate and inspect; `timelines visualize` shows the selected draft |
 | Build an iteration video or compare experiment outputs | [iteration](../../../iteration/docs/SKILL.md) | `iteration.assemble`, `iteration.experiment_review` |
-| Add sound to one short video clip | [fal](../../../fal/docs/SKILL.md), then [timeline editing](../../../rendering/docs/SKILL.md) for a finished video | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate, then render as evidence |
+| Add sound to one short video clip | [fal](../../../fal/docs/SKILL.md), then [timeline editing](../../../timeline/docs/SKILL.md) to place and review it | `fal.fal_foley` produces audio; place it alongside the source video on a detached timeline candidate |
 | Make a spatial soundscape from video tiles | [foley](../../../foley/docs/SKILL.md) | `foley.foley_map` produces per-tile audio and a review viewer |
 | Distill a long stream or event into reviewable clips | [stream content](../../../stream_content/docs/SKILL.md) | `stream_content.distill` |
 | Build a training dataset or run LoRA training | [training](../../../training/docs/SKILL.md) | `training.dataset_build`, `training.training_run` |
