@@ -553,6 +553,11 @@ def entity_states(tl):
     arrangements = {a["owner"]: a for a in bed["arrangements"]} if bed else {}
     adopted_projection = {}
     result = {"parent": copy.deepcopy(tl.bundle.get("parent", {}))}
+    for item in tl.bundle.get("parent", {}).get("clips", []):
+        key = f"parent/clip:{item['id']}"
+        if key in result:
+            raise CommandError(f"Duplicate scoped identity {key}")
+        result[key] = copy.deepcopy(item)
     for row in tl.bundle.get("placements", []):
         sid = str(row.get("shot_id"))
         oid = row.get("occurrence_id")
@@ -742,6 +747,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
         return direct
     if entry.op in {"timeline.resolve", "timeline.reflow", "timeline.retime"}:
         return set()  # compiler execution is not a claim of direct authorship
+    if entry.op == "clip.declare-quotes":
+        return [(selected[0], "app.astrid.copy_quotes")]
     if entry.kind == "clip" and entry.op in {"clip.set", "clip.set-param", "clip.set-look", "clip.clear"}:
         sid = selected[0]
         if entry.op == "clip.set-param":
@@ -1057,7 +1064,7 @@ def flag_inventory_table(inventory):
 PUBLIC_READERS = {
     "Clip": frozenset({"get"}),
     "Cut": frozenset({"layer", "step"}),
-    "Checkout": frozenset("assets at changed_cut_ids changes check clip cut cut_count cut_note cut_notes_all cut_picture dips document edits empty_cuts expected_cuts find frame gaps lint log narration narration_changes orphans picture_gaps quantize sequence slot_clips time to_shot_seconds verify voice word".split()),
+    "Checkout": frozenset("copy_inventory copy_lint assets at changed_cut_ids changes check clip cut cut_count cut_note cut_notes_all cut_picture dips document edits empty_cuts expected_cuts find frame gaps lint log narration narration_changes orphans picture_gaps quantize sequence slot_clips time to_shot_seconds verify voice word".split()),
 }
 STORAGE_BOUNDARIES = frozenset({"discard", "draft", "edit", "load", "open", "pin_narration", "publish", "step"})
 

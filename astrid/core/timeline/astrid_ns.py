@@ -14,7 +14,7 @@ NS = "astrid"
 LEGACY = "_legacy"
 CLIP_INTENT_KEYS = frozenset({
     "on", "until", "until_film_end", "for", "cut", "layer", "deliberate", "deliberate_hold",
-    "why", "why_layers", "formulas", "segment", "words", "text", "gap_after_s",
+    "why", "why_layers", "formulas", "segment", "words", "text", "copy_quotes", "copy_quote_tracking", "gap_after_s",
     "beats", "beats_label", "slot", "replaces", "standin", "standin_intent",
     "standin_for", "intended", "sequence", "sequence_index", "sequence_fit",
     "sequence_shape_from", "orphan", "role", "style", "group", "duck", "loop",

@@ -29,7 +29,10 @@
     "description": "Default text card effect.",
     "label": "Text Card",
     "whenToUse": "Use for simple rendered text cards and captions.",
-    "pack_id": "rendering"
+    "pack_id": "rendering",
+    "text": [
+      "content"
+    ]
   },
   "pack_id": "rendering",
   "runtime": {

@@ -18,6 +18,7 @@ from astrid.sdk.timeline import journal as _journal
 from astrid.sdk.timeline import store as _store
 from astrid.sdk.timeline._common import (TimelineEditError, _Suggest)
 from astrid.sdk.timeline.check import (_CheckMixin, describe_changes)
+from astrid.sdk.timeline.copy_sync import copy_inventory, copy_lint, declare_quotes
 from astrid.sdk.timeline.doc import _serialize
 from astrid.sdk.timeline.edits import _EditMixin
 from astrid.sdk.timeline.identity import retain_cut_reservations
@@ -494,13 +495,19 @@ def _joined_label(journal: list[tuple[str, str | None]]) -> str:
     return text if len(text) <= 160 else text[:157] + "..."
 
 
+# COPY-SYNC uses the existing runner; read-only extraction does not author intent.
+Clip.declare_quotes = declare_quotes
+Checkout.copy_inventory = copy_inventory
+Checkout.copy_lint = copy_lint
+
+
 # Every public document mutator enters the command runner. Lifecycle and I/O
 # (save, undo, redo, publish, draft/discard) keep their existing storage boundaries.
 from astrid.sdk.timeline import commands as _commands
 
 _commands.register(Clip, "clip", (
     "on", "until", "enter_at", "nudge", "hold_for", "for_", "set_duration", "trim", "slip", "extend", "end_at",
-    "set", "set_param", "clear", "set_track", "clear_asset", "swap_asset", "set_beats", "keyframe_at",
+    "declare_quotes", "set", "set_param", "clear", "set_track", "clear_asset", "swap_asset", "set_beats", "keyframe_at",
     "remove", "remove_layer", "keep", "set_look", "tag", "move_to_cut"))
 _commands.register(Checkout, "timeline", (
     "add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",

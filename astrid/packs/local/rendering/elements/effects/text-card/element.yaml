@@ -20,6 +20,7 @@
   ],
   "kind": "effect",
   "metadata": {
+    "text": ["content"],
     "description": "Forked text card with real DOM rendering, anchored positioning, and per-clip fades.",
     "label": "Text Card",
     "whenToUse": "Use for captions, titles, and persistent text overlays. Position via params.anchor (top-left|top|top-right|left|center|right|bottom-left|bottom|bottom-right) plus offsetX/offsetY, or via clip.x/y/width/height. Fades read clip.effects.fade_in/fade_out (seconds)."

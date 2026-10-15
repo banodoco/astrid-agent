@@ -496,7 +496,9 @@ class _CheckMixin:
     # ---- check / publish ----------------------------------------------------
     def lint(self, *, cuts: Iterable[int] | None = None) -> list[str]:
         """Lint lines for this candidate (the same checks as ``timelines lint``), optionally only some cuts."""
-        head = _broken_head()
+        from astrid.sdk.timeline.copy_sync import format_findings
+        copy_findings = format_findings(self.copy_lint())
+        head = _broken_head() + copy_findings
         try:
             from astrid.packs.rendering.actions.timeline_visualize.motion import model
             from astrid.packs.rendering.actions.timeline_visualize.motion.conditions import run_checks
@@ -575,9 +577,11 @@ class _CheckMixin:
         summary = render_diff(diff).splitlines()
         changed = {c["clip_id"] for c in diff["changes"]}
         cut_numbers = sorted({cut.n for cut in self.cuts for clip in cut.clips if clip.id in changed})
+        from astrid.sdk.timeline.copy_sync import format_findings
         from astrid.sdk.timeline_address import ordinals_to_ids
 
-        lint = [ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)] if cut_numbers else []
+        lint = ([ordinals_to_ids(line, self) for line in self.lint(cuts=cut_numbers)] if cut_numbers
+                else format_findings(self.copy_lint()))
         lint_new, lint_old = _new_findings(lint, Checkout(base_bundle(candidate)))
         names = []
         for n in cut_numbers:

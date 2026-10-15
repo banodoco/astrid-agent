@@ -4784,6 +4784,14 @@
           "kind": "callable",
           "signature": "(self, *, before: 'Any', keep: 'float' = 0.0) -> 'float'"
         },
+        "copy_inventory": {
+          "kind": "callable",
+          "signature": "(self, *, evaluated_support=None)"
+        },
+        "copy_lint": {
+          "kind": "callable",
+          "signature": "(self, *, before=None, evaluated_support=None)"
+        },
         "cut": {
           "kind": "callable",
           "signature": "(self, selector: 'Any') -> 'Cut'"
@@ -5043,6 +5051,10 @@
         },
         "cut_id": {
           "kind": "property"
+        },
+        "declare_quotes": {
+          "kind": "callable",
+          "signature": "(self, declarations)"
         },
         "detach_audio": {
           "kind": "callable",

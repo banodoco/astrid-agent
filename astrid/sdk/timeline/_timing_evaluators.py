@@ -313,6 +313,8 @@ class _TimingEvaluators:
         report names every such line. The script's ``voice``/``rate`` are TTS settings: re-flow reads
         only ``id``, ``text`` and ``gap_after_s`` (and the takes' words).
         """
+        from astrid.sdk.timeline.copy_sync import after_script
+        copy_before = copy.deepcopy(self.bundle)
         path = Path(spec).expanduser() if isinstance(spec, (str, Path)) else None
         data = json.loads(path.read_text(encoding="utf-8")) if path else dict(spec)
         folder = Path(takes).expanduser() if takes else (path.parent.parent / "vo" if path and (path.parent.parent / "vo").is_dir() else (path.parent if path else Path.cwd()))
@@ -345,7 +347,8 @@ class _TimingEvaluators:
                 line = Voice(self, seg)
                 current = [(round(w.end - w.start, 3), _norm(w.text)) for w in line.words]
                 fresh = [(round(e - s, 3), _norm(t)) for s, e, t in new_words]
-                if new_words and take.is_file() and current != fresh:
+                if new_words and take.is_file() and (current != fresh or
+                        [w.text for w in line.words] != [t for _s, _e, t in new_words]):
                     line.replace(take, words=new_words, text=item.get("text"))
                     report += [f"line {seg}: new take"] + self.report
                 elif item.get("text") and intent.line_text(line.clips[0].data) != item["text"]:
@@ -362,7 +365,7 @@ class _TimingEvaluators:
         if no_gap:
             head.append(f"{len(no_gap)} line(s) had no gap_after_s: new ones got {default_gap:g} s "
                         f"(the script's default_gap_after_s): {', '.join(no_gap)}")
-        report = head + report
+        report = head + report + after_script(self, copy_before)
         self.report = report
         return report
 

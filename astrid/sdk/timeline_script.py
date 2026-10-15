@@ -87,3 +87,15 @@ def read_composition_script(timelines, transport, project, ref, *, revision_id=N
     rows.sort(key=lambda row: (Fraction(*row["start"]) if isinstance(row.get("start"), list) else Fraction(0), row.get("ordinal", 0)))
     return DomainResult.success({"revision_id": pinned, "snapshot_digest": snapshot,
                                  "kind": kind, "occurrences": rows})
+
+
+
+def read_detached_copy_source(bundle):
+    """Read the script pins and word producers of one supplied detached document.
+
+    Unlike read_composition_script, this performs no remote reads. Its digest is
+    explicitly labelled detached-document-sha256. Independent remote script and
+    word reads are never asserted to share a snapshot.
+    """
+    from astrid.sdk.timeline.copy_sync import source_context
+    return source_context(bundle)

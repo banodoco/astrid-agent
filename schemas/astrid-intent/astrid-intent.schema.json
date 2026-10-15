@@ -244,6 +244,53 @@
         },
         "_legacy": {
           "$ref": "#/$defs/legacyValues"
+        },
+        "copy_quotes": {
+          "$ref": "#/$defs/copyQuotes"
+        },
+        "copy_quote_tracking": {
+          "type": "object",
+          "description": "Command-owned correspondence/invalidation evidence keyed by declaration content digest. Declarations retain their captured source basis.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "enum": [
+                  "current",
+                  "stale",
+                  "unavailable"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/copySource"
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "status",
+              "source",
+              "reasons"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -403,6 +450,158 @@
           "uniqueItems": true
         }
       },
+      "additionalProperties": false
+    },
+    "copyQuotes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "const": 1
+          },
+          "normalization": {
+            "const": "copy-token-v1"
+          },
+          "display": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^params\\.[A-Za-z_][\\w.-]*$"
+              },
+              "text": {
+                "type": "string"
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "path",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "source": {
+            "$ref": "#/$defs/copySource"
+          }
+        },
+        "required": [
+          "version",
+          "normalization",
+          "display",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "copySource": {
+      "type": "object",
+      "properties": {
+        "revision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "snapshot_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurrence_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clip": {
+          "type": "string",
+          "minLength": 1
+        },
+        "segment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "words": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "snapshot_kind": {
+          "enum": [
+            "detached-document-sha256"
+          ]
+        },
+        "word_producer": {
+          "type": "object",
+          "properties": {
+            "clip": {
+              "type": "string",
+              "minLength": 1
+            },
+            "words_digest": {
+              "type": "string",
+              "minLength": 1
+            },
+            "asset": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "asset_dependency": {},
+            "lexical_digest": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "clip",
+            "words_digest",
+            "asset",
+            "asset_dependency",
+            "lexical_digest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "revision_id",
+        "snapshot_digest",
+        "occurrence_id",
+        "binding_id",
+        "content_hash",
+        "clip",
+        "segment",
+        "words"
+      ],
       "additionalProperties": false
     }
   }

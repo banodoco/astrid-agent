@@ -31,7 +31,7 @@ def _app_w(clip: dict[str, Any]) -> dict[str, Any]:
 
 _INTENT_KEYS = frozenset({"on", "until", "until_film_end", "for", "cut", "layer", "why", "why_layers",
     "deliberate", "deliberate_hold", "formulas", "segment", "words", "text",
-    "gap_after_s", "beats", "beats_label", "slot", "replaces", "standin",
+    "copy_quotes", "copy_quote_tracking", "gap_after_s", "beats", "beats_label", "slot", "replaces", "standin",
     "standin_intent", "sequence", "sequence_index", "sequence_fit", "orphan", "loop"})
 
 
@@ -262,3 +262,24 @@ def set_chapters(bundle: dict[str, Any], table: list[Mapping[str, Any]]) -> None
 def orphan(clip):
     value=_get(clip,"orphan"); return str(value) if value else None
 def set_orphan(clip,value): _set(clip,"orphan",value)
+
+
+# COPY-SYNC declarations are authored; tracking is command-owned comparison evidence.
+def copy_quotes(clip):
+    import copy
+    return copy.deepcopy(_get(clip, "copy_quotes", []))
+
+
+def set_copy_quotes(clip, declarations):
+    from astrid.core.timeline.copy_sync import validate_declarations
+    _set(clip, "copy_quotes", validate_declarations(declarations))
+
+
+def copy_quote_tracking(clip):
+    import copy
+    return copy.deepcopy(_get(clip, "copy_quote_tracking", {}))
+
+
+def set_copy_quote_tracking(clip, value):
+    import copy
+    _set(clip, "copy_quote_tracking", copy.deepcopy(value))

@@ -198,17 +198,36 @@ def _norm(text: str) -> str:
     return re.sub(r"[^\w']", "", str(text).lower())
 
 
-def find_words(moment: Moment, words: Sequence[Word]) -> list[list[Word]]:
-    """Every occurrence of the moment's phrase (consecutive words of one line), in time order."""
-    want = [_norm(t) for t in moment.text.split() if _norm(t)]
+def find_words(moment: Moment, words: Sequence[Word], *, tokenizer=None) -> list[list[Word]]:
+    """Every consecutive same-line match; optional whole-word tokenizer for copy consumers.
+
+    The default retains TimeRef's historical normalization exactly.
+    """
+    if tokenizer is None:
+        want = [_norm(t) for t in moment.text.split() if _norm(t)]
+        pool = [w for w in words if moment.line is None or w.segment == moment.line]
+        return [list(run) for i in range(len(pool))
+                if (run := pool[i:i + len(want)]) and len(run) == len(want)
+                and all(_norm(w.text) == t for w, t in zip(run, want))
+                and len({w.segment for w in run}) == 1] if want else []
+    want = tuple(tokenizer(moment.text))
     if not want:
         return []
     pool = [w for w in words if moment.line is None or w.segment == moment.line]
     hits = []
-    for i in range(len(pool)):
-        run = pool[i:i + len(want)]
-        if len(run) == len(want) and all(_norm(w.text) == t for w, t in zip(run, want)) and len({w.segment for w in run}) == 1:
-            hits.append(list(run))
+    for i, word in enumerate(pool):
+        if not tokenizer(word.text):
+            continue
+        got = ()
+        for j in range(i, len(pool)):
+            if pool[j].segment != word.segment:
+                break
+            got += tuple(tokenizer(pool[j].text))
+            if got == want:
+                hits.append(list(pool[i:j + 1]))
+                break
+            if len(got) >= len(want) or got != want[:len(got)]:
+                break
     return hits
 
 
