@@ -3072,6 +3072,22 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_look import has_look
     from astrid.sdk.timeline_checkout import Checkout
 
+    if getattr(parsed, "command", None) is not None:
+        from astrid.sdk.timeline.commands import run, CommandError, EDIT_FLAG_OPERATIONS
+        context = {"command", "dry_run", "file", "project", "draft", "no_sweep"}
+        extras = [key for key in EDIT_FLAG_OPERATIONS if key not in context
+                  and getattr(parsed, key, None) not in (None, False, [], ())]
+        if extras:
+            raise CommandError("--command cannot be combined with edit flags: " + ", ".join(sorted(extras)))
+        try:
+            command = json.loads(parsed.command)
+        except json.JSONDecodeError as exc:
+            raise CommandError(f"--command requires JSON: {exc.msg}") from None
+        tl = Checkout.load(parsed.file) if parsed.file else _edit_checkout(parsed)
+        plan = run(tl, command, dry_run=parsed.dry_run)
+        print(json.dumps(plan.to_json(), ensure_ascii=False))
+        return 0 if plan.changed else 3
+
     voice_ops = any((parsed.replace_line, parsed.insert_line, parsed.remove_line, parsed.gap_after, parsed.from_script))
     crossfade = getattr(parsed, "crossfade", None)
     if getattr(parsed, "overlap", None) is not None and not crossfade:
@@ -3102,7 +3118,7 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
             parsed.at, parsed.at_word, parsed.nudge, parsed.nudge_frames, parsed.extend, parsed.swap_asset,
             parsed.on, parsed.until, parsed.for_seconds, parsed.trim_in, parsed.trim_out, parsed.slip,
             parsed.why, parsed.picture)) \
-            and not parsed.set_values and not parsed.remove and not parsed.keep and not parsed.clear_asset \
+            and not parsed.set_values and not getattr(parsed, "clear_keys", []) and not parsed.remove and not parsed.keep and not parsed.clear_asset \
             and not parsed.beats and not parsed.hold and not parsed.fit_sequence and not has_look(parsed):
         raise _VerbError("say what to do to the clip: --on, --until, --for, --at-word, --at, --nudge, --nudge-frames, "
                          "--extend, --set, --swap-asset, --beats or --fade-in, --entrance, --opacity, --volume, "
@@ -3124,6 +3140,12 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
 
         apply_music_policy(tl, parsed)
     before = tl.document()
+    if getattr(parsed, "dry_run", False):
+        with tl.edit(_edit_label(parsed), dry_run=True, quiet=True) as tx:
+            tx.canonical = True
+            _apply_edit(tl, parsed)
+        print(json.dumps(tx.plan.to_json(), ensure_ascii=False))
+        return 0 if tx.changed else 3
     with tl.step(_edit_label(parsed)):
         _apply_edit(tl, parsed)
     changed = before != tl.document()
@@ -3149,7 +3171,7 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         if target is None:
             verify_status = _print_verify(parsed, tl, before)
         else:
-            print("verify needs a working copy; check out the timeline before editing, not --file")
+            print("verify  needs a working copy; check out the timeline before editing, not --file")
     sweep_status = 0
     if target is None:
         from astrid.packs.timeline.cli_sweep import auto_sweep_after_edit, touched_cuts
@@ -3290,20 +3312,10 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
         clip.trim(in_s=parsed.trim_in, out_s=parsed.trim_out)
     if parsed.slip is not None:
         clip.slip(parsed.slip)
+    for key in getattr(parsed, "clear_keys", []):
+        clip.clear(key)
     values = _parse_set(parsed.set_values)
     if values:
-        from astrid.sdk.timeline_address import element_schema, unknown_params
-
-        bad = unknown_params(clip.element, [re.split(r"[.\[]", k, maxsplit=1)[0] for k in values], existing=clip.params)
-        if bad and not parsed.allow_new_params:
-            import difflib
-
-            props = sorted((element_schema(clip.element).get("properties") or {}))
-            hints = [f"{k} (did you mean {', '.join(difflib.get_close_matches(k, props, n=2))}?)"
-                     if difflib.get_close_matches(k, props, n=2) else k for k in bad]
-            raise _VerbError(f"{clip.address} is an {clip.element}, which has no param {', '.join(hints)}. "
-                             f"It takes: {', '.join(props)}. (See them all: timelines show TL {clip.address}; "
-                             "an undeclared param on purpose: --allow-new-params)", 2)
         clip.set(**values, **({"_allow_new": True} if parsed.allow_new_params else {}))
     from astrid.packs.timeline.cli_look import apply_look, has_look, look_values
 
@@ -3491,6 +3503,10 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--slip", type=float, default=None, metavar="SECONDS",
                            help="Move a media clip's source window while its film position and length stay fixed.")
     subparser.add_argument("--set", dest="set_values", action="append", default=[])
+    subparser.add_argument("--clear", dest="clear_keys", action="append", default=[], metavar="KEY",
+                           help="Remove a param's presence so its element default applies.")
+    subparser.add_argument("--command", help="Execute one JSON EditCommand (OpCall).")
+    subparser.add_argument("--dry-run", action="store_true", help="Preview the command without writing anything.")
     subparser.add_argument("--swap-asset", metavar="KEY|FILE|HANDLE|KEY=HANDLE",
                            help="Point the clip at an asset: a registry key, a local file, or project media "
                                 "(run:RUN/PORT#n, task:TASK/PORT#n, ref:NAME, sha256:DIGEST). Name new media yourself "

@@ -129,18 +129,6 @@ def _check(clip: Any, name: str, version: str) -> None:
 def apply_look(tl: Any, clip: Any, values: Mapping[str, str]) -> list[str]:
     audio = clip.is_audio
     fps = tl.fps
-    for name in values:
-        if name not in LOOK_FLAGS:
-            raise ValueError(f"unknown look field {name!r}")
-        spec = cf.FIELDS[name]
-        if audio and spec.applies_to == "visual":
-            raise ValueError(f"{clip.address}: {_label(name, audio).replace('_', '-')} is a visual field; "
-                             "an audio clip cannot take it")
-        if not audio and spec.applies_to == "audio":
-            raise ValueError(f"{clip.address}: {name} is an audio field; a visual clip cannot take it")
-    # The SDK owns validation, all-or-nothing writes and non-blocking render
-    # diagnostics. This CLI adapter only translates flags and reports changes.
-    cf.coerce_many(dict(values), fps=fps, audio=audio)
     before = cf.describe(clip.data, fps=fps)
     clip.set_look(**dict(values))
     after = cf.describe(clip.data, fps=fps)

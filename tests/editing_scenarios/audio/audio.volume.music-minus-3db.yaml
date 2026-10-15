@@ -4,8 +4,13 @@ intent: Take the music bed a-music down 3 dB (a clip-level volume of 0.7079 gain
 fixture: tiny
 expect: change
 cli: edit --clip a-music --gain-db -3
-sheet: {missing: "clip fields in the sheet land with M-Core V-1/M-4"}
-python: {missing: "clip.look lands with M-Core M-4"}
+sheet:
+  text: 'edit {"op": "clip.set-look", "select": "a-music", "args": {"volume": "-3dB"}}
+
+    '
+python: 'tl.clip(''a-music'').set_look(**{''volume'': ''-3dB''})
+
+  '
 check:
-  - 'abs(tl.clip("a-music").data.get("volume") - 0.7079) < 1e-6'
-  - '"volume" not in (tl.clip("a-music").data.get("params") or {})'
+- abs(tl.clip("a-music").data.get("volume") - 0.7079) < 1e-6
+- '"volume" not in (tl.clip("a-music").data.get("params") or {})'

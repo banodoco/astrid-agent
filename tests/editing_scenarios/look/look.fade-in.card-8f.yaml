@@ -4,7 +4,12 @@ intent: Fade the c2 card title in over 8 frames (the clip-level entrance, not an
 fixture: tiny
 expect: change
 cli: edit --clip c2.card --fade-in 8f
-sheet: {missing: "clip fields in the sheet land with M-Core V-1/M-4"}
-python: {missing: "clip.look lands with M-Core M-4"}
+sheet:
+  text: 'edit {"op": "clip.set-look", "select": "c2.card", "args": {"fade_in": "8f"}}
+
+    '
+python: 'tl.clip(''c2.card'').set_look(**{''fade_in'': ''8f''})
+
+  '
 check:
-  - 'tl.clip("c2.card").data.get("entrance") == {"type": "fade", "duration": 0.2667}'
+- 'tl.clip("c2.card").data.get("entrance") == {"type": "fade", "duration": 0.2667}'

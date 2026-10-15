@@ -48,7 +48,13 @@ def _snapshot(checkout: Any) -> str:
 
 def _stage_step(folder: Path, label: str, state: str) -> tuple[Path, Path]:
     folder.mkdir(parents=True, exist_ok=True)
-    name = f"{time.time_ns():020d}-{uuid.uuid4().hex[:4]}.json"
+    # A stable step identity is part of the semantic journal, while its numeric
+    # prefix orders the local stack. It is independent of wall-clock/UUID noise.
+    import hashlib
+    sequence = max((int(p.name.split("-", 1)[0]) for p in folder.glob("*.json")
+                    if p.name.split("-", 1)[0].isdigit()), default=0) + 1
+    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()[:16]
+    name = f"{sequence:020d}-{digest}.json"
     temporary = folder / f".{name}.tmp"
     temporary.write_text(json.dumps({"label": str(label), "state": state}), encoding="utf-8")
     return temporary, folder / name
@@ -114,26 +120,16 @@ def _file_lock(target: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _journaled(function, kind):
-    """Make one public mutator one undo step; nested calls join their active outer step."""
-    from functools import wraps
 
-    @wraps(function)
-    def wrapped(owner, *args, **kwargs):
-        checkout = owner if kind == "checkout" else (
-            getattr(owner, "owner", None) or getattr(owner, "_tl", None) or getattr(owner, "tl", None)
-        )
-        if checkout is None:
-            return function(owner, *args, **kwargs)
-        if getattr(checkout, "_edit_depth", 0):
-            return function(owner, *args, **kwargs)
-        who = getattr(owner, "address", None) or getattr(owner, "segment", None) or ""
-        shown = ", ".join([repr(value)[:40] for value in args]
-                           + [f"{key}={value!r}"[:40] for key, value in kwargs.items()])
-        label = f"{who + '.' if who else ''}{function.__name__}({shown})"
-        with checkout.step(label):
-            return function(owner, *args, **kwargs)
-    return wrapped
+def _journaled(function, kind):
+    """Legacy private export; delegate to the single command runner."""
+    from astrid.sdk.timeline.commands import Operation, REGISTRY, _adapter
+    if getattr(function, "__edit_operation__", None):
+        return function
+    kind = "timeline" if kind == "checkout" else kind
+    operation = f"{kind}.{function.__name__.replace('_', '-').rstrip('-')}"
+    entry = REGISTRY.setdefault(operation, Operation(operation, kind, function.__name__, function))
+    return _adapter(entry)
 
 
 def _merge(base: Any, head: Any, draft: Any, path: str, conflicts: list[str], force: bool):

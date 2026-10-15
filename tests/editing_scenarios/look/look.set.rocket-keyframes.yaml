@@ -5,15 +5,14 @@ fixture: tiny
 expect: change
 cli: edit --clip c1.rocket --set 'keyframes=[{"frame":0,"x":1000,"y":300},{"frame":30,"x":1400,"y":300}]'
 sheet:
-  cuts: [c1]
+  cuts:
+  - c1
   replace:
-    - ["x=60", "x=60 keyframes=[{\"frame\":0,\"x\":1000,\"y\":300},{\"frame\":30,\"x\":1400,\"y\":300}]"]
-python: |
-  tl.clip("c1.rocket").set(keyframes=[{"frame": 0, "x": 1000, "y": 300}, {"frame": 30, "x": 1400, "y": 300}])
+  - - x=60
+    - x=60 keyframes=[{"frame":0,"x":1000,"y":300},{"frame":30,"x":1400,"y":300}]
+python: 'tl.clip("c1.rocket").set(keyframes=[{"frame": 0, "x": 1000, "y": 300}, {"frame": 30, "x": 1400, "y": 300}])
+
+  '
 check:
-  - len(tl.clip("c1.rocket").get("keyframes")) == 2
-  - tl.clip("c1.rocket").get("keyframes")[1]["x"] == 1400
-xfail:
-  - {path: cli, check: check, reason: "NEW: keyframes are stored in x/6 units (canvas 1400 -> 233): get('keyframes') returns the stored value, while get('x') returns canvas px"}
-  - {path: sheet, check: check, reason: "NEW: keyframes are stored in x/6 units (canvas 1400 -> 233): get('keyframes') returns the stored value, while get('x') returns canvas px"}
-  - {path: python, check: check, reason: "NEW: keyframes are stored in x/6 units (canvas 1400 -> 233): get('keyframes') returns the stored value, while get('x') returns canvas px"}
+- len(tl.clip("c1.rocket").get("keyframes")) == 2
+- tl.clip("c1.rocket").get("keyframes")[1]["x"] == 1400

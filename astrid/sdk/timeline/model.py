@@ -120,8 +120,11 @@ def validate_param_value(element: str, key: str, value: Any, *, where: str | Non
     num = value
     if kind in ("number", "integer") and isinstance(value, str) and _PX_TEXT.fullmatch(value.strip()):
         num = float(value.strip()[:-2])  # "20px" is canvas px, as from_canvas reads it
-    if isinstance(kind, str) and not _matches_type(num, kind):
-        raise TimelineEditError(f"{label}: {shown} is not {_TYPE_WORDS.get(kind, kind)}")
+    kinds = [kind] if isinstance(kind, str) else kind if isinstance(kind, list) else []
+    if kinds and not any(_matches_type(num, k) if k != "null" else num is None for k in kinds):
+        expected = " or ".join(_TYPE_WORDS.get(k, k) for k in kinds)
+        hint = f"; use --clear {key} to remove it" if value is None else ""
+        raise TimelineEditError(f"{label}: {shown} is not {expected}{hint}")
     enum = prop.get("enum")
     if isinstance(enum, list) and enum and not any(value == e and isinstance(value, bool) == isinstance(e, bool) for e in enum):
         raise TimelineEditError(f'{label}: {shown} is not allowed; {key} takes {" | ".join(str(e) for e in enum)}')
@@ -587,10 +590,11 @@ class Clip(_Suggest):
             hints = [f"{k} (did you mean {', '.join(difflib.get_close_matches(k, props, n=2))}?)"
                      if difflib.get_close_matches(k, props, n=2) else k for k in bad]
             raise TimelineEditError(f"{self.address} is an {self.element}, which has no param {', '.join(hints)}. It takes: "
-                                    f"{', '.join(props)} (an undeclared param on purpose: .set(..., _allow_new=True))")
+                                    f"{', '.join(props)} (an undeclared param on purpose: --allow-new-params / .set(..., _allow_new=True))")
 
     def set_param(self, path: str, value: Any) -> "Clip":
         """Set one param by its address inside the clip (``x``, ``states[3].at``, ``stamp.at``)."""
+        validate_param_value(self.element, path, value, where=self.address)
         top = re.split(r"[.\[]", path, maxsplit=1)[0]
         formulas = intent.formulas(self.data)
         full = f"params.{path}"
@@ -627,13 +631,32 @@ class Clip(_Suggest):
             return self
         for existing in [p for p in formulas if p == full or p.startswith((f"{full}[", f"{full}."))]:
             intent.set_formula(self.data, existing, None)  # a fixed value replaces the formula: never a silent revert
-        if path == top and value is None:  # null takes the param off: the element's default applies (a stored null fails its schema)
-            self.params.pop(top, None)
-        elif path == top:
+        if path == top:
             self.params[top] = copy.deepcopy(from_canvas(self.element, top, value))
         else:
             self.data.setdefault("params", {})
             _set_path(self.data, full, copy.deepcopy(value))
+        return self
+
+    def clear(self, *keys: str) -> "Clip":
+        """Remove presence (including formula intent); the element default applies.
+
+        Clearing an absent key is a no-op. Null remains a value, never a clear.
+        """
+        from astrid.sdk.timeline_address import element_schema
+        declared = element_schema(self.element).get("properties") or {}
+        for key in keys:
+            if key not in declared and key in cf.FIELDS:
+                self.set_look(**{key: None})
+                continue
+            self._check_param_keys([key])
+            full = f"params.{key}"
+            if re.search(r"[.\[]", key):
+                raise TimelineEditError("clear takes a top-level param key")
+            self.params.pop(key, None)
+            for path in list(intent.formulas(self.data)):
+                if path == full or path.startswith((full + ".", full + "[")):
+                    intent.set_formula(self.data, path, None)
         return self
 
     def set_track(self, track: str) -> "Clip":

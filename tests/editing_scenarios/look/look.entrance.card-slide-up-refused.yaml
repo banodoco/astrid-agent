@@ -4,3 +4,10 @@ intent: slide-up is an exit only; asking for it as an entrance is refused and ch
 fixture: tiny
 expect: refused
 cli: edit --clip c2.card --entrance slide-up 18f
+python: 'tl.clip("c2.card").set_look(entrance="slide-up 18f")
+
+  '
+sheet:
+  text: 'edit {"op":"clip.set-look","select":"c2.card","args":{"entrance":"slide-up 18f"}}
+
+    '

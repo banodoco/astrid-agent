@@ -1,0 +1,490 @@
+[
+  {
+    "flags": [
+      "--add-cut"
+    ],
+    "destination": "add_cut",
+    "operation": "timeline.add-cut"
+  },
+  {
+    "flags": [
+      "--add-media"
+    ],
+    "destination": "add_media",
+    "operation": "timeline.add"
+  },
+  {
+    "flags": [
+      "--after"
+    ],
+    "destination": "after",
+    "operation": "timeline.add-cut"
+  },
+  {
+    "flags": [
+      "--allow-new-params"
+    ],
+    "destination": "allow_new_params",
+    "operation": "clip.set"
+  },
+  {
+    "flags": [
+      "--at"
+    ],
+    "destination": "at",
+    "operation": "clip.enter-at"
+  },
+  {
+    "flags": [
+      "--at-word"
+    ],
+    "destination": "at_word",
+    "operation": "clip.enter-at"
+  },
+  {
+    "flags": [
+      "--beats"
+    ],
+    "destination": "beats",
+    "operation": "clip.set-beats"
+  },
+  {
+    "flags": [
+      "--clear-asset"
+    ],
+    "destination": "clear_asset",
+    "operation": "clip.clear-asset"
+  },
+  {
+    "flags": [
+      "--clip"
+    ],
+    "destination": "clip",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--id"
+    ],
+    "destination": "clip_id",
+    "operation": "timeline.add"
+  },
+  {
+    "flags": [
+      "--close-gap-before"
+    ],
+    "destination": "close_gap_before",
+    "operation": "timeline.close-gap"
+  },
+  {
+    "flags": [
+      "--crossfade"
+    ],
+    "destination": "crossfade",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--cut"
+    ],
+    "destination": "cut",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--cut-id"
+    ],
+    "destination": "cut_id",
+    "operation": "cut.split"
+  },
+  {
+    "flags": [
+      "--draft"
+    ],
+    "destination": "draft",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--entrance"
+    ],
+    "destination": "entrance",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--exit"
+    ],
+    "destination": "exit",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--extend"
+    ],
+    "destination": "extend",
+    "operation": "clip.extend"
+  },
+  {
+    "flags": [
+      "--fade-in"
+    ],
+    "destination": "fade_in",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--fade-out"
+    ],
+    "destination": "fade_out",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--file"
+    ],
+    "destination": "file",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--film-end"
+    ],
+    "destination": "film_end",
+    "operation": "timeline.film-end"
+  },
+  {
+    "flags": [
+      "--fit-sequence"
+    ],
+    "destination": "fit_sequence",
+    "operation": "sequence.fit"
+  },
+  {
+    "flags": [
+      "--duration",
+      "--for"
+    ],
+    "destination": "for_seconds",
+    "operation": "clip.set-duration"
+  },
+  {
+    "flags": [
+      "--from-script"
+    ],
+    "destination": "from_script",
+    "operation": "timeline.apply-script"
+  },
+  {
+    "flags": [
+      "--gain-db"
+    ],
+    "destination": "gain_db",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--gap-after"
+    ],
+    "destination": "gap_after",
+    "operation": "voice.set-gap-after"
+  },
+  {
+    "flags": [
+      "--hold"
+    ],
+    "destination": "hold",
+    "operation": "timeline.set-cut-note"
+  },
+  {
+    "flags": [
+      "--insert"
+    ],
+    "destination": "insert",
+    "operation": "timeline.insert-time"
+  },
+  {
+    "flags": [
+      "--gap",
+      "--insert-gap-after"
+    ],
+    "destination": "insert_gap_after",
+    "operation": "timeline.insert-line"
+  },
+  {
+    "flags": [
+      "--insert-line"
+    ],
+    "destination": "insert_line",
+    "operation": "timeline.insert-line"
+  },
+  {
+    "flags": [
+      "--keep"
+    ],
+    "destination": "keep",
+    "operation": "clip.keep"
+  },
+  {
+    "flags": [
+      "--labels"
+    ],
+    "destination": "labels",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--line-text",
+      "--text"
+    ],
+    "destination": "line_text",
+    "operation": "voice.replace"
+  },
+  {
+    "flags": [
+      "--music"
+    ],
+    "destination": "music",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--n"
+    ],
+    "destination": "n",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--near"
+    ],
+    "destination": "near",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--no-sweep"
+    ],
+    "destination": "no_sweep",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--nudge"
+    ],
+    "destination": "nudge",
+    "operation": "clip.nudge"
+  },
+  {
+    "flags": [
+      "--nudge-frames"
+    ],
+    "destination": "nudge_frames",
+    "operation": "clip.nudge"
+  },
+  {
+    "flags": [
+      "--offset"
+    ],
+    "destination": "offset",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--on"
+    ],
+    "destination": "on",
+    "operation": "clip.on"
+  },
+  {
+    "flags": [
+      "--opacity"
+    ],
+    "destination": "opacity",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--over"
+    ],
+    "destination": "overlap",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--picture"
+    ],
+    "destination": "picture",
+    "operation": "cut.split"
+  },
+  {
+    "flags": [
+      "--project"
+    ],
+    "destination": "project",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--remove"
+    ],
+    "destination": "remove",
+    "operation": "clip.remove-layer"
+  },
+  {
+    "flags": [
+      "--remove-line"
+    ],
+    "destination": "remove_line",
+    "operation": "timeline.remove-line"
+  },
+  {
+    "flags": [
+      "--replace-asset"
+    ],
+    "destination": "replace_asset",
+    "operation": "timeline.replace-asset"
+  },
+  {
+    "flags": [
+      "--line",
+      "--replace-line"
+    ],
+    "destination": "replace_line",
+    "operation": "voice.replace"
+  },
+  {
+    "flags": [
+      "--retime"
+    ],
+    "destination": "retime",
+    "operation": "timeline.retime"
+  },
+  {
+    "flags": [
+      "--gaps",
+      "--script-gaps"
+    ],
+    "destination": "script_gaps",
+    "operation": "timeline.apply-script"
+  },
+  {
+    "flags": [
+      "--set"
+    ],
+    "destination": "set_values",
+    "operation": "clip.set"
+  },
+  {
+    "flags": [
+      "--shape-from"
+    ],
+    "destination": "shape_from",
+    "operation": "sequence.fit"
+  },
+  {
+    "flags": [
+      "--slip"
+    ],
+    "destination": "slip",
+    "operation": "clip.slip"
+  },
+  {
+    "flags": [
+      "--split"
+    ],
+    "destination": "split",
+    "operation": "cut.split"
+  },
+  {
+    "flags": [
+      "--swap-asset"
+    ],
+    "destination": "swap_asset",
+    "operation": "clip.swap-asset"
+  },
+  {
+    "flags": [
+      "--sweep"
+    ],
+    "destination": "sweep",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--take"
+    ],
+    "destination": "take",
+    "operation": "voice.replace"
+  },
+  {
+    "flags": [
+      "--takes"
+    ],
+    "destination": "takes",
+    "operation": "timeline.apply-script"
+  },
+  {
+    "flags": [
+      "--timings"
+    ],
+    "destination": "timings",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--track"
+    ],
+    "destination": "track",
+    "operation": "timeline.add"
+  },
+  {
+    "flags": [
+      "--trim-in"
+    ],
+    "destination": "trim_in",
+    "operation": "clip.trim"
+  },
+  {
+    "flags": [
+      "--trim-out"
+    ],
+    "destination": "trim_out",
+    "operation": "clip.trim"
+  },
+  {
+    "flags": [
+      "--until"
+    ],
+    "destination": "until",
+    "operation": "clip.until"
+  },
+  {
+    "flags": [
+      "--verify"
+    ],
+    "destination": "verify",
+    "operation": "timeline.edit-flags"
+  },
+  {
+    "flags": [
+      "--volume"
+    ],
+    "destination": "volume",
+    "operation": "clip.set-look"
+  },
+  {
+    "flags": [
+      "--why"
+    ],
+    "destination": "why",
+    "operation": "timeline.set-cut-note"
+  },
+  {
+    "flags": [
+      "--words"
+    ],
+    "destination": "words",
+    "operation": "voice.replace"
+  }
+]

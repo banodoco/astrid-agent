@@ -30,10 +30,17 @@ def guard(default_code: int):
             try:
                 return fn(parsed)
             except VerbError as exc:
+                parsed._edit_refusal = {"type": type(exc).__name__, "message": str(exc)}
                 print(str(exc), file=sys.stderr)
                 return exc.code
             except (TimelineEditError, SheetError) as exc:
-                print(str(exc), file=sys.stderr)
+                parsed._edit_refusal = {"type": type(exc).__name__, "message": str(exc)}
+                if getattr(parsed, "command", None) is not None:
+                    import json
+                    payload = exc.to_json() if hasattr(exc, "to_json") else {"code": "invalid_edit", "message": str(exc)}
+                    print(json.dumps({"error": payload}), file=sys.stderr)
+                else:
+                    print(str(exc), file=sys.stderr)
                 return default_code
 
         run.__name__ = fn.__name__

@@ -39,7 +39,7 @@ RESOLVED = ("p", "t", "rev-0")  # what the patched resolve_ids returns (the fixt
 
 PATHS = ("cli", "sheet", "python")
 EXPECTS = ("change", "no-change", "refused")
-CHECKS = ("runs", "changes", "reports", "equal", "steps", "undo", "redo", "check", "exists", "idempotent")
+CHECKS = ("journal", "runs", "changes", "reports", "equal", "steps", "undo", "redo", "check", "exists", "idempotent")
 AREAS = ("timing", "structure", "look", "audio", "code")
 TOP_KEYS = {"id", "source", "intent", "fixture", "tool", "expect", "idempotent", "cli", "sheet", "python", "check",
             "xfail"}
@@ -60,6 +60,7 @@ class PathSpec:
     commands: tuple[str, ...] = ()  # cli: one `timelines` command per entry (without the timeline/project)
     cuts: tuple[str, ...] | None = None  # sheet: only these cuts; None = the whole sheet
     replace: tuple[tuple[str, str], ...] = ()  # sheet: (old, new), old must occur exactly once
+    text: str | None = None
     snippet: str | None = None  # python: runs with tl = Checkout.draft(P, t)
 
 
@@ -108,6 +109,8 @@ class PathResult:
     redo_error: str | None
     checks: dict[str, tuple[bool, str]]  # expression -> (truthy, detail)
 
+    records: list[dict] = dataclasses.field(default_factory=list)
+    refusal_type: str | None = None
     second_changed: bool | None = None  # idempotent scenarios: did the second run change the document (None: not run)
     second_steps: int = 0  # undo steps the second run made (taken back before the undo/redo checks)
     second_stdout: str = ""
@@ -116,7 +119,7 @@ class PathResult:
 
     @property
     def refused(self) -> bool:
-        return self.error is not None or any(code != 0 for code in self.exit_codes)
+        return self.refusal_type is not None or bool(self.error and self.error.startswith("refused:"))
 
 
 # ---- loading -----------------------------------------------------------------------------
@@ -244,9 +247,14 @@ def _parse_path(name: str, value: Any, where: str) -> PathSpec:
     # sheet
     if not isinstance(value, dict):
         raise ScenarioError(f"{where}: sheet is a mapping (cuts, replace) or {{missing: ...}}")
-    extra = set(value) - {"cuts", "replace"}
+    extra = set(value) - {"cuts", "replace", "text"}
     if extra:
         raise ScenarioError(f"{where}: sheet has unknown key(s) {sorted(extra)}; allowed: cuts, replace")
+    text = value.get("text")
+    if text is not None and (not isinstance(text, str) or not text.strip()):
+        raise ScenarioError(f"{where}: sheet.text is a non-empty sheet")
+    if text is not None and ("cuts" in value or "replace" in value):
+        raise ScenarioError(f"{where}: sheet.text and cuts/replace are separate adapters")
     cuts = value.get("cuts")
     if cuts is not None and not (isinstance(cuts, list) and all(isinstance(c, str) for c in cuts)):
         raise ScenarioError(f"{where}: sheet.cuts is a list of cut ids")
@@ -255,7 +263,7 @@ def _parse_path(name: str, value: Any, where: str) -> PathSpec:
         if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(s, str) for s in pair) and pair[0]):
             raise ScenarioError(f"{where}: sheet.replace entries are [old, new] string pairs; got {pair!r}")
         replace.append((pair[0], pair[1]))
-    return PathSpec(name=name, cuts=tuple(cuts) if cuts is not None else None, replace=tuple(replace))
+    return PathSpec(name=name, cuts=tuple(cuts) if cuts is not None else None, replace=tuple(replace), text=text)
 
 
 # ---- running -----------------------------------------------------------------------------
@@ -304,9 +312,12 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str, str | None]:
             parsed = cli.build_parser(None).parse_args(argv)
             code = parsed.handler(parsed)
             code = 0 if code is None else int(code)
+            refusal = getattr(parsed, "_edit_refusal", None)
+            if refusal:
+                error = f"refused:{refusal['type']}: {refusal['message']}"
         except SystemExit as exc:  # argparse errors and explicit exits
             code = 0 if exc.code is None else (exc.code if isinstance(exc.code, int) else 1)
-        except Exception as exc:  # a verb crashed: a refusal in the strongest sense, recorded
+        except Exception as exc:  # a crash is recorded separately and never counts as refusal
             code, error = 1, f"{type(exc).__name__}: {exc}"
     return code, out.getvalue(), err.getvalue(), error
 
@@ -406,7 +417,9 @@ def _exec_snippet(snippet: str, tl: Checkout) -> tuple[str, str | None]:
             exec(snippet, {"tl": tl, "Checkout": Checkout})  # noqa: S102 - the scenario author's code
             tl.save()  # once: a script that raised before this point saves nothing
     except Exception as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        from astrid.sdk.timeline._common import TimelineEditError
+        prefix = "refused:" if isinstance(exc, TimelineEditError) else ""
+        error = f"{prefix}{type(exc).__name__}: {exc}"
     return buf.getvalue(), error
 
 
@@ -441,7 +454,7 @@ def _run_sheet_path(scenario: Scenario, spec: PathSpec) -> PathResult:
         _checkout()
         tl = Checkout.draft(PROJECT, TIMELINE)
         base = canon(tl.document())
-        text = render_sheet(tl, cuts=spec.cuts)
+        text = spec.text if spec.text is not None else render_sheet(tl, cuts=spec.cuts)
         for old, new in spec.replace:
             count = text.count(old)
             if count != 1:
@@ -487,6 +500,10 @@ def _rerun_python(spec: PathSpec) -> tuple[list[int], str, str | None]:
 def _finish(scenario: Scenario, name: str, exits: list[int], stdout: str, stderr: str, error: str | None,
             base: str, undo_redo, second: _Rerun | None = None) -> PathResult:
     after = _document()
+    from astrid.sdk.timeline import journal
+    # Capture before undo/redo and check readers. Compare exact records, with
+    # only the seven explicitly variable card fields removed.
+    records = [row.to_json() for row in journal.read(journal.journal_path("p", "t"))]
     new_steps = _history_count()
     checks = _eval_checks(scenario.check)
     undo_error = redo_error = None
@@ -500,7 +517,7 @@ def _finish(scenario: Scenario, name: str, exits: list[int], stdout: str, stderr
     return PathResult(
         name=name, exit_codes=exits, stdout=stdout, stderr=stderr, error=error,
         base=base, after=after, undone=undone, redone=redone, new_steps=new_steps,
-        undo_error=undo_error, redo_error=redo_error, checks=checks, **extra,
+        undo_error=undo_error, redo_error=redo_error, checks=checks, records=records, **extra,
     )
 
 
@@ -600,6 +617,13 @@ def _evaluate_path(scenario: Scenario, r: PathResult, fail, ref: PathResult | No
     if expect == "change" and ref is not None and name != ref_name and r.after != ref.after:
         fail(name, "equal", f"differs from the reference ({ref_name}):\n" + _diff(ref.after, r.after, ref_name, name))
 
+    if ref is not None and name != ref_name:
+        left, right = comparable_records(ref.records), comparable_records(r.records)
+        if left != right:
+            fail(name, "journal", "journal differs from " + str(ref_name) + ":\n" + _diff(canon(left), canon(right), str(ref_name), name))
+    if scenario.expect == "change" and not any(row.get("calls") for row in r.records):
+        fail(name, "journal", "changed edit has no populated journal calls")
+
     if r.new_steps >= 1:
         if r.undo_error or r.undone != r.base:
             fail(name, "undo", f"undo {r.new_steps} did not restore the base"
@@ -624,6 +648,13 @@ def _evaluate_path(scenario: Scenario, r: PathResult, fail, ref: PathResult | No
     for expr, (ok, detail) in r.checks.items():
         if not ok:
             fail(name, "check", f"{expr}" + (f" ({detail})" if detail else ""))
+
+
+JOURNAL_VARIABLE_FIELDS = frozenset({"source", "actor", "at", "id", "seq", "prev", "hash"})
+
+
+def comparable_records(records):
+    return [{key: value for key, value in record.items() if key not in JOURNAL_VARIABLE_FIELDS} for record in records]
 
 
 def xfail_reasons(scenario: Scenario) -> dict[tuple[str, str], str]:

@@ -94,7 +94,7 @@ def from_canvas(element: str, key: str, value: Any) -> Any:
         return round(value / scale)
     subs = [p.split("[].", 1)[1] for p in paths if p.startswith(f"{key}[].")]
     if subs and isinstance(value, list):
-        return [{**k, **{a: round(k[a] / scale) for a in subs if _number(k.get(a))}} if isinstance(k, Mapping) else k
+        return [{**k, **{a: k[a] / scale for a in subs if _number(k.get(a))}} if isinstance(k, Mapping) else k
                 for k in value]
     return value
 

@@ -72,3 +72,19 @@ fails the test. Missing paths xfail with their reason.
 - `runner.py`: `load_scenario`, `parse_scenario`, `run_case(scenario, via)` (alias `run_path`), `run_scenario`, `evaluate`, `classify`.
 - `test_conformance.py`: one test per (scenario, path).
 - `test_runner_selftest.py`: proves the harness catches each class of bug.
+
+RUNNER also accepts `sheet: {text: 'edit {"op":...,"select":...,"args":...}'}`
+for a complete sheet whose intent does not fit a layer row. `text` and
+`cuts`/`replace` are mutually exclusive. These are the same sheet parser and
+`timelines apply` path, using the same OpCall registry as the CLI and SDK.
+
+The `journal` check compares the actual complete journal records across paths.
+It removes only `source`, `actor`, `at`, `id`, `seq`, `prev`, and `hash`; labels,
+calls, digests, undo-step identity and errors must match. A crash never counts as
+a refusal: the harness records a refusal only for a typed editing error.
+
+The admitted `08a6044` source contains 50 YAML scenarios; all 150 paths are
+exercised. The card's stated 49-file census is retained as a control discrepancy,
+not implemented by dropping a scenario. The remaining three cut-placement
+xfails describe the current `Checkout.resolve()` behavior; the RUNNER branch
+does not change that shared timing implementation.

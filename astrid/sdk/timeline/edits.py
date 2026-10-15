@@ -94,6 +94,7 @@ class _EditMixin:
         internal["clips"].append(new)
         self._mcache = None
         clip = Clip(self, sid, new)
+        clip._check_param_keys(list(params or {}))
         for key, value in dict(params or {}).items():  # the same path as clip.set: canvas px, formulas, moments
             clip.set_param(key, value)
         if corner:

@@ -249,14 +249,18 @@ def record_working_copy(path: str | Path, *, owner: Any = None, kind: str, outco
     target = Path(path)
     try:
         target.resolve().relative_to(_drafts_root().resolve())
+        is_draft = True
     except (OSError, ValueError):
-        return None
+        is_draft = False
     bundle = getattr(owner, "bundle", {}) or {}
     project = str(bundle.get("project_id") or getattr(owner, "project_id", ""))
     timeline = str(bundle.get("timeline_id") or getattr(owner, "timeline_id", ""))
+    if not is_draft:
+        project, timeline = project or "local", timeline or target.stem
     if not project or not timeline:
         return None
-    return append(journal_path(project, timeline), project=project, timeline=timeline,
+    destination = journal_path(project, timeline) if is_draft else target.with_suffix(target.suffix + ".journal.jsonl")
+    return append(destination, project=project, timeline=timeline,
                   draft=target.stem, actor=current_actor(), source=current_source(label), kind=kind,
                   outcome=outcome, label=label, before=before, after=after, **extra)
 

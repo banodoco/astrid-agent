@@ -203,3 +203,25 @@ def test_idempotent_is_only_for_expect_change():
 def test_idempotent_must_be_a_bool():
     with pytest.raises(ScenarioError, match="true or false"):
         _scenario(idempotent="yes")
+
+
+def test_journal_comparison_does_not_hide_calls_labels_or_undo_identity():
+    scenario = _scenario()
+    results = run_scenario(scenario)
+    assert evaluate(scenario, results) == {}
+    for field in ("calls", "label", "undo_step"):
+        changed = copy.deepcopy(results)
+        changed["cli"].records[-1][field] = {"tampered": True}
+        failures = evaluate(scenario, changed)
+        assert ("cli", "journal") in failures
+        assert ("cli", "equal") not in failures  # the documents still agree
+
+
+def test_repository_scenarios_have_all_three_real_paths():
+    from tests.editing_conformance.runner import SCENARIOS
+    scenarios = [load_scenario(p) for p in SCENARIOS.rglob("*.yaml")]
+    # The exact admitted 08a tree already contains 50, although the card says 49.
+    assert len(scenarios) == 50
+    for scenario in scenarios:
+        assert scenario.present() == ["cli", "sheet", "python"]
+        assert scenario.runnable() == scenario.present()

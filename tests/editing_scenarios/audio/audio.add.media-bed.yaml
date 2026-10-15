@@ -4,15 +4,27 @@ intent: Add a source-trimmed music clip independently of the picture cut.
 fixture: audio-media
 expect: change
 cli: edit --add-media Q --track music --on 1 --for 3 --trim-in 2 --gain-db -5.8 --id music-bed
-sheet: {missing: "the cut sheet cannot add independent media clips; use the CLI verb or SDK"}
-python: |
-  clip = tl.add("media", asset="Q", track="music", at=1, hold=3, cut=None, clip_id="music-bed")
+sheet:
+  text: 'edit {"op": "timeline.add", "select": null, "args": {"element": "media", "asset": "Q", "track": "music", "at": 1,
+    "hold": 3, "cut": null, "clip_id": "music-bed"}}
+
+    edit {"op": "clip.trim", "select": "music-bed", "args": {"in_s": 2, "out_s": 5}}
+
+    edit {"op": "clip.set-look", "select": "music-bed", "args": {"volume": "-5.8dB"}}
+
+    '
+python: 'clip = tl.add("media", asset="Q", track="music", at=1, hold=3, cut=None, clip_id="music-bed")
+
   clip.trim(in_s=2, out_s=5)
+
   from astrid.packs.timeline.cli_look import apply_look
+
   apply_look(tl, clip, {"volume": "-5.8dB"})
+
+  '
 check:
-  - tl.clip("music-bed").cut_id is None
-  - abs(tl.clip("music-bed").start - 1) < 1e-6
-  - abs(tl.clip("music-bed").duration - 3) < 1e-6
-  - tl.clip("music-bed").data["from"] == 2
-  - tl.clip("music-bed").data["to"] == 5
+- tl.clip("music-bed").cut_id is None
+- abs(tl.clip("music-bed").start - 1) < 1e-6
+- abs(tl.clip("music-bed").duration - 3) < 1e-6
+- tl.clip("music-bed").data["from"] == 2
+- tl.clip("music-bed").data["to"] == 5

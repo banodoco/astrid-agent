@@ -4,7 +4,12 @@ intent: Fade the c2 card out over 12 frames at its end (the clip-level exit).
 fixture: tiny
 expect: change
 cli: edit --clip c2.card --exit fade 12f
-sheet: {missing: "clip fields in the sheet land with M-Core V-1/M-4"}
-python: {missing: "clip.look lands with M-Core M-4"}
+sheet:
+  text: 'edit {"op": "clip.set-look", "select": "c2.card", "args": {"exit": "fade 12f"}}
+
+    '
+python: 'tl.clip(''c2.card'').set_look(**{''exit'': ''fade 12f''})
+
+  '
 check:
-  - 'tl.clip("c2.card").data.get("exit") == {"type": "fade", "duration": 0.4}'
+- 'tl.clip("c2.card").data.get("exit") == {"type": "fade", "duration": 0.4}'

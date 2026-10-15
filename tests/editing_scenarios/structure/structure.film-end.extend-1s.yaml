@@ -1,13 +1,18 @@
 id: structure.film-end.extend-1s
-source: "new (W3: where the film ends, as a moment; the last picture holds to it, the music keeps its ending)"
-intent: "End the film 2.3 s after the word now (9.0 s, was 8.0 s): the last picture ends at 9.0 s and the last shot's placement is 5000 ms."
+source: 'new (W3: where the film ends, as a moment; the last picture holds to it, the music keeps its ending)'
+intent: 'End the film 2.3 s after the word now (9.0 s, was 8.0 s): the last picture ends at 9.0 s and the last shot''s placement
+  is 5000 ms.'
 fixture: tiny
 expect: change
 cli: edit --film-end 'after "now" +2.3s'
-sheet: {missing: "film end in the sheet: later"}
-python: |
-  tl.film_end('after "now" +2.3s')
+sheet:
+  text: 'edit {"op": "timeline.film-end", "select": null, "args": {"moment": "after \"now\" +2.3s"}}
+
+    '
+python: 'tl.film_end(''after "now" +2.3s'')
+
+  '
 check:
-  - abs(tl.duration - 9.0) < 1e-6
-  - abs(tl.clip("c2.plate").end - 9.0) < 1e-6
-  - "[p for p in tl.document()['placements'] if p['shot_id'] == 'B'][0]['duration_ms'] == 5000"
+- abs(tl.duration - 9.0) < 1e-6
+- abs(tl.clip("c2.plate").end - 9.0) < 1e-6
+- '[p for p in tl.document()[''placements''] if p[''shot_id''] == ''B''][0][''duration_ms''] == 5000'

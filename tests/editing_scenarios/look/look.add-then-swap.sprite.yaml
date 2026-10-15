@@ -3,14 +3,19 @@ source: h2 L6 (AUDIT bug 3)
 intent: Add a sprite on "now" in c2 at x=600 y=300 and give it asset R; the position and the asset must survive.
 fixture: tiny
 expect: change
-cli: {missing: "no add verb in the CLI (AUDIT: Missing tools, Add a clip by verb; h2 L6)"}
+cli: 'edit --command ''{"op": "timeline.add", "select": null, "args": {"element": "am-sprite", "at": "\"now\"", "layer": "pin",
+  "hold": 1.5, "params": {"x": 600, "y": 300}, "asset": "R"}}'''
 sheet:
-  cuts: [c2]
+  cuts:
+  - c2
   replace:
-    - ["         type   card   type        \"Live.\"  for 1s", "         type   card   type        \"Live.\"  for 1s\n         sprite pin    sprite      R  on \"now\" for 1.5s x=600 y=300"]
-python: |
-  tl.add("am-sprite", at='"now"', layer="pin", hold=1.5, params={"x": 600, "y": 300}).swap_asset("R")
+  - - '         type   card   type        "Live."  for 1s'
+    - "         type   card   type        \"Live.\"  for 1s\n         sprite pin    sprite      R  on \"now\" for 1.5s x=600\
+      \ y=300"
+python: 'tl.add("am-sprite", at=''"now"'', layer="pin", hold=1.5, params={"x": 600, "y": 300}).swap_asset("R")
+
+  '
 check:
-  - tl.clip("c2.pin").asset == "R"
-  - tl.clip("c2.pin").get("x") == 600
-  - tl.clip("c2.pin").get("y") == 300
+- tl.clip("c2.pin").asset == "R"
+- tl.clip("c2.pin").get("x") == 600
+- tl.clip("c2.pin").get("y") == 300

@@ -4,7 +4,12 @@ intent: Give the c2 card a scale-in entrance over 18 frames (0.6 s).
 fixture: tiny
 expect: change
 cli: edit --clip c2.card --entrance scale-in 18f
-sheet: {missing: "clip fields in the sheet land with M-Core V-1/M-4"}
-python: {missing: "clip.look lands with M-Core M-4"}
+sheet:
+  text: 'edit {"op": "clip.set-look", "select": "c2.card", "args": {"entrance": "scale-in 18f"}}
+
+    '
+python: 'tl.clip(''c2.card'').set_look(**{''entrance'': ''scale-in 18f''})
+
+  '
 check:
-  - 'tl.clip("c2.card").data.get("entrance") == {"type": "scale-in", "duration": 0.6}'
+- 'tl.clip("c2.card").data.get("entrance") == {"type": "scale-in", "duration": 0.6}'

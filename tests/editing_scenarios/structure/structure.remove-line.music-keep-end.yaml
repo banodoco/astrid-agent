@@ -1,16 +1,23 @@
 id: structure.remove-line.music-keep-end
 source: W2 (new)
-intent: Remove narration line s1 ("It went viral.") from a film whose music runs to its end; the default keep_end cuts the bed at the removal, so its ending stays on the film's end.
+intent: Remove narration line s1 ("It went viral.") from a film whose music runs to its end; the default keep_end cuts the
+  bed at the removal, so its ending stays on the film's end.
 fixture: tiny
 expect: change
-cli:
-  - edit --clip a-music --for 8       # setup: the bed runs to the film's 8 s end (in tiny it stops at 4 s)
-  - edit --remove-line s1
-sheet: {missing: "the sheet cannot remove a narration line (harness H-5), so the music check cannot run on the sheet either"}
-python: |
-  tl.clip("a-music").set_duration(8)  # setup, as the CLI's --for
+cli: 'edit --command ''{"op": "timeline.batch", "select": null, "args": {"commands": [{"op": "clip.set-duration", "select":
+  "a-music", "args": {"seconds": 8}}, {"op": "timeline.remove-line", "select": null, "args": {"segment": "s1"}}]}}'''
+sheet:
+  text: 'edit {"op": "clip.set-duration", "select": "a-music", "args": {"seconds": 8}}
+
+    edit {"op": "timeline.remove-line", "select": null, "args": {"segment": "s1"}}
+
+    '
+python: 'tl.clip("a-music").set_duration(8)  # setup, as the CLI''s --for
+
   tl.remove_line("s1")
+
+  '
 check:
-  - '"s1" not in [v.segment for v in tl.lines()]'
-  - 'len([c for c in tl.clips() if c.track == "music"]) == 2'
-  - 'abs(max(c.end for c in tl.clips() if c.track == "music") - tl.duration) < 1/30'
+- '"s1" not in [v.segment for v in tl.lines()]'
+- len([c for c in tl.clips() if c.track == "music"]) == 2
+- abs(max(c.end for c in tl.clips() if c.track == "music") - tl.duration) < 1/30

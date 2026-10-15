@@ -354,6 +354,14 @@ def parse_sheet(text: str) -> dict[str, Any]:
         body = line.strip()
         if raw.startswith(("film ", "WORKING COPY", "PUBLISHED", "next:", "scope ")) or body.startswith((">", "↳")) or raw.startswith("# "):
             continue
+        if body.startswith("edit "):
+            from astrid.sdk.timeline.commands import EditCommand, CommandError
+            try:
+                command = EditCommand.coerce(json.loads(body[5:])).to_json()
+            except (json.JSONDecodeError, CommandError) as exc:
+                raise SheetError(f"line {number}: {exc}") from None
+            sheet.setdefault("commands", []).append(command)
+            continue
         if body in ("lines", "orphans", "sound"):
             section, cut = body, None
             if body == "lines":
@@ -674,7 +682,8 @@ def apply_sheet(tl: Checkout, text: str) -> list[str]:
                              "your change again, so nothing edited since is undone")
         parsed = merge_sheet(parsed, base, tl)
     try:
-        return _apply_parsed(tl, parsed, before)
+        with tl.step("apply sheet"):
+            return _apply_parsed(tl, parsed, before)
     except Exception:
         tl.bundle = before.bundle
         tl._refresh()
@@ -828,6 +837,7 @@ def _apply_parsed(tl, sheet, before):
     if sheet.get("sound"):
         _apply_sound(tl, sheet["sound"])
     groups = {g["id"]: g for g in tl._cut_groups()}
+    removals = []
     for cut in sheet["cuts"]:
         group = groups.get(cut["id"])
         if group is None:
@@ -879,9 +889,16 @@ def _apply_parsed(tl, sheet, before):
                 raise SheetError(_with_text(f"line {layer['line']}: {said}", layer["line"], layer.get("text_line", ""))) from None
         for name, clip in existing.items():
             if name not in seen and intent.cut_of(clip.data) == cut["id"]:
-                clip.remove()
+                removals.append((clip, cut["id"]))
+    for clip, original_cut in removals:
+        # A later split can carry this very clip into its new cut. Decide
+        # omission after all cut headers have been applied, preserving its uid.
+        if intent.cut_of(clip.data) == original_cut:
+            clip.remove()
+    from astrid.sdk.timeline.commands import execute
+    for command in sheet.get("commands", []):
+        execute(tl, command)
     tl._mcache = None
-    tl.resolve()
     if reflow:
         tl.reflow()
     for segment in sorted(line_removals):
@@ -947,7 +964,7 @@ def _apply_sound(tl, rows):
                 if value is not ELIDED:
                     stored = cf.coerce(key, value, fps=tl.fps, audio=True)[1]
                     if stored != cf.read(clip.data, key, fps=tl.fps, audio=True):
-                        cf.write(clip.data, key, value, fps=tl.fps, audio=True)
+                        clip.set_look(**{key: value})
         except (TimelineEditError, mo.MomentError, cf.ClipFieldError) as exc:
             raise SheetError(_with_text(f"line {row['line']}: {clip.address}: {exc}", row["line"], row.get("text_line", ""))) from None
 
@@ -971,7 +988,7 @@ def _update_layer(tl, clip, layer, *, is_picture):
         if layer["asset"]:
             clip.swap_asset(layer["asset"])
         else:
-            data.pop("asset", None)
+            clip.clear_asset()
     raw_params = data.get("params") if isinstance(data.get("params"), dict) else None
     current = dict(raw_params or {})
     wanted = dict(layer["params"])
@@ -980,18 +997,15 @@ def _update_layer(tl, clip, layer, *, is_picture):
             wanted["text"] = layer["text"]
         elif "text" in current:
             wanted["text"] = current["text"]
-    from astrid.sdk.timeline.model import validate_param_value
-    for key, value in wanted.items():
+    from astrid.sdk.timeline_address import element_schema
+    declared = set(element_schema(element).get("properties") or {})
+    fields = {key: wanted.pop(key) for key in list(wanted) if key in cf.FIELDS and key not in declared}
+    for key, value in fields.items():
         if value is not ELIDED:
-            validate_param_value(element, key, value, where=clip.address)
+            clip.set_look(**{key: value})
     for key in list(current):
         if key not in wanted and key != "text" and raw_params is not None:
-            raw_params.pop(key, None)
-    from astrid.sdk.timeline_address import element_schema, unknown_params
-    bad = unknown_params(element, [k for k, v in wanted.items() if v is not ELIDED], existing=current)
-    if bad:
-        props = sorted((element_schema(element).get("properties") or {}))
-        raise TimelineEditError(f"{element} has no param {', '.join(bad)}; it takes: {', '.join(props)}")
+            clip.clear(key)
     from astrid.sdk.timeline_checkout import formula_from_spec, formula_short, parse_formula_value, to_canvas
     formulas = intent.formulas(data)
     for key, value in wanted.items():

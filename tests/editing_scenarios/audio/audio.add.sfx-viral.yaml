@@ -4,11 +4,16 @@ intent: Add a short sound effect (asset Q, 0.3 s) on the spoken word "viral", in
 fixture: audio-media
 expect: change
 cli: edit --add-media Q --track vo --on '"viral"' --for 0.3 --id blip
-sheet: {missing: "the cut sheet cannot add independent media clips; use the CLI verb or SDK"}
-python: |
-  tl.add("media", at='"viral"', hold=0.3, asset="Q", track="vo", cut=None, clip_id="blip")
+sheet:
+  text: 'edit {"op": "timeline.add", "select": null, "args": {"element": "media", "asset": "Q", "track": "vo", "at": "\"viral\"",
+    "hold": 0.3, "cut": null, "clip_id": "blip"}}
+
+    '
+python: 'tl.add("media", at=''"viral"'', hold=0.3, asset="Q", track="vo", cut=None, clip_id="blip")
+
+  '
 check:
-  - tl.clip("blip").cut_id is None
-  - abs(tl.clip("blip").duration - 0.3) < 1e-6
-  - abs(tl.clip("blip").start - 1.3) < 1e-3
-  - tl.clip("c1.rocket") is not None
+- tl.clip("blip").cut_id is None
+- abs(tl.clip("blip").duration - 0.3) < 1e-6
+- abs(tl.clip("blip").start - 1.3) < 1e-3
+- tl.clip("c1.rocket") is not None

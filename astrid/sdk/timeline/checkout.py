@@ -47,6 +47,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         self._kept: list[str] = []
         self._outside: list[str] = []
         self._journal: list[tuple[str, str | None]] = []  # (label, the document before that edit), one per edit
+        self._pending_calls: list[Any] = []
         self._edit_depth = 0
         self._open_edit: Any = None  # the Edit of the tl.edit now open (nested edits join it)
         self._orphan_reason = "its line was removed"
@@ -143,7 +144,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         staged: list[tuple[Path, Path]] = []  # undo steps: written under a temp name now, committed after the file
         clear_redo = False
         journaled_step: tuple[str, str, str] | None = None  # (label, previous text, step file name) of the step staged now
-        if record and target.is_file() and _store._is_draft(target):
+        if record and target.is_file():
             previous = target.read_text(encoding="utf-8")
             journal = list(self._journal)
             if previous != text and not journal and not _same_document(target, previous, text):
@@ -173,16 +174,24 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
             import shutil
 
             shutil.rmtree(_store._redo_dir(target), ignore_errors=True)  # a new edit ends the redo chain
+        pending_calls = list(self._pending_calls)
+        if self._open_edit is not None:
+            pending_calls.extend(self._open_edit.calls)
         self._journal = []
+        self._pending_calls = []
         self.path = target
         self._disk = text
         if journaled_step is not None:  # the journal: one record per undo step (the file and the step are committed now)
             label, before_text, undo_step = journaled_step
+            from astrid.sdk.timeline.commands import compact_calls, call_label
+            pending_calls = compact_calls(pending_calls, self)
+            if pending_calls and (self._open_edit is None or self._open_edit.canonical):
+                label = call_label(pending_calls)
             try:
                 clips, cuts = _clip_changes(before_text, text)
                 _journal.record_working_copy(target, owner=self, kind="save", outcome="changed", label=label,
                                              before=_journal.digest(before_text), after=_journal.digest(text),
-                                             clips=tuple(clips), cuts=tuple(cuts), undo_step=undo_step)
+                                             clips=tuple(clips), cuts=tuple(cuts), undo_step=undo_step, calls=tuple(pending_calls))
             except Exception as exc:  # noqa: BLE001 - the save is committed; only its journal record is missing
                 _journal.note_failure(self, exc)
         return target
@@ -216,6 +225,36 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         ``dry_run=True`` reports and restores (nothing saved). ``tx.plan`` is filled for every transaction."""
         return edit_transaction(self, label, dry_run=dry_run, check=check, quiet=quiet, reason=reason)
 
+    def edit_flags(self, flags: Mapping[str, Any], *, client: Any = None) -> None:
+        """Execute the existing CLI edit adapter through the shared runner."""
+        import argparse
+        from astrid.packs.timeline.cli import _configure_edit, _apply_edit
+        from astrid.sdk.timeline.commands import EDIT_FLAG_OPERATIONS, CommandError
+        unknown = set(flags) - set(EDIT_FLAG_OPERATIONS)
+        if unknown:
+            raise CommandError(f"unknown edit flags: {', '.join(sorted(unknown))}")
+        parser = argparse.ArgumentParser(add_help=False)
+        _configure_edit(parser)
+        parsed = parser.parse_args([])
+        vars(parsed).update(flags)
+        parsed.client = client
+        if parsed.music is not None:
+            from astrid.packs.timeline.cli_music import apply_music_policy
+            apply_music_policy(self, parsed)
+        # This adapter expands to the same individual operations as the SDK.
+        depth, self._command_depth = self._command_depth, 0
+        try:
+            _apply_edit(self, parsed)
+        finally:
+            self._command_depth = depth
+
+    def batch(self, commands: list[Mapping[str, Any]]) -> list[Any]:
+        """Run ordered OpCalls as one atomic edit and one undo step."""
+        from astrid.sdk.timeline.commands import execute, CommandError
+        if not isinstance(commands, list) or not commands:
+            raise CommandError("batch requires a non-empty list of EditCommands")
+        return [execute(self, command) for command in commands]
+
     def undo(self, steps: int = 1) -> list[str]:
         """Go back ``steps`` edits of this working copy (``redo`` goes forward). Returns what was undone."""
         if not self.path:
@@ -235,7 +274,8 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         target.write_text(current, encoding="utf-8")
         self._reload()
         _journal.record_or_note(self, target, kind="undo", outcome="changed", label="; ".join(undone)[:160],
-                                     before=_journal.digest(start), after=_journal.digest(current))
+                                     before=_journal.digest(start), after=_journal.digest(current),
+                                     calls=(self._storage_call,) if getattr(self, "_storage_call", None) else ())
         return undone
 
     def redo(self, steps: int = 1) -> list[str]:
@@ -257,7 +297,8 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         target.write_text(current, encoding="utf-8")
         self._reload()
         _journal.record_or_note(self, target, kind="redo", outcome="changed", label="; ".join(redone)[:160],
-                                     before=_journal.digest(start), after=_journal.digest(current))
+                                     before=_journal.digest(start), after=_journal.digest(current),
+                                     calls=(self._storage_call,) if getattr(self, "_storage_call", None) else ())
         return redone
 
     def _reload(self) -> None:
@@ -267,17 +308,13 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
     @contextlib.contextmanager
     def step(self, label: str):
         """One undo step for everything inside (a verb that makes several changes is one edit)."""
-        if self._edit_depth:
+        outer = not self._edit_depth
+        with edit_transaction(self, label, check=False, quiet=True, persist=False) as tx:
+            if outer:
+                tx.canonical = True
             yield self
-            return
-        before = _store._snapshot(self)
-        self._edit_depth += 1
-        try:
-            yield self
-        finally:
-            self._edit_depth -= 1
-        if _store._snapshot(self) != before:
-            self._journal.append((label, before))
+        if outer and tx.changed:
+            self._pending_calls.extend(tx.calls)
 
     # ---- working copy (draft) --------------------------------------------------
     @classmethod
@@ -419,14 +456,20 @@ def _joined_label(journal: list[tuple[str, str | None]]) -> str:
     return text if len(text) <= 160 else text[:157] + "..."
 
 
-# every edit is one undo step (the outermost call; what it calls inside is part of it)
-for _name in ("on", "until", "enter_at", "nudge", "hold_for", "set_duration", "extend", "end_at", "set", "set_track", "clear_asset",
-              "swap_asset", "set_beats", "keyframe_at", "remove", "remove_layer", "keep", "set_look", "tag", "move_to_cut"):
-    setattr(Clip, _name, _store._journaled(getattr(Clip, _name), "clip"))
-for _name in ("add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
-              "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut", "set_cut_note"):
-    setattr(Checkout, _name, _store._journaled(getattr(Checkout, _name), "checkout"))
-Cut.split = _store._journaled(Cut.split, "cut")
-StepSequence.fit = _store._journaled(StepSequence.fit, "cut")
-for _name in ("replace", "set_gap_after"):
-    setattr(Voice, _name, _store._journaled(getattr(Voice, _name), "voice"))
+# Every public document mutator enters the command runner. Lifecycle and I/O
+# (save, undo, redo, publish, draft/discard) keep their existing storage boundaries.
+from astrid.sdk.timeline import commands as _commands
+
+_commands.register(Clip, "clip", (
+    "on", "until", "enter_at", "nudge", "hold_for", "for_", "set_duration", "trim", "slip", "extend", "end_at",
+    "set", "set_param", "clear", "set_track", "clear_asset", "swap_asset", "set_beats", "keyframe_at",
+    "remove", "remove_layer", "keep", "set_look", "tag", "move_to_cut"))
+_commands.register(Checkout, "timeline", (
+    "add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
+    "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut", "set_cut_note", "replace_asset",
+    "reflow", "retime", "resolve", "film_end", "batch", "edit_flags"))
+_commands.register(Cut, "cut", ("split", "set_note", "shorten"))
+_commands.register(StepSequence, "sequence", ("fit",))
+_commands.register(Voice, "voice", ("replace", "set_gap_after"))
+
+_commands.register(Checkout, "timeline", ("save", "undo", "redo"), boundary="storage")

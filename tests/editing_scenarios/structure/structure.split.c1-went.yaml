@@ -1,18 +1,21 @@
 id: structure.split.c1-went
 source: h1 T4
-intent: Split cut c1 at the spoken word "went"; c1 keeps the opening, and the new cut c1a starts on "went" and carries the rocket.
+intent: Split cut c1 at the spoken word "went"; c1 keeps the opening, and the new cut c1a starts on "went" and carries the
+  rocket.
 fixture: tiny
 expect: change
 cli: edit --split c1 --on '"went"'
 sheet:
-  cuts: [c1]
+  cuts:
+  - c1
   replace:
-    - ["  1.30   sprite  rocket  sprite      R  on \"viral\"  x=60\n         why: the opener", "         why: the opener\n  0.90 ┃ c1a on \"went\"\n         plate   plate   snap-plate  P\n  1.30   sprite  rocket  sprite      R  on \"viral\"  x=60"]
-python: |
-  tl.cut("c1").split('"went"')
+  - - "  1.30   sprite  rocket  sprite      R  on \"viral\"  x=60\n         why: the opener"
+    - "         why: the opener\n  0.90 ┃ c1a on \"went\"\n         plate   plate   snap-plate  P\n  1.30   sprite  rocket\
+      \  sprite      R  on \"viral\"  x=60"
+python: 'tl.cut("c1").split(''"went"'')
+
+  '
 check:
-  - abs(tl.clip("c1a.plate").start - 0.9) < 1e-3
-  - abs(tl.clip("c1.plate").end - 0.9) < 1e-3
-  - abs(tl.clip("c1a.rocket").start - 1.3) < 1e-3
-xfail:
-  - {path: sheet, check: equal, reason: "NEW: a sheet cut header with the rocket listed under it re-creates the rocket: '− c1.rocket removed (sprite R)' and '+ c1a.rocket added' (new clip id, appended after the plate), not the CLI/Python move of a-rocket"}
+- abs(tl.clip("c1a.plate").start - 0.9) < 1e-3
+- abs(tl.clip("c1.plate").end - 0.9) < 1e-3
+- abs(tl.clip("c1a.rocket").start - 1.3) < 1e-3

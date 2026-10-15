@@ -341,7 +341,7 @@ def unknown_params(element: str, keys: list[str], existing: dict[str, Any] | Non
     """Keys the element does not declare (and the clip does not already have)."""
     schema = element_schema(element)
     props = schema.get("properties") or {}
-    if not props:
+    if not props and element != "media":
         return []
     return [k for k in keys if k not in props and k not in (existing or {})]
 

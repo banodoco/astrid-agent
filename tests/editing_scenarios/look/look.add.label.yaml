@@ -1,17 +1,23 @@
 id: look.add.label
 source: h2 L5
-intent: Add a type label "beta" on the spoken word "now" in c2, held 1.5 s, at x=96 y=84 (canvas px), keeping the c2 plate and card.
+intent: Add a type label "beta" on the spoken word "now" in c2, held 1.5 s, at x=96 y=84 (canvas px), keeping the c2 plate
+  and card.
 fixture: tiny
 expect: change
-cli: {missing: "no add verb in the CLI (AUDIT: Missing tools, Add a clip by verb; h2 L5)"}
+cli: 'edit --command ''{"op": "timeline.add", "select": null, "args": {"element": "am-type", "at": "\"now\"", "layer": "beta",
+  "hold": 1.5, "params": {"text": "beta", "x": 96, "y": 84}}}'''
 sheet:
-  cuts: [c2]
+  cuts:
+  - c2
   replace:
-    - ["         type   card   type        \"Live.\"  for 1s", "         type   card   type        \"Live.\"  for 1s\n         type   beta   type        \"beta\"  on \"now\" for 1.5s x=96 y=84"]
-python: |
-  tl.add("am-type", at='"now"', layer="beta", hold=1.5, params={"text": "beta", "x": 96, "y": 84})
+  - - '         type   card   type        "Live."  for 1s'
+    - "         type   card   type        \"Live.\"  for 1s\n         type   beta   type        \"beta\"  on \"now\" for 1.5s\
+      \ x=96 y=84"
+python: 'tl.add("am-type", at=''"now"'', layer="beta", hold=1.5, params={"text": "beta", "x": 96, "y": 84})
+
+  '
 check:
-  - abs(tl.clip("c2.beta").duration - 1.5) < 1e-6
-  - tl.clip("c2.beta").get("x") == 96
-  - tl.clip("c2.beta").get("y") == 84
-  - tl.clip("c2.card") is not None
+- abs(tl.clip("c2.beta").duration - 1.5) < 1e-6
+- tl.clip("c2.beta").get("x") == 96
+- tl.clip("c2.beta").get("y") == 84
+- tl.clip("c2.card") is not None

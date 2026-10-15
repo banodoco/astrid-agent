@@ -5,15 +5,9 @@ fixture: tiny
 expect: refused
 cli: edit --clip a-music --set zzbogus=2
 sheet:
-  cuts: [c1]
-  replace:
-    - ["Q  for 4s", "Q  for 4s zzbogus=2"]
-python: |
-  tl.clip("a-music").set(zzbogus=2)
-xfail:
-  - {path: cli, check: runs, reason: "AUDIT bug 4: CLI --set accepts unknown params silently (zzbogus=2 is stored on a-music)"}
-  - {path: cli, check: changes, reason: "AUDIT bug 4: CLI --set accepts unknown params silently (zzbogus=2 is stored on a-music)"}
-  - {path: cli, check: steps, reason: "AUDIT bug 4: CLI --set accepts unknown params silently (zzbogus=2 is stored on a-music)"}
-  - {path: python, check: runs, reason: "AUDIT bug 4: Python clip.set accepts an unknown param on a media clip (it refuses one on am-sprite/am-type)"}
-  - {path: python, check: changes, reason: "AUDIT bug 4: Python clip.set accepts an unknown param on a media clip (it refuses one on am-sprite/am-type)"}
-  - {path: python, check: steps, reason: "AUDIT bug 4: Python clip.set accepts an unknown param on a media clip (it refuses one on am-sprite/am-type)"}
+  text: 'edit {"op":"clip.set","select":"a-music","args":{"zzbogus":2}}
+
+    '
+python: 'tl.clip("a-music").set(zzbogus=2)
+
+  '

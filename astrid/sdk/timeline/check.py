@@ -328,6 +328,8 @@ class _CheckMixin:
                 source = str(path)
         else:
             media_id = entry.get("media_id") or entry.get("content_sha256")
+            if getattr(self, "_edit_local_only", False):
+                return None  # edit validation never acquires a Runtime or writes its acquisition lock
             if not isinstance(media_id, str) or not media_id.startswith("sha256:"):
                 return None
             cache = self.__dict__.setdefault("_art_bytes", {})
@@ -816,7 +818,7 @@ def describe_changes(before: "Checkout", after: "Checkout") -> list[str]:  # noq
         if a_on != b_on:
             what = f"now enters on {b_on} = {clip.start:.2f} s" if b_on else f"no longer tied to a moment: starts {clip.start:.2f} s"
             reference = f"reference {a_on or 'none'} → {b_on or 'none'}"
-            what += f" ({reference}; was {prev.start:.2f} s, {secs(clip.start - prev.start)})" if moved_start else f" ({reference}; it was already there)"
+            what += f" (was {prev.start:.2f} s, {secs(clip.start - prev.start)}); {reference}" if moved_start else f" ({reference}; it was already there)"
             if not (a_until != b_until or a_for != b_for):
                 what += f"; {_end_rule(after, clip)}, ending {clip.end:.2f} s"
             said.append(what)
