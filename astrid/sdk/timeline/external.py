@@ -214,7 +214,7 @@ def load_hand_edit(tl):
             if rows and journal.verify(destination):
                 raise TimelineEditError('draft journal verification failed; restore its verified history before importing')
             latest = rows[-1] if rows else None
-            if latest is not None and latest.after == journal.digest(text):
+            if latest is not None and latest.after == journal.document_digest(tl.document()):
                 remember_saved(path, text)
                 return tl
             before_text = None

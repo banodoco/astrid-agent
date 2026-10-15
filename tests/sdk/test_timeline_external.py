@@ -234,3 +234,23 @@ def test_repeated_publications_are_not_collapsed_into_a_guessed_revision():
             Revision('same', 'restore', None, 'other', None, publication_id='p2')]
     with pytest.raises(Exception, match='publication ancestry'):
         find_external('base', 'same', rows)
+
+
+def test_legacy_runner_digest_does_not_hide_a_hand_edited_timeline_helper(tmp_path):
+    tl = Checkout(document())
+    tl.save(tmp_path / 'legacy.json', quiet=True)
+    with tl.edit('literal', quiet=True):
+        edit(tl, x=240)
+    (store._history_dir(tl.path) / '.saved' / 'current.json').unlink()
+    before = tl.document()
+    raw = json.loads(tl.path.read_text())
+    stamp = raw['shots']['B']['internal_timeline']['clips'][1]['_timeline']
+    stamp['start'] += .1
+    stamp['end'] += .1
+    tl.path.write_text(json.dumps(raw))
+    loaded = Checkout.load(tl.path)
+    assert loaded.clip('b-type').start == pytest.approx(tl.clip('b-type').start + .1)
+    assert loaded.clip('a-rocket').get('x') == 240
+    assert records(tl.path)[-1].calls[0]['op'] == 'timeline.import-external'
+    loaded.undo()
+    assert loaded.document() == before
