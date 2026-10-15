@@ -16,7 +16,7 @@ from typing import Any
 
 
 from astrid.core.execution.custody_broker import (
-    CustodyError as CleanupUncertainError, ProcessCustody,
+    CustodyError as CleanupUncertainError, ProcessCustody, RetainedCustodyPopen,
     _darwin_process_records, _ps_lstart_birth,
 )
 
@@ -227,8 +227,9 @@ def popen_owned_process(argv: list[str], **kwargs: Any) -> subprocess.Popen:
         options['close_fds'] = True
     else:
         options["start_new_session"] = new_session
+    custody.begin_launch_spawn()
     try:
-        process = subprocess.Popen(wrapped, **options)
+        process = (RetainedCustodyPopen if sys.platform == 'darwin' else subprocess.Popen)(wrapped, **options)
     except BaseException:
         custody.cleanup_failed_launch(signum=signal.SIGTERM)
         raise
@@ -485,6 +486,10 @@ def _verify_tree_absent(process: subprocess.Popen) -> None:
             if (hasattr(process, "_astrid_process_group_id")
                     and any(info.pgid == _group_id(process) for info in snapshot.values())):
                 raise CleanupUncertainError("owned group members remain")
+        if isinstance(custody, ProcessCustody):
+            # The original Popen wait is positive child evidence. Final census
+            # remains a separate obligation and never creates this settlement.
+            custody.settle_launch()
 
 
 def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:

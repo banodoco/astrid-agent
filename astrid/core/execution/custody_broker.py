@@ -1047,6 +1047,78 @@ class RetainedChildActor:
             raise CustodyError("designated cleanup actor has no positive retained-child exit proof")
 
 
+class RetainedCustodyPopen(subprocess.Popen):
+    """Popen retaining a positive native terminal wait status.
+
+    CPython's cached returncode can be zero after ECHILD. Neither that cache
+    nor an externally reaped child supplies this owner's positive wait result.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._custody_wait_outcome = None
+        super().__init__(*args, **kwargs)
+
+    def _try_wait(self, wait_flags):
+        # Preserve ECHILD as evidence loss rather than manufacturing status 0.
+        return os.waitpid(self.pid, wait_flags)
+
+    def _handle_exitstatus(self, status, **kwargs):
+        super()._handle_exitstatus(status, **kwargs)
+        if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+            self._custody_wait_outcome = {'pid': self.pid, 'status': status,
+                                          'returncode': self.returncode}
+
+
+class _UnspawnedReservation:
+    """Owner-local evidence invalidated before entering the Popen producer."""
+
+    def __init__(self, authority, record):
+        self.authority = authority
+        self.record = authority._semantic(record)
+        self.unattempted = True
+
+
+class RetainedLaunchChild:
+    """Original live direct-child handle, pinned before launch release.
+
+    This object is never reconstructed from a designation or an observed PID.
+    Only its own Popen.wait result can produce the terminal evidence.
+    """
+
+    def __init__(self, child, *, authority, record, actor, identity_provider):
+        identity = identity_provider(child.pid)
+        pinned_actor = actor.verify()
+        target = record['target']
+        if (not isinstance(child, RetainedCustodyPopen) or child.poll() is not None
+                or record['actor'] != pinned_actor or identity is None
+                or identity.get('parent_pid') != pinned_actor['pid']
+                or any(identity.get(k) != target.get(k) for k in ('pid', 'uid', 'birth_id'))
+                or child.pid != target.get('pid')):
+            raise CustodyError('launch settlement requires the original live direct child')
+        self._child = child
+        self._binding = {'scope_root': str(authority.root), 'role': authority.role,
+                         'generation': record['generation'], 'owner_epoch': record['owner_epoch'],
+                         'actor': pinned_actor,
+                         'incarnation': {k: target[k] for k in ('pid', 'uid', 'birth_id')}}
+
+    def prove_wait(self, authority, record):
+        binding = {'scope_root': str(authority.root), 'role': authority.role,
+                   'generation': record['generation'], 'owner_epoch': record['owner_epoch'],
+                   'actor': record['actor'],
+                   'incarnation': {k: record['target'].get(k) for k in ('pid', 'uid', 'birth_id')}}
+        if binding != self._binding:
+            raise CustodyError('retained child settlement binding differs')
+        try:
+            code = self._child.wait(timeout=0)
+        except (subprocess.TimeoutExpired, ChildProcessError) as exc:
+            raise CustodyError('launch has no positive retained-child wait outcome') from exc
+        outcome = self._child._custody_wait_outcome
+        if (not isinstance(outcome, dict) or outcome.get('pid') != self._binding['incarnation']['pid']
+                or type(code) is not int or outcome.get('returncode') != code):
+            raise CustodyError('launch has no positive native retained-child wait outcome')
+        return {'producer': 'original-direct-child-wait', 'wait': dict(outcome), **self._binding}
+
+
 class RoleCustodyAuthority:
     """Protected per-role designation, fenced through every destructive call.
 
@@ -1085,6 +1157,7 @@ class RoleCustodyAuthority:
         self._ready_committed = False
         self._anchor_requires_resume = False
         self._admission_resume: dict[str, object] | None = None
+        self._unspawned_reservation: _UnspawnedReservation | None = None
 
     @contextmanager
     def _guard(self, *, exclusive: bool):
@@ -1120,7 +1193,7 @@ class RoleCustodyAuthority:
             or set(record) != {"version", "role", "generation", "owner_epoch", "state", "actor", "target", "transitions", "digest"}
             or record["version"] != DESIGNATION_VERSION or record["role"] != self.role
             or isinstance(record["generation"], bool) or not isinstance(record["generation"], int) or record["generation"] < 1
-            or record["state"] not in {"pending", "active"}
+            or record["state"] not in {"pending", "active", "settled", "retired"}
             or not isinstance(record["actor"], dict) or not isinstance(record["target"], dict)
             or not isinstance(record["transitions"], list)
             or record["digest"] != _digest_bytes(_canonical({k: v for k, v in record.items() if k != "digest"}))
@@ -1260,7 +1333,9 @@ class RoleCustodyAuthority:
                     or anchor['intent']['start_anchor'] != self._live_start_anchor):
                 raise CustodyError("admission chain has no retained live anchor")
             entries = self._admission_refresh_ledger
-            disk_entries = [e for e in record['transitions'] if e.get('intent', {}).get('action') == 'refresh-exec-token']
+            disk_entries = [e for e in record['transitions']
+                            if e.get('intent', {}).get('action') == 'refresh-exec-token'
+                            and e.get('intent', {}).get('generation') == generation]
             if disk_entries != entries:
                 raise CustodyError("admission refresh ledger differs from retained history")
             previous = dict(self._admission_base)
@@ -1300,21 +1375,121 @@ class RoleCustodyAuthority:
 
     def reserve_before_spawn(self, *, actor: AuthenticatedCleanupActor, owner_epoch: str,
                              admission_id: str) -> None:
-        """Record the owner of an unbound launch obligation before Popen."""
-        if not isinstance(owner_epoch, str) or not owner_epoch or len(owner_epoch) > 256 or not admission_id:
+        """Reserve once after an explicitly terminal prior generation."""
+        if (not isinstance(owner_epoch, str) or not owner_epoch or len(owner_epoch) > 256
+                or not isinstance(admission_id, str) or not admission_id or len(admission_id) > 256):
             raise CustodyError("pending launch custody binding is invalid")
         with self._guard(exclusive=True):
+            generation, transitions = 1, []
             if self.path.exists():
-                raise CustodyError("custody role already has a designation")
-            self._commit({"version": DESIGNATION_VERSION, "role": self.role, "generation": 1,
-                         "owner_epoch": owner_epoch, "state": "pending", "actor": actor.verify(),
-                         "target": {"admission_id": admission_id}, "transitions": []}, initial=True)
+                previous = self._read_current()
+                if previous['state'] not in {'settled', 'retired'}:
+                    raise CustodyError("custody role already has a designation")
+                terminal = previous['transitions'][-1] if previous['transitions'] else {}
+                if (terminal.get('intent', {}).get('action') != ('settle-child' if previous['state'] == 'settled' else 'retire-unspawned')
+                        or terminal.get('ack', {}).get('generation') != previous['generation']
+                        or terminal.get('ack', {}).get('status') != previous['state']):
+                    raise CustodyError('custody terminal transition is unavailable')
+                generation = previous['generation'] + 1
+                transitions = previous['transitions']
+            record = {"version": DESIGNATION_VERSION, "role": self.role, "generation": generation,
+                      "owner_epoch": owner_epoch, "state": "pending", "actor": actor.verify(),
+                      "target": {"admission_id": admission_id}, "transitions": transitions}
+            self._commit(record, initial=True)
+            # The new generation starts without a prior live admission session.
+            self._initial_capture_witness = None
+            self._live_start_anchor = None
+            self._anchor_actor = None
+            self._anchor_transition = None
+            self._ready_base = None
+            self._admission_prefix = None
+            self._refresh_ledger = []
+            self._admission_refresh_ledger = []
+            self._admission_base = None
+            self._ready_committed = False
+            self._anchor_requires_resume = False
+            self._admission_resume = None
+            self._unspawned_reservation = _UnspawnedReservation(self, record)
+
+    def begin_spawn(self) -> None:
+        """Invalidate no-spawn evidence BEFORE invoking a creation producer.
+
+        A Popen exception is ambiguous and cannot restore this evidence.
+        """
+        proof = self._unspawned_reservation
+        if proof is None:
+            raise CustodyError('spawn attempt has no retained reservation')
+        proof.unattempted = False
+
+    def retain_child(self, *, actor: AuthenticatedCleanupActor, generation: int,
+                     child: subprocess.Popen, identity_provider) -> RetainedLaunchChild:
+        with self._guard(exclusive=False):
+            record = self._read_current()
+            self._check_actor(record, actor, generation)
+            if record['state'] != 'active':
+                raise CustodyError('retained child requires active authenticated registration')
+            return RetainedLaunchChild(child, authority=self, record=record, actor=actor,
+                                       identity_provider=identity_provider)
+
+    def settle(self, *, actor: AuthenticatedCleanupActor, generation: int,
+               owner_epoch: str, expected_target: Mapping[str, object], transition_id: str,
+               retained_child: RetainedLaunchChild | None = None,
+               unspawned: _UnspawnedReservation | None = None) -> dict[str, object]:
+        """Durably settle one exact child wait or retire its unattempted owner.
+
+        An exact committed transition may be replayed without recreating lost
+        wait evidence. An uncommitted wait lost with its owner stays unresolved.
+        """
+        if (type(generation) is not int or generation < 1
+                or not isinstance(transition_id, str) or not transition_id or len(transition_id) > 256
+                or not isinstance(owner_epoch, str) or not owner_epoch
+                or not isinstance(expected_target, Mapping)):
+            raise CustodyError('custody settlement binding is invalid')
+        action = 'retire-unspawned' if set(expected_target) == {'admission_id'} else 'settle-child'
+        requester = actor.verify()
+        intent = {'action': action, 'role': self.role, 'generation': generation,
+                  'owner_epoch': owner_epoch, 'requester': requester, 'target': dict(expected_target)}
+        with self._guard(exclusive=True):
+            record = self._read()
+            for entry in record['transitions']:
+                if entry.get('transition_id') == transition_id:
+                    if entry.get('intent') != intent:
+                        raise CustodyError('custody settlement replay conflicts with durable intent')
+                    return dict(entry['ack'])
+            record = self._read_current()
+            self._check_actor(record, actor, generation)
+            if (record['owner_epoch'] != owner_epoch or self._reference(record)['target'] != dict(expected_target)
+                    or record['state'] not in {'active', 'pending'}):
+                raise CustodyError('custody settlement target or owner differs')
+            if action == 'retire-unspawned':
+                if (record['state'] != 'pending' or unspawned is None
+                        or unspawned is not self._unspawned_reservation
+                        or unspawned.authority is not self or not unspawned.unattempted
+                        or unspawned.record != self._semantic(record)):
+                    raise CustodyError('reservation has no positive existing-owner no-spawn evidence')
+                evidence = {'producer': 'existing-launch-owner-before-spawn', 'admission_id': expected_target['admission_id']}
+                status = 'retired'
+            else:
+                if not isinstance(retained_child, RetainedLaunchChild) or unspawned is not None:
+                    raise CustodyError('settlement has no positive retained-child wait evidence')
+                evidence = retained_child.prove_wait(self, record)
+                status = 'settled'
+            ack = {'role': self.role, 'generation': generation, 'owner_epoch': owner_epoch,
+                   'actor': requester, 'target': dict(expected_target), 'status': status,
+                   'transition_id': transition_id, 'previous_digest': record['digest'],
+                   'evidence_digest': _digest_bytes(_canonical(evidence))}
+            record['transitions'].append({'transition_id': transition_id, 'intent': intent,
+                                          'evidence': evidence, 'ack': ack})
+            record['state'] = status
+            self._commit(record)
+            return dict(ack)
 
     def bind_pending(self, *, actor: AuthenticatedCleanupActor, admission_id: str,
-                     identity: Mapping[str, object], token: Mapping[str, object]) -> None:
+                     identity: Mapping[str, object], token: Mapping[str, object],
+                     generation: int = 1) -> None:
         with self._guard(exclusive=True):
             record = self._read_current()
-            self._check_actor(record, actor, 1)
+            self._check_actor(record, actor, generation)
             if record["state"] != "pending" or record["target"] != {"admission_id": admission_id}:
                 raise CustodyError("pending launch obligation differs from registration")
             record["target"] = _incarnation(identity, token)
@@ -1325,6 +1500,8 @@ class RoleCustodyAuthority:
                     final_ready: bool = False) -> dict[str, object]:
         with self._guard(exclusive=True):
             record = self._read_current()
+            if record['state'] not in {'pending', 'active'}:
+                raise CustodyError('terminal custody cannot be rebound')
             if self._ready_base is not None:
                 raise CustodyError("custody readiness baseline cannot be rebound")
             if final_ready and self._anchor_requires_resume and self._admission_resume is None:
@@ -1851,9 +2028,10 @@ class RoleBoundCustodyBroker:
         self.cleanup_actor = AuthenticatedCleanupActor.current()
         self.role_authority = RoleCustodyAuthority(self.authority_scope_root or (ledger_root / "authority"), role, timeout=timeout)
         self.owner_epoch = owner_epoch or self.run_id
-        self.custody_generation = 1
         self.role_authority.reserve_before_spawn(actor=self.cleanup_actor, owner_epoch=self.owner_epoch,
                                                  admission_id=self.run_id)
+        self.custody_generation = self.role_authority.reference()["generation"]
+        self._retained_launch_child: RetainedLaunchChild | None = None
         self.socket_root = _create_compact_socket_root()
         self.socket_path = self.socket_root / "s"
         listener: socket.socket | None = None
@@ -1951,6 +2129,10 @@ class RoleBoundCustodyBroker:
 
         if self.registration is not None:
             raise CustodyError("registered custody cannot use pre-spawn abort")
+        self.role_authority.settle(
+            actor=self.cleanup_actor, generation=self.custody_generation, owner_epoch=self.owner_epoch,
+            expected_target={'admission_id': self.run_id}, transition_id='retire-' + self.run_id,
+            unspawned=self.role_authority._unspawned_reservation)
         self.listener.close()
         self.socket_path.unlink(missing_ok=True)
         try:
@@ -1961,6 +2143,20 @@ class RoleBoundCustodyBroker:
         self.close_child_pipes()
         if self.operation_channel is not None:
             self.operation_channel.close()
+
+    def retain_launch_child(self, process: subprocess.Popen) -> None:
+        self._retained_launch_child = self.role_authority.retain_child(
+            actor=self.cleanup_actor, generation=self.custody_generation,
+            child=process, identity_provider=self.identity_provider)
+
+    def settle_launch(self) -> dict[str, object]:
+        """Called by the owner after its real terminal child wait."""
+        if not hasattr(self, '_settlement_target'):
+            self._settlement_target = self.role_authority.reference()['target']
+        return self.role_authority.settle(
+            actor=self.cleanup_actor, generation=self.custody_generation, owner_epoch=self.owner_epoch,
+            expected_target=self._settlement_target, transition_id='settle-' + self.run_id,
+            retained_child=self._retained_launch_child)
 
     @property
     def child_pipe_fds(self) -> tuple[int, ...]:
@@ -2003,7 +2199,7 @@ class RoleBoundCustodyBroker:
         normalized = [lexical_executable, *list(argv[1:])]
         if self.role not in {'command', 'engine', 'engine_listener'}:
             raise CustodyError('custody role has no matched exec consumer')
-        return {
+        environment = {
             "ASTRID_RUNTIME_CUSTODY_SOCKET": str(self.socket_path),
             "ASTRID_RUNTIME_CUSTODY_RUN_ID": self.run_id,
             "ASTRID_RUNTIME_CUSTODY_ROLE": self.role,
@@ -2015,6 +2211,10 @@ class RoleBoundCustodyBroker:
             **({_BOOTSTRAP_PIPES: _canonical(self.child_pipe_binding).decode('ascii')}
                if self.child_pipe_binding else {}),
         }
+        # Exporting bootstrap authority permits a caller to create a child.
+        # A later registration absence cannot prove that no creation occurred.
+        self.role_authority.begin_spawn()
+        return environment
 
     def wait_until_sealed(self) -> None:
         diagnostic = lambda: (f"stage={getattr(self, '_observation_phase', 'unknown')}, "
@@ -2317,7 +2517,7 @@ class RoleBoundCustodyBroker:
             # and let exec proceed. It conveys no destructive signal authority.
             self._observation_phase = "pending-checkpoint"
             self.role_authority.bind_pending(actor=self.cleanup_actor, admission_id=self.run_id,
-                                             identity=before, token=pre)
+                                             identity=before, token=pre, generation=self.custody_generation)
             self._persist("registration_pre_exec")
             self.ack = {
                 "version": PROTOCOL_VERSION, "status": "registered",
@@ -3023,7 +3223,7 @@ class ProcessCustody:
         policy = _inventory_launch_policy(inventory_context["environment"], inventory_context["cwd"]) if inventory_context is not None and role == "command" else None
         broker = RoleBoundCustodyBroker(
             role=role, retain_channel=policy is not None, identity_provider=default_process_identity,
-            ledger_root=self.root / (role + "-ledger"),
+            ledger_root=self.root / (role + "-ledger-" + os.urandom(8).hex()),
             authority_scope_root=self.root,
             authority_journal=self.root / "custody.journal.jsonl",
             owner_epoch=self.owner_epoch,
@@ -3049,6 +3249,7 @@ class ProcessCustody:
                 registration = self._launch_broker.registration
                 if registration is None or registration["pid"] != process.pid:
                     raise CustodyError("registered launch differs from retained child")
+                self._launch_broker.retain_launch_child(process)
                 birth = str(registration["identity"]["birth_id"])
                 self._handles[process.pid] = (birth, self._launch_broker)
             else:
@@ -3059,6 +3260,16 @@ class ProcessCustody:
             self._uncertain = exc
             process._astrid_tree_uncertain = str(exc) or type(exc).__name__
             raise
+
+    def begin_launch_spawn(self) -> None:
+        if self._launch_broker is not None:
+            self._launch_broker.role_authority.begin_spawn()
+
+    def settle_launch(self) -> None:
+        if self._launch_broker is not None:
+            if self.process is None:
+                raise CustodyError('settlement has no original retained child')
+            self._launch_broker.settle_launch()
 
     def start_inventory_owner(self) -> None:
         if getattr(self, "_inventory_owner", None) is not None:
@@ -3832,6 +4043,7 @@ class ProcessCustody:
             # Only the original Popen supplies positive direct-child reap evidence.
             # Its returncode retains the result; timeout leaves custody unresolved.
             self.process.wait(timeout=_FAILED_LAUNCH_REAP_TIMEOUT_SECONDS)
+            self.settle_launch()
 
 
 ENGINE_CONTROL_VERSION = "runtime.local-execution-engine-control/v1"

@@ -1,7 +1,9 @@
-"""Preserved real-crash counterexamples, not successful recovery certification.
+"""Preserved real-crash evidence-loss cases, not recovery certification.
 
 Use the existing reservation/registration/suspended-release primitives verbatim.
-A passing test means the documented unresolved-generation blocker reproduced.
+A passing test means the lost launch/wait producer cannot settle a generation.
+Normal retained-owner settlement is exercised separately; it cannot reconstruct
+these missing results after supervisor death.
 """
 import json
 import os
@@ -54,7 +56,9 @@ cb.RoleCustodyAuthority._commit=commit
 broker=cb.RoleBoundCustodyBroker(role='command',identity_provider=cb.default_process_identity,
     ledger_root=root/'ledger',authority_scope_root=root,authority_journal=root/'authority.jsonl',timeout=2)
 pause('reservation',broker)
-env={**plan['env'],**broker.child_environment(plan['argv'],start_new_session=True)}
+env={'PATH':'/usr/bin:/bin','HOME':plan['cwd'],'TMPDIR':plan['cwd'],
+     'PYTHONDONTWRITEBYTECODE':'1','PYTHONNOUSERSITE':'1','LC_ALL':'C',
+     **broker.child_environment(plan['argv'],start_new_session=True)}
 env['ASTRID_RUNTIME_CUSTODY_SOCKET']=os.path.relpath(broker.socket_path.absolute(),plan['cwd'])
 child=subprocess.Popen(cb.custody_wrapper_argv(sys.executable),cwd=plan['cwd'],env=env,
     close_fds=True,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -64,7 +68,7 @@ pause('registered-suspended',broker)
 broker.release_suspended_launch(expected_pid=child.pid,process=child)
 Path(settings['stop']).touch()
 out,err=child.communicate(input=b'exit\n',timeout=5)
-if child.returncode!=0:raise RuntimeError(err.decode())
+if child.returncode!=0:raise RuntimeError('synthetic workload failed')
 pause('settlement-after-wait',broker)
 raise RuntimeError('expected crash checkpoint was not reached')
 '''
@@ -117,7 +121,7 @@ def test_supervisor_crash_retains_unrecoverable_generation(launch,tmp_path,stage
     plan=host._wan_creation_control_launch_plan([str(Path(sys.executable).resolve()),'-I','-S','-B','-c',code],policy=policy)
     checkpoint=tmp_path/'checkpoint.json'; root=tmp_path/'protected-owner'
     settings={'root':str(root),'checkpoint':str(checkpoint),'stage':stage,'stop':str(stop),
-              'plan':{'argv':plan.argv,'env':dict(plan.environment),'cwd':str(plan.cwd)}}
+              'plan':{'argv':plan.argv,'cwd':str(plan.cwd)}}
     settings_path=tmp_path/'settings.json';settings_path.write_text(json.dumps(settings))
     source=str(Path(host.__file__).resolve().parents[3])
     env={'PATH':'/usr/bin:/bin','HOME':str(tmp_path),'TMPDIR':str(tmp_path),'PYTHONDONTWRITEBYTECODE':'1'}
@@ -127,7 +131,7 @@ def test_supervisor_crash_retains_unrecoverable_generation(launch,tmp_path,stage
     try:
         def ready():
             if driver.poll() is not None:
-                pytest.fail('fake supervisor exited before checkpoint: '+driver.stderr.read().decode())
+                pytest.fail('fake supervisor exited before checkpoint')
             return read(checkpoint)
         snapshot=wait_for(ready)
         record=json.loads((root/'designation-command.json').read_text())
@@ -176,10 +180,23 @@ def test_supervisor_crash_retains_unrecoverable_generation(launch,tmp_path,stage
             authority.reserve_before_spawn(actor=successor,owner_epoch='fresh',admission_id='fresh')
         errors['fresh_after_recovery_attempt']=str(refusal.value)
         cleanup=cleanup_fake_identity(pid,anchor)
-        print('NATIVE_CRASH_BLOCKER',json.dumps({'stage':stage,'supervisor_pid':driver.pid,
-              'child_pid':pid,'designation_state':record['state'],'target':record['target'],
-              'workload_released':marker.exists(),'errors':errors,'cleanup':cleanup,
-              'product_recovery':'BLOCKED: no identity-bound settlement/reacquisition'}))
+        # Test-only cleanup cannot produce the lost launch owner's wait result.
+        with pytest.raises(cb.CustodyError):
+            authority.reserve_before_spawn(actor=successor,owner_epoch='after-fixture-cleanup',
+                                           admission_id='after-fixture-cleanup')
+        final=authority._read()
+        assert final['state'] in {'pending','active'}
+        assert not any(item.get('ack',{}).get('status') in {'settled','retired'}
+                       for item in final['transitions'])
+        (tmp_path/'crash-result.json').write_text(json.dumps({
+            'stage':stage,'designation_state':final['state'],
+            'fresh_generation_refused':True,'fixture_cleanup_does_not_settle':True,
+            'workload_released':marker.exists(),'cleanup':cleanup,
+            'missing_producer':('launch-owner no-spawn result' if stage=='reservation'
+                                else 'retained direct-child wait result'),
+            'recovered_signal':('refused' if isinstance(errors.get('recovered_signal'),dict)
+                                else 'accepted' if 'recovered_signal' in errors else 'not-attempted'),
+        },sort_keys=True))
     finally:
         if driver.poll() is None:driver.kill()
         driver.wait(timeout=5)

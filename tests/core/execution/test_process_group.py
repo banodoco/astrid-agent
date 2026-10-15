@@ -675,11 +675,14 @@ def test_failed_launch_preserves_admission_error_and_original_custody(monkeypatc
     owner.process, owner._launch_broker, owner._inventory_owner, owner._uncertain = None, broker, None, None
     owner._handles = {103: ("retained-birth", broker)}
     owner.prepare_launch = lambda argv, **_: (argv, {})
+    owner.begin_launch_spawn = lambda: None  # Synthetic producer; no durable launch proof.
+    owner.settle_launch = lambda: events.append(("settle-original", process.pid, process.returncode))
     owner.bind_launch = lambda child: setattr(owner, "process", child)
     owner.start_observer = lambda: (_ for _ in ()).throw(admission_error)
     owner.release_launch = lambda: pytest.fail("unadmitted target was released")
     monkeypatch.setattr(groups, "ProcessCustody", lambda: owner)
     monkeypatch.setattr(groups.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(groups, "RetainedCustodyPopen", lambda *_a, **_kw: process)
     monkeypatch.setattr(groups, "observe_tree", lambda _: {})
     monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("PID fallback used"))
     monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("group fallback used"))
@@ -690,8 +693,11 @@ def test_failed_launch_preserves_admission_error_and_original_custody(monkeypatc
     assert caught.value.process is process and caught.value.custody is owner
     assert owner.process is process and process._astrid_custody is owner
     if case in {"suspended", "reap-timeout"}:
-        assert events == [("exact-signal", signal.SIGKILL),
-                          ("original-wait", custody._FAILED_LAUNCH_REAP_TIMEOUT_SECONDS)]
+        expected = [("exact-signal", signal.SIGKILL),
+                    ("original-wait", custody._FAILED_LAUNCH_REAP_TIMEOUT_SECONDS)]
+        if case == "suspended":
+            expected.append(("settle-original", process.pid, -signal.SIGKILL))
+        assert events == expected
         if case == "suspended":
             assert process.returncode == -signal.SIGKILL and owner._uncertain is None
             return
@@ -747,8 +753,11 @@ def test_failed_suspended_admission_kills_and_reaps_original_child(monkeypatch):
         assert caught.value.process is process and caught.value.custody is owner
         assert not owner._launch_broker._release_sent
         assert signals == [(signal.SIGKILL, process.pid)]
-        assert waits == [(process, custody._FAILED_LAUNCH_REAP_TIMEOUT_SECONDS, -signal.SIGKILL)]
+        assert waits[0] == (process, custody._FAILED_LAUNCH_REAP_TIMEOUT_SECONDS, -signal.SIGKILL)
+        assert waits[1:] and all(item == (process, 0, -signal.SIGKILL) for item in waits[1:])
         assert process.returncode == -signal.SIGKILL
+        assert process._custody_wait_outcome['returncode'] == -signal.SIGKILL
+        assert owner._launch_broker.role_authority._read()['state'] == 'settled'
         groups.verify_tree_absent(process)
     finally:
         # Also settle the exact retained test child when run against old code.
