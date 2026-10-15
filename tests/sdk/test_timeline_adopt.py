@@ -357,8 +357,10 @@ def test_time_reference_resolves_moves_orphans_and_requires_explicit_rehome():
 
 
 def test_adopt_cli_preflight_and_writer_capability_refusal(tmp_path, capsys, monkeypatch):
+    from astrid.core.timeline import compatibility
     from astrid.packs.timeline.cli import build_parser
     tl = enrolled()
+    expected_source = copy.deepcopy(tl.clip('a-music').data)
     path = tmp_path / 'source.json'
     # Write through the document format read by the actual Checkout.load API.
     tl.save(path, quiet=True)
@@ -371,12 +373,28 @@ def test_adopt_cli_preflight_and_writer_capability_refusal(tmp_path, capsys, mon
     assert parsed.handler(parsed) == 0
     assert 'dry_run' in capsys.readouterr().out
     assert path.read_bytes() == original
-    from astrid.core.timeline import compatibility
+    writer_capabilities = compatibility.WRITER_CAPABILITIES
     monkeypatch.setattr(compatibility, 'WRITER_CAPABILITIES', frozenset())
     parsed = parser.parse_args(args)
     assert parsed.handler(parsed) == 2
     assert 'capability' in capsys.readouterr().err
     assert path.read_bytes() == original
+
+    # A writer with the adopted-bed format capability may persist this scoped
+    # transfer; the older-writer refusal above remains an atomic no-write.
+    monkeypatch.setattr(compatibility, 'WRITER_CAPABILITIES', writer_capabilities)
+    parsed = parser.parse_args(args)
+    assert parsed.handler(parsed) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == dict(arrangements=1, changed=True, dry_run=False)
+    assert path.read_bytes() != original
+    saved = Checkout.load(path)
+    bed = adopted(saved)
+    assert bed is not None
+    assert bed['arrangements'][0]['owner'] == OWNER
+    assert bed['arrangements'][0]['source'] == expected_source
+    assert sources(saved)[OWNER]['source'] == expected_source
+    assert not collection(saved)
 
 
 def test_source_bounds_negative_or_outside_checked_media_refuse():
