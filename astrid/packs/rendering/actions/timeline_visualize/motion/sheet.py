@@ -151,6 +151,8 @@ def build_context(
     ctx.shared["layer_names"] = tuple(layer_names)
     config = snapshot.get("config")
     ctx.shared["config"] = config if isinstance(config, Mapping) else {}
+    if isinstance(snapshot.get("audio_lane"), Mapping):
+        ctx.shared["audio_lane"] = snapshot["audio_lane"]
     return ctx
 
 
