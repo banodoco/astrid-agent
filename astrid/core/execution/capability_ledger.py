@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
+from astrid.core.execution.provider_route_grant import ProjectGrantAuthority
 from astrid.core.pack.loader import _load_manifest_payload
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +60,33 @@ def _validate_matrix_capabilities(capabilities: list[Any]) -> None:
                 raise CapabilityLedgerError(
                     f"capabilities[{index}].evidence_reason is required for {disposition} capability"
                 )
+
+
+def project_capability_execution_admission(
+    ledger: Mapping[str, Any], capability_id: str, *,
+    authority: ProjectGrantAuthority | None, grant: object,
+    realm: str, browser_session: str, actor_id: str, project_id: str,
+) -> dict[str, Any]:
+    """Intersect a host-owned project policy with current capability admission.
+
+    This policy seam is not connected to a browser transport: callers must first
+    have a trusted session binding. An arbitrary policy/decision dictionary is
+    not an authority. Source admission is still distinct from runtime readiness.
+    Runtime's timeline.update operation is not an executor capability and must
+    not be admitted through this matrix or aliased to a rendering capability.
+    """
+    denied = {"capability_id": capability_id, "executable": False, "status": "denied"}
+    if not isinstance(authority, ProjectGrantAuthority):
+        return {**denied, "code": "project_grant_authority_missing"}
+    decision = authority.decide(
+        grant, realm=realm, browser_session=browser_session, actor_id=actor_id,
+        project_id=project_id, operation=capability_id,
+    )
+    if decision["allowed"] is not True:
+        return {**denied, "code": decision["code"], "project_decision": decision}
+    admission = capability_execution_admission(ledger, capability_id)
+    return {**admission, "code": "project_capability_admitted" if admission["executable"]
+            else "project_capability_unavailable", "project_decision": decision}
 
 
 def capability_execution_admission(
@@ -688,6 +716,7 @@ def load_capability_ledger(matrix_path: str | Path) -> dict[str, Any]:
 __all__ = [
     "CapabilityLedgerError",
     "capability_execution_admission",
+    "project_capability_execution_admission",
     "load_capability_ledger",
 ]
 
