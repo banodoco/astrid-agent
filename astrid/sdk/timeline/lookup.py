@@ -88,6 +88,14 @@ class _LookupMixin:
             text = self._cut_id(text) or text  # c1 is c01
             group = next((g for g in self._cut_groups() if g["id"] == text.lower()), None)
             if group is None:
+                # Status excludes orphan cuts from the live picture list; exact
+                # identity lookup must still expose the authored orphan content.
+                members = self._cut_clips(text.lower())
+                if members:
+                    picture = self.cut_picture(text.lower()) or members[0]
+                    return Cut(self, dict(index=len(cuts) + 1, shot_id=picture.shot_id,
+                                          start=min(c.start for c in members), end=max(c.end for c in members),
+                                          clip=picture.data, layers=[{"clip": c.data} for c in members if c.data is not picture.data]))
                 ids = [g["id"] for g in self._cut_groups()]
                 raise TimelineEditError(f"no cut {text}; cuts are {', '.join(ids) or 'not named in this timeline'}")
             if group["picture"] is not None:

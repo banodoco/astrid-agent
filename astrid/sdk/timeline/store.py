@@ -172,6 +172,11 @@ def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mappi
     # places); the merge itself is applied to the head as it is, so units nobody touched stay verbatim
     b, h, c = (_units(_ns.normalized(x), whole=whole) for x in (base, head, candidate))
     same = lambda x, y: json.dumps(x, sort_keys=True, default=str) == json.dumps(y, sort_keys=True, default=str)
+    # Reservations are joined by maximum, never treated as competing authored edits.
+    from astrid.sdk.timeline.identity import KEY, retain_cut_reservations
+    reservation = ("parent-config", KEY)
+    for units in (b, h, c):
+        units.pop(reservation, None)
     ours = {k for k in set(b) | set(c) if not same(b.get(k), c.get(k))}
     theirs = {k for k in set(b) | set(h) if not same(b.get(k), h.get(k))}
     conflicts = [k for k in sorted(ours & theirs) if not same(c.get(k), h.get(k))]
@@ -184,7 +189,7 @@ def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mappi
         kind = key[0]
         if kind == "placement":
             rows = merged.setdefault("placements", [])
-            rows[:] = [r for r in rows if str(r.get("shot_id")) != key[1]] + ([value] if value is not None else [])
+            rows[:] = [r for r in rows if _placement_identity(r) != key[1]] + ([value] if value is not None else [])
         elif kind in ("tracks", "registry"):
             shot = merged["shots"].setdefault(key[1], copy.deepcopy(candidate["shots"][key[1]]))
             shot.setdefault("internal_timeline", {})[kind] = value
@@ -247,6 +252,7 @@ def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mappi
             if not notes:
                 ns.pop("cut_notes", None)
                 _ns.tidy_film(merged["parent"]["config"])
+    retain_cut_reservations(merged, base, head, candidate)
     return merged, lines
 
 
@@ -579,6 +585,12 @@ def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
         return read(c)
 
 
+def _placement_identity(row):
+    # Explicit occurrence IDs distinguish repeated placements of a shared shot.
+    # Legacy singleton rows remain mergeable by their only available identity.
+    return str(row.get("occurrence_id") or row.get("id") or row.get("shot_id"))
+
+
 def _units(bundle: Mapping[str, Any], *, whole: bool = False) -> dict[tuple[str, ...], Any]:
     """The bundle as mergeable units: every internal clip, every placement row, every parent clip
     (each film setting in ``parent.config`` too, merged on publish; ``whole``: also each shot's payload, for working-copy saves)."""
@@ -603,7 +615,10 @@ def _units(bundle: Mapping[str, Any], *, whole: bool = False) -> dict[tuple[str,
         for sid, shot in (bundle.get("shots") or {}).items():
             units[("payload", str(sid))] = shot.get("payload")
     for row in bundle.get("placements") or []:
-        units[("placement", str(row.get("shot_id")))] = row
+        key = ("placement", _placement_identity(row))
+        if key in units:
+            raise TimelineEditError(f"ambiguous placement identity {key[1]!r}")
+        units[key] = row
     for sid, shot in (bundle.get("shots") or {}).items():
         internal = shot.get("internal_timeline") or {}
         for clip in internal.get("clips") or []:
