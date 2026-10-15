@@ -10,6 +10,25 @@
     "args"
   ],
   "additionalProperties": false,
+  "$defs": {
+    "scopedId": {
+      "type": "string",
+      "description": "Current ScopedId vocabulary: parent, shot, or occurrence clip/track ids, plus cut ids.",
+      "pattern": "^(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track):[^/]+|cut:[^/:]+)$"
+    },
+    "anchorIdentity": {
+      "description": "Current resolved anchor identities, including scoped entity ids and the documented word, beat, and cut anchors.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/scopedId"
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:word:[^:]+:[0-9]+|beat:[0-9]+|cut:[^/:]+:(?:start|end))$"
+        }
+      ]
+    }
+  },
   "properties": {
     "op": {
       "type": "string",
@@ -28,6 +47,64 @@
       "description": "Opaque finite JSON operation arguments in authoring units. Omitted keys, JSON null, explicit clip.clear keys, and ordinary objects (including {$absent:true} or {op:clear}) remain distinct. Only the selected handler interprets these values.",
       "additionalProperties": true
     },
+    "expect": {
+      "type": "object",
+      "description": "Optional prior values keyed by direct-write path. Absence and present JSON values are tagged separately; command-specific requirements remain producer/consumer rules.",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "const": "absent"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "state",
+              "value"
+            ],
+            "properties": {
+              "state": {
+                "const": "present"
+              },
+              "value": {}
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "description": "Runner-resolved anchor identity keyed by the exact authored TimeRef text.",
+      "additionalProperties": {
+        "$ref": "#/$defs/anchorIdentity"
+      }
+    },
+    "created": {
+      "type": "array",
+      "description": "Scoped IDs allocated by the runner for this call.",
+      "items": {
+        "$ref": "#/$defs/scopedId"
+      }
+    },
+    "authorship": {
+      "type": "object",
+      "description": "Per-write-path authorship classification; it carries no actor or authentication claim.",
+      "additionalProperties": {
+        "enum": [
+          "direct",
+          "consequence"
+        ]
+      }
+    },
     "version": {
       "type": [
         "string",
@@ -37,9 +114,9 @@
     },
     "resolved": {
       "type": "array",
-      "description": "Runner-populated stable string identities. The admitted producer uses local identities; globally scoped ScopedId mapping remains unresolved and is not imposed here.",
+      "description": "Runner-populated IDs of the selected targets in the current ScopedId vocabulary.",
       "items": {
-        "type": "string"
+        "$ref": "#/$defs/scopedId"
       },
       "default": []
     }

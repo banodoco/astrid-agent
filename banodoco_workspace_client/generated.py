@@ -66,12 +66,152 @@ class RuntimeAcceptance(Protocol):
     def head(self, project_id: str, timeline_id: str) -> CommitHead: ...
     def revisions(self, project_id: str, timeline_id: str, options: CommitRevisionQuery) -> list[CommitRevisionSummary]: ...
     def evidence(self, digest: str) -> CommitEvidence: ...
-OPCALL_SCHEMA = {'$schema': 'https://json-schema.org/draft/2020-12/schema', '$id': 'https://astrid.local/schemas/change-contract/opcall.schema.json', 'title': 'OpCall', 'description': 'Candidate single EditCommand envelope (SDK executable name: EditCommand). D RUNNER emits canonical OpCalls in Plan.calls and journal calls. Handler ids remain open. This increment is not a schema freeze.', 'type': 'object', 'required': ['op', 'select', 'args'], 'additionalProperties': False, 'properties': {'op': {'type': 'string', 'description': 'Qualified operation id, e.g. timeline.opacity or myteam.stagger.', 'pattern': '^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$'}, 'select': {'type': ['string', 'null'], 'description': 'Authoring selector; executed calls use the canonical stable selector resolved by the runner. null for timeline-level operations.'}, 'args': {'type': 'object', 'description': 'Opaque finite JSON operation arguments in authoring units. Omitted keys, JSON null, explicit clip.clear keys, and ordinary objects (including {$absent:true} or {op:clear}) remain distinct. Only the selected handler interprets these values.', 'additionalProperties': True}, 'version': {'type': ['string', 'null'], 'description': 'The tool version when it ran (filled by the runner).'}, 'resolved': {'type': 'array', 'description': 'Runner-populated stable string identities. The admitted producer uses local identities; globally scoped ScopedId mapping remains unresolved and is not imposed here.', 'items': {'type': 'string'}, 'default': []}}}
+OPCALL_SCHEMA = {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+ '$id': 'https://astrid.local/schemas/change-contract/opcall.schema.json',
+ 'title': 'OpCall',
+ 'description': 'Candidate single EditCommand envelope (SDK executable name: EditCommand). D RUNNER emits '
+                'canonical OpCalls in Plan.calls and journal calls. Handler ids remain open. This increment '
+                'is not a schema freeze.',
+ 'type': 'object',
+ 'required': ['op', 'select', 'args'],
+ 'additionalProperties': False,
+ '$defs': {'scopedId': {'type': 'string',
+                        'description': 'Current ScopedId vocabulary: parent, shot, or occurrence clip/track '
+                                       'ids, plus cut ids.',
+                        'pattern': '^(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track):[^/]+|cut:[^/:]+)$'},
+           'anchorIdentity': {'description': 'Current resolved anchor identities, including scoped entity '
+                                             'ids and the documented word, beat, and cut anchors.',
+                              'oneOf': [{'$ref': '#/$defs/scopedId'},
+                                        {'type': 'string',
+                                         'pattern': '^(?:word:[^:]+:[0-9]+|beat:[0-9]+|cut:[^/:]+:(?:start|end))$'}]}},
+ 'properties': {'op': {'type': 'string',
+                       'description': 'Qualified operation id, e.g. timeline.opacity or myteam.stagger.',
+                       'pattern': '^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$'},
+                'select': {'type': ['string', 'null'],
+                           'description': 'Authoring selector; executed calls use the canonical stable '
+                                          'selector resolved by the runner. null for timeline-level '
+                                          'operations.'},
+                'args': {'type': 'object',
+                         'description': 'Opaque finite JSON operation arguments in authoring units. Omitted '
+                                        'keys, JSON null, explicit clip.clear keys, and ordinary objects '
+                                        '(including {$absent:true} or {op:clear}) remain distinct. Only the '
+                                        'selected handler interprets these values.',
+                         'additionalProperties': True},
+                'expect': {'type': 'object',
+                           'description': 'Optional prior values keyed by direct-write path. Absence and '
+                                          'present JSON values are tagged separately; command-specific '
+                                          'requirements remain producer/consumer rules.',
+                           'additionalProperties': {'oneOf': [{'type': 'object',
+                                                               'required': ['state'],
+                                                               'properties': {'state': {'const': 'absent'}},
+                                                               'additionalProperties': False},
+                                                              {'type': 'object',
+                                                               'required': ['state', 'value'],
+                                                               'properties': {'state': {'const': 'present'},
+                                                                              'value': {}},
+                                                               'additionalProperties': False}]}},
+                'bindings': {'type': 'object',
+                             'description': 'Runner-resolved anchor identity keyed by the exact authored '
+                                            'TimeRef text.',
+                             'additionalProperties': {'$ref': '#/$defs/anchorIdentity'}},
+                'created': {'type': 'array',
+                            'description': 'Scoped IDs allocated by the runner for this call.',
+                            'items': {'$ref': '#/$defs/scopedId'}},
+                'authorship': {'type': 'object',
+                               'description': 'Per-write-path authorship classification; it carries no actor '
+                                              'or authentication claim.',
+                               'additionalProperties': {'enum': ['direct', 'consequence']}},
+                'version': {'type': ['string', 'null'],
+                            'description': 'The tool version when it ran (filled by the runner).'},
+                'resolved': {'type': 'array',
+                             'description': 'Runner-populated IDs of the selected targets in the current '
+                                            'ScopedId vocabulary.',
+                             'items': {'$ref': '#/$defs/scopedId'},
+                             'default': []}}}
+
+def _matches_opcall_schema(value: Any, schema: Mapping[str, Any], root: Mapping[str, Any]) -> bool:
+    """Evaluate the JSON Schema keywords used by the checked-in OpCall schema."""
+    import re
+
+    reference = schema.get("$ref")
+    if reference is not None:
+        prefix = "#/$defs/"
+        if not isinstance(reference, str) or not reference.startswith(prefix):
+            return False
+        definition = reference[len(prefix):]
+        return definition in root.get("$defs", {}) and _matches_opcall_schema(
+            value, root["$defs"][definition], root
+        )
+
+    kind = schema.get("type")
+    kinds = kind if isinstance(kind, list) else [kind] if kind is not None else []
+    def is_integer(item):
+        return (
+            isinstance(item, int) and not isinstance(item, bool)
+            or isinstance(item, float) and not isinstance(item, bool) and item.is_integer()
+        )
+
+    type_checks = {
+        "string": lambda item: isinstance(item, str),
+        "null": lambda item: item is None,
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "boolean": lambda item: isinstance(item, bool),
+        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+        "integer": is_integer,
+    }
+    if kinds and not any(type_checks.get(name, lambda _: False)(value) for name in kinds):
+        return False
+    if "const" in schema and value != schema["const"]:
+        return False
+    if "enum" in schema and value not in schema["enum"]:
+        return False
+    if "pattern" in schema:
+        if not isinstance(value, str) or re.search(schema["pattern"], value) is None:
+            return False
+
+    if "oneOf" in schema:
+        if sum(_matches_opcall_schema(value, item, root) for item in schema["oneOf"]) != 1:
+            return False
+    if "anyOf" in schema and not any(
+        _matches_opcall_schema(value, item, root) for item in schema["anyOf"]
+    ):
+        return False
+    if "allOf" in schema and not all(
+        _matches_opcall_schema(value, item, root) for item in schema["allOf"]
+    ):
+        return False
+
+    if isinstance(value, dict):
+        if not set(schema.get("required", ())) <= set(value):
+            return False
+        properties = schema.get("properties", {})
+        for key, item in value.items():
+            if key in properties:
+                if not _matches_opcall_schema(item, properties[key], root):
+                    return False
+            elif schema.get("additionalProperties") is False:
+                return False
+            elif isinstance(schema.get("additionalProperties"), dict):
+                if not _matches_opcall_schema(item, schema["additionalProperties"], root):
+                    return False
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict) and any(
+            not _matches_opcall_schema(item, items, root) for item in value
+        ):
+            return False
+        if schema.get("uniqueItems"):
+            for index, item in enumerate(value):
+                if any(item == other for other in value[index + 1:]):
+                    return False
+    return True
+
 
 def validate_edit_command(value: Any) -> Mapping[str, Any]:
     """Validate only the OpCall envelope; return the exact unmodified value."""
     import math
-    import re
+
     def finite_json(item):
         if item is None or isinstance(item, (str, bool, int)):
             return True
@@ -82,6 +222,7 @@ def validate_edit_command(value: Any) -> Mapping[str, Any]:
         if isinstance(item, dict):
             return all(isinstance(k, str) and finite_json(v) for k, v in item.items())
         return False
+
     if not isinstance(value, dict):
         raise ValueError("OpCall must be an object")
     fields = OPCALL_SCHEMA["properties"]
@@ -93,17 +234,12 @@ def validate_edit_command(value: Any) -> Mapping[str, Any]:
         valid_json = False
     if not valid_json:
         raise ValueError("OpCall requires finite JSON values")
-    types = {"string": lambda v: isinstance(v, str), "null": lambda v: v is None,
-             "object": lambda v: isinstance(v, dict), "array": lambda v: isinstance(v, list)}
-    for key, item in value.items():
-        field = fields[key]
-        kinds = field["type"] if isinstance(field["type"], list) else [field["type"]]
-        if not any(types[kind](item) for kind in kinds):
-            raise ValueError("OpCall invalid " + key)
-        if "pattern" in field and re.search(field["pattern"], item) is None:
-            raise ValueError("OpCall invalid " + key)
-        if "items" in field and any(not types[field["items"]["type"]](v) for v in item):
-            raise ValueError("OpCall invalid " + key)
+    try:
+        valid_schema = _matches_opcall_schema(value, OPCALL_SCHEMA, OPCALL_SCHEMA)
+    except RecursionError:
+        valid_schema = False
+    if not valid_schema:
+        raise ValueError("OpCall invalid schema")
     return value
 
 

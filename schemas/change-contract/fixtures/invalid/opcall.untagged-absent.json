@@ -1,0 +1,15 @@
+{
+  "$provenance": "invalid on purpose: an untagged $absent object is opaque user data, not an absence marker",
+  "instance": {
+    "op": "timeline.set",
+    "select": "c08.app",
+    "args": {
+      "intent.on": null
+    },
+    "expect": {
+      "intent.on": {
+        "$absent": true
+      }
+    }
+  }
+}

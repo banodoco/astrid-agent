@@ -8,8 +8,8 @@
     },
     "version": "1.0.0",
     "resolved": [
-      "c12.label-1",
-      "c12.label-2"
+      "parent/clip:c12-label-1",
+      "parent/clip:c12-label-2"
     ]
   }
 }
