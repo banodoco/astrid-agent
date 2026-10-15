@@ -6399,6 +6399,10 @@ class GenericPackHost:
                     "estimated_scratch_bytes": record.estimated_scratch_bytes,
                     "estimated_output_bytes": record.estimated_output_bytes,
                     "unavailable_reason": unavailable_reason,
+                    # Forward only the declaration bound into this definition
+                    # digest; legacy executors remain summary-only.
+                    **({"action_declaration": record.definition.metadata["action_declaration"]}
+                       if "action_declaration" in record.definition.metadata else {}),
                 }
             )
         all_keys = sorted({key for record in self.capabilities.values() for key in record.resource_keys})

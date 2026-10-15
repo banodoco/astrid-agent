@@ -66,6 +66,13 @@ def _stringify_declared_input(name: str, value: Any) -> str:
     return _stringify(value)
 
 
+def _json_operand(name: str, value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise BindingError(f"input {name!r} must be JSON-serializable") from exc
+
+
 def _is_truthy_flag(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -165,14 +172,17 @@ def _expand_one_input_arg(
         if bool(_field(mapping, "optional", False)):
             return []
         raise BindingError(f"missing mapped input {name!r}")
-    items = _input_items(value)
-    if len(items) > 1 and not bool(_field(mapping, "repeatable", False)):
+    port_type = _port_type(port_by_name.get(name))
+    repeatable = bool(_field(mapping, "repeatable", False))
+    # A structured JSON array is one value unless the mapping explicitly
+    # declares repeated operands. In particular, [] must reach validation.
+    items = (value,) if port_type == "json" and not repeatable else _input_items(value)
+    if len(items) > 1 and not repeatable:
         raise BindingError(f"input {name!r} is not repeatable")
 
     flag = _field(mapping, "flag")
     is_boolean = _port_type(port_by_name.get(name)) in {"boolean", "bool"}
     expanded: list[str] = []
-    port_type = _port_type(port_by_name.get(name))
     for item in items:
         if not _has_value(item):
             continue
@@ -188,10 +198,7 @@ def _expand_one_input_arg(
         # be parsed by the child executor, silently dropping verified source
         # previews.  Keep the normal string behavior for every other port.
         if port_type == "json":
-            try:
-                expanded.append(json.dumps(item, sort_keys=True, separators=(",", ":")))
-            except (TypeError, ValueError) as exc:
-                raise BindingError(f"input {name!r} must be JSON-serializable") from exc
+            expanded.append(_json_operand(name, item))
         else:
             expanded.append(_stringify_declared_input(name, item))
     return expanded
@@ -307,10 +314,12 @@ def expand_command(
                 auto_forwarded.add(name)
                 continue
             wrote_value = False
-            for item in _input_items(value):
+            is_json = _port_type(port) == "json"
+            for item in ((value,) if is_json else _input_items(value)):
                 if not _has_value(item):
                     continue
-                argv.extend((_input_flag(name), _stringify_declared_input(name, item)))
+                operand = _json_operand(name, item) if is_json else _stringify_declared_input(name, item)
+                argv.extend((_input_flag(name), operand))
                 wrote_value = True
             if wrote_value:
                 auto_forwarded.add(name)

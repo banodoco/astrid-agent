@@ -81,6 +81,48 @@ def test_json_input_args_are_encoded_as_json() -> None:
     _assert_flag_value(result.argv, "--objects", '{"sha256:abc":"/tmp/managed-object"}')
 
 
+@pytest.mark.parametrize("value", [[], [{"enabled": True}], [1, {"nested": [False, None]}], {}])
+@pytest.mark.parametrize("auto_forward", [False, True])
+def test_json_values_cross_as_one_operand(value, auto_forward) -> None:
+    command = CommandSpec(
+        argv=("run",),
+        input_args=() if auto_forward else ({"input": "data", "flag": "--data"},),
+    )
+    ports = (Port("data", type="json"),)
+    result = expand_command(command, ports, {"data": value}, {})
+    assert result.argv[:2] == ("run", "--data")
+    assert len(result.argv) == 3
+    assert json.loads(result.argv[2]) == value
+    assert result.auto_forwarded_inputs == (frozenset({"data"}) if auto_forward else frozenset())
+    assert_provided_inputs_bound(result, ports, {"data": value}, {})
+
+
+@pytest.mark.parametrize("value", [{"bad": object()}, {"bad": float("nan")}, {"bad": {1, 2}}])
+@pytest.mark.parametrize("auto_forward", [False, True])
+def test_json_operands_reject_non_json_values(value, auto_forward) -> None:
+    command = CommandSpec(
+        argv=("run",),
+        input_args=() if auto_forward else ({"input": "data", "flag": "--data"},),
+    )
+    with pytest.raises(BindingError, match="input 'data' must be JSON-serializable"):
+        expand_command(command, (Port("data", type="json"),), {"data": value}, {})
+
+
+@pytest.mark.parametrize("port_type, values, expected", [
+    ("string", ["first with spaces", "second"], ("first with spaces", "second")),
+    ("json", [{"a": 1}, [2, 3]], ('{"a":1}', '[2,3]')),
+])
+def test_explicit_repeatable_mapping_keeps_multiple_operands(port_type, values, expected) -> None:
+    mapping = {"input": "data", "flag": "--data", "repeatable": True}
+    ports = (Port("data", type=port_type),)
+    result = expand_command(CommandSpec(argv=("run",), input_args=(mapping,)), ports, {"data": values}, {})
+    assert result.argv == ("run", "--data", expected[0], "--data", expected[1])
+    if port_type != "json":
+        with pytest.raises(BindingError, match="not repeatable"):
+            expand_command(CommandSpec(argv=("run",), input_args=({**mapping, "repeatable": False},)),
+                           ports, {"data": values}, {})
+
+
 def test_wan_compiler_preserves_generation_controls() -> None:
     settings = compile_from_inputs(
         {
