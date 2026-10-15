@@ -109,7 +109,7 @@ def _data_faces(tracks: Sequence[Any], t: float) -> list[model.Box]:
         if track.name == "face" and track.kind == "boxes":
             for rect in track.boxes_at(t):
                 stub = model.Element(track.clip_id, "face-track", "", t, t, {}, {})
-                found.append(model.Box(stub, "face", rect, "tracked face"))
+                found.append(model.Box(stub, "face", rect, "tracked face", estimated=False))
     return found
 
 
@@ -129,7 +129,10 @@ def composition(
     face_fraction = _p(params, "face_fraction")
     found: dict[tuple[str, str, str], Finding] = {}
 
-    def add(code: str, key: str, t: float, message: str, severity: str = "warn", fix: dict | None = None) -> None:
+    def add(code: str, key: str, t: float, message: str, severity: str = "warn", fix: dict | None = None,
+            *, estimated: bool = False) -> None:
+        if estimated:
+            message += " (estimated geometry)"
         found.setdefault((code, key, message.split(" (")[0]), Finding(code, index, t, message, severity, fix, "composition"))
 
     for t in _sample_times(cut, elements, fps):
@@ -149,12 +152,14 @@ def composition(
                     add("FACE", box.element.id, t,
                         f"{box.label} covers {share:.0%} of the {whose} "
                         f"(face {x0:.0f},{max(0, y0):.0f}–{x1:.0f},{min(1080, y1):.0f}; {box.kind} "
-                        f"{box.rect[0]:.0f},{box.rect[1]:.0f}–{box.rect[2]:.0f},{box.rect[3]:.0f}){hint}", fix=fix)
+                        f"{box.rect[0]:.0f},{box.rect[1]:.0f}–{box.rect[2]:.0f},{box.rect[3]:.0f}){hint}", fix=fix,
+                        estimated=box.estimated or face.estimated)
             if box.kind in ("text", "card"):
                 off = max(-box.rect[0], -box.rect[1], box.rect[2] - model.CANVAS[0], box.rect[3] - model.CANVAS[1])
                 if off > 2:
                     add("FRAME", box.element.id, t, f"{box.label} is cut off: {off:.0f} px past the frame edge "
-                        f"(box {box.rect[0]:.0f},{box.rect[1]:.0f}–{box.rect[2]:.0f},{box.rect[3]:.0f})")
+                        f"(box {box.rect[0]:.0f},{box.rect[1]:.0f}–{box.rect[2]:.0f},{box.rect[3]:.0f})",
+                        estimated=box.estimated)
                 out = {
                     "left": title[0] - box.rect[0], "top": title[1] - box.rect[1],
                     "right": box.rect[2] - title[2], "bottom": box.rect[3] - title[3],
@@ -163,10 +168,12 @@ def composition(
                 if out[worst] > 2:
                     hint, fix = _fit_hint(box, worst, out[worst])
                     add("SAFE", box.element.id, t, f"{box.label} is {out[worst]:.0f} px outside title-safe ({worst})"
-                        f"{hint}", fix=fix)
+                        f"{hint}", fix=fix, estimated=box.estimated)
             if box.text_px is not None and box.text_px < min_text_px:
                 what = "body text" if box.kind == "card" else "text"
-                add("SMALL", box.element.id, t, f"{box.label} {what} {box.text_px:.0f} px < {min_text_px:.0f} px at 1080p")
+                add("SMALL", box.element.id, t,
+                    f"{box.label} {what} {box.text_px:.0f} px < {min_text_px:.0f} px at 1080p",
+                    estimated=box.estimated)
             if box.kind == "sprite":
                 over = {
                     "left": -box.rect[0], "top": -box.rect[1],
@@ -175,7 +182,7 @@ def composition(
                 worst = max(over, key=lambda side: over[side])
                 if over[worst] > 6:
                     add("EDGE", box.element.id, t, f"{box.label} runs {over[worst]:.0f} px past the {worst} edge "
-                        "(a crop; fine if intended)", "info")
+                        "(a crop; fine if intended)", "info", estimated=box.estimated)
         opaque = [b for b in boxes if b.kind in ("card", "panel") and b.rect != (0, 0, model.CANVAS[0], model.CANVAS[1])]
         for upper in opaque:
             for lower in boxes:
@@ -185,14 +192,16 @@ def composition(
                     continue
                 inside = model.intersection(upper.rect, lower.rect) / max(1.0, model.area(lower.rect))
                 if inside >= 0.98:
-                    add("COVER", lower.element.id + upper.element.id, t, f"{upper.label} fully covers {lower.label}")
+                    add("COVER", lower.element.id + upper.element.id, t, f"{upper.label} fully covers {lower.label}",
+                        estimated=upper.estimated or lower.estimated)
         for a in boxes:
             for b in boxes:
                 if a is b or a.kind in ("plate", "face") or b.kind in ("plate", "face") or a.element.id >= b.element.id:
                     continue
                 inter = model.intersection(a.rect, b.rect)
                 if inter >= 0.95 * model.area(a.rect) and inter >= 0.95 * model.area(b.rect) and model.area(a.rect) > 0:
-                    add("COVER", a.element.id + b.element.id, t, f"{a.label} and {b.label} occupy the same box")
+                    add("COVER", a.element.id + b.element.id, t, f"{a.label} and {b.label} occupy the same box",
+                        estimated=a.estimated or b.estimated)
     return sorted(found.values(), key=lambda f: (f.t, f.code))
 
 

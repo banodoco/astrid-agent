@@ -230,6 +230,47 @@ def _run_with_client(*argv):
     return parsed.handler(parsed)
 
 
+def test_lint_cli_marks_estimated_geometry_only(capsys):
+    """The disposable CLI report labels estimated boxes but leaves timing findings alone."""
+    from types import SimpleNamespace
+
+    fixture = bundle()
+    shot = copy.deepcopy(fixture["shots"]["A"])
+    shot["internal_timeline"]["tracks"] = [
+        {"id": "type", "kind": "visual"}, {"id": "plate", "kind": "visual"},
+    ]
+    shot["internal_timeline"]["clips"] = [
+        {"id": "plate", "clipType": "am-snap-plate", "track": "plate", "at": 0.0, "hold": 0.25,
+         "params": {}},
+        {"id": "type", "clipType": "am-type", "track": "type", "at": 0.0, "hold": 0.25,
+         "params": {"text": "TWO WORDS", "size": 20, "x": 1760, "y": 900, "width": 400}},
+    ]
+    fixture["shots"] = {"A": shot}
+    fixture["placements"] = [
+        {"shot_id": "A", "occurrence_id": "occ-A", "placement": {"start_ms": 0}, "duration_ms": 250},
+    ]
+
+    class Timelines:
+        def open_bundle(self, project, ref, revision_id=None):
+            return _Opened({"bundle": copy.deepcopy(fixture), "timeline_id": "t", "revision_id": "fixture"})
+
+    parsed = _parse("lint", "t", "--project", "P", "--published", "--no-rules", "--json")
+    parsed.client = SimpleNamespace(timelines=Timelines())
+    assert parsed.handler(parsed) == 0
+
+    findings = json.loads(capsys.readouterr().out)["data"]["findings"]
+    assert {finding["code"] for finding in findings} == {"SAFE", "SMALL", "SHORT"}
+    safe = next(finding for finding in findings if finding["code"] == "SAFE")
+    assert "60 px outside title-safe" in safe["message"]
+    assert "estimated geometry" in safe["message"]
+    small = next(finding for finding in findings if finding["code"] == "SMALL")
+    assert "20 px < 32 px at 1080p" in small["message"]
+    assert "estimated geometry" in small["message"]
+    short = next(finding for finding in findings if finding["code"] == "SHORT")
+    assert "0.25 s (< 0.5 s)" in short["message"]
+    assert "estimated" not in short["message"]
+
+
 @pytest.fixture
 def draft_with_edit(tmp_path, monkeypatch):
     monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))

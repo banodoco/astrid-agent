@@ -646,6 +646,7 @@ class Box:
     label: str
     text_px: float | None = None
     notes: list[str] = field(default_factory=list)
+    estimated: bool = True
 
 
 def _wrap_lines(text: str, size: float, width: float, char_em: float) -> int:
@@ -682,7 +683,7 @@ def _internal_zoom(element: "Element") -> float:
 
 
 def boxes_at(element: Element, t: float, fps: float) -> list[Box]:
-    """Declared on-screen bounds of one element at ``t`` (screen px, 1920x1080)."""
+    """Estimated on-screen bounds of one element at ``t`` (screen px, 1920x1080)."""
     if element.audio or not element.start - 1e-6 <= t < element.end - 1e-6:
         return []
     params = element.params
