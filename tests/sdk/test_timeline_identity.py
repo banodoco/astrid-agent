@@ -190,7 +190,9 @@ def test_fixed_seed_full_transition_sequences_do_not_reissue_cut_ids(tl, seed):
             else:
                 base = tl.document()
                 branch = copy.deepcopy(base)
-                reserve_cut_id(branch, f'c{100 + rng.randrange(100)}')
+                # The merge branch must allocate above retained numeric reservations.
+                fresh_number = cut_reservations(base)['number'] + 1 + rng.randrange(100)
+                reserve_cut_id(branch, f'c{fresh_number}')
                 merged, conflicts = store.three_way(base, base, branch, whole=True)
                 assert not conflicts
                 tl.bundle = merged
