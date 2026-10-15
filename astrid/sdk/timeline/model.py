@@ -304,6 +304,15 @@ class Clip(_Suggest):
         """Accept an orphan where it is (a fixed time, no moment): it stops blocking publish. Params on a
         moment that no longer resolves keep their last value as a fixed one."""
         for clip in self._sequence_mates():
+            if (intent.orphan(clip.data) or "").startswith("ORPHAN:"):
+                # The spelling may resolve to a different surviving ordinal.
+                # Accepting the cached value must remove that lost binding.
+                span = self._tl._own_cut_span(clip)
+                offset = mo.offset_text(clip.start - span[0], self._tl.fps) if span else None
+                intent.set_on(clip.data, offset)
+                intent.set_until(clip.data, None)
+                intent.set_for(clip.data, clip.duration)
+                intent.set_sequence_fit(clip.data, None)
             intent.set_orphan(clip.data, None)
         on = intent.on(self.data)
         if on:
@@ -312,6 +321,9 @@ class Clip(_Suggest):
             except TimelineEditError:
                 intent.set_on(self.data, None)
         for path, expr in intent.formulas(self.data).items():
+            if isinstance(expr, Mapping) and expr.get("orphan"):
+                intent.set_formula(self.data, path, None)
+                continue
             if isinstance(expr, Mapping) and expr.get("moment"):
                 try:
                     self._tl._evaluate(self, expr, {}, self._tl.words(), self._tl.slots)
@@ -775,7 +787,12 @@ class Cut(_Suggest):
         ids = list(sequence.get("clip_ids") or [])
         if not ids:
             return [self.picture] if self.picture else []
-        return [self._tl.clip(i) for i in ids]
+        # These are stored identities, not user selectors (prefixes/ordinals).
+        by_id = {c.id: c for c in self._tl.clips(shot=self.shot_id)}
+        missing = [i for i in ids if i not in by_id]
+        if missing:
+            raise TimelineEditError(f"MISSING_SEQUENCE_STEP: {', '.join(missing)}")
+        return [by_id[i] for i in ids]
 
     def step(self, n: int) -> Clip:
         steps = self.steps
@@ -841,10 +858,13 @@ class StepSequence(_Suggest):
 
     def __init__(self, tl: "Checkout", seq_id: str):  # noqa: F821
         self._tl, self.id = tl, seq_id
+        self._member: tuple[str, str] | None = None  # selected handle identity, never an ordinal
 
     @property
     def steps(self) -> list[Clip]:
         steps = [c for c in self._tl.clips() if (intent.sequence(c.data) or ("",))[0] == self.id]
+        if self._member is not None and not any((c.shot_id, c.id) == self._member for c in steps):
+            raise TimelineEditError(f"MISSING_SEQUENCE_STEP: {self._member[1]}")
         return sorted(steps, key=lambda c: intent.sequence(c.data)[1])
 
     @property
@@ -889,9 +909,11 @@ class StepSequence(_Suggest):
         if until is not None:
             text = self._tl._moment_text(until)
             self._tl._moment_time(text, head)  # it must resolve
-            intent.set_until(head.data, text)
+            fit = intent.sequence_fit(head.data) or {}
+            intent.set_sequence_fit(head.data, {**fit, "land": text})
+            intent.set_until(head.data, None)
             intent.set_for(head.data, None)
-        self._tl.retime()
+        self._tl.resolve()
         return self
 
     def __repr__(self) -> str:
@@ -960,77 +982,127 @@ def music_keyword(fn):
 
 
 def _follow_occurrences(tl: "Checkout", segment: str, said_before: Sequence[Any]) -> None:  # noqa: F821
-    """After line ``segment`` gets new words, keep every word moment on the word it meant.
+    """Align the old/new take, then rewrite references to the matched spoken run.
 
-    ``"and" in m11 #1`` names an occurrence. A take that says the word once more before it
-    ("front-end and back-end features, and share") would silently move the moment onto the
-    new word. The line's old and new words are matched by a diff; a moment whose word is
-    still said gets the occurrence number that now names it. A word the take no longer says
-    keeps its moment, so the re-flow reports it as an orphan.
+    A deleted run is durably orphaned: retaining its spelling alone would let a
+    surviving (or later reintroduced) ordinal silently take over the binding.
     """
     said_after = tl._word_list()
 
-    def places(words: Sequence[Any]) -> dict[int, tuple[str, int]]:
-        count: dict[str, int] = {}
-        out = {}
+    def places(words):
+        count, out = {}, {}
         for w in words:
-            out[id(w)] = (w.segment, count.get(w.segment, 0))
+            out[w.id] = (w.segment, count.get(w.segment, 0))
             count[w.segment] = count.get(w.segment, 0) + 1
         return out
 
     old_places, new_places = places(said_before), places(said_after)
     old_line = [_norm(w.text) for w in said_before if w.segment == segment]
     new_line = [_norm(w.text) for w in said_after if w.segment == segment]
-    moved: dict[int, int] = {}
+    moved = {}
     for tag, i1, i2, j1, _j2 in difflib.SequenceMatcher(a=old_line, b=new_line, autojunk=False).get_opcodes():
         if tag == "equal":
             moved.update({i1 + k: j1 + k for k in range(i2 - i1)})
 
-    def follow(m: Any) -> Any:
+    def follow(m):
         if m.kind in ("beat", "downbeat") and m.base is not None:
             base = follow(m.base)
-            return m if base is m.base else _dc_replace(m, base=base)
+            return None if base is None else m if base is m.base else _dc_replace(m, base=base)
         if m.kind != "word":
             return m
         hits = mo.find_words(m, said_before)
         if not hits or (m.n is None and len(hits) > 1) or (m.n is not None and not 1 <= m.n <= len(hits)):
-            return m
-        seg, pos = old_places[id(hits[(m.n or 1) - 1][0])]
-        if seg == segment:
-            if pos not in moved:
-                return m
-            pos = moved[pos]
+            return m  # Existing ambiguity/malformed diagnostics stay strict.
+        run = hits[(m.n or 1) - 1]
+        target = []
+        for word in run:
+            seg, pos = old_places[word.id]
+            if seg == segment:
+                if pos not in moved:
+                    return None
+                pos = moved[pos]
+            target.append((seg, pos))
         now = mo.find_words(_dc_replace(m, n=None), said_after)
-        k = next((k for k, run in enumerate(now, 1) if new_places[id(run[0])] == (seg, pos)), None)
-        if k is None or (len(now) == 1 and m.n is None) or k == m.n:
+        k = next((k for k, run in enumerate(now, 1)
+                  if [new_places[w.id] for w in run] == target), None)
+        if k is None:
+            return None  # Every word of a phrase must still be contiguous.
+        if (len(now) == 1 and m.n is None) or k == m.n:
             return m
         return _dc_replace(m, n=k)
 
+    def follow_expr(expr):
+        if expr.get("orphan"):
+            return expr
+        if expr.get("moment"):
+            new = follow(mo.parse(expr["moment"]))
+            return None if new is None else {**expr, "moment": mo.format_moment(new)}
+        if expr.get("word"):
+            old = next((w for w in said_before if w.id == expr["word"]), None)
+            if old is None or (expr.get("text") and _norm(old.text) != _norm(expr["text"])):
+                return None
+            seg, pos = old_places[old.id]
+            if seg == segment:
+                if pos not in moved:
+                    return None
+                pos = moved[pos]
+            new = next((w for w in said_after if new_places[w.id] == (seg, pos)), None)
+            return None if new is None else {**expr, "word": new.id}
+        return expr
+
+    def note(clip, label, old, new):
+        tl.notes.append(f"{clip.address}{label}: {old} → {new} (the same spoken word in the new take)")
+
     for clip in tl.clips():
-        for read, write in ((intent.on, intent.set_on), (intent.until, intent.set_until)):
-            text = read(clip.data)
-            if not text:
-                continue
-            try:
-                m = mo.parse(text)
-            except mo.MomentError:
-                continue
-            new = follow(m)
-            if new is not m:
-                write(clip.data, mo.format_moment(new))
-                tl.notes.append(f"{clip.address}: {text} → {mo.format_moment(new)} (the same spoken word in the new take)")
+        if not intent.orphan(clip.data):
+            for read, write in ((intent.on, intent.set_on), (intent.until, intent.set_until)):
+                text = read(clip.data)
+                if not text:
+                    continue
+                try:
+                    new = follow(mo.parse(text))
+                except mo.MomentError:
+                    continue
+                if new is None:
+                    reason = f"ORPHAN: {text} lost its spoken word in the new take"
+                    for mate in clip._sequence_mates():
+                        intent.set_orphan(mate.data, reason)
+                    tl.notes.append(f"{clip.address}: {reason} (kept its last value)")
+                elif mo.format_moment(new) != text:
+                    write(clip.data, mo.format_moment(new))
+                    note(clip, "", text, mo.format_moment(new))
+            fit = intent.sequence_fit(clip.data)
+            if fit and fit.get("land") is not None:
+                land = fit["land"]
+                expr = {"moment": land} if isinstance(land, str) else land
+                try:
+                    new = follow_expr(expr)
+                except mo.MomentError:
+                    continue
+                if new is None:
+                    reason = f"ORPHAN: fit land {land} lost its spoken word in the new take"
+                    for mate in clip._sequence_mates():
+                        intent.set_orphan(mate.data, reason)
+                    tl.notes.append(f"{clip.address}: {reason} (kept its last value)")
+                else:
+                    value = new["moment"] if isinstance(land, str) else new
+                    if value != land:
+                        intent.set_sequence_fit(clip.data, {**fit, "land": value})
+                        note(clip, " fit land", land, value)
         for path, expr in intent.formulas(clip.data).items():
-            if not isinstance(expr, Mapping) or not expr.get("moment"):
+            if not isinstance(expr, Mapping) or expr.get("orphan"):
                 continue
             try:
-                m = mo.parse(expr["moment"])
+                new = follow_expr(expr)
             except mo.MomentError:
                 continue
-            new = follow(m)
-            if new is not m:
-                intent.set_formula(clip.data, path, {**expr, "moment": mo.format_moment(new)})
-                tl.notes.append(f"{clip.address}.{path.removeprefix('params.')}: {expr['moment']} → "
-                                f"{mo.format_moment(new)} (the same spoken word in the new take)")
+            if new is None:
+                reason = f"ORPHAN: {expr.get('moment') or expr.get('word')} lost its spoken word in the new take"
+                intent.set_formula(clip.data, path, {**expr, "orphan": reason})
+                tl.notes.append(f"{clip.address}.{path}: {reason} (kept its last value)")
+            elif new != expr:
+                intent.set_formula(clip.data, path, new)
+                note(clip, f".{path}", expr.get("moment") or expr.get("word"), new.get("moment") or new.get("word"))
 
 
 class Voice(_Suggest):

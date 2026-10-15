@@ -233,10 +233,15 @@ class _LookupMixin:
         if any((intent.sequence(c.data) or ("",))[0] == text for c in self.clips()):
             return StepSequence(self, text)
         clip = address if isinstance(address, Clip) else self.clip(text)
+        if isinstance(address, Clip) and not any(
+                c.id == address.id and c.shot_id == address.shot_id for c in self.clips()):
+            raise TimelineEditError(f"MISSING_SEQUENCE_STEP: {address.id}")
         tag = intent.sequence(clip.data)
         if tag is None:
             raise TimelineEditError(f"{clip.address} is not a step of a sequence")
-        return StepSequence(self, tag[0])
+        selected = StepSequence(self, tag[0])
+        selected._member = (clip.shot_id, clip.id)
+        return selected
 
     def find(self, query: str | None = None, *, text: str | None = None, asset: str | None = None) -> list[Any]:
         """What you hear or see → addresses and times (``timelines find``): ``tl.find("the conclusion")``."""

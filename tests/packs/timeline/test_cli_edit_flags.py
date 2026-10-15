@@ -448,3 +448,32 @@ def test_fit_sequence_without_a_sequence_is_a_clean_error(local, capsys):
 def test_why_and_hold_need_a_cut_not_a_clip(local, capsys):
     assert _run("edit", "--file", str(local), "--clip", "R", "--why", "x") == 2
     assert "--cut" in capsys.readouterr().err
+
+
+def test_fit_sequence_cli_and_sdk_share_land_and_report_real_changes(local, capsys):
+    from astrid.sdk import timeline_intent as intent
+
+    tl = Checkout.load(local)
+    head = tl.clip('a-plate')
+    head.data['hold'] = 2.0
+    intent.set_sequence(head.data, 'seq', 0)
+    tail = copy.deepcopy(head.data)
+    tail.update(id='authored-tail', at=2.0, hold=2.0)
+    intent.set_sequence(tail, 'seq', 1)
+    tl.bundle['shots']['A']['internal_timeline']['clips'].append(tail)
+    tl.save(local)
+    assert _run('edit', '--file', str(local), '--clip', 'a-plate', '--fit-sequence', '--until', '"viral"') == 0
+    output = capsys.readouterr().out
+    assert 'no change' not in output.lower()
+    tl = Checkout.load(local)
+    assert intent.sequence_fit(tl.sequence('seq').steps[0].data)['land'] == '"viral"'
+    assert intent.until(tl.sequence('seq').steps[0].data) is None
+    before = copy.deepcopy(tl.bundle)
+    tl.sequence('seq').fit(until='"viral"')
+    assert tl.bundle == before
+    assert _run('edit', '--file', str(local), '--clip', 'a-plate', '--fit-sequence', '--until', '"viral"') == 3
+    assert 'no change' in capsys.readouterr().out.lower()
+    assert _run('edit', '--file', str(local), '--clip', 'a-plate', '--fit-sequence', '--until', 'after "viral"') == 0
+    assert 'no change' not in capsys.readouterr().out.lower()
+    tl = Checkout.load(local)
+    assert intent.sequence_fit(tl.sequence('seq').steps[0].data)['land'] == 'after "viral"'

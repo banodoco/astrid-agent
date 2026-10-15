@@ -156,6 +156,8 @@ def _validate_dependencies(tl):
         for path, expr in intent.formulas(clip.data).items():
             if path not in ('at', 'hold', 'from', 'to', 'speed') or not isinstance(expr, Mapping):
                 continue  # element params do not write clip timing
+            if expr.get('orphan'):
+                continue  # a lost spoken identity keeps its cache, not a new edge
             target = start if path == 'at' else end
             if 'moment' in expr:
                 link(target, *references(expr['moment'], clip))

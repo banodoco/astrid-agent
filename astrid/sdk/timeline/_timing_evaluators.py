@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 from contextlib import contextmanager
@@ -343,6 +344,9 @@ class _TimingEvaluators:
                   for sid, steps in sequences.items()}  # before anything moves: the unit's shape
         for g in groups:  # 1. cut starts
             pic = g["picture"]
+            if pic and intent.orphan(pic.data):
+                orphan_cuts.add(g["id"])
+                continue
             on = intent.on(pic.data) if pic else None
             if not on:
                 continue
@@ -367,6 +371,9 @@ class _TimingEvaluators:
                 continue
             lo, hi = cut_span[cid]
             until = intent.until(steps[0].data)
+            fit = intent.sequence_fit(steps[0].data) or {}
+            if fit and not any(k in fit for k in ("lead", "race", "cycle", "then")):
+                until = fit.get("land") or until
             if until:
                 hi = self._resolve_note(until, steps[0], start=lo)
             if hi is None:
@@ -629,6 +636,9 @@ class _TimingEvaluators:
                            or "there is no downbeat" in str(exc) else "its word is gone")
                     out.append(f"{clip.address:<16} {field} {text}: {exc} ({why}: re-home it or remove the clip)")
             for path, expr in intent.formulas(clip.data).items():
+                if isinstance(expr, Mapping) and expr.get("orphan"):
+                    out.append(f"{clip.address:<16} {path}: {expr['orphan']}")
+                    continue
                 if isinstance(expr, Mapping) and expr.get("moment"):
                     try:
                         mo.resolve(mo.parse(expr["moment"]), _MomentContext(self, clip))
@@ -695,7 +705,7 @@ class _TimingEvaluators:
         groups: dict[str, list[Clip]] = {}
         for clip in self.clips():
             tag = intent.sequence(clip.data)
-            if tag:
+            if tag and not intent.orphan(clip.data):
                 groups.setdefault(tag[0], []).append(clip)
         changes = []
         for seq_id, steps in groups.items():
@@ -717,6 +727,15 @@ class _TimingEvaluators:
                 land = self._as_word(str((spec or {}).get("word") or "")) or self.word(str((spec or {}).get("text")))
                 land_t, land_name = land.start, repr(land.text)
             life = int(round((land_t - start) * self.fps)) + int(fit.get("offset_frames") or 0)
+            if not any(k in fit for k in ("lead", "race", "cycle", "then")):
+                if life < len(steps):
+                    self.notes.append(f"{steps[0].address}: fit until {spec}: not enough frames; the sequence is left as it is")
+                    continue
+                before = [(c.start, c.end) for c in steps]
+                self._relay_steps([c.data for c in steps], start - self._shot_start(steps[0].shot_id), life / self.fps)
+                if before != [(c.start, c.end) for c in steps]:
+                    changes.append(f"sequence {seq_id}: {len(steps)} steps, lands on {land_name} at frame {life}")
+                continue
             cycle = list(fit.get("cycle") or [steps[0].asset])
             lead = [int(n) for n in fit.get("lead") or []]
             plan = [(cycle[i % len(cycle)], n) for i, n in enumerate(lead)]
@@ -738,18 +757,33 @@ class _TimingEvaluators:
             sid = steps[0].shot_id
             rows = self._internal(sid)["clips"]
             at = _num(template.get("at"))
+            # Lead members are rooted at the start; race members are rooted at
+            # the landing, counted backwards. The terminal member stays the
+            # terminal member when the number of racing outputs changes.
+            # Existing dictionaries/IDs carry other hands' edits; new outputs
+            # get fresh IDs, never an ordinal that used to name a removed step.
+            def roles(count):
+                return ([('lead', i) for i in range(min(len(lead), count - 1))]
+                        + [('race', i) for i in range(count - len(lead) - 2, -1, -1)]
+                        + [('land', 0)])
+
+            members = dict(zip(roles(len(steps)), steps))
+            basis = json.dumps([seq_id, [c.id for c in steps], plan], separators=(",", ":"))
+
             for c in steps:
                 c.remove()
             frame = 0
-            for i, (asset, n) in enumerate(plan):
-                new = copy.deepcopy(template)
-                new["id"] = f"{seq_id}-{i:02d}"
+            for i, ((asset, n), role) in enumerate(zip(plan, roles(len(plan)))):
+                member = members.get(role)
+                new = member.data if member is not None else copy.deepcopy(template)
+                if member is None:
+                    suffix = hashlib.sha256(f"{basis}:{role}".encode()).hexdigest()[:20]
+                    new["id"] = f"{seq_id}-{suffix}"
                 new["asset"] = self._register_asset(sid, asset)
                 new["at"] = _r(at + frame / self.fps)
                 new.pop("from", None), new.pop("to", None)
                 new["hold"] = _r(n / self.fps)
-                set_fit = intent.sequence_fit(new) if i == 0 else None
-                intent.set_sequence_fit(new, set_fit)
+                intent.set_sequence_fit(new, fit if i == 0 else None)
                 intent.set_sequence(new, seq_id, i)
                 rows.append(new)
                 frame += n
@@ -782,6 +816,9 @@ class _TimingEvaluators:
             if not formulas:
                 continue
             for path, expr in formulas.items():
+                if isinstance(expr, Mapping) and expr.get("orphan"):
+                    self.notes.append(f"{clip.address}.{path}: {expr['orphan']} (kept its last value)")
+                    continue
                 try:
                     value = self._evaluate(clip, expr, by_id, words, slots, path)
                 except (TimelineEditError, mo.MomentError, ValueError, KeyError, TypeError) as exc:
@@ -820,6 +857,8 @@ class _TimingEvaluators:
                   path: str = "") -> Any:
         if not isinstance(expr, Mapping):
             raise TimelineEditError(f"a formula must be an object, got {expr!r}")
+        if expr.get("orphan"):
+            raise TimelineEditError(str(expr["orphan"]))
         if "moment" in expr:  # a moment in the grammar: "lifetime" -50f, beat 2 after "Astrid", c26 …
             try:
                 t = mo.resolve(mo.parse(expr["moment"]), _MomentContext(self, clip))

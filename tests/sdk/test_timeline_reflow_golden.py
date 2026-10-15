@@ -203,7 +203,10 @@ def test_fit_sequence_restores_a_shape_and_fits_a_span_as_one_unit(monkeypatch):
     seq = tl.sequence("c3.step-02")
     seq.fit(on='"back"', until="end", shape_from="round0")
     steps = _steps(tl)
-    assert intent.on(steps[0].data) == '"back"' and intent.until(steps[0].data) == "end"
+    # TIMING-FIXES: fit() uses the compiler/check's one canonical land store.
+    assert intent.on(steps[0].data) == '"back"'
+    assert intent.sequence_fit(steps[0].data)["land"] == "end"
+    assert intent.until(steps[0].data) is None
     assert steps[0].start == pytest.approx(tl.word("back").start, abs=1 / FPS)
     for a, b in zip(steps, steps[1:]):
         assert b.start == pytest.approx(a.end, abs=1e-6)
