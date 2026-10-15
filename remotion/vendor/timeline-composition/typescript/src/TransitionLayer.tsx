@@ -5,14 +5,13 @@ import {queryDrawFrame, type DrawPlan} from './evaluation';
 // Wraps one clip's content inside its draw Sequence. Frames here are draw-local.
 // Extension frames (added by a transition) show the clip frozen at its boundary
 // frame; opacity applies the transition ramp.
-export const TransitionLayer = ({
+export const composeTransitionLayer = ({
   plan,
   children,
 }: {
   plan: DrawPlan;
   children: ReactNode;
-}): ReactElement => {
-  const frame = useCurrentFrame();
+}, frame: number): ReactElement => {
   const evaluated = queryDrawFrame(plan, frame);
   const extended = plan.drawDuration > plan.ownDuration;
   const body = extended
@@ -30,3 +29,6 @@ export const TransitionLayer = ({
     </AbsoluteFill>
   );
 };
+
+export const TransitionLayer = (props: {plan: DrawPlan; children: ReactNode}): ReactElement =>
+  composeTransitionLayer(props, useCurrentFrame());

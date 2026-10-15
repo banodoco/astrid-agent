@@ -1,24 +1,34 @@
 {
   "package": "@banodoco/timeline-composition",
   "package_version": "0.0.7",
-  "source_commit": "3b9640335b9b8c07b350c2e37eea328877b58912",
-  "source_tree": "28ec5263433998ad75053ca3a02ba33b3533a8a0",
-  "archive": "outputs/renderer-convergence/G-EVAL-planner-export-20261015/recovery-001/artifact/timeline-composition-eval-recovery-001-source-3b9640335b9b8c07b350c2e37eea328877b58912-tree-28ec5263433998ad75053ca3a02ba33b3533a8a0.tgz",
-  "archive_bytes": 23419,
-  "archive_sha256": "8f48e7d9cddf35621280395f2b8fb6878413a27588f11406bc58313c044221a6",
-  "admission_receipt": "projects/A-integration/receipts/A-G-EVAL-recovery-001-artifact-admission-20261015.md",
-  "admission_receipt_sha256": "a82afb1c532cf95d45c6a626353abe8ac470b56659a08b7e1c0c54dc679abd1c",
-  "artifact_identity": "outputs/renderer-convergence/G-EVAL-planner-export-20261015/recovery-001/artifact-identity.json",
-  "artifact_identity_sha256": "be83521ce2f30140c509fe701d37c2b107c630582821fc6b1cbd1b33951d69b9",
+  "source_commit": "df38db31a18ada18d3339959b930e7b6bbbf16ea",
+  "source_tree": "07f80d208f314d73bfea89f6d18579d4e6626387",
+  "source_parent": "9cf3fce5fa72cd02eca4a0ec65da864351ca5bbb",
+  "archive": "projects/A-integration/out/A-Composition-declared-transition-artifact-001/banodoco-timeline-composition-0.0.7.tgz",
+  "archive_bytes": 79831,
+  "archive_sha256": "24d9c149410e88b08c5c42f103721fbc5ca2542267c86ef150ed8f108383f2f3",
+  "archive_sha512_base64": "qqv8UzBRUXmTWrtppSkrWSea3zAro+0Y+VmDi+BV0WCp22Y/D+y5fjsCnY5naU8oBVUjVA6HUb/Y7VB2sttN5Q==",
+  "npm_integrity": "sha512-qqv8UzBRUXmTWrtppSkrWSea3zAro+0Y+VmDi+BV0WCp22Y/D+y5fjsCnY5naU8oBVUjVA6HUb/Y7VB2sttN5Q==",
+  "npm_shasum": "ae57bafeb1eb61f8f1d5478708c57d058c747464",
+  "producer_handback": "projects/A-integration/receipts/A-Composition-declared-transition-artifact-001-handback.md",
+  "producer_handback_sha256": "c63e2c5859131e847fd7f620cec9d9bf2834aa8ce51704e352f83703bcd0a7e5",
+  "archive_audit": "projects/A-integration/evidence/A-Composition-declared-transition-artifact-001/archive-audit.json",
+  "archive_audit_sha256": "c24ad1104fc102c37f13bb8246bd864285c01d2d71f4e817ef027efb287a3939",
+  "emitted_output_manifest": "projects/A-integration/evidence/A-Composition-declared-transition-artifact-001/emitted-output-manifest.json",
+  "emitted_output_manifest_sha256": "6ccfcd41f6bdea533f65267bdae5ad8acb2d160e5c3ad460c7cdd28e48fe7e97",
   "required_ref": "v0.0.7/e2ab21a7",
   "required_ref_authenticated": false,
-  "scope": "Run-local development source only. Package metadata 0.0.7 does not authenticate equivalence to v0.0.7/e2ab21a7; no release or renderer-equivalence claim.",
+  "scope": "A-owned run-local development source only. The package metadata does not authenticate equivalence to v0.0.7/e2ab21a7; this repin is not release, renderer-equivalence, package acceptance, or card acceptance evidence.",
+  "archive_file_count": 89,
+  "archive_unpacked_bytes": 289845,
+  "source_file_count": 45,
+  "compiled_file_count": 44,
   "files": [
     {
       "path": "README.md",
-      "bytes": 6086,
-      "sha256": "2d3529c82d788bfdceefc4c2125e1f732b0b4bcb2be5073e1fa441e10debeda9",
-      "source_git_blob": "b89de9bbd198de20ae273cd040eb8ec095eec4c1"
+      "bytes": 9015,
+      "sha256": "62cf6038fa7b172f2f32271f8c0fb7812ad7e7c1fe25c14062511abc55b9a5c8",
+      "source_git_blob": "6d2f99c45bc1f337253a38a8411de9debe312b54"
     },
     {
       "path": "package.json",
@@ -33,40 +43,304 @@
       "source_git_blob": "a6b5aad0189bb60e665dcec286c8721d7105c0f2"
     },
     {
+      "path": "typescript/dist/src/AudioTrack.js",
+      "bytes": 1108,
+      "sha256": "cfa0b0b9173f2d8d7c361981b0d926d305d79a04cb997966f184dec6561f34cf",
+      "emitted_output_sha256": "cfa0b0b9173f2d8d7c361981b0d926d305d79a04cb997966f184dec6561f34cf"
+    },
+    {
+      "path": "typescript/dist/src/ClipLook.js",
+      "bytes": 4310,
+      "sha256": "576b213f6df2cdcaae608df7b42bf09a5be74bf3ebc41f3765dd8c07696ff28b",
+      "emitted_output_sha256": "576b213f6df2cdcaae608df7b42bf09a5be74bf3ebc41f3765dd8c07696ff28b"
+    },
+    {
+      "path": "typescript/dist/src/ThemeContext.js",
+      "bytes": 1560,
+      "sha256": "81574f28fca4ea226b136e7405baaf4f0e4871fbc95a467c45e37db7c474d1a5",
+      "emitted_output_sha256": "81574f28fca4ea226b136e7405baaf4f0e4871fbc95a467c45e37db7c474d1a5"
+    },
+    {
+      "path": "typescript/dist/src/TimelineComposition.js",
+      "bytes": 9135,
+      "sha256": "8ff23d2899250032d4a10f1410e83edcf6334ec406ef3d555c6b257e5f710bd5",
+      "emitted_output_sha256": "8ff23d2899250032d4a10f1410e83edcf6334ec406ef3d555c6b257e5f710bd5"
+    },
+    {
+      "path": "typescript/dist/src/TransitionLayer.js",
+      "bytes": 1115,
+      "sha256": "2ff44b1aebcfe4c1332dc8206e876c3db09bf744da276c3f3fb1bc4156f1d505",
+      "emitted_output_sha256": "2ff44b1aebcfe4c1332dc8206e876c3db09bf744da276c3f3fb1bc4156f1d505"
+    },
+    {
+      "path": "typescript/dist/src/VisualClip.js",
+      "bytes": 4200,
+      "sha256": "ffb7c2798d540b601bd6d073316cf3add9a1566768ab391a20601c60a6dd1031",
+      "emitted_output_sha256": "ffb7c2798d540b601bd6d073316cf3add9a1566768ab391a20601c60a6dd1031"
+    },
+    {
+      "path": "typescript/dist/src/animations.generated.js",
+      "bytes": 1953,
+      "sha256": "a6a268fc23d2c433844925dc43f36fd2ad96027d35c0b7f3fb2222874dc55f17",
+      "emitted_output_sha256": "a6a268fc23d2c433844925dc43f36fd2ad96027d35c0b7f3fb2222874dc55f17"
+    },
+    {
+      "path": "typescript/dist/src/effects-types.js",
+      "bytes": 153,
+      "sha256": "fc569abe8c85e3539a193309bbfc3832ca3f176a551910130a0ce897a775fdf1",
+      "emitted_output_sha256": "fc569abe8c85e3539a193309bbfc3832ca3f176a551910130a0ce897a775fdf1"
+    },
+    {
+      "path": "typescript/dist/src/effects.generated.js",
+      "bytes": 265,
+      "sha256": "afe25455fef935edcda0f9902b8922c899cef7861dfa0d8411855a4884abcd6b",
+      "emitted_output_sha256": "afe25455fef935edcda0f9902b8922c899cef7861dfa0d8411855a4884abcd6b"
+    },
+    {
+      "path": "typescript/dist/src/evaluation.js",
+      "bytes": 2300,
+      "sha256": "d988a3a0772396aa626bdbd067a4540edffe585ce5a46a64637cc56a7240c154",
+      "emitted_output_sha256": "d988a3a0772396aa626bdbd067a4540edffe585ce5a46a64637cc56a7240c154"
+    },
+    {
+      "path": "typescript/dist/src/index.js",
+      "bytes": 1494,
+      "sha256": "a9e12c3716a21da962a1cb640c6d9847ecf10ba904e19b307d1924f4d83bd517",
+      "emitted_output_sha256": "a9e12c3716a21da962a1cb640c6d9847ecf10ba904e19b307d1924f4d83bd517"
+    },
+    {
+      "path": "typescript/dist/src/lib/animation-easing.js",
+      "bytes": 1743,
+      "sha256": "942f829f7408c9c18fcc29c6f15bc509db89bc5ca156d56a135b2b08f2367e20",
+      "emitted_output_sha256": "942f829f7408c9c18fcc29c6f15bc509db89bc5ca156d56a135b2b08f2367e20"
+    },
+    {
+      "path": "typescript/dist/src/lib/animation-progress-adapters.js",
+      "bytes": 2584,
+      "sha256": "d503f0cb5322bbacb655a39bf0d517db0f58dd6d150f42ca27ebc183b280dd3b",
+      "emitted_output_sha256": "d503f0cb5322bbacb655a39bf0d517db0f58dd6d150f42ca27ebc183b280dd3b"
+    },
+    {
+      "path": "typescript/dist/src/lib/animations.js",
+      "bytes": 6530,
+      "sha256": "8d7f471843e4c11933260cba85b869c195e9f0359df384b5b2b98fca976fb29e",
+      "emitted_output_sha256": "8d7f471843e4c11933260cba85b869c195e9f0359df384b5b2b98fca976fb29e"
+    },
+    {
+      "path": "typescript/dist/src/lib/audio-curves.generated.js",
+      "bytes": 531,
+      "sha256": "3ec5a8fdb8af0042501957e6f70f68f9944be084d1d61b8cc86454557ff80397",
+      "emitted_output_sha256": "3ec5a8fdb8af0042501957e6f70f68f9944be084d1d61b8cc86454557ff80397"
+    },
+    {
+      "path": "typescript/dist/src/lib/audio-envelope.js",
+      "bytes": 7611,
+      "sha256": "7610060914b66edeb6a6c48041dd3253b3216a348d37fa673670b235654210da",
+      "emitted_output_sha256": "7610060914b66edeb6a6c48041dd3253b3216a348d37fa673670b235654210da"
+    },
+    {
+      "path": "typescript/dist/src/lib/beat-loop.js",
+      "bytes": 3632,
+      "sha256": "b358dd67e4a1ac73003d16ccd6ab0116943e1f9fa17dfe5af751f7ead71f9632",
+      "emitted_output_sha256": "b358dd67e4a1ac73003d16ccd6ab0116943e1f9fa17dfe5af751f7ead71f9632"
+    },
+    {
+      "path": "typescript/dist/src/lib/clip-look.js",
+      "bytes": 5277,
+      "sha256": "4d7d01fa5c98a4e40ca559fa397dd785c1ab7ececfebb8c8edb7ad0b14d806b3",
+      "emitted_output_sha256": "4d7d01fa5c98a4e40ca559fa397dd785c1ab7ececfebb8c8edb7ad0b14d806b3"
+    },
+    {
+      "path": "typescript/dist/src/lib/duration.js",
+      "bytes": 1077,
+      "sha256": "3688d852aab473d0676d5a53638ac5d4d79cae37ed25b42985178d60940fea1d",
+      "emitted_output_sha256": "3688d852aab473d0676d5a53638ac5d4d79cae37ed25b42985178d60940fea1d"
+    },
+    {
+      "path": "typescript/dist/src/lib/effect-params.js",
+      "bytes": 136,
+      "sha256": "34a1fe73b56a421c89c4a4b102ada9e9c879ddab225297b342168df6b591dbc5",
+      "emitted_output_sha256": "34a1fe73b56a421c89c4a4b102ada9e9c879ddab225297b342168df6b591dbc5"
+    },
+    {
+      "path": "typescript/dist/src/lib/fade.js",
+      "bytes": 197,
+      "sha256": "e79b7b7404e65b607cc8042b64376d85684babfce41f243ce7cbf51fd0ff886f",
+      "emitted_output_sha256": "e79b7b7404e65b607cc8042b64376d85684babfce41f243ce7cbf51fd0ff886f"
+    },
+    {
+      "path": "typescript/dist/src/lib/keyframe-easing.js",
+      "bytes": 1328,
+      "sha256": "cc16aac78102580583948a7deb2766d82dbdb08a68b96e66f5825379687e9fdc",
+      "emitted_output_sha256": "cc16aac78102580583948a7deb2766d82dbdb08a68b96e66f5825379687e9fdc"
+    },
+    {
+      "path": "typescript/dist/src/lib/keyframe-origin.js",
+      "bytes": 1234,
+      "sha256": "83c86440f5a28a9a6921870959f95211ad65e57372e80afa19af32f8f55af3fa",
+      "emitted_output_sha256": "83c86440f5a28a9a6921870959f95211ad65e57372e80afa19af32f8f55af3fa"
+    },
+    {
+      "path": "typescript/dist/src/lib/modifier-admission.js",
+      "bytes": 2099,
+      "sha256": "57f03d342177bf24a8ad47ed0c8334873cca6215fc29e7740f0a5bcb34b644e1",
+      "emitted_output_sha256": "57f03d342177bf24a8ad47ed0c8334873cca6215fc29e7740f0a5bcb34b644e1"
+    },
+    {
+      "path": "typescript/dist/src/lib/modifier-bounds.js",
+      "bytes": 2668,
+      "sha256": "67006a5132a6be6091b55f9cff0606fa5a6315eff7dcc5b897d1e07ba3886adf",
+      "emitted_output_sha256": "67006a5132a6be6091b55f9cff0606fa5a6315eff7dcc5b897d1e07ba3886adf"
+    },
+    {
+      "path": "typescript/dist/src/lib/modifiers.js",
+      "bytes": 1917,
+      "sha256": "1633ee6a0ba438785399dbc9ce27c99d697d71d9cfa63f1a91ab227d0b901a4d",
+      "emitted_output_sha256": "1633ee6a0ba438785399dbc9ce27c99d697d71d9cfa63f1a91ab227d0b901a4d"
+    },
+    {
+      "path": "typescript/dist/src/lib/motion-curves.generated.js",
+      "bytes": 2537,
+      "sha256": "a47d8589e0609732148f9cd0bbf9c5df61b36addf010faf5eacb63ff8a835557",
+      "emitted_output_sha256": "a47d8589e0609732148f9cd0bbf9c5df61b36addf010faf5eacb63ff8a835557"
+    },
+    {
+      "path": "typescript/dist/src/lib/render-bounds.js",
+      "bytes": 3833,
+      "sha256": "9179da67b6d61861d807aba6a7f6e8516833e75cf00202e03270c45f904a5ed6",
+      "emitted_output_sha256": "9179da67b6d61861d807aba6a7f6e8516833e75cf00202e03270c45f904a5ed6"
+    },
+    {
+      "path": "typescript/dist/src/lib/tracks.js",
+      "bytes": 389,
+      "sha256": "5e36fcb81701b519ce22ddbac3ac528adb51b76ae35121acb00d630e107c78e3",
+      "emitted_output_sha256": "5e36fcb81701b519ce22ddbac3ac528adb51b76ae35121acb00d630e107c78e3"
+    },
+    {
+      "path": "typescript/dist/src/lib/transition-declarations.js",
+      "bytes": 11644,
+      "sha256": "5ddb9a702ea672342fbdbd9f77b78ea56c25f2b865c06f281738f93de0ec1370",
+      "emitted_output_sha256": "5ddb9a702ea672342fbdbd9f77b78ea56c25f2b865c06f281738f93de0ec1370"
+    },
+    {
+      "path": "typescript/dist/src/lib/transition-spans.js",
+      "bytes": 4386,
+      "sha256": "69674ba25ee3e46c71107a7e6f509eb9019f37bef583136329b7a35067f34c1d",
+      "emitted_output_sha256": "69674ba25ee3e46c71107a7e6f509eb9019f37bef583136329b7a35067f34c1d"
+    },
+    {
+      "path": "typescript/dist/src/lib/transitions.js",
+      "bytes": 1740,
+      "sha256": "9b29dda493fee6e0ba231a70095b10a8cc9b4973c39ef79c36c4e43dcf493d2c",
+      "emitted_output_sha256": "9b29dda493fee6e0ba231a70095b10a8cc9b4973c39ef79c36c4e43dcf493d2c"
+    },
+    {
+      "path": "typescript/dist/src/lib/trim.js",
+      "bytes": 576,
+      "sha256": "4ef086ac54730ac5acef33188c3dbb77e5f08889ff3cd728d2ba9caab272ba58",
+      "emitted_output_sha256": "4ef086ac54730ac5acef33188c3dbb77e5f08889ff3cd728d2ba9caab272ba58"
+    },
+    {
+      "path": "typescript/dist/src/lib/use-audio-envelope.js",
+      "bytes": 3043,
+      "sha256": "e7601362f86cabcad24547809a7e775f40335f98daee12757931b6bd548c2d57",
+      "emitted_output_sha256": "e7601362f86cabcad24547809a7e775f40335f98daee12757931b6bd548c2d57"
+    },
+    {
+      "path": "typescript/dist/src/modifier-types.js",
+      "bytes": 11,
+      "sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
+      "emitted_output_sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881"
+    },
+    {
+      "path": "typescript/dist/src/modifiers.js",
+      "bytes": 300,
+      "sha256": "1e9e0d8be976e852c9e39b609c44e9feafe8f214071d91beb34b574d2438387f",
+      "emitted_output_sha256": "1e9e0d8be976e852c9e39b609c44e9feafe8f214071d91beb34b574d2438387f"
+    },
+    {
+      "path": "typescript/dist/src/registry.generated.js",
+      "bytes": 1352,
+      "sha256": "0fee7d7688fcc06a7cf8c973b68e7a0dd11841b4ae150b47e3b3d558d65263ab",
+      "emitted_output_sha256": "0fee7d7688fcc06a7cf8c973b68e7a0dd11841b4ae150b47e3b3d558d65263ab"
+    },
+    {
+      "path": "typescript/dist/src/scene-evaluation.js",
+      "bytes": 7815,
+      "sha256": "af21902a60cc42729a43869cd06a76cfc8cc33be5ceae59e9595864478c5c964",
+      "emitted_output_sha256": "af21902a60cc42729a43869cd06a76cfc8cc33be5ceae59e9595864478c5c964"
+    },
+    {
+      "path": "typescript/dist/src/theme-api.js",
+      "bytes": 1448,
+      "sha256": "568e94a25eb9f9e4a59e1448baebab4e7101eb560ca5b7aaf05e6bc08e298be9",
+      "emitted_output_sha256": "568e94a25eb9f9e4a59e1448baebab4e7101eb560ca5b7aaf05e6bc08e298be9"
+    },
+    {
+      "path": "typescript/dist/src/transitions.generated.js",
+      "bytes": 709,
+      "sha256": "0302db67e377dbfa284dbc5132394afdefb1d0a7acf40108c854f886a1bc45c2",
+      "emitted_output_sha256": "0302db67e377dbfa284dbc5132394afdefb1d0a7acf40108c854f886a1bc45c2"
+    },
+    {
+      "path": "typescript/dist/src/types.js",
+      "bytes": 501,
+      "sha256": "717c9e9d2b9860a308ec8f520bfa78740287dcaadd2efbed0aa41d351b103f7c",
+      "emitted_output_sha256": "717c9e9d2b9860a308ec8f520bfa78740287dcaadd2efbed0aa41d351b103f7c"
+    },
+    {
+      "path": "typescript/dist/tests/audio-envelope.test.js",
+      "bytes": 6352,
+      "sha256": "da0152510683768753ade9729fb6e6a92875dd9368732ee417648fdcd0dac593",
+      "emitted_output_sha256": "da0152510683768753ade9729fb6e6a92875dd9368732ee417648fdcd0dac593"
+    },
+    {
+      "path": "typescript/dist/tests/transition-declarations.test.js",
+      "bytes": 14681,
+      "sha256": "094804802dca64cb2726c05f62453a0c7adebea6e0c2c343994ba71e60dd8640",
+      "emitted_output_sha256": "094804802dca64cb2726c05f62453a0c7adebea6e0c2c343994ba71e60dd8640"
+    },
+    {
+      "path": "typescript/dist/tests/transition-spans.test.js",
+      "bytes": 6053,
+      "sha256": "71b5c46deb302252aa55736cdcb2aa529e4e23697d84c02b862f0830c1b2fe93",
+      "emitted_output_sha256": "71b5c46deb302252aa55736cdcb2aa529e4e23697d84c02b862f0830c1b2fe93"
+    },
+    {
       "path": "typescript/src/AudioTrack.tsx",
-      "bytes": 2305,
-      "sha256": "005bacb9c8c5986df3da416f2892834025c64b0f6df0517e3839c24841c186c8",
-      "source_git_blob": "6526e4db03b45180e2259e273d8a9559f55758dd"
+      "bytes": 1398,
+      "sha256": "d0ebeb67d0395063e3fbf0e51c00c110ef242a6482a0eec26e4007cde5c29f6f",
+      "source_git_blob": "0d9f029cf187bcf5ebdff7c03bb8327a9b32128e"
     },
     {
       "path": "typescript/src/ClipLook.tsx",
-      "bytes": 2823,
-      "sha256": "f810eac7b39bc8ec9bfe8124f45f6c0feaffb3d10eff103d5d79f89e038f7bcb",
-      "source_git_blob": "776317516b4dc76e002aaa8db0a6052815fcd8b8"
+      "bytes": 4859,
+      "sha256": "372b355119a106c6ec986f8982a779a2f33580423068a03cc73011180c3f6af1",
+      "source_git_blob": "22e90ee783228759ce7015ab107fd2724e9da7ed"
     },
     {
       "path": "typescript/src/ThemeContext.tsx",
-      "bytes": 2177,
-      "sha256": "4a4249352a086ee677c52cacd33af19f7aeada8eb5ed8f0f023d7ed3cca35b3b",
-      "source_git_blob": "9b860207b9a158ed74c4e78233299c267e94e8ad"
+      "bytes": 2184,
+      "sha256": "1a3c296f40fdb16525ca47cb23994e40306834a4baf433021f6b642fa6966ab0",
+      "source_git_blob": "4ab483832e090d3368a92431ffbd321addf3e044"
     },
     {
       "path": "typescript/src/TimelineComposition.tsx",
-      "bytes": 8906,
-      "sha256": "d18363c6fa75bd8f3c03d1331fa9eaea238bbf98e7d4cedec7f1cf80a304f62a",
-      "source_git_blob": "b54cf5623aa5d0ac2160da8315c75a373530a2b2"
+      "bytes": 11412,
+      "sha256": "cfa6a3ea508a780dcbad715f66681ee09a570bb8abfaae172bc8d0f6266742dc",
+      "source_git_blob": "a0797f8f448456c87df230a5848ee664c5375cc1"
     },
     {
       "path": "typescript/src/TransitionLayer.tsx",
-      "bytes": 1055,
-      "sha256": "5b37c971a1cfad49dc465191d834432fb1da328a804085f706dc35f35ab5f381",
-      "source_git_blob": "c17f2f84ccf114f7924b3c735d542b7fbd89473e"
+      "bytes": 1190,
+      "sha256": "5f59b306bf372ffa999a5a7b2b3d3847862ca2975cf27f7e8c95d44e280ca50d",
+      "source_git_blob": "0136856848340b2443fde9575fff96e1004043f5"
     },
     {
       "path": "typescript/src/VisualClip.tsx",
-      "bytes": 4253,
-      "sha256": "67122a17e960b87c8363a07d556e7663d5b93fc7ef807fd6fa674151730831da",
-      "source_git_blob": "0929788dc9bf6ebf1858895371540dd4fe36ed70"
+      "bytes": 4364,
+      "sha256": "531b49da2eb115113d86d6cccfb4dc0d73b2d68d311a75839a303d1f77545914",
+      "source_git_blob": "5b6c59c05056d522cf4ec8ac5158f7dda3b2ce4b"
     },
     {
       "path": "typescript/src/animations.generated.ts",
@@ -76,9 +350,9 @@
     },
     {
       "path": "typescript/src/effects-types.ts",
-      "bytes": 3349,
-      "sha256": "d1fdd07db7c054c3697c65fd0be4db0c26878b63da64195e19d7464ca4e91090",
-      "source_git_blob": "3143b9991f7494866ff2f51b3736cb04393fab35"
+      "bytes": 3566,
+      "sha256": "188befad0958fac6fc3aa63b90c91894edde78ac5df2bca8718e7dfef84905b3",
+      "source_git_blob": "457aa44658f5d23b1df9a8055280c53d727890be"
     },
     {
       "path": "typescript/src/effects.generated.ts",
@@ -88,27 +362,57 @@
     },
     {
       "path": "typescript/src/evaluation.ts",
-      "bytes": 1960,
-      "sha256": "8ee36867cd9b5067680d4b89f6166c1c4ae90fd136d5d0551cc0c943957e846e",
-      "source_git_blob": "f5a060ef13a7a01f745c292e7c3197711142ec2e"
+      "bytes": 3689,
+      "sha256": "e3b86a9a51e3a6a6a66360e050b16b877844dc07d210828d72a7ad64190021ca",
+      "source_git_blob": "45fbe1c190433e67a9670ddaafd3cbc1b737c996"
     },
     {
       "path": "typescript/src/index.ts",
-      "bytes": 1859,
-      "sha256": "f89a48035bed86ee3d0f4ee9123968f43fd0236d08db501f487f74c8b20e50ab",
-      "source_git_blob": "d7a64e6aebfc29dd11d7793814211433efe56579"
+      "bytes": 2388,
+      "sha256": "c0cd486aa25b6fbc47def0041866858657e91416847fa2625501eead66cdb4fa",
+      "source_git_blob": "8df8ffdf07e2fd5395c828ccc16e94dfaf17fb10"
+    },
+    {
+      "path": "typescript/src/lib/animation-easing.ts",
+      "bytes": 1878,
+      "sha256": "cbe85e4026a20fb23d75c5c1e82dd8d673c6de3d44b659abb4bacc9629dac970",
+      "source_git_blob": "b17f9a94e954095b1847d58fac40613afbd2ce6e"
+    },
+    {
+      "path": "typescript/src/lib/animation-progress-adapters.tsx",
+      "bytes": 2567,
+      "sha256": "67c17bbeadc876ec4a384adcec1fc3e3960b053e0a490d176fb138da7e2dd1fd",
+      "source_git_blob": "31e9c29ac637a23c3bbf088d6c83cd764127b936"
     },
     {
       "path": "typescript/src/lib/animations.tsx",
-      "bytes": 5878,
-      "sha256": "47eb1c25feb5670915d8116d5c9fa18af45cd9c1ff338cf363ceec16b0e04a21",
-      "source_git_blob": "519087ce4ed4b1d27ce1337523fe471200ac4c9f"
+      "bytes": 7867,
+      "sha256": "10e77a3b79baf58793a35d7b896b5eabd46be42ef200f8b63bb8e52c2be780bb",
+      "source_git_blob": "07128b1d66d174a383ef77f156207c536cba8f5a"
+    },
+    {
+      "path": "typescript/src/lib/audio-curves.generated.ts",
+      "bytes": 480,
+      "sha256": "923d0c55eca05d482234c9553614b1ee9a8a5ddd743a5c6ac3e58cc4b552219e",
+      "source_git_blob": "807a141053d09683b6c4a7f4d666dfc767efea59"
+    },
+    {
+      "path": "typescript/src/lib/audio-envelope.ts",
+      "bytes": 8278,
+      "sha256": "edbf7f270a6291459a7951f0ffafe38d2e2757197ba900edf3be42b3af51fddc",
+      "source_git_blob": "d97f4969ff4e73649bcc1032cd145437421338cb"
+    },
+    {
+      "path": "typescript/src/lib/beat-loop.ts",
+      "bytes": 4055,
+      "sha256": "bbfd4fd335537bc8d727f638f50a66f540368bbb62af393418bd506ea0b954e2",
+      "source_git_blob": "af906ab11998dd782553552b4f7745a62df38156"
     },
     {
       "path": "typescript/src/lib/clip-look.ts",
-      "bytes": 5967,
-      "sha256": "56bf1985ab284b7dff9216cf121d1af2e7607163ea6413b769c90df407d7be86",
-      "source_git_blob": "99850aa3d3ebaa2b93553e73ab094370ec803241"
+      "bytes": 6203,
+      "sha256": "d258be5a5618a2c75153098e0996fc6fb935a3a73b0416fdd011343ed34f31e2",
+      "source_git_blob": "360d0571abc04a03b442c70e054815067fa05071"
     },
     {
       "path": "typescript/src/lib/duration.ts",
@@ -129,6 +433,42 @@
       "source_git_blob": "041d4c12f1d8e9f6050a470ede0ad5cff5986e70"
     },
     {
+      "path": "typescript/src/lib/keyframe-easing.ts",
+      "bytes": 1453,
+      "sha256": "cd0dd6d2679b442d6b1ba45d4ef2db6b85f23487ae24395261b80e754c3297f6",
+      "source_git_blob": "82c414926471d88aea77c66ca4cae39e36a8a93d"
+    },
+    {
+      "path": "typescript/src/lib/keyframe-origin.ts",
+      "bytes": 1735,
+      "sha256": "b5665e9e53e086c95282a596103c9199b9893868b2b91e9a5bb5225dba246373",
+      "source_git_blob": "8af789b1cf15d6726b3581da64345f7150279232"
+    },
+    {
+      "path": "typescript/src/lib/modifier-admission.ts",
+      "bytes": 2149,
+      "sha256": "695e5608942b39c92a86ec4484c1c245e1dbabebc9b03ff31555688670af5a2e",
+      "source_git_blob": "9688b767495e02b8247f5ae3e9732d669679a25d"
+    },
+    {
+      "path": "typescript/src/lib/modifier-bounds.ts",
+      "bytes": 2853,
+      "sha256": "da40b35445bfc09a7870aae55a7a45197e1f55ba531f9f9c7444a0ea84b70a3c",
+      "source_git_blob": "8e96817534ddb9254c304c915458bf8fb65dffab"
+    },
+    {
+      "path": "typescript/src/lib/modifiers.tsx",
+      "bytes": 2287,
+      "sha256": "6d0114282b20467ae5c4c277838c83bb33ac8784996c0ca2a8b40b6389a211ad",
+      "source_git_blob": "f151f5f8c5616015d86427431d8f7752ae5e2008"
+    },
+    {
+      "path": "typescript/src/lib/motion-curves.generated.ts",
+      "bytes": 2452,
+      "sha256": "1e0929a471c27e23f203de3a26cb4852a4ec3e8b2116e6da379e2454830b71e7",
+      "source_git_blob": "2ca91f60c2b56424be6162ef226e5a27ac3559f7"
+    },
+    {
       "path": "typescript/src/lib/render-bounds.ts",
       "bytes": 4606,
       "sha256": "ee5c4c7cab0ca0e398504fb4601e4cd7223f02d8dc5079da2bdcb719e4a5d11f",
@@ -139,6 +479,12 @@
       "bytes": 590,
       "sha256": "4381a779369b925e2442e3b4214910843df577fe27b1243fa03c502eb9c08dbc",
       "source_git_blob": "7e978f8588a86c038752ca67eedcae7c5e904ad9"
+    },
+    {
+      "path": "typescript/src/lib/transition-declarations.ts",
+      "bytes": 13806,
+      "sha256": "c5a142746983c6f393f36e1bcf53b2a8bb50e20b64310889f33ca37346b77567",
+      "source_git_blob": "d520283ee1964e8a5342dc843a1bd3c78c960847"
     },
     {
       "path": "typescript/src/lib/transition-spans.ts",
@@ -159,16 +505,46 @@
       "source_git_blob": "2b7398387335363cc65b17b8af5ecdd2bf4e07fa"
     },
     {
+      "path": "typescript/src/lib/use-audio-envelope.ts",
+      "bytes": 2868,
+      "sha256": "a5cdf397358c6f3141c913ee75f4f48c3b328cdf46e1d904c8da5c7d992e8e61",
+      "source_git_blob": "ae1865bcfd90e206d1f50500a99c44e31b2395ef"
+    },
+    {
+      "path": "typescript/src/modifier-types.ts",
+      "bytes": 2029,
+      "sha256": "df21a3ee64b9aa71791bf006cebda531603609967890e5d60e2dcd1c05df47ee",
+      "source_git_blob": "b0d63592600fcc9c3cbaab28e99bb4d7f7ba6772"
+    },
+    {
+      "path": "typescript/src/modifiers.ts",
+      "bytes": 566,
+      "sha256": "b0b0c0f5d2adc0ba6c6c101dd9b93a09ee8ef0134e06e5ce3231747d1fd07ad1",
+      "source_git_blob": "9d147ee539ce5fc6158d47632b0d6877eb4a2a60"
+    },
+    {
       "path": "typescript/src/registry.generated.ts",
       "bytes": 1582,
       "sha256": "b796c22ce6b53bdc2cd58e8a0d5ad5c54211b19693e247ecfb23474ae6c26365",
       "source_git_blob": "bf5394b9fd984f9398765f50cc10b4660527658c"
     },
     {
+      "path": "typescript/src/remotion-timer-compat.d.ts",
+      "bytes": 123,
+      "sha256": "146d912cf2bbb127cf0f96d27ab2c8cd33925ddbc385b23dc0b6e5ecd1dec8c9",
+      "source_git_blob": "f406eeceb62540c193fb426327aff60e9a1e8aad"
+    },
+    {
+      "path": "typescript/src/scene-evaluation.ts",
+      "bytes": 8932,
+      "sha256": "0a294f4ec742ec44369c79122f17f1d66f37370695de37e6c9875d02f756f593",
+      "source_git_blob": "a394867823549ff0397b2dcc48176b65dcce5bf3"
+    },
+    {
       "path": "typescript/src/theme-api.ts",
-      "bytes": 1746,
-      "sha256": "6acc08d2aaa81fd9f19d4017ba3297bd8ea38e97231a8a323e9da13fca5d01a1",
-      "source_git_blob": "7f212f88dca3a2177ec641f6cdd46460a9d18834"
+      "bytes": 2709,
+      "sha256": "a57b35011fba91c0d30562391b39975250e7d6514d64eb2b80f9d136ae7c1f90",
+      "source_git_blob": "fc937aa5775fa7b11cbbb58cb7fb23ae17395d5c"
     },
     {
       "path": "typescript/src/transitions.generated.ts",
@@ -178,9 +554,9 @@
     },
     {
       "path": "typescript/src/types.ts",
-      "bytes": 2403,
-      "sha256": "9b53ff72c42a1bcf0adf0318bbb1fc222af999055ea0325ed7472c87f7f703ef",
-      "source_git_blob": "5c55cd045a36252fad3eac2d7f8663095bad5790"
+      "bytes": 3027,
+      "sha256": "53cd9035c1a9a323f465fd8b917d8d2ef34a5338d1064d3d444dfd993246c7ca",
+      "source_git_blob": "298fbdb908202e29e81b1abd0087cd2e424cd44b"
     }
   ]
 }

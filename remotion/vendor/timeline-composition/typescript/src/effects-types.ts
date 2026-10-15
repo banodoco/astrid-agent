@@ -10,6 +10,8 @@ export type EffectProps<TParams = unknown> = {
   params: TParams;
   theme: RuntimeTheme;
   fps: number;
+  /** The existing composition frame, before clip Sequences/transition freezes. */
+  globalFrame?: number;
   assetEntry?: AssetRegistryEntry;
 };
 
@@ -56,6 +58,8 @@ export type BaseAnimationProps<TParams = Record<string, unknown>> = {
   phase: AnimationPhase;
   durationFrames: number;
   elapsedFrames: number;
+  /** Explicit canonical local progress; undefined preserves component legacy curves. */
+  progress?: number;
   animationId: string;
 };
 
