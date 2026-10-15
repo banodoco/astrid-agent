@@ -210,6 +210,7 @@
           "name": "beats",
           "type": "file",
           "path_template": "{out}/beats.json",
+          "artifact_type": "application/json",
           "description": "JSON {bpm, beats, downbeats, bars (4-bar phrase starts), sections[]} for snapping cuts."
         }
       ],

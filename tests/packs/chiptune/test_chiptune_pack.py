@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import wave
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,6 +17,9 @@ from astrid.core.pack.validate import validate_pack
 from astrid.packs.chiptune.actions import _synth as syn
 from astrid.packs.chiptune.actions.compose import run as compose_run
 from astrid.packs.chiptune.actions.sfx import run as sfx_run
+from astrid.sdk import get_capability
+from astrid.sdk.media_handles import resolve_media_handle
+from astrid.sdk.results import InvocationResult
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACK_ROOT = REPO_ROOT / "astrid" / "packs" / "chiptune"
@@ -31,19 +36,25 @@ def _read_wav(path: Path) -> tuple[np.ndarray, int, int]:
     return data.T, rate, channels
 
 
-def _compose(tmp_path: Path, name: str, *, duration_s: float = 20.0, seed: int = 7, sections=None,
-             hits: str | None = None, vo_mask=None, duck_db: float = -9.0, master_db: float = -16.0) -> Path:
+def _compose(tmp_path: Path, name: str, *, duration_s: float = 20.0, bpm: float = 132,
+             key: str = "A minor", seed: int = 7, sections=None, hits: str | None = None,
+             duck: str | None = None, vo_mask=None, mutes=None, duck_db: float = -9.0,
+             master_db: float = -16.0, style: str = "nes") -> Path:
     out = tmp_path / name
     if sections is None:
         sections = [{"start_s": 0, "end_s": 10, "energy": 0.6, "mood": "bright"},
                     {"start_s": 10, "end_s": 20, "energy": 0.9, "mood": "tense"}]
-    argv = ["--duration-s", str(duration_s), "--bpm", "132", "--key", "A minor", "--seed", str(seed),
+    argv = ["--duration-s", str(duration_s), "--bpm", str(bpm), "--key", key, "--seed", str(seed),
             "--sections", json.dumps(sections), "--master-db", str(master_db), "--duck-db", str(duck_db),
-            "--out", str(out)]
+            "--style", style, "--out", str(out)]
     if hits is not None:
         argv += ["--hits", hits]
+    if duck is not None:
+        argv += ["--duck", duck]
     if vo_mask is not None:
         argv += ["--vo-mask", json.dumps(vo_mask)]
+    if mutes is not None:
+        argv += ["--mutes", json.dumps(mutes)]
     assert compose_run.main(argv) == 0
     return out
 
@@ -160,6 +171,94 @@ def test_compose_same_seed_is_byte_identical(tmp_path: Path) -> None:
     assert (first / "beats.json").read_bytes() == (second / "beats.json").read_bytes()
     other = _compose(tmp_path, "c", seed=8)
     assert (first / "music.wav").read_bytes() != (other / "music.wav").read_bytes()
+
+
+def test_compose_admission_assets_and_sdk_media_handles(tmp_path: Path) -> None:
+    capability = get_capability("chiptune.compose", kind="action")
+    declared_inputs = {port.name: port.type for port in capability.inputs}
+    declared_outputs = {port.name: port.artifact_type for port in capability.outputs}
+    assert declared_inputs == {
+        "duration_s": "number", "bpm": "integer", "key": "string", "seed": "integer",
+        "sections": "json", "hits": "json", "duck": "json", "vo_mask": "json",
+        "mutes": "json", "duck_db": "number", "master_db": "number", "style": "string",
+    }
+    assert declared_outputs == {"music": "audio", "beats": "application/json"}
+
+    inputs = {
+        "duration_s": 2.0,
+        "bpm": 132,
+        "key": "A minor",
+        "seed": 17,
+        "sections": [{"start_s": 0, "end_s": 2, "energy": 0.4, "mood": "bright"}],
+        "hits": [],
+        "duck": [],
+        "vo_mask": [[0.5, 0.75]],
+        "mutes": [[1.25, 1.5]],
+        "duck_db": -10.0,
+        "master_db": -16.0,
+        "style": "nes",
+    }
+    assert set(declared_inputs) == set(inputs)
+    compose_inputs = {
+        **inputs,
+        "hits": json.dumps(inputs["hits"]),
+        "duck": json.dumps(inputs["duck"]),
+    }
+    first = _compose(tmp_path, "generator-first", **compose_inputs)
+    second = _compose(tmp_path, "generator-second", **compose_inputs)
+    for filename in ("music.wav", "beats.json"):
+        assert (first / filename).read_bytes() == (second / filename).read_bytes()
+
+    manifest = json.loads((first / "manifest.json").read_text())
+    emitted = {output["name"]: output for output in manifest["outputs"]}
+    assert {name: emitted[name]["artifact_type"] for name in emitted} == declared_outputs
+    assert emitted["music"]["media_type"] == "audio/wav"
+    assert emitted["beats"]["media_type"] == "application/json"
+
+    digests = {
+        name: "sha256:" + hashlib.sha256((first / emitted[name]["path"]).read_bytes()).hexdigest()
+        for name in emitted
+    }
+    managed_outputs = [
+        {
+            "run_id": "fixture-run",
+            "task_id": "fixture-task",
+            "output_port": name,
+            "ordinal": 0,
+            "role": emitted[name]["role"],
+            "digest": digests[name],
+            "filename": Path(emitted[name]["path"]).name,
+            "media_type": emitted[name]["media_type"],
+            "size": (first / emitted[name]["path"]).stat().st_size,
+        }
+        for name in ("music", "beats")
+    ]
+    result = InvocationResult(
+        "chiptune.compose", "executor", "external", True,
+        run_id="fixture-run", outputs={"managed_outputs": managed_outputs},
+    )
+    printed = str(result)
+    assert "run:fixture-run/music#0" in printed
+    assert "run:fixture-run/beats#0" in printed
+
+    def show(project: str, digest: str) -> SimpleNamespace:
+        assert project == "generator-scratch"
+        assert digest in digests.values()
+        name = next(name for name, value in digests.items() if value == digest)
+        return SimpleNamespace(ok=True, data={
+            "media_type": emitted[name]["media_type"],
+            "filename": Path(emitted[name]["path"]).name,
+            "size": (first / emitted[name]["path"]).stat().st_size,
+        })
+
+    for name in ("music", "beats"):
+        descriptor, lineage = resolve_media_handle(
+            SimpleNamespace(media=SimpleNamespace(show=show)),
+            "generator-scratch",
+            result.output(name),
+        )
+        assert descriptor["digest"] == digests[name]
+        assert lineage["handle"] == f"run:fixture-run/{name}#0"
 
 
 def test_compose_duration_is_exact_stereo_48k(tmp_path: Path) -> None:
