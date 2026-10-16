@@ -1,0 +1,13 @@
+id: audio.crossfade.music
+source: new
+intent: Add a known-duration music clip, then crossfade it against the existing music clip.
+fixture: audio-crossfade
+expect: change
+cli: edit --crossfade a-music next-bed --over 0.5
+check:
+  - abs(tl.clip("next-bed").start - 3.5) < 1e-6
+  - abs(tl.clip("next-bed").duration - 4) < 1e-6
+  - abs(tl.clip("a-music").params["fadeOut"] - 0.5) < 1e-6
+  - abs(tl.clip("next-bed").params["fadeIn"] - 0.5) < 1e-6
+  - tl.clip("a-music").params["fadeOutCurve"] == "equal-power"
+  - tl.clip("next-bed").params["fadeInCurve"] == "equal-power"

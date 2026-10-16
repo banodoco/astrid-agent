@@ -1,0 +1,9 @@
+id: look.clear.rocket-x
+source: new
+intent: Clear the rocket's explicit x value so its element default applies.
+fixture: cuts-reserved
+expect: change
+cli: edit --clip c1.rocket --clear x
+check:
+  - '"x" not in tl.clip("c1.rocket").params'
+  - 'tl.clip("c1.rocket").get("x") is None'
