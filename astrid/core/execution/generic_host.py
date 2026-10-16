@@ -109,6 +109,9 @@ from astrid.core.execution.guards import (
     write_evidence_status,
 )
 from astrid.core.execution.managed_inputs import managed_file_digest
+from astrid.core.execution.declared_executables import (
+    ExecutableAdmission, ExecutableAdmissionError, ExecutableBinding,
+)
 from astrid.core.execution.managed_tool_session import (
     SessionCapacityError,
     CapabilityDescriptor,
@@ -1917,6 +1920,8 @@ class _ConfinementPolicy:
     workload_process_creation: bool = True
     claim_binding: tuple[tuple[str, Any], ...] = ()
     bootstrap_search_roots: tuple[Path, ...] = ()
+    executable_bindings: tuple[ExecutableBinding, ...] = ()
+    executable_directory: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1928,9 +1933,18 @@ class _AuthenticatedAttempt:
 class _AttemptPolicyFactory:
     """Trusted code/bootstrap configuration shared by slots, never a policy."""
 
+    def __init__(self, executables: ExecutableAdmission):
+        self.executables = executables
+
     def build(self, authority, *, attempt: Path, record) -> _ConfinementPolicy:
         if type(authority) is not _AuthenticatedAttempt:
             raise HostError("authenticated attempt authority required")
+        try:
+            bindings = self.executables.require(_binary_requirements(record))
+        except ExecutableAdmissionError as exc:
+            raise HostError(str(exc)) from exc
+        if bindings != record.executable_bindings:
+            raise HostError("declared executable readiness binding differs from launch")
         projection = dict(authority.fields)
         if not projection.get("project_id"):
             # Explicit host-owned/unpaired workspace tasks have no project data.
@@ -1962,11 +1976,19 @@ class _AttemptPolicyFactory:
                  Path("/System/Volumes/Preboot/Cryptexes/OS/usr/lib"))
         # Existing installed platform artifacts only. Unsupported hosts are
         # refused by the same required backend check before any workload spawn.
+        binary_directory = None
+        if bindings:
+            binary_directory = attempt / ".astrid-executables"
+            # A fresh host-owned namespace, read-only under the child policy.
+            binary_directory.mkdir(mode=0o700)
+            for binding in bindings:
+                (binary_directory / binding.name).symlink_to(binding.executable.resolved)
         policy = _ConfinementPolicy(attempt, private,
             _SandboxProjectScope(project, (project,)),
             tuple(p for p in files if p.exists()), tuple(dict.fromkeys(p for p in roots if p.is_dir())),
             _SandboxEnvironmentPolicy(), claim_binding=authority.fields,
-            bootstrap_search_roots=(Path(__file__).resolve().parents[3], Path(record.source_root).resolve().parent))
+            bootstrap_search_roots=(Path(__file__).resolve().parents[3], Path(record.source_root).resolve().parent),
+            executable_bindings=bindings, executable_directory=binary_directory)
         _confined_launch_plan([str(python)], policy=policy)
         return policy
 
@@ -2083,8 +2105,39 @@ def _confined_launch_plan(
     bootstrap_search_roots = tuple(path(p, directory=True) for p in items(policy.bootstrap_search_roots, "bootstrap searches"))
     bootstrap_files = tuple(path(p, directory=False, character_device=True)
                             for p in items(policy.bootstrap_files, "bootstrap files"))
+    bindings = items(policy.executable_bindings, "declared executable bindings")
+    declared_files: list[Path] = []
+    binary_directory = policy.executable_directory
+    if bindings:
+        if (not isinstance(binary_directory, Path) or binary_directory.is_symlink()
+                or binary_directory != attempt / ".astrid-executables"
+                or path(binary_directory, directory=True) != binary_directory
+                or binary_directory.stat().st_uid != os.getuid()
+                or stat.S_IMODE(binary_directory.stat().st_mode) != 0o700):
+            raise HostError("invalid declared executable directory")
+        if any(type(binding) is not ExecutableBinding for binding in bindings):
+            raise HostError("invalid declared executable binding")
+        if len({binding.name for binding in bindings}) != len(bindings) or set(
+                p.name for p in binary_directory.iterdir()) != {binding.name for binding in bindings}:
+            raise HostError("declared executable namespace differs")
+        for binding in bindings:
+            try:
+                binding.verify()
+            except ExecutableAdmissionError as exc:
+                raise HostError(str(exc)) from exc
+            alias = binary_directory / binding.name
+            if (not alias.is_symlink() or alias.lstat().st_uid != os.getuid()
+                    or alias.readlink() != binding.executable.resolved):
+                raise HostError("declared executable alias replaced")
+            declared_files.append(alias)
+            for pin in (binding.executable, *binding.libraries):
+                declared_files.extend((*pin.aliases, pin.resolved))
+            declared_files.extend(binding.system_libraries)
+        bootstrap_search_roots = (*bootstrap_search_roots, binary_directory)
+    elif binary_directory is not None:
+        raise HostError("undeclared executable directory")
     # Keep declared symlink aliases explicit as well as their resolved artifacts.
-    file_aliases = tuple(dict.fromkeys((*policy.bootstrap_files, *bootstrap_files)))
+    file_aliases = tuple(dict.fromkeys((*policy.bootstrap_files, *bootstrap_files, *declared_files)))
     if any(p.is_relative_to(project) or project.is_relative_to(p)
            or p.is_relative_to(private) or private.is_relative_to(p) for p in bootstrap_roots):
         raise HostError("bootstrap roots must not subsume project or private authority")
@@ -2095,7 +2148,8 @@ def _confined_launch_plan(
     executable = path(Path(argv[0]), directory=False)
     if not os.access(executable, os.X_OK):
         raise HostError("confinement command executable is not executable")
-    if executable not in bootstrap_files and not within(executable, bootstrap_roots):
+    if (executable not in bootstrap_files and not within(executable, bootstrap_roots)
+            and executable not in {binding.executable.resolved for binding in bindings}):
         raise HostError("command executable is not an enumerated bootstrap resource")
     working = private if cwd is None else path(cwd, directory=True)
     if not within(working, (*reads, private, *bootstrap_roots)):
@@ -2149,6 +2203,8 @@ def _confined_launch_plan(
     env = {"PATH": "/usr/bin:/bin", "HOME": str(private), "TMPDIR": str(private),
            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "LC_ALL": "C"}
     env.update(selected)
+    if bindings:
+        env["PATH"] = str(binary_directory) + os.pathsep + env["PATH"]
 
     descriptors = items(policy.pass_fds, "descriptor allowlist")
     if any(type(fd) is not int or fd < 3 for fd in descriptors) or len(set(descriptors)) != len(descriptors):
@@ -4559,6 +4615,12 @@ def _attach_pack_metadata(definition: "ExecutorDefinition", executor_root: Path)
     return replace(definition, metadata=metadata)
 
 
+def _binary_requirements(record) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*record.definition.isolation.binaries,
+        *(str(binary) for binary in record.matrix.get("required_binaries", ())),
+        *record.adapter.required_binaries)))
+
+
 @dataclass(frozen=True)
 class CapabilityRecord:
     definition: ExecutorDefinition
@@ -4569,6 +4631,7 @@ class CapabilityRecord:
     manifest_path: Path | None = None
     preflight: Mapping[str, Any] = field(default_factory=dict)
     ready: bool = False
+    executable_bindings: tuple[ExecutableBinding, ...] = ()
     matrix: Mapping[str, Any] = field(default_factory=dict)
     # Set when a discovered capability has no approved capability-matrix row.
     # Such a capability is registered as unavailable with this reason; it is
@@ -5457,7 +5520,9 @@ class GenericPackHost:
         # Composition-root authority only. Never populate from task/admission,
         # manifest, broker, project-path, MCP or environment configuration.
         self._confinement_policy = confinement_policy
-        self._attempt_policy_factory = _AttemptPolicyFactory() if isinstance(client, RuntimeProtocolClient) else None
+        # Captured from trusted host startup, never a request's PATH/env.
+        self._executable_admission = ExecutableAdmission(os.environ.get("PATH", os.defpath))
+        self._attempt_policy_factory = _AttemptPolicyFactory(self._executable_admission) if isinstance(client, RuntimeProtocolClient) else None
         self._attempt_claim_authority = None
         # Provider route grants are intentionally scoped to this host process;
         # their signing key never crosses into a child or runtime payload.
@@ -6310,13 +6375,17 @@ class GenericPackHost:
         for record in selected:
             checks: dict[str, Any] = {"source": record.source_root.is_dir(), "definition": True}
             adapter = record.adapter
-            matrix_binaries = tuple(str(binary) for binary in record.matrix.get("required_binaries", ()))
-            binary_requirements = tuple(dict.fromkeys((*record.definition.isolation.binaries, *matrix_binaries, *adapter.required_binaries)))
-            missing = list(dict.fromkeys(binary for binary in binary_requirements if shutil.which(binary) is None))
+            bindings = []
+            missing, binary_errors = [], []
+            for binary in _binary_requirements(record):
+                try:
+                    bindings.extend(self._executable_admission.require((binary,)))
+                except ExecutableAdmissionError as exc:
+                    missing.append(binary)
+                    binary_errors.append(str(exc))
+            checks["binaries"] = {"ok": not missing, "bindings": [b.evidence() for b in bindings]}
             if missing:
-                checks["binaries"] = {"ok": False, "missing": missing}
-            else:
-                checks["binaries"] = {"ok": True}
+                checks["binaries"].update(missing=missing, reasons=binary_errors)
             required_env = _required_env_names(record)
             required_credentials = set(_required_secret_names(record))
             missing_env = [
@@ -6412,7 +6481,8 @@ class GenericPackHost:
             if record.approval_reason:
                 checks["approval"] = {"ok": False, "reason": record.approval_reason}
             ready = all(value is True or (isinstance(value, dict) and value.get("ok") is True) for value in checks.values())
-            updated[record.id] = CapabilityRecord(**{**record.__dict__, "preflight": checks, "ready": ready})
+            updated[record.id] = CapabilityRecord(**{**record.__dict__, "preflight": checks, "ready": ready,
+                                                   "executable_bindings": tuple(bindings)})
         self.capabilities = updated
         return tuple(updated[key] for key in sorted(updated) if capability_id is None or key == capability_id)
 
@@ -10699,6 +10769,7 @@ class GenericPackHost:
         # Records are replaced by preflight, never modified in place. The
         # aggregate evidence budget is deliberately shared and already locked.
         slot._attempt_policy_factory = self._attempt_policy_factory
+        slot._executable_admission = self._executable_admission
         slot.capabilities = dict(self.capabilities)
         slot.source_epoch = self.source_epoch
         slot.runtime_state = dict(self.runtime_state)
