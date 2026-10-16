@@ -1932,6 +1932,46 @@ class _AuthenticatedAttempt:
     fields: tuple[tuple[str, Any], ...]
 
 
+def _python_runtime_library(prefix: Path) -> Path | None:
+    """Resolve only the selected interpreter's configured shared runtime file."""
+    try:
+        configured_prefix = prefix.resolve(strict=True)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HostError("selected Python prefix is unavailable") from exc
+
+    framework = sysconfig.get_config_var("PYTHONFRAMEWORK")
+    if framework:
+        if (type(framework) is not str or not framework
+                or Path(framework).name != framework or framework in {".", ".."}):
+            raise HostError("configured Python framework name is invalid")
+        candidate = configured_prefix / framework
+    else:
+        shared = sysconfig.get_config_var("Py_ENABLE_SHARED")
+        if shared not in (1, True, "1", "yes", "true"):
+            return None
+        library = sysconfig.get_config_var("LDLIBRARY")
+        libdir = sysconfig.get_config_var("LIBDIR")
+        if (type(library) is not str or not library or type(libdir) is not str
+                or not libdir or not Path(libdir).is_absolute()):
+            raise HostError("configured Python shared library is incomplete")
+        library_path = Path(library)
+        if library_path.is_absolute() or any(part in {".", ".."} for part in library_path.parts):
+            raise HostError("configured Python shared library path is invalid")
+        candidate = Path(libdir) / library_path
+
+    try:
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_file():
+            raise HostError("configured Python runtime library is unavailable")
+    except HostError:
+        raise
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HostError("configured Python runtime library is unavailable") from exc
+    if not resolved.is_relative_to(configured_prefix):
+        raise HostError("configured Python runtime library escapes selected prefix")
+    return resolved
+
+
 class _AttemptPolicyFactory:
     """Trusted code/bootstrap configuration shared by slots, never a policy."""
 
@@ -1963,7 +2003,8 @@ class _AttemptPolicyFactory:
         _verify_admitted_source({"source_digest": record.source_digest, "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)]})
         python = Path(sys.executable).resolve(strict=True)
         prefix = Path(sys.base_prefix).resolve(strict=True)
-        files = (python, prefix / "lib/libpython3.11.dylib",
+        python_library = _python_runtime_library(prefix)
+        files = (python, *((python_library,) if python_library is not None else ()),
                  Path("/opt/homebrew/opt/gettext/lib/libintl.8.dylib"),
                  Path("/dev/null"), Path("/dev/urandom"), Path("/dev/random"))
         roots = (Path(sysconfig.get_path("stdlib")).resolve(),

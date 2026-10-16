@@ -54,6 +54,74 @@ def build(tmp_path, admission, record, monkeypatch):
     return policy, authority
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Python 3.12 framework fixture requires macOS")
+def test_python_312_framework_runtime_library_resolves_exact_file(monkeypatch):
+    prefix = Path("/Library/Frameworks/Python.framework/Versions/3.12")
+    expected = prefix / "Python"
+    assert expected.is_file(), "the supported-host Python 3.12 framework file is unavailable"
+    monkeypatch.setattr(host.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(host.sysconfig, "get_config_var",
+                        lambda name: "Python" if name == "PYTHONFRAMEWORK" else None)
+    assert host._python_runtime_library(prefix) == expected.resolve(strict=True)
+
+
+def test_non_framework_runtime_library_uses_exact_configured_shared_file(tmp_path, monkeypatch):
+    prefix = tmp_path / "python"
+    libdir = prefix / "lib"
+    libdir.mkdir(parents=True)
+    library = libdir / "libpython3.12.so"
+    library.write_bytes(b"synthetic runtime library")
+    config = {"PYTHONFRAMEWORK": "", "Py_ENABLE_SHARED": 1,
+              "LIBDIR": str(libdir), "LDLIBRARY": library.name}
+    monkeypatch.setattr(host.sysconfig, "get_config_var", lambda name: config.get(name))
+    assert host._python_runtime_library(prefix) == library.resolve(strict=True)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Python 3.12 framework fixture requires macOS")
+def test_python_312_framework_policy_grants_only_runtime_file(selected, tmp_path, monkeypatch):
+    prefix = Path("/Library/Frameworks/Python.framework/Versions/3.12")
+    expected = (prefix / "Python").resolve(strict=True)
+    monkeypatch.setattr(host.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(host.sysconfig, "get_config_var",
+                        lambda name: "Python" if name == "PYTHONFRAMEWORK" else None)
+    admission, _, _ = selected
+    _, record = record_for(tmp_path, admission)
+    policy, _ = build(tmp_path, admission, record, monkeypatch)
+    profile = host._confined_launch_plan([sys.executable], policy=policy).argv[2]
+    assert f'(allow file-read* (literal "{expected}"))' in profile
+    for directory in (Path("/Library/Frameworks"), Path("/Library/Frameworks/Python.framework"), prefix):
+        assert f'(allow file-read* (literal "{directory}"))' not in profile
+        assert f'(allow file-read* (subpath "{directory}"))' not in profile
+        assert f'(allow file-map-executable (literal "{directory}"))' not in profile
+
+
+@pytest.mark.parametrize("state", ["absent", "replaced-outside-prefix"])
+def test_configured_python_runtime_library_refuses_before_spawn(selected, tmp_path, monkeypatch, state):
+    prefix = tmp_path / "Python.framework" / "Versions" / "3.12"
+    prefix.mkdir(parents=True)
+    configured = prefix / "Python"
+    if state == "replaced-outside-prefix":
+        replacement = tmp_path / "replacement" / "Python"
+        replacement.parent.mkdir()
+        replacement.write_bytes(b"replacement runtime")
+        configured.symlink_to(replacement)
+    monkeypatch.setattr(host.sys, "base_prefix", str(prefix))
+    monkeypatch.setattr(host.sysconfig, "get_config_var",
+                        lambda name: "Python" if name == "PYTHONFRAMEWORK" else None)
+    admission, _, _ = selected
+    h, record = record_for(tmp_path, admission)
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    spawn_calls = []
+    monkeypatch.setattr(host, "_verify_admitted_source", lambda _: None)
+    monkeypatch.setattr(host.shutil, "which", lambda name, **kw: "/usr/bin/sandbox-exec")
+    monkeypatch.setattr(host, "popen_owned_group", lambda *a, **k: spawn_calls.append((a, k)))
+    authority = host._AuthenticatedAttempt((("project_id", "synthetic-project"), ("fence", 7)))
+    with pytest.raises(host.HostError, match="configured Python runtime library"):
+        host._AttemptPolicyFactory(admission).build(authority, attempt=attempt, record=record)
+    assert spawn_calls == []
+
+
 def test_readiness_and_authenticated_policy_retain_exact_identity(selected, tmp_path, monkeypatch):
     admission, executable, library = selected
     _, record = record_for(tmp_path, admission)

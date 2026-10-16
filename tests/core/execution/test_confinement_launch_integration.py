@@ -44,10 +44,13 @@ def launch(tmp_path):
     probe=tmp_path/'fake_provider.py'; probe.write_text(PROBE)
     python=Path(sys.executable).resolve()
     prefix=Path(sys.base_prefix)
-    files=(python, prefix/'lib/libpython3.11.dylib',
+    python_library=host._python_runtime_library(prefix)
+    files=(python, *((python_library,) if python_library is not None else ()),
            Path('/opt/homebrew/opt/gettext/lib/libintl.8.dylib'),
            Path('/dev/null'),Path('/dev/urandom'),Path('/dev/random'),probe)
-    roots=(prefix/'lib/python3.11',Path('/usr/lib'),
+    roots=(Path(host.sysconfig.get_path('stdlib')).resolve(),
+           Path(host.sysconfig.get_path('purelib')).resolve(),
+           Path(host.sysconfig.get_path('platlib')).resolve(),Path('/usr/lib'),
            Path('/System/Library/Frameworks/CoreFoundation.framework'),
            Path('/System/Library/Frameworks/CoreServices.framework'),
            Path('/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld'),
