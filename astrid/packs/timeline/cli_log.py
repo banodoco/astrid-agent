@@ -13,7 +13,10 @@ from astrid.sdk.timeline import journal, store
 
 def configure_log(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
-    parser.add_argument("--project", required=True, help="Owning project id or immutable slug.")
+    parser.add_argument(
+        "--project", default=None,
+        help="Owning project id or immutable slug. When omitted, use the workspace runtime's current project.",
+    )
     parser.add_argument("--since", default=None, help="A sequence number or ISO timestamp.")
     parser.add_argument("--actor", default=None, help="Actor id or kind:id.")
     parser.add_argument("--op", default=None, help="Operation label or operation id.")

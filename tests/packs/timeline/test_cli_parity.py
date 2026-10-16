@@ -20,6 +20,12 @@ class _Projects:
             )
         return DomainResult.success({"project": {"slug": self._project, "project_id": "P-" + self._project}})
 
+    def list(self, **_kwargs):
+        return DomainResult.success([
+            {"slug": "demo", "name": "Demo", "project_id": "P-demo"},
+            {"slug": "other", "name": "Other", "project_id": "P-other"},
+        ])
+
 
 class _Client:
     def __init__(self, project="demo"):
@@ -34,6 +40,7 @@ VERBS = {
     "check": ["check", "main"],
     "discard": ["discard", "main"],
     "find": ["find", "main", "hello"],
+    "log": ["log", "main"],
     "lines": ["lines", "main"],
     "publish": ["publish", "main", "-m", "why"],
     "redo": ["redo", "main"],
@@ -64,6 +71,90 @@ def test_no_current_project_is_a_clear_error(verb, capsys) -> None:
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "no current project" in err and "--project" in err
+    assert "demo" in err and "other" in err
+
+
+def test_every_top_level_timeline_project_option_is_optional() -> None:
+    parser = timeline_cli.build_parser(_Client("demo"))
+
+    def project_actions(current):
+        found = []
+        for action in current._actions:
+            if action.dest == "project":
+                found.append(action)
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict):
+                for child in choices.values():
+                    found.extend(project_actions(child))
+        return found
+
+    actions = project_actions(parser)
+    assert actions
+    assert all(not action.required for action in actions)
+
+
+@pytest.mark.parametrize("argv", [
+    ["edit", "--file", "draft.json", "--clip", "c1", "--project", "P"],
+    ["check", "main", "--project", "P"],
+    ["find", "--file", "draft.json", "main", "viral", "--project", "P"],
+    ["undo", "main", "--project", "P"],
+    ["apply", "main", "changes.json", "--project", "P"],
+])
+def test_editor_verbs_offer_json_as_an_opt_in(argv) -> None:
+    parser = timeline_cli.build_parser(_Client("demo"))
+
+    human = parser.parse_args(argv)
+    machine = parser.parse_args([*argv, "--json"])
+
+    assert human.json is False
+    assert machine.json is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["status", "main", "--project", "P"],
+    ["publish", "main", "--project", "P", "-m", "why"],
+    ["history", "main", "--project", "P"],
+    ["diff", "main", "--project", "P"],
+    ["list", "--project", "P"],
+    ["render", "main", "--project", "P"],
+    ["checkout", "main", "--project", "P"],
+])
+def test_human_first_verbs_offer_json_envelopes_as_opt_in(argv) -> None:
+    parser = timeline_cli.build_parser(_Client("demo"))
+
+    human = parser.parse_args(argv)
+    machine = parser.parse_args([*argv, "--json"])
+
+    assert human.json is False
+    assert getattr(human, "format", None) is None
+    assert machine.json is True or getattr(machine, "format", None) == "json"
+
+
+def test_one_selected_project_is_named_on_list_summary_first_line(capsys) -> None:
+    class Timelines:
+        def __init__(self):
+            self.project = None
+
+        def list(self, project, *, include_archived=False):
+            self.project = project
+            return DomainResult.success([{"slug": "main", "name": "Main"}])
+
+    client = _Client("demo")
+    client.timelines = Timelines()
+    parsed = timeline_cli.build_parser(client).parse_args(["list"])
+    assert parsed.handler(parsed) == 0
+    assert client.timelines.project == "P-demo"
+    assert capsys.readouterr().out.splitlines()[0].startswith("project P-demo ·")
+
+
+def test_unknown_flag_names_verb_flag_and_nearest_option_in_three_lines(capsys) -> None:
+    parser = timeline_cli.build_parser(_Client())
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["edit", "main", "--clip", "c1", "--clpi", "c1"])
+    assert exc.value.code == 2
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) <= 3
+    assert "edit" in lines[0] and "--clpi" in lines[0] and "--clip" in lines[0]
 
 
 def test_publish_requires_a_message(capsys) -> None:

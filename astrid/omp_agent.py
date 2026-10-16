@@ -113,10 +113,9 @@ when you want to make the agent route explicit.
   astrid                         interactive Astrid agent
   astrid agent [flags] [message] interactive/one-shot Astrid agent
   astrid <toolkit> ...           product toolkit gateway
-  astrid login                   log in for Hivemind contributions
-  astrid status                  show Hivemind contributor login status
-  astrid logout                  remove the local Hivemind login
-  astrid revoke                  revoke the Hivemind contributor login
+  astrid status [--json]         workspace and Runtime status
+  astrid dev ...                 developer operations
+  astrid auth login|status|logout|revoke  Hivemind contributor login lifecycle
   astrid help                    product toolkit help
 
   --agent NAME     talk to a different installed agent (default: astrid)
@@ -380,6 +379,8 @@ def main(argv: list[str] | None = None, *, confinement_policy: _ConfinementPolic
             return 2
         return _print_agent_profile_file()
     if rest and rest[0] == "help":
+        return _dispatch_toolkit(rest)
+    if rest and rest[0] in {"status", "dev"}:
         return _dispatch_toolkit(rest)
     if rest and rest[0] == "auth":
         return run_auth(rest[1:])

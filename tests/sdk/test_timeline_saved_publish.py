@@ -519,7 +519,7 @@ def test_cli_publish_lost_response_default_key_and_dry_run(setup, monkeypatch, c
     monkeypatch.setattr("astrid.sdk.timeline_checkout.find_draft", lambda *a, **kw: draft.path)
     runtime.lose = True
     parser = cli.build_parser(runtime.client())
-    args = ["publish", "t", "--project", "p", "-m", "edit"]
+    args = ["publish", "t", "--project", "p", "-m", "edit", "--json"]
     parsed = parser.parse_args(args)
     # Direct handler, never the launcher.
     assert parsed.handler(parsed) != 0

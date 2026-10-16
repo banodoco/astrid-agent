@@ -730,6 +730,14 @@ def test_human_output_is_concise() -> None:
         ErrorObject(code="conflict", message="stale version", details={})
     )
     assert render_human(failure) == "error conflict: stale version"
+    actionable = DomainResult.failure(ErrorObject(
+        code="conflict", message="stale version",
+        details={"next_action": "run timelines checkout main"},
+    ))
+    assert render_human(actionable).splitlines() == [
+        "error conflict: stale version",
+        "next action: run timelines checkout main",
+    ]
 
 
 def test_human_output_summarizes_every_list_row_and_nested_report() -> None:

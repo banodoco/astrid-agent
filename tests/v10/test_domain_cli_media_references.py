@@ -88,7 +88,7 @@ class _RecordingMedia:
         )
         key = idempotency_key or "generated-key"
         return DomainResult.success(
-            {"id": "M-1", "project_id": "P-1", "content_hash": "abc"},
+            {"id": "M-1", "project_id": "P-1", "content_hash": "abc", "digest": "sha256:" + "a" * 64},
             receipt=_receipt("core.media.import", key),
             idempotency_key=key,
         )
@@ -524,6 +524,18 @@ def test_media_import_file_is_one_sdk_call_with_exact_envelope(tmp_path, capsys)
     assert envelope["data"]["id"] == "M-1"
     assert envelope["receipt"]["command_kind"] == "core.media.import"
     assert envelope["idempotency_key"] == "generated-key"
+
+
+def test_media_import_human_output_includes_reusable_handle_and_swap_command(tmp_path, capsys) -> None:
+    path = tmp_path / "shot.png"
+    path.write_bytes(b"png-bytes")
+    rc = _run("media", ["import", str(path), "--project", "demo"], client=_FakeClient())
+    lines = capsys.readouterr().out.splitlines()
+
+    assert rc == 0
+    handle = "sha256:" + "a" * 64
+    assert f"handle: {handle}" in lines
+    assert f"--swap-asset {handle}" in lines[-1]
 
 
 def test_media_import_directory_is_one_sdk_call(tmp_path, capsys) -> None:

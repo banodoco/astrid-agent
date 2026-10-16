@@ -5,7 +5,7 @@ import argparse
 from typing import Any
 
 
-def configure_find(parser: argparse.ArgumentParser, add_project_arg: Any) -> None:
+def configure_find(parser: argparse.ArgumentParser, add_project_arg: Any, add_json_flag: Any) -> None:
     parser.description = (
         "Find what you see or hear: a spoken phrase (the conclusion; '\"tool\" in v20a'), a layer name (claw), "
         "on-screen text or an asset key. Each hit prints its address (paste it into show/edit/visualize), its time, "
@@ -23,6 +23,7 @@ def configure_find(parser: argparse.ArgumentParser, add_project_arg: Any) -> Non
     add_find_flags(parser)
     parser.add_argument("--file", default=None, help="Read a local checkout file instead.")
     parser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
+    add_json_flag(parser, default=False)
 
 
 def add_find_flags(parser: argparse.ArgumentParser) -> None:

@@ -68,7 +68,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_result, render_human
+from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_result, render_envelope_json, render_human
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 from astrid.packs.timeline.cli_visualize import (  # noqa: F401  (re-exported: the verb's helpers live beside it)
@@ -136,7 +136,7 @@ def _add_idempotency_key(subparser: argparse.ArgumentParser) -> None:
 
 
 def _add_project_arg(
-    subparser: argparse.ArgumentParser, *, required: bool = True
+    subparser: argparse.ArgumentParser, *, required: bool = False
 ) -> None:
     subparser.add_argument(
         "--project",
@@ -216,7 +216,21 @@ def _cmd_list(parsed: argparse.Namespace) -> int:
             receipt=result.receipt,
             idempotency_key=result.idempotency_key,
         )
-    return print_result(result, as_json=parsed.json)
+    def human(envelope: object) -> str:
+        data = envelope_dict(envelope)["data"]
+        rows = data[0] if isinstance(data, list) and len(data) == 2 and isinstance(data[0], list) else data
+        rows = rows if isinstance(rows, list) else []
+        lines = [f"project {parsed.project} · {len(rows)} timeline(s)"]
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            title = row.get("name") or row.get("slug") or row.get("timeline_id") or row.get("id") or "timeline"
+            slug = row.get("slug")
+            identity = f"{title} ({slug})" if slug and slug != title else str(title)
+            lines.append(f"  {identity}")
+        return "\n".join(lines)
+
+    return print_result(result, as_json=parsed.json, human_renderer=human)
 
 
 def _timeline_summary(item: Any) -> Any:
@@ -1375,9 +1389,15 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
                 result,
                 human_renderer=lambda envelope: format_authoring_revision_diff(
                     envelope_dict(envelope)["data"], mode=output_format,
+                ) if as_json else f"project {parsed.project} · " + format_authoring_revision_diff(
+                    envelope_dict(envelope)["data"], mode=output_format,
                 ),
             )
-        return print_result(result, as_json=True)
+        return print_result(
+            result,
+            as_json=as_json,
+            human_renderer=lambda envelope: f"project {parsed.project} · {render_human(envelope)}",
+        )
 
     presentation = getattr(parsed, "presentation", None)
     if as_json and presentation:
@@ -1422,7 +1442,7 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
             render(before_bundle).splitlines(), render(after_bundle).splitlines(),
             fromfile=old, tofile=new, lineterm="", n=2,
         )
-        print("\n".join(lines) or f"No differences in the {view} view.")
+        print(f"project {parsed.project} · " + ("\n".join(lines) or f"No differences in the {view} view."))
         return 0
 
     from astrid.sdk.timeline_cuts import diff_bundles, render_diff
@@ -1442,10 +1462,10 @@ def _cmd_diff(parsed: argparse.Namespace) -> int:
             ])
     diff["commands"] = commands
     if as_json:
-        print(json.dumps({"ok": True, "data": diff, "error": None}, indent=2, sort_keys=True))
-        return 0
+        return print_result(DomainResult.success(diff), as_json=True)
     text = render_diff(diff, title=f"Timeline {after.data.get('timeline_id')}: {old} → {new}",
                        limit=None if getattr(parsed, "all", False) else 40)
+    text = f"project {parsed.project} · {text}"
     if commands:
         text += "\nsee it: frames of only the changed moments, before and after (no full render):"
         text += "\n" + "\n".join(f"  {label}: {command}" for label, command in commands.items())
@@ -1469,10 +1489,9 @@ def _diff_working_copy(parsed: argparse.Namespace, working: Mapping[str, Any], *
     diff = diff_bundles(head.data["bundle"], working["bundle"])
     diff.update({"from_revision": old, "to_revision": "working copy", "timeline_id": head.data.get("timeline_id")})
     if as_json:
-        print(json.dumps({"ok": True, "data": {**diff, "working_copy": {"base_revision": working["base_revision"],
-                          "edits": len(working["changes"])}}, "error": None}, indent=2, sort_keys=True))
-        return 0
-    print(working_banner(working))
+        return print_result(DomainResult.success({**diff, "working_copy": {"base_revision": working["base_revision"],
+                                           "edits": len(working["changes"])}}), as_json=True)
+    print(f"project {parsed.project} · {working_banner(working)}")
     print(render_diff(diff, title=f"Timeline {head.data.get('timeline_id')}: {old} → working copy",
                       limit=None if getattr(parsed, "all", False) else 40))
     return 0
@@ -2140,10 +2159,12 @@ def _cmd_render(parsed: argparse.Namespace) -> int:
     assert isinstance(data, Mapping)
     if working is not None:
         print(
-            f"WORKING COPY · {_clips_changed(working['edits'])} vs published {working['base_revision']} · "
+            f"project {parsed.project} · WORKING COPY · {_clips_changed(working['edits'])} vs published {working['base_revision']} · "
             "rendering the draft, not the published head"
         )
-    print(f"render {data['state']}")
+        print(f"render {data['state']}")
+    else:
+        print(f"project {parsed.project} · render {data['state']}")
     durable_run_id = data.get("kernel_run_id") or data.get("run_id")
     if durable_run_id:
         print(f"run: {durable_run_id}")
@@ -2235,7 +2256,7 @@ def _configure_list(subparser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Include archived timelines and their archived_at state.",
     )
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_list)
 
 
@@ -2361,7 +2382,7 @@ def _configure_history(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument("ref", help="Timeline UUID, ULID, or slug (TL@prev etc. names an earlier revision elsewhere).")
     subparser.add_argument("--limit", type=_positive_int, default=50, help="Newest revisions to list (default 50).")
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_history)
 
 
@@ -2376,9 +2397,9 @@ def _configure_diff(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--to-version", type=int, help="Explicit legacy integer version (not a canonical parent revision).")
     output = subparser.add_mutually_exclusive_group()
     output.add_argument("--format", choices=("readable", "details", "json"),
-                        help="Group authored changes, show every raw detail, or print the exact SDK envelope (default: json).")
+                        help="Human summary by default; group changes, show details, or print the SDK envelope.")
     output.add_argument("--json", dest="format", action="store_const", const="json",
-                        help="Print the exact SDK envelope; equivalent to --format json (default).")
+                        help="Print the SDK envelope; same as --format json.")
     subparser.add_argument(
         "--as",
         dest="presentation",
@@ -2646,7 +2667,7 @@ def _configure_render(subparser: argparse.ArgumentParser) -> None:
         default=3600.0,
         help="Maximum wait for --wait before returning a non-success result (default: 3600).",
     )
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_cmd_render)
 
 
@@ -2670,6 +2691,7 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline import store
     from astrid.sdk.timeline._common import TimelineEditError
     from astrid.sdk.timeline_checkout import Checkout
+    from astrid.sdk.contracts import ErrorObject
 
     if getattr(parsed, "refresh", False):
         if parsed.fresh or getattr(parsed, "from_ref", None):
@@ -2677,9 +2699,16 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
         from astrid.sdk.timeline_checkout import find_draft
         path = find_draft(parsed.project, parsed.ref, parsed.draft, client=parsed.client)
         if path is None:
-            raise TimelineEditError("no working copy to refresh; run timelines checkout first")
+            return print_result(DomainResult.failure(ErrorObject(
+                "not_found", "no working copy to refresh; run timelines checkout first",
+                {"next_action": f"run timelines checkout {parsed.ref} --project {parsed.project}"},
+            )), as_json=parsed.json)
         result = Checkout.load(path).refresh(client=parsed.client)
-        print_result(DomainResult.success(result), as_json=parsed.json)
+        print_result(
+            DomainResult.success(result),
+            as_json=parsed.json,
+            human_renderer=lambda _envelope: f"project {parsed.project} · working copy {parsed.draft or 'main'} refreshed",
+        )
         return 1 if result["conflicts"] else 0
     if parsed.fresh:
         project_id, timeline_id, _head = store.resolve_ids(
@@ -2692,8 +2721,6 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
             base_known, changed_units = _checkout_change_units(previous)
             dirty = not base_known or bool(changed_units)
             if dirty:
-                from astrid.sdk.contracts import ErrorObject
-
                 return print_result(
                     DomainResult.failure(
                         ErrorObject(
@@ -2704,6 +2731,7 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
                                 "base_revision": previous.base_revision,
                                 "change_state": "changed" if base_known else "unknown",
                                 "changed_units": changed_units,
+                                "next_action": f"run timelines checkout {parsed.ref} --project {parsed.project} --draft NEW_NAME --fresh",
                             },
                         )
                     ),
@@ -2721,20 +2749,34 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
         client=parsed.client,
         fresh=parsed.fresh,
     )
+    data = {
+        "project_id": parsed.project,
+        "timeline_id": tl.bundle.get("timeline_id") or parsed.ref,
+        "draft": parsed.draft or "main",
+        "base_revision": tl.base_revision,
+        "working_copy": "present",
+    }
     if not getattr(parsed, "from_ref", None):
         try:
             summary = checkout_summary(parsed, tl, existed=existed)
         except Exception:  # noqa: BLE001 - the summary is a courtesy; the working copy exists either way
             summary = []
+        if parsed.json:
+            return print_result(DomainResult.success(data), as_json=True)
         for line in summary:
             print(line)
     if getattr(parsed, "from_ref", None):
         if tl.changes():
-            print("working copy has edits; choose a new --draft name before adopting another timeline", file=sys.stderr)
-            return 2
+            return print_result(DomainResult.failure(ErrorObject(
+                "conflict", "working copy has edits; choose a new --draft name before adopting another timeline",
+                {"next_action": f"run timelines checkout {parsed.ref} --project {parsed.project} --draft NEW_NAME --from {parsed.from_ref}"},
+            )), as_json=parsed.json)
         tl.adopt(parsed.from_ref, client=parsed.client)
         tl.save()
-        print(f"adopted {parsed.from_ref}: narration, cuts, assets and intent")
+        data["adopted_from"] = parsed.from_ref
+        if parsed.json:
+            return print_result(DomainResult.success(data), as_json=True)
+        print(f"project {parsed.project} · adopted {parsed.from_ref}: narration, cuts, assets and intent")
     return 0 if tl else 1
 
 
@@ -2773,10 +2815,13 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
             except TimelineEditError:
                 pass  # history unavailable remains explicitly unknown
     fields = status_fields(checkout, head, revisions=revisions, client=parsed.client)
-    if getattr(parsed, "text", False):
+    if getattr(parsed, "text", False) and not parsed.json:
         from astrid.packs.timeline.cli_common import status_text
         from astrid.packs.timeline.cli_sync import sync_lines
-        print("\n".join(sync_lines(fields)))
+        lines = sync_lines(fields)
+        if lines:
+            lines[0] = f"project {parsed.project} · {lines[0]}"
+        print("\n".join(lines))
         result = status_text(parsed, project_id, timeline_id, current_head, draft_name, path if path.is_file() else None)
         for draft in drafts:
             print(f'working copy "{draft["draft"]}" · {draft["change_state"]}'
@@ -2817,7 +2862,28 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
                 },
             }
         )
-    return print_result(DomainResult.success(data), as_json=parsed.json)
+    def human(envelope: object) -> str:
+        status = envelope_dict(envelope)["data"]
+        head = str(status.get("current_head") or "unknown")
+        working = str(status.get("working_copy") or "unknown")
+        if working == "absent":
+            lines = [f"project {parsed.project} · timeline {status['timeline_id']} · head {head[:8]} · no working copy",
+                     f"next: timelines checkout {parsed.ref} --project {parsed.project}"]
+            return "\n".join(lines)
+        state = str(status.get("change_state") or "unknown")
+        lines = [f"project {parsed.project} · timeline {status['timeline_id']} · head {head[:8]} · working copy {status.get('draft')} ({state})"]
+        check = status.get("check")
+        if isinstance(check, Mapping):
+            problems = check.get("problems") or []
+            lines.append(f"check: {'valid' if check.get('valid') else f'{len(problems)} issue(s)'}")
+        next_verb = "publish" if status.get("changed") else "edit"
+        if next_verb == "publish":
+            lines.append(f'next: timelines publish {parsed.ref} --project {parsed.project} -m "what changed"')
+        else:
+            lines.append(f"next: timelines edit {parsed.ref} --project {parsed.project} --clip ADDRESS --set KEY=VALUE")
+        return "\n".join(lines)
+
+    return print_result(DomainResult.success(data), as_json=parsed.json, human_renderer=human)
 
 
 def _cmd_publish(parsed: argparse.Namespace) -> int:
@@ -2835,7 +2901,8 @@ def _cmd_publish(parsed: argparse.Namespace) -> int:
                 ErrorObject(
                     "not_found",
                     "no working copy exists to publish; run timelines checkout first",
-                    {"timeline": parsed.ref, "draft": parsed.draft},
+                    {"timeline": parsed.ref, "draft": parsed.draft,
+                     "next_action": f"astrid timelines checkout {parsed.ref} --project {parsed.project}"},
                 ),
                 idempotency_key=parsed.idempotency_key or "",
             ),
@@ -2854,29 +2921,83 @@ def _cmd_publish(parsed: argparse.Namespace) -> int:
         )
     except WorkspaceClientError as exc:
         from astrid.sdk.contracts import ErrorObject
+        details = dict(exc.details or {})
+        details.setdefault("retry", "repeat publish to resolve the saved request")
         return print_result(DomainResult.failure(ErrorObject(
-            exc.code, str(exc), {"details": exc.details, "retry": "repeat publish to resolve the saved request"}),
+            exc.code, str(exc), details),
             idempotency_key=key or ""), as_json=parsed.json)
     key = receipt.get("request_id", key) or ""
     if receipt.get("status") in {"error", "refused", "conflict"}:
         from astrid.sdk.contracts import ErrorObject
         error = receipt.get("error") or {}
+        details = {"receipt": receipt}
+        if isinstance(error.get("details"), Mapping):
+            details.update(error["details"])
         return print_result(DomainResult.failure(ErrorObject(
             error.get("code", receipt["status"]),
             error.get("message", "timeline commit requires correction"),
-            {"receipt": receipt}), idempotency_key=key), as_json=parsed.json)
+            details), idempotency_key=key), as_json=parsed.json)
+    def human(envelope: object) -> str:
+        data = envelope_dict(envelope)["data"]
+        revision = (data.get("accepted_revision_id") or data.get("new_head")
+                    or data.get("revision_id") or data.get("status") or "published")
+        return f"project {parsed.project} · published {parsed.ref} · revision {revision}"
+
     return print_result(
-        DomainResult.success(receipt, idempotency_key=key), as_json=parsed.json
+        DomainResult.success(receipt, idempotency_key=key), as_json=parsed.json,
+        human_renderer=human,
     )
 
 
-def _edit_duration(value: str) -> float:
-    text=str(value).strip()
-    if text.endswith("f"):
-        return int(text[:-1]) / 30.0
-    if text.endswith("s"):
-        text=text[:-1]
-    return float(text)
+_DURATION_ARG = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*([sf]?)\s*$", re.IGNORECASE)
+
+
+class _FrameDuration(float):
+    """A numeric frame count, kept distinct until the timeline fps is known."""
+
+
+def _edit_duration(value: Any, *, fps: float = 30.0) -> float:
+    """Parse seconds or frame lengths; frame values use the edited timeline's frame rate."""
+    if isinstance(value, _FrameDuration):
+        return float(value) / float(fps)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    match = _DURATION_ARG.fullmatch(str(value))
+    if match is None:
+        raise ValueError(f"time must be seconds or frames (0.6, 0.6s, or 18f), got {value!r}")
+    amount = float(match.group(1))
+    return amount / float(fps) if match.group(2).lower() == "f" else amount
+
+
+def _parse_duration_arg(value: str) -> float | _FrameDuration:
+    """Validate a time token while retaining its unit until the timeline fps is known."""
+    match = _DURATION_ARG.fullmatch(value)
+    if match is None:
+        raise argparse.ArgumentTypeError(f"time must be seconds or frames (0.6, 0.6s, or 18f), got {value!r}")
+    amount = float(match.group(1))
+    return _FrameDuration(amount) if match.group(2).lower() == "f" else amount
+
+
+def _normalize_edit_durations(parsed: argparse.Namespace, tl: Any) -> None:
+    fps = float(getattr(tl, "fps", 30) or 30)
+    for name in (
+        "trim_in", "trim_out", "slip", "for_seconds", "extend", "nudge", "offset",
+        "insert_gap_after", "overlap",
+    ):
+        value = getattr(parsed, name, None)
+        if value is not None:
+            setattr(parsed, name, _edit_duration(value, fps=fps))
+    if parsed.insert:
+        at, seconds = parsed.insert
+        parsed.insert = (at, _edit_duration(seconds, fps=fps))
+    converted_gaps = []
+    for item in getattr(parsed, "gap_after", []) or []:
+        segment, sep, seconds = item.partition("=")
+        if sep and segment:
+            converted_gaps.append(f"{segment}={_edit_duration(seconds, fps=fps)}")
+        else:
+            converted_gaps.append(item)
+    parsed.gap_after = converted_gaps
 
 
 def _crossfade(tl: Any, parsed: argparse.Namespace) -> None:
@@ -2993,14 +3114,11 @@ def _parse_set(items: list[str] | None) -> dict[str, Any]:
     return out
 
 
-def _parse_insert(value: str) -> tuple[str, float]:
+def _parse_insert(value: str) -> tuple[str, str]:
     at, sep, seconds = value.rpartition(":")
     if not sep or not at:
         raise argparse.ArgumentTypeError("--insert takes TIME:SECONDS, e.g. 1:02:0.5")
-    try:
-        return at, float(seconds)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"--insert seconds must be a number: {seconds!r}") from exc
+    return at, _parse_duration_arg(seconds)
 
 
 def _edit_label(parsed: argparse.Namespace) -> str:
@@ -3112,6 +3230,8 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
         if not parsed.ref:
             raise _VerbError("name a timeline (timelines edit <timeline> --project P) or pass --file F", 2)
         tl, target = _edit_checkout(parsed), None
+
+    _normalize_edit_durations(parsed, tl)
 
     if parsed.music is not None:
         from astrid.packs.timeline.cli_music import apply_music_policy
@@ -3254,6 +3374,13 @@ def _apply_edit(tl: Any, parsed: argparse.Namespace) -> None:
     if parsed.clip is None and parsed.cut is None:
         return
     if parsed.clip is not None:
+        if re.fullmatch(r"c\d+[a-z]?", str(parsed.clip).strip().lower()):
+            try:
+                tl.cut(str(parsed.clip).strip().lower())
+            except TimelineEditError:
+                pass
+            else:
+                raise _VerbError(f"--clip {parsed.clip} names a cut; use --cut {parsed.clip}", 2)
         clip = tl.clip(parsed.clip, near=parsed.near, cut=parsed.cut)
     else:
         cut_ref = int(parsed.cut) if str(parsed.cut).isdigit() else parsed.cut
@@ -3450,15 +3577,63 @@ def _as_timeline_verb(handler):
     return run
 
 
+def _json_aware(handler):
+    """Give the hand-written editor verbs an opt-in, exact JSON envelope."""
+    @wraps(handler)
+    def run(parsed):
+        if not getattr(parsed, "json", False):
+            return handler(parsed)
+
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from astrid.sdk.contracts import ErrorObject
+
+        stdout, stderr = StringIO(), StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = int(handler(parsed))
+        output = stdout.getvalue().strip()
+        error_text = stderr.getvalue().strip()
+        try:
+            decoded = json.loads(output) if output else None
+        except json.JSONDecodeError:
+            decoded = None
+        # A guarded helper can already have produced the stable envelope.
+        if isinstance(decoded, Mapping) and set(decoded) == {"ok", "data", "error", "receipt", "idempotency_key"}:
+            print(render_envelope_json(decoded))
+            return code
+        if code in (0, 3):
+            data = decoded if decoded is not None else {
+                "summary": output,
+                "exit_code": code,
+            }
+            result = DomainResult.success(data)
+        else:
+            message = error_text or output or f"{getattr(parsed, 'command', 'timeline command')} failed"
+            details: dict[str, Any] = {"summary": output} if output and output != message else {}
+            action = next((line.partition(":")[2].strip() for line in message.splitlines()
+                           if line.lower().startswith("next action:")), None)
+            if action:
+                details["next_action"] = action
+            result = DomainResult.failure(ErrorObject(
+                "usage_error" if code == 2 else "command_failed",
+                message,
+                details,
+            ))
+        print(render_envelope_json(result))
+        return code
+    return run
+
+
 def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", help="Timeline id or slug to check out.")
     subparser.add_argument("--from", dest="from_ref", help="Adopt content from another timeline into this working copy.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
     subparser.add_argument("--fresh", action="store_true", help="Check out the current head instead of reusing the selected working copy.")
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.add_argument("--refresh", action="store_true", help="Rebase this working copy's recorded commands onto the observed head.")
-    subparser.set_defaults(handler=_as_timeline_verb(_cmd_checkout))
+    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_checkout)))
 
 
 def _configure_lift(subparser: argparse.ArgumentParser) -> None:
@@ -3491,7 +3666,7 @@ def _configure_status(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("ref", help="Timeline id or slug to inspect.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
     subparser.add_argument("--text", "--human", dest="text", action="store_true",
-                           help="Print the human summary (changes in plain words, check, next steps) instead of the envelope.")
+                           help="Print detailed changes, check and next steps.")
     subparser.add_argument("--all", action="store_true", help="With --text: every change and the full check report.")
     subparser.add_argument("--render", action="store_true",
                            help="With --text: also look up the latest render of this timeline (scans the run history, ~10 s).")
@@ -3499,7 +3674,7 @@ def _configure_status(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--watch", action="store_true", help="Poll the compact Runtime head read-only; Ctrl-C stops.")
     subparser.add_argument("--poll-seconds", type=_positive_float, default=2.0)
     subparser.add_argument("--timeout-seconds", type=_positive_float, default=3600.0)
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_status))
 
 
@@ -3511,7 +3686,7 @@ def _configure_publish(subparser: argparse.ArgumentParser) -> None:
     _add_idempotency_key(subparser)
     subparser.add_argument("--force", action="store_true", help="Retained spelling; guarded COMMIT refuses forced expectation overrides.")
     subparser.add_argument("--dry-run", action="store_true", help="Preview through COMMIT without reserving a publish intent.")
-    _add_json_flag(subparser)
+    _add_json_flag(subparser, default=False)
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_publish))
 
 
@@ -3590,11 +3765,11 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                                 "(needs --track and --on; --for/--until/--trim-in/--trim-out/--gain-db/--id optional).")
     subparser.add_argument("--track", default=None, metavar="TRACK", help="Audio track for --add-media (music, vo, sfx ...).")
     subparser.add_argument("--id", dest="clip_id", default=None, metavar="ID", help="Clip id for --add-media.")
-    subparser.add_argument("--trim-in", dest="trim_in", type=float, default=None, metavar="SECONDS",
+    subparser.add_argument("--trim-in", dest="trim_in", type=_parse_duration_arg, default=None, metavar="SECONDS|FRAMES",
                            help="Set a media clip's source in point; its film start stays and its length follows.")
-    subparser.add_argument("--trim-out", dest="trim_out", type=float, default=None, metavar="SECONDS",
+    subparser.add_argument("--trim-out", dest="trim_out", type=_parse_duration_arg, default=None, metavar="SECONDS|FRAMES",
                            help="Set a media clip's source out point; its film start stays and its length follows.")
-    subparser.add_argument("--slip", type=float, default=None, metavar="SECONDS",
+    subparser.add_argument("--slip", type=_parse_duration_arg, default=None, metavar="SECONDS|FRAMES",
                            help="Move a media clip's source window while its film position and length stay fixed.")
     subparser.add_argument("--set", dest="set_values", action="append", default=[])
     subparser.add_argument("--clear", dest="clear_keys", action="append", default=[], metavar="KEY",
@@ -3612,16 +3787,16 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     add_look_flags(subparser)
     subparser.add_argument("--on", help='Start on a moment: "viral", after "Astrid", beat 2 after "Astrid", c22, +0.8s.')
     subparser.add_argument("--until", help='End on a moment (its start stays): "Astrid", after "viral", c26.')
-    subparser.add_argument("--for", "--duration", dest="for_seconds", type=float, metavar="SECONDS",
+    subparser.add_argument("--for", "--duration", dest="for_seconds", type=_parse_duration_arg, metavar="SECONDS|FRAMES",
                            help="A literal length in seconds (prefer --until when the end means something).")
-    subparser.add_argument("--extend", type=float)
-    subparser.add_argument("--nudge", type=float)
+    subparser.add_argument("--extend", type=_parse_duration_arg, metavar="SECONDS|FRAMES")
+    subparser.add_argument("--nudge", type=_parse_duration_arg, metavar="SECONDS|FRAMES")
     subparser.add_argument("--nudge-frames", type=int)
     subparser.add_argument("--close-gap-before")
     subparser.add_argument("--at", dest="at", help="Start the clip at this time (seconds or m:ss).")
     subparser.add_argument("--at-word", dest="at_word", default=None, help="Start the clip at this word.")
     subparser.add_argument("--n", type=int, default=None, help="Which occurrence of --at-word (1-based).")
-    subparser.add_argument("--offset", type=float, help="Seconds after the word or time.")
+    subparser.add_argument("--offset", type=_parse_duration_arg, metavar="SECONDS|FRAMES", help="Seconds after the word or time.")
     subparser.add_argument("--lift", metavar="CUT", help="Lift this cut's picture; the preceding picture holds over it.")
     subparser.add_argument("--layers", choices=("stay", "remove"), default=None, help="With --lift: re-home layers or remove them (default: stay).")
     subparser.add_argument("--split", metavar="CUT", help="Split this cut at --on MOMENT.")
@@ -3667,7 +3842,8 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--take", help="Selected WAV or registered take for --replace-line/--insert-line.")
     subparser.add_argument("--words", help="Word-timing JSON for --replace-line/--insert-line.")
     subparser.add_argument("--after", help="Existing line after which --insert-line is placed.")
-    subparser.add_argument("--insert-gap-after", "--gap", dest="insert_gap_after", type=float, help="Declared gap after a newly inserted line, in seconds.")
+    subparser.add_argument("--insert-gap-after", "--gap", dest="insert_gap_after", type=_parse_duration_arg,
+                           metavar="SECONDS|FRAMES", help="Declared gap after a newly inserted line, in seconds.")
     subparser.add_argument("--text", "--line-text", dest="line_text",
                            help="Narration text to bind with a replacement or insertion.")
     subparser.add_argument("--takes", help="Take directory used by --from-script.")
@@ -3681,13 +3857,14 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
                            help=f"Crossfade clips A and B on one audio track; optional third token curve=NAME "
                                 f"(default: equal-power; curves: {', '.join(audio_curve_names())}). "
                                 "With --over, moves B's start to create that overlap.")
-    subparser.add_argument("--over", dest="overlap", type=float, default=None, metavar="SECONDS",
+    subparser.add_argument("--over", dest="overlap", type=_parse_duration_arg, default=None, metavar="SECONDS|FRAMES",
                            help="With --crossfade: requested overlap; keeps A fixed and moves B's start.")
     subparser.add_argument("--remove", action="store_true")
     from astrid.packs.timeline.cli_sweep import add_edit_sweep_flags
     add_edit_sweep_flags(subparser)
+    _add_json_flag(subparser, default=False)
     _configure_edit_help(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_cmd_edit))
+    subparser.set_defaults(handler=_as_timeline_verb(_json_aware(_cmd_edit)))
 
 
 def _configure_check(subparser: argparse.ArgumentParser) -> None:
@@ -3704,7 +3881,8 @@ def _configure_check(subparser: argparse.ArgumentParser) -> None:
     add_zoom_flags(subparser)
     from astrid.packs.timeline.cli_sweep import add_check_sweep_flag
     add_check_sweep_flag(subparser)
-    subparser.set_defaults(handler=_as_timeline_verb(_cmd_check))
+    _add_json_flag(subparser, default=False)
+    subparser.set_defaults(handler=_as_timeline_verb(_json_aware(_cmd_check)))
 
 
 def _cmd_assets(parsed: argparse.Namespace) -> int:
@@ -3743,8 +3921,8 @@ def _configure_assets(subparser: argparse.ArgumentParser) -> None:
 def _configure_find(subparser: argparse.ArgumentParser) -> None:
     from astrid.packs.timeline.cli_find import configure_find, run_find
 
-    configure_find(subparser, _add_project_arg)
-    subparser.set_defaults(handler=run_find)
+    configure_find(subparser, _add_project_arg, _add_json_flag)
+    subparser.set_defaults(handler=_json_aware(run_find))
 
 
 def _configure_working_verb(name: str):
@@ -3766,7 +3944,8 @@ def _configure_apply(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("ref", help="Timeline id or slug with a saved working copy.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
     subparser.add_argument("sheet_file", help="Path to an edited cut sheet, commands JSONL file, or Python edit script.")
-    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_apply)))
+    _add_json_flag(subparser, default=False)
+    subparser.set_defaults(handler=_as_timeline_verb(_json_aware(_guarded(2, _cmd_apply))))
 
 
 def _configure_adopt_music(subparser):
@@ -3783,7 +3962,11 @@ def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None
     if handler is _cmd_undo:
         subparser.add_argument("--publication", help="Stage this publication's inverse from verified local commands.")
     subparser.add_argument("--steps", dest="steps_option", type=_positive_int, default=None, help="The same, as an option.")
-    subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _with_steps(handler))))
+    wrapped = _guarded(2, _with_steps(handler))
+    if handler is _cmd_undo:
+        _add_json_flag(subparser, default=False)
+        wrapped = _json_aware(wrapped)
+    subparser.set_defaults(handler=_as_timeline_verb(wrapped))
 
 
 def _configure_restore(subparser: argparse.ArgumentParser) -> None:

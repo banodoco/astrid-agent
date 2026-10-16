@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -64,13 +63,14 @@ def run_history(parsed: Any) -> int:
         return 2
     reason = None if complete else REASON
     if parsed.json:
+        from astrid.core.cli.domain_output import DomainResult, print_result
+
         data = {"revisions": [asdict(r) for r in revisions], "complete": complete, "reason": reason}
-        print(json.dumps({"ok": True, "data": data, "error": None}, indent=2, sort_keys=True))
-        return 0
+        return print_result(DomainResult.success(data), as_json=True)
     if complete:
-        lines = [f"Revisions of {parsed.ref} (newest first, {len(revisions)} shown):"]
+        lines = [f"project {parsed.project} · Revisions of {parsed.ref} (newest first, {len(revisions)} shown):"]
     else:
-        lines = [f"Revisions of {parsed.ref}: the head only."]
+        lines = [f"project {parsed.project} · Revisions of {parsed.ref}: the head only."]
     lines.extend(_row(r) for r in revisions)
     if reason:
         lines.append(reason)

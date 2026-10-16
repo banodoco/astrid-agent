@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import json
 import re
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,7 +100,7 @@ def local(tmp_path):
     ["edit", "--file", "x.json", "--cut", "3", "--nudge-frames", "-2", "--set", "x=5", "--set", 'y="a"'],
 ])
 def test_edit_parses_to_its_handler(argv):
-    assert _parse(*argv).handler.__wrapped__ is cli._cmd_edit
+    assert _parse(*argv).handler.__wrapped__.__wrapped__ is cli._cmd_edit
 
 
 def test_edit_parses_operations_and_values():
@@ -120,6 +122,34 @@ def test_every_restored_flag_parses():
     assert (parsed.beats, parsed.verify, parsed.labels, parsed.timings, parsed.near) == ("keep", True, True, True, "viral")
     assert (parsed.for_seconds, parsed.picture, parsed.cut_id, parsed.fit_sequence, parsed.shape_from) == (2.0, "R", "c3b", True, "other@rev")
     assert parsed.retime and parsed.insert == ("1:02", 0.5) and parsed.film_end == "end" and parsed.music == "plays-on"
+
+
+@pytest.mark.parametrize("value", ["0.6", "0.6s", "18f"])
+def test_length_and_shift_flags_accept_seconds_and_frames(value):
+    for flag in ("--for", "--nudge", "--trim-in", "--trim-out", "--slip", "--offset", "--over"):
+        parsed = _parse("edit", "--file", "unused.json", flag, value)
+        cli._normalize_edit_durations(parsed, SimpleNamespace(fps=30))
+        attr = {
+            "--for": "for_seconds", "--nudge": "nudge", "--trim-in": "trim_in",
+            "--trim-out": "trim_out", "--slip": "slip", "--offset": "offset", "--over": "overlap",
+        }[flag]
+        assert getattr(parsed, attr) == pytest.approx(0.6)
+    parsed = _parse("edit", "--file", "unused.json", "--insert-gap-after", value)
+    cli._normalize_edit_durations(parsed, SimpleNamespace(fps=30))
+    assert parsed.insert_gap_after == pytest.approx(0.6)
+    parsed = _parse("edit", "--file", "unused.json", "--insert", f"1:02:{value}")
+    cli._normalize_edit_durations(parsed, SimpleNamespace(fps=30))
+    assert parsed.insert == ("1:02", pytest.approx(0.6))
+    parsed = _parse("edit", "--file", "unused.json", "--gap-after", f"s1={value}")
+    cli._normalize_edit_durations(parsed, SimpleNamespace(fps=30))
+    assert parsed.gap_after == ["s1=0.6"]
+
+
+def test_frame_durations_use_the_timeline_frame_rate():
+    parsed = _parse("edit", "--file", "unused.json", "--for", "18f", "--nudge", "3f")
+    cli._normalize_edit_durations(parsed, SimpleNamespace(fps=24))
+    assert parsed.for_seconds == pytest.approx(0.75)
+    assert parsed.nudge == pytest.approx(0.125)
 
 
 def test_codex_spellings_have_our_aliases():
@@ -163,6 +193,22 @@ def test_edit_needs_one_selector_and_an_operation(local, capsys):
 def test_edit_error_exits_2_with_the_message(local, capsys):
     assert _run("edit", "--file", str(local), "--clip", "R", "--at-word", "nosuchword") == 2
     assert "nobody says" in capsys.readouterr().err
+
+
+def test_clip_flag_that_names_a_cut_directs_to_cut_option(local, monkeypatch, capsys):
+    class TimelineWithCut:
+        def document(self):
+            return {"before": True}
+
+        def step(self, _label):
+            return nullcontext()
+
+        def cut(self, _cut_id):
+            return object()
+
+    monkeypatch.setattr(Checkout, "load", classmethod(lambda _cls, _path: TimelineWithCut()))
+    assert _run("edit", "--file", str(local), "--clip", "c1", "--set", "x=2") == 2
+    assert "use --cut c1" in capsys.readouterr().err
 
 
 # ---- words -----------------------------------------------------------------------------

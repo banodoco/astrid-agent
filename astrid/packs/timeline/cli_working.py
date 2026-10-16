@@ -211,7 +211,7 @@ def _read_beats(path: str) -> str:
     return json.dumps(compact, separators=(",", ":"))
 
 
-def _timeline_args(subparser: argparse.ArgumentParser, *, required_timeline: bool = True, project_required: bool = True) -> None:
+def _timeline_args(subparser: argparse.ArgumentParser, *, required_timeline: bool = True, project_required: bool = False) -> None:
     from astrid.packs.timeline.cli import _add_project_arg
 
     if required_timeline:

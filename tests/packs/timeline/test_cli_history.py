@@ -46,7 +46,7 @@ def test_history_lists_newest_first_with_source_time_and_message(capsys):
     code = cli_history.run_history(_parsed(FakeTimelines()))
     out = capsys.readouterr().out.splitlines()
     assert code == 0
-    assert out[0].startswith("Revisions of TL")
+    assert out[0].startswith("project P · Revisions of TL")
     assert out[1].split()[0] == "aaaa1111"
     assert out[1].split()[1] == "astrid"
     assert out[2].split()[0] == "bbbb2222"

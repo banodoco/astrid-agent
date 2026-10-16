@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -155,7 +157,40 @@ def _cmd_import(parsed: argparse.Namespace) -> int:
             realm=parsed.realm,
             idempotency_key=parsed.idempotency_key,
         )
-    return print_result(result, as_json=parsed.json)
+    def human(envelope: object) -> str:
+        data = envelope_dict(envelope)["data"]
+        if isinstance(data, Mapping) and isinstance(data.get("items"), list):
+            rows = data["items"]
+        elif isinstance(data, list):
+            rows = data
+        else:
+            rows = [data]
+        lines = [f"project {parsed.project} · imported {path.name}"]
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            media_row = row.get("media")
+            if not isinstance(media_row, Mapping):
+                media_row = row
+            digest = media_row.get("digest") or media_row.get("content_sha256") or media_row.get("sha256")
+            if not isinstance(digest, str) or not digest:
+                media_id = media_row.get("object_id") or media_row.get("media_id")
+                digest = media_id if isinstance(media_id, str) and media_id.startswith("sha256:") else None
+            if not digest:
+                continue
+            digest_value = digest.removeprefix("sha256:")
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", digest_value):
+                continue
+            handle = f"sha256:{digest_value.lower()}"
+            lines.append(f"handle: {handle}")
+            lines.append(f"use: --swap-asset {handle}")
+        if len(lines) == 1:
+            lines.append(render_human(envelope))
+        return "\n".join(lines)
+
+    from astrid.core.cli.domain_output import envelope_dict, render_human
+
+    return print_result(result, as_json=parsed.json, human_renderer=human)
 
 
 def _cmd_list(parsed: argparse.Namespace) -> int:

@@ -239,7 +239,7 @@ def test_refresh_keeps_explicit_clear_and_opaque_upstream_fields_and_undo(agents
     assert 'x' not in bob.clip('c1.rocket').params
 
 
-@pytest.mark.parametrize('flags', [[], ['--json'], ['--text'], ['--human'], ['--text', '--all'], ['--text', '--render']])
+@pytest.mark.parametrize('flags', [['--json'], ['--text'], ['--human'], ['--text', '--all'], ['--text', '--render']])
 def test_status_all_presentations_expose_sync_fields(agents, flags, monkeypatch, capsys):
     alice, bob, runtime, client = agents
     edit(alice, x=90)
@@ -274,7 +274,7 @@ def test_watch_one_compact_call_per_tick_and_no_closure_or_history(agents, monke
     monkeypatch.setattr(store, '_file_lock', no_lock)
     monkeypatch.setattr(journal, '_locked', no_lock)
     args = cli.build_parser(client).parse_args(['status', 't', '--project', 'p', '--draft', 'bob',
-        '--watch', '--poll-seconds', '1', '--timeout-seconds', '2', *(['--text'] if text else [])])
+        '--watch', '--poll-seconds', '1', '--timeout-seconds', '2', *(['--text'] if text else ['--json'])])
     assert args.handler(args) == 0
     assert runtime.head_reads == 2 and runtime.history_reads == 0 and runtime.reads == []
     assert bytes_now(bob) == before
@@ -285,6 +285,24 @@ def test_watch_one_compact_call_per_tick_and_no_closure_or_history(agents, monke
         rows = [json.loads(line)['data'] for line in output.splitlines()]
         assert [r['observed_head'] for r in rows] == ['rev-0', 'new-observed-head']
         assert all(r['external_state'] == r['conflict_state'] == 'unknown' for r in rows)
+
+
+def test_watch_defaults_to_a_project_named_human_summary(agents, monkeypatch, capsys):
+    from astrid.packs.timeline import cli_sync
+
+    tick = [0.0]
+    monkeypatch.setattr(cli_sync.time, 'monotonic', lambda: tick[0])
+    monkeypatch.setattr(cli_sync.time, 'sleep', lambda seconds: tick.__setitem__(0, tick[0] + seconds))
+    args = cli.build_parser(agents[3]).parse_args([
+        'status', 't', '--project', 'p', '--draft', 'bob', '--watch',
+        '--poll-seconds', '1', '--timeout-seconds', '1',
+    ])
+
+    assert args.handler(args) == 0
+    output = capsys.readouterr().out
+    assert output.startswith('project p · timeline t · checkout base:')
+    assert 'next: timelines edit t --project p --clip ADDRESS --set KEY=VALUE' in output
+    assert not output.startswith('{')
 
 
 def test_watch_ctrl_c_and_invalid_intervals(agents, monkeypatch):
@@ -320,7 +338,7 @@ def test_compact_api_refuses_closure_fallback_and_empty_unknown_identity():
         RuntimeRevisions(invalid).head_state('p', 't')
 
 
-@pytest.mark.parametrize('flags', [[], ['--json'], ['--text'], ['--human'], ['--text', '--all'], ['--text', '--render']])
+@pytest.mark.parametrize('flags', [['--json'], ['--text'], ['--human'], ['--text', '--all'], ['--text', '--render']])
 @pytest.mark.parametrize('state', ['absent', 'unknown'])
 def test_status_absent_and_unknown_are_distinct_in_every_format(agents, flags, state, monkeypatch, capsys):
     _alice, bob, runtime, client = agents
@@ -386,13 +404,13 @@ def test_refresh_cli_and_incompatible_flags_preserve_draft(agents, capsys):
     edit(bob, y=180)
     alice.publish(client=client)
     parser = cli.build_parser(client)
-    args = parser.parse_args(['checkout', 't', '--project', 'p', '--draft', 'bob', '--refresh'])
+    args = parser.parse_args(['checkout', 't', '--project', 'p', '--draft', 'bob', '--refresh', '--json'])
     assert args.handler(args) == 0
     assert json.loads(capsys.readouterr().out)['data']['status'] == 'refreshed'
     before = bytes_now(bob)
     args = parser.parse_args(['checkout', 't', '--project', 'p', '--draft', 'bob', '--refresh', '--fresh'])
-    with pytest.raises(Exception, match='cannot be combined'):
-        args.handler(args)
+    assert args.handler(args) == 2
+    assert 'cannot be combined' in capsys.readouterr().err
     assert bytes_now(bob) == before
 
 

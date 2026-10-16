@@ -183,7 +183,12 @@ def render_human(result: object, *, human_renderer: Callable[[object], str] | No
         return line
     error = envelope.get("error")
     if isinstance(error, Mapping):
-        return f"error {error.get('code', 'unknown')}: {error.get('message', '')}"
+        text = f"error {error.get('code', 'unknown')}: {error.get('message', '')}"
+        details = error.get("details")
+        next_action = details.get("next_action") if isinstance(details, Mapping) else None
+        if isinstance(next_action, str) and next_action.strip():
+            text += f"\nnext action: {next_action.strip()}"
+        return text
     return "error"
 
 

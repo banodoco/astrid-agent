@@ -50,7 +50,8 @@ def age(path, seconds=DAYS * 86400 + 1):
 
 def status(capsys, *argv):
     capsys.readouterr()
-    parsed = cli.build_parser(None).parse_args(["status", "t", "--project", "P", *argv])
+    machine_args = [] if "--text" in argv or "--json" in argv else ["--json"]
+    parsed = cli.build_parser(None).parse_args(["status", "t", "--project", "P", *argv, *machine_args])
     assert parsed.handler(parsed) == 0
     output = capsys.readouterr().out
     return output if "--text" in argv else json.loads(output)["data"]

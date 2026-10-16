@@ -49,10 +49,19 @@ def watch_status(parsed):
             fields = status_fields(checkout, head, compact=True)
             data = dict(timeline_id=timeline, current_head=head['revision_id'], draft=name,
                         working_copy='present' if checkout is not None else 'absent', **fields)
-            if getattr(parsed, 'text', False):
-                print('\n'.join(sync_lines(fields)), flush=True)
-            else:
+            if getattr(parsed, 'json', False):
                 print(json.dumps(envelope_dict(DomainResult.success(data)), sort_keys=True), flush=True)
+            else:
+                lines = sync_lines(fields)
+                if lines:
+                    lines[0] = f"project {parsed.project} · timeline {timeline} · {lines[0]}"
+                if data['working_copy'] == 'absent':
+                    lines.append(f"next: timelines checkout {parsed.ref} --project {parsed.project}")
+                elif fields['conflicts']:
+                    lines.append(f"next: timelines checkout {parsed.ref} --project {parsed.project} --refresh")
+                else:
+                    lines.append(f"next: timelines edit {parsed.ref} --project {parsed.project} --clip ADDRESS --set KEY=VALUE")
+                print('\n'.join(lines), flush=True)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return 0

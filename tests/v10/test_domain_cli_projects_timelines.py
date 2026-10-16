@@ -760,7 +760,7 @@ def test_a_completed_render_prints_its_video_handle(capsys) -> None:
             "managed_outputs": [{"output_port": "video", "ordinal": 0, "filename": "film.mp4"}]})
 
     client.invoke_result = with_video
-    rc = _run("timelines", ["render", "--project", "demo", "main"], client=client)
+    rc = _run("timelines", ["render", "--project", "demo", "main", "--json"], client=client)
 
     assert rc == 0
     data = json.loads(capsys.readouterr().out)["data"]
@@ -795,7 +795,7 @@ def test_timelines_render_default_admission_preserves_json_handoff(capsys) -> No
     client = _FakeClient()
 
     assert _run(
-        "timelines", ["render", "--project", "demo", "main", "--detach"], client=client
+        "timelines", ["render", "--project", "demo", "main", "--detach", "--json"], client=client
     ) == 0
 
     payload = json.loads(capsys.readouterr().out)

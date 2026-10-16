@@ -35,12 +35,24 @@ def guard(default_code: int):
                 return exc.code
             except (TimelineEditError, SheetError) as exc:
                 parsed._edit_refusal = {"type": type(exc).__name__, "message": str(exc)}
-                if getattr(parsed, "command", None) is not None:
-                    import json
-                    payload = exc.to_json() if hasattr(exc, "to_json") else {"code": "invalid_edit", "message": str(exc)}
-                    print(json.dumps({"error": payload}), file=sys.stderr)
+                if getattr(parsed, "json", False):
+                    from astrid.core.cli.domain_output import DomainResult, print_result
+                    from astrid.sdk.contracts import ErrorObject
+
+                    details = getattr(exc, "details", None)
+                    if not isinstance(details, Mapping):
+                        payload = exc.to_json() if hasattr(exc, "to_json") else {}
+                        if isinstance(payload, Mapping):
+                            details = payload.get("details") or {}
+                        else:
+                            details = {}
+                    print_result(DomainResult.failure(ErrorObject("invalid_edit", str(exc), details)), as_json=True)
                 else:
                     print(str(exc), file=sys.stderr)
+                    details = getattr(exc, "details", None)
+                    action = details.get("next_action") if isinstance(details, Mapping) else None
+                    if isinstance(action, str) and action.strip():
+                        print(f"next action: {action.strip()}", file=sys.stderr)
                 return default_code
 
         run.__name__ = fn.__name__
@@ -153,7 +165,7 @@ def checkout_summary(parsed: argparse.Namespace, tl: Any, *, existed: bool) -> l
     where = f"{parsed.ref} --project {parsed.project}"
     fresh = bool(getattr(parsed, "fresh", False))
     return [
-        f'working copy "{name}" of {parsed.ref} · from published {short_rev(tl.base_revision)} · {summary}'
+        f'project {parsed.project} · working copy "{name}" of {parsed.ref} · from published {short_rev(tl.base_revision)} · {summary}'
         + ("" if existed and not fresh else " · a new working copy, made from the published head"),
         "show, visualize, lint and diff now read this working copy (--published for the live version)",
         "next:",

@@ -94,6 +94,16 @@
           "required": false
         },
         {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
+          ],
+          "required": false
+        },
+        {
           "action": "_StoreAction",
           "default": null,
           "dest": "project",
@@ -153,7 +163,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -239,6 +249,16 @@
           "nargs": null,
           "options": [
             "--draft"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
           ],
           "required": false
         },
@@ -350,7 +370,7 @@
         },
         {
           "action": "_StoreTrueAction",
-          "default": true,
+          "default": false,
           "dest": "json",
           "nargs": 0,
           "options": [
@@ -445,7 +465,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -561,7 +581,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreTrueAction",
@@ -661,7 +681,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -899,12 +919,13 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "extend",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--extend"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_Tokens",
@@ -963,14 +984,14 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "for_seconds",
-          "metavar": "SECONDS",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--duration",
             "--for"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1036,13 +1057,14 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "insert_gap_after",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--gap",
             "--insert-gap-after"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1052,6 +1074,16 @@
           "nargs": null,
           "options": [
             "--insert-line"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
           ],
           "required": false
         },
@@ -1161,12 +1193,13 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "nudge",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--nudge"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1183,12 +1216,13 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "offset",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--offset"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1215,13 +1249,13 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "overlap",
-          "metavar": "SECONDS",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--over"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1334,13 +1368,13 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "slip",
-          "metavar": "SECONDS",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--slip"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1419,25 +1453,25 @@
           "action": "_StoreAction",
           "default": null,
           "dest": "trim_in",
-          "metavar": "SECONDS",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--trim-in"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
           "default": null,
           "dest": "trim_out",
-          "metavar": "SECONDS",
+          "metavar": "SECONDS|FRAMES",
           "nargs": null,
           "options": [
             "--trim-out"
           ],
           "required": false,
-          "type": "float"
+          "type": "_parse_duration_arg"
         },
         {
           "action": "_StoreAction",
@@ -1574,6 +1608,16 @@
         {
           "action": "_StoreTrueAction",
           "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
           "dest": "last",
           "nargs": 0,
           "options": [
@@ -1657,7 +1701,7 @@
       "flags": [
         {
           "action": "_StoreTrueAction",
-          "default": true,
+          "default": false,
           "dest": "json",
           "nargs": 0,
           "options": [
@@ -1684,7 +1728,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -2148,7 +2192,7 @@
         },
         {
           "action": "_StoreTrueAction",
-          "default": true,
+          "default": false,
           "dest": "json",
           "nargs": 0,
           "options": [
@@ -2239,7 +2283,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -2317,7 +2361,7 @@
         },
         {
           "action": "_StoreTrueAction",
-          "default": true,
+          "default": false,
           "dest": "json",
           "nargs": 0,
           "options": [
@@ -2388,7 +2432,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -2515,7 +2559,7 @@
         },
         {
           "action": "_StoreTrueAction",
-          "default": true,
+          "default": false,
           "dest": "json",
           "nargs": 0,
           "options": [
@@ -2680,7 +2724,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -2767,6 +2811,16 @@
           "nargs": null,
           "options": [
             "--draft"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
           ],
           "required": false
         },
@@ -2952,7 +3006,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -3028,7 +3082,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": []
@@ -3053,7 +3107,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": []
@@ -3088,7 +3142,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -3151,7 +3205,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -3185,7 +3239,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -3238,7 +3292,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -3319,7 +3373,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         },
         {
           "action": "_StoreAction",
@@ -3383,7 +3437,7 @@
           "options": [
             "--project"
           ],
-          "required": true
+          "required": false
         }
       ],
       "positionals": [
@@ -3683,7 +3737,7 @@
         },
         {
           "action": "_StoreTrueAction",
-          "default": true,
+          "default": false,
           "dest": "json",
           "nargs": 0,
           "options": [
@@ -3775,6 +3829,16 @@
           "nargs": null,
           "options": [
             "--draft"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
           ],
           "required": false
         },
@@ -4664,7 +4728,7 @@
       },
       {
         "action": "_StoreTrueAction",
-        "default": true,
+        "default": false,
         "dest": "json",
         "nargs": 0,
         "options": [

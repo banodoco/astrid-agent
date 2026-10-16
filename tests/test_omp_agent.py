@@ -184,6 +184,19 @@ def test_toolkit_families_and_help_delegate_to_gateway(monkeypatch) -> None:
     assert calls == [["projects", "list", "--json"], ["help"]]
 
 
+def test_status_and_dev_dispatch_to_gateway_but_auth_stays_namespaced(monkeypatch) -> None:
+    gateway_calls: list[list[str]] = []
+    auth_calls: list[list[str]] = []
+    monkeypatch.setattr(omp_agent, "_dispatch_toolkit", lambda argv: gateway_calls.append(argv) or 7)
+    monkeypatch.setattr(omp_agent, "run_auth", lambda argv: auth_calls.append(argv) or 9)
+
+    assert omp_agent.main(["status", "--json"]) == 7
+    assert omp_agent.main(["dev", "status"]) == 7
+    assert omp_agent.main(["auth", "status"]) == 9
+    assert gateway_calls == [["status", "--json"], ["dev", "status"]]
+    assert auth_calls == [["status"]]
+
+
 def test_top_level_help_describes_unified_agent_and_toolkit_surface(capsys) -> None:
     assert omp_agent.main(["--help"]) == 0
     output = capsys.readouterr().out
@@ -191,8 +204,9 @@ def test_top_level_help_describes_unified_agent_and_toolkit_surface(capsys) -> N
     assert "astrid agent" in output
     for family in ("projects", "timelines", "media", "tasks", "runs", "doctor", "backup"):
         assert family in output
-    for command in ("astrid login", "astrid status", "astrid logout", "astrid revoke"):
-        assert command in output
+    assert "astrid status [--json]" in output
+    assert "astrid dev" in output
+    assert "astrid auth login|status|logout|revoke" in output
 
 
 def test_alternate_agent_does_not_receive_astrid_packaged_prompt(monkeypatch) -> None:

@@ -48,3 +48,140 @@
   card: CUTS
   reason: "Adds optional visuals=orphan|remove; the existing segment argument, music policy, and default orphan behavior remain accepted (spec-timing 6.3)."
   alias: "sdk:Checkout.remove_line"
+
+- feature: "flag:timelines.archive:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.checkout:--json"
+  card: UX-LOOP
+  reason: "UX-LOOP makes this command human-first by default; explicit --json preserves its machine envelope."
+  alias: "--json"
+- feature: "flag:timelines.create:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.diff:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.duplicate:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.edit:--duration"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--duration"
+- feature: "flag:timelines.edit:--extend"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--extend"
+- feature: "flag:timelines.edit:--for"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--for"
+- feature: "flag:timelines.edit:--gap"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--gap"
+- feature: "flag:timelines.edit:--insert-gap-after"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--insert-gap-after"
+- feature: "flag:timelines.edit:--nudge"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--nudge"
+- feature: "flag:timelines.edit:--offset"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--offset"
+- feature: "flag:timelines.edit:--over"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--over"
+- feature: "flag:timelines.edit:--slip"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--slip"
+- feature: "flag:timelines.edit:--trim-in"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--trim-in"
+- feature: "flag:timelines.edit:--trim-out"
+  card: UX-LOOP
+  reason: "UX-LOOP extends this existing timing option to accept seconds and frame-suffixed durations."
+  alias: "--trim-out"
+- feature: "flag:timelines.history:--json"
+  card: UX-LOOP
+  reason: "UX-LOOP makes this command human-first by default; explicit --json preserves its machine envelope."
+  alias: "--json"
+- feature: "flag:timelines.history:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.list:--json"
+  card: UX-LOOP
+  reason: "UX-LOOP makes this command human-first by default; explicit --json preserves its machine envelope."
+  alias: "--json"
+- feature: "flag:timelines.log:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.publish:--json"
+  card: UX-LOOP
+  reason: "UX-LOOP makes this command human-first by default; explicit --json preserves its machine envelope."
+  alias: "--json"
+- feature: "flag:timelines.recover:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.render:--json"
+  card: UX-LOOP
+  reason: "UX-LOOP makes this command human-first by default; explicit --json preserves its machine envelope."
+  alias: "--json"
+- feature: "flag:timelines.replace-parent-media:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.add:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.create:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.list:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.remove:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.reorder:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.show:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.text.list:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.text.set:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.shots.text.show:--project"
+  card: UX-LOOP
+  reason: "UX-LOOP allows this command to resolve --project from the selected project while preserving explicit project selection."
+  alias: "--project"
+- feature: "flag:timelines.status:--json"
+  card: UX-LOOP
+  reason: "UX-LOOP makes this command human-first by default; explicit --json preserves its machine envelope."
+  alias: "--json"
