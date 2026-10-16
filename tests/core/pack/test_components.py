@@ -140,3 +140,46 @@ def test_environment_is_inspect_only_and_discovery_never_imports(component, monk
     assert not inspected.eligible and inspected.source_kind == 'env'
     with pytest.raises(UnsupportedComponent, match='unsupported execution'):
         bind_component(inspected, host='composition')
+
+
+def test_consumer_stages_exact_declared_import_and_rejects_stale_collision(component, tmp_path):
+    from astrid.core.pack.component_consumer import stage_components
+    c, discovery = component
+    request = {'identity': c.identity, 'implementation_digest': c.implementation_digest}
+    kwargs = dict(trusted_roots=discovery['extra_pack_roots'], output=tmp_path / 'stage')
+    projection = stage_components([request], **kwargs)
+    module = Path(projection['module']).read_text()
+    assert c.identity + '@' + c.implementation_digest in module
+    assert c.descriptor['implementation']['path'] in module
+    assert 'implementation0' in module
+    for filename, digest in projection['files'].items():
+        assert hashlib.sha256(Path(filename).read_bytes()).hexdigest() == digest
+    with pytest.raises(CommandError, match='stale'):
+        stage_components([dict(request, implementation_digest='0' * 64)], **kwargs)
+    with pytest.raises(CommandError, match='collision'):
+        stage_components([request, request], **kwargs)
+    with pytest.raises(UnsupportedComponent, match='unsupported'):
+        stage_components([request], **dict(kwargs, host='remote'))
+
+
+def test_cli_add_inserts_through_canonical_opcall_and_reads_back(component, tmp_path, capsys):
+    import subprocess
+    import sys
+    c, discovery = component
+    document = json.loads((REPO / 'tests/fixtures/timeline_editing/tiny_publishable.json').read_text())
+    path = tmp_path / 'timeline.json'
+    path.write_text(json.dumps(document))
+    args = [sys.executable, '-B', '-c',
+            "import sys; from astrid.packs.timeline.cli import build_parser; p=build_parser(None).parse_args(sys.argv[1:]); raise SystemExit(p.handler(p))",
+            'edit', '--file', str(path),
+            '--clip', 'a-rocket', '--add', c.identity, '--instance-id', 'cli-shade',
+            '--params', '{"strength":0.6}', '--component-pack-root', discovery['extra_pack_roots'][0]]
+    result = subprocess.run(args, text=True, capture_output=True, cwd=REPO)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'clip.set-param' in result.stdout
+    assert 'component_readback' in result.stdout
+    from astrid.sdk.timeline.checkout import Checkout
+    assert Checkout.load(path).clip('a-rocket').data['modifiers'] == [
+        {'id': 'cli-shade', 'element': c.identity, 'params': {'strength': 0.6}}]
+    duplicate = subprocess.run(args, text=True, capture_output=True, cwd=REPO)
+    assert duplicate.returncode != 0

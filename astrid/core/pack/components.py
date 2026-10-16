@@ -6,6 +6,8 @@ an existing trusted local host/bundler, never a second renderer or Python plugin
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 from dataclasses import dataclass
@@ -172,3 +174,29 @@ def component_bounds(component, target_bounds):
         return {"status": "unknown", "finding": {"code": "unknown-modifier-bounds",
                 "element": component.identity, "reason": "Component declares no bounds"}}
     return copy.deepcopy(target_bounds)
+
+
+# Discovery configuration is scoped to a trusted consumer, never browser input.
+# Store roots rather than declarations: every edit re-resolves and rebinds.
+_DISCOVERY = ContextVar("component_discovery", default={})
+
+
+@contextmanager
+def component_discovery_scope(**discovery):
+    token = _DISCOVERY.set(discovery)
+    try:
+        yield
+    finally:
+        _DISCOVERY.reset(token)
+
+
+def validate_component_reference(row):
+    component = resolve_component(row["element"], **_DISCOVERY.get())
+    component_instance(component, row["id"], row["params"], host="composition")
+
+
+def component_add_call(component, *, select, instance_id, params, host):
+    row = component_instance(component, instance_id, params, host=host)
+    path = "modifiers[" + json.dumps(instance_id) + "]"
+    return {"op": "clip.set-param", "select": select,
+            "args": {"path": path, "value": row}, "expect": {path: {"state": "absent"}}}

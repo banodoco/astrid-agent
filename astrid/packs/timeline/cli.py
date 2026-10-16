@@ -3070,6 +3070,39 @@ def _cmd_edit(parsed: argparse.Namespace) -> int:
     from astrid.packs.timeline.cli_look import has_look
     from astrid.sdk.timeline_checkout import Checkout
 
+    if getattr(parsed, "add_component", None) is not None:
+        from astrid.core.pack.components import component_add_call, component_discovery_scope, resolve_component
+        from astrid.sdk.timeline.commands import run, CommandError, EDIT_FLAG_OPERATIONS
+        allowed = {"project", "file", "draft", "clip", "near", "dry_run", "no_sweep",
+                   "add_component", "component_pack_roots", "component_params", "instance_id"}
+        extras = [key for key in EDIT_FLAG_OPERATIONS if key not in allowed
+                  and getattr(parsed, key, None) not in (None, False, [], ())]
+        if extras or parsed.command:
+            raise CommandError("--add is one edit; remove other mutation flags")
+        if not parsed.clip or not parsed.instance_id or not parsed.component_pack_roots:
+            raise CommandError("--add requires --clip, --instance-id and explicit --component-pack-root")
+        try:
+            params = json.loads(parsed.component_params or "{}")
+        except (ValueError, TypeError) as exc:
+            raise CommandError("--params requires a JSON object") from exc
+        discovery = {"extra_pack_roots": tuple(parsed.component_pack_roots)}
+        component = resolve_component(parsed.add_component, **discovery)
+        tl = Checkout.load(parsed.file) if parsed.file else _edit_checkout(parsed)
+        clip = tl.clip(parsed.clip, near=parsed.near)
+        call = component_add_call(component, select=clip.address,
+            instance_id=parsed.instance_id, params=params, host="composition")
+        with component_discovery_scope(**discovery):
+            plan = run(tl, call, dry_run=parsed.dry_run)
+        print(json.dumps(plan.to_json(), ensure_ascii=False))
+        if not parsed.dry_run:
+            # Read back the canonical setter's result; component_instance alone
+            # is never reported as an insertion.
+            row = next((r for r in clip.data.get("modifiers", []) if r["id"] == parsed.instance_id), None)
+            if row != call["args"]["value"]:
+                raise CommandError("component insertion readback mismatch")
+            print(json.dumps({"component_readback": row}))
+        return 0 if plan.changed else 3
+
     if getattr(parsed, "command", None) is not None:
         from astrid.sdk.timeline.commands import run, CommandError, EDIT_FLAG_OPERATIONS
         context = {"command", "dry_run", "file", "project", "draft", "no_sweep"}
@@ -3622,6 +3655,11 @@ def _configure_edit_help(subparser: argparse.ArgumentParser) -> None:
 
 
 def _configure_edit(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument("--add", dest="add_component", metavar="timeline.component/PACK.KEY")
+    subparser.add_argument("--instance-id", help="Stable modifier instance id for --add.")
+    subparser.add_argument("--params", dest="component_params", default=None, help="Component parameters as JSON.")
+    subparser.add_argument("--component-pack-root", dest="component_pack_roots", action="append", default=[],
+                           help="Explicitly trusted local V3 pack root for this edit.")
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", nargs="?", default=None,
                            help="Timeline id or slug with a saved working copy (or use --file).")

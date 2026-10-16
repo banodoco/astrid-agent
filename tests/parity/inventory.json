@@ -729,6 +729,17 @@
     "timelines.edit": {
       "flags": [
         {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "add_component",
+          "metavar": "timeline.component/PACK.KEY",
+          "nargs": null,
+          "options": [
+            "--add"
+          ],
+          "required": false
+        },
+        {
           "action": "_StoreTrueAction",
           "default": false,
           "dest": "add_cut",
@@ -859,6 +870,26 @@
           "nargs": null,
           "options": [
             "--command"
+          ],
+          "required": false
+        },
+        {
+          "action": "_AppendAction",
+          "default": [],
+          "dest": "component_pack_roots",
+          "nargs": null,
+          "options": [
+            "--component-pack-root"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "component_params",
+          "nargs": null,
+          "options": [
+            "--params"
           ],
           "required": false
         },
@@ -1093,6 +1124,16 @@
           "nargs": null,
           "options": [
             "--insert-line"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "instance_id",
+          "nargs": null,
+          "options": [
+            "--instance-id"
           ],
           "required": false
         },

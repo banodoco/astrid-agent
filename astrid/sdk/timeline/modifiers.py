@@ -47,6 +47,10 @@ def instances(data):
 
 
 def validate(row):
+    if row['element'].startswith('timeline.component/'):
+        from astrid.core.pack.components import validate_component_reference
+        validate_component_reference(row)
+        return
     # Read declarations through the existing catalog. No component code or I/O
     # implementation is loaded. Unknown/unavailable declarations fail closed.
     from astrid.core.element.catalog import read_element_schema, read_element_meta
