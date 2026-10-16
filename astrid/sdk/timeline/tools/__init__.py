@@ -7,11 +7,13 @@ from astrid.core.pack.operations import (
     UnsupportedOperation,
     discover_operations,
     invoke_operation,
+    operation_call,
+    operation_discovery_scope,
     plan_operation,
     resolve_operation,
 )
 
 __all__ = [
     "UnsupportedOperation", "discover_operations", "invoke_operation",
-    "plan_operation", "resolve_operation",
+    "plan_operation", "resolve_operation", "operation_call", "operation_discovery_scope",
 ]

@@ -188,6 +188,7 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
         except TimelineCompatibilityError as exc:
             raise CommandError(str(exc)) from None
         yield tx
+        label = tx.label  # nested admitted operations retain their exact source identity
         if tx.cancelled:
             _restore(tl, state, contents, cache)
             tx.calls.clear()

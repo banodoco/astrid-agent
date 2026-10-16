@@ -9,6 +9,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -21,6 +23,17 @@ from astrid.sdk.timeline.commands import CommandError, EditCommand
 
 POINT = "timeline.operation"
 _SCHEMA = Path(__file__).parent / "schemas" / "operation.json"
+_DISCOVERY = ContextVar("operation_discovery", default={})
+
+
+@contextmanager
+def operation_discovery_scope(**discovery):
+    """Trusted local discovery configuration; roots never come from OpCall args."""
+    token = _DISCOVERY.set(discovery)
+    try:
+        yield
+    finally:
+        _DISCOVERY.reset(token)
 
 
 class UnsupportedOperation(CommandError):
@@ -136,7 +149,7 @@ def resolve_operation(identity, **discovery):
     """Resolve only a complete point-qualified identity; never a basename."""
     if not isinstance(identity, str) or not identity.startswith(POINT + "/"):
         raise UnsupportedOperation(f"unsupported operation identity: {identity!r}; use {POINT}/<pack>.<key>")
-    for operation in discover_operations(**discovery):
+    for operation in discover_operations(**(_DISCOVERY.get() if not discovery else discovery)):
         if operation.identity == identity:
             return operation
     raise UnsupportedOperation(f"unsupported unknown operation: {identity}")
@@ -230,13 +243,26 @@ def plan_operation(tl, operation, inputs, *, host="sdk"):
     return calls
 
 
+def operation_call(operation, inputs):
+    """The local CLI/runner envelope pins the exact admitted implementation.
+
+    Publication uses the expanded primitive calls from the returned Plan; this
+    envelope is never a remote-code execution request to Runtime.
+    """
+    return EditCommand.coerce(dict(op="timeline.operation", select=None, args=dict(
+        identity=operation.identity, implementation_digest=operation.implementation_digest, inputs=inputs)))
+
+
 def invoke_operation(tl, operation, inputs, *, dry_run=False, host="sdk"):
     """One existing transaction/undo step; return the runner's existing Plan shape."""
-    from astrid.sdk.timeline.commands import execute
+    from astrid.sdk.timeline.commands import run
     calls = plan_operation(tl, operation, inputs, host=host)
     label = f"{operation.identity}@{operation.implementation_digest}"
     with tl.edit(label, dry_run=dry_run, quiet=True) as tx:
+        if label not in tx.label:
+            tx.label += "; " + label
         tx.canonical = True
-        for call in calls:
-            execute(tl, call)
+        if calls:
+            run(tl, dict(op="timeline.batch", select=None,
+                         args={"commands": [call.to_json() for call in calls]}))
     return tx.plan

@@ -1215,6 +1215,18 @@ def run(tl, value, *, dry_run=False):
     """Run one OpCall atomically and return its change preview."""
     command = EditCommand.coerce(value)
     entry = REGISTRY.get(command.op)
+    if entry is None and command.op == "timeline.operation":
+        # Trusted local contributions expand before publication. Only the existing
+        # guarded primitive calls enter the journal and Runtime commit envelope.
+        from astrid.core.pack.operations import invoke_operation, resolve_operation
+        if (command.select is not None or command.resolved or command.expect is not None
+                or command.bindings is not None or command.created is not None or command.authorship is not None
+                or set(command.args) != {"identity", "implementation_digest", "inputs"}):
+            raise CommandError("operation OpCall requires only identity, implementation_digest and inputs, without a selector or replay guards")
+        operation = resolve_operation(command.args["identity"])
+        if command.args["implementation_digest"] != operation.implementation_digest:
+            raise CommandError("operation implementation changed; rediscover before invoking")
+        return invoke_operation(tl, operation, command.args["inputs"], dry_run=dry_run)
     if entry is None:
         raise CommandError(f"unknown edit operation {command.op!r}; choose from {', '.join(sorted(REGISTRY))}")
     with tl.edit(command.op, dry_run=dry_run, quiet=True) as tx:
@@ -1227,6 +1239,8 @@ def execute(tl, value):
     """Small sheet/SDK adapter; join an outer edit without persisting early."""
     command = EditCommand.coerce(value)
     entry = REGISTRY.get(command.op)
+    if entry is None and command.op == "timeline.operation":
+        return run(tl, command)
     if entry is None:
         raise CommandError(f"unknown edit operation {command.op!r}")
     with tl.step(command.op):

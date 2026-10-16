@@ -448,6 +448,8 @@ class RuntimeCommitService:
                     "clip.swap-asset", "timeline.edit-flags"}
         for value in values:
             call = commands.EditCommand.coerce(value)
+            if call.op == "timeline.operation":
+                raise _Refusal("Local operations must publish their expanded guarded commands, never contribution code")
             if call.op == "timeline.apply-script":
                 from astrid.sdk.timeline.narration import validate_spec
                 if set(call.args) - {"spec", "gaps", "takes", "music"} or call.args.get("takes") is not None:

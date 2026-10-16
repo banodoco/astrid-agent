@@ -55,6 +55,10 @@ class _ClosurePort:
     def __init__(self, workspace, project, timeline):
         self.workspace, self.project, self.timeline = workspace, project, timeline
 
+    def narration_take(self, refs):
+        from astrid.sdk.timeline.narration import read_managed_take
+        return read_managed_take(self.workspace, self.project, refs)
+
     def revision_closure(self, revision):
         w, p, t = self.workspace, self.project, self.timeline
         if isinstance(revision, dict):
@@ -263,15 +267,26 @@ def _active(checkout, rows, path):
 
 def _prepare(checkout, workspace, origin, session, message, explicit, dry_run):
     from astrid.sdk.timeline.checkout import Checkout
-    calls = read_saved_calls(checkout)
     with _locked(checkout) as (path, _log, rows):
         text = path.read_bytes().decode("utf-8")
         _finite_json(text)
         saved_digest = journal.digest(text)
-        anchor = [row for row in rows if any(isinstance(e, dict) and e.get("kind") == "saved-base-v1"
-                                            for e in row.get("evidence", []))][-1]
+        anchors = [row for row in rows if any(isinstance(e, dict) and e.get("kind") == "saved-base-v1"
+                                             for e in row.get("evidence", []))]
+        if not anchors:
+            raise SavedIntentError("Saved intent has no initial checkout anchor")
+        anchor = anchors[-1]
         generation = anchor["id"]
         base_evidence = next(e for e in anchor["evidence"] if e.get("kind") == "saved-base-v1")
+    # Reload immutable speech context only for a fresh publication. Pending
+    # envelopes take the recovery branch before _prepare and perform no reads.
+    from astrid.sdk.timeline.narration import capture_takes
+    take_port = _ClosurePort(workspace, checkout.bundle["project_id"], checkout.bundle["timeline_id"])
+    saved = [call for row in rows if row["seq"] > anchor["seq"] and row.get("kind") == "save"
+             for call in row.get("calls", [])]
+    takes = capture_takes(take_port, base_evidence["document"], saved)
+    checkout._narration_takes = takes
+    calls = read_saved_calls(checkout)
     body = dict(api_version=1, project_id=checkout.bundle["project_id"], timeline_id=checkout.bundle["timeline_id"],
                 session_id=session, session_sequence=1, base_revision_id=checkout.base_revision,
                 base_publication_id=None, scope=copy.deepcopy(_SCOPE), change=dict(commands=list(calls)),
@@ -293,7 +308,7 @@ def _prepare(checkout, workspace, origin, session, message, explicit, dry_run):
         hydrate_sources(port, body, document, row.get("calls", []),
                         parent_loader=lambda rid: _exact(workspace, body, rid), include_base=False)
         journal_sources(workspace, body, document, row)
-        document, _plan, _direct = RuntimeCommitService._apply(document, row.get("calls", []))
+        document, _plan, _direct = RuntimeCommitService._apply(document, row.get("calls", []), narration_takes=takes)
         replay = Checkout(document)
         replay._sync_film_length()
     from astrid.sdk.timeline.check import _require_complete_evaluation

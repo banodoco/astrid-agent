@@ -218,3 +218,70 @@ def test_discovery_never_executes_python_and_bad_command_return_is_atomic(setup)
     assert not list(store._history_dir(Path(tl.path)).glob("*.json"))
     path.write_text("raise AssertionError('discovery imported code')\n")
     assert resolve_operation(IDENTITY, **kwargs).identity == IDENTITY
+
+
+@pytest.fixture
+def opcall_setup(setup):
+    from astrid.sdk.timeline.tools import operation_discovery_scope
+    tl, operation, discovery = setup
+    with operation_discovery_scope(**discovery):
+        yield tl, operation
+
+
+def test_operation_opcall_cli_and_batch_use_existing_runner(opcall_setup, monkeypatch, capsys):
+    from astrid.packs.timeline import cli
+    from astrid.sdk.timeline.tools import operation_call
+    tl, operation = opcall_setup
+    call = operation_call(operation, INPUTS)
+    before = tl.document()
+    expected = invoke_operation(Checkout(copy.deepcopy(before)), operation, INPUTS)
+    preview = commands.run(tl, call, dry_run=True)
+    assert preview.to_json() == expected.to_json()
+    assert tl.document() == before
+    monkeypatch.setattr(cli, "_edit_checkout", lambda parsed: tl)
+    parsed = cli.build_parser(object()).parse_args([
+        "edit", "t", "--project", "p", "--command", json.dumps(call.to_json())])
+    assert parsed.handler(parsed) == 0
+    assert operation.identity in capsys.readouterr().out
+    assert len(list(store._history_dir(Path(tl.path)).glob("*.json"))) == 1
+    tl.undo()
+    assert tl.document() == before
+    plan = commands.run(tl, dict(op="timeline.batch", select=None, args={"commands": [
+        call.to_json(), dict(op="clip.set", select="c1.rocket", args={"x": 600})]}))
+    assert [c.op for c in plan.calls] == ["clip.on", "clip.until", "clip.on", "clip.until", "clip.set"]
+    assert operation.identity in plan.label and operation.implementation_digest in plan.label
+    assert tl.clip("c1.rocket").get("x") == 600
+    tl.undo()
+    assert tl.document() == before
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda c: c["args"].update(implementation_digest="0" * 64),
+    lambda c: c.update(select="c1.rocket"),
+    lambda c: c.update(expect={}),
+    lambda c: c["args"].update(path="unadmitted.py"),
+    lambda c: c["args"].update(inputs={"clips": ["c1.rocket"], "beats": []}),
+])
+def test_operation_opcall_refuses_before_content_or_history_changes(opcall_setup, mutation):
+    from astrid.sdk.timeline.tools import operation_call
+    tl, operation = opcall_setup
+    call = operation_call(operation, INPUTS).to_json()
+    mutation(call)
+    before, disk = tl.document(), _files(Path(tl.path).parents[3])
+    with pytest.raises(TimelineEditError):
+        commands.run(tl, call)
+    assert tl.document() == before
+    assert not list(store._history_dir(Path(tl.path)).glob("*.json"))
+    # Transaction rollback audit is permitted for handler-level failures.
+    assert Path(tl.path).read_bytes() == disk[str(Path(tl.path).relative_to(Path(tl.path).parents[3]))]
+
+
+def test_operation_opcall_does_not_cross_runtime_code_boundary(opcall_setup):
+    from astrid.sdk.timeline.commit import RuntimeCommitService
+    from astrid.sdk.timeline.tools import operation_call
+    tl, operation = opcall_setup
+    call = operation_call(operation, INPUTS).to_json()
+    before = tl.document()
+    with pytest.raises(ValueError, match="expanded guarded commands"):
+        RuntimeCommitService._apply(before, [dict(op="timeline.batch", select=None, args={"commands": [call]})])
+    assert tl.document() == before
