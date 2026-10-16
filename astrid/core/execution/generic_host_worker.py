@@ -10,25 +10,18 @@ from __future__ import annotations
 import json
 import os
 import runpy
-import socket
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Mapping
 
-from .generic_host import _capability_digest, _source_digest_for_roots, _verify_action_admission
+def _install_pipe_bridge(descriptors):
+    from ._child_pipe import install_bridge
+    return install_bridge(descriptors)
 
 
-def _install_inherited_bridge(fd: str):
-    from astrid.sdk._child_bridge import _install_child_bridge
-
-    channel = socket.socket(fileno=int(fd))
-    channel.set_inheritable(False)
-    return _install_child_bridge(channel)
-
-
-def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
+def _run_child_command(encoded: str, descriptors: str = "", *, renderer: bool = False) -> int:
     """Install before Python command code, preserving its argv and entry point."""
     args = json.loads(encoded)
     if not isinstance(args, list) or not args or any(not isinstance(arg, str) for arg in args):
@@ -43,7 +36,7 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
         from .remotion_pipe import install_executor_client
         bridge = install_executor_client()
     else:
-        bridge = _install_inherited_bridge(fd)
+        bridge = _install_pipe_bridge(descriptors)
     try:
         if args[0] == "-c":
             sys.argv = ["-c", *args[2:]]
@@ -96,6 +89,8 @@ def _request_object(raw: Mapping[str, Any], *, kind: str, capability_id: str) ->
 
 
 def run(payload_path: str | Path) -> int:
+    from .generic_host import _capability_digest, _source_digest_for_roots, _verify_action_admission
+
     payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise ValueError("capability worker payload must be an object")
@@ -177,12 +172,12 @@ def run(payload_path: str | Path) -> int:
 if __name__ == "__main__":
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--renderer-command-stdio":
-            raise SystemExit(_run_child_command("", sys.argv[2], renderer=True))
+            raise SystemExit(_run_child_command(sys.argv[2], renderer=True))
         if len(sys.argv) == 4 and sys.argv[1] == "--child-command":
-            raise SystemExit(_run_child_command(sys.argv[2], sys.argv[3]))
+            raise SystemExit(_run_child_command(sys.argv[3], sys.argv[2]))
         bridge = None
         if len(sys.argv) == 4 and sys.argv[2] == "--child-bridge":
-            bridge = _install_inherited_bridge(sys.argv[3])
+            bridge = _install_pipe_bridge(sys.argv[3])
         elif len(sys.argv) != 2 or sys.argv[1].startswith("--"):
             raise ValueError("invalid private worker launch controls")
         try:

@@ -250,7 +250,8 @@ class HostChildBridge:
             os.close(self._attempt_fd)
             raise
         self.cancelled = cancelled
-        self.channel, self.child_channel = socket.socketpair()
+        from ._child_pipe import pipe_pair
+        self.channel, self.child_channel = pipe_pair()
         self.channel.settimeout(0.1)
         self._revoked = threading.Event()
         self._fd_lock = threading.Lock()
@@ -268,15 +269,57 @@ class HostChildBridge:
         # Host-installed capability-specific custody adapter; never socket input.
         self._iteration_video_submit = None
         self._thread = threading.Thread(target=self._serve, name="astrid-child-bridge", daemon=True)
-        self._thread.start()
+        self._launched = False
+        self._launch_binding = None
 
-    def inherited_fd(self) -> int:
-        if self._channel_closed or self._revoked.is_set():
-            raise ChildBridgeError("child bridge is closed")
-        return self.child_channel.fileno()
+    def launch_binding(self):
+        from ._child_pipe import _ChildBridgeLaunchBinding
+        if self._launch_binding is not None:
+            raise ChildBridgeError("child pipe launch binding cannot be reused")
+        self._launch_binding = _ChildBridgeLaunchBinding(self)
+        return self._launch_binding
 
-    def launched(self) -> None:
-        self.child_channel.close()
+    def launched(self, process: Any) -> None:
+        from ._child_pipe import VERSION, encode, pipe_identity, read_frame
+        from .process_group import process_birth_identity
+        try:
+            self._live()
+            custody = getattr(process, "_astrid_custody", None)
+            birth = getattr(process, "_astrid_process_birth", None)
+            if (self._launch_binding is None or self._launch_binding.custody is not custody or self._launched or self._channel_closed
+                    or custody is None or custody.process is not process
+                    or not birth or process_birth_identity(process.pid) != birth
+                    or custody._handles.get(process.pid, (None,))[0] != birth
+                    or process.poll() is not None):
+                raise ChildBridgeError("child pipe lacks original live launch custody")
+            self._launch_binding.verify()
+            self._launch_binding.assert_running()
+            self._launched = True
+            authority = getattr(self.host, "_attempt_claim_authority", None)
+            executor = self.host.executor_id
+            if authority is not None:
+                fields = dict(authority.fields)
+                if (any(fields.get(k) != v for k, v in self.context.items() if k != "run_id")
+                        or fields.get("executor_id") != executor):
+                    raise ChildBridgeError("child pipe claim differs from authenticated host attempt")
+            binding = {"protocol": VERSION, "context": {k: v for k, v in self.context.items() if k != "lease_id"}, "executor_id": executor,
+                       "pid": process.pid, "birth": birth, "parent_pid": os.getpid(),
+                       "launch_digest": hashlib.sha256(encode(self._launch_binding.wire)).hexdigest(),
+                       "pipes": [pipe_identity(self.child_channel.read_fd, os.O_RDONLY),
+                                 pipe_identity(self.child_channel.write_fd, os.O_WRONLY)]}
+            self.child_channel.close()
+            digest = hashlib.sha256(encode(binding)).hexdigest()
+            self.channel.settimeout(5.0)
+            self.channel.sendall(encode({"binding": binding, "digest": digest}))
+            if read_frame(self.channel) != {"ready": digest}:
+                raise ChildBridgeError("child pipe bootstrap acknowledgement differs")
+            self._live()
+            self.channel.sendall(encode({"accepted": digest}))
+            self.channel.settimeout(0.1)
+            self._thread.start()
+        except BaseException:
+            self.revoke()
+            raise
 
     def close_channel(self) -> None:
         with self._admission_lock:
@@ -287,7 +330,7 @@ class HostChildBridge:
             except OSError:
                 pass
             channel.close()
-        if threading.current_thread() is not self._thread:
+        if threading.current_thread() is not self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.5)
 
     def revoke(self) -> None:
@@ -1026,6 +1069,8 @@ class HostChildBridge:
                 try:
                     phase = "dispatch"
                     dispatch_started = time.monotonic()
+                    if self._launch_binding is not None:
+                        self._launch_binding.assert_running()
                     data = self.dispatch(request)
                     dispatch_elapsed = time.monotonic() - dispatch_started
                     reply = {"v": 1, "request_id": request["request_id"], "ok": True, "data": data}

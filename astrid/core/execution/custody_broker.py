@@ -60,6 +60,8 @@ class CustodyError(RuntimeError):
 
 
 _BOOTSTRAP_PIPES = 'ASTRID_RUNTIME_CUSTODY_PIPES'
+_BOOTSTRAP_CHILD_BRIDGE = 'ASTRID_RUNTIME_CUSTODY_CHILD_BRIDGE'
+_CHILD_BRIDGE_CONSUMER = 'ASTRID_CHILD_BRIDGE_CHANNEL'
 
 
 def _pipe_identity(fd: int, direction: int) -> dict[str, int]:
@@ -85,6 +87,23 @@ def _validate_pipe_binding(value: object) -> tuple[int, int]:
     if descriptors[0] == descriptors[1]:
         raise CustodyError('private pipe endpoints collide')
     return tuple(descriptors)
+
+
+def _validate_child_bridge_binding(value, *, role='command', argv=None, run_id=None):
+    if (type(value) is not dict or set(value) != {
+            'purpose', 'role', 'endpoints', 'argv_digest', 'owner_epoch', 'run_id', 'claim_digest'}
+            or value['purpose'] != 'child_bridge' or value['role'] != role or role != 'command'
+            or type(value['run_id']) is not str or not 0 < len(value['run_id']) <= 128
+            or run_id is not None and value['run_id'] != run_id
+            or type(value['argv_digest']) is not str
+            or re.fullmatch(r'sha256:[0-9a-f]{64}', value['argv_digest']) is None
+            or argv is not None and value['argv_digest'] != _digest_bytes(_canonical(argv))
+            or type(value['claim_digest']) is not str
+            or re.fullmatch(r'[0-9a-f]{64}', value['claim_digest']) is None
+            or type(value['owner_epoch']) is not str
+            or re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', value['owner_epoch']) is None):
+        raise CustodyError('child bridge bootstrap differs from matched command launch')
+    return _validate_pipe_binding(value['endpoints'])
 
 
 class _PipeChannel:
@@ -2271,7 +2290,7 @@ class RoleBoundCustodyBroker:
                 os.close(item['fd'])
 
     def retained_pipe_actor(self) -> AuthenticatedCleanupActor:
-        if (self.operation_channel is None or not self._release_sent
+        if ((self.operation_channel is None and getattr(self, 'child_bridge_binding', None) is None) or not self._release_sent
                 or not self._post_exec_authority_validated or self.registration is None):
             raise CustodyError('pipe actor lacks authenticated retained registration')
         expected = self.registration['identity']
@@ -2327,6 +2346,8 @@ class RoleBoundCustodyBroker:
             ).decode("ascii"),
             **({_BOOTSTRAP_PIPES: _canonical(self.child_pipe_binding).decode('ascii')}
                if self.child_pipe_binding else {}),
+            **({_BOOTSTRAP_CHILD_BRIDGE: _canonical(self.child_bridge_binding).decode('ascii')}
+               if getattr(self, 'child_bridge_binding', None) is not None else {}),
         }
         # Exporting bootstrap authority permits a caller to create a child.
         # A later registration absence cannot prove that no creation occurred.
@@ -2607,6 +2628,8 @@ class RoleBoundCustodyBroker:
                     raise CustodyError("hosted role, generation, launch or incarnation differs")
             if self.child_pipe_binding:
                 required.add('pipes')
+            if getattr(self, 'child_bridge_binding', None) is not None:
+                required.add('child_bridge')
             if (
                 set(frame) != required
                 or frame["version"] != PROTOCOL_VERSION
@@ -2618,6 +2641,7 @@ class RoleBoundCustodyBroker:
                 or not isinstance(frame["pid"], int)
                 or frame["pid"] <= 0
                 or frame.get('pipes', []) != self.child_pipe_binding
+                or frame.get('child_bridge') != getattr(self, 'child_bridge_binding', None)
             ):
                 raise CustodyError("custody registration frame is invalid")
             self._observation_phase = "peer-token"
@@ -2777,6 +2801,15 @@ def child_exec_from_environment() -> int:
     encoded_pipes = os.environ.get(_BOOTSTRAP_PIPES)
     pipe_binding = json.loads(encoded_pipes) if encoded_pipes is not None else []
     pipe_fds = _validate_pipe_binding(pipe_binding) if encoded_pipes is not None else ()
+    child_bridge = json.loads(os.environ[_BOOTSTRAP_CHILD_BRIDGE]) if _BOOTSTRAP_CHILD_BRIDGE in os.environ else None
+    bridge_fds = ()
+    if _CHILD_BRIDGE_CONSUMER in os.environ:
+        raise CustodyError('child bridge consumer cannot select bootstrap authority')
+    if child_bridge is not None:
+        if pipe_fds or command_channel:
+            raise CustodyError('child bridge cannot inherit custody control pipes')
+        bridge_fds = _validate_child_bridge_binding(child_bridge, role=role, argv=argv,
+            run_id=os.environ.get('ASTRID_RUNTIME_CUSTODY_RUN_ID'))
     if (bool(pipe_fds) != (role == 'engine' or command_channel)
             or (command_channel and role != 'command')
             or _COMMAND_INVENTORY_FD in os.environ or 'ASTRID_ENGINE_CONTROL_FD' in os.environ):
@@ -2812,6 +2845,7 @@ def child_exec_from_environment() -> int:
         "pid": os.getpid(), "ppid": os.getppid(),
         "argv_digest": _digest_bytes(_canonical(argv)),
         **({'pipes': pipe_binding} if pipe_fds else {}),
+        **({'child_bridge': child_bridge} if child_bridge is not None else {}),
         **({'hosted_digest': _digest_bytes(_canonical(hosted[0])), 'hosted_process': hosted[1]} if hosted else {}),
     }
     _send_frame(connection, frame)
@@ -2832,14 +2866,16 @@ def child_exec_from_environment() -> int:
     if pipe_fds:
         name = 'ASTRID_ENGINE_CONTROL_FD' if role == 'engine' else _COMMAND_INVENTORY_FD
         os.environ[name] = _canonical(pipe_binding).decode('ascii')
+    if child_bridge is not None:
+        os.environ[_CHILD_BRIDGE_CONSUMER] = _canonical(child_bridge).decode('ascii')
     hosted_proof = None
-    approved = pipe_fds
+    approved = pipe_fds + bridge_fds
     if hosted:
         hosted_proof, selected = hosted_contract.publish_consumer(*hosted)
         os.environ.update(selected)
         approved = tuple(hosted_contract.validate(hosted[0], role=role)) + (hosted_proof.fileno(),)
     _close_workload_descriptors(approved)
-    for fd in pipe_fds:
+    for fd in pipe_fds + bridge_fds:
         os.set_inheritable(fd, True)
     _posix_spawn_setexec_suspended(argv, dict(os.environ))
     raise AssertionError("suspended SETEXEC returned")
@@ -3415,9 +3451,11 @@ class ProcessCustody:
         if binding is not None:
             binding.verify()
 
-    def prepare_launch(self, argv: Sequence[str], *, start_new_session: bool, role: str = "command", inventory_context: Mapping[str, Any] | None = None) -> tuple[list[str], dict[str, str]]:
+    def prepare_launch(self, argv: Sequence[str], *, start_new_session: bool, role: str = "command", inventory_context: Mapping[str, Any] | None = None, child_bridge_launch=None) -> tuple[list[str], dict[str, str]]:
         self._verify_root()
         if sys.platform != "darwin":
+            if child_bridge_launch is not None:
+                raise CustodyError('matched child bridge bootstrap requires Darwin custody')
             if not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")):
                 raise CustodyError("incarnation-bound kernel custody is unavailable")
             return list(argv), {}
@@ -3431,6 +3469,10 @@ class ProcessCustody:
         )
         self._launch_broker = broker
         try:
+            if child_bridge_launch is not None:
+                if policy is not None or role != 'command':
+                    raise CustodyError('child bridge cannot inherit custody control endpoints')
+                broker.child_bridge_binding = child_bridge_launch.prepare(self, argv)
             environment = broker.child_environment(argv, start_new_session=start_new_session)
         except BaseException:
             broker.abort_before_spawn()

@@ -1951,7 +1951,9 @@ class _AttemptPolicyFactory:
         roots = (Path(sysconfig.get_path("stdlib")).resolve(),
                  Path(sysconfig.get_path("purelib")).resolve(),
                  Path(sysconfig.get_path("platlib")).resolve(),
-                 Path(__file__).resolve().parents[2], *_admitted_source_roots(record.source_root, record.definition),
+                 Path(__file__).resolve().parents[2],
+                 Path(__file__).resolve().parents[3] / "banodoco_workspace_client",
+                 *_admitted_source_roots(record.source_root, record.definition),
                  Path("/usr/lib"), Path("/System/Library/Frameworks/CoreFoundation.framework"),
                  Path("/System/Library/Frameworks/CoreServices.framework"),
                  Path("/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld"),
@@ -1981,12 +1983,16 @@ class _ConfinedLaunchPlan:
     environment: tuple[tuple[str, str], ...]
     pass_fds: tuple[int, ...]
     retained_process_only: bool = False
+    child_bridge_launch: Any = None
 
     def subprocess_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {"cwd": str(self.cwd), "env": dict(self.environment),
                 "close_fds": True, "pass_fds": self.pass_fds,
                 "stdin": subprocess.PIPE, "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE}
+        if self.child_bridge_launch is not None:
+            options["pass_fds"] = ()
+            options["_child_bridge_launch"] = self.child_bridge_launch
         if self.retained_process_only:
             # No command-inventory IPC may mint helpers outside this topology.
             # Only popen_owned_{process,group} consumes this private option.
@@ -5527,7 +5533,7 @@ class GenericPackHost:
     def _workload_launch_plan(
         self, argv: Sequence[str], *, attempt: Path, cwd: Path | None,
         environment: Mapping[str, str], inherited_fds: tuple[int, ...],
-        broker_endpoint: str | None,
+        broker_endpoint: str | None, child_bridge: Any = None,
     ) -> _ConfinedLaunchPlan:
         policy = self._required_confinement_policy(attempt)
         if self._attempt_claim_authority is not None:
@@ -5536,14 +5542,25 @@ class GenericPackHost:
                 "task_id", "attempt_id", "lease_id", "fence", "runtime_epoch", "project_id", "operation", "executor_id")})
         if cwd == attempt:
             cwd = policy.private_write_root
-        # A channel requested by a worker cannot add itself to host authority.
+        # Only this existing bridge's retained pair can extend this attempt's
+        # immutable descriptor policy. Caller pass_fds remain unmatched.
+        bridge_launch = None
+        if child_bridge is not None:
+            if policy.pass_fds:
+                raise HostError("child bridge cannot add caller-selected descriptors")
+            bridge_launch = child_bridge.launch_binding()
+            policy = replace(policy, pass_fds=bridge_launch.descriptors)
+            self._confinement_policy = policy
+            inherited_fds = bridge_launch.descriptors
         plan = _confined_launch_plan(
             argv, policy=policy, cwd=cwd, parent_environment=environment,
             broker_endpoint=broker_endpoint or None,
         )
         if set(inherited_fds) != set(policy.pass_fds):
             raise HostError("worker descriptors differ from host confinement policy")
-        return plan
+        if bridge_launch is not None:
+            bridge_launch.select(plan.argv, str(plan.cwd), plan.environment, plan.pass_fds)
+        return replace(plan, child_bridge_launch=bridge_launch)
 
     def _required_confinement_policy(self, attempt: Path) -> _ConfinementPolicy:
         policy = self._confinement_policy
@@ -8196,9 +8213,9 @@ class GenericPackHost:
             if (not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}
                     or arguments[0] in {"-c", "-m"} and len(arguments) < 2):
                 raise HostError("unsupported delegating Python command flags")
-            inherited_fds = (child_bridge.inherited_fd(),)
+            inherited_fds = (child_bridge.child_channel.read_fd, child_bridge.child_channel.write_fd)
             argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
-                    "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+                    "--child-command", json.dumps(inherited_fds), json.dumps(arguments)]
         remotion_lease = None
         remotion_bridge = None
         remotion_completed = False
@@ -8260,16 +8277,25 @@ class GenericPackHost:
                         json.dumps(imports), json.dumps(arguments)]
             plan = self._workload_launch_plan(
                 argv, attempt=attempt, cwd=cwd, environment=env,
-                inherited_fds=inherited_fds, broker_endpoint=broker_endpoint,
+                inherited_fds=inherited_fds, broker_endpoint=broker_endpoint, child_bridge=child_bridge,
             )
             process = popen_owned_group(list(plan.argv), **plan.subprocess_options(), text=True)
             self._track_process(process)
+            if child_bridge is not None:
+                try:
+                    child_bridge.launched(process)
+                except BaseException as error:
+                    _terminate_process_group(process)
+                    self._untrack_process(process)
+                    _, diagnostic = process.communicate()
+                    secret_values = {key: value for key, value in env.items()
+                                     if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))}
+                    raise HostError("child pipe bootstrap failed: " + self._scrub_secret_text(
+                        (diagnostic or "")[-3500:], secret_values)) from error
         except BaseException:
             if remotion_lease is not None:
                 remotion_lease.close()
             raise
-        if child_bridge is not None:
-            child_bridge.launched()
         if remotion_lease is not None:
             from .remotion_pipe import HostPipeBridge
             try:
@@ -8526,9 +8552,8 @@ class GenericPackHost:
                 payload["remotion_pipe"] = True
             request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             if child_bridge is not None:
-                bridge_fd = child_bridge.inherited_fd()
-                inherited_fds += (bridge_fd,)
-                argv.extend(("--child-bridge", str(bridge_fd)))
+                inherited_fds = (child_bridge.child_channel.read_fd, child_bridge.child_channel.write_fd)
+                argv.extend(("--child-bridge", json.dumps(inherited_fds)))
             if require_network_startup:
                 argv = _network_startup_argv(argv, attempt_path, env, broker_required=network_broker_required)
             else:
@@ -8549,16 +8574,25 @@ class GenericPackHost:
                         ]))), *argv[2:]]
             plan = self._workload_launch_plan(
                 argv, attempt=attempt_path, cwd=None, environment=env,
-                inherited_fds=inherited_fds, broker_endpoint=broker_endpoint,
+                inherited_fds=inherited_fds, broker_endpoint=broker_endpoint, child_bridge=child_bridge,
             )
             process = popen_owned_group(list(plan.argv), **plan.subprocess_options(), text=True)
             self._track_process(process)
+            if child_bridge is not None:
+                try:
+                    child_bridge.launched(process)
+                except BaseException as error:
+                    _terminate_process_group(process)
+                    self._untrack_process(process)
+                    _, diagnostic = process.communicate()
+                    secret_values = {key: value for key, value in env.items()
+                                     if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))}
+                    raise HostError("child pipe bootstrap failed: " + self._scrub_secret_text(
+                        (diagnostic or "")[-3500:], secret_values)) from error
         except BaseException:
             if remotion_lease is not None:
                 remotion_lease.close()
             raise
-        if child_bridge is not None:
-            child_bridge.launched()
         if remotion_lease is not None:
             from .remotion_pipe import HostPipeBridge
             try:

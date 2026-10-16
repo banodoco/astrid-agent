@@ -1136,6 +1136,7 @@ def bridge(world):
     c = world.claim
     result = HostChildBridge(world.host, world.task, attempt_id=c["attempt_id"], lease_id=c["lease_id"], fence=c["fence"],
                              runtime_epoch=c["runtime_epoch"], output_root=output, cancelled=lambda: False)
+    result._thread.start()  # direct wire fixture, no process launch
     world.bridges.append(result)
     return result
 
@@ -2247,6 +2248,7 @@ def _snapshot_fixture(world, *, form="python", limits=None):
     output = world.tmp / "source-review-attempt/outputs"
     output.mkdir(parents=True)
     source = HostChildBridge(host, task, **{k: claim[k] for k in ("attempt_id", "lease_id", "fence", "runtime_epoch")}, output_root=output, cancelled=lambda: False)
+    source._thread.start()  # direct wire fixture, no process launch
     world.bridges.append(source)
     world.source_bridge, world.source_claim, world.source_task, world.parent_bridge = source, claim, task, parent_bridge
     return source

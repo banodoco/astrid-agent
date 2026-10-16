@@ -207,23 +207,47 @@ def process_birth_identity(pid: int | None = None) -> str:
     return info.birth if info is not None else ""
 
 
-def popen_owned_process(argv: list[str], *, custody_root: CustodyRootBinding | None = None, **kwargs: Any) -> subprocess.Popen:
+def popen_owned_process(argv: list[str], *, custody_root: CustodyRootBinding | None = None, _child_bridge_launch=None, **kwargs: Any) -> subprocess.Popen:
     """Launch with retained custody while preserving the requested session."""
     options = dict(kwargs)
     new_session = bool(options.pop("start_new_session", False))
     delegate_inventory = options.pop("_delegate_inventory", True)
     if type(delegate_inventory) is not bool:
         raise CleanupUncertainError("inventory launch selection must be explicit")
+    if _child_bridge_launch is not None:
+        from ._child_pipe import _ChildBridgeLaunchBinding
+        if type(_child_bridge_launch) is not _ChildBridgeLaunchBinding:
+            raise CleanupUncertainError('child bridge requires its private launch binding')
+        try:
+            if options.get('pass_fds'):
+                raise CleanupUncertainError('child bridge cannot admit caller descriptors')
+            _child_bridge_launch.verify_launch(argv, options, new_session=new_session)
+        except BaseException:
+            _child_bridge_launch.bridge.revoke()
+            raise
+        # The application pair never shares the command-inventory channel.
+        delegate_inventory = False
     if sys.platform == 'darwin' and options.get('pass_fds'):
         raise CleanupUncertainError('unmatched inherited channels require an admitted pipe consumer')
     custody = ProcessCustody(custody_root=custody_root) if custody_root is not None else ProcessCustody()
     context = {"environment": dict(os.environ if options.get("env") is None else options["env"]), "cwd": str(options.get("cwd") or os.getcwd())} if delegate_inventory else None
-    wrapped, registration_env = custody.prepare_launch(argv, start_new_session=new_session, inventory_context=context)
+    try:
+        if _child_bridge_launch is None:
+            wrapped, registration_env = custody.prepare_launch(argv, start_new_session=new_session, inventory_context=context)
+        else:
+            wrapped, registration_env = custody.prepare_launch(argv, start_new_session=new_session,
+                inventory_context=context, child_bridge_launch=_child_bridge_launch)
+    except BaseException:
+        if _child_bridge_launch is not None:
+            _child_bridge_launch.bridge.revoke()
+        raise
     if registration_env:
         options["env"] = {**(os.environ if options.get("env") is None else options["env"]), **registration_env}
         # Only the host broker creates these channels. Caller-supplied FD lists
         # cannot select the bootstrap's matched operation pipes.
         broker_fds = custody._launch_broker.child_pipe_fds
+        if _child_bridge_launch is not None:
+            broker_fds += _child_bridge_launch.descriptors
         options['pass_fds'] = tuple(options.get('pass_fds', ())) + broker_fds
         options['close_fds'] = True
     else:
@@ -232,6 +256,8 @@ def popen_owned_process(argv: list[str], *, custody_root: CustodyRootBinding | N
     try:
         process = (RetainedCustodyPopen if sys.platform == 'darwin' else subprocess.Popen)(wrapped, **options)
     except BaseException:
+        if _child_bridge_launch is not None:
+            _child_bridge_launch.bridge.revoke()
         custody.cleanup_failed_launch(signum=signal.SIGTERM)
         raise
     process._astrid_custody = custody
@@ -245,6 +271,8 @@ def popen_owned_process(argv: list[str], *, custody_root: CustodyRootBinding | N
         custody.start_inventory_owner()
         custody.release_launch()
     except BaseException as error:
+        if _child_bridge_launch is not None:
+            _child_bridge_launch.bridge.revoke()
         # Keep the initiating error and its retained obligation visible.
         error.process = process
         error.custody = custody
