@@ -143,6 +143,12 @@ def projected_clips(closure):
 
 
 def test_persisted_restructure_reopen_edit_commit_and_exact_replay(port):
+    from unittest.mock import patch
+
+    from astrid.core.timeline import shot_composition_projection
+    from astrid.core.timeline.chapter_storage import _render_input
+    from astrid.sdk.timeline.story import story_overview
+
     original = port.path.read_bytes()
     before = port.revision_closure("rev-0")
     opened = port.open()
@@ -161,7 +167,18 @@ def test_persisted_restructure_reopen_edit_commit_and_exact_replay(port):
     assert [t["id"] for t in parent["config"]["tracks"]] == ["picture", "music", "vo"]
     assert parent["config"]["tracks"][0]["scaleAppliesToPositionedClips"] is True
     assert projected_clips(before) == projected_clips(closure)
-    fresh = port.open(rid)
+    # Observe the real opener's exact persisted inputs; delegate to the shared
+    # production projection rather than replacing its track reconciliation.
+    with patch.object(shot_composition_projection, "project_runtime_parent_composition",
+                      wraps=shot_composition_projection.project_runtime_parent_composition) as project:
+        fresh = port.open(rid)
+        project.assert_called_once_with(closure["parent_revision"],
+                                       shot_revisions=closure["shot_revisions"],
+                                       internal_timeline_revisions=closure["internal_timeline_revisions"])
+    assert fresh["base_parent"]["revision_id"] == rid
+    renderer_before = _render_input(opened)
+    assert renderer_before == _render_input(fresh["structure_base"])
+    assert renderer_before[2] == 120
     assert fresh["placements"][0]["shot_id"] == opened["placements"][0]["shot_id"]
     assert fresh["placements"][0]["occurrence_id"] == opened["placements"][0]["occurrence_id"]
     assert {c["id"]: c["at"] for c in fresh["shots"]["film-shot"]["internal_timeline"]["clips"]} == {
@@ -170,12 +187,33 @@ def test_persisted_restructure_reopen_edit_commit_and_exact_replay(port):
     second = port.commit(dict(op="clip.set", select="occurrence:film-occ/clip:one", args=dict(opacity=.75)), request_id="request-2")
     assert second["status"] == "accepted", second
     assert len(port.accepts) == 2
-    read = port.open(second["accepted_revision_id"])
+    second_rid = second["accepted_revision_id"]
+    assert port.accepts[1]["expected_head_revision_id"] == rid
+    read = port.open(second_rid)
+    assert read["base_parent"]["revision_id"] == second_rid
     assert Checkout(read).clip("one").data["opacity"] == .75
+    edited = port.revision_closure(second_rid)
+    assert edited["parent_revision"]["payload"]["config"]["tracks"] == parent["config"]["tracks"]
+    assert all(r["payload"]["tracks"] == [] for r in edited["internal_timeline_revisions"])
+    tracks = {t["id"] for t in parent["config"]["tracks"]}
+    assert all(c["track"] in tracks for r in edited["internal_timeline_revisions"] for c in r["payload"]["clips"])
+    ranges = opened["parent"]["config"]["app"]["astrid"]["ranges"]
+    expected_ranges = [dict(range=row, start_frame=start, end_frame=end)
+                       for row, (start, end) in zip(ranges, [(0, 60), (60, 120), (30, 90)])]
+    for document, revision in ((opened, "rev-0"), (fresh, rid), (read, second_rid)):
+        overview = story_overview(document, revision_id=revision)
+        assert overview["findings"] == []
+        assert overview["ranges"] == expected_ranges
+        clips = {c["id"]: c for c in document["shots"]["film-shot"]["internal_timeline"]["clips"]}
+        assert {cid: (clips[cid]["from"], clips[cid]["to"], clips[cid]["at"])
+                for cid in ("cross", "bed")} == {"cross": (.25, 1.25, 1.5), "bed": (.5, 4.5, 0)}
+    assert set(port.data()["parents"]) == {"rev-0", rid, second_rid}
     assert port.revision_closure("rev-0") == before
+    assert port.revision_closure(rid) == closure
     # Replay needs only exact retained closure bytes, no current store/head.
     offline = open_authoring_bundle(**copy.deepcopy(closure))
     assert compile_candidate(offline).publication["parent_composition"] == parent
+    assert _render_input(offline["structure_base"]) == renderer_before
 
 
 def test_retry_rebase_inverse_and_rename_identity(port):
