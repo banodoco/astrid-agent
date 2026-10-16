@@ -5596,6 +5596,10 @@ class GenericPackHost:
         self._renderer_setup_lock = threading.RLock()
         self._host_lifetime_processes: set[subprocess.Popen] = set()
         self._shutdown = threading.Event()
+        # Dedicated preparation listener, never shared by claim slots or the
+        # execution/cleanup control channel. Installed only by trusted startup.
+        self._storage_preparation_listener = None
+        self._storage_preparation_lock = threading.Lock()
         # An unregistered host must retain the existing claim-loop failure
         # semantics. register() arms the first refresh after success.
         self._registration_refresh_deadline = float("inf")
@@ -6047,6 +6051,12 @@ class GenericPackHost:
         with self.managed_tool_session._lock:
             self._shutdown.set()
         errors: list[BaseException] = []
+        with self._storage_preparation_lock:
+            if self._storage_preparation_listener is not None:
+                try:
+                    self._storage_preparation_listener.close()
+                except Exception as exc:  # noqa: BLE001 - retain shutdown cleanup obligations.
+                    errors.append(exc)
         # Fence every serving slot before any session release can block or
         # report uncertainty. A failed release must not leave a sibling live.
         for slot in self._claim_slots:
@@ -6314,6 +6324,7 @@ class GenericPackHost:
             "source_inventory_identity": self.source_inventory_identity,
             "matrix_digest": _canonical_digest(self.matrix),
         })
+        self._retire_changed_storage_preparation()
         return tuple(records[key] for key in sorted(records))
 
     def admit(self, capability_kind: str, capability_id: str) -> tuple[Mapping[str, Any], Mapping[str, str]]:
@@ -6452,6 +6463,39 @@ class GenericPackHost:
             prior = owner._remotion_full_preflight.get(capability_id)
             if context is not None and prior is not None and prior[0] == context:
                 owner._remotion_full_preflight.pop(capability_id, None)
+
+    def start_storage_preparation(self, config):
+        """Trusted composition calls once after discovery with exact bindings.
+
+        No wire/manifest/environment path installs this configuration. The
+        existing Host shutdown owns the resulting listener's entire lifetime.
+        """
+        from .storage_preparation_transport import StoragePreparationListener
+        with self._storage_preparation_lock:
+            if self._shutdown.is_set() or self._storage_preparation_listener is not None:
+                raise HostError("storage preparation cannot start on this host lifecycle")
+            listener = StoragePreparationListener(self, config).start()
+            self._storage_preparation_listener = listener
+            return listener
+
+    def _retire_changed_storage_preparation(self, runtime_state=None) -> None:
+        """Withdraw the owned endpoint when discovery/registration changes it."""
+        with self._storage_preparation_lock:
+            listener = self._storage_preparation_listener
+            if listener is None:
+                return
+            config = listener.config
+            runtime_changed = runtime_state is not None and any(
+                runtime_state.get(key) != getattr(config, key)
+                for key in ("runtime_instance_id", "runtime_session_id")
+            )
+            runtime_changed = runtime_changed or (runtime_state is not None and any(
+                runtime_state.get(key) != self._registered_runtime_state.get(key)
+                for key in ("protocol", "schema_digest", "runtime_epoch", "coordinator_epoch")
+            ))
+            if runtime_changed or not listener.is_ready():
+                listener.close()
+                # Retain the closed listener: this lifecycle cannot rebind.
 
     def prepare_storage_estimate(self, request: StorageEstimateRequest) -> StoragePreparation:
         """Host-local final099 seam; A/C own authenticated transport/projection.
@@ -6622,6 +6666,7 @@ class GenericPackHost:
             raise HostError(self._runtime_registration_fence)
         # A dead/incompatible Runtime must fail before expensive native work.
         runtime_state = self._runtime_compatibility()
+        self._retire_changed_storage_preparation(runtime_state)
         if self._registered_runtime_state and not deliberate:
             changed = [key for key in ("protocol", "schema_digest", "runtime_epoch",
                         "runtime_instance_id", "runtime_session_id", "coordinator_epoch")
@@ -11817,6 +11862,13 @@ class LocalExecutionPreparation:
                     host._handoff_claim_gate_closed = True
                     host._handoff_observation_known = False
 
+    def start_storage_preparation(self):
+        """Start only on this selected, activated, registered claim owner."""
+        from .storage_preparation_startup import configuration_from_activation
+        with self._lock:
+            config = configuration_from_activation(self)
+            return self._claim_host.start_storage_preparation(config)
+
     def retain_activation_grant(self, grant: Mapping[str, Any]) -> None:
         """Retain the activation accepted over the private Runtime channel."""
         if (not isinstance(grant, Mapping) or grant.get("version") != _ACTIVATION_VERSION
@@ -14350,75 +14402,85 @@ def _cli() -> int:
             "unready": unready, "withdrawn": registration.get("withdrawn_capabilities") or [],
             "full_registration": str(ready_path) if ready_path is not None else None,
         }, sort_keys=True, default=_json_safe), flush=True)
-    if ready_path is not None:
-        ready_payload = {
-            "status": "ready",
-            "remotion_validation": {k: v for k, v in os.environ.items() if k.startswith("ASTRID_REMOTION_VALIDATION_")} or None,
-            "python_executable": os.path.abspath(sys.executable),
-            "pid": os.getpid(),
-            "process_birth_id": process_birth_identity(),
-            "endpoint": str(args.runtime_endpoint).rstrip("/") if args.runtime_endpoint else None,
-            "executor_id": host.executor_id,
-            "output_root": output_root,
-            "attempt_base": str(host.attempt_base) if host.attempt_base else None,
-            "session_ref": os.environ.get("ASTRID_SESSION_REF"),
-            "session_config_digest": os.environ.get("ASTRID_SESSION_CONFIG_DIGEST"),
-            "data_root": os.environ.get("BANODOCO_LOCAL_DATA_ROOT"),
-            "capability_count": len(host.capabilities),
-            "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
-            "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),
-            "registration": registration,
-            "ready_file": str(ready_path),
-            "credential_file": str(credential_path) if credential_path else None,
-            "support_root": str(support_root) if support_root else None,
-            "source_checkout": str(source_checkout) if source_checkout else None,
-            "source_checkout_digest": source_checkout_digest(source_checkout) if source_checkout else None,
-            "source_closure_digest": identity_attestation["source"].get("closure_digest"),
-            "source_inventory_identity": host.source_inventory_identity,
-            "boot_manifest_path": str(boot_manifest),
-            "boot_manifest_hash": boot_manifest_hash,
-            "source_epoch": host.source_epoch,
-            "runtime_instance_id": args.runtime_instance_id,
-            "runtime_epoch": host.runtime_state.get("runtime_epoch"),
-            "schema_digest": host.runtime_state.get("schema_digest"),
-            "identity_attestation": identity_attestation,
-            "model_root_binding": (
-                verified_model_root.as_dict() if verified_model_root is not None else None
-            ),
-            "activation": {
-                key: activation[key]
-                for key in (
-                    "version", "operation_id", "channel_id", "activation_id",
-                    "executor_incarnation", "evidence_digest", "host",
-                )
+    if preparation is not None and args.register:
+        try:
+            preparation.start_storage_preparation()
+        except Exception as exc:  # noqa: BLE001 - preparation refuses without granting execution.
+            print(json.dumps({"event": "storage_preparation_unavailable",
+                "code": str(getattr(exc, "code", "binding_unavailable"))}), file=sys.stderr, flush=True)
+    try:
+        if ready_path is not None:
+            ready_payload = {
+                "status": "ready",
+                "remotion_validation": {k: v for k, v in os.environ.items() if k.startswith("ASTRID_REMOTION_VALIDATION_")} or None,
+                "python_executable": os.path.abspath(sys.executable),
+                "pid": os.getpid(),
+                "process_birth_id": process_birth_identity(),
+                "endpoint": str(args.runtime_endpoint).rstrip("/") if args.runtime_endpoint else None,
+                "executor_id": host.executor_id,
+                "output_root": output_root,
+                "attempt_base": str(host.attempt_base) if host.attempt_base else None,
+                "session_ref": os.environ.get("ASTRID_SESSION_REF"),
+                "session_config_digest": os.environ.get("ASTRID_SESSION_CONFIG_DIGEST"),
+                "data_root": os.environ.get("BANODOCO_LOCAL_DATA_ROOT"),
+                "capability_count": len(host.capabilities),
+                "ready_capabilities": sorted(record.id for record in host.capabilities.values() if record.ready),
+                "unready_capabilities": sorted(record.id for record in host.capabilities.values() if not record.ready),
+                "registration": registration,
+                "ready_file": str(ready_path),
+                "credential_file": str(credential_path) if credential_path else None,
+                "support_root": str(support_root) if support_root else None,
+                "source_checkout": str(source_checkout) if source_checkout else None,
+                "source_checkout_digest": source_checkout_digest(source_checkout) if source_checkout else None,
+                "source_closure_digest": identity_attestation["source"].get("closure_digest"),
+                "source_inventory_identity": host.source_inventory_identity,
+                "boot_manifest_path": str(boot_manifest),
+                "boot_manifest_hash": boot_manifest_hash,
+                "source_epoch": host.source_epoch,
+                "runtime_instance_id": args.runtime_instance_id,
+                "runtime_epoch": host.runtime_state.get("runtime_epoch"),
+                "schema_digest": host.runtime_state.get("schema_digest"),
+                "identity_attestation": identity_attestation,
+                "model_root_binding": (
+                    verified_model_root.as_dict() if verified_model_root is not None else None
+                ),
+                "activation": {
+                    key: activation[key]
+                    for key in (
+                        "version", "operation_id", "channel_id", "activation_id",
+                        "executor_incarnation", "evidence_digest", "host",
+                    )
+                }
+                if activation is not None
+                else None,
             }
-            if activation is not None
-            else None,
-        }
-        _write_ready_marker(ready_path, ready_payload)
-        _emit_startup_phase("ready_written")
-    if args.run_task:
-        if client is None or not args.lease_token:
-            parser.error("--run-task requires --runtime-endpoint, --credential-file, and --lease-token")
-        task = client.task(args.run_task)
-        print(json.dumps(host.run_task(task, lease_token=args.lease_token, keep_attempt=args.keep_attempt), indent=2, sort_keys=True))
-    if args.command == "run":
-        if client is None:
-            parser.error("run requires --runtime-endpoint and --credential-file")
-        if not args.register:
-            host.register()
-        print(json.dumps(host.run(once=args.once, poll_seconds=args.poll_seconds, max_tasks=args.max_tasks), indent=2, sort_keys=True, default=str))
-    if args.command == "supervise":
-        if client is None:
-            parser.error("supervise requires --runtime-endpoint and --credential-file")
-        if not args.supervisor_state:
-            parser.error("supervise requires --supervisor-state")
-        supervisor = host.persistent_supervisor(
-            args.supervisor_state,
-            max_frame_bytes=args.max_frame_bytes,
-        )
-        supervisor.serve(sys.stdin, sys.stdout)
-    return 0
+            _write_ready_marker(ready_path, ready_payload)
+            _emit_startup_phase("ready_written")
+        if args.run_task:
+            if client is None or not args.lease_token:
+                parser.error("--run-task requires --runtime-endpoint, --credential-file, and --lease-token")
+            task = client.task(args.run_task)
+            print(json.dumps(host.run_task(task, lease_token=args.lease_token, keep_attempt=args.keep_attempt), indent=2, sort_keys=True))
+        if args.command == "run":
+            if client is None:
+                parser.error("run requires --runtime-endpoint and --credential-file")
+            if not args.register:
+                host.register()
+            print(json.dumps(host.run(once=args.once, poll_seconds=args.poll_seconds, max_tasks=args.max_tasks), indent=2, sort_keys=True, default=str))
+        if args.command == "supervise":
+            if client is None:
+                parser.error("supervise requires --runtime-endpoint and --credential-file")
+            if not args.supervisor_state:
+                parser.error("supervise requires --supervisor-state")
+            supervisor = host.persistent_supervisor(
+                args.supervisor_state,
+                max_frame_bytes=args.max_frame_bytes,
+            )
+            supervisor.serve(sys.stdin, sys.stdout)
+        return 0
+    finally:
+        if host._storage_preparation_listener is not None:
+            host.shutdown()
 
 
 if __name__ == "__main__":
