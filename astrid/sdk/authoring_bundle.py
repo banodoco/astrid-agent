@@ -32,6 +32,22 @@ from .authoring_remote import AuthoringRemoteError, TargetBoundAuthoringBundle
 from .authoring_render_preview import render_authoring_candidate_preview
 
 
+def project_audio_lane_for_runtime_inspection(
+    closure: Mapping[str, Any], *, capabilities: Iterable[str],
+) -> dict[str, Any] | None:
+    """Trusted Runtime composition over its verified, detached revision closure.
+
+    Open only the supplied immutable revisions. The complete authoring bundle
+    and caller-advertised capabilities pass directly to the canonical adapter.
+    """
+    bundle = open_authoring_bundle(
+        closure["parent_revision"],
+        shot_revisions=closure["shot_revisions"],
+        internal_timeline_revisions=closure["internal_timeline_revisions"],
+    )
+    return project_audio_lane_for_authoring_bundle(bundle, capabilities=capabilities)
+
+
 def project_audio_lane_for_authoring_bundle(
     authoring_bundle: Mapping[str, Any], *, capabilities: Iterable[str],
 ) -> dict[str, Any] | None:
@@ -143,6 +159,7 @@ __all__ = [
     "inspect_authoring_candidate",
     "open_authoring_bundle",
     "project_audio_lane_for_authoring_bundle",
+    "project_audio_lane_for_runtime_inspection",
     "preview_authoring_candidate",
     "render_authoring_candidate_preview",
     "publish_authoring_candidate",
