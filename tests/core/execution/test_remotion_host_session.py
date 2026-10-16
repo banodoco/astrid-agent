@@ -11,6 +11,18 @@ import pytest
 
 from astrid.core.execution import remotion_host_session as host
 
+_REAL_SIGNATURE_CHECK = host._verify_browser_signature
+
+
+@pytest.fixture(autouse=True)
+def disposable_browser(tmp_path, monkeypatch):
+    # Unit/lifecycle tests must never inspect or verify an installed browser.
+    browser = tmp_path / "disposable-browser"
+    browser.write_bytes(b"synthetic browser identity only")
+    browser.chmod(0o700)
+    monkeypatch.setattr(host, "_DARWIN_BROWSER", browser)
+    monkeypatch.setattr(host, "_verify_browser_signature", lambda selected: None)
+
 
 def environment(tmp_path):
     (tmp_path / "artifact-scratch").mkdir(exist_ok=True)
@@ -216,7 +228,7 @@ assert reply['ok'] is True, reply
         before = Path(path).stat()
         value = original_identity(path)
         after = Path(path).stat()
-        identity_observations.append({'path':str(path), 'identity':dict(zip(identity_names,value)),
+        identity_observations.append({'path':str(path), 'identity':{'sha256':value.sha256,'security':repr(value.security)},
             'stat_before':dict(zip(identity_names[:5],(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns))),
             'stat_after':dict(zip(identity_names[:5],(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)))})
         return value
@@ -454,7 +466,7 @@ def test_host_browser_identity_is_bound_and_only_added_to_native_request(tmp_pat
         identity = host._file_identity(browser)
         assert lease.browser == browser
         assert lease.input_identities[browser] == identity
-        assert (str(browser), identity) in lease.selected_identity[2]
+        assert (str(browser), (identity.security, identity.sha256)) in lease.selected_identity[2]
         manager.request(lease, value)
         assert native_requests[0]["browserExecutable"] == str(browser)
         assert "browserExecutable" not in value["request"]
@@ -508,6 +520,7 @@ def test_fixed_darwin_browser_selection_ignores_executor_environment(tmp_path, m
     monkeypatch.setattr(host, "_DARWIN_BROWSER", browser)
     monkeypatch.setenv("CHROME_PATH", "/unadmitted/browser")
     monkeypatch.setenv("ASTRID_BROWSER_EXECUTABLE", "/unadmitted/browser")
+    monkeypatch.setattr(host, "_verify_browser_signature", lambda selected: None)
     assert host._host_browser_executable() == browser
 
 
@@ -965,3 +978,202 @@ def test_host_custody_explicit_symlink_parent_is_not_canonicalized(tmp_path, mon
     finally:
         manager._closed = True
         lease.close()
+
+
+@pytest.mark.parametrize('change', ['timestamp', 'same-mode'])
+def test_secure_input_metadata_revalidation_keeps_content_and_security(tmp_path, change):
+    path = tmp_path / 'input'
+    path.write_bytes(b'admitted bytes')
+    before = host._file_identity(path)
+    if change == 'timestamp':
+        os.utime(path, ns=(1_000_000_000, 2_000_000_000))
+    else:
+        path.chmod(path.stat().st_mode)
+    after = host._file_identity(path)
+    assert before == after
+    assert before.before['ctime_ns'] != after.after['ctime_ns']
+    assert before.sha256 == after.sha256
+
+
+@pytest.mark.parametrize('change', ['mode', 'owner', 'same-size-bytes', 'xattr', 'acl'])
+def test_secure_input_security_and_same_size_bytes_refuse(tmp_path, monkeypatch, change):
+    manager, _ = owner(tmp_path)
+    env = environment(tmp_path)
+    lease = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+    worker = Path(env['ASTRID_REMOTION_PROJECT_DIR']) / 'src/astrid-frame-worker.mjs'
+    before = worker.stat()
+    if change == 'mode':
+        worker.chmod(0o700)
+    elif change == 'owner':
+        # No permission widening or chown privilege: inject the kernel fact at
+        # the snapshot boundary, then exercise the real identity comparison.
+        original = host._file_facts
+        def changed(st):
+            facts = original(st)
+            if st.st_ino == before.st_ino:
+                facts['uid'] += 1
+            return facts
+        monkeypatch.setattr(host, '_file_facts', changed)
+    elif change == 'acl':
+        if sys.platform != 'darwin':
+            pytest.skip('extended ACL case requires Darwin chmod')
+        subprocess.run(['/bin/chmod', '+a', 'everyone deny write', str(worker)], check=True)
+    elif change == 'xattr':
+        if sys.platform != 'darwin':
+            os.setxattr(worker, 'user.astrid-test', b'changed')
+        else:
+            subprocess.run(['/usr/bin/xattr', '-w', 'org.astrid.disposable', 'changed', str(worker)], check=True)
+    else:
+        worker.write_bytes(b'x' * before.st_size)
+        os.utime(worker, ns=(before.st_atime_ns, before.st_mtime_ns))
+    try:
+        with pytest.raises(ValueError, match='input changed'):
+            manager._validate_inputs(lease)
+        assert manager.execution_invalidated is not None and manager.custody_unresolved is None
+    finally:
+        lease.close()
+        manager.close()
+
+
+@pytest.mark.parametrize('change', ['pathname-swap', 'unstable-bytes'])
+def test_secure_input_hash_brackets_pathname_and_open_descriptor(tmp_path, monkeypatch, change):
+    path = tmp_path / 'input'
+    path.write_bytes(b'admitted bytes')
+    original = os.read
+    changed = False
+    def read(fd, size):
+        nonlocal changed
+        data = original(fd, size)
+        if not changed:
+            changed = True
+            if change == 'pathname-swap':
+                replacement = tmp_path / 'replacement'
+                replacement.write_bytes(b'admitted bytes')
+                replacement.replace(path)
+            else:
+                path.write_bytes(b'changed! bytes')
+        return data
+    monkeypatch.setattr(host.os, 'read', read)
+    with pytest.raises(ValueError, match='while hashing|pathname'):
+        host._file_identity(path)
+
+
+@pytest.mark.parametrize('fault', ['bytes', 'ctime-only', 'custody', 'owner-loss'])
+def test_owned_evaluate_input_invalidation_still_shutdowns_original(tmp_path, monkeypatch, record_property, fault):
+    manager, events = owner(tmp_path)
+    env = environment(tmp_path)
+    worker = Path(env['ASTRID_REMOTION_PROJECT_DIR']) / 'src/astrid-frame-worker.mjs'
+    marker = tmp_path / 'artifact-scratch' / 'evaluated.json'
+    worker.write_text('''import json, os, sys
+from pathlib import Path
+for line in sys.stdin:
+    value = json.loads(line)
+    if value['type'] == 'shutdown':
+        print(json.dumps({'ok': True, 'shutdown': True, 'exit': True}), flush=True)
+        break
+    assert value['type'] == 'evaluate'
+    Path(%r).write_text(json.dumps({'pid': os.getpid(), 'evaluated': True}))
+    source = Path(__file__)
+    if %r == 'ctime-only':
+        source.chmod(source.stat().st_mode)
+    else:
+        source.write_bytes(source.read_bytes().replace(b'# admitted', b'# replaced'))
+    print(json.dumps({'ok': True, 'evaluated': True}), flush=True)
+# admitted
+''' % (str(marker), fault))
+    lease = manager.lease(env, attempt=tmp_path, scratch=tmp_path / 'artifact-scratch')
+    frame = request(env)
+    frame['request'].update(type='evaluate', compositionId='AstridTrackEvaluation')
+    process = None
+    if fault == 'owner-loss':
+        real_exchange = manager._exchange
+        def exchange(value, **kwargs):
+            response = real_exchange(value, **kwargs)
+            if value['type'] == 'evaluate':
+                manager._custody_root.owner_birth = 'disposable-owner-lost'
+            return response
+        monkeypatch.setattr(manager, '_exchange', exchange)
+    try:
+        if fault == 'ctime-only':
+
+            assert manager.request(lease, frame)['ok'] is True
+        else:
+            expected_error = RuntimeError if fault == 'owner-loss' else ValueError
+            expected_message = 'owner incarnation' if fault == 'owner-loss' else 'input changed'
+            with pytest.raises(expected_error, match=expected_message):
+                manager.request(lease, frame)
+            assert manager.execution_invalidated is not None
+            assert (manager.custody_unresolved is not None) == (fault == 'owner-loss')
+            with pytest.raises(RuntimeError, match='cleanup is unresolved' if fault == 'owner-loss' else 'execution invalidated'):
+
+                manager._request_owned(lease, frame)
+        process = manager.process
+        assert json.loads(marker.read_text()) == {'pid': process.pid, 'evaluated': True}
+        facts = json.loads((manager.root / 'input-validation.json').read_text())
+        assert facts['execution_invalidated'] == (fault not in {'ctime-only', 'owner-loss'})
+        if fault == 'owner-loss':
+            with pytest.raises(RuntimeError):
+                manager.close()
+            process.stdin.close()  # Cooperative fixture EOF, no control bypass.
+            assert process.wait(timeout=5) == 0
+            with pytest.raises(RuntimeError):
+                manager.close()
+            assert manager.process is process and manager.root.exists()
+            assert manager.execution_invalidated is not None and manager.custody_unresolved is not None
+            assert events == [('track', process)]
+        elif fault == 'custody':
+
+            real_verify = host.verify_tree_absent
+            def unresolved(p):
+                real_verify(p)
+                raise RuntimeError('disposable unresolved membership')
+            monkeypatch.setattr(host, 'verify_tree_absent', unresolved)
+            with pytest.raises(RuntimeError, match='unresolved membership'):
+                manager.close()
+            assert manager.process is process and manager.root.exists()
+            assert manager.execution_invalidated is not None and manager.custody_unresolved is not None
+            assert events == [('track', process)]
+            retained = json.loads((manager.root / 'input-validation.json').read_text())
+            assert retained['execution_failure'] and retained['custody_failure']
+            assert retained['execution_invalidated'] and retained['custody_unresolved']
+        else:
+            if fault == 'bytes':
+
+                released = manager.request(lease, {'identity': frame['identity'],
+                    'request': {'type': 'release', 'force': True}})
+                assert released['released'] is True and released['exit'] is True
+            manager.close()
+            assert manager.process is None and manager.custody_unresolved is None
+            assert events == [('track', process), ('untrack', process)]
+            if fault == 'bytes':
+                retained = json.loads((manager.root / 'input-validation.json').read_text())
+                assert retained['execution_invalidated'] and retained['cleanup_settled']
+                assert not retained['custody_unresolved']
+        assert process.returncode == 0
+        record_property('disposable_evaluate', json.dumps({
+            'pid': process.pid, 'original_wait': process._custody_wait_outcome,
+            'fault': fault, 'execution_invalidated': manager.execution_invalidated is not None,
+            'custody_unresolved': manager.custody_unresolved is not None, 'input_facts': facts}))
+    finally:
+        process = process or manager.process
+        if process is not None:
+            if process.poll() is None:
+                process.stdin.close()
+                process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
+        manager._closed = True
+        lease.close()
+
+
+def test_failed_browser_signature_refuses_without_executing_browser(tmp_path, monkeypatch):
+    verify = _REAL_SIGNATURE_CHECK
+    calls = []
+    def failed(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, b'', b'synthetic signature rejection')
+    monkeypatch.setattr(host.subprocess, 'run', failed)
+    with pytest.raises(ValueError, match='signature or designated'):
+        verify(tmp_path / 'disposable-browser')
+    assert calls[0][:4] == ['/usr/bin/codesign', '--verify', '--strict', '-R']
+    assert 'com.google.Chrome' in calls[0][4] and 'EQHXZ8M8AV' in calls[0][4]

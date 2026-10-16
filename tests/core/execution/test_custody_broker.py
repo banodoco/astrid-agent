@@ -1150,6 +1150,8 @@ def observed_descendant(graph, tmp_path, monkeypatch):
     monkeypatch.setattr(custody, "ordinary_candidate_observation", fake_observation)
     monkeypatch.setattr(custody, "current_process_audit_token",
                         lambda pid: {**tokens[pid], "words": list(tokens[pid]["words"])})
+    monkeypatch.setattr(custody, '_DarwinExitObservation', lambda observation: SimpleNamespace(
+        queue=None, facts={'authority': 'NONE', 'outcome': 'SYNTHETIC_NOT_REGISTERED'}))
     owner = object.__new__(custody.ProcessCustody)
     owner.root = tmp_path / "observed-custody"
     owner.owner_epoch = "fixture-owner"
@@ -1685,6 +1687,11 @@ def test_native_candidate_observation_has_explicit_non_authority_outcome(monkeyp
         if outcome == "OBSERVATION_ERROR": raise OSError("native lookup failed")
         return [] if outcome == "ABSENT" else [row]
     monkeypatch.setattr(custody, "_darwin_process_records", rows)
+    def precise(_):
+        if outcome in {'ABSENT', 'ZOMBIE'}:
+            raise custody.DarwinProcessExitedError('synthetic terminal observation')
+        return row
+    monkeypatch.setattr(custody, '_darwin_process_start', precise)
     observation = custody.ordinary_candidate_observation(103)
     assert observation["outcome"] == outcome
     assert "words" not in observation and "capability" not in observation
@@ -4072,7 +4079,7 @@ def test_owned_group_threads_explicit_binding_without_environment_selection(tmp_
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin native census/capability discriminator')
 @pytest.mark.parametrize('phase', ['before', 'during', 'after-child-admission'])
-def test_disposable_exec_session_child_retains_obligation_across_intermediary_exit(tmp_path, monkeypatch, phase):
+def test_disposable_exec_session_child_retains_obligation_across_intermediary_exit(tmp_path, monkeypatch, phase, record_property):
     import select
     import time
 
@@ -4087,7 +4094,11 @@ for command in sys.stdin:
         middle = os.fork()
         if middle == 0:
             os.close(leaf_write); os.close(middle_write)
-            leaf = subprocess.Popen([sys.executable, "-I", "-c", "import os; os.read(" + str(leaf_read) + ", 1)"], pass_fds=(leaf_read,), start_new_session=True)
+            ready_read, ready_write = os.pipe()
+            leaf = subprocess.Popen([sys.executable, "-I", "-c", "import os; os.setsid(); [os.close(fd) for fd in (0, 1, 2)]; os.write(" + str(ready_write) + ", b'r'); os.close(" + str(ready_write) + "); os.read(" + str(leaf_read) + ", 1)"], pass_fds=(leaf_read, ready_write))
+            os.close(ready_write)
+            assert os.read(ready_read, 1) == b'r'
+            os.close(ready_read)
             os.close(leaf_read)
             print(str(os.getpid()) + " " + str(leaf.pid), flush=True)
             os.read(middle_read, 1)
@@ -4187,6 +4198,17 @@ for command in sys.stdin:
             assert owner._uncertain is None
         process.stdout.close()
         process.stderr.close()
+        exit_thread = getattr(owner, '_exit_observer_thread', None)
+        if exit_thread:
+            exit_thread.join(timeout=2)
+            assert not exit_thread.is_alive()
+        record_property('disposable_session_topology', json.dumps({
+            'phase': phase, 'root_pid': process.pid, 'root_original_wait': process.returncode,
+            'middle_pid': middle, 'middle_original_wait': middle_done,
+            'grandchild_pid': child, 'grandchild_own_session': census[child]['pgid'] == child,
+            'grandchild_closed_stdio': True, 'grandchild_released': leaf_done,
+            'custody_unresolved': owner._uncertain is not None,
+            'exit_observations': [watch.facts for watch in getattr(owner, '_exit_observations', {}).values()]}))
 
 
 def test_final_census_retains_new_child_of_terminal_parent_before_refusal(observed_descendant, monkeypatch):
@@ -4233,3 +4255,108 @@ def test_failed_storage_check_during_bind_keeps_original_child_obligation(tmp_pa
         owner.bind_launch(original)
     assert owner.process is original and owner._uncertain is not None
     assert original._astrid_tree_uncertain
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='requires Darwin libproc and EVFILT_PROC')
+@pytest.mark.parametrize('boundary', ['registered', 'before-identity', 'before-registration', 'after-registration', 'pid-reuse'])
+def test_disposable_darwin_exit_registration_boundary(tmp_path, monkeypatch, record_property, boundary):
+    import time
+    child = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import sys; sys.stdin.buffer.read(1)'],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    watch = None
+    try:
+        observed = custody.ordinary_candidate_observation(child.pid)
+        assert observed['outcome'] == 'LIVE' and observed['native']['pid'] == child.pid
+        original_start = custody._darwin_process_start
+        calls = 0
+        def started(pid):
+            nonlocal calls
+            calls += 1
+            if boundary == 'before-identity' and calls == 1:
+                child.stdin.close()
+                assert child.wait(timeout=5) == 0
+            if boundary == 'after-registration' and calls == 2:
+                child.stdin.close()
+                assert child.wait(timeout=5) == 0
+            value = original_start(pid)
+            if boundary == 'before-registration'  and calls == 1:
+                child.stdin.close()
+                assert child.wait(timeout=5) == 0
+            if boundary == 'pid-reuse' and calls == 2:
+                # Controlled incarnation counterexample; no PID churn or claim
+                # that Darwin actually recycled a PID during this bounded run.
+                value = {**value, 'start_usec': value['start_usec'] + 1}
+            return value
+        monkeypatch.setattr(custody, '_darwin_process_start', started)
+        watch = custody._DarwinExitObservation(observed)
+        if boundary == 'registered':
+            assert watch.facts['outcome'] == 'REGISTERED', watch.facts
+            child.stdin.close()
+            assert child.wait(timeout=5) == 0
+            deadline = time.monotonic() + 2
+            while not watch.poll() and watch.facts['outcome'] == 'REGISTERED':
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            assert watch.facts['outcome'] == 'EXIT_OBSERVED', watch.facts
+        elif boundary == 'after-registration':
+            assert watch.facts['outcome'] == 'EXIT_EVENT_UNBOUND', watch.facts
+            assert watch.facts['event']['pid'] == child.pid
+            assert 'registration_bound' not in watch.facts
+        elif boundary == 'pid-reuse':
+            assert watch.facts['outcome'] == 'INCARNATION_CHANGED'
+        else:
+            assert watch.facts['outcome'] == 'REGISTRATION_UNAVAILABLE'
+            assert 'event' not in watch.facts  # Absence is never invented exit.
+        assert watch.facts['authority'] == 'NONE'
+        record_property('darwin_registration', json.dumps({'boundary': boundary, **watch.facts}))
+    finally:
+        if watch:
+            watch.close()
+        if not child.stdin.closed:
+            child.stdin.close()
+        assert child.wait(timeout=5) == 0
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='requires actual Darwin libproc and kqueue')
+def test_disposable_kernel_exit_evidence_survives_optional_mach_failure(tmp_path, monkeypatch, record_property):
+    child = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import sys; sys.stdin.buffer.read(1)'],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    owner = custody.ProcessCustody(scope_root=tmp_path / 'custody')
+    owner.root.mkdir(mode=0o700)
+    try:
+        observed = custody.ordinary_candidate_observation(child.pid)
+        assert observed['outcome'] == 'LIVE'
+        native_capture = 'AVAILABLE'
+        try:
+            custody.current_process_audit_token(child.pid)
+        except custody.NativeTokenCaptureError as error:
+            native_capture = error.capture_failure
+        owner._observe_candidate_exits({child.pid: observed})
+        def denied(pid):
+            assert pid == child.pid
+            raise custody.NativeTokenCaptureError('injected optional Mach denial',
+                substage='task_name_for_pid', kern_return=5, port_acquired=False)
+        monkeypatch.setattr(custody, 'current_process_audit_token', denied)
+        with pytest.raises(custody.CustodyError, match='token-capture'):
+            owner.register(child.pid, observed['identity']['birth_id'], _observation=observed)
+        assert child.pid not in owner._handles
+        assert custody.ordinary_candidate_observation(child.pid)['native'] == observed['native']
+        child.stdin.close()
+        assert child.wait(timeout=5) == 0
+        owner._exit_observer_thread.join(timeout=3)
+        assert not owner._exit_observer_thread.is_alive()
+        evidence = json.loads((owner.root / 'observed-containment.json').read_text())
+        event = evidence['exit_observations'][0]
+        assert event['outcome'] == 'EXIT_OBSERVED', event
+        assert event['authority'] == 'NONE' and event['event']['pid'] == child.pid
+        with pytest.raises(custody.CustodyError):
+            owner.signal(child.pid, observed['identity']['birth_id'], signal.SIGTERM)
+        record_property('darwin_optional_control', json.dumps({
+            'native_capture': native_capture, 'denial_test': 'INJECTED_AT_MACH_CAPTURE_BOUNDARY',
+            'kernel_exit_event': event, 'original_wait': child.returncode}))
+    finally:
+        if not child.stdin.closed:
+            child.stdin.close()
+        assert child.wait(timeout=5) == 0
+        for watch in getattr(owner, '_exit_observations', {}).values():
+            watch.close()

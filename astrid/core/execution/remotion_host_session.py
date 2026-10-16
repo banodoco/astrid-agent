@@ -5,6 +5,8 @@ executor inherits it, and the host fixes the executable and helper directory.
 """
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import math
@@ -18,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from astrid.core.subprocess_env import build_child_subprocess_env
@@ -67,12 +70,120 @@ class _PipeReader:
                 return os.read(self.stream.fileno(), count)
 
 
+@dataclass(frozen=True)
+class _FileIdentity:
+    security: tuple
+    sha256: str
+    before: dict = field(compare=False)
+    after: dict = field(compare=False)
+
+
+def _file_facts(st):
+    return {name: getattr(st, "st_" + name, 0) for name in
+            ("dev", "ino", "mode", "size", "uid", "gid", "flags", "mtime_ns", "ctime_ns")}
+
+
+def _access_identity(fd):
+    # Hash values rather than exporting arbitrary extended-attribute contents.
+    attributes = ()
+    acl_digest = None
+    if sys.platform == "darwin":
+        library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        library.flistxattr.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        library.flistxattr.restype = ctypes.c_ssize_t
+        library.fgetxattr.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p,
+                                     ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int]
+        library.fgetxattr.restype = ctypes.c_ssize_t
+        names = ctypes.create_string_buffer(65536)
+        used = library.flistxattr(fd, names, len(names), 0)
+        if used < 0 or used >= len(names):
+            raise OSError(ctypes.get_errno(), "renderer extended attribute census failed")
+        values = []
+        for name in names.raw[:used].split(b"\0"):
+            if not name:
+                continue
+            size = library.fgetxattr(fd, name, None, 0, 0, 0)
+            if not 0 <= size <= 1024 * 1024:
+                raise ValueError("renderer security attribute unavailable or over bound")
+            value = ctypes.create_string_buffer(size)
+            if library.fgetxattr(fd, name, value, size, 0, 0) != size:
+                raise ValueError("renderer security attribute changed during observation")
+            values.append((os.fsdecode(name), hashlib.sha256(value.raw).hexdigest()))
+        attributes = tuple(sorted(values))
+        library.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+        library.acl_get_fd_np.restype = ctypes.c_void_p
+        library.acl_size.argtypes = [ctypes.c_void_p]
+        library.acl_size.restype = ctypes.c_ssize_t
+        library.acl_copy_ext.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ssize_t]
+        library.acl_copy_ext.restype = ctypes.c_ssize_t
+        library.acl_free.argtypes = [ctypes.c_void_p]
+        ctypes.set_errno(0)
+        acl = library.acl_get_fd_np(fd, 0x100)  # sys/acl.h ACL_TYPE_EXTENDED
+        if not acl:
+            # Libc acl_file.c uses filesec_get_property(FILESEC_ACL), whose
+            # ENOENT denotes an absent ACL on this already-open file. Other
+            # observation failures remain refusals; never discard an ACL error.
+            if ctypes.get_errno() != errno.ENOENT:
+                raise OSError(ctypes.get_errno(), "renderer input ACL observation failed")
+            os.fstat(fd)
+            acl_digest = "ABSENT"
+        else:
+            try:
+                size = library.acl_size(acl)
+                if not 0 < size <= 1024 * 1024:
+                    raise ValueError("renderer ACL unavailable or over bound")
+                value = ctypes.create_string_buffer(size)
+                if library.acl_copy_ext(value, acl, size) != size:
+                    raise ValueError("renderer input ACL serialization failed")
+                acl_digest = hashlib.sha256(value.raw).hexdigest()
+            finally:
+                library.acl_free(acl)
+    else:
+        attributes = tuple(sorted((name, hashlib.sha256(os.getxattr(fd, name)).hexdigest())
+                                  for name in os.listxattr(fd)))
+    return attributes, acl_digest
+
+
 def _file_identity(path):
-    st = Path(path).stat()
-    if not stat.S_ISREG(st.st_mode):
-        raise ValueError("selected renderer input is not a regular file")
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns,
-            hashlib.sha256(Path(path).read_bytes()).hexdigest())
+    path = Path(path)
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise ValueError("selected renderer input must be canonical and no-follow")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    facts = {}
+    try:
+        before = _file_facts(os.fstat(descriptor))
+        facts["before"] = before
+        if not stat.S_ISREG(before["mode"]):
+            raise ValueError("selected renderer input is not a regular file")
+        access_before = _access_identity(descriptor)
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        access_after = _access_identity(descriptor)
+        after = _file_facts(os.fstat(descriptor))
+        named = _file_facts(path.lstat())
+        facts.update(after=after, pathname=named, sha256=digest.hexdigest())
+        if (before != after or after != named or access_before != access_after
+                or path.resolve(strict=True) != path):
+            raise ValueError("selected renderer input changed while hashing or pathname was replaced")
+        # ctime/mtime remain stability checks above, and trigger complete secure
+        # revalidation on every request; neither is executable replacement alone.
+        security = tuple(after[key] for key in ("dev", "ino", "mode", "size", "uid", "gid", "flags"))
+        return _FileIdentity((security, access_after), digest.hexdigest(), before, after)
+    except BaseException as error:
+        error.input_facts = facts
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def _verify_browser_signature(browser):
+    requirement = ('identifier "com.google.Chrome" and anchor apple generic '
+                   'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    result = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R", requirement, str(browser)],
+                            capture_output=True, timeout=10, check=False)
+    if result.returncode:
+        raise ValueError("host-selected Chrome signature or designated identity failed")
 
 
 def _host_browser_executable():
@@ -90,6 +201,7 @@ def _host_browser_executable():
             raise ValueError("host-selected Chrome is not a canonical executable")
     except OSError as error:
         raise ValueError("host-selected installed Chrome is unavailable; browser download refused") from error
+    _verify_browser_signature(browser)
     return browser
 
 
@@ -109,7 +221,10 @@ class HostRemotionSession:
         self.root = None
         self.process = None
         self.identity = None
-        self.uncertain = None
+        self.custody_unresolved = None
+        self.execution_invalidated = None
+        self._input_facts = []
+        self._cleanup_settled = False
         self._closed = False
         self._leases = set()
         self._timer = None
@@ -118,10 +233,71 @@ class HostRemotionSession:
         self._idle_seconds = 45.0
         self.frame_owner = RemotionFrameOwner.for_host_session(self)
 
+    @property
+    def uncertain(self):
+        # Compatibility for existing host callers: input invalidation is never
+        # a lost cleanup owner. Only custody uncertainty fences retirement.
+        return self.custody_unresolved
+
+    @uncertain.setter
+    def uncertain(self, error):
+        self.custody_unresolved = error
+
+    def _record_inputs(self, lease, phase, observed=None):
+        facts = {"phase": phase, "inputs": [
+            {"path": str(path), "admitted": {"before": identity.before, "after": identity.after,
+             "sha256": identity.sha256, "security_sha256": hashlib.sha256(repr(identity.security).encode()).hexdigest()},
+             **({"observed": {"before": observed[path].before, "after": observed[path].after,
+                "sha256": observed[path].sha256,
+                "security_sha256": hashlib.sha256(repr(observed[path].security).encode()).hexdigest()}}
+                if observed is not None and path in observed else {})}
+            for path, identity in lease.input_identities.items()]}
+        self._input_facts.append(facts)
+        del self._input_facts[:-8]
+        self._persist_input_state()
+
+    def _persist_input_state(self):
+        if self.root is None:
+            return
+        from .custody_broker import _atomic_owner_json
+        self._guard(observe=False)
+        def reason(error):
+            if error is None:
+                return None
+            return {"error_type": type(error).__name__,
+                    "reason_sha256": hashlib.sha256(str(error).encode()).hexdigest()}
+        _atomic_owner_json(self.root / "input-validation.json", {
+            "observations": self._input_facts,
+            "execution_invalidated": self.execution_invalidated is not None,
+            "custody_unresolved": self.custody_unresolved is not None,
+            "execution_failure": reason(self.execution_invalidated),
+            "custody_failure": reason(self.custody_unresolved),
+            "failed_snapshot": getattr(self.execution_invalidated, "input_facts", None),
+            "cleanup_settled": self._cleanup_settled,
+        })
+
+    def _validate_inputs(self, lease):
+        observed = {}
+        try:
+            if self.closure_binding is not None:
+                self.closure_binding.validate(lease.project)
+            for path, identity in lease.input_identities.items():
+                observed[path] = _file_identity(path)
+                if observed[path] != identity:
+                    raise ValueError("host-selected renderer input changed after task admission")
+            if lease.browser is not None:
+                if _host_browser_executable() != lease.browser:
+                    raise ValueError("host-selected browser identity changed")
+        except BaseException as error:
+            self.execution_invalidated = self.execution_invalidated or error
+            self._record_inputs(lease, "refused", observed)
+            raise
+        self._record_inputs(lease, "revalidated", observed)
+
     def lease(self, environment, *, attempt, scratch):
         """Retain outer task custody and its exact policy-selected artifact root."""
         with self._lock:
-            if self._closed or self.uncertain:
+            if self._closed or self.uncertain or self.execution_invalidated:
                 raise RuntimeError("host Remotion owner is closed or cleanup is unresolved")
             project = Path(environment.get("ASTRID_REMOTION_PROJECT_DIR", ""))
             node = Path(environment.get("ASTRID_NODE_EXECUTABLE", ""))
@@ -201,6 +377,10 @@ class HostRemotionSession:
         environment.update(ASTRID_FRAME_WORKER_ROOT=str(self.root / "worker"),
                            TMPDIR=str(self.root), TMP=str(self.root), TEMP=str(self.root))
         (self.root / "worker").mkdir(exist_ok=True, mode=0o700)
+        # Revalidate next to launch after lifecycle setup; the opened snapshot
+        # does not claim immutable execution or replace confinement.
+        self._validate_inputs(lease)
+        self._cleanup_settled = False
         try:
             self.process = popen_owned_group(
                 [str(lease.node), str(lease.project / "src/astrid-frame-worker.mjs")],
@@ -216,6 +396,7 @@ class HostRemotionSession:
             raise
         self.identity = identity
         self._track(self.process)
+        self._record_inputs(lease, "launch")
         self._stderr_thread = threading.Thread(target=self._capture_stderr, args=(self.process,), daemon=True)
         self._stderr_thread.start()
 
@@ -252,6 +433,13 @@ class HostRemotionSession:
         return response
 
     def _guard(self, *, observe=True):
+        try:
+            self._guard_custody(observe=observe)
+        except BaseException as error:
+            self.custody_unresolved = self.custody_unresolved or error
+            raise
+
+    def _guard_custody(self, *, observe=True):
         if self.root is not None:
             st = self.root.lstat()
             if self.root.is_symlink() or (st.st_dev, st.st_ino, st.st_uid) != self._root_identity:
@@ -294,11 +482,7 @@ class HostRemotionSession:
             raise ValueError("renderer task changed host-selected executable or project")
         if request.get("remotionCli") != str(lease.cli):
             raise ValueError("renderer task changed host-selected Remotion CLI")
-        if self.closure_binding is not None:
-            self.closure_binding.validate(lease.project)
-        for path, identity in lease.input_identities.items():
-            if _file_identity(path) != identity:
-                raise ValueError("host-selected renderer input changed after task admission")
+        self._validate_inputs(lease)
         scratch = self._inside(lease.scratch, lease.attempt)
         observed = scratch.stat()
         if (observed.st_dev, observed.st_ino, observed.st_uid) != lease.scratch_identity:
@@ -342,6 +526,8 @@ class HostRemotionSession:
                 if request.get("force"):
                     self._close_original()
                 return {"ok": True, "released": True, "exit": bool(request.get("force"))}
+            if self.execution_invalidated:
+                raise RuntimeError("host renderer execution invalidated") from self.execution_invalidated
             self._validate_request(lease, request)
             admitted_request = request
             try:
@@ -356,13 +542,18 @@ class HostRemotionSession:
                     request = {**request, "browserExecutable": str(lease.browser)}
                 self._start(lease, frame["identity"])
                 response = self._exchange(request)
+                self._validate_inputs(lease)
                 if request["type"] == "evaluate":
                     self._validate_request(lease, admitted_request)
                 return response
             except BaseException as error:
-                # A failed transport/start never authorizes replacement.
-                if self.process is not None and self.uncertain is None:
-                    self.uncertain = error
+                # A failed operation invalidates result/cache acceptance.
+                # Custody guards/census retain their own independent fence.
+                self.execution_invalidated = self.execution_invalidated or error
+                custody_error = getattr(getattr(self.process, "_astrid_custody", None), "_uncertain", None)
+                tree_error = getattr(self.process, "_astrid_tree_uncertain", None)
+                if custody_error is not None or tree_error is not None:
+                    self.custody_unresolved = self.custody_unresolved or custody_error or RuntimeError(tree_error)
                 raise
 
     def release(self, lease):
@@ -410,8 +601,13 @@ class HostRemotionSession:
             if self.uncertain:
                 raise RuntimeError("original Remotion cleanup remains sticky") from self.uncertain
             release_group(process)
+            self._cleanup_settled = True
         except BaseException as error:
             self.uncertain = self.uncertain or error
+            try:
+                self._persist_input_state()
+            except (OSError, RuntimeError, ValueError) as persistence_error:
+                self._input_state_persistence_error = type(persistence_error).__name__
             raise
         try:
             if self._stderr_thread:
@@ -432,6 +628,13 @@ class HostRemotionSession:
             raise RuntimeError("unresolved custody evidence must survive retirement")
         self._guard(observe=False)
         root = self.root
+        if root is not None and self.execution_invalidated is not None:
+            # Preserve failed-input diagnostics under the already accounted
+            # host root even after successful cleanup. Retention is evidence,
+            # not a live process obligation or custody uncertainty.
+            self._persist_input_state()
+            self._account(root)
+            return
         if root is not None:
             shutil.rmtree(root)
             self._retire(root)
@@ -452,13 +655,13 @@ class _HostLease:
         observed = scratch.stat()
         self.scratch_identity = (observed.st_dev, observed.st_ino, observed.st_uid)
         self.browser = _host_browser_executable()
-        self.input_identities = {p: _file_identity(p) for p in (node, cli, project / "src/astrid-frame-worker.mjs")}
+        self.input_identities = {p: _file_identity(p) for p in (node, cli.resolve(strict=True), project / "src/astrid-frame-worker.mjs")}
         if self.browser is not None:
             self.input_identities[self.browser] = _file_identity(self.browser)
         project_stat = project.stat()
         self.selected_identity = (
             str(project), (project_stat.st_dev, project_stat.st_ino, project_stat.st_uid),
-            tuple(sorted((str(path), identity) for path, identity in self.input_identities.items())),
+            tuple(sorted((str(path), (identity.security, identity.sha256)) for path, identity in self.input_identities.items())),
             tuple((key, environment.get(key)) for key in ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "PATH")),
         )
         self.parent, self.child = socket.socketpair()

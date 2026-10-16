@@ -230,9 +230,16 @@ class UnadmittedCandidateZombie(CustodyError):
 def ordinary_candidate_observation(pid: int) -> dict[str, Any]:
     """Observe before token capture; existing authority identity APIs stay strict."""
     try:
+        try:
+            precise = _darwin_process_start(pid)
+        except DarwinProcessExitedError:
+            precise = None
         rows = _darwin_process_records(pid)
         if not rows:
             return {"outcome": "ABSENT"}
+        if precise is not None and any(precise[key] != rows[0][key]
+                                      for key in ("pid", "uid", "start_sec", "start_usec")):
+            raise CustodyError("ordinary candidate changed across precise kernel observations")
         row = rows[0]
         identity = {"pid": row["pid"], "uid": row["uid"], "parent_pid": row["parent_pid"],
                     "birth_id": _ps_lstart_birth(row["start_sec"])}
@@ -242,6 +249,88 @@ def ordinary_candidate_observation(pid: int) -> dict[str, Any]:
                 "identity": identity, "native": dict(row)}
     except Exception as error:
         return {"outcome": "OBSERVATION_ERROR", "error": error}
+
+
+class _DarwinExitObservation:
+    """One registered incarnation's exit event; never a control capability.
+
+    No child discovery or historical containment inference. The queue remains
+    retained across optional Mach capture failure until an event or explicit
+    observer close. Absence before registration is recorded as a missed edge.
+    """
+    def __init__(self, observation):
+        self.queue = None
+        self._bound = False
+        self.facts = {"authority": "NONE", "outcome": "UNREGISTERED",
+                      "pre": _candidate_observation_evidence(observation)}
+        native = observation.get("native", {})
+        pid = native.get("pid")
+        try:
+            self.queue = select.kqueue()
+            before = _darwin_process_start(pid)
+            keys = ("pid", "uid", "start_sec", "start_usec")
+            if any(before.get(key) != native.get(key) for key in keys):
+                raise CustodyError("exit observation incarnation changed before registration")
+            self.facts["registration_pre"] = before
+            self.queue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            self.facts["outcome"] = "REGISTERED"
+            # Retain the actual event even across a terminal post-check, but
+            # bind it to this incarnation only after a matching live bracket.
+            # PID reuse between pre-check and registration otherwise remains
+            # indistinguishable from the original process exiting here.
+            self.poll()
+            try:
+                after = _darwin_process_start(pid)
+            except DarwinProcessExitedError:
+                self.poll()
+                self.facts["registration_post"] = {"outcome": "TERMINAL_OR_ABSENT"}
+                if "event" not in self.facts:
+                    self.facts["outcome"] = "TERMINAL_DURING_REGISTRATION_UNOBSERVED"
+                self.close()
+            else:
+                self.facts["registration_post"] = after
+                if any(before[key] != after[key] for key in keys + ("start_abstime",)):
+                    self.facts["outcome"] = "INCARNATION_CHANGED"
+                    self.close()
+                else:
+                    self._bound = True
+                    self.facts["registration_bound"] = True
+                    if self.facts["outcome"] == "EXIT_EVENT_UNBOUND":
+                        self.facts["outcome"] = "EXIT_OBSERVED"
+        except (OSError, AttributeError, CustodyError, TypeError) as error:
+            self.facts.update(outcome="REGISTRATION_UNAVAILABLE", error_type=type(error).__name__,
+                              errno=getattr(error, "errno", None))
+            self.close()
+
+    def poll(self):
+        if self.queue is None:
+            return False
+        try:
+            events = self.queue.control([], 1, 0)
+            if not events:
+                return False
+            event = events[0]
+            native = self.facts["pre"]["native"]
+            if (event.ident != native["pid"] or event.filter != select.KQ_FILTER_PROC
+                    or event.flags & select.KQ_EV_ERROR or not event.fflags & select.KQ_NOTE_EXIT):
+                self.facts["outcome"] = "EVENT_UNVERIFIED"
+            else:
+                self.facts.update(outcome="EXIT_OBSERVED" if self._bound else "EXIT_EVENT_UNBOUND", event={
+                    "pid": event.ident, "filter": event.filter, "fflags": event.fflags,
+                    "flags": event.flags, "data": event.data})
+            self.close()
+            return True
+        except OSError as error:
+            self.facts.update(outcome="EVENT_UNAVAILABLE", errno=error.errno)
+            self.close()
+            return True
+
+    def close(self):
+        if self.queue is not None:
+            self.queue.close()
+            self.queue = None
 
 
 class AuditTokenSignalError(CustodyError):
@@ -3677,6 +3766,40 @@ class ProcessCustody:
                 error.registration_stage = stage
                 raise error from exc
 
+    def _observe_candidate_exits(self, observations):
+        watches = self._exit_observations = getattr(self, "_exit_observations", {})
+        for pid, observation in observations.items():
+            if observation.get("outcome") != "LIVE" or not isinstance(observation.get("native"), Mapping):
+                continue
+            native = observation["native"]
+            key = (pid, native.get("start_sec"), native.get("start_usec"))
+            if key not in watches:
+                watches[key] = _DarwinExitObservation(observation)
+        if not watches:
+            return
+        self._write_observed_containment()
+        thread = getattr(self, "_exit_observer_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+
+        def monitor():
+            while True:
+                with self._lock:
+                    active = [watch for watch in watches.values() if watch.queue is not None]
+                    if not active:
+                        return
+                    changed = any([watch.poll() for watch in active])
+                    if changed:
+                        try:
+                            self._write_observed_containment()
+                        except (OSError, CustodyError):
+                            # Preserve in memory; observation cannot release a
+                            # custody fence or mutate existing capabilities.
+                            self._exit_evidence_persist_failed = True
+                time.sleep(0.01)
+        self._exit_observer_thread = threading.Thread(target=monitor, name="astrid-exit-observer", daemon=True)
+        self._exit_observer_thread.start()
+
     def _write_observed_containment(self) -> None:
         self._verify_root()
         # This is retained evidence, not a designation or signal capability.
@@ -3688,6 +3811,7 @@ class ProcessCustody:
             "unadmitted_candidates": list(self._unadmitted_absent.values()),
             "observed_candidates": list(getattr(self, "_observed_candidates", {}).values()),
             "capture_failures": getattr(self, "_capture_failure_observations", []),
+            "exit_observations": [watch.facts for watch in getattr(self, "_exit_observations", {}).values()],
             **({"command_observations": self._command_observations,
                 "command_diagnostics_truncated": getattr(self, "_command_diagnostics_truncated", False),
                 "command_diagnostic_authority": "NONE",
@@ -3864,9 +3988,11 @@ class ProcessCustody:
                     new_absences = []
                     retry_admissions = []
                     # Observe the whole set before any terminal disposition.
-                    observations = {pid: ordinary_candidate_observation(pid)
-                                    for pid in members
-                                    if pid not in self._handles and pid not in self._unadmitted_absent}
+                    observations = {}
+                    for pid in members:
+                        if pid not in self._handles and pid not in self._unadmitted_absent:
+                            observations[pid] = ordinary_candidate_observation(pid)
+                            self._observe_candidate_exits({pid: observations[pid]})
                     # Live acquisition precedes terminal reconciliation, regardless
                     # of mapping order. Each live child still needs its own chain.
                     ordered = sorted(members, key=lambda pid: observations.get(pid, {}).get("outcome") != "LIVE")
