@@ -3619,7 +3619,8 @@ class ProcessCustody:
         if getattr(self, "_inventory_owner", None) is not None:
             self._inventory_owner.finish(cancel=cancel)
 
-    def register(self, pid: int, birth: str, *, _observation: Mapping[str, Any] | None = None) -> None:
+    def register(self, pid: int, birth: str, *, _observation: Mapping[str, Any] | None = None,
+                 _capture_retry: bool = False) -> None:
         with self._lock:
             stage = "birth-check"
             try:
@@ -3676,7 +3677,11 @@ class ProcessCustody:
                     initial_capture_witness = None
                     broker = getattr(self, "_launch_broker", None)
                     original_native = _observation.get("native") if isinstance(_observation, Mapping) else None
-                    if (isinstance(broker, RoleBoundCustodyBroker) and broker.role == "command"
+                    # A bounded retry admits only the exact token it captures.
+                    # Its earlier failed capture cannot be replaced by a new
+                    # original-capture witness granting exec-refresh authority.
+                    if (not _capture_retry
+                            and isinstance(broker, RoleBoundCustodyBroker) and broker.role == "command"
                             and isinstance(original_native, Mapping)):
                         stage = "initial-start-witness"
                         try:
@@ -4112,7 +4117,7 @@ class ProcessCustody:
                         or any(type(native.get(k)) is not int or type(_retry_expected.get(k)) is not int
                                or native[k] != _retry_expected[k] for k in precise)):
                     raise CustodyError('candidate changed before bounded capture retry')
-            self.register(pid, birth, _observation=observation)
+            self.register(pid, birth, _observation=observation, _capture_retry=_capture_retry)
             if (observation is not None and observation.get("outcome") == "LIVE"
                     and census[pid]["parent_pid"] != root_pid and fresh_census is not None):
                 after = fresh_census()
