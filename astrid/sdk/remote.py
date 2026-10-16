@@ -699,10 +699,23 @@ class RemoteTimelines(_RemoteFamily):
         if (not isinstance(data, Mapping) or data.get("project_id") != project_id
                 or data.get("timeline_id") != timeline_id or "head_revision_id" not in data):
             return DomainResult.failure(ErrorObject("protocol_error", "compact timeline head has wrong scope or no revision identity", {}))
-        # The public metadata API does not expose Runtime's internal head event.
-        # Unknown is explicit; never infer publication identity from a revision.
-        return DomainResult.success(dict(revision_id=data["head_revision_id"],
-                                         publication_id=None, updated_at=None))
+        head = {}
+        for public_field, state_field in (
+            ("head_revision_id", "revision_id"),
+            ("head_publication_id", "publication_id"),
+            ("head_updated_at", "updated_at"),
+        ):
+            value = data.get(public_field)
+            if value is not None and not isinstance(value, str):
+                return DomainResult.failure(ErrorObject(
+                    "protocol_error",
+                    f"compact timeline head field {public_field!r} must be a string or null",
+                    {"field": public_field},
+                ))
+            head[state_field] = value
+        # These fields describe the same current-head row. The exact accepted
+        # receipt remains the only authority for what this client published.
+        return DomainResult.success(head)
 
     def _parent_composition_scope(self, project, ref):
         """Resolve the canonical Runtime IDs required by the composition revision routes."""

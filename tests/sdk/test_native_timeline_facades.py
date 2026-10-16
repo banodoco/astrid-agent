@@ -59,6 +59,98 @@ class _SelectedNativeTransport(_NativeTransport):
         }
 
 
+class _HeadTransport:
+    def __init__(self, response):
+        self.response = response
+        self.get_calls = []
+
+    def get_timeline(self, timeline_id, *, project_id=None):
+        self.get_calls.append((timeline_id, project_id))
+        return self.response
+
+
+def test_head_canonical_maps_all_public_metadata_from_one_get():
+    transport = _HeadTransport({
+        "project_id": "project-1",
+        "timeline_id": "tl-1",
+        "head_revision_id": "revision-42",
+        "head_publication_id": "publication-42",
+        "head_updated_at": "2026-10-15T12:34:56Z",
+    })
+
+    result = RemoteTimelines(transport).head_canonical("project-1", "tl-1")
+
+    assert result.ok
+    assert result.data == {
+        "revision_id": "revision-42",
+        "publication_id": "publication-42",
+        "updated_at": "2026-10-15T12:34:56Z",
+    }
+    assert transport.get_calls == [("tl-1", "project-1")]
+
+
+@pytest.mark.parametrize("metadata", [
+    {},
+    {"head_publication_id": None, "head_updated_at": None},
+])
+def test_head_canonical_keeps_absent_or_null_optional_metadata_unknown(metadata):
+    transport = _HeadTransport({
+        "project_id": "project-1",
+        "timeline_id": "tl-1",
+        "head_revision_id": "revision-42",
+        **metadata,
+    })
+
+    result = RemoteTimelines(transport).head_canonical("project-1", "tl-1")
+
+    assert result.ok
+    assert result.data == {
+        "revision_id": "revision-42",
+        "publication_id": None,
+        "updated_at": None,
+    }
+    assert transport.get_calls == [("tl-1", "project-1")]
+
+
+def test_head_canonical_accepts_explicit_null_revision_and_metadata():
+    transport = _HeadTransport({
+        "project_id": "project-1",
+        "timeline_id": "tl-1",
+        "head_revision_id": None,
+        "head_publication_id": None,
+        "head_updated_at": None,
+    })
+
+    result = RemoteTimelines(transport).head_canonical("project-1", "tl-1")
+
+    assert result.ok
+    assert result.data == {"revision_id": None, "publication_id": None, "updated_at": None}
+    assert transport.get_calls == [("tl-1", "project-1")]
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("head_revision_id", 42),
+    ("head_publication_id", []),
+    ("head_updated_at", {}),
+])
+def test_head_canonical_rejects_malformed_non_null_metadata(field, value):
+    transport = _HeadTransport({
+        "project_id": "project-1",
+        "timeline_id": "tl-1",
+        "head_revision_id": "revision-42",
+        "head_publication_id": "publication-42",
+        "head_updated_at": "2026-10-15T12:34:56Z",
+        field: value,
+    })
+
+    result = RemoteTimelines(transport).head_canonical("project-1", "tl-1")
+
+    assert not result.ok
+    assert result.error.code == "protocol_error"
+    assert result.error.details == {"field": field}
+    assert transport.get_calls == [("tl-1", "project-1")]
+
+
 def test_remote_show_uses_runtime_current_project_and_project_default() -> None:
     transport = _SelectedNativeTransport()
     result = RemoteTimelines(transport).show(None, None)
