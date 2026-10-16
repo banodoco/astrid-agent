@@ -2734,8 +2734,19 @@ def _checkout_change_units(checkout: Any) -> tuple[bool, list[list[str]]]:
 
 def _cmd_checkout(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline import store
+    from astrid.sdk.timeline._common import TimelineEditError
     from astrid.sdk.timeline_checkout import Checkout
 
+    if getattr(parsed, "refresh", False):
+        if parsed.fresh or getattr(parsed, "from_ref", None):
+            raise TimelineEditError("--refresh cannot be combined with --fresh or --from")
+        from astrid.sdk.timeline_checkout import find_draft
+        path = find_draft(parsed.project, parsed.ref, parsed.draft, client=parsed.client)
+        if path is None:
+            raise TimelineEditError("no working copy to refresh; run timelines checkout first")
+        result = Checkout.load(path).refresh(client=parsed.client)
+        print_result(DomainResult.success(result), as_json=parsed.json)
+        return 1 if result["conflicts"] else 0
     if parsed.fresh:
         project_id, timeline_id, _head = store.resolve_ids(
             parsed.project, parsed.ref, client=parsed.client
@@ -2796,25 +2807,47 @@ def _cmd_checkout(parsed: argparse.Namespace) -> int:
 def _cmd_status(parsed: argparse.Namespace) -> int:
     """Report the canonical head and an existing draft without creating one."""
     from astrid.sdk.timeline import store
+    from astrid.sdk.timeline._common import TimelineEditError
     from astrid.sdk.timeline_checkout import Checkout
 
+    if getattr(parsed, "watch", False):
+        from astrid.packs.timeline.cli_sync import watch_status
+        return watch_status(parsed)
     project_id, timeline_id, current_head = store.resolve_ids(
         parsed.project, parsed.ref, client=parsed.client
     )
     draft_name = parsed.draft or store.current_draft(project_id, timeline_id)
     path = store.draft_path(project_id, timeline_id, draft_name)
+    from astrid.sdk.timeline.revisions import RuntimeRevisions
+    from astrid.sdk.timeline.sync import status_fields
+    checkout = Checkout.load(path) if path.is_file() else None
+    head = dict(revision_id=current_head, publication_id=None)
+    revisions = None
+    service = getattr(parsed.client, "timelines", None)
+    if service is not None:
+        adapter = RuntimeRevisions(service)
+        if callable(getattr(service, "head_canonical", None) or getattr(service, "head", None)):
+            head = adapter.head_state(project_id, timeline_id)
+            current_head = head["revision_id"]
+        if checkout is not None:
+            try:
+                revisions = adapter.list(project_id, timeline_id, limit=200)
+            except TimelineEditError:
+                pass  # history unavailable remains explicitly unknown
+    fields = status_fields(checkout, head, revisions=revisions, client=parsed.client)
     if getattr(parsed, "text", False):
         from astrid.packs.timeline.cli_common import status_text
-
+        from astrid.packs.timeline.cli_sync import sync_lines
+        print("\n".join(sync_lines(fields)))
         return status_text(parsed, project_id, timeline_id, current_head, draft_name, path if path.is_file() else None)
     data: dict[str, Any] = {
         "timeline_id": timeline_id,
         "current_head": current_head,
         "draft": draft_name,
         "working_copy": "absent",
+        **fields,
     }
     if path.is_file():
-        checkout = Checkout.load(path)
         changes = checkout.changes()
         edit_diff = checkout.edits()
         base_known, changed_units = _checkout_change_units(checkout)
@@ -3407,15 +3440,16 @@ def _cmd_check(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_apply(parsed: argparse.Namespace) -> int:
-    from astrid.sdk.timeline_sheet import apply_sheet
+    from astrid.sdk.timeline.apply_file import apply_file
     tl = _edit_checkout(parsed)
-    before = tl.document()
-    changes = apply_sheet(tl, Path(parsed.sheet_file).read_text(encoding="utf-8"))
-    if changes or before != tl.document():
-        tl.save(quiet=True)
-        print("applied sheet")
+    input_file = Path(parsed.sheet_file)
+    changes = apply_file(tl, input_file)
+    if changes:
+        kind = "sheet" if input_file.suffix.lower() not in {".jsonl", ".py"} else "file"
+        print(f"applied {kind}")
         return 0
-    print("no change (the sheet matches the working copy)")
+    kind = "sheet" if input_file.suffix.lower() not in {".jsonl", ".py"} else "file"
+    print(f"no change (the {kind} matches the working copy)")
     return 3
 
 
@@ -3480,6 +3514,7 @@ def _configure_checkout(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
     subparser.add_argument("--fresh", action="store_true", help="Check out the current head instead of reusing the selected working copy.")
     _add_json_flag(subparser)
+    subparser.add_argument("--refresh", action="store_true", help="Rebase this working copy's recorded commands onto the observed head.")
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_checkout))
 
 
@@ -3517,6 +3552,10 @@ def _configure_status(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--all", action="store_true", help="With --text: every change and the full check report.")
     subparser.add_argument("--render", action="store_true",
                            help="With --text: also look up the latest render of this timeline (scans the run history, ~10 s).")
+    from astrid.core.cli.domain_tasks import _positive_float
+    subparser.add_argument("--watch", action="store_true", help="Poll the compact Runtime head read-only; Ctrl-C stops.")
+    subparser.add_argument("--poll-seconds", type=_positive_float, default=2.0)
+    subparser.add_argument("--timeout-seconds", type=_positive_float, default=3600.0)
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_as_timeline_verb(_cmd_status))
 
@@ -3720,7 +3759,7 @@ def _configure_apply(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", help="Timeline id or slug with a saved working copy.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("sheet_file", help="Path to the edited cut sheet.")
+    subparser.add_argument("sheet_file", help="Path to an edited cut sheet, commands JSONL file, or Python edit script.")
     subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_apply)))
 
 

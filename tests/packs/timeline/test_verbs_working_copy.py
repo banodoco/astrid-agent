@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -325,6 +326,127 @@ def test_a_sheet_exported_before_an_edit_never_reverts_it(tmp_path, monkeypatch,
     err = capsys.readouterr().err
     assert "c1.rocket" in err and "Re-export" in err
     assert Checkout.draft("P", "t").clip("c1.rocket").get("x") == 120
+
+
+def _prepare_apply_file_draft(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[2] / "fixtures" / "timeline_editing"
+    tiny = json.loads((root / "tiny.json").read_text(encoding="utf-8"))
+    # Current undo retains cut reservations; start this two-cut draft with its
+    # existing mark so the exact-document assertion measures only file edits.
+    tiny["parent"]["config"].setdefault("app", {}).setdefault("astrid", {})["cut_id_high_water"] = {
+        "number": 2, "suffixes": {},
+    }
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(tc, "resolve_ids", lambda project, timeline, client=None: ("p", "t", "rev-0"))
+    monkeypatch.setattr(tc, "fetch_bundle", lambda project, timeline, revision_id=None, client=None: copy.deepcopy(tiny))
+    assert _run("checkout", "t", "--project", "P") == 0
+    return Checkout.draft("P", "t")
+
+
+def _apply_file_contents(kind):
+    first = {"op": "clip.set", "select": "c1.rocket", "args": {"x": 120}}
+    second = {"op": "clip.set-duration", "select": "c2.card", "args": {"seconds": 2}}
+    if kind == "sheet":
+        from astrid.sdk.timeline_sheet import render_sheet
+
+        return ".sheet", lambda tl: render_sheet(tl).replace("x=60", "x=120").replace("for 1s", "for 2s")
+    if kind == "jsonl":
+        return ".jsonl", lambda _tl: "\n".join(json.dumps(row) for row in (first, second)) + "\n"
+    return ".py", lambda _tl: (
+        'tl.clip("c1.rocket").set(x=120)\n'
+        'tl.clip("c2.card").set_duration(2)\n'
+        'tl.save()\n'
+    )
+
+
+@pytest.mark.parametrize("kind", ["sheet", "jsonl", "python"])
+def test_apply_file_formats_share_one_journal_record_and_undo_step(tmp_path, monkeypatch, capsys, kind):
+    from astrid.sdk.timeline import journal, store
+
+    draft = _prepare_apply_file_draft(tmp_path, monkeypatch)
+    before_document = draft.document()
+    before_records = journal.read(journal.journal_path("p", "t"))
+    before_steps = list(store._history_dir(Path(draft.path)).glob("*.json"))
+    suffix, make_contents = _apply_file_contents(kind)
+    input_file = tmp_path / f"edit{suffix}"
+    input_file.write_text(make_contents(draft), encoding="utf-8")
+
+    assert _run("apply", "t", "--project", "P", str(input_file)) == 0
+    capsys.readouterr()
+    applied = Checkout.draft("P", "t")
+    assert applied.clip("c1.rocket").get("x") == 120
+    assert applied.clip("c2.card").duration == pytest.approx(2)
+    after_records = journal.read(journal.journal_path("p", "t"))
+    after_steps = list(store._history_dir(Path(applied.path)).glob("*.json"))
+    assert len(after_records) == len(before_records) + 1
+    assert len(after_steps) == len(before_steps) + 1
+
+    undone = applied.undo()
+    assert len(undone) == 1
+    assert applied.document() == before_document
+
+
+def _fail_during_apply_file(kind, draft, tmp_path, monkeypatch):
+    suffix, make_contents = _apply_file_contents(kind)
+    if kind == "jsonl":
+        valid = {"op": "clip.set", "select": "c1.rocket", "args": {"x": 120}}
+        invalid = {"op": "not.registered", "select": None, "args": {}}
+        contents = "\n".join(json.dumps(row) for row in (valid, invalid)) + "\n"
+    elif kind == "python":
+        contents = (
+            'tl.clip("c1.rocket").set(x=120)\n'
+            'tl.save()\n'
+            'raise RuntimeError("injected mid-file failure")\n'
+        )
+    else:
+        from astrid.sdk import timeline_sheet
+
+        original = timeline_sheet._update_layer
+        calls = 0
+
+        def fail_after_second_layer(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            result = original(*args, **kwargs)
+            if calls == 2:
+                raise RuntimeError("injected mid-file failure")
+            return result
+
+        monkeypatch.setattr(timeline_sheet, "_update_layer", fail_after_second_layer)
+        contents = make_contents(draft)
+
+    input_file = tmp_path / f"failed{suffix}"
+    input_file.write_text(contents, encoding="utf-8")
+    return input_file
+
+
+@pytest.mark.parametrize("kind", ["sheet", "jsonl", "python"])
+def test_apply_file_mid_file_failure_preserves_document_and_journal_bytes(tmp_path, monkeypatch, capsys, kind):
+    from astrid.sdk.timeline import journal, store
+
+    draft = _prepare_apply_file_draft(tmp_path, monkeypatch)
+    document_path = Path(draft.path)
+    journal_file = journal.journal_path("p", "t")
+    history_dir = store._history_dir(document_path)
+    before_document_bytes = document_path.read_bytes()
+    before_journal_bytes = journal_file.read_bytes()
+    before_history = {path.name: path.read_bytes() for path in history_dir.glob("*.json")}
+    input_file = _fail_during_apply_file(kind, draft, tmp_path, monkeypatch)
+
+    if kind in {"sheet", "python"}:
+        with pytest.raises(RuntimeError, match="injected mid-file failure"):
+            _run("apply", "t", "--project", "P", str(input_file))
+    else:
+        assert _run("apply", "t", "--project", "P", str(input_file)) == 2
+    capsys.readouterr()
+    assert document_path.read_bytes() == before_document_bytes
+    assert journal_file.read_bytes() == before_journal_bytes
+    assert {path.name: path.read_bytes() for path in history_dir.glob("*.json")} == before_history
+    assert Checkout.draft("P", "t").document() == draft.document()
+
+
+def test_apply_file_does_not_add_a_timelines_run_verb():
+    assert "run" not in {spec.name for spec in cli.COMMANDS}
 
 
 # ---- show: the sheet, one address, the summary, the working copy ---------------------------------

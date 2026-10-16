@@ -367,6 +367,16 @@
             "--project"
           ],
           "required": false
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "refresh",
+          "nargs": 0,
+          "options": [
+            "--refresh"
+          ],
+          "required": false
         }
       ],
       "positionals": [
@@ -3683,6 +3693,17 @@
         },
         {
           "action": "_StoreAction",
+          "default": 2.0,
+          "dest": "poll_seconds",
+          "nargs": null,
+          "options": [
+            "--poll-seconds"
+          ],
+          "required": false,
+          "type": "_positive_float"
+        },
+        {
+          "action": "_StoreAction",
           "default": null,
           "dest": "project",
           "nargs": null,
@@ -3709,6 +3730,27 @@
           "options": [
             "--human",
             "--text"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": 3600.0,
+          "dest": "timeout_seconds",
+          "nargs": null,
+          "options": [
+            "--timeout-seconds"
+          ],
+          "required": false,
+          "type": "_positive_float"
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "watch",
+          "nargs": 0,
+          "options": [
+            "--watch"
           ],
           "required": false
         }
@@ -4942,6 +4984,10 @@
         "reflow": {
           "kind": "callable",
           "signature": "(self, *, gaps: 'Mapping[str, float] | None' = None, points: 'Mapping[str, float] | None' = None) -> 'list[str]'"
+        },
+        "refresh": {
+          "kind": "callable",
+          "signature": "(self, *, client: 'Any' = None) -> 'dict[str, Any]'"
         },
         "remove_line": {
           "kind": "callable",

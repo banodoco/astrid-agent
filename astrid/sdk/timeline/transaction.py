@@ -143,7 +143,8 @@ def _needs_resolve(calls):
 
 @contextlib.contextmanager
 def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool = True,
-                     quiet: bool = False, reason: str | None = None, persist: bool = True) -> Iterator[Edit]:
+                     quiet: bool = False, reason: str | None = None, persist: bool = True,
+                     record_no_change: bool = True, record_rollback: bool = True) -> Iterator[Edit]:
     if getattr(tl, "_edit_depth", 0):
         yield tl._open_edit
         return
@@ -193,7 +194,7 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
             finish_recording(tl, tx, entry)
             tx.plan = _plan(label, changed=False, digests=digests, calls=tx.calls,
                             direct_writes=getattr(tx, "direct_writes", ()), consequences=getattr(tx, "consequences", ()))
-            if persist and not dry_run:
+            if persist and record_no_change and not dry_run:
                 _record(tl, label, "no-change", reason=reason, before=digests["before"], after=digests["after"], calls=tx.calls)
             if not quiet:
                 print(f"no change: {label}")
@@ -244,7 +245,7 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
             print(f'edit "{label}": {len(changes)} change(s) · {where}' + (f" · {first}" if first else ""))
     except BaseException as exc:
         _restore(tl, state, contents, cache)
-        if not dry_run:
+        if not dry_run and record_rollback:
             from astrid.sdk.timeline.commands import call_label, compact_calls
             tx.calls[:] = compact_calls(tx.calls)
             record_label = call_label(tx.calls) if tx.canonical and tx.calls else label

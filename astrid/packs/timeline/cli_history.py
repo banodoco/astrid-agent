@@ -7,7 +7,13 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline.revisions import Revision, RuntimeRevisions, resolve_revision, split_ref
+from astrid.sdk.timeline.revisions import (
+    Revision,
+    RuntimeRevisions,
+    publisher_identity,
+    resolve_revision,
+    split_ref,
+)
 
 REASON = (
     "earlier revisions: this Runtime cannot list them (Runtime ask: composition revisions need "
@@ -27,7 +33,7 @@ def _short(revision: Revision) -> str:
 
 
 def _row(revision: Revision) -> str:
-    return f"  {_short(revision):<8}  {revision.source:<8}  {revision.created_at or '-':<25}  {revision.message or ''}".rstrip()
+    return f"  {_short(revision):<8}  {publisher_identity(revision.provenance) or revision.source:<8}  {revision.created_at or '-':<25}  {revision.message or ''}".rstrip()
 
 
 def run_history(parsed: Any) -> int:
