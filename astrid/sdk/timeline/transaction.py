@@ -62,6 +62,17 @@ class Edit:
         self.calls: list[Any] = []
         self.failure: str | None = None
         self.canonical = False
+        self._check_admission = None
+        self._check_admission_closed = False
+
+    def _check_context(self):
+        if self._check_admission_closed:
+            raise RuntimeError("edit check admission is closed")
+        if self._check_admission is None:
+            from astrid.core.pack.checks import CheckAdmissionContext
+
+            self._check_admission = CheckAdmissionContext()
+        return self._check_admission
 
 
 def _digest(document: Any) -> str:
@@ -213,7 +224,7 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
         tl._edit_local_only = True
         tl._command_depth = getattr(tl, "_command_depth", 0) + 1
         try:
-            tx.report = tl.check() if check else None
+            tx.report = tl._check(_admission_context=tx._check_context()) if check else None
         finally:
             tl._edit_local_only = local_only
             tl._command_depth -= 1
@@ -252,6 +263,10 @@ def edit_transaction(tl: Any, label: str, *, dry_run: bool = False, check: bool 
             _record(tl, record_label, "rolled-back", reason=reason, error=tx.failure or _journal.one_line(exc), calls=tx.calls)
         raise
     finally:
+        if tx._check_admission is not None:
+            tx._check_admission.close()
+            tx._check_admission = None
+        tx._check_admission_closed = True
         tl._edit_depth, tl._open_edit = 0, None
         # The runner's nesting marker belongs to this transaction, including
         # implicit resolve/check calls. Do not leave a new attribute on refusal.

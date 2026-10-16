@@ -184,7 +184,7 @@ def register(layer: Layer) -> Layer:
     return layer
 
 
-def checks(*, include_v3: bool = False) -> dict[str, Check]:
+def checks(*, include_v3: bool = False, _admission_context=None) -> dict[str, Check]:
     """Every registered check (built-in and pack-provided)."""
     discover()
     registry = dict(_CHECKS)
@@ -192,7 +192,7 @@ def checks(*, include_v3: bool = False) -> dict[str, Check]:
         try:
             from astrid.core.pack.checks import registered_checks
 
-            for check in registered_checks():
+            for check in registered_checks(_admission_context=_admission_context):
                 if check.name in registry:
                     raise ValueError(f"V3 check {check.name!r} collides with an existing check")
                 registry[check.name] = check

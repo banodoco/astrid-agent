@@ -125,7 +125,10 @@ def _finding_codes(root: Path) -> dict[str, list[str]]:
     check_codes: set[str] = set()
     check_path = root / "astrid/sdk/timeline/check.py"
     tree = ast.parse(check_path.read_text(encoding="utf-8"), filename=str(check_path))
-    check_methods = {"check", "picture_gaps", "empty_cuts", "dips", "_sprite_problems"}
+    # check() keeps its public signature while _check() accepts the internal
+    # transaction admission context. Both contribute to the same report.
+    report_methods = {"check", "_check"}
+    check_methods = report_methods | {"picture_gaps", "empty_cuts", "dips", "_sprite_problems"}
     checkout = next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "_CheckMixin"
@@ -134,17 +137,17 @@ def _finding_codes(root: Path) -> dict[str, list[str]]:
         if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or method.name not in check_methods:
             continue
         for node in ast.walk(method):
-            if method.name == "check" and isinstance(node, (ast.Assign, ast.AugAssign)):
+            if method.name in report_methods and isinstance(node, (ast.Assign, ast.AugAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 names = {target.id for target in targets if isinstance(target, ast.Name)}
                 if names & {"blocking", "problems"}:
                     check_codes.update(_formatted_prefixes(node.value))
-            elif method.name == "check" and isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            elif method.name in report_methods and isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
                 call = node.value
                 if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) \
                         and call.func.value.id in {"blocking", "problems"} and call.func.attr == "append":
                     check_codes.update(_formatted_prefixes(call))
-            elif method.name != "check" and isinstance(node, ast.JoinedStr):
+            elif method.name not in report_methods and isinstance(node, ast.JoinedStr):
                 prefix = "".join(
                     part.value for part in node.values
                     if isinstance(part, ast.Constant) and isinstance(part.value, str)

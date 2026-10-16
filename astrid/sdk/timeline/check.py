@@ -595,6 +595,10 @@ class _CheckMixin:
         return out
 
     def check(self) -> "CheckReport":
+        """Validate, describe changes against the head, and lint the changed cuts."""
+        return self._check()
+
+    def _check(self, *, _admission_context=None) -> "CheckReport":
         from astrid.sdk.timeline.checkout import Checkout
         """Validate, say what moved (timeline seconds, against the checked-out head) and lint the changed cuts."""
         from astrid.sdk.authoring_bundle import validate_authoring_candidate
@@ -619,10 +623,11 @@ class _CheckMixin:
             checks as registered_checks,
         )
 
-        # One report compares both revisions with one discovered Check set.
-        # Each contributed invocation still re-admits its implementation;
-        # the next report performs fresh discovery rather than using a cache.
-        check_registry = registered_checks(include_v3=True)
+        # Explicit outer-edit context shares metadata across final/prefix/base
+        # reports. Independent checks still discover afresh. Every invocation
+        # re-admits its implementation, regardless of this metadata reuse.
+        check_registry = (_admission_context.registry() if _admission_context is not None
+                          else registered_checks(include_v3=True))
         lint = [ordinals_to_ids(line, self) for line in self._lint(
             cuts=cut_numbers, _check_registry=check_registry,
         )]

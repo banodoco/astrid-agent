@@ -1006,7 +1006,7 @@ def finish_recording(tl, tx, entry):
         if _needs_resolve(tx.calls[:index + 1]) and _snapshot(probe) != _snapshot(tl.__class__(copy.deepcopy(entry))):
             probe.resolve()
         if tx.report is not None:
-            probe.check()
+            probe._check(_admission_context=tx._check_context())
         compiled = entity_states(probe)
         created = tuple(sorted(sid for sid in set(compiled) - set(previous) if is_scoped_id(sid)))
         if expected_created is not None and set(created) != set(expected_created):

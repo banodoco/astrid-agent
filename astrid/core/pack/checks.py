@@ -110,7 +110,47 @@ def validate_check_declarations(root, definition, resources):
         raise CanonicalPackValidationError(f"invalid timeline check: {exc}") from exc
 
 
-def discover_checks(*, project_root=None, extra_pack_roots=()):
+class CheckAdmissionContext:
+    """Lazy metadata census owned and closed by one outer Edit.
+
+    Only canonical entries/resources and Check adapters live here. Documents,
+    selected assets and findings always belong to the individual report.
+    Invocation deliberately does not consult these retained admissions.
+    """
+
+    def __init__(self):
+        self._entries = {}
+        self._registry = None
+        self._closed = False
+
+    def admit(self, root):
+        from astrid.core.pack.canonical import validate_canonical_pack
+
+        self._require_open()
+        key = Path(root).resolve()
+        if key not in self._entries:
+            self._entries[key] = validate_canonical_pack(root)
+        return self._entries[key]
+
+    def registry(self):
+        from astrid.packs.rendering.actions.timeline_visualize.layers.base import checks
+
+        self._require_open()
+        if self._registry is None:
+            self._registry = checks(include_v3=True, _admission_context=self)
+        return self._registry
+
+    def _require_open(self):
+        if self._closed:
+            raise RuntimeError("check admission context is closed")
+
+    def close(self):
+        self._entries.clear()
+        self._registry = None
+        self._closed = True
+
+
+def discover_checks(*, project_root=None, extra_pack_roots=(), _admission_context=None):
     """Discover point-qualified checks from admitted V3 pack manifests."""
     from astrid.core.foundation.paths import REPO_ROOT
     from astrid.core.pack import discover_packs
@@ -140,7 +180,8 @@ def discover_checks(*, project_root=None, extra_pack_roots=()):
             continue
         if not item.pack.extensions.get("timeline", {}).get("checks"):
             continue
-        admitted = validate_canonical_pack(item.pack.root)
+        admitted = (_admission_context.admit(item.pack.root) if _admission_context is not None
+                    else validate_canonical_pack(item.pack.root))
         trust = _derive_pack_trust(item)
         for path, payload, digest in _declarations(admitted.root, admitted.definition, admitted.resources):
             identity = f"{POINT}/{payload['id']}"
@@ -242,12 +283,13 @@ def invoke_check(check: PackCheck, host_context: CheckHostContext | None, *, hos
     return list(result)
 
 
-def registered_checks(*, project_root=None, extra_pack_roots=()):
+def registered_checks(*, project_root=None, extra_pack_roots=(), _admission_context=None):
     """Adapt admitted declarations into the existing renderer Check contract."""
     from astrid.packs.rendering.actions.timeline_visualize.layers.base import Check
 
     registered = []
-    for candidate in discover_checks(project_root=project_root, extra_pack_roots=extra_pack_roots):
+    for candidate in discover_checks(project_root=project_root, extra_pack_roots=extra_pack_roots,
+                                     _admission_context=_admission_context):
         code = candidate.finding["code"]
         severity = candidate.finding["severity"]
         show_scope = candidate.finding.get("location", "scope") == "scope"
