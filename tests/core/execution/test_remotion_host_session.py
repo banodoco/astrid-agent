@@ -1171,7 +1171,7 @@ def test_browser_signature_passes_literal_requirement_to_codesign(tmp_path, monk
     calls = []
 
     def accepted(argv, **kwargs):
-        calls.append(argv)
+        calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, b'', b'')
 
     monkeypatch.setattr(host.subprocess, 'run', accepted)
@@ -1180,18 +1180,27 @@ def test_browser_signature_passes_literal_requirement_to_codesign(tmp_path, monk
 
     requirement = ('identifier "com.google.Chrome" and anchor apple generic '
                    'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
-    assert calls == [[
-        '/usr/bin/codesign', '--verify', '--strict', f'-R={requirement}', str(browser),
-    ]]
+    assert calls == [(
+        ['/usr/bin/codesign', '--verify', '--strict=symlinks', '--all-architectures',
+         f'-R={requirement}', str(browser)],
+        {'capture_output': True, 'timeout': 10, 'check': False},
+    )]
 
 
-@pytest.mark.parametrize('failure', [b'synthetic signature rejection', b'synthetic designated identity rejection'])
-def test_failed_browser_signature_or_identity_refuses_without_executing_browser(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize('failure', [
+    b'identifier mismatch', b'Team ID mismatch', b'anchor check failed',
+    b'unsigned nested code', b'sealed resource mismatch', b'broken symlink',
+    b'outside symlink', b'synthetic verifier failure',
+], ids=[
+    'wrong-identifier', 'wrong-team', 'wrong-anchor', 'unsigned-nested-code',
+    'changed-sealed-resource', 'broken-symlink', 'outside-symlink', 'verifier-failure',
+])
+def test_failed_browser_signature_or_identity_refuses_without_retry(tmp_path, monkeypatch, failure):
     verify = _REAL_SIGNATURE_CHECK
     calls = []
 
     def failed(argv, **kwargs):
-        calls.append(argv)
+        calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 1, b'', failure)
 
     monkeypatch.setattr(host.subprocess, 'run', failed)
@@ -1199,7 +1208,30 @@ def test_failed_browser_signature_or_identity_refuses_without_executing_browser(
         verify(tmp_path / 'disposable-browser')
     requirement = ('identifier "com.google.Chrome" and anchor apple generic '
                    'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
-    assert calls == [[
-        '/usr/bin/codesign', '--verify', '--strict', f'-R={requirement}',
-        str(tmp_path / 'disposable-browser'),
-    ]]
+    assert calls == [(
+        ['/usr/bin/codesign', '--verify', '--strict=symlinks', '--all-architectures',
+         f'-R={requirement}', str(tmp_path / 'disposable-browser')],
+        {'capture_output': True, 'timeout': 10, 'check': False},
+    )]
+
+
+def test_timed_out_browser_signature_verification_refuses_without_retry(tmp_path, monkeypatch):
+    verify = _REAL_SIGNATURE_CHECK
+    calls = []
+
+    def timed_out(argv, **kwargs):
+        calls.append((argv, kwargs))
+        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+
+    monkeypatch.setattr(host.subprocess, 'run', timed_out)
+    browser = tmp_path / 'disposable-browser'
+    with pytest.raises(subprocess.TimeoutExpired):
+        verify(browser)
+
+    requirement = ('identifier "com.google.Chrome" and anchor apple generic '
+                   'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    assert calls == [(
+        ['/usr/bin/codesign', '--verify', '--strict=symlinks', '--all-architectures',
+         f'-R={requirement}', str(browser)],
+        {'capture_output': True, 'timeout': 10, 'check': False},
+    )]

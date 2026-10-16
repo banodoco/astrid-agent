@@ -181,7 +181,8 @@ def _verify_browser_signature(browser):
     requirement = ('identifier "com.google.Chrome" and anchor apple generic '
                    'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
     result = subprocess.run(
-        ["/usr/bin/codesign", "--verify", "--strict", f"-R={requirement}", str(browser)],
+        ["/usr/bin/codesign", "--verify", "--strict=symlinks", "--all-architectures",
+         f"-R={requirement}", str(browser)],
         capture_output=True, timeout=10, check=False,
     )
     if result.returncode:
