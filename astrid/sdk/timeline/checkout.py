@@ -14,13 +14,13 @@ from astrid.core.timeline.cuts import (
     bundle_fps,
 )
 
+from astrid.sdk.timeline import history as _history
 from astrid.sdk.timeline import journal as _journal
 from astrid.sdk.timeline import store as _store
 from astrid.sdk.timeline._common import (TimelineEditError, _Suggest)
 from astrid.sdk.timeline.check import (_CheckMixin, describe_changes)
 from astrid.sdk.timeline.doc import _serialize
 from astrid.sdk.timeline.edits import _EditMixin
-from astrid.sdk.timeline.identity import retain_cut_reservations
 from astrid.sdk.timeline.lookup import _LookupMixin
 from astrid.sdk.timeline.model import (Clip, Cut, StepSequence, Voice)
 from astrid.sdk.timeline.publish import _PublishMixin
@@ -103,6 +103,9 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
     def load(cls, path: str | Path) -> "Checkout":
         """Open a checkout file (``timelines checkout`` or ``save`` wrote it). Applies `_timeline` edits."""
         path = Path(path)
+        if _history.pending_path(path).is_file():
+            with _store._file_lock(path):
+                _history.recover(path)
         text = path.read_text(encoding="utf-8")
         raw = json.loads(text)
         tl = cls({}, path=path)
@@ -136,6 +139,7 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         return saved
 
     def _save_locked(self, target: Path, *, force: bool, record: bool = True, evidence: tuple = ()) -> Path:
+        _history.recover(target)
         self.merged = []
         if self._disk is not None and self.path and Path(self.path) == target and target.is_file():
             now = target.read_text(encoding="utf-8")
@@ -261,6 +265,12 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         """Go back ``steps`` edits of this working copy (``redo`` goes forward). Returns what was undone."""
         if not self.path:
             raise TimelineEditError("only a saved working copy can undo")
+        target = Path(self.path)
+        if _history.pending_path(target).is_file():
+            with _store._file_lock(target):
+                self._assert_history_saved("undo")
+                if _history.recover(target):
+                    self._reload()
         from astrid.sdk.timeline.saved_intent import read_saved_calls
         from astrid.sdk.timeline.inverse import publications, stage
         # Publication undo precedes the old snapshot stack, which can contain
@@ -275,49 +285,42 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
                 with AstridClient.open_from_launcher(start_pack_host=False) as opened:
                     return stage(self, client=opened, publication=publication)
             return stage(self, client=client, publication=publication)
-        target = Path(self.path)
-        history = sorted(_store._history_dir(target).glob("*.json"))
-        if not history:
-            raise TimelineEditError("nothing to undo: this working copy has no earlier edit")
-        undone = []
-        start = current = target.read_text(encoding="utf-8")
-        for step in reversed(history[-max(1, min(int(steps), len(history))):]):
-            label, state = _store._read_step(step)
-            _store._write_step(_store._redo_dir(target), label, current)
-            current = state
-            step.unlink()
-            undone.append(label)
-        current = _serialize(retain_cut_reservations(json.loads(current), json.loads(start)))
-        target.write_text(current, encoding="utf-8")
-        self._reload()
-        _journal.record_or_note(self, target, kind="undo", outcome="changed", label="; ".join(undone)[:160],
-                                     before=_journal.digest(start), after=_journal.digest(current),
-                                     calls=(self._storage_call,) if getattr(self, "_storage_call", None) else ())
-        return undone
+        return self._snapshot_history(steps, redo=False)
 
     def redo(self, steps: int = 1) -> list[str]:
         """Re-apply edits that ``undo`` took back. Returns what was redone."""
+        return self._snapshot_history(steps, redo=True)
+
+    def _snapshot_history(self, steps: int, *, redo: bool) -> list[str]:
+        """Move the existing snapshot stacks through one recoverable transition."""
+        kind = "redo" if redo else "undo"
         if not self.path:
-            raise TimelineEditError("only a saved working copy can redo")
+            raise TimelineEditError(f"only a saved working copy can {kind}")
         target = Path(self.path)
-        stack = sorted(_store._redo_dir(target).glob("*.json"))
-        if not stack:
-            raise TimelineEditError("nothing to redo")
-        redone = []
-        start = current = target.read_text(encoding="utf-8")
-        for step in reversed(stack[-max(1, min(int(steps), len(stack))):]):
-            label, state = _store._read_step(step)
-            _store._write_step(_store._history_dir(target), label, current)
-            current = state
-            step.unlink()
-            redone.append(label)
-        current = _serialize(retain_cut_reservations(json.loads(current), json.loads(start)))
-        target.write_text(current, encoding="utf-8")
-        self._reload()
-        _journal.record_or_note(self, target, kind="redo", outcome="changed", label="; ".join(redone)[:160],
-                                     before=_journal.digest(start), after=_journal.digest(current),
-                                     calls=(self._storage_call,) if getattr(self, "_storage_call", None) else ())
-        return redone
+        with _store._file_lock(target):
+            self._assert_history_saved(kind)
+            if _history.recover(target):
+                self._reload()
+            current = target.read_text(encoding="utf-8")
+            if self._disk is None or current != self._disk:
+                raise TimelineEditError(
+                    f"cannot {kind}: another writer changed this working copy; open it again first")
+            source = _store._redo_dir(target) if redo else _store._history_dir(target)
+            stack = sorted(source.glob("*.json"))
+            if not stack:
+                raise TimelineEditError("nothing to redo" if redo else
+                                        "nothing to undo: this working copy has no earlier edit")
+            labels, _ = _history.replay(
+                target, list(reversed(stack[-max(1, min(int(steps), len(stack))):])),
+                current, redo=redo, owner=self)
+            self._reload()
+            return labels
+
+    def _assert_history_saved(self, kind: str) -> None:
+        if (self._journal or self._pending_calls or self._edit_depth
+                or (self._disk is not None and not _same_document(
+                    Path(self.path), self._disk, _serialize(self._annotated())))):
+            raise TimelineEditError(f"cannot {kind} with unsaved edits: save them first")
 
     def _reload(self) -> None:
         fresh = Checkout.load(self.path)
@@ -343,6 +346,9 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
         ``visualize`` and ``render --draft`` read the same working copy; ``save()`` writes it back.
         """
         project_id, timeline_id, _head = _store.resolve_ids(project, timeline, client=client)
+        from astrid.sdk.timeline.drafts import expire_drafts
+
+        expire_drafts(project_id, timeline_id)
         name = name or _store.current_draft(project_id, timeline_id)
         path = _store.draft_path(project_id, timeline_id, name)
         if path.is_file() and not fresh:
@@ -409,15 +415,16 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
 
     def discard(self) -> None:
         """Delete this working copy and its undo history (nothing published is touched)."""
-        if self.path and Path(self.path).is_file():
-            gone = Path(self.path)
-            _journal.record_or_note(self, gone, kind="discard", outcome="changed", label="discard",
-                                         before=_journal.digest(gone.read_text(encoding="utf-8")))  # before the file goes
-            gone.unlink()
         if self.path:
-            import shutil
+            from astrid.sdk.timeline.drafts import remove_draft
 
-            shutil.rmtree(_store._history_dir(Path(self.path)), ignore_errors=True)
+            gone = Path(self.path)
+            with _store._file_lock(gone):
+                _history.recover(gone)
+                if gone.is_file():
+                    _journal.record_or_note(self, gone, kind="discard", outcome="changed", label="discard",
+                                           before=_journal.digest(gone.read_text(encoding="utf-8")))
+                remove_draft(gone)
 
     @property
     def base_revision(self) -> str:

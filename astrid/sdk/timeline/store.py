@@ -82,7 +82,7 @@ def _discard_half_written(folder: Path) -> None:
 
 
 @contextlib.contextmanager
-def _file_lock(target: Path):
+def _file_lock(target: Path, *, wait_seconds: float | None = None):
     """Serialize compare-and-write saves; the kernel releases the lock if its writer exits."""
     try:
         import fcntl
@@ -96,6 +96,8 @@ def _file_lock(target: Path):
             wait = max(0.0, float(os.environ.get(LOCK_WAIT_ENV) or LOCK_WAIT_SECONDS))
         except ValueError:
             wait = LOCK_WAIT_SECONDS
+        if wait_seconds is not None:
+            wait = max(0.0, wait_seconds)
         deadline = time.monotonic() + wait
         while True:
             try:
@@ -552,6 +554,9 @@ def find_draft(project: str, timeline: str, name: str | None = None, *, client: 
     """The working copy for this timeline, if one exists: the named one, else the CURRENT one (the
     last checked out, ``checkout --draft NAME``), else "main"."""
     project_id, timeline_id, _head = resolve_ids(project, timeline, client=client)
+    from astrid.sdk.timeline.drafts import expire_drafts
+
+    expire_drafts(project_id, timeline_id)
     path = draft_path(project_id, timeline_id, name or current_draft(project_id, timeline_id))
     return path if path.is_file() else None
 
@@ -649,3 +654,85 @@ def import_media(path: Path, project: Any) -> dict[str, Any]:
     if data.get("resolution"):
         entry["resolution"] = data["resolution"]
     return entry
+
+
+def checkout_change_units(checkout: Any, *, complete: bool = False) -> tuple[bool, list[list[str]]]:
+    """Compare every SDK merge unit with the checkout's pinned base.
+
+    ``Checkout.edits()`` is a clip/cut/placement diff. Fresh checkout safety
+    and status also need parent config, shot payload, tracks, and registries,
+    using the same whole-unit model as ``store.three_way(..., whole=True)``.
+    An incomplete old draft base is unknown, so callers must not overwrite it.
+    """
+    from astrid.core.timeline.astrid_ns import normalized
+
+    document = checkout.document()
+    if not isinstance(document, Mapping):
+        return False, []
+    base_parent = document.get("base_parent_payload")
+    if not isinstance(base_parent, Mapping):
+        return False, []
+
+    source_mapping = document.get("source_mapping")
+    mapped_placements = (
+        source_mapping.get("placements") if isinstance(source_mapping, Mapping) else None
+    )
+    if isinstance(mapped_placements, Mapping):
+        base_placements = list(mapped_placements.values())
+    elif isinstance(mapped_placements, list):
+        base_placements = mapped_placements
+    else:
+        pinned_placements = document.get("base_placements")
+        if not isinstance(pinned_placements, Mapping):
+            return False, []
+        base_placements = list(pinned_placements.values())
+    if any(not isinstance(row, Mapping) or row.get("shot_id") is None for row in base_placements):
+        return False, []
+
+    current_shots = document.get("shots")
+    if not isinstance(current_shots, Mapping):
+        return False, []
+    base_shots: dict[str, Any] = {}
+    for row in base_placements:
+        shot_id = str(row["shot_id"])
+        shot = current_shots.get(shot_id)
+        if not isinstance(shot, Mapping):
+            return False, []
+        base_payload = shot.get("base_payload")
+        base_internal = shot.get("base_internal_timeline")
+        if not isinstance(base_payload, Mapping) or not isinstance(base_internal, Mapping):
+            return False, []
+        base_shot = copy.deepcopy(dict(shot))
+        base_shot["payload"] = copy.deepcopy(dict(base_payload))
+        base_shot["internal_timeline"] = copy.deepcopy(dict(base_internal))
+        base_shots[shot_id] = base_shot
+
+    base_document = copy.deepcopy(dict(document))
+    base_document["parent"] = copy.deepcopy(dict(base_parent))
+    base_document["placements"] = copy.deepcopy(
+        [dict(row) for row in base_placements]
+    )
+    base_document["shots"] = base_shots
+    base_document, document = normalized(base_document), normalized(document)
+    before_units = _units(base_document, whole=True)
+    current_units = _units(document, whole=True)
+    if complete:
+        # Expiry must also retain authored fields outside today's merge units
+        # (for example parent registry entries or internal timeline metadata).
+        before_units[("parent",)] = base_document.get("parent")
+        current_units[("parent",)] = document.get("parent")
+        before_units[("placements",)] = base_document.get("placements")
+        current_units[("placements",)] = document.get("placements")
+        for sid in set(base_document["shots"]) | set(document["shots"]):
+            before_units[("internal-timeline", sid)] = base_document["shots"].get(sid, {}).get("internal_timeline")
+            current_units[("internal-timeline", sid)] = document["shots"].get(sid, {}).get("internal_timeline")
+    changed = []
+    for key in set(before_units) | set(current_units):
+        if key not in before_units or key not in current_units:
+            changed.append(key)
+            continue
+        before = json.dumps(before_units[key], sort_keys=True, default=str)
+        current = json.dumps(current_units[key], sort_keys=True, default=str)
+        if before != current:
+            changed.append(key)
+    return True, [list(key) for key in sorted(changed)]

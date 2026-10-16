@@ -2661,75 +2661,9 @@ def _edit_checkout(parsed: argparse.Namespace):
 
 
 def _checkout_change_units(checkout: Any) -> tuple[bool, list[list[str]]]:
-    """Compare every SDK merge unit with the checkout's pinned base.
+    from astrid.sdk.timeline.store import checkout_change_units
 
-    ``Checkout.edits()`` is a clip/cut/placement diff. Fresh checkout safety
-    and status also need parent config, shot payload, tracks, and registries,
-    using the same whole-unit model as ``store.three_way(..., whole=True)``.
-    An incomplete old draft base is unknown, so callers must not overwrite it.
-    """
-    from astrid.core.timeline.astrid_ns import normalized
-    from astrid.sdk.timeline import store
-
-    document = checkout.document()
-    if not isinstance(document, Mapping):
-        return False, []
-    base_parent = document.get("base_parent_payload")
-    if not isinstance(base_parent, Mapping):
-        return False, []
-
-    source_mapping = document.get("source_mapping")
-    mapped_placements = (
-        source_mapping.get("placements") if isinstance(source_mapping, Mapping) else None
-    )
-    if isinstance(mapped_placements, Mapping):
-        base_placements = list(mapped_placements.values())
-    elif isinstance(mapped_placements, list):
-        base_placements = mapped_placements
-    else:
-        pinned_placements = document.get("base_placements")
-        if not isinstance(pinned_placements, Mapping):
-            return False, []
-        base_placements = list(pinned_placements.values())
-    if any(not isinstance(row, Mapping) or row.get("shot_id") is None for row in base_placements):
-        return False, []
-
-    current_shots = document.get("shots")
-    if not isinstance(current_shots, Mapping):
-        return False, []
-    base_shots: dict[str, Any] = {}
-    for row in base_placements:
-        shot_id = str(row["shot_id"])
-        shot = current_shots.get(shot_id)
-        if not isinstance(shot, Mapping):
-            return False, []
-        base_payload = shot.get("base_payload")
-        base_internal = shot.get("base_internal_timeline")
-        if not isinstance(base_payload, Mapping) or not isinstance(base_internal, Mapping):
-            return False, []
-        base_shot = copy.deepcopy(dict(shot))
-        base_shot["payload"] = copy.deepcopy(dict(base_payload))
-        base_shot["internal_timeline"] = copy.deepcopy(dict(base_internal))
-        base_shots[shot_id] = base_shot
-
-    base_document = copy.deepcopy(dict(document))
-    base_document["parent"] = copy.deepcopy(dict(base_parent))
-    base_document["placements"] = copy.deepcopy(
-        [dict(row) for row in base_placements]
-    )
-    base_document["shots"] = base_shots
-    before_units = store._units(normalized(base_document), whole=True)
-    current_units = store._units(normalized(document), whole=True)
-    changed = []
-    for key in set(before_units) | set(current_units):
-        if key not in before_units or key not in current_units:
-            changed.append(key)
-            continue
-        before = json.dumps(before_units[key], sort_keys=True, default=str)
-        current = json.dumps(current_units[key], sort_keys=True, default=str)
-        if before != current:
-            changed.append(key)
-    return True, [list(key) for key in sorted(changed)]
+    return checkout_change_units(checkout)
 
 
 def _cmd_checkout(parsed: argparse.Namespace) -> int:
@@ -2816,6 +2750,10 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
     project_id, timeline_id, current_head = store.resolve_ids(
         parsed.project, parsed.ref, client=parsed.client
     )
+    from astrid.sdk.timeline.drafts import expire_drafts, list_drafts
+
+    expire_drafts(project_id, timeline_id)
+    drafts = list_drafts(project_id, timeline_id)
     draft_name = parsed.draft or store.current_draft(project_id, timeline_id)
     path = store.draft_path(project_id, timeline_id, draft_name)
     from astrid.sdk.timeline.revisions import RuntimeRevisions
@@ -2839,18 +2777,23 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
         from astrid.packs.timeline.cli_common import status_text
         from astrid.packs.timeline.cli_sync import sync_lines
         print("\n".join(sync_lines(fields)))
-        return status_text(parsed, project_id, timeline_id, current_head, draft_name, path if path.is_file() else None)
+        result = status_text(parsed, project_id, timeline_id, current_head, draft_name, path if path.is_file() else None)
+        for draft in drafts:
+            print(f'working copy "{draft["draft"]}" · {draft["change_state"]}'
+                  + (" · leased" if draft["leased"] else ""))
+        return result
     data: dict[str, Any] = {
         "timeline_id": timeline_id,
         "current_head": current_head,
         "draft": draft_name,
         "working_copy": "absent",
+        "drafts": drafts,
         **fields,
     }
     if path.is_file():
         changes = checkout.changes()
         edit_diff = checkout.edits()
-        base_known, changed_units = _checkout_change_units(checkout)
+        base_known, changed_units = store.checkout_change_units(checkout, complete=True)
         cut_points = edit_diff.get("cut_points") or {}
         report = checkout.check()
         data.update(
