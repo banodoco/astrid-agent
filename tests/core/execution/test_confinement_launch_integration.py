@@ -283,3 +283,40 @@ def test_native_engine_graph_has_no_unrestricted_fallback(monkeypatch):
     with pytest.raises(host.HostError,match='policy is missing or invalid'):
         graph.prepare()
     assert graph.process is None
+
+
+def test_trusted_constructor_default_cwd_and_module_bootstrap_without_factory(tmp_path, launch):
+    config, _, _, outside = launch
+    pack = tmp_path / 'bootstrap-pack'
+    manifest = _write_manifest(pack)
+    module = pack / 'executors'
+    module.mkdir()
+    (module / '__init__.py').write_text('')
+    (module / 'run.py').write_text('''
+import json,os,sys
+from pathlib import Path
+try:
+    Path(sys.argv[2]).read_text()
+    outside=0
+except OSError as exc:
+    outside=exc.errno
+Path(sys.argv[1]).write_text(json.dumps(dict(cwd=os.getcwd(),marker=os.environ.get('ASTRID_INTERNAL_INVOCATION'),
+    pythonpath=os.environ.get('PYTHONPATH'),outside=outside)))
+''')
+    definition = json.loads(manifest.read_text())
+    definition['command']['argv'] = ['{python_exec}', '-m', 'executors.run', '{out}/answer.txt', str(outside)]
+    definition['command']['env'] = {'PYTHONPATH': str(tmp_path), 'ASTRID_INTERNAL_INVOCATION': 'forged'}
+    manifest.write_text(json.dumps(definition))
+    policy = replace(config, bootstrap_roots=(*config.bootstrap_roots, pack))
+    h = host.GenericPackHost(pack_roots=[pack], confinement_policy=policy)
+    h.discover()
+    assert h._required_confinement_policy(config.attempt_root) is policy
+    result = h._run_command_definition(h.capabilities['test.echo'], {}, config.private_write_root, config.attempt_root)
+    assert result is not None
+    observed = json.loads((config.private_write_root / 'answer.txt').read_text())
+    assert observed == dict(cwd=str(config.private_write_root), marker='1', pythonpath=None, outside=errno.EPERM)
+    # The new parent search is a literal directory rule, never a recursive read.
+    plan = h._workload_launch_plan([str(config.bootstrap_files[0])], attempt=config.attempt_root,
+        cwd=config.attempt_root, environment={}, inherited_fds=(), broker_endpoint=None)
+    assert f'(allow file-read* (literal "{tmp_path}"))' in plan.argv[2]
+    assert f'(allow file-read* (subpath "{tmp_path}"))' not in plan.argv[2]

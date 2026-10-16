@@ -1913,6 +1913,7 @@ class _ConfinementPolicy:
     network: _SandboxNetworkPolicy = field(default_factory=_SandboxNetworkPolicy)
     pass_fds: tuple[int, ...] = ()
     workload_process_creation: bool = True
+    bootstrap_search_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2020,6 +2021,7 @@ def _confined_launch_plan(
     if any(not p.is_relative_to(attempt) or not within(p, reads) for p in writes):
         raise HostError("project writes must stay inside the private attempt and project read scope")
     bootstrap_roots = tuple(path(p, directory=True) for p in items(policy.bootstrap_roots, "bootstrap roots"))
+    bootstrap_search_roots = tuple(path(p, directory=True) for p in items(policy.bootstrap_search_roots, "bootstrap searches"))
     bootstrap_files = tuple(path(p, directory=False, character_device=True)
                             for p in items(policy.bootstrap_files, "bootstrap files"))
     # Keep declared symlink aliases explicit as well as their resolved artifacts.
@@ -2117,7 +2119,7 @@ def _confined_launch_plan(
     rules.extend(f'(allow file-read-metadata (literal "{quote(p)}"))' for p in ancestors)
     rules.append('(allow file-read* (literal "/"))')
     rules.extend(f'(allow file-read* (subpath "{quote(p)}"))' for p in (*reads, private, *bootstrap_roots))
-    rules.extend(f'(allow file-read* (literal "{quote(p)}"))' for p in file_aliases)
+    rules.extend(f'(allow file-read* (literal "{quote(p)}"))' for p in (*file_aliases, *bootstrap_search_roots))
     rules.extend(f'(allow file-map-executable (subpath "{quote(p)}"))' for p in bootstrap_roots)
     rules.extend(f'(allow file-map-executable (literal "{quote(p)}"))' for p in file_aliases)
     rules.extend(f'(allow file-write* (subpath "{quote(p)}"))' for p in (*writes, private))
@@ -5445,6 +5447,8 @@ class GenericPackHost:
         broker_endpoint: str | None,
     ) -> _ConfinedLaunchPlan:
         policy = self._required_confinement_policy(attempt)
+        if cwd == attempt:
+            cwd = policy.private_write_root
         # A channel requested by a worker cannot add itself to host authority.
         plan = _confined_launch_plan(
             argv, policy=policy, cwd=cwd, parent_environment=environment,
@@ -8133,6 +8137,42 @@ class GenericPackHost:
                             sysconfig.get_path('platlib'), *_dependency_pythonpath()]))), *argv[2:]]
             if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
+            elif (remotion_lease is None
+                    and Path(argv[0]).resolve() == Path(sys.executable).resolve()):
+                arguments = list(argv[1:])
+                while arguments and arguments[0] in {"-B", "-u", "-I", "-S"}:
+                    arguments.pop(0)
+                if not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}:
+                    raise HostError("unsupported confined Python command")
+                startup = (
+                    "import json,os,runpy,sys; sys.path[:0]=json.loads(sys.argv[1]); "
+                    "args=json.loads(sys.argv[2]); kind=args.pop(0); "
+                    "os.environ.update({'ASTRID_INTERNAL_INVOCATION':'1'} if kind=='-m' else {}); "
+                    "target=args.pop(0) if kind in ('-c','-m') else kind; "
+                    "sys.argv=['-c' if kind=='-c' else target,*args]; "
+                    "runpy.run_module(target,run_name='__main__',alter_sys=True) if kind=='-m' else "
+                    "exec(compile(target,'<command>','exec'),{'__name__':'__main__'}) if kind=='-c' else "
+                    "runpy.run_path(target,run_name='__main__')"
+                )
+                # Host-selected imports must stay within the supplied verified
+                # bootstrap closure. Parent searches grant directory enumeration
+                # only, never reads of sibling files or recursive roots.
+                bootstrap = self._required_confinement_policy(attempt)
+                scopes = tuple(root.resolve() for root in bootstrap.bootstrap_roots)
+                searches = list(bootstrap.bootstrap_search_roots)
+                imports = []
+                for raw in (package_parent, sysconfig.get_path('purelib'), sysconfig.get_path('platlib'),
+                            str(record.source_root), str(record.source_root.parent), *_dependency_pythonpath()):
+                    candidate = Path(raw).resolve()
+                    if any(candidate == root or candidate.is_relative_to(root) for root in scopes):
+                        imports.append(str(candidate))
+                    elif any(candidate == root.parent for root in scopes):
+                        imports.append(str(candidate))
+                        searches.append(candidate)
+                self._confinement_policy = replace(bootstrap,
+                    bootstrap_search_roots=tuple(dict.fromkeys(searches)))
+                argv = [sys.executable, '-I', '-S', '-B', '-c', startup,
+                        json.dumps(imports), json.dumps(arguments)]
             plan = self._workload_launch_plan(
                 argv, attempt=attempt, cwd=cwd, environment=env,
                 inherited_fds=inherited_fds, broker_endpoint=broker_endpoint,
