@@ -5596,6 +5596,10 @@ class GenericPackHost:
         self._renderer_setup_lock = threading.RLock()
         self._host_lifetime_processes: set[subprocess.Popen] = set()
         self._shutdown = threading.Event()
+        # Dedicated preparation listener, never shared by claim slots or the
+        # execution/cleanup control channel. Installed only by trusted startup.
+        self._storage_preparation_listener = None
+        self._storage_preparation_lock = threading.Lock()
         # An unregistered host must retain the existing claim-loop failure
         # semantics. register() arms the first refresh after success.
         self._registration_refresh_deadline = float("inf")
@@ -6047,6 +6051,12 @@ class GenericPackHost:
         with self.managed_tool_session._lock:
             self._shutdown.set()
         errors: list[BaseException] = []
+        with self._storage_preparation_lock:
+            if self._storage_preparation_listener is not None:
+                try:
+                    self._storage_preparation_listener.close()
+                except Exception as exc:  # noqa: BLE001 - retain shutdown cleanup obligations.
+                    errors.append(exc)
         # Fence every serving slot before any session release can block or
         # report uncertainty. A failed release must not leave a sibling live.
         for slot in self._claim_slots:
@@ -6416,6 +6426,20 @@ class GenericPackHost:
             prior = owner._remotion_full_preflight.get(capability_id)
             if context is not None and prior is not None and prior[0] == context:
                 owner._remotion_full_preflight.pop(capability_id, None)
+
+    def start_storage_preparation(self, config):
+        """Trusted composition calls once after discovery with exact bindings.
+
+        No wire/manifest/environment path installs this configuration. The
+        existing Host shutdown owns the resulting listener's entire lifetime.
+        """
+        from .storage_preparation_transport import StoragePreparationListener
+        with self._storage_preparation_lock:
+            if self._shutdown.is_set() or self._storage_preparation_listener is not None:
+                raise HostError("storage preparation cannot start on this host lifecycle")
+            listener = StoragePreparationListener(self, config).start()
+            self._storage_preparation_listener = listener
+            return listener
 
     def prepare_storage_estimate(self, request: StorageEstimateRequest) -> StoragePreparation:
         """Host-local final099 seam; A/C own authenticated transport/projection.
