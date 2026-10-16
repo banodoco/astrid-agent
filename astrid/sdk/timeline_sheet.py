@@ -947,11 +947,14 @@ def _apply_parsed(tl, sheet, before):
                     if picture is not None and clip.data is picture.data and intent.on(clip.data) != old_on:
                         reflow = True
                     if loose_clip and json.dumps(clip.data, sort_keys=True, default=str) != was:
-                        if not intent.until(clip.data) and intent.for_s(clip.data) is None:
-                            intent.set_for(clip.data, tl.quantize(clip.duration))
-                        intent.set_cut(clip.data, cut["id"])
-                        if name != clip.id:
-                            intent.set_layer(clip.data, name)
+                        # Joining the cut is an authored edit too: record it through
+                        # the same command path as the layer changes above. Keep
+                        # an unbounded loose clip's own length after re-homing.
+                        duration = tl.quantize(clip.duration)
+                        keep_length = not intent.until(clip.data) and intent.for_s(clip.data) is None
+                        clip.move_to_cut(cut["id"], on=intent.on(clip.data) or clip.start)
+                        if keep_length:
+                            clip.hold_for(duration)
             except (TimelineEditError, mo.MomentError) as exc:
                 said = str(exc)
                 said = said if said.startswith(f"{cut['id']}.{name}") else f"{cut['id']}.{name}: {said}"

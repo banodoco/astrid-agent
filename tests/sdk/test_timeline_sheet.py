@@ -215,6 +215,71 @@ def test_a_clip_in_no_cut_shows_in_the_sheet_and_applying_never_duplicates_it():
     assert len(tl.clips()) == before  # a refused apply changes nothing
 
 
+@pytest.mark.parametrize("explicit_length", [False, True])
+@pytest.mark.parametrize("layer_name", [None, "loose-card"])
+def test_edited_loose_layer_records_replayable_membership_and_preserves_its_payload(explicit_length, layer_name):
+    import json
+    from pathlib import Path
+
+    from astrid.sdk.timeline import commands
+
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "timeline_editing"
+    tl = Checkout(json.loads((root / "tiny.json").read_text(encoding="utf-8")))
+    loose = tl.clip("c2.card")
+    intent.set_cut(loose.data, None)
+    intent.set_layer(loose.data, layer_name)
+    if not explicit_length:
+        intent.set_for(loose.data, None)
+    foreign = {"cut": "opaque", "nested": [None, False, {"value": 7}]}
+    loose.data.setdefault("app", {})["foreign"] = copy.deepcopy(foreign)
+    tl._mcache = None
+    replay = Checkout(copy.deepcopy(tl.bundle))
+    identities = {commands.scoped_clip(tl, clip) for clip in tl.clips()}
+    start, duration = loose.start, loose.duration
+    sheet = render_sheet(tl)
+    assert apply_sheet(tl, sheet) == [] and intent.cut_of(loose.data) is None
+
+    apply_sheet(tl, sheet.replace('"Live."', '"Live!"'))
+
+    assert {commands.scoped_clip(tl, clip) for clip in tl.clips()} == identities
+    assert tl.clip(loose.id).data is loose.data
+    assert loose.text == "Live!" and loose.start == pytest.approx(start)
+    assert loose.duration == pytest.approx(duration)
+    assert intent.cut_of(loose.data) == "c2" and intent.layer_of(loose.data) == layer_name
+    assert loose.data["app"]["foreign"] == foreign
+    move = next(call for call in tl._pending_calls if call.op == "clip.move-to-cut")
+    assert move.resolved == (commands.scoped_clip(tl, loose),)
+    # With no remaining intent, the whole namespace is created and guarded.
+    membership_path = "intent.cut" if explicit_length or layer_name else "app.astrid"
+    assert move.expect[membership_path] == {"state": "absent"}
+    assert move.authorship[membership_path] == "direct"
+    assert all(call.created == () for call in tl._pending_calls)
+    commands.run(replay, {"op": "timeline.batch", "select": None,
+                          "args": {"commands": [call.to_json() for call in tl._pending_calls]}})
+    assert replay.document() == tl.document()
+
+
+def test_sheet_refuses_unrecorded_cut_membership_after_a_command_and_restores_the_document(monkeypatch):
+    from astrid.sdk import timeline_sheet
+    from astrid.sdk.timeline.commands import CommandError
+
+    tl = Checkout(named())
+    tl.resolve()
+    sheet = render_sheet(tl)
+    before = tl.document()
+    update = timeline_sheet._update_layer
+
+    def unrecorded_membership(timeline, clip, layer, **kwargs):
+        update(timeline, clip, layer, **kwargs)
+        if clip.id == tl.clip("c2.card").id:
+            intent.set_cut(clip.data, None)
+
+    monkeypatch.setattr(timeline_sheet, "_update_layer", unrecorded_membership)
+    with pytest.raises(CommandError, match="Compiler prefix evidence does not match the executed candidate"):
+        apply_sheet(tl, sheet.replace('"Live."', '"Live!"'))
+    assert tl.document() == before
+
+
 def test_a_words_of_formula_round_trips_and_can_be_set():
     """Acceptance fix 2: c09.we-shape words=ƒ(words of n05b) must apply unchanged (it read as a spoken word)."""
     import json
