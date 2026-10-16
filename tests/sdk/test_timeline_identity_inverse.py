@@ -169,7 +169,9 @@ def test_reflow_uses_recorded_causal_writes_instead_of_inferring_commands_from_a
     intent.set_gap_after(tl.clip("a-vo").data, None)
     before = tl.document()
     after, plan, _ = apply(before, call("timeline.reflow", gaps={"a-vo": 0.8}))
-    assert plan.changed and plan.consequences and not plan.calls[0].expect
+    assert plan.changed and plan.consequences
+    assert plan.calls[0].expect == {
+        "occurrence:occ-A/clip:a-music::music_bed.ripple_basis": {"state": "absent"}}
     value = backward(before, after, plan)
     assert value["args"]["writes"]
     assert inverse.authored_paths(plan.calls) == {commands.write_target(key, call.resolved)
