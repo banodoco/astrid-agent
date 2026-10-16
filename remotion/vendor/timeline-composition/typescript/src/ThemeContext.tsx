@@ -81,7 +81,7 @@ export const DEFAULT_THEME: Theme = {
   },
 };
 
-const toRuntimeTheme = (theme: Theme): RuntimeTheme => {
+export const toRuntimeTheme = (theme: Theme): RuntimeTheme => {
   return {
     ...theme,
     color: theme.visual.color,

@@ -77,6 +77,39 @@ and occlusion. It does not establish rendered visibility. Component internals
 and coverage remain unknown here. Renderer-owner/Python caching and consumers,
 coverage findings, and App Player integration are separate work.
 
+## Transition authoring admission
+
+The evaluation subpath also exports `declareAppTransition` and
+`prepareDeclaredTrack`. These are explicit authoring admission calls; existing
+renderer callers continue to use `prepareTrack` with legacy semantics.
+
+```ts
+import {declareAppTransition, prepareDeclaredTrack} from '@banodoco/timeline-composition/evaluation';
+
+const host = 'timeline-composition';
+const declaration = declareAppTransition(
+  'visual', 'a', {type: 'crossfade', duration: 0.3, params: {easing: 'linear'}}, 30, host,
+);
+const admitted = prepareDeclaredTrack('visual', [
+  {id: 'a', start: 0, duration: 30},
+  {id: 'b', start: 30, duration: 30},
+], [declaration], host);
+```
+
+A declaration names one outgoing clip on one track, the supported host and
+implementation, resolved frame spec, and preserved App params. App duration is
+in seconds and rounds once to frames. `crossfade` maps to `cross-fade`
+(dissolve); `fade` maps to dip. Other implementations or hosts throw
+`TransitionAdmissionError` with a `code` and actionable `nextStep`.
+
+Admission requires ordered, non-overlapping own clip spans; gaps are valid.
+Duplicate owners, cross-track owners and owners without a successor are refused.
+Admission never sorts, moves, trims or repairs clips. After validation it calls
+the existing planner, including its cut behavior for gaps and transition lengths
+that do not fit. Planner draw extensions may overlap by design. Params are
+preserved as declaration data; this pure API does not execute custom components.
+This API does not wire the App editor or change legacy rendering automatically.
+
 ## Speed
 
 `clip.speed` is a playback rate, and the clip's length is its hold divided by `speed` (speed 2 halves the length).
@@ -96,3 +129,24 @@ npm install
 npm run build
 npm test
 ```
+
+## Keyframe origin
+
+`clip.keyframeOrigin` is key-time zero in **seconds relative to the clip's
+start on the timeline**. Zero means clip start. It is independent of media
+`from`/`to` and playback `speed`; trimming changes source sampling, never this
+origin or authored keys. Keys retain their payload units (App seconds, sprite
+frames). For a declared origin `o`, App key time at timeline second `t` is
+`t - (clip.at + o)`; sprite key frame at own local frame `f` is `f - o * fps`.
+The sprite then applies its existing step quantization and held-pose selection.
+Transition extensions still use the evaluator's existing clamped own frame.
+
+The pure `./evaluation` and component `./theme-api` subpaths expose
+`timelineKeyframeTime`, `spriteKeyframeFrame` and `declareKeyframeOrigin`.
+`declareKeyframeOrigin(clip, 'app-seconds')` stamps legacy origin `-clip.at`;
+`'sprite-frames'` stamps zero. Both preserve keys without conversion, rounding or
+mutation, and preserve an already declared origin. Missing origins keep each
+legacy consumer's existing domain. New clip-local seconds keys use origin zero.
+A later timeline move carries a declared origin with its clip. An undeclared App
+clip retains the old absolute-timeline behavior. This contract is available to
+component consumers; it introduces no easing, loops or modifiers.

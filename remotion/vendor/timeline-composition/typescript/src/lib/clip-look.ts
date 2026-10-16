@@ -105,12 +105,15 @@ const normalizeOneAnimationRef = (ref: unknown, fps: number): AnimationReference
   if (typeof ref !== 'object' || ref === null) {
     return undefined;
   }
-  const record = ref as {id?: unknown; type?: unknown; duration?: unknown; params?: unknown};
+  const record = ref as {id?: unknown; type?: unknown; duration?: unknown; params?: unknown; easing?: unknown};
   if (typeof record.id === 'string') {
     return ref as AnimationReferenceItem;
   }
   if (typeof record.type !== 'string') {
     return undefined;
+  }
+  if (record.easing !== undefined && typeof record.easing !== 'string') {
+    throw new Error('Animation easing must be a declared curve name');
   }
   const duration = typeof record.duration === 'number' && Number.isFinite(record.duration)
     ? record.duration
@@ -118,6 +121,7 @@ const normalizeOneAnimationRef = (ref: unknown, fps: number): AnimationReference
   return {
     id: record.type,
     durationFrames: duration === undefined ? undefined : Math.round(duration * fps),
+    ...(record.easing === undefined ? {} : {easing: record.easing}),
     params: record.params as Record<string, unknown> | undefined,
   };
 };

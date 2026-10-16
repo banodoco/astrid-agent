@@ -24,6 +24,7 @@ export {
   ThemeProvider,
   useTheme,
   DEFAULT_THEME,
+  toRuntimeTheme,
 } from "./ThemeContext";
 export type {
   EffectProps,
@@ -57,3 +58,14 @@ export type {
   ThemePackageRegistryEntry,
   ThemePackageClipType,
 } from "./registry.generated";
+
+export {MODIFIER_REGISTRY, composeModifiers, declareModifier, ModifierAdmissionError} from './modifiers';
+export type {
+  ClipModifierReference, ModifierBounds, ModifierContext, ModifierDeclaration,
+  ModifierDefinition, ModifierFinding, ModifierProps, ModifierRegistry,
+} from './modifier-types';
+
+export {mediaModifierBounds} from './lib/modifier-bounds';
+
+export {prepareCompositionScene} from './TimelineComposition';
+export {prepareScene, querySceneFrame, queryCompositionSceneFrame} from './evaluation';
