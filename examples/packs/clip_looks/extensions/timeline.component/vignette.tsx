@@ -6,7 +6,7 @@ import type {
 type Params = {strength: number};
 type Declaration = {
   point: string; id: string; kind: string; hosts: readonly string[];
-  bounds?: string; alpha: string; support: string;
+  bounds?: 'preserve'; alpha: string; support: string;
 };
 type Host = {
   declareModifier: <T>(definition: ModifierDefinition<T>) => ModifierDeclaration;
@@ -25,7 +25,7 @@ export const Vignette = ({params, context, children}: ModifierProps<Params>): Re
   // It is unrelated to time and creates no independent frame origin.
   const filterId = `vignette-${useId().replace(/[^a-zA-Z0-9_-]/g, (c) => `_${c.charCodeAt(0)}_`)}`;
   if (params.strength === 0) return children;
-  if (context.bounds.status !== 'known') throw new Error('unknown-modifier-bounds: vignette target');
+  if (context.bounds.status !== 'known') throw new Error('unknown-target-bounds: vignette target');
   const {x, y, width, height} = context.bounds.rect;
   return createElement('div', {style: {position: 'absolute', inset: 0, filter: `url(#${filterId})`}},
     createElement('svg', {width: 0, height: 0, style: {position: 'absolute'}, 'aria-hidden': true},
@@ -47,9 +47,13 @@ export const bindVignette = (host: Host, declaration: Declaration): ModifierDecl
     || declaration.hosts.some((value) => value !== 'composition' && value !== 'app')) {
     throw new Error('Invalid vignette declaration identity/preservation/host');
   }
-  if (declaration.bounds !== 'preserve') throw new Error('unknown-modifier-bounds: vignette has no declared bounds');
+  const hasDeclaredBounds = Object.prototype.hasOwnProperty.call(declaration, 'bounds');
+  if (hasDeclaredBounds && declaration.bounds !== 'preserve') {
+    throw new Error('Invalid vignette bounds declaration');
+  }
   return host.declareModifier({kind: 'modifier', element: `${declaration.point}/${declaration.id}`,
-    hosts: declaration.hosts, bounds: 'preserve', alpha: 'preserve', support: 'preserve',
+    hosts: declaration.hosts, bounds: hasDeclaredBounds ? 'preserve' : 'unknown',
+    alpha: 'preserve', support: 'preserve',
     component: Vignette,
     resolveParams: (params) => {
       const strength = params.strength;

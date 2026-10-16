@@ -1,4 +1,5 @@
 """The declared vignette's actual v3 admission, not an alternate registry."""
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -83,6 +84,14 @@ def test_undeclared_bounds_are_unknown_with_named_finding(component):
     assert component_bounds(unknown, {'status': 'known', 'rect': {}}) == {
         'status': 'unknown', 'finding': {'code': 'unknown-modifier-bounds', 'element': IDENTITY,
                                        'reason': 'Component declares no bounds'}}
+    binding = bind_component(unknown, host='composition')
+    assert 'bounds' not in binding['descriptor']
+    implementation_path = unknown.descriptor['implementation']['path']
+    assert binding['sources'][implementation_path]['sha256'] == hashlib.sha256(
+        (unknown.pack_root / implementation_path).read_bytes()).hexdigest()
+    instance = component_instance(unknown, 'stable-omitted-bounds', {'strength': 0.5}, host='composition')
+    assert json.loads(json.dumps(instance)) == {
+        'id': 'stable-omitted-bounds', 'element': IDENTITY, 'params': {'strength': 0.5}}
 
 
 def test_exact_identity_closure_and_neighbour_substitution(component):
