@@ -687,12 +687,14 @@ def test_a_param_moment_outside_its_clip_blocks_and_keep_fixes_an_orphan():
     assert not any("states[1].at" in o for o in tl.orphans())
 
 
-def test_check_flags_offcanvas_mixed_scale_and_damaged_sprite_by_address():
+def test_check_flags_offcanvas_mixed_scale_and_damaged_sprite_by_address(monkeypatch):
     data = bundle()
     sprite = data["shots"]["A"]["internal_timeline"]["clips"][1]
     # Never on canvas (the add() units bug put sprites at x=4212): blocking.
     sprite["params"].update({"x": 4212, "scale": 8,
                               "keyframes": [{"frame": 12, "x": 4300, "y": 20}]})
+    # Resolution is the admitted source geometry consumed by the shared scene evaluator.
+    data["shots"]["A"]["internal_timeline"]["registry"]["assets"]["R"]["resolution"] = "16x12"
     data["shots"]["A"]["internal_timeline"]["registry"]["assets"]["R"]["pixel_provenance"] = {
         "executor": "pixel.sprites", "run_id": "sprite-run",
         "lattice": {"detected": True, "block": 4.0},
@@ -703,7 +705,8 @@ def test_check_flags_offcanvas_mixed_scale_and_damaged_sprite_by_address():
               "app": {"cut": "c01", "layer": "hourglass"}}
     data["shots"]["A"]["internal_timeline"]["clips"].append(second)
     data["shots"]["A"]["internal_timeline"]["registry"]["assets"]["H"] = {
-        "media_id": "m-h", "pixel_provenance": {"outline_integrity": {"fraction": 0.56}},
+        "media_id": "m-h", "resolution": "16x12",
+        "pixel_provenance": {"outline_integrity": {"fraction": 0.56}},
     }
     # Runs in from off screen (the film's mink): deliberate, not flagged.
     runner = {"id": "a-runner", "clipType": "am-sprite", "track": "sprite", "asset": "H",
@@ -711,6 +714,75 @@ def test_check_flags_offcanvas_mixed_scale_and_damaged_sprite_by_address():
                                                    "keyframes": [{"frame": 8, "x": 300, "y": 20}]},
               "app": {"cut": "c01", "layer": "runner"}}
     data["shots"]["A"]["internal_timeline"]["clips"].append(runner)
+
+    # Unit tests do not start a frame owner. Inject deterministic answers at the
+    # scene-answer client seam; CHECK still supplies admitted dimensions and
+    # canvas-space poses, and classifies only the returned canonical bounds.
+    from astrid.core.timeline import scene_answers
+
+    expected_inputs = {
+        ("a-rocket", 0): (25272, 0, 16, 12, 8),
+        ("a-rocket", 12): (25800, 120, 16, 12, 8),
+        ("a-hourglass", 0): (120, 0, 16, 12, 6),
+        ("a-runner", 0): (-5400, 0, 16, 12, 6),
+        ("a-runner", 8): (1800, 120, 16, 12, 6),
+    }
+    known_rects = {
+        ("a-rocket", 0): (25272, 0, 128, 96),
+        ("a-rocket", 12): (25800, 120, 128, 96),
+        ("a-hourglass", 0): (120, 0, 96, 72),
+        ("a-runner", 0): (-5400, 0, 96, 72),
+        ("a-runner", 8): (1800, 120, 96, 72),
+    }
+
+    class KnownGeometry:
+        def query_scene(self, *, revision_digest, scene, frames):
+            clips = scene["timeline"]["clips"]
+            results = []
+            for frame in frames:
+                if len(clips) == 1 and (clips[0]["id"], frame) in expected_inputs:
+                    clip = clips[0]
+                    clip_id = clip["id"]
+                    params = clip["params"]
+                    actual = (params["x"], params["y"], params["width"], params["height"], params["scale"])
+                    assert actual == expected_inputs[(clip_id, frame)]
+                    x, y, width, height = known_rects[(clip_id, frame)]
+                    layers = [{
+                        "clipId": clip_id,
+                        "track": clip.get("track", "sprite"),
+                        "z": 0,
+                        "role": scene["roles"].get(clip_id, "sprite"),
+                        "visible": True,
+                        "opacity": 1.0,
+                        "bounds": {"status": "known", "rect": {
+                            "x": x, "y": y, "width": width, "height": height,
+                        }},
+                        "fullFrame": False,
+                        "findings": [],
+                    }]
+                    results.append({"frame": frame, "coverage": "COVERED", "content": "CONTENT",
+                                    "findings": [], "layers": layers})
+                    continue
+
+                reason = "focused fixture supplies only per-sprite bounds"
+                findings = [{"code": "evaluation-unavailable", "clipId": clip["id"], "reason": reason}
+                            for clip in clips]
+                layers = [{
+                    "clipId": clip["id"],
+                    "track": clip.get("track", "sprite"),
+                    "z": index,
+                    "role": scene["roles"].get(clip["id"], "sprite"),
+                    "visible": "unknown",
+                    "opacity": None,
+                    "bounds": {"status": "unknown", "reason": reason},
+                    "fullFrame": False,
+                    "findings": [finding for finding in findings if finding["clipId"] == clip["id"]],
+                } for index, clip in enumerate(clips)]
+                results.append({"frame": frame, "coverage": "UNKNOWN", "content": "UNKNOWN",
+                                "findings": findings, "layers": layers})
+            return results
+
+    monkeypatch.setattr(scene_answers, "_client", lambda: KnownGeometry())
     lines = Checkout(data).check().problems
     assert any("OFFCANVAS" in line and "a-rocket" in line for line in lines)
     assert not any("OFFCANVAS" in line and "runner" in line for line in lines)
