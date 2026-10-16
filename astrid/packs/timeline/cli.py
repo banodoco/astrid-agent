@@ -1317,10 +1317,27 @@ def _cmd_replace_parent_media(parsed: argparse.Namespace) -> int:
 
 
 def _cmd_archive(parsed: argparse.Namespace) -> int:
+    from astrid.sdk.contracts import ErrorObject
+
+    options = {}
+    pins = (parsed.expected_revision_id, parsed.expected_publication_id)
+    if parsed.withdraw_publication:
+        if not all(pins) or parsed.expected_version is None:
+            return print_result(DomainResult.failure(ErrorObject(
+                "invalid_argument", "--withdraw-publication requires --expected-version, --expected-revision-id and --expected-publication-id", {}
+            )), as_json=parsed.json)
+        options["withdraw_publication"] = dict(zip(("expected_revision_id", "expected_publication_id"), pins))
+    elif any(pins):
+        return print_result(DomainResult.failure(ErrorObject(
+            "invalid_argument", "publication pins require --withdraw-publication", {}
+        )), as_json=parsed.json)
+    if parsed.expected_version is not None:
+        options["expected_version"] = parsed.expected_version
     result = parsed.client.timelines.archive(
         parsed.project,
         parsed.ref,
         idempotency_key=parsed.idempotency_key,
+        **options,
     )
     return print_result(result, as_json=parsed.json)
 
@@ -2341,6 +2358,10 @@ def _configure_replace_parent_media(subparser: argparse.ArgumentParser) -> None:
 def _configure_archive(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument("ref", help="Timeline UUID, ULID, or slug.")
+    subparser.add_argument("--expected-version", type=int, default=None)
+    subparser.add_argument("--withdraw-publication", action="store_true", help="Explicit owner-only withdrawal; requires exact version and head pins.")
+    subparser.add_argument("--expected-revision-id", default=None)
+    subparser.add_argument("--expected-publication-id", default=None)
     _add_idempotency_key(subparser)
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_archive)
@@ -3796,6 +3817,8 @@ def _undo_target(value):
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec("purge-plan", help="Plan retention for an explicit JSON list of pinned timeline IDs.", configure=_configure_working_verb("purge_plan")),
+    CommandSpec("purge-execute", help="Execute a saved Runtime purge plan with a stable caller key.", configure=_configure_working_verb("purge_execute")),
     CommandSpec("adopt", help="Preflight adoption of authored music sources as one bed.", configure=_configure_adopt_music),
     CommandSpec("checkout", help="Create or open a detached editable working copy.", configure=_configure_checkout),
     CommandSpec("lift", help="Lift a cut's picture and hold the previous picture.", configure=_configure_lift),

@@ -128,6 +128,37 @@
         {
           "action": "_StoreAction",
           "default": null,
+          "dest": "expected_publication_id",
+          "nargs": null,
+          "options": [
+            "--expected-publication-id"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "expected_revision_id",
+          "nargs": null,
+          "options": [
+            "--expected-revision-id"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "expected_version",
+          "nargs": null,
+          "options": [
+            "--expected-version"
+          ],
+          "required": false,
+          "type": "int"
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
           "dest": "idempotency_key",
           "nargs": null,
           "options": [
@@ -154,6 +185,16 @@
             "--project"
           ],
           "required": true
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "withdraw_publication",
+          "nargs": 0,
+          "options": [
+            "--withdraw-publication"
+          ],
+          "required": false
         }
       ],
       "positionals": [
@@ -2357,6 +2398,96 @@
           "required": true
         }
       ]
+    },
+    "timelines.purge-execute": {
+      "flags": [
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "idempotency_key",
+          "nargs": null,
+          "options": [
+            "--idempotency-key"
+          ],
+          "required": true
+        },
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "plan",
+          "nargs": null,
+          "options": [
+            "--plan"
+          ],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "project",
+          "nargs": null,
+          "options": [
+            "--project"
+          ],
+          "required": true
+        }
+      ],
+      "positionals": []
+    },
+    "timelines.purge-plan": {
+      "flags": [
+        {
+          "action": "_StoreTrueAction",
+          "default": false,
+          "dest": "json",
+          "nargs": 0,
+          "options": [
+            "--json"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "output",
+          "nargs": null,
+          "options": [
+            "--output"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "project",
+          "nargs": null,
+          "options": [
+            "--project"
+          ],
+          "required": true
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
+          "dest": "targets",
+          "nargs": null,
+          "options": [
+            "--targets"
+          ],
+          "required": true
+        }
+      ],
+      "positionals": []
     },
     "timelines.recover": {
       "flags": [

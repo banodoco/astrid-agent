@@ -470,3 +470,51 @@ def _configure_duplicate(subparser: argparse.ArgumentParser) -> None:
     subparser.set_defaults(handler=_cmd_duplicate)
 
 
+def _retention_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise VerbError(f"could not read retention JSON {path}: {exc}", code=2) from exc
+
+
+@guard(1)
+def _cmd_purge_plan(parsed: argparse.Namespace) -> int:
+    result = parsed.client.timelines.plan_purge(parsed.project, _retention_json(parsed.targets))
+    if result.ok and parsed.output:
+        # Do not replace an already displayed plan that may have been executed.
+        try:
+            with Path(parsed.output).open("x", encoding="utf-8") as handle:
+                json.dump(result.data, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+        except OSError as exc:
+            raise VerbError(f"could not save retention plan {parsed.output}: {exc}", code=2) from exc
+    # Always display the complete plan, including structured blockers/counts.
+    return print_result(result, as_json=True)
+
+
+@guard(1)
+def _cmd_purge_execute(parsed: argparse.Namespace) -> int:
+    result = parsed.client.timelines.execute_purge(
+        parsed.project, _retention_json(parsed.plan), idempotency_key=parsed.idempotency_key,
+    )
+    return print_result(result, as_json=True)
+
+
+def _configure_purge_plan(subparser: argparse.ArgumentParser) -> None:
+    from astrid.packs.timeline.cli import _add_project_arg
+
+    _add_project_arg(subparser)
+    subparser.add_argument("--targets", required=True, help="JSON file: nonempty list of exact timeline IDs and expected version/revision/publication (null after withdrawal).")
+    subparser.add_argument("--output", help="Save the complete returned plan to a new JSON file for execution.")
+    subparser.add_argument("--json", action="store_true", help="Print the complete plan as JSON (always enabled).")
+    subparser.set_defaults(handler=_cmd_purge_plan)
+
+
+def _configure_purge_execute(subparser: argparse.ArgumentParser) -> None:
+    from astrid.packs.timeline.cli import _add_project_arg
+
+    _add_project_arg(subparser)
+    subparser.add_argument("--plan", required=True, help="Saved Runtime plan JSON; sent unchanged without replanning.")
+    subparser.add_argument("--idempotency-key", required=True, help="Explicit execution identity; reuse with this exact plan on every retry.")
+    subparser.add_argument("--json", action="store_true", help="Print the Runtime result as JSON (always enabled).")
+    subparser.set_defaults(handler=_cmd_purge_execute)

@@ -152,9 +152,13 @@ def _duplicate(client: Any, project: str, source: str, *, slug: str | None) -> d
         raise TimelineEditError(f"not duplicating {source}: its head is not valid ("
                                 + "; ".join((report.blocking or report.problems or ["invalid"])[:3]) + "); nothing was created")
     created = client.timelines.create_empty(
-        project=project,
+        project=src.bundle["project_id"],
         timeline_id=slug or None,
         config=copy.deepcopy(dict((src.bundle.get("parent") or {}).get("config") or {})),
+        duplicate_source={
+            "timeline_id": src.bundle.get("timeline_id"),
+            "expected_revision_id": (src.bundle.get("base_parent") or {}).get("revision_id"),
+        },
         idempotency_key=f"dup-{uuid.uuid4().hex}",
     )
     if not created.ok:

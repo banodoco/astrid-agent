@@ -238,6 +238,7 @@ class WorkspaceClient:
                 "select_project", "current_project", "create_timeline",
                 "create_timeline_document", "update_timeline_document", "list_timelines",
                 "get_timeline", "get_project_timeline", "commit_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
+                "plan_timeline_purge", "execute_timeline_purge",
                 "recover_timeline", "list_project_shots", "create_project_shot",
                 "inspect_timeline", "create_timeline_view",
                 "get_project_shot", "update_project_shot", "archive_project_shot",
@@ -527,8 +528,9 @@ class WorkspaceClient:
             timing=timing,
         )
 
-    def create_timeline(self, project_id: str, timeline_id: str, *, idempotency_key: str) -> Any:
-        return self._call_generated("create_timeline", project_id, timeline_id, idempotency_key=idempotency_key)
+    def create_timeline(self, project_id: str, timeline_id: str, *, idempotency_key: str, duplicate_source: Mapping[str, Any] | None = None) -> Any:
+        options = {"duplicate_source": duplicate_source} if duplicate_source is not None else {}
+        return self._call_generated("create_timeline", project_id, timeline_id, idempotency_key=idempotency_key, **options)
 
     def create_timeline_document(self, project_id: str, timeline_id: str, *, config: Mapping[str, Any], registry: Mapping[str, Any], slug: str | None = None, name: str | None = None, idempotency_key: str) -> Any:
         return self._call_generated("create_timeline_document", project_id, timeline_id, config=config, registry=registry, slug=slug, name=name, idempotency_key=idempotency_key)
@@ -609,10 +611,17 @@ class WorkspaceClient:
             "diff_timeline", timeline_id, from_version=from_version, to_version=to_version
         )
 
-    def archive_timeline(self, timeline_id: str, *, expected_version: int, idempotency_key: str) -> Any:
+    def archive_timeline(self, timeline_id: str, *, expected_version: int, idempotency_key: str, withdraw_publication: Mapping[str, Any] | None = None) -> Any:
+        options = {"withdraw_publication": withdraw_publication} if withdraw_publication is not None else {}
         return self._call_generated(
-            "archive_timeline", timeline_id, expected_version=expected_version, idempotency_key=idempotency_key
+            "archive_timeline", timeline_id, expected_version=expected_version, idempotency_key=idempotency_key, **options
         )
+
+    def plan_timeline_purge(self, project_id: str, targets: list[Mapping[str, Any]]) -> Any:
+        return self._call_generated("plan_timeline_purge", project_id, targets)
+
+    def execute_timeline_purge(self, project_id: str, targets: list[Mapping[str, Any]], *, plan_digest: str, idempotency_key: str) -> Any:
+        return self._call_generated("execute_timeline_purge", project_id, targets, plan_digest=plan_digest, idempotency_key=idempotency_key)
 
     def recover_timeline(
         self,
