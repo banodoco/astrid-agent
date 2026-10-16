@@ -9,7 +9,7 @@ from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline import commands, inverse, saved_publish
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.commit import RuntimeCommitService, _digest, _Refusal
-from astrid.sdk.timeline.identity import next_cut_id
+from astrid.sdk.timeline.identity import next_cut_id, cut_reservations, retain_cut_reservation_mark
 from astrid.sdk.timeline.rebase import rebase
 from astrid.sdk.timeline._common import TimelineEditError
 from test_timeline_publication_inverse import setup, publish, edit, parsed
@@ -179,6 +179,60 @@ def test_reflow_uses_recorded_causal_writes_instead_of_inferring_commands_from_a
     restored, _, _ = apply(after, value)
     assert {c.id for c in Checkout(restored).clips()} == {c.id for c in Checkout(before).clips()}
     assert Checkout(restored).clip("b-vo").start == Checkout(before).clip("b-vo").start
+    assert "music_beds" not in restored["parent"]["config"]["app"]["astrid"]
+    expected = copy.deepcopy(before)
+    # IDENTITY deliberately retains reservation maxima across an inverse.
+    retain_cut_reservation_mark(expected, cut_reservations(before))
+    assert restored == expected
+
+
+@pytest.mark.parametrize("container", ["absent", "empty-music"])
+def test_reflow_inverse_preserves_authored_container_presence_and_opaque_values(setup, container):
+    draft, _runtime, _client = setup
+    tl = Checkout(draft.document())
+    intent.set_gap_after(tl.clip("a-vo").data, None)
+    config = tl.bundle["parent"]["config"]
+    ns = config["app"]["astrid"]
+    opaque = {"null": None, "empty": {}, "values": [False, 0, {"future": "v3"}]}
+    config["opaque"] = copy.deepcopy(opaque)
+    config["app"]["other-app"] = copy.deepcopy(opaque)
+    ns["opaque"] = copy.deepcopy(opaque)
+    if container == "empty-music":
+        ns.update(v=2, music_beds={})
+    # Start with the existing identity reservation so full document equality
+    # checks all reversible content without introducing a new reservation mark.
+    retain_cut_reservation_mark(tl.bundle, cut_reservations(tl.bundle))
+    before = tl.document()
+    after, plan, _ = apply(before, call("timeline.reflow", gaps={"a-vo": 0.8}))
+    assert apply(before, *plan.calls)[0] == after
+    undo = backward(before, after, plan)
+    restored, undo_plan, _ = apply(after, undo)
+    assert restored == before
+    # The same ordinary guarded inverse contract must support redo and replay.
+    assert apply(after, *undo_plan.calls)[0] == before
+    assert apply(restored, backward(after, restored, undo_plan))[0] == after
+
+
+def test_reflow_inverse_refuses_to_remove_collection_with_a_later_source_and_rolls_back(setup):
+    from astrid.sdk.timeline import music_beds
+
+    draft, _runtime, _client = setup
+    tl = Checkout(draft.document())
+    intent.set_gap_after(tl.clip("a-vo").data, None)
+    before = tl.document()
+    after, plan, _ = apply(before, call("timeline.reflow", gaps={"a-vo": 0.8}))
+    undo = backward(before, after, plan)
+    head = Checkout(after)
+    sid = "occurrence:occ-B/clip:b-music"
+    source = copy.deepcopy(head.clip("b-music").data)
+    music_beds.collection(head)[sid] = dict(owner=sid, source=source,
+                                          ripple_basis=[], outputs=["b-music"])
+    music_beds.project(head)
+    music_beds.validate(head)
+    current = head.document()
+    with pytest.raises(commands.SemanticConflict, match="dependent"):
+        commands.run(head, undo)
+    assert head.document() == current
 
 
 def test_external_add_is_a_literal_existing_adapter_refusal_not_an_identity_gap(setup):

@@ -262,9 +262,42 @@ def _music_writes(tl, writes, states):
             outputs = [source['id']] if enrolling else meta['outputs']
             ns.setdefault('music_beds', {})[sid] = dict(owner=sid, source=source,
                 ripple_basis=copy.deepcopy(meta['ripple_basis']), outputs=copy.deepcopy(outputs))
-    if unenrolling and not ns.get('music_beds') and not ns.get('bed'):
-        ns.pop('music_beds', None)
+    # Collection presence is restored by the recorded parent write, after the
+    # owner-scoped transfer. An empty collection may be explicitly authored.
     return handled
+
+
+
+def _parent_write(tl, path, state):
+    """Restore a parent property without overwriting owner-scoped carriers.
+
+    The semantic parent records only collection presence. Its source members
+    have already been restored by _music_writes, under their own exact guards.
+    """
+    collection = ["config", "app", "astrid", "music_beds"]
+    keys = _tokens(path)
+    if keys == collection[:len(keys)]:
+        from astrid.sdk.timeline import music_beds
+        carriers = music_beds.collection(tl)
+        value = copy.deepcopy(state)
+        node = value.get("value") if value["state"] == "present" else None
+        remaining = collection[len(keys):]
+        for key in remaining:
+            node = node.get(key) if isinstance(node, dict) else None
+        if node == {}:
+            # {} here is a recorded shell, not a replacement for the members.
+            if remaining:
+                owner = value["value"]
+                for key in remaining[:-1]:
+                    owner = owner[key]
+                owner[remaining[-1]] = copy.deepcopy(carriers)
+            else:
+                value["value"] = copy.deepcopy(carriers)
+        elif carriers:
+            raise commands.SemanticConflict("dependent", "parent", path,
+                                            state, {"state": "present", "value": copy.deepcopy(carriers)}, state)
+        state = value
+    _write(tl.bundle["parent"], path, state)
 
 
 def apply_inverse(self, writes, publication):
@@ -306,6 +339,8 @@ def apply_inverse(self, writes, publication):
         try:
             if not path:
                 _root(tl, write)
+            elif write["id"] == "parent":
+                _parent_write(tl, path, write["after"])
             else:
                 _write(_entity(tl, write["id"]), path, write["after"])
         except (KeyError, IndexError, TypeError, AttributeError) as exc:

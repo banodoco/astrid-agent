@@ -669,7 +669,11 @@ def entity_states(tl):
     # Carrier storage is represented once under its authored owner. The parent
     # snapshot must not claim a second authored entity for the same source.
     app = result["parent"].get("config", {}).get("app", {}).get("astrid", {})
-    app.pop("music_beds", None)
+    # Sources live only in the owner-scoped view, but the authored collection's
+    # presence is independent state. Keep its shell so causal recording can
+    # distinguish enrollment into an absent collection from an authored {}.
+    if "music_beds" in app:
+        app["music_beds"] = {}
     app.pop("bed", None)
     if "clips" in result["parent"]:
         result["parent"]["clips"] = [c for c in result["parent"]["clips"]
