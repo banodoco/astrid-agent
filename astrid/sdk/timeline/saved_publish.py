@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
+from astrid.sdk.authoring_revision_diff import retain_revision_closure
 from astrid.sdk.timeline import journal, store
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.commit import RuntimeCommitService, _digest
@@ -66,13 +67,20 @@ class _ClosurePort:
             irid = shot["payload"]["internal_timeline_revision_id"]
             if irid not in internals:
                 internals[irid] = w.get_project_timeline_revision(p, t, irid)
-        return dict(parent_revision=parent, shot_revisions=list(shots.values()),
-                    internal_timeline_revisions=list(internals.values()))
+        self.closure = dict(parent_revision=parent, shot_revisions=list(shots.values()),
+                            internal_timeline_revisions=list(internals.values()))
+        return self.closure
 
 
 def _exact(workspace, body, revision):
-    return RuntimeCommitService._load_revision(
-        _ClosurePort(workspace, body["project_id"], body["timeline_id"]), body, revision)
+    port = _ClosurePort(workspace, body["project_id"], body["timeline_id"])
+    bundle = RuntimeCommitService._load_revision(port, body, revision)
+    # Retain the same raw rows only after the exact closure has been validated.
+    closure = port.closure
+    return retain_revision_closure(
+        bundle, closure["parent_revision"],
+        {row["revision_id"]: row for row in closure["shot_revisions"]},
+        {row["revision_id"]: row for row in closure["internal_timeline_revisions"]})
 
 
 def _publication(workspace, body, anchor):

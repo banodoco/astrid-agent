@@ -17,7 +17,8 @@ import pytest
 from banodoco_workspace_client import WorkspaceClient as GeneratedClient
 from banodoco_workspace_client.contract_metadata import PROTOCOL, SCHEMA_DIGEST
 from banodoco_workspace_client.generated import ApiError
-from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
+from astrid.core.timeline.authoring_bundle import compile_authoring_candidate, open_authoring_bundle
+from astrid.sdk.authoring_revision_diff import retain_revision_closure
 from astrid.sdk.timeline import commands, journal, saved_publish, store
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.commit import RuntimeCommitService, _digest
@@ -72,8 +73,8 @@ class RuntimeFixture:
 
     def closure(self, rid):
         parent = self.parents[rid]
-        shots = [self.shots[r] for r in {o["shot_revision_id"] for o in parent["payload"]["occurrences"]}]
-        internals = [self.internals[r] for r in {s["internal_timeline_revision_id"] for s in shots}]
+        shots = [self.shots[r] for r in dict.fromkeys(o["shot_revision_id"] for o in parent["payload"]["occurrences"])]
+        internals = [self.internals[r] for r in dict.fromkeys(s["internal_timeline_revision_id"] for s in shots)]
         return copy.deepcopy(dict(parent_revision=parent, shot_revisions=shots, internal_timeline_revisions=internals))
 
     def transport(self, method, path, headers, payload):
@@ -95,11 +96,13 @@ class RuntimeFixture:
                 if "?" in path:
                     response = dict(items=self.history[0], next_cursor=self.history[1])
                 else:
-                    response = self.parents[parts[-1]]
+                    response = self.parents.get(parts[-1])
             elif "shots" in parts:
-                response = self.shots[parts[-1]]
+                response = self.shots.get(parts[-1])
             else:
-                response = self.internals[parts[-1]]
+                response = self.internals.get(parts[-1])
+            if response is None:
+                raise ApiError(404, "not_found", "synthetic pinned revision missing")
         elif path.endswith("/commit"):
             if self.revoked:
                 raise ApiError(403, "forbidden", "current commit authorization revoked")
@@ -165,8 +168,14 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(Checkout, "SAY_SAVED", False)
     runtime = RuntimeFixture()
-    client = runtime.client()
-    bundle = saved_publish._exact(client, dict(project_id="p", timeline_id="t", base_revision_id="rev-0"), "rev-0")
+    # Model the normal open path independently of the saved-publish reader:
+    # otherwise a missing retained closure on both sides hides the regression.
+    closure = runtime.closure("rev-0")
+    shots = {r["revision_id"]: r for r in closure["shot_revisions"]}
+    internals = {r["revision_id"]: r for r in closure["internal_timeline_revisions"]}
+    bundle = open_authoring_bundle(closure["parent_revision"], shot_revisions=shots,
+                                   internal_timeline_revisions=internals)
+    retain_revision_closure(bundle, closure["parent_revision"], shots, internals)
     monkeypatch.setattr(store, "resolve_ids", lambda *a, **kw: ("p", "t", "rev-0"))
     monkeypatch.setattr(store, "fetch_bundle", lambda *a, **kw: copy.deepcopy(bundle))
     draft = Checkout.draft("p", "t")
@@ -651,6 +660,95 @@ def test_exact_closure_mismatch_refuses_without_envelope_or_file_change(setup):
     with pytest.raises(SavedIntentError, match="exact revision"):
         draft.publish(client=runtime.client())
     assert not runtime.calls and Path(draft.path).read_bytes() == before
+    assert not any(e["kind"] == "publish-intent-v1" for e in metadata())
+
+
+def test_nonempty_saved_closure_reopens_exact_pins_and_publishes(setup):
+    draft, runtime = setup
+    base = next(e["document"] for e in metadata() if e["kind"] == "saved-base-v1")
+    closure = base["immutable_closure"]
+    assert closure["parent"] == runtime.parents["rev-0"]
+    assert closure["shots"] == runtime.shots and closure["shots"]
+    assert closure["internal_timelines"] == runtime.internals and closure["internal_timelines"]
+    expected_reads = ["/v1/projects/p/timelines/t/composition-revisions/rev-0"]
+    for occurrence in closure["parent"]["payload"]["occurrences"]:
+        sid, rid = occurrence["shot_id"], occurrence["shot_revision_id"]
+        shot = closure["shots"][rid]
+        assert (shot["project_id"], shot["shot_id"], shot["revision_id"]) == ("p", sid, rid)
+        irid = shot["payload"]["internal_timeline_revision_id"]
+        assert shot["internal_timeline_revision_id"] == irid
+        internal = closure["internal_timelines"][irid]
+        assert (internal["project_id"], internal["revision_id"]) == ("p", irid)
+        assert internal["timeline_id"] == base["source_mapping"]["shots"][sid]["internal_timeline_id"]
+        expected_reads.extend([f"/v1/projects/p/shots/{sid}/revisions/{rid}",
+                               f"/v1/projects/p/timelines/t/revisions/{irid}"])
+    reopened = saved_publish._exact(runtime.client(), dict(project_id="p", timeline_id="t"), "rev-0")
+    assert Checkout(reopened).document() == base
+    assert runtime.reads == expected_reads
+    # Retention is detached from the fetched rows, including nested payloads.
+    reopened["immutable_closure"]["parent"]["payload"]["config"]["local-only"] = True
+    assert "local-only" not in runtime.parents["rev-0"]["payload"]["config"]
+    edit(draft, x=90)
+    runtime.reads.clear()
+    result = Checkout.load(draft.path).publish(client=runtime.client())
+    assert result["status"] == "accepted" and result["local_state"] == "finalized"
+    assert runtime.reads[:len(expected_reads)] == expected_reads
+    acknowledged = Checkout.load(draft.path).document()["immutable_closure"]
+    assert acknowledged["parent"] == runtime.parents[result["accepted_revision_id"]]
+    for occurrence in acknowledged["parent"]["payload"]["occurrences"]:
+        rid = occurrence["shot_revision_id"]
+        assert acknowledged["shots"][rid] == runtime.shots[rid]
+        irid = acknowledged["shots"][rid]["internal_timeline_revision_id"]
+        assert acknowledged["internal_timelines"][irid] == runtime.internals[irid]
+    assert len(runtime.calls) == len(runtime.publications) == 1
+
+
+@pytest.mark.parametrize("row_kind,field", [
+    ("parent", "project_id"), ("parent", "timeline_id"), ("parent", "revision_id"),
+    ("shot", "project_id"), ("shot", "shot_id"), ("shot", "revision_id"),
+    ("shot", "internal_timeline_revision_id"),
+    ("internal", "project_id"), ("internal", "timeline_id"), ("internal", "revision_id"),
+    ("parent", "created_at"), ("shot", "created_at"), ("internal", "created_at"),
+    ("parent", None), ("shot", None), ("internal", None),
+])
+def test_changed_or_missing_exact_pin_refuses_without_intent_or_file_change(setup, row_kind, field):
+    draft, runtime = setup
+    edit(draft, x=90)
+    rows = {"parent": runtime.parents, "shot": runtime.shots, "internal": runtime.internals}[row_kind]
+    rid = next(iter(rows))
+    if field is None:
+        del rows[rid]
+    else:
+        rows[rid][field] = "wrong-or-drifted"
+    before = Path(draft.path).read_bytes()
+    log = journal.journal_path("p", "t")
+    journal_before = log.read_bytes()
+    with pytest.raises((ValueError, WorkspaceClientError)):
+        Checkout.load(draft.path).publish(client=runtime.client())
+    assert runtime.calls == runtime.publications == []
+    assert Path(draft.path).read_bytes() == before and log.read_bytes() == journal_before
+    assert not any(e["kind"] == "publish-intent-v1" for e in metadata())
+
+
+@pytest.mark.parametrize("missing", ["parent_revision", "shot_revisions", "internal_timeline_revisions"])
+def test_incomplete_exact_closure_refuses_before_retention_or_publish(setup, monkeypatch, missing):
+    draft, runtime = setup
+    edit(draft, x=90)
+    read = saved_publish._ClosurePort.revision_closure
+    def incomplete(port, revision):
+        closure = read(port, revision)
+        del closure[missing]
+        return closure
+    monkeypatch.setattr(saved_publish._ClosurePort, "revision_closure", incomplete)
+    monkeypatch.setattr(saved_publish, "retain_revision_closure",
+                        lambda *a: pytest.fail("invalid closure must not be retained"))
+    before = Path(draft.path).read_bytes()
+    log = journal.journal_path("p", "t")
+    journal_before = log.read_bytes()
+    with pytest.raises(ValueError, match="Invalid exact revision closure shape"):
+        Checkout.load(draft.path).publish(client=runtime.client())
+    assert runtime.calls == runtime.publications == []
+    assert Path(draft.path).read_bytes() == before and log.read_bytes() == journal_before
     assert not any(e["kind"] == "publish-intent-v1" for e in metadata())
 
 
