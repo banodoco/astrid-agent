@@ -218,18 +218,11 @@ def test_bad_snapshot_receipt_data_and_body_are_refused(source):
         _record(replace(frozen, canonical_record_json=frozen.canonical_record_json + " "))
 
 
-def test_public_facade_refuses_changed_request_project_source_before_dispatch(source):
-    frozen = prepared(source)
-    facade = Transcripts(project_id="p", producer_digest="a" * 64,
-        documents=SimpleNamespace(get_document=lambda *a: pytest.fail("unexpected read")),
-        invoke_document_action=lambda *a, **kw: pytest.fail("unexpected dispatch"))
-    assert facade.prepare(source[0], project_id="p", expected_document_version=None,
-        request_id="publish-1", expected_source_digest="a" * 64) == frozen
-    with pytest.raises(ValueError):
-        facade.publish(frozen, request_id="different")
-    with pytest.raises(ValueError):
-        facade.prepare(source[0], project_id="other", expected_document_version=None,
-            request_id="publish-1", expected_source_digest="a" * 64)
+def test_public_facade_rejects_callback_and_unbound_constructor():
+    with pytest.raises(TypeError):
+        Transcripts(project_id="p", producer_digest="a" * 64,
+            documents=SimpleNamespace(get_document=lambda *_args: None),
+            invoke_document_action=lambda *_args, **_kwargs: None)
 
 
 def test_replay_recovers_missing_snapshot_with_same_frozen_ingest_key(source):

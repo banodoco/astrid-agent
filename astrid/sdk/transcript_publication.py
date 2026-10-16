@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from astrid.sdk.managed_transcript import (
     TRANSCRIPT_DOCUMENT_KIND,
-    TRANSCRIPT_SCHEMA_ID,
     canonical_transcript_json,
     transcript_document_id,
     validate_transcript_record,
@@ -57,6 +56,7 @@ def _record(prepared):
 
 def _bound(invocation, prepared, record):
     from astrid.core.execution.document_invocation import BoundDocumentInvocation
+    from astrid.core.pack.document_access import MEDIA_TRANSCRIPT_SCHEMA_ID
     if type(invocation) is not BoundDocumentInvocation:
         raise TypeError("only a Host-minted BoundDocumentInvocation may publish")
     if (invocation.project_id, invocation.request_id, invocation.action_id,
@@ -64,7 +64,7 @@ def _bound(invocation, prepared, record):
             invocation.document_kind, invocation.schema_id, invocation.schema_version) != (
             prepared.project_id, prepared.request_id, ACTION_ID, ACTION_ID,
             prepared.producer_digest, record["source"]["producer_id"],
-            TRANSCRIPT_DOCUMENT_KIND, TRANSCRIPT_SCHEMA_ID, 1):
+            TRANSCRIPT_DOCUMENT_KIND, MEDIA_TRANSCRIPT_SCHEMA_ID, 1):
         raise ValueError("publisher request differs from authenticated source/caller binding")
     if invocation.document_id != prepared.document_id or "write" not in invocation.access:
         raise ValueError("publisher lacks the exact selected document writer grant")
@@ -239,20 +239,66 @@ def publication_matches_selection(publication, request, selection):
 
 
 class Transcripts:
-    """Front door bound by A to the selected project/Host adapter, never a raw client."""
-    def __init__(self, *, project_id, producer_digest, documents, invoke_document_action):
-        self._project_id, self._producer_digest = project_id, producer_digest
-        self._documents, self._invoke_document_action = documents, invoke_document_action
+    """Authenticated SDK front door for the built-in caller-bound Host writer.
 
-    def prepare(self, record, *, project_id, expected_document_version, request_id,
-                expected_source_digest) -> PreparedTranscriptPublication:
+    Construct this from an already-open :class:`AstridClient`. The factory
+    retains that client's selected WorkspaceClient and the existing
+    GenericPackHost invocation boundary; it does not accept a client, document
+    writer, or callback supplied independently by the caller.
+    """
+
+    def __init__(self, client, *, project_id):
+        from astrid.core.execution.generic_host import GenericPackHost
+        from astrid.core.pack.canonical import validate_canonical_pack
+        from astrid.core.pack.document_access import (
+            builtin_media_root,
+            document_source_digest,
+            select_transcript_writer,
+        )
+        from astrid.sdk.client import AstridClient
+        from astrid.sdk.remote import RemoteAstridClient
+        from astrid.sdk.workspace_client import WorkspaceClient
+
+        if type(client) is not AstridClient:
+            raise TypeError("Transcripts requires the selected authenticated AstridClient")
+        remote = client._remote
+        if type(remote) is not RemoteAstridClient or type(remote._transport) is not WorkspaceClient:
+            raise TypeError("AstridClient does not expose its selected WorkspaceClient route")
+        connection = remote._transport
+        if type(project_id) is not str or not project_id or project_id != project_id.strip():
+            raise ValueError("an exact selected project id is required")
+        project = connection.get_project(project_id)
+        if not isinstance(project, dict) or project.get("project_id") != project_id:
+            raise ValueError("caller project differs from canonical selection")
+
+        root = builtin_media_root()
+        entry = validate_canonical_pack(root)
+        producer_digest = document_source_digest(entry)
+        # This check refuses a broken/missing declaration or incomplete hashed
+        # closure before the SDK offers a publishable facade.
+        select_transcript_writer(entry, producer_digest)
+        self._project_id = project_id
+        self._producer_digest = producer_digest
+        self._caller_connection = connection
+        self._host = GenericPackHost(pack_roots=[root])
+
+    @classmethod
+    def from_client(cls, client, *, project_id):
+        """Bind the transcript front door to an open, authenticated client."""
+        return cls(client, project_id=project_id)
+
+    def prepare(self, record, *, expected_document_version, request_id,
+                project_id=None, expected_source_digest=None) -> PreparedTranscriptPublication:
+        project_id = self._project_id if project_id is None else project_id
+        expected_source_digest = (self._producer_digest if expected_source_digest is None
+                                  else expected_source_digest)
         if project_id != self._project_id or expected_source_digest != self._producer_digest:
             raise ValueError("transcript preparation differs from selected project/source")
         validated = validate_transcript_record(record)
         parent = None
         if expected_document_version is not None:
             document_id = transcript_document_id(project_id, validated["subject"], validated["source"])
-            row = self._documents.get_document(document_id)
+            row = self._caller_connection.get_document(project_id, document_id)
             if not isinstance(row, dict) or (row.get("project_id"), row.get("document_id"), row.get("kind"), row.get("version")) != (
                     project_id, document_id, TRANSCRIPT_DOCUMENT_KIND, expected_document_version):
                 raise ValueError("transcript prepare requires the exact current parent version")
@@ -269,7 +315,8 @@ class Transcripts:
                 request_id, prepared.project_id, prepared.producer_digest) != (
                 prepared.request_id, self._project_id, self._producer_digest):
             raise ValueError("publish must resend the exact frozen request identity")
-        result = self._invoke_document_action(ACTION_ID, prepared, project_id=prepared.project_id,
+        result = self._host.invoke_document_action(ACTION_ID, prepared,
+            caller_connection=self._caller_connection, project_id=prepared.project_id,
             request_id=request_id, expected_source_digest=prepared.producer_digest)
         if type(result) is not ResolvedTranscriptPublication or result.prepared != prepared:
             raise ValueError("Host did not return the original authenticated publication capture")

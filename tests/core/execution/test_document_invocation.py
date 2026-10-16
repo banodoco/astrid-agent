@@ -739,12 +739,16 @@ def test_unjoined_replay_extension_fails_without_mutation(boundary):
     assert not effects
 
 
-def test_actual_receiver_has_no_writer_declaration():
-    # Real source admission remains closed; fixture success is not a D join.
+def test_actual_receiver_admits_builtin_writer_declaration():
     root = document_access.builtin_media_root()
     entry = validate_canonical_pack(root)
-    with pytest.raises(ValueError, match="writer/source"):
-        document_access.select_transcript_writer(entry, document_access.document_source_digest(entry))
+    action, kind = document_access.select_transcript_writer(
+        entry, document_access.document_source_digest(entry),
+    )
+    assert action["invocation"]["path"] == "actions/transcript_publish/run.py"
+    assert action["inputs"] == "schemas/transcript-publication-request-v1.json"
+    assert kind.kind == "media.transcript/v1"
+    assert set(kind.access) == {"read", "list", "write"}
 
 
 @pytest.mark.parametrize("reference", ["unadmitted.json", "https://invalid.example/schema", "../../foreign.json"])

@@ -40,6 +40,15 @@ documents:
   transcript:
     format_version: 1
     schema: schemas/transcript-v1.json
+    runtime:
+      kind: media.transcript/v1
+      schema_id: media.transcript
+      schema_version: 1
+      identity: media-transcript-v1
+      access:
+        - read
+        - list
+        - write
 documentation:
   kind: skill
   path: docs/SKILL.md
@@ -50,7 +59,37 @@ agent:
     - media.clip_extract
     - media.speech_repair_lavasr
     - media.gif_search
+    - media.transcript_publish
 actions:
+  transcript_publish:
+    name: Publish Transcript
+    version: "1.0"
+    short_description: Publish an immutable transcript revision through the authenticated Astrid SDK.
+    description: Publish the exact prepared transcript request through the built-in caller-bound Host document adapter. Direct pack-runner invocation is not permitted.
+    keywords:
+      - transcript
+      - document
+      - publish
+    invocation:
+      kind: python
+      path: actions/transcript_publish/run.py
+      function: run
+    inputs: schemas/transcript-publication-request-v1.json
+    outputs: schemas/transcript-publication-output-v1.json
+    cache:
+      mode: none
+    isolation:
+      mode: subprocess
+      network: false
+    resources:
+      - kind: implementation
+        path: actions/transcript_publish/run.py
+      - kind: schema
+        path: schemas/transcript-publication-request-v1.json
+      - kind: schema
+        path: schemas/transcript-publication-output-v1.json
+    metadata:
+      requires_caller_document_adapter: true
   clip_extract:
     name: Clip Extract
     version: "1.0"

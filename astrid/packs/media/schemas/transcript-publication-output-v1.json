@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "media.transcript-publication-output/v1",
+  "title": "media.transcript_publish output",
+  "description": "Strict public projection of the authenticated publication capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["data", "receipt", "snapshot"],
+  "properties": {
+    "data": {"type": "object"},
+    "receipt": {"type": "object"},
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_id", "sha256"],
+      "properties": {
+        "object_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
