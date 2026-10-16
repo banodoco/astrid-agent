@@ -1,0 +1,412 @@
+{
+  "test_only": {
+    "purpose": "synthetic fixture corpus for transcript source, segmentation, and occurrence identity",
+    "source_receipt_reference_note": "The JSON Pointer in take_correspondence points to the fixture binding that pins the new-take document and immutable snapshot; this is structural fixture provenance, not an authenticated Runtime receipt.",
+    "orphan_geometry_note": "last_accepted_position and last_accepted_length are literal previously accepted authoring geometry retained for the orphan case, not source-clock projection output."
+  },
+  "frozen_source": {
+    "content_file": "frozen-source-v1.json",
+    "document": {
+      "id": "fixture-document-take-a",
+      "version": 7,
+      "content_digest": "734da37e6d05677796d2a9d50b20c986e3bb3dd3ce21531a7b6d1a2ce86f397e"
+    },
+    "snapshot": {
+      "object_id": "fixture-cas-transcript-take-a-r1",
+      "sha256": "734da37e6d05677796d2a9d50b20c986e3bb3dd3ce21531a7b6d1a2ce86f397e"
+    }
+  },
+  "same_lineage_correction": {
+    "content_file": "same-lineage-correction-v2.json",
+    "document": {
+      "id": "fixture-document-take-a",
+      "version": 8,
+      "content_digest": "8ebc18fc5e67f203d080c542d39cdf0afb6ae54c2c02d281915d50fb0b9ceab8"
+    },
+    "snapshot": {
+      "object_id": "fixture-cas-transcript-take-a-r2",
+      "sha256": "8ebc18fc5e67f203d080c542d39cdf0afb6ae54c2c02d281915d50fb0b9ceab8"
+    },
+    "retained_correspondence": [
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-001"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-001"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-002"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-002"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-003"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-003"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-004"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-004"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-005"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-005"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-006"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-006"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-007"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-007"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-008"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-008"
+        }
+      }
+    ]
+  },
+  "same_snapshot_occurrences": [
+    {
+      "target": {
+        "clip_id": "fixture-clip-take-a-occurrence-1",
+        "occurrence_id": "fixture-occurrence-take-a-1"
+      },
+      "clip": {
+        "id": "fixture-clip-take-a-occurrence-1",
+        "asset": "fixture-media-object-001",
+        "at": 18.0,
+        "from": 0.3,
+        "to": 1.7,
+        "speed": 1.0
+      },
+      "binding": {
+        "schema_version": 1,
+        "document": {
+          "id": "fixture-document-take-a",
+          "version": 7,
+          "content_digest": "734da37e6d05677796d2a9d50b20c986e3bb3dd3ce21531a7b6d1a2ce86f397e"
+        },
+        "snapshot": {
+          "object_id": "fixture-cas-transcript-take-a-r1",
+          "sha256": "734da37e6d05677796d2a9d50b20c986e3bb3dd3ce21531a7b6d1a2ce86f397e"
+        },
+        "subject": {
+          "media_object_id": "fixture-media-object-001",
+          "media_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "source": {
+          "producer_id": "fixture.producer.astra101",
+          "source_id": "fixture-source-take-a",
+          "lineage_id": "fixture-lineage-take-a",
+          "revision_id": "fixture-revision-take-a-001",
+          "producer_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "clock": {
+          "kind": "media",
+          "unit": "seconds",
+          "origin_seconds": 0
+        },
+        "occurrence_id": "fixture-occurrence-take-a-1",
+        "word_ids": [
+          "fixture-word-a-001",
+          "fixture-word-a-002",
+          "fixture-word-a-003",
+          "fixture-word-a-004"
+        ]
+      }
+    },
+    {
+      "target": {
+        "clip_id": "fixture-clip-take-a-occurrence-2",
+        "occurrence_id": "fixture-occurrence-take-a-2"
+      },
+      "clip": {
+        "id": "fixture-clip-take-a-occurrence-2",
+        "asset": "fixture-media-object-001",
+        "at": 36.5,
+        "from": 1.9,
+        "to": 3.2,
+        "speed": 1.5
+      },
+      "binding": {
+        "schema_version": 1,
+        "document": {
+          "id": "fixture-document-take-a",
+          "version": 7,
+          "content_digest": "734da37e6d05677796d2a9d50b20c986e3bb3dd3ce21531a7b6d1a2ce86f397e"
+        },
+        "snapshot": {
+          "object_id": "fixture-cas-transcript-take-a-r1",
+          "sha256": "734da37e6d05677796d2a9d50b20c986e3bb3dd3ce21531a7b6d1a2ce86f397e"
+        },
+        "subject": {
+          "media_object_id": "fixture-media-object-001",
+          "media_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "source": {
+          "producer_id": "fixture.producer.astra101",
+          "source_id": "fixture-source-take-a",
+          "lineage_id": "fixture-lineage-take-a",
+          "revision_id": "fixture-revision-take-a-001",
+          "producer_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "clock": {
+          "kind": "media",
+          "unit": "seconds",
+          "origin_seconds": 0
+        },
+        "occurrence_id": "fixture-occurrence-take-a-2",
+        "word_ids": [
+          "fixture-word-a-006",
+          "fixture-word-a-007",
+          "fixture-word-a-008",
+          "fixture-word-a-009"
+        ]
+      }
+    }
+  ],
+  "new_take": {
+    "content_file": "new-take-source-v1.json",
+    "document": {
+      "id": "fixture-document-take-b",
+      "version": 1,
+      "content_digest": "9e09d9ef6d7846a3bab23a05992ea315811bc4f8892f62058c563c46eeb8968b"
+    },
+    "snapshot": {
+      "object_id": "fixture-cas-transcript-take-b-r1",
+      "sha256": "9e09d9ef6d7846a3bab23a05992ea315811bc4f8892f62058c563c46eeb8968b"
+    },
+    "binding": {
+      "schema_version": 1,
+      "document": {
+        "id": "fixture-document-take-b",
+        "version": 1,
+        "content_digest": "9e09d9ef6d7846a3bab23a05992ea315811bc4f8892f62058c563c46eeb8968b"
+      },
+      "snapshot": {
+        "object_id": "fixture-cas-transcript-take-b-r1",
+        "sha256": "9e09d9ef6d7846a3bab23a05992ea315811bc4f8892f62058c563c46eeb8968b"
+      },
+      "subject": {
+        "media_object_id": "fixture-media-object-001",
+        "media_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "source": {
+        "producer_id": "fixture.producer.astra101",
+        "source_id": "fixture-source-take-b",
+        "lineage_id": "fixture-lineage-take-b",
+        "revision_id": "fixture-revision-take-b-001",
+        "producer_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "clock": {
+        "kind": "media",
+        "unit": "seconds",
+        "origin_seconds": 0
+      },
+      "occurrence_id": "fixture-occurrence-take-b-map",
+      "word_ids": [
+        "fixture-word-b-001",
+        "fixture-word-b-002",
+        "fixture-word-b-003",
+        "fixture-word-b-004",
+        "fixture-word-b-005",
+        "fixture-word-b-006",
+        "fixture-word-b-007",
+        "fixture-word-b-008",
+        "fixture-word-b-009"
+      ]
+    }
+  },
+  "take_correspondence": {
+    "source_receipt": "#/new_take/binding",
+    "correspondence": [
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-001"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-001"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-002"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-002"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-003"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-003"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-004"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-004"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-005"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-005"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-006"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-006"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-007"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-007"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-008"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-008"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-009"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-009"
+        }
+      }
+    ]
+  },
+  "duplicate_target_negative": {
+    "source_receipt": "#/new_take/binding",
+    "correspondence": [
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-001"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-001"
+        }
+      },
+      {
+        "from": {
+          "lineage_id": "fixture-lineage-take-a",
+          "word_id": "fixture-word-a-002"
+        },
+        "to": {
+          "lineage_id": "fixture-lineage-take-b",
+          "word_id": "fixture-word-b-001"
+        }
+      }
+    ],
+    "expected": "reject: duplicate target word identity"
+  },
+  "ambiguous_repeated_text": {
+    "source_words": [
+      "we",
+      "we"
+    ],
+    "new_take_words": [
+      "we",
+      "we"
+    ],
+    "automatic_correspondence": [],
+    "expected": "refuse automatic mapping: repeated visible text is ambiguous"
+  },
+  "unmatched_prior_anchor_orphan": {
+    "target": {
+      "clip_id": "fixture-clip-orphan-anchor",
+      "occurrence_id": "fixture-occurrence-orphan-anchor"
+    },
+    "prior_anchor": {
+      "lineage_id": "fixture-lineage-take-a",
+      "word_id": "fixture-word-a-009"
+    },
+    "correspondence": [],
+    "last_accepted_position": 42.25,
+    "last_accepted_length": 0.7,
+    "expected_state": "ORPHAN"
+  }
+}
