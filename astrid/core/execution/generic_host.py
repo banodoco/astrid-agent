@@ -1913,7 +1913,58 @@ class _ConfinementPolicy:
     network: _SandboxNetworkPolicy = field(default_factory=_SandboxNetworkPolicy)
     pass_fds: tuple[int, ...] = ()
     workload_process_creation: bool = True
+    claim_binding: tuple[tuple[str, Any], ...] = ()
     bootstrap_search_roots: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
+class _AuthenticatedAttempt:
+    # Constructed by the credential-owning Runtime client after live renewal.
+    fields: tuple[tuple[str, Any], ...]
+
+
+class _AttemptPolicyFactory:
+    """Trusted code/bootstrap configuration shared by slots, never a policy."""
+
+    def build(self, authority, *, attempt: Path, record) -> _ConfinementPolicy:
+        if type(authority) is not _AuthenticatedAttempt:
+            raise HostError("authenticated attempt authority required")
+        projection = dict(authority.fields)
+        if not projection.get("project_id"):
+            # Explicit host-owned/unpaired workspace tasks have no project data.
+            if projection.get("kind") == "paired_session":
+                raise HostError("paired claim lacks selected project")
+        # Only Runtime-admitted CAS inputs are materialized here. No task path,
+        # environment or selected-project title chooses a host filesystem root.
+        project = attempt / "inputs"
+        private = attempt / "outputs"
+        for root in (project, private):
+            root.mkdir(mode=0o700, exist_ok=True)
+            if root.is_symlink() or root.resolve() != root or root.stat().st_uid != os.getuid():
+                raise HostError("attempt resource root is not canonical and owned")
+        _verify_admitted_source({"source_digest": record.source_digest, "source_roots": [str(root) for root in _admitted_source_roots(record.source_root, record.definition)]})
+        python = Path(sys.executable).resolve(strict=True)
+        prefix = Path(sys.base_prefix).resolve(strict=True)
+        files = (python, prefix / "lib/libpython3.11.dylib",
+                 Path("/opt/homebrew/opt/gettext/lib/libintl.8.dylib"),
+                 Path("/dev/null"), Path("/dev/urandom"), Path("/dev/random"))
+        roots = (Path(sysconfig.get_path("stdlib")).resolve(),
+                 Path(sysconfig.get_path("purelib")).resolve(),
+                 Path(sysconfig.get_path("platlib")).resolve(),
+                 Path(__file__).resolve().parents[2], *_admitted_source_roots(record.source_root, record.definition),
+                 Path("/usr/lib"), Path("/System/Library/Frameworks/CoreFoundation.framework"),
+                 Path("/System/Library/Frameworks/CoreServices.framework"),
+                 Path("/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld"),
+                 Path("/System/Volumes/Preboot/Cryptexes/OS/usr/lib"))
+        # Existing installed platform artifacts only. Unsupported hosts are
+        # refused by the same required backend check before any workload spawn.
+        policy = _ConfinementPolicy(attempt, private,
+            _SandboxProjectScope(project, (project,)),
+            tuple(p for p in files if p.exists()), tuple(dict.fromkeys(p for p in roots if p.is_dir())),
+            _SandboxEnvironmentPolicy(), claim_binding=authority.fields,
+            bootstrap_search_roots=(Path(__file__).resolve().parents[3], Path(record.source_root).resolve().parent))
+        _confined_launch_plan([str(python)], policy=policy)
+        return policy
 
 
 @dataclass(frozen=True)
@@ -4678,6 +4729,7 @@ class RuntimeProtocolClient:
         # a freshly observed epoch while an attempt is in flight: a restart
         # must revoke the old attempt rather than make its lease look current.
         self._attempt_runtime_epochs: dict[str, int] = {}
+        self._authenticated_claims: dict[str, dict[str, Any]] = {}
         self._heartbeat_session = secrets_module.token_hex(8)
         self._heartbeat_sequence = 0
         self._heartbeat_lock = threading.RLock()
@@ -4861,7 +4913,36 @@ class RuntimeProtocolClient:
         if attempt_id is not None:
             raw_epoch = claim.get("runtime_epoch") if isinstance(claim, Mapping) else getattr(claim, "runtime_epoch", None)
             self._attempt_runtime_epochs[attempt_id] = int(raw_epoch if raw_epoch is not None else claim_epoch)
+            projection = claim.get("claim_authority") if isinstance(claim, Mapping) else getattr(claim, "claim_authority", None)
+            if not isinstance(projection, Mapping):
+                raise HostError("authenticated Runtime claim has no execution authority")
+            self._authenticated_claims[attempt_id] = dict(projection)
         return claim
+
+    def confirm_claim_authority(self, *, task_id, attempt_id, lease_id, fence,
+                                runtime_epoch, project_id, operation, executor_id):
+        original = self._authenticated_claims.get(attempt_id)
+        if not isinstance(original, dict):
+            raise HostError("attempt lacks authenticated claim provenance")
+        expected = dict(task_id=task_id, attempt_id=attempt_id, lease_id=lease_id,
+                        fence=fence, runtime_epoch=runtime_epoch, project_id=project_id,
+                        operation=operation, executor_id=executor_id)
+        if any(original.get(k) != v for k, v in expected.items()):
+            raise HostError("authenticated claim authority binding mismatch")
+        reply = self.heartbeat(task_id, lease_id, attempt_id=attempt_id, fence=fence)
+        current = reply.get("claim_authority") if isinstance(reply, Mapping) else None
+        if not isinstance(current, Mapping):
+            raise HostError("Runtime renewal did not confirm claim authority")
+        stable = set(original) - {"lease_expires_at"}
+        if set(current) != set(original) or any(current[k] != original[k] for k in stable):
+            raise HostError("Runtime renewal changed issuing claim authority")
+        try:
+            from datetime import datetime, timezone
+            if datetime.fromisoformat(current["lease_expires_at"]) <= datetime.now(timezone.utc):
+                raise HostError("Runtime claim authority expired")
+        except (TypeError, ValueError, KeyError) as exc:
+            raise HostError("invalid Runtime claim authority deadline") from exc
+        return _AuthenticatedAttempt(tuple(sorted(current.items())))
 
     def task(self, task_id: str):
         return self.generated.get_task(task_id)
@@ -5368,6 +5449,8 @@ class GenericPackHost:
         # Composition-root authority only. Never populate from task/admission,
         # manifest, broker, project-path, MCP or environment configuration.
         self._confinement_policy = confinement_policy
+        self._attempt_policy_factory = _AttemptPolicyFactory() if isinstance(client, RuntimeProtocolClient) else None
+        self._attempt_claim_authority = None
         # Provider route grants are intentionally scoped to this host process;
         # their signing key never crosses into a child or runtime payload.
         self._provider_grants = ProviderRouteGrantAuthority()
@@ -5447,6 +5530,10 @@ class GenericPackHost:
         broker_endpoint: str | None,
     ) -> _ConfinedLaunchPlan:
         policy = self._required_confinement_policy(attempt)
+        if self._attempt_claim_authority is not None:
+            fields = dict(self._attempt_claim_authority.fields)
+            self.client.confirm_claim_authority(**{k: fields[k] for k in (
+                "task_id", "attempt_id", "lease_id", "fence", "runtime_epoch", "project_id", "operation", "executor_id")})
         if cwd == attempt:
             cwd = policy.private_write_root
         # A channel requested by a worker cannot add itself to host authority.
@@ -5462,6 +5549,8 @@ class GenericPackHost:
         policy = self._confinement_policy
         if type(policy) is not _ConfinementPolicy:
             raise HostError("required confinement policy is missing or invalid")
+        if self._attempt_claim_authority is not None and policy.claim_binding != self._attempt_claim_authority.fields:
+            raise HostError("confinement policy claim binding changed")
         if not isinstance(policy.attempt_root, Path) or not policy.attempt_root.is_absolute():
             raise HostError("invalid confinement attempt root")
         if policy.attempt_root.resolve() != attempt.resolve():
@@ -9043,6 +9132,21 @@ class GenericPackHost:
         # debug/single-attempt callers. Long-lived hosts use ``attempt_base``
         # so sequential tasks get isolated namespaces.
         root = self._allocate_attempt_root(task_id, attempt_id)
+        if self._attempt_policy_factory is not None:
+            try:
+                confirmation = self.client.confirm_claim_authority(
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token, fence=fence,
+                    runtime_epoch=claim_epoch, project_id=task_data.get("project_id"),
+                    operation=capability_id, executor_id=self.executor_id)
+                self._confinement_policy = self._attempt_policy_factory.build(
+                    confirmation, attempt=root, record=record)
+                self._attempt_claim_authority = confirmation
+            except Exception as exc:  # noqa: BLE001 - terminalize every failed owned claim.
+                if self.attempt_root is None:
+                    shutil.rmtree(root)
+                    self._last_cleanup_receipt = {"path": str(root), "status": "deleted",
+                        "intended_disposition": "deleted", "observed_exists": False}
+                fail_admission(exc)
         attempt_evidence_cap = _attempt_evidence_cap(
             self.execution_policy.evidence_cap_bytes,
             storage_estimate,
@@ -10322,6 +10426,7 @@ class GenericPackHost:
             "generation_intent": getattr(claim, "generation_intent", None),
             "execution_request": getattr(claim, "execution_request", None),
             "execution_binding": getattr(claim, "execution_binding", None),
+            "claim_authority": getattr(claim, "claim_authority", None),
             "queued_at": getattr(claim, "queued_at", None),
             "admitted_at": getattr(claim, "admitted_at", None),
             "created_at": getattr(claim, "created_at", None),
@@ -10540,11 +10645,12 @@ class GenericPackHost:
             source_inventory_identity=self.source_inventory_identity,
             boot_manifest_path=self.boot_manifest_path, boot_manifest_hash=self.boot_manifest_hash,
             execution_policy=self.execution_policy,
-            confinement_policy=self._confinement_policy,
+            confinement_policy=None,
             remotion_closure_binding=self._remotion_closure_binding,
         )
         # Records are replaced by preflight, never modified in place. The
         # aggregate evidence budget is deliberately shared and already locked.
+        slot._attempt_policy_factory = self._attempt_policy_factory
         slot.capabilities = dict(self.capabilities)
         slot.source_epoch = self.source_epoch
         slot.runtime_state = dict(self.runtime_state)
