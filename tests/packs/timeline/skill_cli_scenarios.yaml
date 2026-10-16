@@ -10,19 +10,27 @@ scenarios:
         python3 -m astrid timelines show main --project demo --summary
   - id: timeline-skill-edit-loop
     fixture: tiny-publishable/demo-main
+    publish_then_r2: true
+    fast_watch_clock: true
     commands:
       - >-
         python3 -m astrid timelines checkout main --project demo --draft working
       - >-
-        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"clip.set","select":"c1.rocket","args":{"x":120}}'
+        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"timeline.batch","select":null,"args":{"commands":[{"op":"clip.set","select":"c1.rocket","args":{"x":125}},{"op":"clip.set","select":"c1.rocket","args":{"y":40}}]}}' --dry-run
+      - >-
+        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"timeline.batch","select":null,"args":{"commands":[{"op":"clip.set","select":"c1.rocket","args":{"x":125}},{"op":"clip.set","select":"c1.rocket","args":{"y":40}}]}}'
       - >-
         python3 -m astrid timelines check main --project demo --draft working
       - >-
         python3 -m astrid timelines visualize main --project demo --draft working --mode inputs --plan
       - >-
-        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"timeline.batch","select":null,"args":{"commands":[{"op":"clip.set","select":"c1.rocket","args":{"x":125}},{"op":"clip.set","select":"c1.rocket","args":{"y":40}}]}}' --dry-run
+        python3 -m astrid timelines publish main --project demo --draft working -m "Adjust the selected rocket" --json
       - >-
-        python3 -m astrid timelines edit main --project demo --draft working --command '{"op":"timeline.batch","select":null,"args":{"commands":[{"op":"clip.set","select":"c1.rocket","args":{"x":125}},{"op":"clip.set","select":"c1.rocket","args":{"y":40}}]}}'
+        python3 -m astrid timelines status main --project demo --draft working --watch --poll-seconds 2 --timeout-seconds 3600 --json
+      - >-
+        python3 -m astrid timelines checkout main --project demo --draft working --refresh --json
+      - >-
+        python3 -m astrid timelines status main --project demo --draft working --watch --poll-seconds 2 --timeout-seconds 3600 --json
   - id: timeline-skill-history-revert
     fixture: tiny-publishable/demo-main
     setup_commands:

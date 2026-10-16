@@ -21,7 +21,7 @@ def _append_call(name: str, **fields: Any) -> None:
 
 def write_state(path: Path, *, head: str, bundles: Mapping[str, Mapping[str, Any]],
                 closures: Mapping[str, Mapping[str, Any]], history: list[Mapping[str, Any]],
-                fixture_identity: str) -> str:
+                fixture_identity: str, runtime_fields: Mapping[str, Any] | None = None) -> str:
     media: dict[str, dict[str, str]] = {}
     for bundle in bundles.values():
         for shot in (bundle.get("shots") or {}).values():
@@ -44,13 +44,14 @@ def write_state(path: Path, *, head: str, bundles: Mapping[str, Mapping[str, Any
         "history": [copy.deepcopy(dict(row)) for row in history],
         "media": list(media.values()),
         "fixture_identity": fixture_identity,
+        **copy.deepcopy(dict(runtime_fields or {})),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def write_simple_state(path: Path) -> str:
+def write_simple_state(path: Path, *, publish_then_r2: bool = False) -> str:
     """Build two local revisions from the tiny publishable authoring fixture."""
     from astrid.core.timeline.authoring_bundle import compile_authoring_candidate, open_authoring_bundle
     from astrid.sdk.timeline_checkout import Checkout
@@ -90,7 +91,8 @@ def write_simple_state(path: Path) -> str:
          "previous_publication_id": None, "is_current_head": False, "created_at": "fixture"},
     ]
     return write_state(path, head="rev-0", bundles=bundles, closures=closures, history=history,
-                       fixture_identity=f"tiny_publishable.json sha256={hashlib.sha256(fixture.read_bytes()).hexdigest()}")
+                       fixture_identity=f"tiny_publishable.json sha256={hashlib.sha256(fixture.read_bytes()).hexdigest()}",
+                       runtime_fields={"publish_then_r2": publish_then_r2, "requests": {}, "accepted_count": 0})
 
 
 def install() -> None:
@@ -145,9 +147,95 @@ def install() -> None:
                                       if row.get("revision_id") == revision))
 
         def commit_timeline(self, body: Mapping[str, Any]):
-            _append_call("commit_timeline", dry_run=bool(body.get("dry_run")), base=body.get("base_revision_id"))
-            return {"status": "preview", "request_id": "local-fixture-preview",
-                    "base_revision_id": body.get("base_revision_id"), "new_head": self.state()["head"]}
+            from astrid.core.timeline.authoring_bundle import open_authoring_bundle
+            from astrid.sdk.timeline.commit import RuntimeCommitService, _digest
+
+            state = self.state()
+
+            class Port:
+                def lookup_request(_self):
+                    return copy.deepcopy(state.get("requests", {}).get(body["request_id"]))
+
+                def head(_self):
+                    row = next(row for row in state["history"] if row.get("is_current_head"))
+                    return dict(revision_id=state["head"], publication_id=row.get("publication_id"),
+                                updated_at="fixture")
+
+                def revision_closure(_self, revision):
+                    return copy.deepcopy(state["closures"][revision])
+
+                def accept(_self, prepared):
+                    result = copy.deepcopy(prepared["result"])
+                    previous = state["head"]
+                    previous_row = next(row for row in state["history"] if row["revision_id"] == previous)
+                    publication = prepared["publication"]
+
+                    def install_revision(revision, payload, publication_id, parent_revision, parent_publication):
+                        for row in state["history"]:
+                            row["is_current_head"] = False
+                        if payload is None:
+                            closure = copy.deepcopy(state["closures"][parent_revision])
+                            parent = copy.deepcopy(closure["parent_revision"])
+                            parent["revision_id"] = revision
+                            parent["content_digest"] = _digest(parent["payload"])
+                            closure["parent_revision"] = parent
+                        else:
+                            parent_payload = copy.deepcopy(payload["parent_composition"])
+                            parent = dict(revision_id=revision, project_id="p", timeline_id="t",
+                                          payload=parent_payload, content_digest=_digest(parent_payload))
+                            all_shots = {row["revision_id"]: row for existing in state["closures"].values()
+                                         for row in existing["shot_revisions"]}
+                            all_shots.update({row["revision_id"]: row for row in payload["shot_revisions"]})
+                            shot_ids = {row["shot_revision_id"] for row in parent_payload["occurrences"]}
+                            shots = [dict(all_shots[revision_id], project_id="p") for revision_id in shot_ids]
+                            all_internals = {row["revision_id"]: row for existing in state["closures"].values()
+                                             for row in existing["internal_timeline_revisions"]}
+                            all_internals.update({row["revision_id"]: row
+                                                  for row in payload["internal_timeline_revisions"]})
+                            internal_ids = {row["internal_timeline_revision_id"] for row in shots}
+                            internals = [dict(all_internals[revision_id], project_id="p")
+                                         for revision_id in internal_ids]
+                            closure = dict(parent_revision=parent, shot_revisions=shots,
+                                           internal_timeline_revisions=internals)
+                        state["closures"][revision] = closure
+                        state["bundles"][revision] = open_authoring_bundle(
+                            closure["parent_revision"], shot_revisions=closure["shot_revisions"],
+                            internal_timeline_revisions=closure["internal_timeline_revisions"])
+                        state["history"].insert(0, dict(
+                            revision_id=revision, publication_id=publication_id,
+                            previous_revision_id=parent_revision,
+                            previous_publication_id=parent_publication,
+                            is_current_head=True, created_at="fixture", source="agent:fixture"))
+                        state["head"] = revision
+
+                    if publication is not None:
+                        state["accepted_count"] = int(state.get("accepted_count", 0)) + 1
+                        accepted = f"accepted-{state['accepted_count']}"
+                        accepted_publication = f"pub-{accepted}"
+                        install_revision(accepted, publication, accepted_publication, previous,
+                                         previous_row.get("publication_id"))
+                        result.update(accepted_revision_id=accepted,
+                                      accepted_publication_id=accepted_publication)
+                        if state.get("publish_then_r2"):
+                            install_revision("R2", None, "pub-R2", accepted, accepted_publication)
+                    result.update(
+                        previous_revision_id=previous,
+                        runtime_receipt=dict(publisher="agent:fixture", accepted_at="fixture",
+                                             evidence_digest=_digest(prepared["evidence"]), narration_state=None),
+                        provenance=dict(publisher="agent:fixture", source=copy.deepcopy(body["source"])),
+                        evidence=dict(digest=_digest(prepared["evidence"])))
+                    state.setdefault("requests", {})[body["request_id"]] = dict(
+                        request_hash=_digest(body), result=copy.deepcopy(result))
+                    self_path = Path(os.environ["ASTRID_SKILL_CLI_STATE"])
+                    self_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+                    return {"stored_result": result}
+
+            result = RuntimeCommitService().commit(copy.deepcopy(dict(body)), Port())
+            _append_call("commit_timeline", dry_run=bool(body.get("dry_run")),
+                         base=body.get("base_revision_id"), status=result.get("status"),
+                         accepted_revision_id=result.get("accepted_revision_id"),
+                         observed_head=self.state().get("head"))
+            return result
 
         def get_project(self, project: str):
             _append_call("get_project", project=project)
@@ -204,12 +292,19 @@ def install() -> None:
             })
 
         def open_bundle(self, project: str, timeline: str, *, revision_id: str | None = None):
+            from astrid.sdk.timeline.commit import RuntimeCommitService
+
             state = self.transport.state()
             revision = revision_id or state["head"]
             _append_call("open_bundle", project=project, timeline=timeline, revision=revision)
-            bundle = state["bundles"].get(revision)
-            if bundle is None:
+            if revision not in state["closures"]:
                 return DomainResult.failure(ErrorObject("not_found", "fixture revision missing", {}))
+            class Reader:
+                def revision_closure(_self, exact_revision):
+                    return copy.deepcopy(state["closures"][exact_revision])
+
+            bundle = RuntimeCommitService._load_revision(
+                Reader(), dict(project_id="p", timeline_id="t", base_revision_id=revision), revision)
             return DomainResult.success({"bundle": copy.deepcopy(bundle), "project_id": "p", "timeline_id": "t",
                                          "revision_id": revision, "is_current_head": revision == state["head"]})
 
@@ -271,5 +366,5 @@ def install() -> None:
         from types import SimpleNamespace
         from astrid.packs.timeline import cli_sync
 
-        ticks = iter((100.0, 100.0, 3701.0))
+        ticks = iter((100.0, 100.0, 3701.0, 4000.0, 4000.0, 7601.0))
         cli_sync.time = SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _seconds: None)

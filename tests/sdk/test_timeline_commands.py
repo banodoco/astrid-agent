@@ -74,6 +74,27 @@ def test_command_preview_is_populated_replayable_and_writes_nothing(draft):
     assert len(list(store._history_dir(Path(draft.path)).glob("*.json"))) == 1
 
 
+def test_timeline_skill_collection_batch_recipe_runs_as_one_undo_step(draft):
+    selected = draft.clips(element="am-sprite")
+    calls = [
+        {"op": "clip.set", "select": clip.address,
+         "args": {"x": 120}}
+        for clip in selected
+    ]
+    batch = {"op": "timeline.batch", "select": None, "args": {"commands": calls}}
+    before, disk = draft.document(), files(Path(draft.path).parents[3])
+    before_x = draft.clip("c1.rocket").params.get("x", 0)
+    preview = commands.run(draft, batch, dry_run=True)
+    assert preview.changed and preview.calls
+    assert draft.document() == before
+    assert files(Path(draft.path).parents[3]) == disk
+    with draft.edit("Set selected sprite positions"):
+        draft.batch(calls)
+    assert draft.clip("c1.rocket").params.get("x", 0) != before_x
+    assert draft.undo(1)
+    assert draft.clip("c1.rocket").params.get("x", 0) == before_x
+
+
 @pytest.mark.parametrize("value", [None, [], {}, {"op":"clip.set","select":2,"args":{}},
     {"op":"not.registered","select":None,"args":{}}, command(x=float("nan")),
     command(op="clip.set-duration", seconds="bad"), command(op="clip.set-duration", seconds=None),

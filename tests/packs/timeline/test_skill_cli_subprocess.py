@@ -145,8 +145,10 @@ def test_skill_cli_recipe_scenarios_run_built_entrypoint(scenario, tmp_path, mon
     if scenario["fixture"].startswith("two-agents/"):
         state_path, fixture_identity = _prepare_agent_sync_fixture(scenario_root, monkeypatch)
     else:
-        state_hash = support.write_simple_state(state_path)
-        fixture_identity = f"tiny_publishable/demo-main; state_sha256={state_hash}"
+        state_hash = support.write_simple_state(
+            state_path, publish_then_r2=scenario.get("publish_then_r2", False))
+        fixture_identity = (f"tiny_publishable/demo-main; publish_then_r2={scenario.get('publish_then_r2', False)}; "
+                            f"state_sha256={state_hash}")
 
     env = _bootstrap_env(scenario_root, state_path, fast_watch=scenario.get("fast_watch_clock", False))
     logs = scenario_root / "logs"
@@ -170,7 +172,30 @@ def test_skill_cli_recipe_scenarios_run_built_entrypoint(scenario, tmp_path, mon
     calls = scenario_root / "fake-transport.jsonl"
     assert calls.is_file() and calls.read_text(encoding="utf-8").strip(), scenario["id"]
     if scenario["id"] == "timeline-skill-edit-loop":
-        assert "plan: view contact" in results[3]["stdout"]
+        assert "plan: view contact" in results[4]["stdout"]
+        publish = json.loads(results[5]["stdout"])
+        accepted_revision = publish["data"]["accepted_revision_id"]
+        assert accepted_revision == "accepted-1"
+        before_refresh, refreshed, after_refresh = (json.loads(results[index]["stdout"])
+                                                    for index in (6, 7, 8))
+        assert (before_refresh["data"]["accepted_revision"],
+                before_refresh["data"]["observed_head"]) == (accepted_revision, "R2")
+        assert refreshed["data"]["status"] == "refreshed"
+        assert refreshed["data"]["observed_head"] == "R2"
+        assert (after_refresh["data"]["base_revision"],
+                after_refresh["data"]["accepted_revision"],
+                after_refresh["data"]["observed_head"]) == ("R2", accepted_revision, "R2")
+        transport_rows = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+        accepted_calls = [row for row in transport_rows if row["route"] == "commit_timeline"]
+        assert len(accepted_calls) == 1
+        assert accepted_calls[0]["accepted_revision_id"] == accepted_revision
+        assert accepted_calls[0]["observed_head"] == "R2"
+        assert any(row["route"] == "get_project_parent_composition_revision" and row["revision"] == "R2"
+                   for row in transport_rows)
+        # Each watch and refresh uses the existing public revision-only
+        # metadata read; it must not invent publication or update metadata.
+        head_reads = [row for row in transport_rows if row["route"] == "head_canonical"]
+        assert len(head_reads) == 3
     if scenario["id"] == "timeline-skill-history-revert":
         assert "journal" in results[3]["stdout"].lower()
         assert any('"route": "restore_parent_composition_revision"' in line
