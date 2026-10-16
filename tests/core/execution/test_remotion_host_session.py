@@ -1166,14 +1166,40 @@ for line in sys.stdin:
         lease.close()
 
 
-def test_failed_browser_signature_refuses_without_executing_browser(tmp_path, monkeypatch):
+def test_browser_signature_passes_literal_requirement_to_codesign(tmp_path, monkeypatch):
     verify = _REAL_SIGNATURE_CHECK
     calls = []
+
+    def accepted(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b'', b'')
+
+    monkeypatch.setattr(host.subprocess, 'run', accepted)
+    browser = tmp_path / 'disposable-browser'
+    verify(browser)
+
+    requirement = ('identifier "com.google.Chrome" and anchor apple generic '
+                   'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    assert calls == [[
+        '/usr/bin/codesign', '--verify', '--strict', f'-R={requirement}', str(browser),
+    ]]
+
+
+@pytest.mark.parametrize('failure', [b'synthetic signature rejection', b'synthetic designated identity rejection'])
+def test_failed_browser_signature_or_identity_refuses_without_executing_browser(tmp_path, monkeypatch, failure):
+    verify = _REAL_SIGNATURE_CHECK
+    calls = []
+
     def failed(argv, **kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 1, b'', b'synthetic signature rejection')
+        return subprocess.CompletedProcess(argv, 1, b'', failure)
+
     monkeypatch.setattr(host.subprocess, 'run', failed)
     with pytest.raises(ValueError, match='signature or designated'):
         verify(tmp_path / 'disposable-browser')
-    assert calls[0][:4] == ['/usr/bin/codesign', '--verify', '--strict', '-R']
-    assert 'com.google.Chrome' in calls[0][4] and 'EQHXZ8M8AV' in calls[0][4]
+    requirement = ('identifier "com.google.Chrome" and anchor apple generic '
+                   'and certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    assert calls == [[
+        '/usr/bin/codesign', '--verify', '--strict', f'-R={requirement}',
+        str(tmp_path / 'disposable-browser'),
+    ]]
