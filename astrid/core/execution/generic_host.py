@@ -1797,6 +1797,8 @@ _STRICT_NETWORK_HOOK_SOURCE = (
 # Load only the exact host policy and hook; restore dependency paths afterwards.
 _STRICT_NETWORK_STARTUP = r"""
 import hashlib, importlib.machinery, json, os, pathlib, sys, types
+# Preserve the selected interpreter's -I -S paths before restoring site paths.
+stdlib_paths = sys.path[:]
 try:
     config = json.loads(sys.argv[1])
     hook_path = pathlib.Path(config['hook'])
@@ -1829,8 +1831,7 @@ import site
 site.execsitecustomize = lambda: None
 site.execusercustomize = lambda: None
 site.main()
-sys.path[:0] = list(dict.fromkeys(config['imports']))
-sys.path.insert(0, os.getcwd())
+sys.path[:] = list(dict.fromkeys([*stdlib_paths, os.getcwd(), *config['imports'], *sys.path]))
 import runpy
 sys.argv = [config['module'], *sys.argv[2:]]
 runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
@@ -8576,7 +8577,7 @@ class GenericPackHost:
                 argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
                         "--renderer-command-stdio", json.dumps(argv[1:])]
                 startup = (
-                    "import json,runpy,sys; sys.path[:0]=json.loads(sys.argv[1]); "
+                    "import json,runpy,sys; sys.path.extend(json.loads(sys.argv[1])); "
                     "sys.argv=sys.argv[2:]; runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')"
                 )
                 argv = [sys.executable, "-I", "-S", "-B", "-c", startup,
@@ -8620,7 +8621,7 @@ class GenericPackHost:
                 if not arguments or arguments[0].startswith("-") and arguments[0] not in {"-c", "-m"}:
                     raise HostError("unsupported confined Python command")
                 startup = (
-                    "import json,os,runpy,sys; sys.path[:0]=json.loads(sys.argv[1]); "
+                    "import json,os,runpy,sys; sys.path.extend(json.loads(sys.argv[1])); "
                     "args=json.loads(sys.argv[2]); kind=args.pop(0); "
                     "os.environ.update({'ASTRID_INTERNAL_INVOCATION':'1'} if kind=='-m' else {}); "
                     "target=args.pop(0) if kind in ('-c','-m') else kind; "
@@ -8983,7 +8984,7 @@ class GenericPackHost:
                 # these imports still require explicit policy read exceptions.
                 startup = (
                     "import json,os,runpy,sys; "
-                    "sys.path[:0]=json.loads(sys.argv[1]); "
+                    "sys.path.extend(json.loads(sys.argv[1])); "
                     "os.environ['ASTRID_INTERNAL_INVOCATION']='1'; "
                     "sys.argv=sys.argv[2:]; "
                     "runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')"

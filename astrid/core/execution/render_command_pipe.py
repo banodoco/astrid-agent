@@ -291,7 +291,7 @@ class HostRenderCommandBridge(pipe.HostPipeBridge):
         if backend:
             args = argv[1:]
             startup = (
-                "import json,os,runpy,sys; sys.path[:0]=json.loads(sys.argv[1]); "
+                "import json,os,runpy,sys; sys.path.extend(json.loads(sys.argv[1])); "
                 "os.environ.update(json.loads(sys.argv[2])); sys.argv=sys.argv[3:]; "
                 "from astrid.core.execution.render_command_pipe import install_render_command_client; "
                 "install_render_command_client(); runpy.run_path(sys.argv[0],run_name='__main__')"
