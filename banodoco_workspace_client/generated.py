@@ -13,11 +13,13 @@ from typing import Any, Callable, Literal, Mapping, TypedDict, NotRequired, Prot
 
 PROTOCOL = "workspace.v1"
 _UNSET = object()
-SCHEMA_DIGEST = 'sha256:a626e3453903a4189ccb7b9d55d64504c285836ef89c5e33937f0d95263cecb6'
-OPERATIONS = ('commitTimeline', 'health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
+SCHEMA_DIGEST = "sha256:f9e768b27f6c1bc5b759b5e47e6da0a0b28dc8d6b093162c16dc43d4b99cc211"
+OPERATIONS = ('commitTimeline', 'health', 'handshake', 'getRealm', 'doctor', 'createBackup', 'restoreBackup', 'exportRealm', 'tombstoneRealm', 'recoverRealm', 'purgeRealm', 'listProjects', 'createProject', 'getProject', 'updateProject', 'currentProject', 'selectProject', 'getPreferences', 'updatePreferences', 'listDocuments', 'createDocument', 'getDocument', 'updateDocument', 'listProjectObjects', 'ingestProjectObject', 'importProjectMedia', 'getProjectMediaImport', 'listProjectTasks', 'listManagedOutputs', 'getManagedOutput', 'adoptManagedOutput', 'getProjectObjectLocation', 'exportManagedOutput', 'updateManagedOutputLifecycle', 'listProjectRuns', 'createTimeline', 'listTimelines', 'getProjectTimeline', 'inspectTimeline', 'createTimelineView', 'listProjectParentCompositionRevisions', 'publishParentComposition', 'replaceParentCompositionMedia', 'getProjectParentCompositionRevision', 'restoreProjectParentCompositionRevision', 'createTimelineDocument', 'getProjectShotRevision', 'getProjectTimelineRevision', 'updateTimeline', 'listTimelineHistory', 'replaceTimelineClip', 'diffTimeline', 'archiveTimeline', 'recoverTimeline', 'createShot', 'getShot', 'updateShot', 'archiveShot', 'recoverShot', 'createReference', 'createProjectShot', 'listProjectShots', 'getProjectShot', 'updateProjectShot', 'archiveProjectShot', 'recoverProjectShot', 'addShotItem', 'removeShotItem', 'promoteProjectShotCandidate', 'reorderShotItems', 'listProjectShotTextBindings', 'setProjectShotTextBinding', 'getProjectShotTextBinding', 'setProjectShotTextBindingById', 'rebindProjectShotTextBinding', 'createProjectReference', 'listProjectReferences', 'getProjectReference', 'updateProjectReference', 'archiveProjectReference', 'recoverProjectReference', 'associateReference', 'setPrimaryReference', 'linkReferences', 'getReference', 'updateReference', 'archiveReference', 'recoverReference', 'listMediaRelations', 'createMediaRelation', 'getSourceFrameThumbnail', 'ensureSourceFrameThumbnail', 'ingestObject', 'getObject', 'headObject', 'admitTask', 'claimTask', 'admitDelegatedTask', 'getTask', 'cancelTask', 'retryTask', 'recoverTaskPlacement', 'recordRemoteActivation', 'controlRemoteCredential', 'revokeRemoteActivation', 'getRun', 'cancelRun', 'retryRun', 'listRunEvents', 'listEvents', 'registerExecutor', 'getExecutor', 'getLocalWorkerGeneration', 'startLocalWorker', 'relinquishLocalWorker', 'listCapabilities', 'registerCapability', 'getProjectMediaSelection', 'listGenerations', 'createGeneration', 'getGeneration', 'listVariants', 'createVariant', 'markGenerationVariantsViewed', 'getVariant', 'attachVariantThumbnail', 'markVariantViewed', 'settleAttempt', 'publishRecoverableSnapshot', 'issueChildAuthority', 'prepareReboot', 'checkpointAttempt', 'publishTimelineRender', 'failAttempt', 'heartbeatAttempt', 'requestReboot', 'resumeAttempt')
 
 
-EditCommand = TypedDict('EditCommand', {'op': 'str', 'select': 'str | None', 'args': 'dict[str, Any]', 'version': NotRequired['str | None'], 'resolved': NotRequired['list[str]']})
+EditCommandExpectValue0 = TypedDict('EditCommandExpectValue0', {'state': "Literal['absent']"})
+EditCommandExpectValue1 = TypedDict('EditCommandExpectValue1', {'state': "Literal['present']", 'value': 'Any'})
+EditCommand = TypedDict('EditCommand', {'op': 'str', 'select': 'str | None', 'args': 'dict[str, Any]', 'expect': NotRequired['dict[str, EditCommandExpectValue0 | EditCommandExpectValue1]'], 'bindings': NotRequired['dict[str, str | str]'], 'created': NotRequired['list[str]'], 'authorship': NotRequired["dict[str, Literal['direct', 'consequence']]"], 'version': NotRequired['str | None'], 'resolved': NotRequired['list[str]']})
 CommitJson = Any
 CommitCommand = EditCommand
 CommitActor = TypedDict('CommitActor', {'kind': "Literal['user', 'agent', 'script']", 'id': 'str'})
@@ -38,7 +40,7 @@ CommitError = TypedDict('CommitError', {'code': "Literal['runtime_unavailable', 
 CommitProvenance = TypedDict('CommitProvenance', {'publisher': 'str', 'asserted_actor': NotRequired['CommitActor'], 'source': 'CommitSource'})
 CommitEvidenceRef = TypedDict('CommitEvidenceRef', {'digest': 'str'})
 CommitResultTemplate = TypedDict('CommitResultTemplate', {'status': "Literal['accepted', 'no_change', 'preview', 'conflict', 'refused', 'error']", 'request_id': 'str', 'request_hash': 'str', 'base_revision_id': 'str', 'accepted_revision_id': 'str | None', 'accepted_publication_id': 'str | None', 'previous_revision_id': 'str | None', 'rebased_onto': 'str | None', 'canonical_document': 'CommitJson', 'projection_version': 'Literal[1]', 'document_digest': 'str | None', 'id_map': 'dict[str, str]', 'change': 'CommitChanges', 'conflicts': 'list[CommitConflict]', 'choices': 'list[CommitChoice]', 'provenance': 'CommitProvenance | None', 'evidence': 'CommitEvidenceRef | None', 'schema_report': 'None', 'runtime_receipt': 'CommitReceipt | None', 'error': 'CommitError | None'})
-CommitReceipt = TypedDict('CommitReceipt', {'publisher': 'str', 'asserted_actor': NotRequired['CommitActor'], 'accepted_at': 'str', 'evidence_digest': 'str', 'narration_state': "Literal['committed', None]"})
+CommitReceipt = TypedDict('CommitReceipt', {'publisher': 'str', 'asserted_actor': NotRequired['CommitActor'], 'accepted_at': 'str', 'evidence_digest': 'str', 'narration_state': 'CommitNarrationState | None'})
 CommitResult = CommitResultTemplate
 CommitHttpSuccess = CommitResult
 CommitHttpBadRequest = CommitResult
@@ -47,7 +49,7 @@ CommitEvidenceDigests = TypedDict('CommitEvidenceDigests', {'before': 'str', 'af
 CommitEvidenceToolchain = TypedDict('CommitEvidenceToolchain', {'astrid_sha': 'str', 'compiler_version': 'str'})
 CommitEvidence = TypedDict('CommitEvidence', {'commands': 'list[CommitCommand]', 'direct_writes': 'list[CommitWrite]', 'digests': 'CommitEvidenceDigests', 'toolchain': 'CommitEvidenceToolchain'})
 CommitPublication = TypedDict('CommitPublication', {'parent_composition': 'CommitJson', 'shot_revisions': 'list[CommitJson]', 'internal_timeline_revisions': 'list[CommitJson]'})
-CommitNarration = TypedDict('CommitNarration', {'binding_id': 'str', 'expected_hash': 'str', 'new_hash': 'str'})
+CommitNarration = TypedDict('CommitNarration', {'version': 'Literal[1]', 'lines': 'list[CommitNarrationLine]'})
 AcceptRequest = TypedDict('AcceptRequest', {'project_id': 'str', 'timeline_id': 'str', 'request_id': 'str', 'request_hash': 'str', 'expected_head_revision_id': 'str', 'publication': 'CommitPublication | None', 'result': 'CommitResultTemplate', 'evidence': 'CommitEvidence', 'asserted_actor': NotRequired['CommitActor'], 'source': 'CommitSource', 'label': NotRequired['str'], 'reason': NotRequired['str'], 'narration': NotRequired['CommitNarration']})
 AcceptResponse = TypedDict('AcceptResponse', {'outcome': "Literal['accepted', 'replayed', 'no_change']", 'revision_id': 'str | None', 'publication_id': 'str | None', 'previous_revision_id': 'str | None', 'previous_publication_id': 'str | None', 'receipt': 'CommitReceipt', 'stored_result': 'CommitResult'})
 LookupCommitRequestResult0 = TypedDict('LookupCommitRequestResult0', {'request_hash': 'str', 'result': 'CommitResult'})
@@ -60,158 +62,22 @@ CommitHead = TypedDict('CommitHead', {'revision_id': 'str', 'publication_id': 's
 CommitRevisionQuery = TypedDict('CommitRevisionQuery', {'limit': NotRequired['int'], 'before': NotRequired['str']})
 CommitRevisionSummary = TypedDict('CommitRevisionSummary', {'revision_id': 'str', 'publication_id': 'str', 'previous_revision_id': 'str | None', 'previous_publication_id': 'str | None', 'restored_from_revision_id': 'str | None', 'accepted_at': 'str', 'source': 'CommitSource', 'asserted_actor': 'CommitActor | None', 'publisher': 'str', 'label': 'str | None', 'evidence_digest': 'str | None'})
 CommitExchange = TypedDict('CommitExchange', {'request': 'CommitRequest', 'result': 'CommitResult'})
+CommitManagedTakeRef = TypedDict('CommitManagedTakeRef', {'association_id': 'str', 'object_id': 'str'})
+CommitNarrationTake = TypedDict('CommitNarrationTake', {'speech': 'CommitManagedTakeRef', 'speech_words': 'CommitManagedTakeRef', 'speech_manifest': 'CommitManagedTakeRef'})
+CommitNarrationLine = TypedDict('CommitNarrationLine', {'occurrence_id': 'str | None', 'shot_id': 'str | None', 'shot_revision_id': 'str | None', 'internal_timeline_id': 'str | None', 'internal_revision_id': 'str | None', 'clip_id': 'str', 'segment': 'str', 'take': 'CommitNarrationTake', 'line_digest': 'str'})
+CommitNarrationState = TypedDict('CommitNarrationState', {'projection': 'CommitNarration', 'digest': 'str', 'parent_revision_id': 'str'})
 class RuntimeAcceptance(Protocol):
     def lookup_request(self, project_id: str, timeline_id: str, request_id: str) -> LookupCommitRequestResult: ...
     def accept(self, request: AcceptRequest) -> AcceptResponse: ...
     def head(self, project_id: str, timeline_id: str) -> CommitHead: ...
     def revisions(self, project_id: str, timeline_id: str, options: CommitRevisionQuery) -> list[CommitRevisionSummary]: ...
     def evidence(self, digest: str) -> CommitEvidence: ...
-OPCALL_SCHEMA = {'$schema': 'https://json-schema.org/draft/2020-12/schema',
- '$id': 'https://astrid.local/schemas/change-contract/opcall.schema.json',
- 'title': 'OpCall',
- 'description': 'Candidate single EditCommand envelope (SDK executable name: EditCommand). D RUNNER emits '
-                'canonical OpCalls in Plan.calls and journal calls. Handler ids remain open. This increment '
-                'is not a schema freeze.',
- 'type': 'object',
- 'required': ['op', 'select', 'args'],
- 'additionalProperties': False,
- '$defs': {'scopedId': {'type': 'string',
-                        'description': 'Current ScopedId vocabulary: parent, shot, or occurrence clip/track '
-                                       'ids, plus cut ids.',
-                        'pattern': '^(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track):[^/]+|cut:[^/:]+)$'},
-           'anchorIdentity': {'description': 'Current resolved anchor identities, including scoped entity '
-                                             'ids and the documented word, beat, and cut anchors.',
-                              'oneOf': [{'$ref': '#/$defs/scopedId'},
-                                        {'type': 'string',
-                                         'pattern': '^(?:word:[^:]+:[0-9]+|beat:[0-9]+|cut:[^/:]+:(?:start|end))$'}]}},
- 'properties': {'op': {'type': 'string',
-                       'description': 'Qualified operation id, e.g. timeline.opacity or myteam.stagger.',
-                       'pattern': '^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$'},
-                'select': {'type': ['string', 'null'],
-                           'description': 'Authoring selector; executed calls use the canonical stable '
-                                          'selector resolved by the runner. null for timeline-level '
-                                          'operations.'},
-                'args': {'type': 'object',
-                         'description': 'Opaque finite JSON operation arguments in authoring units. Omitted '
-                                        'keys, JSON null, explicit clip.clear keys, and ordinary objects '
-                                        '(including {$absent:true} or {op:clear}) remain distinct. Only the '
-                                        'selected handler interprets these values.',
-                         'additionalProperties': True},
-                'expect': {'type': 'object',
-                           'description': 'Optional prior values keyed by direct-write path. Absence and '
-                                          'present JSON values are tagged separately; command-specific '
-                                          'requirements remain producer/consumer rules.',
-                           'additionalProperties': {'oneOf': [{'type': 'object',
-                                                               'required': ['state'],
-                                                               'properties': {'state': {'const': 'absent'}},
-                                                               'additionalProperties': False},
-                                                              {'type': 'object',
-                                                               'required': ['state', 'value'],
-                                                               'properties': {'state': {'const': 'present'},
-                                                                              'value': {}},
-                                                               'additionalProperties': False}]}},
-                'bindings': {'type': 'object',
-                             'description': 'Runner-resolved anchor identity keyed by the exact authored '
-                                            'TimeRef text.',
-                             'additionalProperties': {'$ref': '#/$defs/anchorIdentity'}},
-                'created': {'type': 'array',
-                            'description': 'Scoped IDs allocated by the runner for this call.',
-                            'items': {'$ref': '#/$defs/scopedId'}},
-                'authorship': {'type': 'object',
-                               'description': 'Per-write-path authorship classification; it carries no actor '
-                                              'or authentication claim.',
-                               'additionalProperties': {'enum': ['direct', 'consequence']}},
-                'version': {'type': ['string', 'null'],
-                            'description': 'The tool version when it ran (filled by the runner).'},
-                'resolved': {'type': 'array',
-                             'description': 'Runner-populated IDs of the selected targets in the current '
-                                            'ScopedId vocabulary.',
-                             'items': {'$ref': '#/$defs/scopedId'},
-                             'default': []}}}
-
-def _matches_opcall_schema(value: Any, schema: Mapping[str, Any], root: Mapping[str, Any]) -> bool:
-    """Evaluate the JSON Schema keywords used by the checked-in OpCall schema."""
-    import re
-
-    reference = schema.get("$ref")
-    if reference is not None:
-        prefix = "#/$defs/"
-        if not isinstance(reference, str) or not reference.startswith(prefix):
-            return False
-        definition = reference[len(prefix):]
-        return definition in root.get("$defs", {}) and _matches_opcall_schema(
-            value, root["$defs"][definition], root
-        )
-
-    kind = schema.get("type")
-    kinds = kind if isinstance(kind, list) else [kind] if kind is not None else []
-    def is_integer(item):
-        return (
-            isinstance(item, int) and not isinstance(item, bool)
-            or isinstance(item, float) and not isinstance(item, bool) and item.is_integer()
-        )
-
-    type_checks = {
-        "string": lambda item: isinstance(item, str),
-        "null": lambda item: item is None,
-        "object": lambda item: isinstance(item, dict),
-        "array": lambda item: isinstance(item, list),
-        "boolean": lambda item: isinstance(item, bool),
-        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
-        "integer": is_integer,
-    }
-    if kinds and not any(type_checks.get(name, lambda _: False)(value) for name in kinds):
-        return False
-    if "const" in schema and value != schema["const"]:
-        return False
-    if "enum" in schema and value not in schema["enum"]:
-        return False
-    if "pattern" in schema:
-        if not isinstance(value, str) or re.search(schema["pattern"], value) is None:
-            return False
-
-    if "oneOf" in schema:
-        if sum(_matches_opcall_schema(value, item, root) for item in schema["oneOf"]) != 1:
-            return False
-    if "anyOf" in schema and not any(
-        _matches_opcall_schema(value, item, root) for item in schema["anyOf"]
-    ):
-        return False
-    if "allOf" in schema and not all(
-        _matches_opcall_schema(value, item, root) for item in schema["allOf"]
-    ):
-        return False
-
-    if isinstance(value, dict):
-        if not set(schema.get("required", ())) <= set(value):
-            return False
-        properties = schema.get("properties", {})
-        for key, item in value.items():
-            if key in properties:
-                if not _matches_opcall_schema(item, properties[key], root):
-                    return False
-            elif schema.get("additionalProperties") is False:
-                return False
-            elif isinstance(schema.get("additionalProperties"), dict):
-                if not _matches_opcall_schema(item, schema["additionalProperties"], root):
-                    return False
-    if isinstance(value, list):
-        items = schema.get("items")
-        if isinstance(items, dict) and any(
-            not _matches_opcall_schema(item, items, root) for item in value
-        ):
-            return False
-        if schema.get("uniqueItems"):
-            for index, item in enumerate(value):
-                if any(item == other for other in value[index + 1:]):
-                    return False
-    return True
-
+OPCALL_SCHEMA = {'$schema': 'https://json-schema.org/draft/2020-12/schema', '$id': 'https://astrid.local/schemas/change-contract/opcall.schema.json', 'title': 'OpCall', 'description': 'Candidate single EditCommand envelope (SDK executable name: EditCommand). D RUNNER emits canonical OpCalls in Plan.calls and journal calls. Handler ids remain open. This increment is not a schema freeze.', 'type': 'object', 'required': ['op', 'select', 'args'], 'additionalProperties': False, '$defs': {'scopedId': {'type': 'string', 'description': 'Current ScopedId vocabulary: parent, shot, or occurrence clip/track ids, plus cut ids.', 'pattern': '^(?:(?:parent|shot:[^/]+|occurrence:[^/]+)/(?:clip|track):[^/]+|cut:[^/:]+)$'}, 'anchorIdentity': {'description': 'Current resolved anchor identities, including scoped entity ids and the documented word, beat, and cut anchors.', 'oneOf': [{'$ref': '#/$defs/scopedId'}, {'type': 'string', 'pattern': '^(?:word:[^:]+:[0-9]+|beat:[0-9]+|cut:[^/:]+:(?:start|end))$'}]}}, 'properties': {'op': {'type': 'string', 'description': 'Qualified operation id, e.g. timeline.opacity or myteam.stagger.', 'pattern': '^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$'}, 'select': {'type': ['string', 'null'], 'description': 'Authoring selector; executed calls use the canonical stable selector resolved by the runner. null for timeline-level operations.'}, 'args': {'type': 'object', 'description': 'Opaque finite JSON operation arguments in authoring units. Omitted keys, JSON null, explicit clip.clear keys, and ordinary objects (including {$absent:true} or {op:clear}) remain distinct. Only the selected handler interprets these values.', 'additionalProperties': True}, 'expect': {'type': 'object', 'description': 'Optional prior values keyed by direct-write path. Absence and present JSON values are tagged separately; command-specific requirements remain producer/consumer rules.', 'additionalProperties': {'oneOf': [{'type': 'object', 'required': ['state'], 'properties': {'state': {'const': 'absent'}}, 'additionalProperties': False}, {'type': 'object', 'required': ['state', 'value'], 'properties': {'state': {'const': 'present'}, 'value': {}}, 'additionalProperties': False}]}}, 'bindings': {'type': 'object', 'description': 'Runner-resolved anchor identity keyed by the exact authored TimeRef text.', 'additionalProperties': {'$ref': '#/$defs/anchorIdentity'}}, 'created': {'type': 'array', 'description': 'Scoped IDs allocated by the runner for this call.', 'items': {'$ref': '#/$defs/scopedId'}}, 'authorship': {'type': 'object', 'description': 'Per-write-path authorship classification; it carries no actor or authentication claim.', 'additionalProperties': {'enum': ['direct', 'consequence']}}, 'version': {'type': ['string', 'null'], 'description': 'The tool version when it ran (filled by the runner).'}, 'resolved': {'type': 'array', 'description': 'Runner-populated IDs of the selected targets in the current ScopedId vocabulary.', 'items': {'$ref': '#/$defs/scopedId'}, 'default': []}}}
 
 def validate_edit_command(value: Any) -> Mapping[str, Any]:
     """Validate only the OpCall envelope; return the exact unmodified value."""
     import math
-
+    import re
     def finite_json(item):
         if item is None or isinstance(item, (str, bool, int)):
             return True
@@ -222,7 +88,6 @@ def validate_edit_command(value: Any) -> Mapping[str, Any]:
         if isinstance(item, dict):
             return all(isinstance(k, str) and finite_json(v) for k, v in item.items())
         return False
-
     if not isinstance(value, dict):
         raise ValueError("OpCall must be an object")
     fields = OPCALL_SCHEMA["properties"]
@@ -234,12 +99,40 @@ def validate_edit_command(value: Any) -> Mapping[str, Any]:
         valid_json = False
     if not valid_json:
         raise ValueError("OpCall requires finite JSON values")
-    try:
-        valid_schema = _matches_opcall_schema(value, OPCALL_SCHEMA, OPCALL_SCHEMA)
-    except RecursionError:
-        valid_schema = False
-    if not valid_schema:
-        raise ValueError("OpCall invalid schema")
+    types = {"string": lambda v: isinstance(v, str), "null": lambda v: v is None,
+             "object": lambda v: isinstance(v, dict), "array": lambda v: isinstance(v, list)}
+    def matches(node, item):
+        if "$ref" in node:
+            return matches(OPCALL_SCHEMA["$defs"][node["$ref"].rsplit("/", 1)[-1]], item)
+        if "oneOf" in node and sum(matches(branch, item) for branch in node["oneOf"]) != 1:
+            return False
+        if "const" in node and item != node["const"]:
+            return False
+        if "enum" in node and item not in node["enum"]:
+            return False
+        if "type" in node:
+            kinds = node["type"] if isinstance(node["type"], list) else [node["type"]]
+            if not any(types[kind](item) for kind in kinds):
+                return False
+        if isinstance(item, str) and "pattern" in node and re.search(node["pattern"], item) is None:
+            return False
+        if isinstance(item, list) and "items" in node and not all(matches(node["items"], v) for v in item):
+            return False
+        if isinstance(item, dict):
+            fields = node.get("properties", {})
+            if not set(node.get("required", [])) <= set(item):
+                return False
+            for key, child in item.items():
+                if key in fields:
+                    if not matches(fields[key], child):
+                        return False
+                else:
+                    extra = node.get("additionalProperties", True)
+                    if extra is False or (isinstance(extra, dict) and not matches(extra, child)):
+                        return False
+        return True
+    if not matches(OPCALL_SCHEMA, value):
+        raise ValueError("OpCall invalid envelope")
     return value
 
 
@@ -256,6 +149,14 @@ def validate_edit_command_bytes(raw: bytes) -> bytes:
     validate_edit_command(json.loads(raw, object_pairs_hook=unique_object))
     return raw
 
+
+
+class ProjectMediaSelection(TypedDict):
+    asset: str
+    generation_id: str
+    variant_id: str
+    object_id: str
+    catalog_digest: str
 
 
 @dataclass(frozen=True)
@@ -1584,6 +1485,12 @@ class WorkspaceClient:
         value = self._json(self._request("GET", f"/v1/runs/{_path_part(run_id)}/events" + query)[2])
         items, next_cursor = self._page(value)
         return [Event.from_json(item) for item in items], next_cursor
+
+    def get_project_media_selection(self, project_id: str, *, asset: str, generation_id: str, variant_id: str) -> ProjectMediaSelection:
+        query = "&".join(f"{key}={_path_part(value)}" for key, value in (
+            ("asset", asset), ("generation_id", generation_id), ("variant_id", variant_id),
+        ))
+        return cast(ProjectMediaSelection, self._json(self._request("GET", f"/v1/projects/{_path_part(project_id)}/media-selection?{query}")[2]))
 
     def list_generations(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> tuple[list[Generation], str | None]:
         query = f"?limit={int(limit)}" + (f"&cursor={_path_part(cursor)}" if cursor else "")
