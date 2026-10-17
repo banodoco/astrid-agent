@@ -70,6 +70,11 @@ class RuntimeFixture:
         self.revoked = self.lose = self.unavailable = False
         self.history = [[dict(revision_id="rev-0", publication_id="pub-0", project_id="p", timeline_id="t")], None]
 
+    @property
+    def commits(self):
+        """Normal envelopes; calls retains preview traffic as well."""
+        return [call for call in self.calls if not json.loads(call[0])["dry_run"]]
+
     def client(self):
         workspace = WorkspaceClient("http://127.0.0.1:1", "test-current-credential")
         workspace._generated = GeneratedClient(workspace.endpoint, workspace.token, transport=self.transport)
@@ -115,13 +120,13 @@ class RuntimeFixture:
             body = json.loads(payload)
             assert headers["X-Astrid-Session"] == body["session_id"]
             assert headers["Idempotency-Key"] == body["request_id"]
-            if self.unavailable:
+            if self.unavailable and not body["dry_run"]:
                 from astrid.sdk.timeline.commit import _result
                 response = _result(body, _digest(body))
                 response["error"] = dict(code="runtime_unavailable", message="fixture", hint="retry", next_action="retry")
             else:
                 response = RuntimeCommitService().commit(body, self.port(body))
-            if self.lose:
+            if self.lose and not body["dry_run"]:
                 self.lose = False
                 raise TimeoutError("accepted fixture response deliberately lost")
         else:
@@ -203,7 +208,7 @@ def test_saved_two_operations_generated_route_and_exact_receipt_finalize(setup):
     edit(draft, y=180)
     calls = read_saved_calls(Checkout.load(draft.path))
     result = Checkout.load(draft.path).publish("two edits", client=runtime.client())
-    body = json.loads(runtime.calls[0][0])
+    body = json.loads(runtime.commits[0][0])
     assert body["change"]["commands"] == list(calls)
     assert body["session_sequence"] == 1 and body["session_id"].startswith("handshake-")
     assert result["status"] == "accepted" and result["local_state"] == "finalized"
@@ -223,7 +228,7 @@ def test_lost_acceptance_fresh_handshake_head_advance_retries_identical_bytes(se
     assert runtime.publications == ["accepted-1"]
     runtime.current = "advanced-after-acceptance"  # replay must not read this nonexistent head
     result = Checkout.load(draft.path).publish("retry label ignored", client=runtime.client())
-    first, second = runtime.calls
+    first, second = runtime.commits
     assert first[0] == second[0]
     for key in ("Idempotency-Key", "X-Astrid-Session"):
         assert first[1][key] == second[1][key]
@@ -243,7 +248,7 @@ def test_lost_result_retry_in_a_fresh_process(setup):
 
     def retry():
         result = Checkout.load(draft.path).publish(client=runtime.client())
-        queue.put((result, runtime.calls[-1], runtime.sessions, runtime.publications))
+        queue.put((result, runtime.commits[-1], runtime.sessions, runtime.publications))
 
     process = context.Process(target=retry)
     process.start()
@@ -251,12 +256,12 @@ def test_lost_result_retry_in_a_fresh_process(setup):
     process.join(20)
     assert process.exitcode == 0
     assert result["accepted_revision_id"] == "accepted-1" and publications == ["accepted-1"]
-    assert sessions == 2 and runtime.calls[0][0] == retried[0]
-    assert runtime.calls[0][1]["X-Astrid-Session"] == retried[1]["X-Astrid-Session"]
+    assert sessions == 2 and runtime.commits[0][0] == retried[0]
+    assert runtime.commits[0][1]["X-Astrid-Session"] == retried[1]["X-Astrid-Session"]
 
 
 @pytest.mark.parametrize("boundary", ["file", "directory"])
-def test_durability_failure_never_sends_and_can_be_recovered(setup, monkeypatch, boundary):
+def test_durability_failure_never_sends_commit_and_can_be_recovered(setup, monkeypatch, boundary):
     draft, runtime = setup
     edit(draft, x=90)
     original = journal.os.fsync
@@ -269,7 +274,8 @@ def test_durability_failure_never_sends_and_can_be_recovered(setup, monkeypatch,
     monkeypatch.setattr(journal.os, "fsync", fail)
     with pytest.raises(OSError, match="fsync"):
         draft.publish(client=runtime.client())
-    assert runtime.calls == []
+    assert runtime.commits == []
+    assert all(json.loads(call[0])["dry_run"] for call in runtime.calls)
     monkeypatch.setattr(journal.os, "fsync", original)
     result = Checkout.load(draft.path).publish(client=runtime.client())
     assert result["status"] == "accepted" and len(runtime.publications) == 1
@@ -292,7 +298,7 @@ def test_two_concurrent_processes_choose_one_envelope_and_session(setup):
             return result
         client.list_project_parent_composition_revisions = history
         result = Checkout.load(draft.path).publish(client=client)
-        queue.put((result, runtime.calls[0]))
+        queue.put((result, runtime.commits[0]))
 
     processes = [context.Process(target=worker) for _ in range(2)]
     for process in processes:
@@ -315,7 +321,7 @@ def test_changed_or_revoked_identity_refuses_before_commit(setup, identity):
     setattr(runtime, identity, True if identity == "revoked" else "changed")
     with pytest.raises((WorkspaceClientError, saved_publish.TimelineEditError)):
         Checkout.load(draft.path).publish(client=runtime.client())
-    assert len(runtime.calls) == 1
+    assert len(runtime.commits) == 1
 
 
 @pytest.mark.parametrize("history,expected", [
@@ -329,10 +335,10 @@ def test_only_unique_complete_exact_base_mapping_is_frozen(setup, history, expec
     edit(draft, x=90)
     runtime.unavailable, runtime.history = True, history
     draft.publish(client=runtime.client())
-    assert json.loads(runtime.calls[0][0])["base_publication_id"] == expected
+    assert json.loads(runtime.commits[0][0])["base_publication_id"] == expected
     runtime.history = [[dict(revision_id="rev-0", publication_id="discovered-later")], None]
     draft.publish(client=runtime.client())
-    assert runtime.calls[0][0] == runtime.calls[1][0]
+    assert runtime.commits[0][0] == runtime.commits[1][0]
 
 
 def test_explicit_key_and_pending_suffix_are_preserved_until_resolution(setup):
@@ -340,18 +346,18 @@ def test_explicit_key_and_pending_suffix_are_preserved_until_resolution(setup):
     edit(draft, x=90)
     runtime.unavailable = True
     draft.publish(idempotency_key="Caller-Key:123", client=runtime.client())
-    first = runtime.calls[0][0]
+    first = runtime.commits[0][0]
     edit(draft, y=180)
     suffix = Path(draft.path).read_bytes()
     runtime.unavailable = False
     result = Checkout.load(draft.path).publish(client=runtime.client())
-    assert runtime.calls[-1][0] == first
+    assert runtime.commits[-1][0] == first
     assert json.loads(first)["request_id"] == "Caller-Key:123"
     assert result["local_state"] == saved_publish._RETAINED
     assert Path(draft.path).read_bytes() == suffix
-    before = len(runtime.calls)
+    before = len(runtime.commits)
     assert Checkout.load(draft.path).publish(client=runtime.client())["local_state"] == saved_publish._RETAINED
-    assert len(runtime.calls) == before
+    assert len(runtime.commits) == before
 
 
 def test_new_base_content_key_after_resolution_and_explicit_conflict(setup):
@@ -365,7 +371,7 @@ def test_new_base_content_key_after_resolution_and_explicit_conflict(setup):
     assert len(runtime.publications) == 1
     result = draft.publish(client=runtime.client())
     assert result["status"] == "accepted" and len(runtime.publications) == 2
-    assert json.loads(runtime.calls[-1][0])["request_id"].startswith("edit-v1-")
+    assert json.loads(runtime.commits[-1][0])["request_id"].startswith("edit-v1-")
     assert first["accepted_revision_id"] == "accepted-1"
 
 
@@ -389,11 +395,11 @@ def test_crash_after_durable_acceptance_recovers_without_another_commit(setup, m
         monkeypatch.setattr(saved_publish, "_append", crash_append)
     with pytest.raises(OSError, match="crash"):
         draft.publish(client=runtime.client())
-    assert len(runtime.calls) == 1
+    assert len(runtime.commits) == 1
     monkeypatch.setattr(saved_publish, "_append", append)
     monkeypatch.setattr(saved_publish, "_replace", replace)
     result = Checkout.load(draft.path).publish(client=runtime.client())
-    assert result["local_state"] == "finalized" and len(runtime.calls) == 1
+    assert result["local_state"] == "finalized" and len(runtime.commits) == 1
     assert Checkout.load(draft.path).base_revision == "accepted-1"
     assert read_saved_calls(Checkout.load(draft.path)) == ()
 
@@ -405,6 +411,7 @@ def test_dry_run_reserves_no_intent_and_no_publication(setup):
     before = log.read_bytes(), Path(draft.path).read_bytes()
     result = draft.publish(dry_run=True, client=runtime.client())
     assert result["status"] == "preview" and not runtime.saved and not runtime.publications
+    assert len(runtime.calls) == 1 and not runtime.commits
     assert (log.read_bytes(), Path(draft.path).read_bytes()) == before
 
 
@@ -414,7 +421,7 @@ def test_default_key_exact_algorithm_and_no_process_labels(setup):
     digest = journal.digest(Path(draft.path).read_bytes().decode())
     runtime.unavailable = True
     draft.publish("message", client=runtime.client())
-    body = json.loads(runtime.calls[0][0])
+    body = json.loads(runtime.commits[0][0])
     raw = dict(realm_id="realm", project_id="p", timeline_id="t", base_revision_id="rev-0",
                scope=body["scope"], saved_draft_digest=digest)
     import hashlib
@@ -430,7 +437,7 @@ def test_no_change_is_durable_and_recovers_exact_base(setup):
     assert result["status"] == "no_change" and not runtime.publications
     assert result["local_state"] == "finalized" and draft.base_revision == "rev-0"
     again = Checkout.load(draft.path).publish(client=runtime.client())
-    assert again == result and len(runtime.calls) == 1
+    assert again == result and len(runtime.commits) == 1
 
 
 @pytest.mark.parametrize("damage", ["hash", "publisher", "revision", "document"])
@@ -441,6 +448,8 @@ def test_unverified_acceptance_remains_pending(setup, monkeypatch, damage):
     submit = client.commit_timeline
     def corrupt(body):
         result = submit(body)
+        if body["dry_run"]:
+            return result
         if damage == "hash":
             result["request_hash"] = "sha256:wrong"
         elif damage == "publisher":
@@ -496,17 +505,17 @@ def test_sheet_apply_file_and_duplicate_audits_preserve_order(setup, tmp_path, m
     assert read_saved_calls(Checkout.load(draft.path)) == expected
     result = Checkout.load(draft.path).publish(client=runtime.client())
     assert result["status"] == "accepted"
-    assert json.loads(runtime.calls[0][0])["change"]["commands"] == list(expected)
+    assert json.loads(runtime.commits[0][0])["change"]["commands"] == list(expected)
 
 
 def test_default_key_changes_for_new_saved_base_content_after_resolution(setup):
     draft, runtime = setup
     edit(draft, x=90)
     draft.publish(client=runtime.client())
-    first = json.loads(runtime.calls[0][0])
+    first = json.loads(runtime.commits[0][0])
     edit(draft, y=180)
     draft.publish(client=runtime.client())
-    second = json.loads(runtime.calls[1][0])
+    second = json.loads(runtime.commits[1][0])
     assert first["request_id"] != second["request_id"]
     assert second["base_revision_id"] == "accepted-1"
     assert second["session_id"] != first["session_id"] and second["session_sequence"] == 1
@@ -545,8 +554,8 @@ def test_cli_publish_lost_response_default_key_and_dry_run(setup, monkeypatch, c
     assert parsed.handler(parsed) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] and payload["data"]["accepted_revision_id"] == "accepted-1"
-    assert payload["idempotency_key"] == json.loads(runtime.calls[0][0])["request_id"]
-    assert runtime.calls[0][0] == runtime.calls[1][0]
+    assert payload["idempotency_key"] == json.loads(runtime.commits[0][0])["request_id"]
+    assert runtime.commits[0][0] == runtime.commits[1][0]
     # Preview can use a newer head only when it is an exact available revision.
     runtime.current = "accepted-1"
     edit(Checkout.load(draft.path), y=180)
@@ -580,7 +589,7 @@ def test_current_auth_owns_wire_identity_and_no_credentials_are_journaled(setup,
     monkeypatch.setenv("ASTRID_ACTOR", "agent:invented-publisher")
     monkeypatch.setenv("ASTRID_SESSION", "invented-session")
     draft.publish(client=runtime.client())
-    body = json.loads(runtime.calls[0][0])
+    body = json.loads(runtime.commits[0][0])
     assert "asserted_actor" not in body and body["session_id"] != "invented-session"
     records = [r for r in journal.read(journal.journal_path("p", "t")) if r.kind == "publish"]
     assert all(r.actor == dict(kind="unknown", id="unknown", session=None) for r in records)
@@ -622,8 +631,8 @@ def test_concurrent_accepting_publishers_get_one_runtime_result(setup):
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda _: worker(), range(2)))
     assert results[0] == results[1] and results[0]["status"] == "accepted"
-    assert len(runtime.publications) == 1 and len(runtime.calls) == 2
-    assert runtime.calls[0][0] == runtime.calls[1][0]
+    assert len(runtime.publications) == 1 and len(runtime.commits) == 2
+    assert runtime.commits[0][0] == runtime.commits[1][0]
     assert len([e for e in metadata() if e["kind"] == "publish-intent-v1"]) == 1
     assert len([e for e in metadata() if e["kind"] == "publish-result-v1"]) == 1
 
@@ -719,7 +728,7 @@ def test_nonempty_saved_closure_reopens_exact_pins_and_publishes(setup):
         assert acknowledged["shots"][rid] == runtime.shots[rid]
         irid = acknowledged["shots"][rid]["internal_timeline_revision_id"]
         assert acknowledged["internal_timelines"][irid] == runtime.internals[irid]
-    assert len(runtime.calls) == len(runtime.publications) == 1
+    assert len(runtime.commits) == len(runtime.publications) == 1
 
 
 @pytest.mark.parametrize("row_kind,field", [
@@ -780,7 +789,7 @@ def test_pending_request_is_not_replaced_by_an_explicit_new_key(setup):
     edit(draft, y=180)
     with pytest.raises(saved_publish.TimelineEditError, match="original request ID"):
         draft.publish(idempotency_key="replacement", client=runtime.client())
-    assert len(runtime.calls) == 1
+    assert len(runtime.commits) == 1
 
 
 def test_invalid_local_publish_refuses_before_any_launcher(setup, monkeypatch):
@@ -810,7 +819,7 @@ def test_sdk_transport_composition_and_default_client_boundary(setup, monkeypatc
     monkeypatch.setattr(AstridClient, "open_from_launcher", fake_launcher)
     assert draft.publish()["status"] == "accepted"
     assert opened == [dict(start_pack_host=False)]
-    assert len(runtime.calls) == 1 and runtime.sessions == 1
+    assert len(runtime.commits) == 1 and runtime.sessions == 1
 
 
 def test_first_journal_file_is_synced_before_its_directory(tmp_path, monkeypatch):
@@ -844,7 +853,7 @@ def test_suffix_saved_after_interrupted_checkpoint_keeps_acknowledged_result(set
     result = newer.publish(client=runtime.client())
     assert result["local_state"] == saved_publish._RETAINED
     assert result["accepted_revision_id"] == "accepted-1"
-    assert len(runtime.calls) == 1 and Path(draft.path).read_bytes() == suffix
+    assert len(runtime.commits) == 1 and Path(draft.path).read_bytes() == suffix
 
 
 def test_saved_session_does_not_bypass_current_commit_authorization(setup, monkeypatch):
@@ -853,16 +862,17 @@ def test_saved_session_does_not_bypass_current_commit_authorization(setup, monke
     client = runtime.client()
     submit = client.commit_timeline
     def revoked_at_submit(body):
-        runtime.revoked = True
+        if not body["dry_run"]:
+            runtime.revoked = True
         return submit(body)
     monkeypatch.setattr(client, "commit_timeline", revoked_at_submit)
     with pytest.raises(WorkspaceClientError, match="authorization revoked"):
         draft.publish(client=client)
-    assert not runtime.publications and not runtime.calls
+    assert not runtime.publications and not runtime.commits
     pending = next(e for e in metadata() if e["kind"] == "publish-intent-v1")
     runtime.revoked = False
     assert draft.publish(client=runtime.client())["status"] == "accepted"
-    assert json.loads(runtime.calls[0][0]) == pending["body"]
+    assert json.loads(runtime.commits[0][0]) == pending["body"]
 
 
 def test_conclusive_conflict_keeps_saved_draft_and_original_commands(setup):
@@ -873,14 +883,14 @@ def test_conclusive_conflict_keeps_saved_draft_and_original_commands(setup):
     competing = Checkout.draft("p", "t", "competing")
     edit(competing, x=500)
     competing.publish(client=runtime.client())
-    result = draft.publish(client=runtime.client())
-    assert result["status"] == "conflict" and result["runtime_receipt"] is None
-    assert Path(draft.path).read_bytes() == before
+    log = journal.journal_path("p", "t")
+    journal_before = log.read_bytes()
+    with pytest.raises(saved_publish.TimelineEditError, match="COMMIT preview"):
+        draft.publish(client=runtime.client())
+    assert Path(draft.path).read_bytes() == before and log.read_bytes() == journal_before
     assert read_saved_calls(Checkout.load(draft.path)) == calls
-    assert len(runtime.publications) == 1
-    records = [r for r in journal.read(journal.journal_path("p", "t")) if r.draft == Path(draft.path).stem]
-    assert records[-1].outcome == "refused"
-    assert records[-1].evidence[0]["result"] == result
+    assert len(runtime.publications) == len(runtime.commits) == 1
+    assert len(runtime.calls) == 3  # competing preview/COMMIT, then refused preview
 
 
 def test_collision_preservation_uses_saved_canonical_commit(tmp_path, monkeypatch):
@@ -910,7 +920,7 @@ def test_collision_preservation_uses_saved_canonical_commit(tmp_path, monkeypatc
     assert read_saved_calls(Checkout.load(draft.path)) == ()
 
 
-def test_incomplete_scene_preflight_writes_no_publish_intent_or_request(setup, monkeypatch):
+def test_incomplete_remote_scene_preflight_writes_no_publish_intent_or_commit(setup, monkeypatch):
     from astrid.core.timeline import scene_answers
     from astrid.core.execution.remotion_frame_owner import FrameOwnerError
 
@@ -920,10 +930,11 @@ def test_incomplete_scene_preflight_writes_no_publish_intent_or_request(setup, m
     def unavailable():
         raise FrameOwnerError("synthetic owner unavailable")
     monkeypatch.setattr(scene_answers, "_client", unavailable)
-    with pytest.raises(saved_publish.TimelineEditError, match="scene evaluation incomplete"):
+    with pytest.raises(saved_publish.TimelineEditError, match="COMMIT preview"):
         draft.publish(client=runtime.client())
     assert metadata() == before
-    assert runtime.calls == [] and runtime.publications == []
+    assert runtime.commits == [] and runtime.publications == []
+    assert len(runtime.calls) == 1 and json.loads(runtime.calls[0][0])["dry_run"]
 
 
 def test_pending_accepted_publish_replays_without_new_scene_evaluation(setup, monkeypatch):
@@ -934,8 +945,166 @@ def test_pending_accepted_publish_replays_without_new_scene_evaluation(setup, mo
     runtime.lose = True
     with pytest.raises(WorkspaceClientError):
         draft.publish(client=runtime.client())
-    original = runtime.calls[0][0]
+    original = runtime.commits[0][0]
+    monkeypatch.setattr(saved_publish, "_prepare", lambda *a: pytest.fail("pending intent must not be rebuilt"))
     monkeypatch.setattr(scene_answers, "_client", lambda: pytest.fail("accepted retry must replay its original envelope"))
     result = Checkout.load(draft.path).publish(client=runtime.client())
     assert result["status"] == "accepted" and result["local_state"] == "finalized"
-    assert runtime.calls[-1][0] == original and len(runtime.publications) == 1
+    assert runtime.commits[-1][0] == original and len(runtime.publications) == 1
+    assert [json.loads(call[0])["dry_run"] for call in runtime.calls] == [True, False, False]
+
+
+def test_authenticated_preview_precedes_intent_and_preserves_frozen_normal_request(setup, monkeypatch):
+    import inspect
+
+    from astrid.sdk.timeline import check
+
+    draft, runtime = setup
+    edit(draft, x=90)
+    log = journal.journal_path("p", "t")
+    before = log.read_bytes(), Path(draft.path).read_bytes()
+    client = runtime.client()
+    submit = client.commit_timeline
+    evaluate = check._require_complete_evaluation
+    evaluated = []
+    replies = []
+
+    def checked_evaluation(checkout):
+        # The real semantic provider still evaluates both invocations. The SDK
+        # must not ask an unbound local evaluator before authenticated COMMIT.
+        assert inspect.currentframe().f_back.f_code.co_name == "commit"
+        evaluated.append(len(runtime.calls))
+        return evaluate(checkout)
+
+    def observed(body):
+        if body["dry_run"]:
+            assert (log.read_bytes(), Path(draft.path).read_bytes()) == before
+            assert not runtime.saved and not runtime.publications
+        else:
+            intent = next(e for e in metadata() if e["kind"] == "publish-intent-v1")
+            assert body == intent["body"] and intent["request_hash"] == _digest(body)
+        result = submit(body)
+        replies.append(copy.deepcopy(result))
+        if body["dry_run"]:
+            assert (log.read_bytes(), Path(draft.path).read_bytes()) == before
+            assert not runtime.saved and not runtime.publications
+        return result
+
+    monkeypatch.setattr(check, "_require_complete_evaluation", checked_evaluation)
+    monkeypatch.setattr(client, "commit_timeline", observed)
+    assert draft.publish("frozen label", idempotency_key="same-preview-id", client=client)["status"] == "accepted"
+    preview, normal = [json.loads(call[0]) for call in runtime.calls]
+    assert preview == dict(normal, dry_run=True) and normal["dry_run"] is False
+    assert preview["request_id"] == normal["request_id"] == "same-preview-id"
+    assert replies[0]["request_hash"] == _digest(preview) != replies[1]["request_hash"]
+    assert evaluated == [1, 2] and len(runtime.publications) == 1
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("damage", [
+    "request_id", "request_hash", "normal_hash", "base_revision_id", "status",
+    "missing_request_id", "missing_request_hash", "missing_base_revision_id", "missing_status",
+    "empty", "not_object",
+])
+def test_unverified_preview_preserves_journal_draft_and_remote_history(setup, monkeypatch, dry_run, damage):
+    draft, runtime = setup
+    edit(draft, x=90)
+    log = journal.journal_path("p", "t")
+    before = log.read_bytes(), Path(draft.path).read_bytes()
+    remote_before = copy.deepcopy((runtime.current, runtime.publications, runtime.saved, runtime.history))
+    client = runtime.client()
+    submit = client.commit_timeline
+
+    def corrupt(body):
+        assert body["dry_run"]
+        result = submit(body)
+        if damage.startswith("missing_"):
+            del result[damage.removeprefix("missing_")]
+        elif damage == "normal_hash":
+            result["request_hash"] = _digest(dict(body, dry_run=False))
+        elif damage == "empty":
+            return {}
+        elif damage == "not_object":
+            return None
+        else:
+            result[damage] = "accepted" if damage == "status" else "wrong"
+        return result
+
+    monkeypatch.setattr(client, "commit_timeline", corrupt)
+    with pytest.raises(saved_publish.TimelineEditError, match="COMMIT preview identity/hash/status"):
+        draft.publish(dry_run=dry_run, client=client)
+    assert len(runtime.calls) == 1 and not runtime.commits
+    assert (log.read_bytes(), Path(draft.path).read_bytes()) == before
+    assert (runtime.current, runtime.publications, runtime.saved, runtime.history) == remote_before
+
+
+def test_preview_transport_failure_preserves_journal_and_can_start_fresh(setup, monkeypatch):
+    draft, runtime = setup
+    edit(draft, x=90)
+    log = journal.journal_path("p", "t")
+    before = log.read_bytes(), Path(draft.path).read_bytes()
+    client = runtime.client()
+    submit = client.commit_timeline
+
+    def lost_preview(body):
+        assert body["dry_run"]
+        submit(body)
+        raise WorkspaceClientError(0, "transport_error", "preview response lost")
+
+    monkeypatch.setattr(client, "commit_timeline", lost_preview)
+    with pytest.raises(WorkspaceClientError, match="preview response lost"):
+        draft.publish(client=client)
+    assert (log.read_bytes(), Path(draft.path).read_bytes()) == before
+    assert not runtime.commits and not runtime.publications and not runtime.saved
+    assert draft.publish(client=runtime.client())["status"] == "accepted"
+    assert [json.loads(call[0])["dry_run"] for call in runtime.calls] == [True, True, False]
+
+
+def test_saved_draft_race_during_preview_refuses_before_intent(setup, monkeypatch):
+    draft, runtime = setup
+    edit(draft, x=90)
+    client = runtime.client()
+    submit = client.commit_timeline
+    changed = []
+
+    def raced(body):
+        result = submit(body)
+        assert body["dry_run"]
+        edit(draft, y=180)
+        changed.append((journal.journal_path("p", "t").read_bytes(), Path(draft.path).read_bytes()))
+        return result
+
+    monkeypatch.setattr(client, "commit_timeline", raced)
+    with pytest.raises(SavedIntentError, match="handle is stale|saved draft changed during preparation"):
+        Checkout.load(draft.path).publish(client=client)
+    assert (journal.journal_path("p", "t").read_bytes(), Path(draft.path).read_bytes()) == changed[0]
+    assert len(runtime.calls) == 1 and not runtime.commits and not runtime.publications
+    assert not any(e["kind"] == "publish-intent-v1" for e in metadata())
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_head_movement_after_preview_keeps_normal_commit_rebase_and_conflict(setup, monkeypatch, overlap):
+    draft, runtime = setup
+    edit(draft, x=90)
+    competing = Checkout.draft("p", "t", "competing")
+    edit(competing, **({"x": 500} if overlap else {"y": 500}))
+    client = runtime.client()
+    submit = client.commit_timeline
+
+    def head_moves(body):
+        result = submit(body)
+        if body["dry_run"]:
+            assert result["status"] == "preview" and not runtime.publications
+            assert competing.publish(client=runtime.client())["status"] == "accepted"
+        return result
+
+    monkeypatch.setattr(client, "commit_timeline", head_moves)
+    result = draft.publish(client=client)
+    assert result["status"] == ("conflict" if overlap else "accepted")
+    assert len(runtime.calls) == 4 and len(runtime.commits) == 2
+    preview, normal = json.loads(runtime.calls[0][0]), json.loads(runtime.calls[-1][0])
+    assert preview == dict(normal, dry_run=True)
+    assert len(runtime.publications) == (1 if overlap else 2)
+    if not overlap:
+        assert draft.clip("c1.rocket").get("x") == 90
+        assert draft.clip("c1.rocket").get("y") == competing.clip("c1.rocket").get("y")

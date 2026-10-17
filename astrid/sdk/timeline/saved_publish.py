@@ -347,8 +347,6 @@ def _prepare(checkout, workspace, origin, session, message, explicit, dry_run):
         document, _plan, _direct = RuntimeCommitService._apply(document, row.get("calls", []), narration_takes=takes)
         replay = Checkout(document)
         replay._sync_film_length()
-    from astrid.sdk.timeline.check import _require_complete_evaluation
-    _require_complete_evaluation(replay)
     if _serialize(replay._annotated()) != text:
         raise SavedIntentError("exact-base commands do not reproduce the saved canonical draft")
     compile_authoring_candidate(replay.document())
@@ -357,6 +355,20 @@ def _prepare(checkout, workspace, origin, session, message, explicit, dry_run):
                 body=body, origin=origin, saved_draft_digest=saved_digest,
                 generation=generation, saved_bytes_digest=hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 request_hash=_digest(body))
+
+
+def _preview(workspace, intent):
+    # Use the caller's authenticated COMMIT route for scene evaluation. Preview
+    # neither reserves this request ID nor acknowledges the normal envelope.
+    body = copy.deepcopy(intent["body"])
+    body["dry_run"] = True
+    result = workspace.commit_timeline(copy.deepcopy(body))
+    if (not isinstance(result, dict) or result.get("request_id") != body["request_id"] or
+            result.get("request_hash") != _digest(body) or
+            result.get("base_revision_id") != body["base_revision_id"] or
+            result.get("status") != "preview"):
+        raise TimelineEditError("unverified COMMIT preview identity/hash/status; saved publish not prepared")
+    return result
 
 
 def _verify_result(workspace, intent, result):
@@ -485,8 +497,9 @@ def publish_saved(checkout, message="", *, idempotency_key=None, client=None, fo
             journal.sync(log)
     if dry_run or not active:
         prepared = _prepare(checkout, workspace, origin, session, message, explicit, dry_run)
+        preview = _preview(workspace, prepared)
         if dry_run:
-            return workspace.commit_timeline(copy.deepcopy(prepared["body"]))
+            return preview
         with _locked(checkout) as (path, log, rows):
             active = _active(checkout, rows, path)
             if active:
