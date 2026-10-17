@@ -34,7 +34,7 @@ def selected(request, monkeypatch):
     host = w.host
     host._registered_state = {w.record.id: {"capability_digest": w.record.capability_digest,
         "source_digest": w.record.source_digest, "dependency_digest": w.record.dependency_digest}}
-    host.runtime_state = {"runtime_epoch": 1, "runtime_instance_id": w.config.runtime_instance_id,
+    host.runtime_state = {"runtime_epoch": w.config.runtime_epoch, "runtime_instance_id": w.config.runtime_instance_id,
         "coordinator_epoch": w.config.runtime_instance_id, "runtime_session_id": w.config.runtime_session_id}
     host._registered_runtime_state = {**host.runtime_state, "source_epoch": host.source_epoch}
     preparation = hosts.LocalExecutionPreparation(operation_id="operation", channel_id="channel")
@@ -196,7 +196,7 @@ def test_discovery_change_retires_endpoint_and_prevents_restart(selected):
 
 
 @pytest.mark.parametrize("key,value,reason", [("runtime_session_id", "next-session", "session changed"),
-    ("runtime_epoch", 2, "epoch changed")])
+    ("runtime_epoch", 8, "epoch changed")])
 def test_runtime_session_change_retires_endpoint(selected, monkeypatch, key, value, reason):
     w = selected
     listener = w.preparation.start_storage_preparation()

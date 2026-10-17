@@ -36,7 +36,7 @@ def world(tmp_path, monkeypatch):
     runtime_peer = replace(host_peer, pid=os.getpid() + 1, birth_id="runtime-birth", audit_token_pidversion=11)
     config = transport.StoragePreparationConfig(root, "host-instance", host_peer, runtime_peer,
         "a" * 64, "realm", "runtime-instance", "runtime-session", "executor", "source-epoch",
-        "pack.action", D, D, D, "estimator", 1, D)
+        "pack.action", D, D, D, "estimator", 1, D, 7, D, D)
     host = hosts.GenericPackHost(pack_roots=[], executor_id="executor",
                                 execution_policy=ExecutionGuardPolicy(deadline_seconds=0.3))
     w = SimpleNamespace(config=config, host=host, calls=[], accepts=queue.Queue(),
@@ -368,7 +368,10 @@ def admitted(world):
     w.host.pack_roots = (root,)
     w.host.discover()
     record = w.host.capabilities["pack.action"]
+    w.host._registered_runtime_state = {**w.config.context["runtime"]}
     w.config = replace(w.config, source_epoch=w.host.source_epoch,
+        executor_source_digest="sha256:" + hosts._canonical_digest({k: v.source_digest for k, v in w.host.capabilities.items()}),
+        executor_dependency_digest="sha256:" + hosts._canonical_digest({k: v.dependency_digest for k, v in w.host.capabilities.items()}),
         capability_digest=record.capability_digest, source_digest="sha256:" + record.source_digest,
         dependency_digest="sha256:" + record.dependency_digest,
         estimator_implementation_digest=record.request_storage_estimate_contract["estimator"]["implementation_digest"])

@@ -25,8 +25,8 @@ from .storage_estimator import StorageEstimateRequest, StoragePreparation
 
 PROTOCOL = "astrid.storage-preparation/v1"
 COMMAND = "prepare_storage_estimate"
-# Existing retained Host control-frame policy (serve_control); separate socket.
-FRAME_LIMIT = 1024 * 1024
+# Effective end-to-end private wire ceiling, including the UTF-8 newline.
+FRAME_LIMIT = 64 * 1024
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -48,7 +48,7 @@ class ProcessIdentity:
         if (type(self.pid) is not int or self.pid <= 0
                 or type(self.uid) is not int or self.uid < 0
                 or type(self.birth_id) is not str or not self.birth_id
-                or type(self.audit_token_pidversion) is not int or self.audit_token_pidversion < 0
+                or type(self.audit_token_pidversion) is not int or self.audit_token_pidversion <= 0
                 or type(self.audit_token_sha256) is not str
                 or not _DIGEST.fullmatch(self.audit_token_sha256)):
             raise PreparationTransportError("identity_unavailable")
@@ -77,6 +77,9 @@ class StoragePreparationConfig:
     estimator_id: str
     estimator_version: int
     estimator_implementation_digest: str
+    runtime_epoch: int
+    executor_source_digest: str
+    executor_dependency_digest: str
 
     def __post_init__(self):
         if (not isinstance(self.support_root, Path)
@@ -92,16 +95,21 @@ class StoragePreparationConfig:
                 or not re.fullmatch(r"[0-9a-f]{64}", self.boot_manifest_hash)):
             raise PreparationTransportError("invalid_config")
         for key in ("capability_digest", "source_digest", "dependency_digest",
-                    "estimator_implementation_digest"):
+                    "estimator_implementation_digest", "executor_source_digest", "executor_dependency_digest"):
             if type(getattr(self, key)) is not str or not _DIGEST.fullmatch(getattr(self, key)):
                 raise PreparationTransportError("invalid_config")
-        if type(self.estimator_version) is not int or self.estimator_version <= 0:
+        if (type(self.runtime_epoch) is not int or self.runtime_epoch <= 0
+                or type(self.estimator_version) is not int or self.estimator_version <= 0):
             raise PreparationTransportError("invalid_config")
 
     @property
     def context(self):
-        return {key: getattr(self, key) for key in ("runtime_realm_id", "runtime_instance_id",
-                "runtime_session_id", "executor_id", "source_epoch")}
+        return {"runtime": {"realm_id": self.runtime_realm_id,
+                "runtime_instance_id": self.runtime_instance_id,
+                "runtime_session_id": self.runtime_session_id, "runtime_epoch": self.runtime_epoch},
+                "executor_id": self.executor_id, "source_epoch": self.source_epoch,
+                "capability_id": self.capability_id, "capability_digest": self.capability_digest,
+                "storage_estimate_contract": {"mode": "request_estimated", "estimator": self.estimator}}
 
     @property
     def estimator(self):
@@ -121,6 +129,7 @@ def validate_host_binding(host, config):
     """Validate admitted source/declaration without invoking the estimator."""
     from .generic_host import (
         _admitted_source_roots,
+        _canonical_digest,
         _capability_digest,
         _dependency_digest,
         _is_withdrawn,
@@ -129,8 +138,11 @@ def validate_host_binding(host, config):
     from .storage_estimator import estimator_descriptor
     if (host._shutdown.is_set() or host.executor_id != config.executor_id
             or host.source_epoch != config.source_epoch or host.source_epoch == "uninitialized"
+            or "sha256:" + _canonical_digest({k: v.source_digest for k, v in host.capabilities.items()}) != config.executor_source_digest
+            or "sha256:" + _canonical_digest({k: v.dependency_digest for k, v in host.capabilities.items()}) != config.executor_dependency_digest
+            or any(host._registered_runtime_state.get(k) != v for k, v in config.context["runtime"].items() if k != "realm_id")
             or host.boot_manifest_path is None or host.boot_manifest_hash != config.boot_manifest_hash
-            or host.boot_manifest_path.parents[1] != config.support_root
+            or not host.boot_manifest_path.is_relative_to(config.support_root)
             or host.boot_manifest_provenance() != {"kind": "astrid.boot_manifest", "sha256": config.boot_manifest_hash}
             or sys.platform != "darwin" or not shutil.which("/usr/bin/sandbox-exec")):
         raise PreparationTransportError("binding_unavailable")
@@ -270,7 +282,9 @@ class StoragePreparationListener:
                 "socket_path": str(config.socket_path), "capability_id": config.capability_id,
                 "capability_digest": config.capability_digest, "source_digest": config.source_digest,
                 "dependency_digest": config.dependency_digest,
-                "estimator": config.estimator}
+                "estimator": config.estimator,
+                "executor_source_digest": config.executor_source_digest,
+                "executor_dependency_digest": config.executor_dependency_digest}
             encoded = _encoded(self._record)
             fd = os.open("ready.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=self._root_fd)
@@ -345,7 +359,7 @@ class StoragePreparationListener:
             raise PreparationTransportError("unsupported_operation")
         if type(frame["request_id"]) is not str or not frame["request_id"]:
             raise PreparationTransportError("invalid_request")
-        if frame["context"] != config.context:
+        if _encoded(frame["context"]) != _encoded(config.context):
             raise PreparationTransportError("context_mismatch")
         body = frame["request"]
         if type(body) is not dict or set(body) != {
@@ -386,7 +400,14 @@ class StoragePreparationListener:
         except Exception as exc:  # noqa: BLE001 - estimator failure must become a refusal.
             reply["refusal"] = {"code": exc.code if isinstance(exc, PreparationTransportError)
                                 else "preparation_unavailable"}
-        encoded = _encoded(reply)
+        try:
+            encoded = _encoded(reply)
+        except PreparationTransportError as exc:
+            if exc.code != "oversized_frame":
+                raise
+            reply.pop("preparation", None)
+            reply["refusal"] = {"code": "oversized_frame"}
+            encoded = _encoded(reply)
         _remaining(channel, deadline)  # Discard any late result, never pretend cancellation.
         channel.sendall(encoded)
 
