@@ -393,12 +393,70 @@ def _configure_lines(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
     subparser.add_argument("--line", default=None, metavar="ID", help="One line in full: its text, take, span, gap, "
                                                                         "every word with its time, and the cuts it is under.")
+    subparser.add_argument(
+        "--text", default=None, metavar="TEXT",
+        help="Set --line's script text without changing its take or word timings.",
+    )
+    subparser.add_argument(
+        "--from-script", default=None, metavar="PATH",
+        help="Apply a JSON narration script to the working copy.",
+    )
+    subparser.add_argument("--takes", action="append", nargs="+", default=None, metavar="DIR",
+                           help="Take folder(s) for --from-script; repeat the option to add fallbacks (later folders win).")
+    subparser.add_argument("--gaps", "--script-gaps", dest="script_gaps", action="store_true",
+                           help="Use script-declared gaps when applying --from-script.")
     subparser.set_defaults(handler=_cmd_lines)
 
 
 @guard(2)
 def _cmd_lines(parsed: argparse.Namespace) -> int:
     from astrid.sdk.timeline_checkout import Checkout
+
+    editing = parsed.text is not None or parsed.from_script is not None
+    if getattr(parsed, "published", False) and editing:
+        raise VerbError("lines --published is read-only; remove --published to edit the working copy", 2)
+    if parsed.text is not None and not parsed.line:
+        raise VerbError("--text requires --line ID", 2)
+    if parsed.from_script is not None and parsed.line:
+        raise VerbError("--from-script edits the line set; do not combine it with --line", 2)
+    if parsed.takes and parsed.from_script is None:
+        raise VerbError("--takes requires --from-script", 2)
+    if parsed.script_gaps and parsed.from_script is None:
+        raise VerbError("--gaps requires --from-script", 2)
+
+    if editing:
+        if not parsed.ref:
+            raise VerbError("name a timeline to edit with timelines lines TL --line ID --text TEXT", 2)
+        tl, _existed = working_copy(parsed, create=True)
+        before = tl.document()
+        if parsed.from_script is not None:
+            report = tl.apply_script(parsed.from_script, takes=parsed.takes, gaps=parsed.script_gaps)
+            if before == tl.document():
+                print("no change (the working copy already matches)")
+                return 3
+            tl.save(quiet=True)
+            for line in report:
+                print(line)
+            print("edited working copy")
+            print(
+                f"next: timelines status {parsed.ref} --project {parsed.project}  ·  "
+                f"timelines lines {parsed.ref} --project {parsed.project}"
+            )
+            return 0
+
+        from astrid.sdk.timeline.commands import run
+
+        plan = run(tl, {"op": "voice.set-text", "select": parsed.line, "args": {"text": parsed.text}})
+        if not plan.changed:
+            print("no change (the working copy already matches)")
+            return 3
+        print(f"line {parsed.line}: script text updated (narration re-pins on publish)")
+        print("edited working copy")
+        print(
+            f"next: timelines status {parsed.ref} --project {parsed.project}  ·  "
+            f"timelines lines {parsed.ref} --project {parsed.project} --line {parsed.line}"
+        )
+        return 0
 
     if parsed.published:
         tl = Checkout.open(need_project(parsed), parsed.ref, client=parsed.client)

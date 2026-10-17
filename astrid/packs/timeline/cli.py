@@ -2834,6 +2834,7 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
         base_known, changed_units = store.checkout_change_units(checkout, complete=True)
         cut_points = edit_diff.get("cut_points") or {}
         report = checkout.check()
+        script_source = _timeline_script_source(checkout)
         data.update(
             {
                 "working_copy": "present",
@@ -2855,7 +2856,23 @@ def _cmd_status(parsed: argparse.Namespace) -> int:
                 },
             }
         )
+        if script_source is not None:
+            data["script_source"] = script_source
     return print_result(DomainResult.success(data), as_json=parsed.json)
+
+
+def _timeline_script_source(checkout: Any) -> dict[str, str] | None:
+    parent = getattr(checkout, "bundle", {}).get("parent", {})
+    config = parent.get("config", {}) if isinstance(parent, Mapping) else {}
+    app = config.get("app", {}) if isinstance(config, Mapping) else {}
+    astrid = app.get("astrid", {}) if isinstance(app, Mapping) else {}
+    source = astrid.get("script_source") if isinstance(astrid, Mapping) else None
+    if not isinstance(source, Mapping):
+        return None
+    path, digest = source.get("path"), source.get("digest")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        return None
+    return {"path": path, "digest": digest}
 
 
 def _cmd_publish(parsed: argparse.Namespace) -> int:
@@ -3772,7 +3789,8 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--insert-gap-after", "--gap", dest="insert_gap_after", type=float, help="Declared gap after a newly inserted line, in seconds.")
     subparser.add_argument("--text", "--line-text", dest="line_text",
                            help="Narration text to bind with a replacement or insertion.")
-    subparser.add_argument("--takes", help="Take directory used by --from-script.")
+    subparser.add_argument("--takes", action="append", nargs="+", default=None, metavar="DIR",
+                           help="Take folder(s) used by --from-script; repeat the option to add fallbacks (later folders win).")
     subparser.add_argument("--gaps", "--script-gaps", dest="script_gaps", action="store_true",
                            help="Use script-declared gaps when applying --from-script.")
     from astrid.packs.timeline.cli_music import add_music_flag

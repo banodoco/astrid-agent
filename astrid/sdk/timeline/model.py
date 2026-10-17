@@ -1341,6 +1341,13 @@ class Voice(_Suggest):
         declared = intent.line_text(self.clips[0].data)
         return declared if declared is not None else " ".join(w.text for w in self.words)
 
+    def set_text(self, text: str) -> "Voice":
+        """Change this line's script text without replacing its take or word timings."""
+        if not isinstance(text, str) or not text.strip():
+            raise TimelineEditError("line text must be a non-empty string")
+        intent.set_line_text(self.clips[0].data, text)
+        return self
+
     @music_keyword
     def replace(self, media: Any, *, words: Any, ripple: bool = True, text: str | None = None) -> list[tuple[str, float, float]]:
         """Swap this line for another take; anchored clips follow their words.

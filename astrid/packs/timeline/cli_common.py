@@ -214,6 +214,17 @@ def status_text(parsed: argparse.Namespace, project_id: str, timeline_id: str, h
     print(f'WORKING COPY "{name}" · {clips_changed(clips)} vs published {short_rev(tl.base_revision)}'
           + (f" (said in {len(changes)} lines: clips that only moved with the film are one line per shift)"
              if clips != len(changes) else ""))
+    parent = getattr(tl, "bundle", {}).get("parent", {})
+    config = parent.get("config", {}) if isinstance(parent, Mapping) else {}
+    app = config.get("app", {}) if isinstance(config, Mapping) else {}
+    astrid = app.get("astrid", {}) if isinstance(app, Mapping) else {}
+    script_source = astrid.get("script_source") if isinstance(astrid, Mapping) else None
+    if (
+        isinstance(script_source, Mapping)
+        and isinstance(script_source.get("path"), str)
+        and isinstance(script_source.get("digest"), str)
+    ):
+        print(f"script {script_source['path']} · {script_source['digest']}")
     shown = changes if show_all or len(changes) <= 25 else changes[:25]
     for line in shown:
         print(f"  {line}")

@@ -553,7 +553,7 @@ _commands.register(Checkout, "timeline", (
     "reflow", "retime", "resolve", "film_end", "batch", "edit_flags", "register_asset", "set_shader_postprocess"))
 _commands.register(Cut, "cut", ("split", "set_note", "shorten", "lift", "move"))
 _commands.register(StepSequence, "sequence", ("fit",))
-_commands.register(Voice, "voice", ("replace", "set_gap_after"))
+_commands.register(Voice, "voice", ("replace", "set_gap_after", "set_text"))
 
 _commands.register(Checkout, "timeline", ("save", "undo", "redo"), boundary="storage")
 

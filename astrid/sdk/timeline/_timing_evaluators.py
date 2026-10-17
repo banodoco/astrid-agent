@@ -350,24 +350,86 @@ class _TimingEvaluators:
             self.report = report
             return report
         path = Path(spec).expanduser() if isinstance(spec, (str, Path)) else None
-        data = json.loads(path.read_text(encoding="utf-8")) if path else dict(spec)
+        source = None
+        if path:
+            try:
+                source_bytes = path.read_bytes()
+                data = json.loads(source_bytes.decode("utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise TimelineEditError(f"could not read narration script {path}: {exc}") from None
+            source = {
+                "path": str(path.resolve()),
+                "digest": "sha256:" + hashlib.sha256(source_bytes).hexdigest(),
+            }
+        else:
+            try:
+                data = dict(spec)
+            except (TypeError, ValueError):
+                raise TimelineEditError("a narration script must be a path or an object") from None
+        if not isinstance(data, Mapping):
+            raise TimelineEditError("a narration script must be an object")
         if data.get("version") == 1 and "lines" in data:
             raise TimelineEditError("managed script paths require the speech preparation adapter; local takes cannot bind them")
-        folder = Path(takes).expanduser() if takes else (path.parent.parent / "vo" if path and (path.parent.parent / "vo").is_dir() else (path.parent if path else Path.cwd()))
-        segments = [s for s in data.get("segments") or [] if s.get("id")]
+        if takes:
+            raw_folders = [takes] if isinstance(takes, (str, Path)) else list(takes)
+            folders = []
+            for value in raw_folders:
+                if isinstance(value, (list, tuple)):
+                    folders.extend(Path(item).expanduser() for item in value)
+                else:
+                    folders.append(Path(value).expanduser())
+        else:
+            if path and (path.parent.parent / "vo").is_dir():
+                default = path.parent.parent / "vo"
+            else:
+                default = path.parent if path else Path.cwd()
+            folders = [default]
+
+        def take_file(filename: str) -> Path:
+            # Explicit folders are ordered from lowest to highest precedence.
+            # Use the last folder containing each file, preserving older takes
+            # as fallbacks when a newer folder only overrides one sidecar.
+            return next((folder / filename for folder in reversed(folders) if (folder / filename).is_file()),
+                        (folders[-1] if folders else Path.cwd()) / filename)
+
+        raw_segments = data.get("segments") or []
+        if not isinstance(raw_segments, list) or any(not isinstance(item, Mapping) for item in raw_segments):
+            raise TimelineEditError("script segments must be an array of objects")
+        segments = [item for item in raw_segments if item.get("id")]
         wanted = [str(s["id"]) for s in segments]
+        if len(set(wanted)) != len(wanted):
+            raise TimelineEditError("a narration script cannot contain duplicate line ids")
+
+        if source:
+            parent = self.bundle.setdefault("parent", {})
+            if not isinstance(parent, dict):
+                raise TimelineEditError("the timeline parent is not editable")
+            config = parent.setdefault("config", {})
+            if not isinstance(config, dict):
+                raise TimelineEditError("the timeline config is not editable")
+            app = config.setdefault("app", {})
+            if not isinstance(app, dict):
+                raise TimelineEditError("the timeline config app namespace is not editable")
+            namespace = app.setdefault("astrid", {})
+            if not isinstance(namespace, dict):
+                raise TimelineEditError("the timeline config app.astrid namespace is not editable")
+            namespace["script_source"] = source
+
         default_gap = float(data.get("default_gap_after_s", 0.3))
         film_before = self.duration
         report: list[str] = []
         no_gap: list[str] = []
         have = {v.segment for v in self.lines()}
+        reflow_needed = False
+
         for seg in sorted(have - set(wanted)):
             report += self.remove_line(seg)
+            reflow_needed = True
         previous = None
         for item in segments:
             seg = str(item["id"])
-            words_path = folder / f"{seg}.words.json"
-            take = folder / f"{seg}.wav"
+            words_path = take_file(f"{seg}.words.json")
+            take = take_file(f"{seg}.wav")
             new_words = _read_words(words_path) if words_path.is_file() else []
             if seg not in have:
                 if not new_words or not take.is_file() or previous is None:
@@ -377,8 +439,9 @@ class _TimingEvaluators:
                     if gap is None:
                         no_gap.append(seg)
                         gap = default_gap
-                    report += self.insert_line(seg, take, words=new_words, after=previous, text=item.get("text"),
-                                               gap_after=float(gap))
+                    report += self.insert_line(seg, take, words=new_words, after=previous,
+                                               text=item.get("text"), gap_after=float(gap))
+                    reflow_needed = True
             else:
                 line = Voice(self, seg)
                 current = [(round(w.end - w.start, 3), _norm(w.text)) for w in line.words]
@@ -387,16 +450,19 @@ class _TimingEvaluators:
                         [w.text for w in line.words] != [t for _s, _e, t in new_words]):
                     line.replace(take, words=new_words, text=item.get("text"))
                     report += [f"line {seg}: new take"] + self.report
+                    reflow_needed = True
                 elif item.get("text") and intent.line_text(line.clips[0].data) != item["text"]:
-                    intent.set_line_text(line.clips[0].data, item["text"])
+                    line.set_text(str(item["text"]))
                     report.append(f"line {seg}: script text updated (narration re-pins on publish)")
                 if gaps and item.get("gap_after_s") is None:
                     no_gap.append(f"{seg} (kept {line.gap_after if line.gap_after is not None else '?'} s)")
                 if gaps and item.get("gap_after_s") is not None and line.gap_after != item["gap_after_s"]:
                     line.set_gap_after(float(item["gap_after_s"]), reflow=False)
                     report.append(f"line {seg}: gap after {item['gap_after_s']} s")
+                    reflow_needed = True
             previous = seg
-        report += self.reflow()
+        if reflow_needed:
+            report += self.reflow()
         head = [f"film {_clock(film_before)} → {_clock(self.duration)} ({self.duration - film_before:+.1f} s)"]
         if no_gap:
             head.append(f"{len(no_gap)} line(s) had no gap_after_s: new ones got {default_gap:g} s "

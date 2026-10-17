@@ -101,7 +101,7 @@ def test_replace_insert_and_from_script_forward_existing_sdk_arguments(monkeypat
         "edit", "main", "--project", "p1", "--from-script", "script.json", "--takes", "takes", "--gaps",
     ])
     assert scripted.handler(scripted) == 0
-    assert calls == [("script", "script.json", {"takes": "takes", "gaps": True})]
+    assert calls == [("script", "script.json", {"takes": [["takes"]], "gaps": True})]
 
 
 def test_edit_flag_aliases_forward_byte_equivalent_sdk_arguments(monkeypatch, capsys) -> None:
@@ -192,7 +192,7 @@ def test_repeated_gap_flags_and_script_gap_override_preserve_sdk_rules(monkeypat
 
     assert parsed.handler(parsed) == 0
     assert calls == [
-        ("script", "script.json", {"takes": "takes", "gaps": True}),
+        ("script", "script.json", {"takes": [["takes"]], "gaps": True}),
         ("gap", "vo-1", 0.2),
         ("gap", "vo-2", 0.4),
     ]

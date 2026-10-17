@@ -63,6 +63,15 @@ Use the address returned by `find` in every step:
 
 Replace a narration take with `--replace-line LINE --take FILE --words WORDS.json`; use `--from-script SCRIPT.json` for an ordered script re-flow. Script segments need stable occurrence and clip identities; exact text tokens bind to generated word timings. Re-check the full draft after re-flow.
 
+For a text-only narration change, use `timelines lines <timeline> --project
+<project> --line <id> --text "New line text"`; it keeps the current take and
+word timings. Apply a JSON narration script with `timelines lines <timeline>
+--project <project> --from-script <path>`. Repeat `--takes <folder>` or pass
+several folders after one `--takes`; later folders override earlier matches.
+The source path and SHA-256 are saved with the working timeline and shown by
+`timelines status`. `timelines script <timeline>` remains a read-only view;
+`--revision`, `--occurrence`, and `--kind` select its read.
+
 If an old word disappears, `check --all` reports orphaned layers. Inspect the sheet, choose a surviving word or time, and re-anchor each layer with `--clip ADDRESS --on MOMENT`; then check again. This receiver has no automatic suggestion-acceptance option. Remove unwanted picture content with `--remove-line LINE --visuals remove`.
 
 ## Publish, history, undo, restore, render
