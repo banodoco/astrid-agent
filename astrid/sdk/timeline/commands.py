@@ -1268,6 +1268,23 @@ def capture_changed_bindings(tl, before, after, bindings):
                 capture_binding(tl, expr["moment"], clip, bindings)
 
 
+def _position_reset_guards(call):
+    """Keep all eight explicit reset guards, including absent -> absent.
+
+    A reset owns absence of every field, so a receipt-only inverse/redo must
+    retain the same guarded paths even when some fields were already absent.
+    Other clears and inverse families keep their existing receipt behavior.
+    """
+    if call.op not in {"clip.clear", "timeline.inverse"}:
+        return set()
+    from astrid.core.timeline import clip_fields as cf
+    paths = {cf.FIELDS[key].stored_at for key in cf.POSITION_RESET_FIELDS}
+    direct = {write_target(key, call.resolved) for key, kind in (call.authorship or {}).items()
+              if kind == "direct"}
+    owners = {sid for sid, _ in direct if "/clip:" in sid}
+    return {(sid, path) for sid in owners if all((sid, path) in direct for path in paths) for path in paths}
+
+
 def finish_recording(tl, tx, entry):
     """Attribute compiler output using actual compiled prefixes of this execution.
 
@@ -1350,6 +1367,11 @@ def finish_recording(tl, tx, entry):
     # Use the executed call's explicit authorship, never its aggregate config
     # consequence, to include the complete guarded permutation in the receipt.
     for call in tx.calls:
+        for sid, path in sorted(_position_reset_guards(call)):
+            write = dict(id=sid, path=path, before=state_at(original, sid, path),
+                         after=state_at(final, sid, path))
+            if write not in direct:
+                direct.append(write)
         for key, kind in (call.authorship or {}).items():
             sid, path = write_target(key, call.resolved)
             if kind != "direct" or path != "track_order" or "/track:" not in sid:

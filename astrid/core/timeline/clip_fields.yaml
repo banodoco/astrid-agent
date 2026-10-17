@@ -19,6 +19,56 @@
 #   since: the first composition version that honours it (default 0.0.0)
 version: 1
 fields:
+  # App clip geometry is distinct from element params.x/y/width/height.
+  # The explicit position_* names keep schema-first element edits unchanged.
+  position_x:
+    type: number
+    unit: pixels
+    store: x
+    default: null
+    applies: visual
+    write: "120"
+    schema: {type: number}
+    render:
+      element: {status: works}
+      media: {status: works}
+
+  position_y:
+    type: number
+    unit: pixels
+    store: y
+    default: null
+    applies: visual
+    write: "120"
+    schema: {type: number}
+    render:
+      element: {status: works}
+      media: {status: works}
+
+  position_width:
+    type: number
+    unit: pixels
+    store: width
+    default: null
+    applies: visual
+    write: "720"
+    schema: {type: number}
+    render:
+      element: {status: works}
+      media: {status: works}
+
+  position_height:
+    type: number
+    unit: pixels
+    store: height
+    default: null
+    applies: visual
+    write: "480"
+    schema: {type: number}
+    render:
+      element: {status: works}
+      media: {status: works}
+
   keyframe_origin:
     type: number
     unit: seconds
@@ -241,4 +291,4 @@ fields:
 
 # Names the clip owns at the top level. The element validator refuses these as
 # element params. freeze, pan, rotate and mute are reserved but not declared yet.
-reserved: [keyframe_origin, opacity, fade_in, fade_out, entrance, exit, crop_top, crop_right, crop_bottom, crop_left, speed, freeze, pan, rotate, volume, mute, transition]
+reserved: [position_x, position_y, position_width, position_height, keyframe_origin, opacity, fade_in, fade_out, entrance, exit, crop_top, crop_right, crop_bottom, crop_left, speed, freeze, pan, rotate, volume, mute, transition]

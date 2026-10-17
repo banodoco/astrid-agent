@@ -288,6 +288,13 @@ def _load() -> tuple[Mapping[str, FieldSpec], frozenset[str]]:
 
 FIELDS: Mapping[str, FieldSpec] = _load()[0]
 
+# One ordinary clip.clear with these declared names resets App clip geometry.
+# Names differ from element parameters; storage paths still come only from YAML.
+POSITION_RESET_FIELDS = (
+    "position_x", "position_y", "position_width", "position_height",
+    "crop_top", "crop_bottom", "crop_left", "crop_right",
+)
+
 
 def fields() -> dict[str, FieldSpec]:
     return dict(_load()[0])

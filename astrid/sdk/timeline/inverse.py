@@ -458,10 +458,12 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
     from astrid.sdk.timeline.checkout import Checkout
     desired = {}
     materializers = set()
+    presence_guards = set()
     for index, value in enumerate(calls):
         call = commands.EditCommand.coerce(value)
         if any(getattr(call, key) is None for key in ("expect", "authorship", "bindings", "created")):
             raise commands.CommandError("publication lacks recorded command preconditions")
+        presence_guards.update(commands._position_reset_guards(call))
         if call.op in {"timeline.reflow", "timeline.retime", "timeline.resolve"}:
             materializers.add(index)
         for key, state in call.expect.items():
@@ -540,7 +542,8 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
     states = commands.entity_states(Checkout(copy.deepcopy(after)))
     writes = [dict(id=sid, path=path, before=commands.state_at(states, sid, path), after=state)
               for (sid, path), state in sorted(desired.items())]
-    writes = [w for w in writes if not (w["before"] == w["after"] == {"state": "absent"})]
+    writes = [w for w in writes if (w["id"], w["path"]) in presence_guards or
+              not (w["before"] == w["after"] == {"state": "absent"})]
     from astrid.sdk.timeline.shot_groups import PREFIX, groups, identity
     group_order = [identity({k: r[k] for k in ("shotId", "trackId")}) for r in groups(original_tl)]
     for write in writes:
