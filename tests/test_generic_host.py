@@ -4892,7 +4892,9 @@ def test_request_estimator_caller_pairs_are_not_coerced(request_estimator_host, 
 def test_request_estimator_admitted_declaration_projects_exact_c_v2_descriptor(request_estimator_host):
     w = request_estimator_host
     health = w.runtime.health()
-    w.runtime.health = lambda: {**health, "capability_catalog_versions": [1, 2]}
+    from banodoco_workspace_client.generated import Health
+    w.runtime.health = lambda: Health.from_json({**health, "runtime_session_id": "fixture-session",
+                                               "capability_catalog_versions": [1, 2]})
     w.host.register()
     record = w.host.capabilities[w.request.capability_id]
     declaration = record.definition.metadata["action_declaration"]
@@ -4904,7 +4906,7 @@ def test_request_estimator_admitted_declaration_projects_exact_c_v2_descriptor(r
     assert row["definition_digest"] == w.request.capability_digest
     assert "storage_estimator" not in row["action_declaration"].get("metadata", {})
     assert "storage_estimator" in record.definition.metadata["action_declaration"]["metadata"]
-    assert row["status"] == "unavailable"  # Transport/enabling join is still A/C-owned.
+    assert row["status"] == "ready"  # Authenticated v2 preserves actual source/preflight readiness.
 
 
 def _chiptune_estimator_record():
@@ -4918,7 +4920,9 @@ def _chiptune_estimator_record():
 def test_chiptune_request_estimator_registration_projects_only_the_public_identity():
     host, runtime, record = _chiptune_estimator_record()
     health = runtime.health()
-    runtime.health = lambda: {**health, "capability_catalog_versions": [1, 2]}
+    from banodoco_workspace_client.generated import Health
+    runtime.health = lambda: Health.from_json({**health, "runtime_session_id": "fixture-session",
+                                              "capability_catalog_versions": [1, 2]})
 
     host.register()
 
@@ -4940,7 +4944,7 @@ def test_chiptune_request_estimator_registration_projects_only_the_public_identi
     assert "storage_estimator" in record.definition.metadata["action_declaration"]["metadata"]
     assert record.definition.metadata["storage_estimator"] == (
         record.definition.metadata["action_declaration"]["metadata"]["storage_estimator"])
-    assert row["status"] == "unavailable"  # Preparation transport remains outside this source join.
+    assert row["status"] == "ready"  # Runtime exposes it only with the live preparation binding.
 
 
 @pytest.mark.parametrize("change", [
@@ -5064,3 +5068,41 @@ def test_request_estimator_flat_reply_matches_current_a_c_j_contract(request_est
     assert reply["source_digest"] == "sha256:" + w.host.capabilities[w.request.capability_id].source_digest
     assert reply["spec_digest"] == "sha256:" + canonical_json_digest(w.request.spec)
     assert reply.pop("preparation_digest") == preparation_digest(prepared) == "sha256:" + canonical_json_digest(reply)
+
+
+@pytest.mark.parametrize("count", [1, 1000])
+def test_chiptune_declared_estimator_runs_in_existing_confined_helper(count):
+    from astrid.core.execution.storage_estimator import StorageEstimateRequest
+    from astrid.packs.chiptune.actions.compose.planner import estimate_compose_storage
+
+    host, runtime, record = _chiptune_estimator_record()
+    params = {"duration_s": 2, "bpm": 132, "key": "A minor", "seed": 1,
+              "sections": [{"start_s": 0, "end_s": 2, "energy": 0.4,
+                            "mood": "bright", "caller_note": (chr(38899) + chr(92) + chr(34)) * count}],
+              "duck_db": -10, "master_db": -16, "style": "nes"}
+    spec = {"family": record.id, "params": params, "output_policy": {}}
+    request = StorageEstimateRequest(record.id, record.capability_digest, 1, spec)
+    prepared = host.prepare_storage_estimate(request)
+    expected = estimate_compose_storage(params)
+    assert prepared.request.spec == spec
+    assert prepared.storage_estimate == {"scratch_bytes": expected.scratch_bytes,
+                                         "output_bytes": expected.output_bytes}
+    assert prepared.estimator == record.request_storage_estimate_contract["estimator"]
+    assert not runtime.heartbeats and not runtime.settlements
+    host.shutdown()
+
+
+def test_request_estimator_executes_resolved_interpreter_through_private_alias_chain(
+    request_estimator_host, tmp_path, monkeypatch,
+):
+    import sys
+
+    w = request_estimator_host
+    binary = tmp_path / "private-bin"
+    binary.mkdir()
+    (binary / "python3").symlink_to(Path(sys.executable).resolve(strict=True))
+    (binary / "python").symlink_to("python3")
+    monkeypatch.setattr(sys, "executable", str(binary / "python"))
+    prepared = w.host.prepare_storage_estimate(w.request)
+    assert prepared.storage_estimate["scratch_bytes"] > 0
+    assert prepared.storage_estimate["output_bytes"] == 2

@@ -7107,7 +7107,8 @@ class GenericPackHost:
             else:
                 status = "ready" if record.ready else "unavailable"
                 unavailable_reason = None if record.ready else _preflight_unavailable_reason(record)
-            if record.has_request_storage_estimator:
+            if (record.has_request_storage_estimator
+                    and 2 not in runtime_state.get("capability_catalog_versions", ())):
                 if status == "ready":
                     status = "unavailable"
                 unavailable_reason = (unavailable_reason or

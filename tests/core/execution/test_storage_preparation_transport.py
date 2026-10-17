@@ -36,7 +36,7 @@ def world(tmp_path, monkeypatch):
     runtime_peer = replace(host_peer, pid=os.getpid() + 1, birth_id="runtime-birth", audit_token_pidversion=11)
     config = transport.StoragePreparationConfig(root, "host-instance", host_peer, runtime_peer,
         "a" * 64, "realm", "runtime-instance", "runtime-session", "executor", "source-epoch",
-        "pack.action", D, D, D, "estimator", 1, D)
+        "pack.action", D, D, D, "estimator", 1, D, 7, D, D)
     host = hosts.GenericPackHost(pack_roots=[], executor_id="executor",
                                 execution_policy=ExecutionGuardPolicy(deadline_seconds=0.3))
     w = SimpleNamespace(config=config, host=host, calls=[], accepts=queue.Queue(),
@@ -368,7 +368,10 @@ def admitted(world):
     w.host.pack_roots = (root,)
     w.host.discover()
     record = w.host.capabilities["pack.action"]
+    w.host._registered_runtime_state = {**w.config.context["runtime"]}
     w.config = replace(w.config, source_epoch=w.host.source_epoch,
+        executor_source_digest="sha256:" + hosts._canonical_digest({k: v.source_digest for k, v in w.host.capabilities.items()}),
+        executor_dependency_digest="sha256:" + hosts._canonical_digest({k: v.dependency_digest for k, v in w.host.capabilities.items()}),
         capability_digest=record.capability_digest, source_digest="sha256:" + record.source_digest,
         dependency_digest="sha256:" + record.dependency_digest,
         estimator_implementation_digest=record.request_storage_estimate_contract["estimator"]["implementation_digest"])
@@ -469,3 +472,17 @@ def test_input_bearing_capability_readiness_refuses_before_any_estimation(admitt
     with pytest.raises(transport.PreparationTransportError, match="input_facts_unavailable"):
         REAL_VALIDATE_BINDING(w.host, config)
     assert not w.calls
+
+
+def test_estimator_failure_keeps_public_refusal_and_bounded_internal_diagnostic(world, capsys):
+    w = world
+    def fail(request):
+        raise hosts.HostError("controlled failure " + "x" * 1000)
+    w.host.prepare_storage_estimate = fail
+    w.host.start_storage_preparation(w.config)
+    assert exchange(w)["refusal"] == {"code": "preparation_unavailable"}
+    event = json.loads(capsys.readouterr().err)
+    assert event["event"] == "storage_preparation_failed"
+    assert event["exception"] == "HostError"
+    assert len(event["message"]) == 512
+    assert "spec" not in event and "request" not in event

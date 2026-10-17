@@ -6,7 +6,7 @@ execution. Both raw core defaults and the SDK consume these definitions.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -135,7 +135,16 @@ def _action_definition(discovered_pack: Any, local_id: str, action: Mapping[str,
             definition[slot] = _schema_input_ports(schema) if slot == "inputs" else []
     if invocation["kind"] == "command":
         definition["command"] = invocation["command"]
-    return validate_executor_definition(definition)
+    admitted = validate_executor_definition(definition)
+    if isinstance(declaration.get("inputs"), list):
+        # Publish the already validated executor semantics, including the
+        # canonical required=True default. A catalog must not force consumers
+        # to guess a missing boolean from an otherwise admitted action.
+        required = {port.name: port.required for port in admitted.inputs}
+        normalized = {**declaration, "inputs": [
+            {**port, "required": required[port["name"]]} for port in declaration["inputs"]]}
+        admitted = replace(admitted, metadata={**admitted.metadata, "action_declaration": normalized})
+    return admitted
 
 
 def action_is_local_orchestrator(action: Mapping[str, Any]) -> bool:
