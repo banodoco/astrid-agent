@@ -398,6 +398,12 @@ class StoragePreparationListener:
                 raise PreparationTransportError("preparation_mismatch")
             reply["preparation"] = prepared.to_dict()  # Existing flat payload, unchanged.
         except Exception as exc:  # noqa: BLE001 - estimator failure must become a refusal.
+            if not isinstance(exc, PreparationTransportError):
+                # Public responses retain the closed refusal code. Keep bounded
+                # internal diagnostics without echoing the request or its spec.
+                print(json.dumps({"event": "storage_preparation_failed",
+                                  "exception": type(exc).__name__,
+                                  "message": str(exc)[:512]}), file=sys.stderr, flush=True)
             reply["refusal"] = {"code": exc.code if isinstance(exc, PreparationTransportError)
                                 else "preparation_unavailable"}
         try:

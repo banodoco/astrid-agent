@@ -472,3 +472,17 @@ def test_input_bearing_capability_readiness_refuses_before_any_estimation(admitt
     with pytest.raises(transport.PreparationTransportError, match="input_facts_unavailable"):
         REAL_VALIDATE_BINDING(w.host, config)
     assert not w.calls
+
+
+def test_estimator_failure_keeps_public_refusal_and_bounded_internal_diagnostic(world, capsys):
+    w = world
+    def fail(request):
+        raise hosts.HostError("controlled failure " + "x" * 1000)
+    w.host.prepare_storage_estimate = fail
+    w.host.start_storage_preparation(w.config)
+    assert exchange(w)["refusal"] == {"code": "preparation_unavailable"}
+    event = json.loads(capsys.readouterr().err)
+    assert event["event"] == "storage_preparation_failed"
+    assert event["exception"] == "HostError"
+    assert len(event["message"]) == 512
+    assert "spec" not in event and "request" not in event
