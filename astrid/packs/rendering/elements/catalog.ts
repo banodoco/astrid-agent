@@ -3571,7 +3571,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:f88ce18c3486aca0cf5a844420b822c554ff3b3eb396ab4c1ea54430a43be5b3",
+    "revision": "sha256:38299974e983d98104e2a7ed7f0201275d6433c4eb65e8e233278e9486c6599b",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -3989,6 +3989,12 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
         "type": "select"
       },
       {
+        "description": "",
+        "label": "Bold",
+        "name": "bold",
+        "type": "boolean"
+      },
+      {
         "default": "display",
         "description": "",
         "label": "Font",
@@ -4004,6 +4010,12 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
           }
         ],
         "type": "select"
+      },
+      {
+        "description": "",
+        "label": "Italic",
+        "name": "italic",
+        "type": "boolean"
       },
       {
         "default": 0.95,
@@ -4081,7 +4093,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:5f5ebbef85eea11aab9516e3c6229ec741c9adeb22d4b0d064610971802ff31d",
+    "revision": "sha256:343dc85b09aee328b7f9bdb589082193f6880c3bf113f9d728ecc3bdf7f02ec9",
     "runtime": {},
     "schema": {
       "additionalProperties": true,
@@ -4094,6 +4106,9 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
           ],
           "type": "string"
         },
+        "bold": {
+          "type": "boolean"
+        },
         "color": {
           "type": "string"
         },
@@ -4103,6 +4118,13 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
             "label"
           ],
           "type": "string"
+        },
+        "fontFamily": {
+          "description": "Explicit CSS family for inline App text; geometry comes from the canonical clip.",
+          "type": "string"
+        },
+        "italic": {
+          "type": "boolean"
         },
         "italicColor": {
           "description": "Colour of the italic word. Default rust (#A94714); on a charcoal field use orange (#FF7A2E).",
@@ -5688,7 +5710,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "supported",
       "workerExport": "supported"
     },
-    "revision": "sha256:f9f9342125e12eeaa73dba74e7157564e58f7d7a937d4f3012885f72dcc1b4c6",
+    "revision": "sha256:41f75b94b6eb165d5395ad6ef5de6dc474939fb38fc69045d835088917f263ee",
     "runtime": {
       "adapter": "remotion"
     },
@@ -5841,7 +5863,7 @@ export const ASTRID_ELEMENT_CATALOG: readonly AstridRenderingElementDescriptor[]
       "preview": "unknown",
       "workerExport": "unknown"
     },
-    "revision": "sha256:937bc4a7f73d3b76f9e313ce8d33be3341cfb719d8d20cc205898d83d4ff761f",
+    "revision": "sha256:e80dd67f03799f669f6a51f2694bbc32225c0ed236903d92f81c63a592ecf758",
     "runtime": {},
     "schema": {
       "additionalProperties": true,

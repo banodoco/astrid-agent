@@ -20,6 +20,9 @@ type Params = {
   /** Colour of the italic word (default rust #A94714; use orange on charcoal, where rust is too dark). */
   italicColor?: string;
   font?: 'display' | 'label';
+  fontFamily?: string;
+  bold?: boolean;
+  italic?: boolean;
   size?: number;
   color?: string;
   align?: 'left' | 'center' | 'right';
@@ -69,6 +72,34 @@ export default function AmType(props: ElementComponentProps): ReactElement | nul
   const text = typeof params.text === 'string' ? params.text : '';
   if (!text.trim()) {
     return null;
+  }
+
+  // Explicit inline typography uses the same canonical clip geometry that the
+  // App constructor/inspector edits. No params geometry mirror or second box.
+  // Editorial am-type and transcript captions retain the original path below.
+  if (typeof params.fontFamily === 'string') {
+    return (
+      <AbsoluteFill style={{
+        left: finiteNumber(props.clip.x, 120),
+        top: finiteNumber(props.clip.y, 120),
+        width: finiteNumber(props.clip.width, 640),
+        height: finiteNumber(props.clip.height, 180),
+        position: 'absolute',
+        justifyContent: 'center',
+        color: params.color ?? '#ffffff',
+        fontFamily: params.fontFamily,
+        fontSize: Math.max(1, finiteNumber(params.size, 64)),
+        fontWeight: params.bold ? 700 : 400,
+        fontStyle: params.italic ? 'italic' : 'normal',
+        textAlign: oneOf(params.align, ALIGNS, 'center'),
+        whiteSpace: 'pre-wrap',
+        lineHeight: 1.1,
+        textShadow: '0 2px 4px rgba(0, 0, 0, 0.95), 0 2px 18px rgba(0, 0, 0, 0.8)',
+        // ClipLook applies canonical clip opacity exactly once.
+      }}>
+        {text}
+      </AbsoluteFill>
+    );
   }
 
   const font = oneOf(params.font, FONTS, 'display');

@@ -56,6 +56,11 @@ schema:
     font:
       type: string
       enum: [display, label]
+    fontFamily:
+      type: string
+      description: Explicit CSS family for inline App text; geometry comes from the canonical clip.
+    bold: {type: boolean}
+    italic: {type: boolean}
     size: {type: number, exclusiveMinimum: 0, description: Canvas px.}
     color: {type: string}
     align:

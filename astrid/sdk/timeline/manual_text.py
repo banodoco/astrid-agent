@@ -1,8 +1,8 @@
 """Explicit App inline-text projection; word captions keep their own producer.
 
-Only content/fontSize/color/align and canvas x/y/width have declared am-type
-counterparts. Unsupported style/bounds refuse, leaving the caller's fallback
-in charge rather than silently flattening its text.
+The existing am-type declaration owns the text parameters. App geometry stays
+in canonical clip fields, decoded by the W32 field declarations; the renderer
+reads that same compiled clip instead of storing another geometry projection.
 """
 from __future__ import annotations
 
@@ -25,25 +25,33 @@ def _number(value, name, *, positive=False):
 
 
 def projection(text, geometry):
-    if not isinstance(text, Mapping) or set(text) - {"content", "fontSize", "color", "align"}:
-        raise TimelineEditError("manual text supports content/fontSize/color/align only; retain App fallback for other styles")
-    if not isinstance(text.get("content"), str):
+    from astrid.core.timeline import clip_fields
+
+    if not isinstance(text, Mapping) or not isinstance(text.get("content"), str):
         raise TimelineEditError("manual text content must be a string")
-    if not isinstance(geometry, Mapping) or set(geometry) - {"x", "y", "width"}:
-        raise TimelineEditError("manual text maps canvas x/y/width only; retain App fallback for height/other bounds")
+    if not isinstance(geometry, Mapping) or set(geometry) - {"x", "y", "width", "height"}:
+        raise TimelineEditError("manual text geometry requires canvas x/y/width/height")
     params = dict(text=text["content"], size=text.get("fontSize", 64),
                   color=text.get("color", "#ffffff"), align=text.get("align", "center"),
+                  fontFamily=text.get("fontFamily", "Georgia, serif"),
+                  bold=text.get("bold", False), italic=text.get("italic", False),
                   reveal="none", tracking=0, lineHeight=1.1)
     _number(params["size"], "fontSize", positive=True)
     if params["size"] < 1:
         raise TimelineEditError("manual text fontSize below one pixel would be clamped by am-type")
     if (not isinstance(params["color"], str) or not isinstance(params["align"], str)
-            or params["align"] not in {"left", "center", "right"}):
-        raise TimelineEditError("manual text color/align cannot map to am-type")
+            or params["align"] not in {"left", "center", "right"}
+            or not isinstance(params["fontFamily"], str)
+            or not all(isinstance(params[key], bool) for key in ("bold", "italic"))):
+        raise TimelineEditError("manual text color/align/fontFamily/bold/italic cannot map to am-type")
     for key, value in geometry.items():
-        params[key] = _number(value, key, positive=key == "width")
+        _number(value, key, positive=key in {"width", "height"})
+        # W32 3320b255 (sole parent e9e04b): exact YAML position_* specs,
+        # using its unchanged coerce() numeric codec. Preserve authored JSON
+        # numeric identity; decoding validates, never replaces caller bytes.
+        clip_fields.coerce("position_" + key, value)
         if key == "width" and value < 1:
-            raise TimelineEditError("manual text width below one pixel would be clamped by am-type")
+            raise TimelineEditError("manual text width must be at least one pixel")
     return params
 
 
@@ -104,7 +112,7 @@ def guard(tl, call, owner, states):
 
 
 def add(self, *, element, text, elementRef, action, time_domain, track, clip_id, expected_order, clip_order,
-        geometry=None, at=None):
+        geometry=None, at=None, opacity=1):
     """Append exactly the caller's text identity/action/order, without allocating."""
     from astrid.sdk.timeline import commands
     from astrid.sdk.timeline.model import Clip
@@ -120,6 +128,9 @@ def add(self, *, element, text, elementRef, action, time_domain, track, clip_id,
     if (not isinstance(time_domain, str) or time_domain not in {"timeline-seconds", "owner-seconds"}
             or start < 0 or end <= start):
         raise TimelineEditError("manual text action has invalid or contradictory timing")
+    _number(opacity, "opacity")
+    if not 0 <= opacity <= 1:
+        raise TimelineEditError("manual text opacity must be between zero and one")
     params = projection(text, {} if geometry is None else geometry)
     declaration(elementRef, params, clip_id)
     shot, members = locate(self, destination, {"id": clip_id})
@@ -140,7 +151,7 @@ def add(self, *, element, text, elementRef, action, time_domain, track, clip_id,
     if local_start < 0 or (shot is not None and end > self._shot_start(shot) + self._shot_length(shot)):
         raise TimelineEditError("manual text action is outside the selected occurrence")
     data = dict(id=clip_id, clipType=element, track=track, at=local_start, hold=end-start,
-                text=copy.deepcopy(dict(text)), params=params, elementRef=copy.deepcopy(dict(elementRef)))
+                text=copy.deepcopy(dict(text)), params=params, opacity=opacity, elementRef=copy.deepcopy(dict(elementRef)))
     data.update(copy.deepcopy(dict(geometry or {})))
     members.append(data)
     self._mcache = None
@@ -172,7 +183,7 @@ def set_text(self, *, text, elementRef):
 
 def direct_paths(sid, before):
     paths = {"clipType", "text", "elementRef"}
-    mapped = {"text", "size", "color", "align", "reveal", "tracking", "lineHeight", "x", "y", "width"}
+    mapped = {"text", "size", "color", "align", "reveal", "tracking", "lineHeight", "fontFamily", "bold", "italic"}
     if "params" not in before:
         paths.add("params")
     else:
