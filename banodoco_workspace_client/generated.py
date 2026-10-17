@@ -173,6 +173,16 @@ class ProjectMediaSelection(TypedDict):
     catalog_digest: str
 
 
+def _catalog_versions(value: Mapping[str, Any]) -> list[int] | None:
+    raw = value.get("capability_catalog_versions")
+    if raw is None:
+        return None
+    if (not isinstance(raw, list) or not raw
+            or any(type(version) is not int or version <= 0 for version in raw)):
+        raise ValueError("capability_catalog_versions must contain positive integers")
+    return list(raw)
+
+
 @dataclass(frozen=True)
 class Health:
     status: str
@@ -182,10 +192,11 @@ class Health:
     runtime_session_id: str
     runtime_instance_id: str
     operation_versions: Mapping[str, tuple[int, ...]] | None = None
+    capability_catalog_versions: list[int] | None = None
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> "Health":
-        return cls(status=value["status"], protocol=value["protocol"], schema_digest=value["schema_digest"], runtime_epoch=int(value.get("runtime_epoch", 0)), runtime_session_id=value["runtime_session_id"], runtime_instance_id=value["runtime_instance_id"], operation_versions=_operation_versions(value))
+        return cls(status=value["status"], protocol=value["protocol"], schema_digest=value["schema_digest"], runtime_epoch=int(value.get("runtime_epoch", 0)), runtime_session_id=value["runtime_session_id"], runtime_instance_id=value["runtime_instance_id"], operation_versions=_operation_versions(value), capability_catalog_versions=_catalog_versions(value))
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
