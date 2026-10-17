@@ -456,7 +456,8 @@ def test_owned_host_retirement_cleans_original_process_and_is_idempotent(monkeyp
         process.stdout.close()
 
 
-@pytest.mark.parametrize("field", ["pid", "process_birth_id", "runtime_instance_id", "boot_manifest_hash"])
+@pytest.mark.parametrize("field", ["pid", "process_birth_id", "runtime_instance_id", "boot_manifest_hash",
+                                    "source_checkout", "source_closure_digest"])
 @pytest.mark.parametrize("record", ["state", "marker", "ready"])
 def test_owned_host_retirement_rejects_identity_mismatch_before_cleanup(monkeypatch, tmp_path, field, record):
     process = SimpleNamespace(pid=54321, wait=lambda **_: 0)
@@ -486,6 +487,105 @@ def test_owned_host_retirement_requires_original_registration(monkeypatch, tmp_p
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="custody is unresolved"):
         host_bootstrap._stop_owned_host(state)
     assert (marker.read_bytes(), ready.read_bytes()) == before
+
+
+@pytest.mark.skipif(__import__("sys").platform != "darwin", reason="J015 Darwin framework owner proof")
+def test_j015_framework_original_owner_public_stop_and_marker_only_refusal(monkeypatch, tmp_path):
+    """Astra107: the launcher keeps its capability until supported cleanup settles."""
+    import sys
+    from astrid.sdk.upgrade import stop_pack_host
+    from astrid.core.execution.custody_broker import _command_observation, _darwin_process_records
+
+    selected = Path("/Library/Frameworks/Python.framework/Versions/3.12/bin/python3")
+    if not selected.is_file():
+        pytest.skip("selected J015 framework interpreter is unavailable")
+    version = subprocess.check_output([str(selected), "-I", "-S", "-c",
+                                       "import sys; print(sys.version.split()[0])"], text=True).strip()
+    if version != "3.12.1":
+        pytest.skip("exact J015 Python 3.12.1 interpreter is unavailable")
+    source = tmp_path / "source"
+    _materialize_source_closure(source)
+    (source / "astrid/core/execution/generic_host.py").write_text(
+        "import time\nprint('ready', flush=True)\ntime.sleep(60)\n")
+    support = tmp_path / "runtime"
+    argv = [str(selected), "-S", "-m", "astrid.core.execution.generic_host", "run",
+            "--ready-file", str(support / "generic-host.ready.json"),
+            "--source-checkout", str(source), "--source-closure-digest", "synthetic-source",
+            "--credential-file", str(support / "worker.token"), "--support-root", str(support),
+            "--runtime-endpoint", "http://runtime.test", "--runtime-instance-id", "original-instance",
+            "--boot-manifest-path", str(support / "boot.json"), "--boot-manifest-hash", "original-boot"]
+    process = host_bootstrap.popen_owned_group(argv, cwd=source, stdout=subprocess.PIPE,
+                                              stderr=subprocess.PIPE, text=True)
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        state, marker, ready = _owned_registration(tmp_path, monkeypatch, process)
+        monkeypatch.delitem(host_bootstrap._RETAINED_HOSTS, (process.pid, state["process_birth_id"]))
+        state.update(process_birth_id=host_bootstrap._host_birth_identity(process.pid),
+                     launch_native_identity=host_bootstrap._capture_native_host_launch_identity(process.pid),
+                     launch_argv_sha256=host_bootstrap._launch_argv_digest(argv),
+                     python_executable=str(selected), source_checkout=str(source),
+                     source_closure_digest="synthetic-source", credential_file=str(support / "worker.token"),
+                     endpoint="http://runtime.test", boot_manifest_path=str(support / "boot.json"))
+        process._astrid_host_launch_argv = tuple(argv)
+        process._astrid_host_registration = (marker, ready, dict(state))
+        monkeypatch.setitem(host_bootstrap._RETAINED_HOSTS, (process.pid, state["process_birth_id"]), process)
+        host_bootstrap._write_object(marker, state)
+        host_bootstrap._write_object(ready, {**state, "status": "ready"})
+        assert "launch_argv_source" not in host_bootstrap._read_object(marker)
+        observation = _command_observation(process.pid)
+        actual = observation["metadata_first"]["argv"][0]
+        assert actual == "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        assert observation["metadata_first"]["argv_sha256"] != state["launch_argv_sha256"]
+        assert host_bootstrap._launch_argv_digest([actual, *argv[1:]]) == observation["metadata_first"]["argv_sha256"]
+        assert host_bootstrap._host_identity_matches(state)
+        before = (marker.read_bytes(), ready.read_bytes())
+        script = """
+import json, sys
+from astrid.sdk import host_bootstrap as host
+from astrid.sdk.upgrade import stop_pack_host
+assert not host._RETAINED_HOSTS
+try:
+    stop_pack_host(sys.argv[1])
+except host.PackHostBootstrapError as error:
+    print(json.dumps({'refused': True, 'message': str(error)}))
+else:
+    raise AssertionError('marker-only interpreter acquired owner authority')
+"""
+        caller = subprocess.run([sys.executable, "-c", script, str(tmp_path)], capture_output=True,
+                                text=True, check=True, timeout=15)
+        refusal = json.loads(caller.stdout)
+        assert refusal["message"] == "host native command differs from its launch; retirement blocked"
+        assert process.poll() is None
+        assert (marker.read_bytes(), ready.read_bytes()) == before
+        result = stop_pack_host(tmp_path)
+        assert result == {"host_status": "stopped", "host_pid": process.pid}
+        assert process.wait(timeout=0) is not None
+        host_bootstrap.verify_tree_absent(process)
+        assert not marker.exists() and not ready.exists()
+        rows = _darwin_process_records(process.pid)
+        assert not rows
+        # An exited PID plus reconstructed marker files cannot recreate the
+        # original cleanup owner or acquire registration-retirement authority.
+        marker.write_bytes(before[0])
+        ready.write_bytes(before[1])
+        monkeypatch.delitem(host_bootstrap._RETAINED_HOSTS, (process.pid, state["process_birth_id"]))
+        with pytest.raises(host_bootstrap.PackHostBootstrapError, match="cleanup custody is unresolved"):
+            host_bootstrap._stop_owned_host(state)
+        assert (marker.read_bytes(), ready.read_bytes()) == before
+        (tmp_path / "owner-stop-witness.json").write_text(json.dumps({
+            "python_version": version, "original_native_observation": observation,
+            "launch_argv_sha256": state["launch_argv_sha256"], "marker_only_refusal": refusal,
+            "marker_only_refusal_preserved_live_process_and_marker_bytes": True,
+            "same_owner_public_api_result": result, "original_wait_returncode": process.returncode,
+            "verify_tree_absent": "passed", "post_stop_native_rows": rows,
+            "positive_removed_both_markers": True,
+            "dead_marker_only_owner_refused_without_retirement": True,
+            "raw_launch_argv_persisted": False,
+        }, indent=2))
+    finally:
+        host_bootstrap.terminate_group(process)
+        process.stdout.close()
+        process.stderr.close()
 
 
 @pytest.mark.parametrize("record", ["marker", "ready"])
