@@ -365,8 +365,33 @@ def _preview(workspace, intent):
     result = workspace.commit_timeline(copy.deepcopy(body))
     if (not isinstance(result, dict) or result.get("request_id") != body["request_id"] or
             result.get("request_hash") != _digest(body) or
-            result.get("base_revision_id") != body["base_revision_id"] or
-            result.get("status") != "preview"):
+            result.get("base_revision_id") != body["base_revision_id"]):
+        raise TimelineEditError("unverified COMMIT preview identity/hash/status; saved publish not prepared")
+
+    def contains_inverse(value):
+        if isinstance(value, dict):
+            return (value.get("op") == "timeline.inverse" or
+                    any(contains_inverse(item) for item in value.values()))
+        if isinstance(value, (list, tuple)):
+            return any(contains_inverse(item) for item in value)
+        return False
+
+    if result.get("status") == "conflict" and contains_inverse(body.get("change", {}).get("commands")):
+        conflicts = result.get("conflicts")
+        choices = result.get("choices")
+        uncommitted = not any(result.get(key) is not None for key in (
+            "accepted_revision_id", "accepted_publication_id", "previous_revision_id",
+            "runtime_receipt", "provenance", "evidence",
+        ))
+        if (result.get("error") is None and isinstance(conflicts, list) and conflicts and
+                all(isinstance(item, dict) and isinstance(item.get("kind"), str) and
+                    isinstance(item.get("path"), str) for item in conflicts) and
+                isinstance(choices, list) and choices and uncommitted):
+            # A history-qualified inverse conflict is a verified semantic result.
+            # Preserve it through the preview so the normal COMMIT can confirm it
+            # against the current head and return the attributed conflict.
+            return result
+    if result.get("status") != "preview":
         raise TimelineEditError("unverified COMMIT preview identity/hash/status; saved publish not prepared")
     return result
 

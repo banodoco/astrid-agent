@@ -36,8 +36,12 @@ def seed(runtime, document):
     compiled = compile_authoring_candidate(document).publication
     parent = compiled["parent_composition"]
     runtime.parents["rev-0"].update(payload=parent, content_digest=_digest(parent))
-    runtime.shots.update({r["revision_id"]: dict(r, project_id="p") for r in compiled["shot_revisions"]})
-    runtime.internals.update({r["revision_id"]: dict(r, project_id="p") for r in compiled["internal_timeline_revisions"]})
+    shots = {r["revision_id"]: dict(r, project_id="p") for r in compiled["shot_revisions"]}
+    internals = {r["revision_id"]: dict(r, project_id="p") for r in compiled["internal_timeline_revisions"]}
+    for shot in shots.values():
+        shot["internal_timeline_id"] = internals[shot["internal_timeline_revision_id"]]["timeline_id"]
+    runtime.shots.update(shots)
+    runtime.internals.update(internals)
 
 
 @pytest.mark.parametrize("op", ["clip.remove", "clip.remove-layer"])
