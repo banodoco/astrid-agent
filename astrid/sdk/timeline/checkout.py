@@ -535,15 +535,20 @@ from astrid.sdk.timeline.music_beds import source_edit as _composite_source_edit
 Clip.set_fade = _composite_source_edit(set_fade)
 Clip.set_transition = _composite_source_edit(set_transition)
 
+from astrid.sdk.timeline.shader_slots import set_shader, set_shader_postprocess  # noqa: E402
+
+Clip.set_shader = _composite_source_edit(set_shader)
+Checkout.set_shader_postprocess = set_shader_postprocess
+
 _commands.register(Clip, "clip", (
     "on", "until", "enter_at", "nudge", "hold_for", "for_", "set_duration", "trim", "slip", "extend", "end_at",
     "declare_quotes", "set", "set_param", "clear", "set_track", "clear_asset", "swap_asset", "set_beats", "keyframe_at",
-    "remove", "remove_layer", "keep", "set_look", "set_fade", "set_transition", "tag", "move_to_cut"))
+    "remove", "remove_layer", "keep", "set_look", "set_fade", "set_transition", "set_shader", "tag", "move_to_cut"))
 Checkout.register_asset = _commands.register_asset
 _commands.register(Checkout, "timeline", (
     "add", "ripple_delete", "close_gap", "insert_time", "insert_line", "remove_line", "apply_script",
     "fill_slot", "fill_standins", "declare_gaps", "adopt", "add_cut", "set_cut_note", "replace_asset",
-    "reflow", "retime", "resolve", "film_end", "batch", "edit_flags", "register_asset"))
+    "reflow", "retime", "resolve", "film_end", "batch", "edit_flags", "register_asset", "set_shader_postprocess"))
 _commands.register(Cut, "cut", ("split", "set_note", "shorten", "lift", "move"))
 _commands.register(StepSequence, "sequence", ("fit",))
 _commands.register(Voice, "voice", ("replace", "set_gap_after"))

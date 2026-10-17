@@ -157,7 +157,8 @@ class FrozenTranscript:
 
 
 def binding_of(clip):
-    declaration = clip.get("app", {}).get("transcript", {})
+    app = clip.get("app")
+    declaration = ({} if app is None else app).get("transcript", {})
     if not isinstance(declaration, Mapping):
         raise TimelineEditError("clip.app.transcript must be an object")
     if "binding" not in declaration:

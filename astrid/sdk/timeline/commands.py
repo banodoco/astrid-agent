@@ -153,7 +153,9 @@ def _adapter(entry):
             return entry.handler(owner, *args, **kwargs)
         choices = kwargs.pop("relation_choices", None)
         bound = _signature(entry.handler).bind(owner, *args, **kwargs)
-        arguments = {key: _plain(value) for key, value in bound.arguments.items() if key not in {"self", "client"}}
+        arguments = {key: (copy.deepcopy(value) if entry.op in {"clip.set-shader", "timeline.set-shader-postprocess"}
+                           and key == "shader" else _plain(value))
+                     for key, value in bound.arguments.items() if key not in {"self", "client"}}
         if any(p.kind == p.VAR_KEYWORD for p in _signature(entry.handler).parameters.values()):
             for key, p in _signature(entry.handler).parameters.items():
                 if p.kind == p.VAR_KEYWORD:
@@ -163,6 +165,9 @@ def _adapter(entry):
         if choices is not None:
             arguments["relation_choices"] = choices
         command = EditCommand.coerce(dict(op=entry.op, select=select, args=arguments))
+        if entry.op in {"clip.set-shader", "timeline.set-shader-postprocess"}:
+            from astrid.sdk.timeline.shader_slots import capture_expectations
+            command = replace(command, expect=capture_expectations(tl, owner, entry))
         if entry.op == "timeline.restructure":
             run(tl, command)  # same no-write refusal/no-op policy as CLI and COMMIT
             return owner
@@ -176,9 +181,12 @@ def _adapter(entry):
 def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if getattr(tl._open_edit, "cancelled", False):
         return owner
-    if (entry.op in {"clip.set-fade", "clip.set-transition"} and owner is None
+    if (entry.op in {"clip.set-fade", "clip.set-transition", "clip.set-shader"} and owner is None
             and (not command.select or not is_scoped_id(command.select) or "/clip:" not in command.select)):
         raise CommandError(f"{entry.op} requires an exact clip ScopedId")
+    if (entry.op == "clip.set-shader" and owner is None and command.resolved
+            and command.resolved != (command.select,)):
+        raise CommandError("clip shader selector and recorded owner disagree")
     if entry.op == "timeline.add" and ("media" in command.args or isinstance(command.args.get("track"), Mapping)):
         entry = replace(entry, kind="track", handler=add_project_media if "media" in command.args else add_track)
     duplicate_source = None
@@ -310,6 +318,9 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if entry.op == "clip.set-transition":
         from astrid.sdk.timeline.composite_effects import guard_call
         command = guard_call(tl, command, owner, before_entities, selected)
+    if entry.op in {"clip.set-shader", "timeline.set-shader-postprocess"}:
+        from astrid.sdk.timeline.shader_slots import guard_call
+        command = guard_call(tl, command, owner, before_entities, selected)
     if (entry.op == "timeline.apply-script" and isinstance(command.args.get("spec"), Mapping)
             and command.args["spec"].get("version") == 1):
         from astrid.sdk.timeline.narration import scoped_line
@@ -355,7 +366,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     for key, value in bound.arguments.items():
         if key in {"self", "client"}:
             continue
-        if entry.op == "timeline.inverse" and key == "writes":
+        if (entry.op == "timeline.inverse" and key == "writes") or (
+                entry.op in {"clip.set-shader", "timeline.set-shader-postprocess"} and key == "shader"):
             # Recorded tagged states are literal authored JSON, not numeric
             # command arguments. Redo must retain opaque values and 6.0/6.
             # Keep _plain and the operation/request digest contracts unchanged.
@@ -413,7 +425,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         getattr(recording_owner, "id", None) or getattr(recording_owner, "segment", None) or getattr(recording_owner, "seq_id", None) or command.select)
     if entry.kind == "track":
         selector = owner.scoped_id
-    if entry.op in {"clip.set-fade", "clip.set-transition", "clip.overhang-to-hold"}:
+    if entry.op in {"clip.set-fade", "clip.set-transition", "clip.set-shader", "clip.overhang-to-hold"}:
         selector = selected[0]
     recorded = replace(command, select=selector, args=canonical, version=command.version or TOOL_VERSION,
                        resolved=resolved)
@@ -880,7 +892,8 @@ def entity_states(tl):
             projection=adopted_projection)
     # Carrier storage is represented once under its authored owner. The parent
     # snapshot must not claim a second authored entity for the same source.
-    app = result["parent"].get("config", {}).get("app", {}).get("astrid", {})
+    stored_app = result["parent"].get("config", {}).get("app")
+    app = ({} if stored_app is None else stored_app).get("astrid", {})
     # Sources live only in the owner-scoped view, but the authored collection's
     # presence is independent state. Keep its shell so causal recording can
     # distinguish enrollment into an absent collection from an authored {}.
@@ -1040,6 +1053,9 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
         return fade_paths(selected[0], args, before[selected[0]])
     if entry.op == "clip.set-transition":
         return {(selected[0], path) for path in ("transition", "elementRef")}
+    if entry.op in {"clip.set-shader", "timeline.set-shader-postprocess"}:
+        from astrid.sdk.timeline.shader_slots import direct_paths as shader_paths
+        return shader_paths(entry.op, selected, before)
     if entry.op == "clip.detach-audio":
         # The handler authors the allocated child, including its complete copied
         # payload. The enclosing clips array remains a storage consequence.
@@ -1325,7 +1341,7 @@ def finish_recording(tl, tx, entry):
         authorship[key] = kind
         tx.calls[cause] = replace(call, authorship=authorship)
         recorded_path = path
-        if (path.startswith("modifiers[") or call.op in {"clip.set-fade", "clip.set-transition", "timeline.register-asset", "timeline.inverse"}) and kind != "direct":
+        if (path.startswith("modifiers[") or call.op in {"clip.set-fade", "clip.set-transition", "clip.set-shader", "timeline.set-shader-postprocess", "timeline.register-asset", "timeline.inverse"}) and kind != "direct":
             # A whole-instance/params replacement (including inverse restore)
             # owns its changed descendants.
             # Keep the original explicit guard path in the call so authenticated

@@ -151,7 +151,8 @@ def base_selections(project_id, base):
     from astrid.sdk.timeline.commands import entity_states
     result = {}
     states = entity_states(Checkout(copy.deepcopy(base)))
-    declaration = states["parent"].get("config", {}).get("app", {}).get("transcript", {})
+    app = states["parent"].get("config", {}).get("app")
+    declaration = ({} if app is None else app).get("transcript", {})
     if not isinstance(declaration, dict):
         raise TimelineEditError("invalid accepted transcript declaration")
     references = declaration.get("references", {})
@@ -163,7 +164,8 @@ def base_selections(project_id, base):
     for sid, state in states.items():
         if "/clip:" not in sid:
             continue
-        namespace = state.get("app", {}).get("transcript", {})
+        app = state.get("app")
+        namespace = ({} if app is None else app).get("transcript", {})
         if not isinstance(namespace, dict):
             raise TimelineEditError("invalid accepted transcript binding namespace")
         if "binding" in namespace:

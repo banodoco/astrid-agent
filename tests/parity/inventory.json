@@ -5294,6 +5294,10 @@
           "kind": "callable",
           "signature": "(self, cut: 'Any', *, why: 'str | None' = None, hold: 'str | bool | None' = None) -> 'dict[str, Any]'"
         },
+        "set_shader_postprocess": {
+          "kind": "callable",
+          "signature": "(self, shader)"
+        },
         "slot_clips": {
           "kind": "callable",
           "signature": "(self, slot_id: 'str') -> 'list[Clip]'"
@@ -5476,6 +5480,10 @@
         "set_param": {
           "kind": "callable",
           "signature": "(self, path: 'str', value: 'Any') -> \"'Clip'\""
+        },
+        "set_shader": {
+          "kind": "callable",
+          "signature": "(self, shader)"
         },
         "set_track": {
           "kind": "callable",

@@ -1,0 +1,154 @@
+{
+  "provenance": {
+    "app_commit": "14caa76c119387517c683926a6f74f657b2ac469",
+    "sources": {
+      "src/tools/video-editor/lib/shader-catalog.ts": "cb7ff7065015a8947c9477f7ca344ad7c1ba0ff51dedee58e4533ad9d960f0ab",
+      "src/tools/video-editor/components/ShaderInspector/ShaderInspector.tsx": "afcd32b031ec8a09c52c62adf6141bb26dc59896465645d4c81ddc09be90d189",
+      "src/tools/video-editor/lib/editor-utils.ts": "8a4a4aa944270690b57cf91db244da19612d8a90c88fc034741704a9fc94fd3d"
+    },
+    "execution": "Actual immutable catalog module and extracted inspector persist/createSourceHash plus actual updateClipInConfig; captured applyEdit boundary, no mounted UI/registry/executable admission"
+  },
+  "record": {
+    "ownerExtensionId": "example.grain",
+    "contributionId": "grain.shader",
+    "shaderId": "film-grain",
+    "label": "Film Grain",
+    "pass": {
+      "kind": "clip"
+    },
+    "status": "active",
+    "source": {
+      "kind": "inline",
+      "vertex": "",
+      "fragment": "void main() { captured(); }"
+    },
+    "uniforms": [
+      {
+        "name": "strength",
+        "type": "float",
+        "default": 0.5
+      },
+      {
+        "name": "input",
+        "type": "textureRef"
+      }
+    ]
+  },
+  "constructors": {
+    "clip": {
+      "scope": "clip",
+      "extensionId": "example.grain",
+      "contributionId": "grain.shader",
+      "shaderId": "film-grain",
+      "label": "Film Grain",
+      "enabled": true,
+      "uniforms": {
+        "strength": 0.5
+      },
+      "textures": {
+        "input": {
+          "kind": "clip-frame"
+        }
+      },
+      "metadata": {
+        "uniformPreset": "defaults",
+        "pickerSource": "clip-panel"
+      }
+    },
+    "postprocess": {
+      "scope": "postprocess",
+      "extensionId": "example.grain",
+      "contributionId": "grain.shader",
+      "shaderId": "film-grain",
+      "label": "Film Grain",
+      "enabled": true,
+      "uniforms": {
+        "strength": 0.5
+      },
+      "textures": {
+        "input": {
+          "kind": "clip-frame"
+        }
+      },
+      "metadata": {
+        "uniformPreset": "defaults",
+        "pickerSource": "timeline-postprocess-canary"
+      }
+    }
+  },
+  "inspector_edits": {
+    "clip": {
+      "shader": {
+        "scope": "clip",
+        "extensionId": "example.grain",
+        "contributionId": "grain.shader",
+        "shaderId": "film-grain",
+        "label": "Film Grain",
+        "enabled": false,
+        "uniforms": {
+          "strength": 0.73
+        },
+        "textures": {
+          "input": {
+            "kind": "clip-frame"
+          }
+        },
+        "metadata": {
+          "uniformPreset": "custom",
+          "pickerSource": "clip-panel",
+          "opaque": {
+            "keep": null
+          },
+          "inspectorCompareMode": "bypass"
+        },
+        "opaque": [
+          null,
+          {
+            "legacy": true
+          }
+        ],
+        "sourceHash": "inline::void main() { captured(); }"
+      },
+      "selection": {
+        "selectedClipId": "selected"
+      }
+    },
+    "postprocess": {
+      "shader": {
+        "scope": "postprocess",
+        "extensionId": "example.grain",
+        "contributionId": "grain.shader",
+        "shaderId": "film-grain",
+        "label": "Film Grain",
+        "enabled": false,
+        "uniforms": {
+          "strength": 0.73
+        },
+        "textures": {
+          "input": {
+            "kind": "clip-frame"
+          }
+        },
+        "metadata": {
+          "uniformPreset": "custom",
+          "pickerSource": "timeline-postprocess-canary",
+          "opaque": {
+            "keep": null
+          },
+          "inspectorCompareMode": "bypass"
+        },
+        "opaque": [
+          null,
+          {
+            "legacy": true
+          }
+        ],
+        "sourceHash": "inline::void main() { captured(); }"
+      },
+      "selection": {
+        "selectedClipId": null,
+        "selectedTrackId": null
+      }
+    }
+  }
+}
