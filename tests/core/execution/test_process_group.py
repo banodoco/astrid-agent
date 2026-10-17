@@ -48,30 +48,96 @@ def _unadmitted_process(tmp_path, monkeypatch):
     return process, owner
 
 
-def test_unadmitted_disappearance_reconciles_and_cleanup_waits_only_retained_root(tmp_path, monkeypatch):
-    process, owner = _unadmitted_process(tmp_path, monkeypatch)
-    initial = _snapshot()
-    fresh = {100: initial[100], 900: initial[900]}
+def _owned_fixture_child(tmp_path, request, *, exit_before_test=False):
+    marker = tmp_path / "owned-fixture-term.log"
+    child = tmp_path / "owned-fixture-child.py"
+    child.write_text(
+        "import os, pathlib, signal, sys\n"
+        "marker = pathlib.Path(sys.argv[1])\n"
+        "def stop(signum, _frame):\n"
+        "    with marker.open('a') as stream:\n"
+        "        stream.write(f'{os.getpid()}:{signum}\\n')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "print('READY', flush=True)\n"
+        "sys.stdin.readline()\n"
+    )
+    process = groups.popen_owned_process(
+        [sys.executable, "-I", "-B", str(child), str(marker)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=str(tmp_path), start_new_session=True, _delegate_inventory=False,
+    )
+
+    def cleanup():
+        if process.poll() is None:
+            groups.terminate_tree(process, grace_seconds=0.2)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+    request.addfinalizer(cleanup)
+    assert isinstance(process._astrid_custody, custody.ProcessCustody)
+    assert isinstance(process._astrid_custody._launch_broker, custody.RoleBoundCustodyBroker)
+    assert isinstance(process._astrid_custody._launch_broker.role_authority, custody.RoleCustodyAuthority)
+    assert select.select([process.stdout], [], [], 5)[0], "owned fixture child did not become ready"
+    assert process.stdout.readline().strip() == "READY"
+    if exit_before_test:
+        process.stdin.write("exit\n")
+        process.stdin.flush()
+        assert process.wait(timeout=5) == 0
+    return process, marker
+
+
+def _owned_fixture_snapshot(process, candidate_pid, candidate_birth, *, status=2,
+                            start_sec=None, start_usec=None):
+    unrelated_pid = candidate_pid + 1
+    return {
+        process.pid: groups._ProcessInfo(process.pid, 1, process.pid, process._astrid_process_birth),
+        candidate_pid: groups._ProcessInfo(candidate_pid, process.pid, candidate_pid,
+                                           candidate_birth, status, start_sec, start_usec, os.getuid()),
+        unrelated_pid: groups._ProcessInfo(unrelated_pid, 1, unrelated_pid, "unrelated-census-process"),
+    }
+
+
+def test_unadmitted_disappearance_reconciles_and_cleanup_waits_only_retained_root(tmp_path, monkeypatch, request):
+    process, marker = _owned_fixture_child(tmp_path, request)
+    owner = process._astrid_custody
+    candidate_pid = 1_000_000 + process.pid
+    initial = _owned_fixture_snapshot(process, candidate_pid, "detached-child")
+    unrelated_pid = candidate_pid + 1
+    fresh = {process.pid: initial[process.pid], unrelated_pid: initial[unrelated_pid]}
+    monkeypatch.setattr(custody, "ordinary_candidate_observation", lambda _: {"outcome": "ABSENT"})
+    real_current_token = custody.current_process_audit_token
+    monkeypatch.setattr(custody, "current_process_audit_token", lambda pid: (
+        pytest.fail("unadmitted token capture") if pid == candidate_pid else real_current_token(pid)))
+    real_native_records = custody._darwin_process_records
+    def native_records_without_unadmitted_candidate(*args, **kwargs):
+        pid = args[0] if args else kwargs.get("pid")
+        if pid == candidate_pid:
+            pytest.fail("unadmitted candidate queried native census")
+        return real_native_records(*args, **kwargs)
+    monkeypatch.setattr(custody, "_darwin_process_records", native_records_without_unadmitted_candidate)
     snapshots = iter((initial, fresh))
     monkeypatch.setattr(groups, "_process_snapshot", lambda: next(snapshots))
-    assert groups.observe_tree(process) == {100: "root"}
-    assert 200 in process._astrid_tree_members and 200 not in owner._handles
+    assert groups.observe_tree(process) == {process.pid: process._astrid_process_birth}
+    assert candidate_pid in process._astrid_tree_members and candidate_pid not in owner._handles
     assert process._astrid_cleanup_semantics["complete_descendant_history"] == "UNPROVED"
-    assert owner._unadmitted_absent[200]["exit_reap"] == "UNPROVED"
+    assert owner._unadmitted_absent[candidate_pid]["exit_reap"] == "UNPROVED"
     assert not hasattr(process, "_astrid_tree_uncertain")
-    calls, waits = [], []
-    def signal_root(pid, birth, signum, **kwargs):
-        assert (pid, birth) == (100, "root")
-        calls.append((pid, signum))
-        fresh.pop(100)
-    owner.signal = signal_root
-    process.poll = lambda: 0 if 100 not in fresh else None
-    process.wait = lambda **kw: waits.append(kw) or 0
-    monkeypatch.setattr(groups, "_process_snapshot", lambda: fresh)
-    groups.terminate_tree(process, grace_seconds=0)
+    waits = []
+    original_wait = process.wait
+    def record_wait(**kwargs):
+        waits.append(kwargs)
+        return original_wait(**kwargs)
+    process.wait = record_wait
+    def fresh_snapshot():
+        return fresh if process.poll() is None else {unrelated_pid: initial[unrelated_pid]}
+    monkeypatch.setattr(groups, "_process_snapshot", fresh_snapshot)
+    groups.terminate_tree(process, grace_seconds=0.2)
     groups.verify_tree_absent(process)
-    assert calls == [(100, signal.SIGTERM)] and waits == [{"timeout": 0}]
-    assert owner._unadmitted_absent[200]["subtree"] == "UNPROVED"
+    assert marker.read_text().splitlines() == [f"{process.pid}:{int(signal.SIGTERM)}"]
+    assert waits == [{"timeout": 0.2}, {"timeout": 0}, {"timeout": 0}]
+    assert owner._unadmitted_absent[candidate_pid]["subtree"] == "UNPROVED"
 
 
 @pytest.mark.parametrize("failure", ["reappeared", "reused", "missing-parent-child", "fresh-census-error"])
@@ -492,16 +558,38 @@ def test_terminal_candidate_is_not_actionable_but_present_group_cannot_be_clean(
     assert owner._uncertain is not None
 
 
-def test_terminal_observation_disappears_without_manufactured_descendant_wait(tmp_path, monkeypatch):
-    process, owner, census = _terminal_process(tmp_path, monkeypatch)
+def test_terminal_observation_disappears_without_manufactured_descendant_wait(tmp_path, monkeypatch, request):
+    process, _ = _owned_fixture_child(tmp_path, request, exit_before_test=True)
+    owner = process._astrid_custody
+    candidate_pid = 1_000_000 + process.pid
+    sec, usec = 1791433449, 654321
+    birth = custody._ps_lstart_birth(sec)
+    row = {"pid": candidate_pid, "uid": os.getuid(), "parent_pid": process.pid,
+           "pgid": candidate_pid, "status": 5, "start_sec": sec, "start_usec": usec}
+    monkeypatch.setattr(custody, "ordinary_candidate_observation", lambda pid: {
+        "outcome": "ZOMBIE", "native": row,
+        "identity": {"pid": candidate_pid, "uid": os.getuid(), "parent_pid": process.pid, "birth_id": birth}}
+        if pid == candidate_pid else {"outcome": "ABSENT"})
+    real_current_token = custody.current_process_audit_token
+    monkeypatch.setattr(custody, "current_process_audit_token", lambda pid: (
+        pytest.fail("unadmitted token capture") if pid == candidate_pid else real_current_token(pid)))
+    real_native_records = custody._darwin_process_records
+    def native_records_without_unadmitted_candidate(*args, **kwargs):
+        pid = args[0] if args else kwargs.get("pid")
+        if pid == candidate_pid:
+            pytest.fail("unadmitted candidate queried native census")
+        return real_native_records(*args, **kwargs)
+    monkeypatch.setattr(custody, "_darwin_process_records", native_records_without_unadmitted_candidate)
+    census = _owned_fixture_snapshot(process, candidate_pid, birth, status=5,
+                                     start_sec=sec, start_usec=usec)
     monkeypatch.setattr(groups, "_process_snapshot", lambda: census)
-    groups.observe_tree(process)
-    absence = {900: census[900]}
+    assert groups.observe_tree(process) == {process.pid: process._astrid_process_birth}
+    absence = {candidate_pid + 1: census[candidate_pid + 1]}
     monkeypatch.setattr(groups, "_process_snapshot", lambda: absence)
     groups.verify_tree_absent(process)
-    assert owner._unadmitted_absent[200]["absence_observed"]
-    assert owner._unadmitted_absent[200]["exit_reap"] == "UNPROVED"
-    assert 200 not in owner._handles and not hasattr(owner, "descendant_wait_exit")
+    assert owner._unadmitted_absent[candidate_pid]["absence_observed"]
+    assert owner._unadmitted_absent[candidate_pid]["exit_reap"] == "UNPROVED"
+    assert candidate_pid not in owner._handles and not hasattr(owner, "descendant_wait_exit")
 
 
 def test_terminal_census_concurrent_observers_retain_one_non_authority_record(tmp_path, monkeypatch):

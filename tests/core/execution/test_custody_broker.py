@@ -114,6 +114,18 @@ def test_isolated_wrapper_reaches_fake_peer_without_workload_startup_hook(tmp_pa
     broker = _WrapperBroker("status")
     try:
         env = _wrapper_environment(tmp_path, broker)
+        # Load the real wrapper class before the environment policy replaces
+        # subprocess.Popen with its function guard. Then run the same entrypoint
+        # after the hook, preserving the private-channel refusal boundary.
+        (tmp_path / "hook" / "sitecustomize.py").write_text(
+            "import os\nfrom pathlib import Path\n"
+            "Path(os.environ['HOOK_MARKER']).write_text('loaded')\n"
+            "from astrid.core.execution import custody_broker\n"
+            "from astrid.core.execution.network_policy import install_from_environment\n"
+            "install_from_environment()\n"
+            "raise SystemExit(custody_broker.child_exec_from_environment())\n",
+            encoding="utf-8",
+        )
         ordinary = subprocess.run(
             [sys.executable, "-u", custody.__file__, "--custody-exec"], env=env,
             capture_output=True, text=True, timeout=5,
@@ -205,8 +217,7 @@ def test_isolated_wrapper_target_restores_network_hook_and_original_environment(
         pipe_left.close();pipe_right.close()
 
 
-@pytest.fixture
-def graph(tmp_path, monkeypatch):
+def _graph(tmp_path, monkeypatch):
     identities = {pid: {"pid": pid, "uid": 501, "birth_id": f"birth-{pid}"} for pid in (101, 102, 103)}
     tokens = {pid: {"pid": pid, "uid": 501, "pidversion": pid + 1,
                     "sha256": f"sha256:token-{pid}", "words": [pid] * 8} for pid in identities}
@@ -217,6 +228,19 @@ def graph(tmp_path, monkeypatch):
     authority.designate_pending(actor=actors[101], identity=identities[103], token=tokens[103], owner_epoch="runtime-A")
     authority.bind_target(actor=actors[101], generation=1, identity=identities[103], token=tokens[103])
     return authority, actors, identities, tokens
+
+
+@pytest.fixture
+def graph(tmp_path, monkeypatch):
+    return _graph(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def graph_with_process_custody(tmp_path, monkeypatch):
+    """Keep the real owner launch slot while exercising retained authority."""
+    owner = custody.ProcessCustody(scope_root=tmp_path / "prepared-custody")
+    authority, actors, identities, tokens = _graph(tmp_path, monkeypatch)
+    return authority, actors, identities, tokens, owner
 
 
 def transfer(graph, *, transition_id="handoff-1", dead_actor=None):
@@ -630,8 +654,8 @@ def test_only_positive_retained_direct_child_exit_settles_absent_signal(kind):
     "waited-root", "live-root", "waited-other-root", "observed-descendant",
     "birth-replaced", "foreign-actor", "stale-generation", "persistence-error", "linux",
 ])
-def test_real_authority_absence_reconciles_only_positive_retained_root(graph, monkeypatch, case):
-    authority, actors, identities, _ = graph
+def test_real_authority_absence_reconciles_only_positive_retained_root(graph_with_process_custody, monkeypatch, case):
+    authority, actors, identities, _, owner = graph_with_process_custody
     monkeypatch.setattr(custody.sys, "platform", "linux" if case == "linux" else "darwin")
     monkeypatch.setattr(custody, "default_process_identity", lambda pid, **_kwargs: identities.get(pid))
     monkeypatch.setattr(custody, "_darwin_process_records", lambda *_: pytest.fail("fake signal vector queried native census"))
@@ -645,13 +669,15 @@ def test_real_authority_absence_reconciles_only_positive_retained_root(graph, mo
     broker.role_authority, broker.cleanup_actor = authority, actors[101]
     broker.custody_generation, broker.identity_provider, broker._cleanup_deadline = 1, identities.get, None
     prior_uncertainty = custody.CustodyError("independent descendant obligation")
-    owner = object.__new__(custody.ProcessCustody)
     owner._lock, owner._uncertain = threading.RLock(), prior_uncertainty
     owner.actor = actors[101]
     owner.process = SimpleNamespace(
         pid=100 if case in {"waited-other-root", "observed-descendant"} else 103,
         poll=lambda: None if case == "live-root" else 0,
+        wait=lambda **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("retained-root", kwargs.get("timeout")))
+        if case == "live-root" else 0,
     )
+    owner._launch_broker = None if case == "observed-descendant" else broker
     owner._handles = {103: ("birth-103", (authority, reference) if case == "observed-descendant" else broker)}
     if case == "birth-replaced":
         identities[103] = {**identities[103], "birth_id": "replacement"}
