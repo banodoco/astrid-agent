@@ -5068,3 +5068,25 @@ def test_request_estimator_flat_reply_matches_current_a_c_j_contract(request_est
     assert reply["source_digest"] == "sha256:" + w.host.capabilities[w.request.capability_id].source_digest
     assert reply["spec_digest"] == "sha256:" + canonical_json_digest(w.request.spec)
     assert reply.pop("preparation_digest") == preparation_digest(prepared) == "sha256:" + canonical_json_digest(reply)
+
+
+@pytest.mark.parametrize("count", [1, 1000])
+def test_chiptune_declared_estimator_runs_in_existing_confined_helper(count):
+    from astrid.core.execution.storage_estimator import StorageEstimateRequest
+    from astrid.packs.chiptune.actions.compose.planner import estimate_compose_storage
+
+    host, runtime, record = _chiptune_estimator_record()
+    params = {"duration_s": 2, "bpm": 132, "key": "A minor", "seed": 1,
+              "sections": [{"start_s": 0, "end_s": 2, "energy": 0.4,
+                            "mood": "bright", "caller_note": (chr(38899) + chr(92) + chr(34)) * count}],
+              "duck_db": -10, "master_db": -16, "style": "nes"}
+    spec = {"family": record.id, "params": params, "output_policy": {}}
+    request = StorageEstimateRequest(record.id, record.capability_digest, 1, spec)
+    prepared = host.prepare_storage_estimate(request)
+    expected = estimate_compose_storage(params)
+    assert prepared.request.spec == spec
+    assert prepared.storage_estimate == {"scratch_bytes": expected.scratch_bytes,
+                                         "output_bytes": expected.output_bytes}
+    assert prepared.estimator == record.request_storage_estimate_contract["estimator"]
+    assert not runtime.heartbeats and not runtime.settlements
+    host.shutdown()
