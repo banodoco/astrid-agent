@@ -19,6 +19,37 @@ from tests.test_generic_host import FakeRuntime, _write_manifest
 
 PACK_ROOT = Path(__file__).resolve().parents[3] / "astrid/packs/chiptune"
 
+def test_public_declaration_uses_admitted_required_default_without_consumer_guess(tmp_path):
+    pack = tmp_path / "required_projection"
+    pack.mkdir()
+    (pack / "pack.yaml").write_text(json.dumps({
+        "schema_version": 3, "id": "required_projection", "name": "Required projection", "version": "1.0.0",
+        "actions": {"probe": {"description": "Synthetic declaration only",
+            "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c", "pass"]}},
+            "inputs": [{"name": "implicit", "type": "string"},
+                       {"name": "optional", "type": "string", "required": False}],
+            "outputs": []}}}))
+    host = GenericPackHost(pack_roots=[pack])
+    record = host.discover()[0]
+    actual = {port.name: port.required for port in record.definition.inputs}
+    declaration = {port["name"]: port["required"] for port in record.public_action_declaration()["inputs"]}
+    assert declaration == actual == {"implicit": True, "optional": False}
+    assert record.capability_digest == _capability_digest(record.definition.to_dict())
+
+
+@pytest.mark.parametrize("capability", ["editorial.boundary_candidates", "editorial.human_notes"])
+def test_real_editorial_declarations_publish_required_input_booleans(capability):
+    editorial = PACK_ROOT.parent / "editorial"
+    host = GenericPackHost(pack_roots=[editorial])
+    host.discover()
+    record = host.capabilities[capability]
+    public = record.public_action_declaration()
+    assert public["inputs"]
+    assert {v["name"]: v["required"] for v in public["inputs"]} == {
+        port.name: port.required for port in record.definition.inputs}
+    assert all(type(v["required"]) is bool for v in public["inputs"])
+
+
 
 def _registered_host(tmp_path, monkeypatch, *, confinement_policy=None, pack_root=PACK_ROOT):
     monkeypatch.setenv("ASTRID_SOURCE_STATE", str(tmp_path / "absent-state.json"))
