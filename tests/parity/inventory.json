@@ -5477,6 +5477,10 @@
           "kind": "callable",
           "signature": "(self, path: 'str', value: 'Any') -> \"'Clip'\""
         },
+        "set_text": {
+          "kind": "callable",
+          "signature": "(self, *, text, elementRef)"
+        },
         "set_track": {
           "kind": "callable",
           "signature": "(self, track: 'str') -> \"'Clip'\""

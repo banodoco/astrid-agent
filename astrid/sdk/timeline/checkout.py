@@ -580,3 +580,8 @@ _register_transcript_commands()
 
 Checkout.restructure = _restructure
 _commands.register(Checkout, "timeline", ("restructure",))
+
+from astrid.sdk.timeline.manual_text import set_text as _set_manual_text  # noqa: E402
+
+Clip.set_text = _composite_source_edit(_set_manual_text)
+_commands.register(Clip, "clip", ("set_text",))
