@@ -351,7 +351,10 @@ def run_source_estimator(record, descriptor: Mapping[str, Any], request: Storage
         host_root, Path(sys.base_prefix), Path(sys.prefix), Path('/usr/lib'), Path('/System/Library'),
         Path(sysconfig.get_path('stdlib')), Path(sysconfig.get_path('purelib')),
     ) if p.is_dir()))
-    executable = Path(sys.executable)
+    # -I -S may report the base prefix, so the venv bin directory is not a
+    # readable root. Execute the exact resolved interpreter rather than an
+    # intermediate venv symlink that the deny-default profile cannot traverse.
+    executable = Path(sys.executable).resolve(strict=True)
     # Reuse the Host's exact interpreter bootstrap files. The selected pyenv
     # Python depends on this read-only dyld artifact outside sys.base_prefix;
     # no dependency directory, project write or ambient Homebrew root is granted.

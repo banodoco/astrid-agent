@@ -5090,3 +5090,19 @@ def test_chiptune_declared_estimator_runs_in_existing_confined_helper(count):
     assert prepared.estimator == record.request_storage_estimate_contract["estimator"]
     assert not runtime.heartbeats and not runtime.settlements
     host.shutdown()
+
+
+def test_request_estimator_executes_resolved_interpreter_through_private_alias_chain(
+    request_estimator_host, tmp_path, monkeypatch,
+):
+    import sys
+
+    w = request_estimator_host
+    binary = tmp_path / "private-bin"
+    binary.mkdir()
+    (binary / "python3").symlink_to(Path(sys.executable).resolve(strict=True))
+    (binary / "python").symlink_to("python3")
+    monkeypatch.setattr(sys, "executable", str(binary / "python"))
+    prepared = w.host.prepare_storage_estimate(w.request)
+    assert prepared.storage_estimate["scratch_bytes"] > 0
+    assert prepared.storage_estimate["output_bytes"] == 2
