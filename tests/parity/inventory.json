@@ -5461,6 +5461,10 @@
           "kind": "callable",
           "signature": "(self, source: 'Any') -> \"'Clip'\""
         },
+        "set_continuous": {
+          "kind": "callable",
+          "signature": "(self, **values)"
+        },
         "set_duration": {
           "kind": "callable",
           "signature": "(self, seconds: 'float') -> \"'Clip'\""

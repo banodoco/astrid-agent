@@ -153,7 +153,8 @@ def _adapter(entry):
             return entry.handler(owner, *args, **kwargs)
         choices = kwargs.pop("relation_choices", None)
         bound = _signature(entry.handler).bind(owner, *args, **kwargs)
-        arguments = {key: _plain(value) for key, value in bound.arguments.items() if key not in {"self", "client"}}
+        arguments = {key: (copy.deepcopy(value) if entry.op == "clip.set-continuous" else _plain(value))
+                     for key, value in bound.arguments.items() if key not in {"self", "client"}}
         if any(p.kind == p.VAR_KEYWORD for p in _signature(entry.handler).parameters.values()):
             for key, p in _signature(entry.handler).parameters.items():
                 if p.kind == p.VAR_KEYWORD:
@@ -176,7 +177,7 @@ def _adapter(entry):
 def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if getattr(tl._open_edit, "cancelled", False):
         return owner
-    if (entry.op in {"clip.set-fade", "clip.set-transition"} and owner is None
+    if (entry.op in {"clip.set-fade", "clip.set-transition", "clip.set-continuous"} and owner is None
             and (not command.select or not is_scoped_id(command.select) or "/clip:" not in command.select)):
         raise CommandError(f"{entry.op} requires an exact clip ScopedId")
     if entry.op == "timeline.add" and ("media" in command.args or isinstance(command.args.get("track"), Mapping)):
@@ -310,6 +311,9 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if entry.op == "clip.set-transition":
         from astrid.sdk.timeline.composite_effects import guard_call
         command = guard_call(tl, command, owner, before_entities, selected)
+    if entry.op == "clip.set-continuous":
+        from astrid.sdk.timeline.continuous import guard_call
+        command = guard_call(command, before_entities, selected, sdk=sdk_args is not None)
     if (entry.op == "timeline.apply-script" and isinstance(command.args.get("spec"), Mapping)
             and command.args["spec"].get("version") == 1):
         from astrid.sdk.timeline.narration import scoped_line
@@ -360,6 +364,10 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             # command arguments. Redo must retain opaque values and 6.0/6.
             # Keep _plain and the operation/request digest contracts unchanged.
             canonical[key] = copy.deepcopy(value)
+        elif entry.op == "clip.set-continuous" and sig.parameters[key].kind == inspect.Parameter.VAR_KEYWORD:
+            # The full App slot and parameter payloads are literal authored
+            # JSON; recorded replay must retain opaque 1.0 versus 1 too.
+            canonical.update(copy.deepcopy(value))
         elif sig.parameters[key].kind == inspect.Parameter.VAR_KEYWORD:
             canonical.update(_plain(value))
         else:
@@ -413,7 +421,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         getattr(recording_owner, "id", None) or getattr(recording_owner, "segment", None) or getattr(recording_owner, "seq_id", None) or command.select)
     if entry.kind == "track":
         selector = owner.scoped_id
-    if entry.op in {"clip.set-fade", "clip.set-transition", "clip.overhang-to-hold"}:
+    if entry.op in {"clip.set-fade", "clip.set-transition", "clip.set-continuous", "clip.overhang-to-hold"}:
         selector = selected[0]
     recorded = replace(command, select=selector, args=canonical, version=command.version or TOOL_VERSION,
                        resolved=resolved)
@@ -1040,6 +1048,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
         return fade_paths(selected[0], args, before[selected[0]])
     if entry.op == "clip.set-transition":
         return {(selected[0], path) for path in ("transition", "elementRef")}
+    if entry.op == "clip.set-continuous":
+        return {(selected[0], "continuous")}
     if entry.op == "clip.detach-audio":
         # The handler authors the allocated child, including its complete copied
         # payload. The enclosing clips array remains a storage consequence.
@@ -1325,7 +1335,7 @@ def finish_recording(tl, tx, entry):
         authorship[key] = kind
         tx.calls[cause] = replace(call, authorship=authorship)
         recorded_path = path
-        if (path.startswith("modifiers[") or call.op in {"clip.set-fade", "clip.set-transition", "timeline.register-asset", "timeline.inverse"}) and kind != "direct":
+        if (path.startswith("modifiers[") or call.op in {"clip.set-fade", "clip.set-transition", "clip.set-continuous", "timeline.register-asset", "timeline.inverse"}) and kind != "direct":
             # A whole-instance/params replacement (including inverse restore)
             # owns its changed descendants.
             # Keep the original explicit guard path in the call so authenticated
