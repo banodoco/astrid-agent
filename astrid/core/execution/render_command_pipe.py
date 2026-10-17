@@ -566,6 +566,10 @@ class HostRenderCommandBridge(pipe.HostPipeBridge):
         environment = {**environment, 'ASTRID_REMOTION_RETAINED_ENDPOINT': json.dumps(endpoint)}
         browser = self.renderer_transport.select_browser()
         environment['ASTRID_REMOTION_RETAINED_BROWSER'] = str(browser)
+        # CLI ensureBrowser runs before the patched launcher and reads this
+        # option, not the launcher's private environment. Only the Host adds
+        # its pinned selection; caller browser flags remain refused above.
+        args = [*args, f'--browser-executable={browser}']
         # Existing declaration-driven alias selection must use the same
         # qualified pack corpus rather than the installed project's parent.
         reads = self.policy.renderer_reads

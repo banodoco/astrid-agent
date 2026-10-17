@@ -171,9 +171,12 @@ def _declared_estimator_descriptor(record, raw: Mapping[str, Any]) -> dict[str, 
     if actual_digest != identity["implementation_digest"]:
         raise StorageEstimatorError("declared estimator implementation digest does not match source")
 
-    # This declaration identifies the producer helper. Host invocation is
-    # wired separately; only the public identity is projected here.
-    return {key: identity[key] for key in ("id", "version", "implementation_digest")}
+    # Keep invocation details local. The public function digest remains distinct
+    # from the complete module-byte fence enforced by the confined importer.
+    return {**{key: identity[key] for key in ("id", "version", "implementation_digest")},
+            "path": str(path), "function": implementation["function"],
+            "source_file_digest": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+            "invocation": "params"}
 
 
 def estimator_descriptor(record) -> dict[str, Any]:
@@ -303,6 +306,12 @@ def _invoke(root: Path, descriptor: Mapping[str, Any], payload: Mapping[str, Any
         function = getattr(importlib.import_module(prefix + "." + ".".join(parts)), descriptor["function"], None)
         if not callable(function):
             raise StorageEstimatorError("declared estimator function is unavailable")
+        if descriptor.get("invocation") == "params":
+            if payload["input_facts"]:
+                raise StorageEstimatorError("declared parameter estimator does not accept input facts")
+            estimate = function(payload["spec"]["params"])
+            return validate_pair({"scratch_bytes": estimate.scratch_bytes,
+                                  "output_bytes": estimate.output_bytes})
         return validate_pair(function(spec=payload["spec"], input_facts=payload["input_facts"]))
     finally:
         sys.meta_path.remove(finder)
@@ -318,7 +327,11 @@ def run_source_estimator(record, descriptor: Mapping[str, Any], request: Storage
     Reuse the host's source importer and OS backend; unavailable confinement
     refuses rather than executing producer code inside the credentialed host.
     """
-    from .generic_host import _filesystem_sandbox_profile, _FilesystemSandboxPolicy
+    from .generic_host import (
+        _filesystem_sandbox_profile,
+        _FilesystemSandboxPolicy,
+        _python_runtime_library,
+    )
     if sys.platform != "darwin" or not shutil.which("/usr/bin/sandbox-exec"):
         raise StorageEstimatorError("request estimation requires the read-only macOS sandbox backend")
     root = record.source_root.resolve()
@@ -330,16 +343,27 @@ def run_source_estimator(record, descriptor: Mapping[str, Any], request: Storage
     if captured != record.source_digest:
         raise StorageEstimatorError("admitted estimator source inventory changed")
     source_files = dict(entries)
-    if "sha256:" + source_files.get(descriptor["path"], "") != descriptor["implementation_digest"]:
+    if ("sha256:" + source_files.get(descriptor["path"], "")
+            != descriptor.get("source_file_digest", descriptor["implementation_digest"])):
         raise StorageEstimatorError("admitted estimator implementation digest changed")
     host_root = Path(__file__).resolve().parents[3]
     roots = tuple(dict.fromkeys(p.resolve() for p in (
         host_root, Path(sys.base_prefix), Path(sys.prefix), Path('/usr/lib'), Path('/System/Library'),
         Path(sysconfig.get_path('stdlib')), Path(sysconfig.get_path('purelib')),
     ) if p.is_dir()))
-    executable = Path(sys.executable)
+    # -I -S may report the base prefix, so the venv bin directory is not a
+    # readable root. Execute the exact resolved interpreter rather than an
+    # intermediate venv symlink that the deny-default profile cannot traverse.
+    executable = Path(sys.executable).resolve(strict=True)
+    # Reuse the Host's exact interpreter bootstrap files. The selected pyenv
+    # Python depends on this read-only dyld artifact outside sys.base_prefix;
+    # no dependency directory, project write or ambient Homebrew root is granted.
+    python_library = _python_runtime_library(Path(sys.base_prefix).resolve(strict=True))
+    gettext = Path("/opt/homebrew/opt/gettext/lib/libintl.8.dylib")
+    bootstrap = (executable, *((python_library,) if python_library is not None else ()),
+                 *((gettext,) if gettext.is_file() else ()))
     profile = _filesystem_sandbox_profile(_FilesystemSandboxPolicy(
-        read_roots=(root,), bootstrap_files=(executable,), bootstrap_roots=roots,
+        read_roots=(root,), bootstrap_files=bootstrap, bootstrap_roots=roots,
         private_write_root=root), root)
     # The shared builder requires an existing private root; preparation grants
     # zero writes, even there. All IPC is stdin/stdout/stderr, with no files.

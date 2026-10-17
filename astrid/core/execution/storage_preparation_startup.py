@@ -21,7 +21,7 @@ from .storage_preparation_transport import (
 
 def configuration_from_activation(preparation):
     """Use only the retained selected launch, native actors and discovery."""
-    from .generic_host import _ACTIVATION_RECEIPT_MODE
+    from .generic_host import _ACTIVATION_RECEIPT_MODE, _canonical_digest
 
     host = preparation._claim_host
     request = preparation._request
@@ -84,6 +84,9 @@ def configuration_from_activation(preparation):
         boot_manifest_hash=host.boot_manifest_hash, runtime_realm_id=profile["workspace_uuid"],
         runtime_instance_id=runtime["runtime_instance_id"], runtime_session_id=runtime["runtime_session_id"],
         executor_id=host.executor_id, source_epoch=host.source_epoch,
+        runtime_epoch=runtime.get("runtime_epoch"),
+        executor_source_digest="sha256:" + _canonical_digest({k: v.source_digest for k, v in host.capabilities.items()}),
+        executor_dependency_digest="sha256:" + _canonical_digest({k: v.dependency_digest for k, v in host.capabilities.items()}),
         capability_id=record.id, capability_digest=record.capability_digest,
         source_digest="sha256:" + record.source_digest, dependency_digest="sha256:" + record.dependency_digest,
         estimator_id=descriptor["id"], estimator_version=descriptor["version"],
