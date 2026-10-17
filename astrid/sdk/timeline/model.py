@@ -518,6 +518,16 @@ class Clip(_Suggest):
         not a param (``.hold_for(0.6)``, ``.until(…)``, ``.on(…)``). ``_allow_new=True`` adds one on purpose."""
         from astrid.sdk.timeline_address import element_schema
 
+        if {"keyframes", "keyframeOrigin"} & params.keys():
+            try:
+                trial = cf.app_keyframes(self.data, params)
+            except cf.ClipFieldError as exc:
+                raise TimelineEditError(str(exc)) from None
+            self.data.clear()
+            self.data.update(trial)
+            self._tl._mcache = None
+            return self
+
         allow_new = bool(params.pop("_allow_new", False))
         declared = set(element_schema(self.element).get("properties") or {})
         from astrid.sdk.timeline import modifiers

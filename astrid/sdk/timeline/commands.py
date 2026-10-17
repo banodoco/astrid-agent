@@ -158,11 +158,20 @@ def _adapter(entry):
             for key, p in _signature(entry.handler).parameters.items():
                 if p.kind == p.VAR_KEYWORD:
                     arguments.update(arguments.pop(key, {}))
+        app_keys = entry.op == "clip.set" and bool({"keyframes", "keyframeOrigin"} & kwargs.keys())
+        if app_keys:
+            arguments = copy.deepcopy(kwargs)  # opaque App keys must bypass numeric/unit normalization
         select = None if entry.kind == "timeline" else str(
             getattr(owner, "id", None) or getattr(owner, "segment", None) or getattr(owner, "seq_id", ""))
         if choices is not None:
             arguments["relation_choices"] = choices
-        command = EditCommand.coerce(dict(op=entry.op, select=select, args=arguments))
+        envelope = dict(op=entry.op, select=select, args=arguments)
+        if app_keys:
+            select = scoped_clip(tl, owner)
+            states = entity_states(tl)
+            envelope.update(select=select, expect={path: state_at(states, select, path)
+                                                 for path in ("keyframes", "keyframeOrigin")})
+        command = EditCommand.coerce(envelope)
         if entry.op == "timeline.restructure":
             run(tl, command)  # same no-write refusal/no-op policy as CLI and COMMIT
             return owner
@@ -176,7 +185,8 @@ def _adapter(entry):
 def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if getattr(tl._open_edit, "cancelled", False):
         return owner
-    if (entry.op in {"clip.set-fade", "clip.set-transition"} and owner is None
+    app_keys = entry.op == "clip.set" and bool({"keyframes", "keyframeOrigin"} & command.args.keys())
+    if ((entry.op in {"clip.set-fade", "clip.set-transition"} or app_keys) and owner is None
             and (not command.select or not is_scoped_id(command.select) or "/clip:" not in command.select)):
         raise CommandError(f"{entry.op} requires an exact clip ScopedId")
     if entry.op == "timeline.add" and ("media" in command.args or isinstance(command.args.get("track"), Mapping)):
@@ -251,6 +261,15 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
     previous_reservations = cut_reservations(tl.bundle)
     before_entities = entity_states(tl)
+    if app_keys:
+        from astrid.core.timeline import clip_fields as cf
+        if not all(any(write_target(key, selected) == (selected[0], path)
+                       for key in command.expect or {}) for path in ("keyframes", "keyframeOrigin")):
+            raise CommandError("App keyframes require tagged before expectations for the complete pair")
+        try:
+            cf.app_keyframes(owner.data, command.args)
+        except cf.ClipFieldError as exc:
+            raise CommandError(str(exc)) from None
     if entry.op == "cut.move":
         # Geometry and membership are inputs to a grouped translation. Rebase
         # must not silently translate a different set or changed layer offsets.
@@ -356,6 +375,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             canonical.update(_plain(value))
         else:
             canonical[key] = _plain(value)
+    if app_keys:
+        canonical = copy.deepcopy(dict(command.args))
     if entry.kind in {"shot", "occurrence"} or entry.op.startswith("shot-group."):
         canonical = {key: value for key, value in canonical.items() if value is not None}
     if relation_choices is not None:
@@ -405,7 +426,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         getattr(recording_owner, "id", None) or getattr(recording_owner, "segment", None) or getattr(recording_owner, "seq_id", None) or command.select)
     if entry.kind == "track":
         selector = owner.scoped_id
-    if entry.op in {"clip.set-fade", "clip.set-transition"}:
+    if entry.op in {"clip.set-fade", "clip.set-transition"} or app_keys:
         selector = selected[0]
     recorded = replace(command, select=selector, args=canonical, version=command.version or TOOL_VERSION,
                        resolved=resolved)
@@ -1024,6 +1045,8 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
     if entry.op == "occurrence.set":
         from astrid.sdk.timeline.graph_commands import PLACEMENT_PATHS
         return {(selected[0], PLACEMENT_PATHS[k]) for k in args.get("placement") or {}}
+    if entry.op == "clip.set" and {"keyframes", "keyframeOrigin"} & args.keys():
+        return {(selected[0], path) for path in ("keyframes", "keyframeOrigin")}
     if entry.op == "clip.set-fade":
         from astrid.sdk.timeline.composite_effects import direct_paths as fade_paths
         return fade_paths(selected[0], args, before[selected[0]])
@@ -1306,7 +1329,8 @@ def finish_recording(tl, tx, entry):
         authorship[key] = kind
         tx.calls[cause] = replace(call, authorship=authorship)
         recorded_path = path
-        if (path.startswith("modifiers[") or call.op in {"clip.set-fade", "clip.set-transition", "timeline.register-asset"}) and kind != "direct":
+        if (path.startswith("modifiers[") or call.op in {"clip.set-fade", "clip.set-transition", "timeline.register-asset"}
+                or (call.op == "clip.set" and "keyframes" in call.args)) and kind != "direct":
             # A whole-instance/params replacement owns its changed descendants.
             # Keep the original explicit guard path in the call so authenticated
             # replay checks exactly the same direct-write set.
@@ -1337,6 +1361,17 @@ def finish_recording(tl, tx, entry):
             old, new = state_at(original, sid, path), state_at(final, sid, path)
             write = dict(id=sid, path=path, before=old, after=new)
             if not _same_value(old, new) and write not in direct:
+                direct.append(write)
+    # The App inspector authors the pair even when the retained origin is equal.
+    # Include both tagged writes; history can then recover the complete clock.
+    for call in tx.calls:
+        if call.op != "clip.set" or "keyframes" not in call.args:
+            continue
+        for path in ("keyframes", "keyframeOrigin"):
+            sid = call.resolved[0]
+            write = dict(id=sid, path=path, before=state_at(original, sid, path),
+                         after=state_at(final, sid, path))
+            if write not in direct:
                 direct.append(write)
     tx.direct_writes, tx.consequences = direct, consequences
 
