@@ -271,7 +271,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
                                list(command.resolved), list(selected), None)
     from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
     previous_reservations = cut_reservations(tl.bundle)
-    before_entities = entity_states(tl)
+    before_entities = _recording_states(tl)
     if app_keys:
         from astrid.core.timeline import clip_fields as cf
         if not all(any(write_target(key, selected) == (selected[0], path)
@@ -604,7 +604,7 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
             tl._open_edit.calls[index] = recorded
         if entry.op not in {"timeline.batch", "timeline.edit-flags"}:
             call = tl._open_edit.calls[index]
-            after_entities = entity_states(tl)
+            after_entities = _recording_states(tl)
             created = tuple(sorted(set(after_entities) - set(before_entities)))
             created = tuple(sid for sid in created if is_scoped_id(sid))
             if entry.op != "shot-group.set" or canonical.get("intent") != "images":
@@ -968,11 +968,7 @@ def entity_states(tl):
     # snapshot must not claim a second authored entity for the same source.
     stored_app = result["parent"].get("config", {}).get("app")
     app = ({} if stored_app is None else stored_app).get("astrid", {})
-    # Sources live only in the owner-scoped view, but the authored collection's
-    # presence is independent state. Keep its shell so causal recording can
-    # distinguish enrollment into an absent collection from an authored {}.
-    if "music_beds" in app:
-        app["music_beds"] = {}
+    app.pop("music_beds", None)
     app.pop("bed", None)
     if "clips" in result["parent"]:
         result["parent"]["clips"] = [c for c in result["parent"]["clips"]
@@ -983,6 +979,21 @@ def entity_states(tl):
     from astrid.sdk.timeline.shot_groups import semantic_states
     semantic_states(tl, result)
     return result
+
+
+def _recording_states(tl):
+    """Include source-free storage presence for causal receipts and inverse guards.
+
+    Carrier members remain solely in entity_states' owner-scoped views. The
+    existing parent property path records absence versus an authored empty
+    collection so undo can restore storage exactly, without persisting a marker.
+    """
+    states = entity_states(tl)
+    stored_app = tl.bundle.get("parent", {}).get("config", {}).get("app")
+    ns = ({} if stored_app is None else stored_app).get("astrid", {})
+    if "music_beds" in ns:
+        states["parent"]["config"]["app"]["astrid"]["music_beds"] = {}
+    return states
 
 
 def _member_path(prefix, key):
@@ -1084,7 +1095,7 @@ def write_target(key, resolved):
 
 
 def check_expectations(tl, call, selected):
-    states = entity_states(tl)
+    states = _recording_states(tl)
     for key, expected in (call.expect or {}).items():
         sid, path = write_target(key, selected or call.resolved)
         current = state_at(states, sid, path)
@@ -1158,8 +1169,6 @@ def direct_paths(tl, entry, owner, args, before, after, selected):
             # equal. Its inverse needs the original literal cached clock too.
             (row["target"], "at") for row in args.get("relation_choices", [])
             if row["choice"] == "detach" and row["edge"] in {"start", "sequence"}}
-    if entry.op == "clip.remove" and selected and "music_bed" in before.get(selected[0], {}):
-        return {(selected[0], ""), (selected[0], "music_bed")}
     if entry.op == "timeline.inverse":
         direct = set()
         for write in args["writes"]:
@@ -1399,7 +1408,7 @@ def finish_recording(tl, tx, entry):
     snapshots = getattr(tx, "semantic_snapshots", ())
     if not snapshots:
         return
-    previous = entity_states(tl.__class__(copy.deepcopy(entry)))
+    previous = _recording_states(tl.__class__(copy.deepcopy(entry)))
     causes = {}
     from astrid.sdk.timeline.transaction import _needs_resolve
     for index, probe, before, after, expected_created in snapshots:
@@ -1410,7 +1419,7 @@ def finish_recording(tl, tx, entry):
             probe.resolve()
         if tx.report is not None:
             probe._check(_admission_context=tx._check_context())
-        compiled = entity_states(probe)
+        compiled = _recording_states(probe)
         created = tuple(sorted(sid for sid in set(compiled) - set(previous) if is_scoped_id(sid)))
         if expected_created is not None and set(created) != set(expected_created):
             raise CommandError(f"Compiler changed recorded created identities: expected {expected_created}, got {created}")
@@ -1425,10 +1434,10 @@ def finish_recording(tl, tx, entry):
                 expectations.setdefault(key, state_at(previous, sid, basis))
                 tx.calls[index] = replace(call, expect=expectations)
         previous = compiled
-    final = entity_states(tl)
+    final = _recording_states(tl)
     if not _same_value(previous, final):
         raise CommandError("Compiler prefix evidence does not match the executed candidate")
-    original = entity_states(tl.__class__(copy.deepcopy(entry)))
+    original = _recording_states(tl.__class__(copy.deepcopy(entry)))
     direct, consequences = [], []
     for sid, path in changed_paths(original, final):
         # The last prefix that actually changed this path is its causal command.
@@ -1650,7 +1659,7 @@ def _path_state(data, path):
 def direct_writes(tl, calls):
     """Guard actual direct properties, scoped to their resolved occurrences."""
     from astrid.sdk import timeline_intent as intent
-    states = entity_states(tl)
+    states = _recording_states(tl)
     clips = {scoped_clip(tl, clip): clip for clip in tl.clips()}
     guards = {}
     for call in calls:
@@ -1674,7 +1683,7 @@ def direct_writes(tl, calls):
 
 
 def guard_direct_writes(tl, guards):
-    states = entity_states(tl)
+    states = _recording_states(tl)
     for (sid, path), state in guards.items():
         if not _same_value(state_at(states, sid, path), state):
             raise CommandError(f"{sid}.{path}: timing replaced an explicit write; edit rolled back")
