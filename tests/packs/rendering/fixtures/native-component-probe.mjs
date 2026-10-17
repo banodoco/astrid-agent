@@ -73,6 +73,32 @@ assert.equal(typeof registry[identity].wrap, 'function');
 const {componentBindings} = load(stage.module);
 const binding = componentBindings[0];
 const {bindComponentRegistry} = load(path.join(repo, 'remotion/src/components.ts'));
+const React = dependencies('react');
+const {renderToStaticMarkup} = dependencies('react-dom/server');
+const context = {bounds: {status: 'known', rect: {x: 0, y: 0, width: 320, height: 180}}};
+const instance = {id: 'native-source-probe', element: identity, params: {strength: 0.6}};
+const content = React.createElement('span', null, 'original child');
+const actual = registry[identity].wrap(instance, context, content);
+assert.notEqual(actual.type, undefined);
+assert.match(renderToStaticMarkup(actual), /original child/);
+// J029's admitted binder uses the React-style Component spelling. Exercise
+// that original shape even for the portable synthetic source fixture.
+const Shade = ({children}) => React.createElement('div', null, children);
+const makeBinding = (canonical) => ({...binding, module: {
+  [binding.descriptor.implementation.export]: (api, descriptor) => api.declareModifier({
+    kind: 'modifier', element: identity, hosts: descriptor.hosts,
+    bounds: 'preserve', alpha: 'preserve', support: 'preserve',
+    Component: canonical ? empty : Shade, ...(canonical ? {component: Shade} : {}),
+    resolveParams: params => params,
+  }),
+}});
+for (const canonical of [false, true]) {
+  const declaration = bindComponentRegistry([makeBinding(canonical)])[identity];
+  const wrapped = declaration.wrap(instance, context, content);
+  assert.equal(wrapped.type, Shade);
+  assert.equal(wrapped.props.children, content);
+  assert.match(renderToStaticMarkup(wrapped), /original child/);
+}
 for (const invalid of [
   {...binding, identity: 'timeline.component/wrong.identity'},
   {...binding, implementation_digest: '0'.repeat(64)},
