@@ -174,9 +174,9 @@ class ProjectMediaSelection(TypedDict):
 
 
 def _catalog_versions(value: Mapping[str, Any]) -> list[int] | None:
-    raw = value.get("capability_catalog_versions")
-    if raw is None:
+    if "capability_catalog_versions" not in value:
         return None
+    raw = value["capability_catalog_versions"]
     if (not isinstance(raw, list) or not raw
             or any(type(version) is not int or version <= 0 for version in raw)):
         raise ValueError("capability_catalog_versions must contain positive integers")

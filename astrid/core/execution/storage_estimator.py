@@ -318,7 +318,11 @@ def run_source_estimator(record, descriptor: Mapping[str, Any], request: Storage
     Reuse the host's source importer and OS backend; unavailable confinement
     refuses rather than executing producer code inside the credentialed host.
     """
-    from .generic_host import _filesystem_sandbox_profile, _FilesystemSandboxPolicy
+    from .generic_host import (
+        _filesystem_sandbox_profile,
+        _FilesystemSandboxPolicy,
+        _python_runtime_library,
+    )
     if sys.platform != "darwin" or not shutil.which("/usr/bin/sandbox-exec"):
         raise StorageEstimatorError("request estimation requires the read-only macOS sandbox backend")
     root = record.source_root.resolve()
@@ -338,8 +342,15 @@ def run_source_estimator(record, descriptor: Mapping[str, Any], request: Storage
         Path(sysconfig.get_path('stdlib')), Path(sysconfig.get_path('purelib')),
     ) if p.is_dir()))
     executable = Path(sys.executable)
+    # Reuse the Host's exact interpreter bootstrap files. The selected pyenv
+    # Python depends on this read-only dyld artifact outside sys.base_prefix;
+    # no dependency directory, project write or ambient Homebrew root is granted.
+    python_library = _python_runtime_library(Path(sys.base_prefix).resolve(strict=True))
+    gettext = Path("/opt/homebrew/opt/gettext/lib/libintl.8.dylib")
+    bootstrap = (executable, *((python_library,) if python_library is not None else ()),
+                 *((gettext,) if gettext.is_file() else ()))
     profile = _filesystem_sandbox_profile(_FilesystemSandboxPolicy(
-        read_roots=(root,), bootstrap_files=(executable,), bootstrap_roots=roots,
+        read_roots=(root,), bootstrap_files=bootstrap, bootstrap_roots=roots,
         private_write_root=root), root)
     # The shared builder requires an existing private root; preparation grants
     # zero writes, even there. All IPC is stdin/stdout/stderr, with no files.

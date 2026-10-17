@@ -4892,7 +4892,9 @@ def test_request_estimator_caller_pairs_are_not_coerced(request_estimator_host, 
 def test_request_estimator_admitted_declaration_projects_exact_c_v2_descriptor(request_estimator_host):
     w = request_estimator_host
     health = w.runtime.health()
-    w.runtime.health = lambda: {**health, "capability_catalog_versions": [1, 2]}
+    from banodoco_workspace_client.generated import Health
+    w.runtime.health = lambda: Health.from_json({**health, "runtime_session_id": "fixture-session",
+                                               "capability_catalog_versions": [1, 2]})
     w.host.register()
     record = w.host.capabilities[w.request.capability_id]
     declaration = record.definition.metadata["action_declaration"]
@@ -4904,7 +4906,7 @@ def test_request_estimator_admitted_declaration_projects_exact_c_v2_descriptor(r
     assert row["definition_digest"] == w.request.capability_digest
     assert "storage_estimator" not in row["action_declaration"].get("metadata", {})
     assert "storage_estimator" in record.definition.metadata["action_declaration"]["metadata"]
-    assert row["status"] == "unavailable"  # Transport/enabling join is still A/C-owned.
+    assert row["status"] == "ready"  # Authenticated v2 preserves actual source/preflight readiness.
 
 
 def _chiptune_estimator_record():
@@ -4918,7 +4920,9 @@ def _chiptune_estimator_record():
 def test_chiptune_request_estimator_registration_projects_only_the_public_identity():
     host, runtime, record = _chiptune_estimator_record()
     health = runtime.health()
-    runtime.health = lambda: {**health, "capability_catalog_versions": [1, 2]}
+    from banodoco_workspace_client.generated import Health
+    runtime.health = lambda: Health.from_json({**health, "runtime_session_id": "fixture-session",
+                                              "capability_catalog_versions": [1, 2]})
 
     host.register()
 
@@ -4940,7 +4944,7 @@ def test_chiptune_request_estimator_registration_projects_only_the_public_identi
     assert "storage_estimator" in record.definition.metadata["action_declaration"]["metadata"]
     assert record.definition.metadata["storage_estimator"] == (
         record.definition.metadata["action_declaration"]["metadata"]["storage_estimator"])
-    assert row["status"] == "unavailable"  # Preparation transport remains outside this source join.
+    assert row["status"] == "ready"  # Runtime exposes it only with the live preparation binding.
 
 
 @pytest.mark.parametrize("change", [
