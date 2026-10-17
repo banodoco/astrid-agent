@@ -74,7 +74,7 @@ def test_every_context_field_matches_trusted_startup(key):
         wire.validate_request(value, context())
 
 
-@pytest.mark.parametrize('change', ['purpose', 'operation', 'unknown', 'candidate', 'frames', 'bool', 'oversize', 'path', 'url', 'dependencies'])
+@pytest.mark.parametrize('change', ['purpose', 'operation', 'unknown', 'candidate', 'frames', 'bool', 'oversize', 'path', 'url', 'dependencies', 'media-evidence', 'renderer-identity', 'font-digests'])
 def test_bad_requests_refuse(change):
     value = request()
     if change in {'purpose', 'operation'}:
@@ -88,6 +88,10 @@ def test_bad_requests_refuse(change):
         value['scene']['assets']['assets']['x'] = {change: '/escape' if change == 'path' else 'https://escape'}
         value['scene_digest'] = wire.digest(value['scene'])
     elif change == 'dependencies': value['dependencies'] = {'sha256:' + '0' * 64: {}}
+    elif change in {'media-evidence', 'renderer-identity', 'font-digests'}:
+        key = {'media-evidence': 'mediaEvidence', 'renderer-identity': 'rendererIdentity', 'font-digests': 'fontDigests'}[change]
+        value['scene'][key] = {'authored': 'must not establish host facts'}
+        value['scene_digest'] = wire.digest(value['scene'])
     with pytest.raises(FrameOwnerError):
         wire.validate_request(value, context())
 
@@ -246,6 +250,53 @@ def test_only_verified_cas_dependencies_are_staged_in_host_scratch(private_host,
     with pytest.raises(FrameOwnerError):
         w.relay.exchange(value, guard=lambda: None, cancelled=threading.Event())
     assert len(w.exchanges) == 1
+
+
+def test_host_projects_decoder_facts_from_the_authenticated_staged_object(private_host, monkeypatch):
+    import base64
+    import hashlib
+    from astrid.core import media
+
+    w = private_host
+    data = b'host-staged media bytes for projection binding'
+    oid = 'sha256:' + hashlib.sha256(data).hexdigest()
+    proof = {
+        'version': 1,
+        'objectId': oid,
+        'contentSha256': oid[7:],
+        'interpretation': media.SCENE_VIDEO_INTERPRETATION,
+        'stream': {'index': 0, 'codec': 'h264', 'width': 16, 'height': 16},
+    }
+    observed = []
+
+    def selected_decoder(path, object_id, *, interpretation):
+        staged = Path(path).read_bytes()
+        actual_digest = hashlib.sha256(staged).hexdigest()
+        observed.append((object_id, interpretation, actual_digest))
+        assert object_id == oid and actual_digest == oid[7:]
+        return dict(proof, file=path, interpretation=interpretation)
+
+    monkeypatch.setattr(media, 'scene_media_evidence', selected_decoder)
+    value = request()
+    value['scene']['assets']['assets']['media-clip'] = {
+        'media_id': oid, 'object_id': oid, 'content_sha256': oid,
+    }
+    value['dependencies'][oid] = {
+        'media_type': 'video/mp4', 'bytes': base64.b64encode(data).decode(),
+    }
+    value['scene_digest'] = wire.digest(value['scene'])
+
+    w.relay.exchange(value, guard=lambda: None, cancelled=threading.Event())
+
+    projected = w.exchanges[0]['scene']
+    asset = projected['assets']['assets']['media-clip']
+    assert observed == [(oid, media.SCENE_VIDEO_INTERPRETATION, oid[7:])]
+    assert asset['media_id'] == oid and asset['object_id'] == oid
+    assert asset['content_sha256'] == oid[7:]
+    assert asset['type'] == 'video' and asset['resolution'] == '16x16'
+    assert projected['mediaEvidence']['media-clip'] == dict(proof, file=asset['local_path'])
+    assert not Path(asset['local_path']).exists()
+    assert value['scene']['assets']['assets']['media-clip']['content_sha256'] == oid
 
 
 @pytest.mark.parametrize('change', [None, 'provider', 'source', 'dependency', 'capability', 'epoch', 'boot', 'closure', 'generation', 'direct-boot', 'outside-boot'])

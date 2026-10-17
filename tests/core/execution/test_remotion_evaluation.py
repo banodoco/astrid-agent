@@ -1,5 +1,6 @@
 """Python cache/protocol checks only; injected replies are not renderer proof."""
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -26,8 +27,14 @@ def query_client(tmp_path, monkeypatch, *, response=None):
             assert request['compositionId'] == 'AstridTrackEvaluation'
             assert props['frames'] == request['frames']
             calls.append((identity, props))
-            return response if response is not None else {'ok': True, 'evaluation': [
-                {'frame': frame, 'layers': []} for frame in props['frames']]}
+            if response is not None:
+                return response
+            evaluation = [
+                ({'frame': frame, 'layers': [], 'coverage': 'GAP', 'content': None, 'findings': []}
+                 if 'scene' in props else {'frame': frame, 'layers': []})
+                for frame in props['frames']
+            ]
+            return {'ok': True, 'evaluation': evaluation}
     transport = Transport()
     monkeypatch.setattr(evaluation, 'host_remotion_client', lambda: transport)
     client = evaluation.RemotionEvaluationClient(project_dir=tmp_path, attempt_root=tmp_path,
@@ -134,6 +141,39 @@ def test_trusted_local_request_fields_are_unchanged(tmp_path, monkeypatch):
         'nodeExecutable': str(Path(sys.executable).resolve()),
         'remotionCli': str(tmp_path.resolve() / 'node_modules/@remotion/cli/remotion-cli.js'),
         'frames': [0], 'resolution': None, 'port': 31500, 'environment': {}}
+
+
+def test_scene_projection_overwrites_authored_identity_and_cache_binds_selected_font_bytes(tmp_path, monkeypatch):
+    fonts = tmp_path / 'public' / 'fonts'
+    fonts.mkdir(parents=True)
+    gelasio = fonts / 'Gelasio-Regular.woff2'
+    departure = fonts / 'DepartureMono-Regular.woff2'
+    gelasio.write_bytes(b'host-selected Gelasio test bytes')
+    departure.write_bytes(b'host-selected Departure Mono test bytes')
+
+    client, calls, current = query_client(tmp_path, monkeypatch)
+    scene = {
+        'rendererIdentity': 'authored-renderer-identity',
+        'fontDigests': {'Gelasio-Regular.woff2': 'authored-font-digest'},
+    }
+    client.query_scene(revision_digest='scene-r1', scene=scene, frames=[0])
+
+    first_scene = calls[0][1]['scene']
+    assert first_scene['rendererIdentity'] == current[0]
+    assert first_scene['fontDigests'] == {
+        'Gelasio-Regular.woff2': hashlib.sha256(gelasio.read_bytes()).hexdigest(),
+        'DepartureMono-Regular.woff2': hashlib.sha256(departure.read_bytes()).hexdigest(),
+    }
+    assert scene['rendererIdentity'] == 'authored-renderer-identity'
+    assert scene['fontDigests'] == {'Gelasio-Regular.woff2': 'authored-font-digest'}
+
+    client.query_scene(revision_digest='scene-r1', scene=scene, frames=[0])
+    assert len(calls) == 1
+    departure.write_bytes(b'changed host-selected font bytes')
+    client.query_scene(revision_digest='scene-r1', scene=scene, frames=[0])
+    assert len(calls) == 2
+    assert calls[1][1]['scene']['fontDigests']['DepartureMono-Regular.woff2'] == hashlib.sha256(
+        departure.read_bytes()).hexdigest()
 
 
 def test_missing_bootstrap_in_internal_executor_refuses_before_path_resolution(tmp_path, monkeypatch):
