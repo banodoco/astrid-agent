@@ -379,7 +379,7 @@ def apply_inverse(self, writes, publication):
     if not isinstance(publication, str) or not publication or not isinstance(writes, list) or not writes:
         raise commands.CommandError("inverse requires a named publication and authored writes")
     seen = set()
-    states = commands.entity_states(tl)
+    states = commands._recording_states(tl)
     for write in writes:
         if not isinstance(write, dict) or set(write) - {"id", "path", "before", "after", "order", "source", "group_containers"} or not {
                 "id", "path", "before", "after"} <= set(write):
@@ -444,7 +444,7 @@ def apply_inverse(self, writes, publication):
         if owner.shot_id is None:
             # Child clips (including zero-output music sources) can inherit a
             # canonical parent lane without a duplicate child track row.
-            current = commands.entity_states(tl)
+            current = commands._recording_states(tl)
             users.extend(sid for sid, payload in current.items()
                          if sid.startswith("occurrence:") and "/clip:" in sid
                          and payload.get("track") == owner.id
@@ -452,14 +452,12 @@ def apply_inverse(self, writes, publication):
         if users:
             raise commands.CommandError(f"Track {owner.scoped_id} is occupied by {', '.join(sorted(set(users)))}; inverse rolled back")
         _root(tl, write)
-    from astrid.sdk.timeline.transcripts import validate_bound_dependencies
-    validate_bound_dependencies(tl)
     from astrid.sdk.timeline import modifiers
     for write in writes:
         if write['path'] == 'modifiers.order':
             _write(_entity(tl, write['id']), write['path'], write['after'])
     for sid in {write['id'] for write in writes if write['path'].startswith('modifiers') or write['path'] == 'keyframes'}:
-        if sid in commands.entity_states(tl):
+        if sid in commands._recording_states(tl):
             data = _entity(tl, sid)
             modifiers.validate_keyframes(data, data.get('keyframes'))
     for write in writes:
@@ -471,7 +469,7 @@ def apply_inverse(self, writes, publication):
         # All before guards were checked before any mutation. Root restoration
         # above is the intended preceding batch state for this final permutation.
         owner = commands.track_owner(tl, state["value"][0])
-        actual = commands.state_at(commands.entity_states(tl), owner.scoped_id, "track_order")["value"]
+        actual = commands.state_at(commands._recording_states(tl), owner.scoped_id, "track_order")["value"]
         commands.reorder_tracks(owner, order=state["value"], expected_order=actual)
     retain_cut_reservation_mark(tl.bundle, reservations)
     tl._refresh()
@@ -483,6 +481,10 @@ def apply_inverse(self, writes, publication):
         refresh_projections(tl)
         music_beds.project(tl)
         music_beds.validate(tl)
+    # Dependency validation consumes the restored authored source and its now
+    # coherent projections, never the intermediate inverse transfer state.
+    from astrid.sdk.timeline.transcripts import validate_bound_dependencies
+    validate_bound_dependencies(tl)
 
 
 def inverse_command(calls, before, after, publication, *, consequences=()):
@@ -520,7 +522,7 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
             sid, path = commands.write_target(key, call.resolved)
             desired.setdefault((sid, path), copy.deepcopy(call.expect[key]))
     original_tl = Checkout(copy.deepcopy(before))
-    original = commands.entity_states(original_tl)
+    original = commands._recording_states(original_tl)
     created_tracks = {sid for value in calls for sid in commands.EditCommand.coerce(value).created if "/track:" in sid}
     for (sid, path), state in list(desired.items()):
         if path != "track_order":
@@ -582,7 +584,7 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
     # Reservation maxima belong to IDENTITY, not reversible authored content.
     desired = {(sid, path): state for (sid, path), state in desired.items() if not (
         sid == "parent" and path.startswith("config.app.astrid.cut_id_high_water"))}
-    states = commands.entity_states(Checkout(copy.deepcopy(after)))
+    states = commands._recording_states(Checkout(copy.deepcopy(after)))
     writes = [dict(id=sid, path=path, before=commands.state_at(states, sid, path), after=state)
               for (sid, path), state in sorted(desired.items())]
     writes = [w for w in writes if (w["id"], w["path"]) in presence_guards or
@@ -698,8 +700,8 @@ def stage(checkout, *, client, publication=None):
         conflict = overlap[1] if overlap else rebased.conflicts[0]
         # Attribute from explicit publication edges, including Runtime restore.
         for event in chain[:-1]:
-            left = commands.entity_states(Checkout(_exact(workspace, body, event.parent)))
-            right = commands.entity_states(Checkout(_exact(workspace, body, event.id)))
+            left = commands._recording_states(Checkout(_exact(workspace, body, event.parent)))
+            right = commands._recording_states(Checkout(_exact(workspace, body, event.id)))
             if (overlap and event is overlap[0]) or not commands._same_value(commands.state_at(left, conflict["id"], conflict["path"]),
                                         commands.state_at(right, conflict["id"], conflict["path"])):
                 label = (records.get(event.publication_id, {}).get("body") or {}).get("label")

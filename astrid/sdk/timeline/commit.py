@@ -617,7 +617,7 @@ class RuntimeCommitService:
                 paths = authored_paths(evidence["commands"]) | {(w["id"], w["path"]) for w in evidence["direct_writes"]}
                 for write in call.args["writes"]:
                     if any(overlaps((write["id"], write["path"]), path) for path in paths):
-                        states = commands.entity_states(Checkout(copy.deepcopy(onto)))
+                        states = commands._recording_states(Checkout(copy.deepcopy(onto)))
                         path = dict(kind="same-property", id=write["id"], path=write["path"],
                                     base=write["before"], theirs=commands.state_at(states, write["id"], write["path"]),
                                     ours=write["after"])
