@@ -303,6 +303,100 @@ def write_source(tmp_path, binary):
     return pack
 
 
+def run_assertions_with_retained_owner(tmp_path, nodeid, binaries):
+    """Run one assertion body inside a real Host-inspection owner launch."""
+    pack = write_source(tmp_path, binaries[0])
+    manifests = list(pack.rglob("executor.json")) or list(pack.rglob("executor.yaml"))
+    manifest = manifests[0]
+    import yaml
+
+    value = yaml.safe_load(manifest.read_text())
+    value["isolation"]["binaries"] = list(binaries)
+    manifest.write_text(json.dumps(value))
+
+    node_bin = "/Users/peteromalley/.nvm/versions/node/v20.19.4/bin"
+    path = os.environ["PATH"]
+    if "node" in binaries:
+        path = node_bin + os.pathsep + path
+    env = dict(
+        os.environ,
+        PATH=path,
+        PYTHONPATH=str(Path.cwd()),
+        PYTHONDONTWRITEBYTECODE="1",
+        XDG_STATE_HOME=str(tmp_path / "no-state"),
+        ASTRID_TEST_RETAINED_OWNER_CHILD="1",
+    )
+    env.pop("ASTRID_SOURCE_STATE", None)
+    launch = cb._HostInspectionLaunch((pack,), Path.cwd(), env)
+    script = tmp_path / "run-retained-owner-test.py"
+    script.write_text(
+        """from pathlib import Path
+import sys
+import pytest
+from tests.core.execution import test_confinement_launch_integration as confinement
+from tests.core.execution import test_remotion_attempt_policy as policy
+from tests.core.execution import test_remotion_closure_binding as closure_tests
+from tests.core.execution import test_renderer_retained_transport as transport
+
+root = Path(sys.argv[2])
+root.mkdir()
+patch = pytest.MonkeyPatch()
+try:
+    roots = closure_tests.roots.__wrapped__(root, patch)
+    selector = sys.argv[1]
+    if selector == "test_admitted_project_read_only_in_real_child":
+        policy.test_admitted_project_read_only_in_real_child(root, roots, patch, None)
+    elif selector in {
+        "test_changed_binding_refused_before_projection",
+        "test_other_capability_does_not_inherit_renderer_read_scope",
+    }:
+        getattr(policy, selector)(root, roots, None)
+    elif selector == "test_node_adopts_owner_retained_listener_without_child_bind":
+        launch = confinement.launch.__wrapped__(root)
+        transport.test_node_adopts_owner_retained_listener_without_child_bind(
+            launch, roots, root, None
+        )
+    else:
+        raise AssertionError(f"unexpected retained-owner selector: {selector}")
+finally:
+    patch.undo()
+""",
+        encoding="utf-8",
+    )
+    process = None
+    try:
+        process = pg.popen_owned_group(
+            [sys.executable, "-B", str(script), nodeid.rsplit("::", 1)[1], str(tmp_path / "child-fixtures")],
+            cwd=str(Path.cwd()),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            _inspection_launch=launch,
+        )
+        stdout, stderr = process.communicate(timeout=40)
+        process.wait(timeout=0)
+        owner = process._astrid_custody._inventory_owner
+        if process.returncode != 0:
+            raise AssertionError(
+                "retained-owner assertion process failed:\n"
+                + stdout.decode(errors="replace")
+                + stderr.decode(errors="replace")
+                + f"\nowner_error={owner.error!r}; first_failure={owner.first_failure!r}; "
+                + f"pending={owner.pending!r}; accepting={owner.accepting!r}"
+            )
+        assert len(owner.helpers) >= len(binaries)
+        if "ffprobe" in binaries:
+            assert len(launch.inspection.images["ffprobe"]) > 1
+        owner.finish()
+        pg.verify_tree_absent(process)
+        assert not owner.accepting and owner.pending is None and owner.error is None
+        assert not (tmp_path / "no-state").exists()
+    finally:
+        if process is not None and process.poll() is None:
+            pg.terminate_tree(process)
+            process.wait(timeout=5)
+
+
 def test_no_managed_state_trusted_policy_is_retained_and_git_exact(tmp_path, monkeypatch):
     pack = write_source(tmp_path, "python3")
     (tmp_path / ".git").mkdir()

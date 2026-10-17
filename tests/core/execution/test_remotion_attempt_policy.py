@@ -13,9 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.execution import custody_broker as cb
 from astrid.core.execution import generic_host as gh
 from astrid.core.execution import remotion_closure
 from tests.core.execution import test_remotion_closure_binding as closure_tests
+from tests.core.execution.test_inventory_load_commands import run_assertions_with_retained_owner
 
 roots = closure_tests.roots
 
@@ -36,7 +38,11 @@ def inputs(tmp_path, roots):
     return host, record, binding, attempt, authority
 
 
-def test_admitted_project_read_only_in_real_child(tmp_path, roots, monkeypatch):
+def test_admitted_project_read_only_in_real_child(tmp_path, roots, monkeypatch, request):
+    if os.environ.get("ASTRID_TEST_RETAINED_OWNER_CHILD") != "1":
+        run_assertions_with_retained_owner(tmp_path, request.node.nodeid, ("node", "ffmpeg"))
+        return
+    assert cb._COMMAND_INVENTORY_FD in os.environ
     host, record, binding, attempt, authority = inputs(tmp_path, roots)
     outside = tmp_path / 'unrelated-private.txt'
     outside.write_text('outside')
@@ -72,7 +78,11 @@ print(json.dumps(result))
         host.shutdown()
 
 
-def test_changed_binding_refused_before_projection(tmp_path, roots):
+def test_changed_binding_refused_before_projection(tmp_path, roots, request):
+    if os.environ.get("ASTRID_TEST_RETAINED_OWNER_CHILD") != "1":
+        run_assertions_with_retained_owner(tmp_path, request.node.nodeid, ("node", "ffmpeg"))
+        return
+    assert cb._COMMAND_INVENTORY_FD in os.environ
     host, record, binding, attempt, authority = inputs(tmp_path, roots)
     try:
         binding.receipt.write_text('{}')
@@ -82,7 +92,11 @@ def test_changed_binding_refused_before_projection(tmp_path, roots):
         host.shutdown()
 
 
-def test_other_capability_does_not_inherit_renderer_read_scope(tmp_path, roots):
+def test_other_capability_does_not_inherit_renderer_read_scope(tmp_path, roots, request):
+    if os.environ.get("ASTRID_TEST_RETAINED_OWNER_CHILD") != "1":
+        run_assertions_with_retained_owner(tmp_path, request.node.nodeid, ("node", "ffmpeg"))
+        return
+    assert cb._COMMAND_INVENTORY_FD in os.environ
     host, record, binding, attempt, authority = inputs(tmp_path, roots)
     try:
         record = replace(record, definition=replace(record.definition, id='rendering.timeline_visualize'))

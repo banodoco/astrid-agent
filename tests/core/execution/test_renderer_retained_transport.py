@@ -13,17 +13,23 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.core.execution import custody_broker as cb
 from astrid.core.execution import generic_host as gh
 from astrid.core.execution.remotion_closure import RemotionClosureBinding
 from astrid.core.execution.renderer_transport import RetainedRendererTransport
 from tests.core.execution import test_confinement_launch_integration as confinement
 from tests.core.execution import test_remotion_closure_binding as closure_tests
+from tests.core.execution.test_inventory_load_commands import run_assertions_with_retained_owner
 
 launch = confinement.launch
 roots = closure_tests.roots
 
 
-def test_node_adopts_owner_retained_listener_without_child_bind(launch, roots):
+def test_node_adopts_owner_retained_listener_without_child_bind(launch, roots, tmp_path, request):
+    if os.environ.get("ASTRID_TEST_RETAINED_OWNER_CHILD") != "1":
+        run_assertions_with_retained_owner(tmp_path, request.node.nodeid, ("node",))
+        return
+    assert cb._COMMAND_INVENTORY_FD in os.environ
     policy, *_ = launch
     bindings = gh.ExecutableAdmission(
         "/Users/peteromalley/.nvm/versions/node/v20.19.4/bin:/usr/bin:/bin"
