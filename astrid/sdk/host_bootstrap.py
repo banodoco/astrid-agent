@@ -18,7 +18,6 @@ import shlex
 import shutil
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -186,38 +185,6 @@ def _capture_native_host_launch_identity(pid: int) -> dict[str, int] | None:
         raise PackHostBootstrapError("host precise launch identity unavailable") from error
 
 
-def _host_launch_argv_source(state: Mapping[str, Any]) -> tuple[str, ...]:
-    """Recover the protected launch source, never a redacted diagnostic tail."""
-    argv = state.get("launch_argv_source")
-    if (not isinstance(argv, list) or not 1 <= len(argv) <= 256
-            or any(not isinstance(value, str) or "\0" in value for value in argv)
-            or sum(len(os.fsencode(value)) + 1 for value in argv) > 64 * 1024
-            or not Path(argv[0]).is_absolute()
-            or _launch_argv_digest(argv) != state.get("launch_argv_sha256")):
-        raise PackHostBootstrapError("host launch source is invalid; retirement blocked")
-    bindings = {
-        "python_executable": None, "endpoint": "--runtime-endpoint",
-        "executor_id": "--executor-id", "ready_file": "--ready-file",
-        "credential_file": "--credential-file", "support_root": "--support-root",
-        "source_checkout": "--source-checkout", "source_checkout_digest": "--source-checkout-digest",
-        "source_closure_digest": "--source-closure-digest",
-        "source_inventory_identity": "--source-inventory-identity",
-        "runtime_instance_id": "--runtime-instance-id",
-        "boot_manifest_path": "--boot-manifest-path", "boot_manifest_hash": "--boot-manifest-hash",
-    }
-    for field, option in bindings.items():
-        value = state.get(field)
-        if option is None:
-            matched = value == argv[0]
-        else:
-            index = argv.index(option) if option in argv else -1
-            matched = (argv.count(option) == 1 and 0 <= index < len(argv) - 1
-                       and value == argv[index + 1])
-        if not isinstance(value, str) or not matched:
-            raise PackHostBootstrapError("host launch source binding differs; retirement blocked")
-    return tuple(argv)
-
-
 def _darwin_host_command_observation(pid: int, state: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """Bounded command observation, never a cleanup or signaling capability."""
     from astrid.core.execution.custody_broker import _command_observation, _ps_lstart_birth
@@ -246,14 +213,11 @@ def _darwin_host_command_observation(pid: int, state: Mapping[str, Any] | None =
                        for key in ("pid", "uid", "pgid", "start_sec", "start_usec"))):
             raise PackHostBootstrapError("host native launch binding unavailable; retirement blocked")
         if metadata["argv_sha256"] != pin:
-            # Framework Python may replace only argv[0]. Across interpreters,
-            # recover the exact tail from the protected, digest-bound source.
+            # Framework Python may replace argv[0]. The exact original tail
+            # remains private on the original retained Popen, never in a marker.
             process = _RETAINED_HOSTS.get((pid, str(state["process_birth_id"])))
             known = getattr(process, "_astrid_host_launch_argv", None)
-            if known is None and "launch_argv_source" in state:
-                known = _host_launch_argv_source(state)
             if (not isinstance(known, tuple) or not known or _launch_argv_digest(known) != pin
-                    or metadata.get("executable") != argv[0]
                     or not _host_executable_matches(argv[0], Path(known[0]))
                     or _launch_argv_digest((argv[0], *known[1:])) != metadata["argv_sha256"]):
                 raise PackHostBootstrapError("host native command differs from its launch; retirement blocked")
@@ -403,16 +367,7 @@ def _host_failure_cause(log_path: Path, *, max_chars: int = 400) -> str:
 
 def _read_object(path: Path) -> Mapping[str, Any] | None:
     try:
-        with path.open(encoding="utf-8") as stream:
-            value = json.load(stream)
-            if isinstance(value, Mapping) and "launch_argv_source" in value:
-                opened, named = os.fstat(stream.fileno()), path.lstat()
-                if (not stat.S_ISREG(opened.st_mode) or stat.S_IMODE(opened.st_mode) != 0o600
-                        or opened.st_uid != os.getuid() or opened.st_nlink != 1
-                        or stat.S_ISLNK(named.st_mode)
-                        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
-                    raise PackHostBootstrapError("host launch source is unprotected; retirement blocked")
-                _host_launch_argv_source(value)
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, Mapping) else None
@@ -1387,7 +1342,6 @@ def ensure_pack_host(
         _RETAINED_HOSTS[(process.pid, _host_birth_identity(process.pid))] = process
         process_state = {
             "launch_argv_sha256": launch_digest,
-            "launch_argv_source": list(argv),
             "execution_profile": _execution_profile(), "execution_origins": execution_origins,
             **expected,
             "version": 2,
