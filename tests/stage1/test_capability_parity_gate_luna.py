@@ -21,6 +21,7 @@ import subprocess
 import sys
 from typing import Any
 
+from astrid.core.execution.capability_ledger import capability_execution_admission
 from astrid.core.execution.generic_host import GenericPackHost
 
 
@@ -147,6 +148,7 @@ def _run_proofs(report: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def test_stage1_capability_parity_is_explicit_and_family_proven(tmp_path: Path) -> None:
     host = GenericPackHost(pack_roots=[PACKS], capability_matrix=MATRIX, credential_source={})
     records = host.discover()
+    discovered_ids = {record.id for record in records}
     report = _report(host)
     proof_runs = _run_proofs(report)
     report["proof_runs"] = proof_runs
@@ -154,13 +156,33 @@ def test_stage1_capability_parity_is_explicit_and_family_proven(tmp_path: Path) 
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     assert report["schema"] == "astrid.stage1.capability_parity.v1"
-    assert report["discovered_count"] == 77
-    discovered_ids = {record.id for record in records}
-    assert discovered_ids <= set(host.matrix)
-    assert len(set(host.matrix) - discovered_ids) == 9
+    assert report["discovered_count"] == 105
+    assert len(discovered_ids) == report["discovered_count"]
+    denied_undeclared_ids = {"media.transcript_publish", "pixel.strip"}
+    assert discovered_ids - set(host.matrix) == denied_undeclared_ids
+    matrix_approved_ids = discovered_ids & set(host.matrix)
+    assert len(matrix_approved_ids) == 103
+    for capability_id in denied_undeclared_ids:
+        admission = capability_execution_admission(host.ledger, capability_id)
+        assert admission["executable"] is False
+        assert admission["reason"] == "capability is not declared in the canonical matrix"
+    assert set(host.matrix) - discovered_ids == {
+        "h3_av.transform",
+        "hivemind.contribute",
+        "hivemind.get_item",
+        "hivemind.ingest_article",
+        "hivemind.ingest_workflow",
+        "hivemind.ingest_youtube",
+        "hivemind.refresh_media",
+        "hivemind.search",
+    }
 
     allowed = {"required", "optional", "unsupported", "retired"}
     for record in records:
+        if record.id in denied_undeclared_ids:
+            assert record.approval_reason
+            assert record.matrix == {}
+            continue
         disposition = record.matrix.get("disposition")
         assert disposition in allowed, f"{record.id}: unclassified disposition {disposition!r}"
         assert str(record.matrix.get("evidence_reason", "")).strip(), f"{record.id}: missing evidence reason"

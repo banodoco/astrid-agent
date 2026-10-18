@@ -11,7 +11,7 @@ def test_shipped_ledger_reconciles_historical_capability_sets():
 
     assert sources["counts"]["pack_labels"] == 107
     assert sources["counts"]["historical_pack_labels"] == 112
-    assert sources["counts"]["executor_inventory"] == 92
+    assert sources["counts"]["executor_inventory"] == 118
     assert sources["counts"]["legacy_ids"] == 19
     assert all(section["complete"] for section in sources["coverage"].values())
     assert not sources["coverage"]["source_labels"]["missing"]
@@ -90,18 +90,27 @@ def test_historical_executor_rows_are_explicitly_not_installed():
 
     assert set(absent) == {
         "iteration.prepare",
+        "media.transcript_publish",
+        "pixel.strip",
         "reigh.open_in_reigh",
         "reigh.publish",
         "reigh.reigh_data",
         "reigh.spatial_audio_page",
         "training.asset_cache",
     }
+    undeclared = {"media.transcript_publish", "pixel.strip"}
     external = {row["id"]: row for row in absent.values() if row["id"].split(".", 1)[0] in {"discord_local", "hivemind", "seedance_local"}}
-    historical = {row["id"]: row for row in absent.values() if row["id"] not in external}
+    historical = {
+        row["id"]: row for row in absent.values()
+        if row["id"] not in external and row["id"] not in undeclared
+    }
     assert external == {}
     assert {row["disposition"] for row in historical.values()} == {"retired", "unsupported"}
     assert {row["discovery_status"] for row in historical.values()} == {"historical_only"}
     assert all(row["executable"] is False for row in historical.values())
+    assert {absent[capability_id]["disposition"] for capability_id in undeclared} == {"historical"}
+    assert {absent[capability_id]["discovery_status"] for capability_id in undeclared} == {"historical_only"}
+    assert all(absent[capability_id]["executable"] is False for capability_id in undeclared)
 
 
 def test_historical_source_labels_preserve_retirements_and_replacement():

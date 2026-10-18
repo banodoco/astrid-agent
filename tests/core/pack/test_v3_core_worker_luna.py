@@ -27,8 +27,10 @@ def _pack(root: Path, pack_id: str) -> PackDefinition:
 
 
 def test_non_strict_pack_scan_quarantines_optional_failure_without_downgrading_discovery(monkeypatch, tmp_path):
-    good_root = tmp_path / "good"
-    bad_root = tmp_path / "bad"
+    packs_root = tmp_path / "packs"
+    good_root = packs_root / "good"
+    bad_root = packs_root / "bad"
+    packs_root.mkdir()
     good_root.mkdir()
     bad_root.mkdir()
     (good_root / "pack.yaml").touch()
@@ -40,19 +42,19 @@ def test_non_strict_pack_scan_quarantines_optional_failure_without_downgrading_d
     def fake_load(path):
         if Path(path).parent.name == "bad":
             raise PackValidationError("invalid optional pack")
-        return _pack(Path(path).parent, "good")
+        return _pack(Path(path).parent, Path(path).parent.name)
 
     monkeypatch.setattr("astrid.core.pack.loader.pack_manifest_path", fake_manifest_path)
     monkeypatch.setattr("astrid.core.pack.loader.load_pack_manifest", fake_load)
 
-    observed = scan_packs(tmp_path, strict=False)
+    observed = scan_packs(packs_root, strict=False)
     assert isinstance(observed, PackScan)
     assert [pack.id for pack in observed.packs] == ["good"]
     assert [record.pack_id for record in observed.quarantined] == ["bad"]
     assert isinstance(observed.quarantined[0], QuarantinedPack)
 
     try:
-        discover_packs(tmp_path)
+        discover_packs(packs_root)
     except PackValidationError as exc:
         assert "invalid optional pack" in str(exc)
     else:
