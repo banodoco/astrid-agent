@@ -3305,14 +3305,25 @@ _COMMAND_CLIENTS_LOCK = threading.Lock()
 
 
 class _HostInspectionLaunch:
-    """Explicit composition-root input, never reconstructed from environment."""
+    """Explicit composition-root input with a retained managed-source binding.
+
+    A caller needing managed inventory must select its exact declaration with
+    ASTRID_SOURCE_STATE before construction and pass the same environment to
+    the child. Inspection alone never grants the default user source store.
+    """
 
     def __init__(self, pack_roots: tuple[Path, ...], source_checkout: Path,
                  environment: Mapping[str, str], capability_matrix: Path | None = None, *, node_executable: Path | None = None):
         from .declared_executables import FilePin, _InspectionAdmission, _InspectionTool
         from .generic_host import _binary_requirements, _launch_static_records
+        from astrid.core.pack.source_setup import SOURCE_STATE_ENV
 
         self.environment = dict(environment)
+        # Capture the explicit declaration now, rather than reconstructing it
+        # at process launch from a possibly replaced file. The cwd is bound by
+        # policy() once the caller supplies the actual launch directory.
+        self.managed_policy = (_managed_inventory_launch_policy(environment, str(source_checkout))
+                               if environment.get(SOURCE_STATE_ENV) else None)
         self.source_checkout = source_checkout.resolve(strict=True)
         self.source_identity = self.source_checkout.stat()
         marker = self.source_checkout / '.git'
@@ -3359,8 +3370,12 @@ class _HostInspectionLaunch:
         if (current.st_dev, current.st_ino) != (self.source_identity.st_dev, self.source_identity.st_ino):
             raise CustodyError('inspection source checkout changed')
         self.tool.verify()
-        policy = {'inspection': self.inspection, 'inspection_tool': self.tool,
-                  'cwd': str(Path(cwd).resolve(strict=True)), 'environment': dict(environment)}
+        policy = dict(self.managed_policy or {'roots': {}})
+        if self.managed_policy is not None:
+            _verify_managed_inventory_policy(policy)
+            policy['roots'] = {root: list(packs) for root, packs in policy['roots'].items()}
+        policy.update(inspection=self.inspection, inspection_tool=self.tool,
+                      cwd=str(Path(cwd).resolve(strict=True)), environment=dict(environment))
         if self.revision_marker is not None:
             policy.update(revision_checkout=str(self.source_checkout),
                           revision_identity=(current.st_dev, current.st_ino),
@@ -3374,12 +3389,10 @@ def _inventory_launch_policy(environment: Mapping[str, str], cwd: str,
         return _managed_inventory_launch_policy(environment, cwd)
     if type(inspection) is not _HostInspectionLaunch:
         raise CustodyError('inspection requires an explicit trusted Host launch')
-    # Explicit inspection never selects the default user source store.
-    from astrid.core.pack.source_setup import SOURCE_STATE_ENV
-    managed = _managed_inventory_launch_policy(environment, cwd) if environment.get(SOURCE_STATE_ENV) else None
-    policy = dict(managed or {'roots': {}})
-    policy.update(inspection.policy(environment, cwd))
-    if managed is None and 'revision_checkout' in policy:
+    # The trusted producer owns its declaration snapshot; never rediscover
+    # managed sources (or the default user store) while preparing the child.
+    policy = inspection.policy(environment, cwd)
+    if 'git' not in policy and 'revision_checkout' in policy:
         selected = shutil.which('git', path=environment.get('PATH', os.defpath))
         if selected is None:
             raise CustodyError('command inventory Git executable is unavailable')
@@ -3398,13 +3411,18 @@ def _managed_inventory_launch_policy(environment: Mapping[str, str], cwd: str) -
     state_home = Path(environment.get('XDG_STATE_HOME', str(Path(environment.get('HOME', str(Path.home()))) / '.local/state')))
     path = Path(configured) if configured else state_home / 'astrid/default/pack-sources.json'
     if not path.exists():
+        if configured:
+            raise CustodyError('command inventory explicit state is unavailable')
         return None
-    if path.is_symlink() or not path.is_file():
+    if (path.is_symlink() or not path.is_file()
+            or (configured and (not path.is_absolute() or path.resolve(strict=True) != path))):
         raise CustodyError('command inventory state is unavailable')
     path = path.resolve(strict=True)
+    state_stat = path.stat()
     raw = path.read_bytes()
     state = json.loads(raw)
-    if not isinstance(state, dict) or state.get('version') != sources.SOURCE_STATE_VERSION:
+    if (not isinstance(state, dict) or state.get('version') != sources.SOURCE_STATE_VERSION
+            or not isinstance(state.get('active'), dict) or not isinstance(state.get('disabled', []), list)):
         raise CustodyError('command inventory state is malformed')
     roots = {}
     for key, value in state.get('active', {}).items():
@@ -3413,13 +3431,15 @@ def _managed_inventory_launch_policy(environment: Mapping[str, str], cwd: str) -
         record = sources._record_from_mapping(value)
         if record.pack_id != key:
             raise CustodyError('command inventory source key differs')
+        if value['pack_root'] != str(record.pack_root):
+            raise CustodyError('command inventory pack root is aliased')
         declaration = sources.SourceDeclaration(record.pack_id, record.repository, record.revision,
                                                 record.pack_subpath, record.manifest_sha256, record.tree_sha256)
         checkout = sources.next_parent_checkout(record.pack_root, declaration)
         if not checkout.is_dir() or checkout.is_symlink() or checkout.resolve(strict=True) != checkout:
             raise CustodyError('command inventory checkout is aliased')
         roots.setdefault(str(checkout), []).append(str(record.pack_root))
-    if not roots:
+    if not roots and not configured:
         return None
     executable = shutil.which('git', path=environment.get('PATH'))
     if executable is None:
@@ -3427,9 +3447,32 @@ def _managed_inventory_launch_policy(environment: Mapping[str, str], cwd: str) -
     git = Path(executable).resolve(strict=True)
     if not git.is_file() or not os.access(git, os.X_OK):
         raise CustodyError('command inventory Git executable is unavailable')
+    paths = set(roots) | {pack for packs in roots.values() for pack in packs}
+    identities = {}
+    for root in paths:
+        value = Path(root).stat()
+        identities[root] = (value.st_dev, value.st_ino)
     return {'state_path': str(path), 'state_sha256': _digest_bytes(raw), 'roots': roots,
+            'state_identity': (state_stat.st_dev, state_stat.st_ino),
+            'root_identities': identities,
             'git': str(git), 'git_sha256': _digest_bytes(git.read_bytes()),
             'cwd': str(Path(cwd).resolve(strict=True)), 'environment': dict(environment)}
+
+
+def _verify_managed_inventory_policy(policy: Mapping[str, Any]) -> None:
+    """Recheck retained declaration and directories without selecting sources."""
+    state = Path(policy['state_path'])
+    value = state.stat()
+    if (state.is_symlink() or not state.is_file() or str(state.resolve(strict=True)) != str(state)
+            or _digest_bytes(state.read_bytes()) != policy['state_sha256']
+            or ('state_identity' in policy and (value.st_dev, value.st_ino) != policy['state_identity'])):
+        raise CustodyError('command inventory declaration changed')
+    for root, identity in policy.get('root_identities', {}).items():
+        path = Path(root)
+        value = path.stat()
+        if (path.is_symlink() or not path.is_dir() or str(path.resolve(strict=True)) != root
+                or (value.st_dev, value.st_ino) != identity):
+            raise CustodyError('command inventory root identity changed')
 
 
 class _InventoryChannelEOF(CustodyError):
@@ -3545,6 +3588,9 @@ class _CommandInventoryOwner:
     def _validate_policy(self, checkout: str, cwd: str, environment: Mapping[str, str], operation: str) -> None:
         import shutil
         p = self.policy
+        if 'state_path' in p:
+            self.failure_stage = 'policy_source_state'
+            _verify_managed_inventory_policy(p)
         explicit_revision = operation == 'revision' and checkout == p.get('revision_checkout')
         if explicit_revision:
             root = Path(checkout)
@@ -3566,9 +3612,6 @@ class _CommandInventoryOwner:
             self.failure_stage = 'policy_source_state'
             if 'state_path' not in p:
                 raise CustodyError('command inventory checkout is outside the launch binding')
-            state = Path(p['state_path'])
-            if state.is_symlink() or _digest_bytes(state.read_bytes()) != p['state_sha256']:
-                raise CustodyError('command inventory declaration changed')
             self.failure_stage = 'policy_paths'
             pack_roots = {root for values in p['roots'].values() for root in values}
             allowed = set(p['roots']) if operation in {'revision', 'clean_status'} else pack_roots

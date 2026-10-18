@@ -421,6 +421,183 @@ def test_no_managed_state_trusted_policy_is_retained_and_git_exact(tmp_path, mon
     assert not list(tmp_path.rglob("pack-sources.json"))
 
 
+def test_unbound_managed_inventory_retains_second_operation_failure(tmp_path, monkeypatch):
+    """Synthetic G boundary: first inspection completed, next Git request unbound."""
+    pack = write_source(tmp_path, "true")
+    env = {"PATH": "/usr/bin:/bin", "XDG_STATE_HOME": str(tmp_path / "absent")}
+    launch = cb._HostInspectionLaunch((pack,), tmp_path, env)
+    policy = cb._inventory_launch_policy(env, str(tmp_path), launch)
+    custody = SimpleNamespace(root=tmp_path, owner_epoch="epoch", process=SimpleNamespace(pid=123),
+                              _launch_broker=SimpleNamespace(run_id="run"))
+    owner = cb._CommandInventoryOwner(custody, policy)
+    binding = {"run_id": "run", "owner_epoch": "epoch", "generation": 1, "target": {"pid": 123}}
+    monkeypatch.setattr(owner, "_authenticate", lambda channel: binding)
+    monkeypatch.setattr(pg, "popen_owned_process", lambda *a, **kw: pytest.fail("unbound helper"))
+    owner.last_operation = 1
+    frame = {"version": cb._COMMAND_INVENTORY_VERSION, "command": "inventory_git", "binding": binding,
+             "operation_id": 2, "operation": "revision", "checkout": str(pack),
+             "cwd": str(tmp_path), "environment": env}
+    with pytest.raises(cb.CustodyError, match="outside the launch binding") as failure:
+        owner._execute(frame, None)
+    owner._retain_first_failure(failure.value)
+    assert owner.last_operation == 1 and owner.pending is None and owner.helpers == {}
+    assert owner.first_failure["operation_id"] == 2
+    assert owner.first_failure["substage"] == "policy_source_state"
+    assert owner.first_failure["code"] == "COMMAND_INVENTORY_FAILED"
+    assert owner.first_failure["detail"] is None and not owner.first_failure["raw_message_emitted"]
+    assert owner.first_failure["chain"] == [{"error_type": "CustodyError", "message_sha256":
+        cb._digest_bytes(b"command inventory checkout is outside the launch binding")}]
+
+
+@pytest.fixture
+def declared_source_launch(tmp_path):
+    from astrid.core.pack import source_setup as sources
+
+    pack = write_source(tmp_path, "true")
+    checkout = tmp_path / "managed"
+    checkout.mkdir()
+    managed_pack = checkout / "pack"
+    managed_pack.mkdir()
+    record = sources.InstalledSource("demo", managed_pack, "fixture-local", "a" * 40,
+                                    "pack", "b" * 64, "c" * 64)
+    state = tmp_path / "sources.json"
+    state.write_text(json.dumps({"version": sources.SOURCE_STATE_VERSION,
+                                "active": {"demo": record.to_dict()}, "cached": {}, "disabled": []}))
+    env = {"PATH": "/usr/bin:/bin", sources.SOURCE_STATE_ENV: str(state),
+           "XDG_STATE_HOME": str(tmp_path / "absent")}
+    return pack, checkout, managed_pack, state, env
+
+
+def test_declared_state_cannot_be_reselected_after_inspection_binding(declared_source_launch, tmp_path):
+    pack, checkout, managed_pack, state, env = declared_source_launch
+    launch = cb._HostInspectionLaunch((pack,), tmp_path, env)
+    # Before the fix, policy creation silently pinned these replacement bytes.
+    state.write_text(state.read_text() + "\n")
+    with pytest.raises(cb.CustodyError, match="declaration changed"):
+        cb._inventory_launch_policy(env, str(tmp_path), launch)
+
+
+@pytest.mark.parametrize("fault", ["foreign", "state_bytes", "state_identity", "checkout", "pack_root", "cwd", "environment"])
+def test_declared_inventory_refuses_drift_before_helper(declared_source_launch, tmp_path, monkeypatch, fault):
+    pack, checkout, managed_pack, state, env = declared_source_launch
+    launch = cb._HostInspectionLaunch((pack,), tmp_path, env)
+    policy = cb._inventory_launch_policy(env, str(tmp_path), launch)
+    owner = cb._CommandInventoryOwner(SimpleNamespace(), policy)
+    binding = {"run_id": "run", "owner_epoch": "epoch", "generation": 1, "target": {"pid": 123}}
+    monkeypatch.setattr(owner, "_authenticate", lambda channel: binding)
+    monkeypatch.setattr(pg, "popen_owned_process", lambda *a, **kw: pytest.fail("changed binding spawned helper"))
+    frame = {"version": cb._COMMAND_INVENTORY_VERSION, "command": "inventory_git", "binding": binding,
+             "operation_id": 1, "operation": "revision", "checkout": str(checkout),
+             "cwd": str(tmp_path), "environment": dict(env)}
+    if fault == "foreign":
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        frame["checkout"] = str(foreign)
+    elif fault == "state_bytes":
+        state.write_text(state.read_text() + "\n")
+    elif fault == "state_identity":
+        replacement = tmp_path / "replacement.json"
+        replacement.write_bytes(state.read_bytes())
+        replacement.replace(state)
+    elif fault in {"checkout", "pack_root"}:
+        root = checkout if fault == "checkout" else managed_pack
+        root.rename(root.with_name(root.name + "-original"))
+        root.mkdir()
+        if fault == "checkout":
+            managed_pack.mkdir()
+    elif fault == "cwd":
+        frame["cwd"] = "/"
+    else:
+        frame["environment"]["UNBOUND"] = "changed"
+    with pytest.raises(cb.CustodyError):
+        owner._execute(frame, None)
+    assert owner.helpers == {} and owner.pending is None and owner.last_operation == 0
+
+
+@pytest.mark.parametrize("fault", ["missing", "relative", "alias", "pack_alias"])
+def test_declared_inventory_refuses_unbound_state_at_construction(declared_source_launch, tmp_path, fault):
+    pack, checkout, managed_pack, state, env = declared_source_launch
+    if fault == "missing":
+        env["ASTRID_SOURCE_STATE"] = str(tmp_path / "missing")
+    elif fault == "relative":
+        env["ASTRID_SOURCE_STATE"] = "sources.json"
+    elif fault == "alias":
+        alias = tmp_path / "alias.json"
+        alias.symlink_to(state)
+        env["ASTRID_SOURCE_STATE"] = str(alias)
+    else:
+        alias = tmp_path / "managed-alias"
+        alias.symlink_to(checkout, target_is_directory=True)
+        value = json.loads(state.read_text())
+        value["active"]["demo"]["pack_root"] = str(alias / "pack")
+        state.write_text(json.dumps(value))
+    with pytest.raises(cb.CustodyError):
+        cb._HostInspectionLaunch((pack,), tmp_path, env)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native retained Host inspection owner")
+@pytest.mark.parametrize("dirty", [False, True])
+def test_declared_inventory_uses_original_host_owner(tmp_path, dirty):
+    from astrid.core.pack import source_setup as sources
+    from tests.core.pack.test_source_setup import _fixture_repo
+
+    checkout = tmp_path / "demo"
+    revision = _fixture_repo(checkout)
+    declaration = sources.SourceDeclaration("demo", "fixture-local", revision)
+    record = sources._validate_checkout(checkout, declaration)
+    state = tmp_path / "sources.json"
+    state.write_text(json.dumps({"version": sources.SOURCE_STATE_VERSION,
+                                "active": {"demo": record.to_dict()}, "cached": {}, "disabled": []}))
+    env = dict(os.environ, ASTRID_SOURCE_STATE=str(state), XDG_STATE_HOME=str(tmp_path / "absent"),
+               PYTHONDONTWRITEBYTECODE="1")
+    launch = cb._HostInspectionLaunch((checkout,), tmp_path, env)
+    if dirty:
+        (checkout / "pack.yaml").write_text((checkout / "pack.yaml").read_text() + "\n# dirty\n")
+    script = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from astrid.core.pack.source_setup import active_source_inventory, SourceSetupError
+try:
+    result = active_source_inventory()
+except SourceSetupError as error:
+    assert sys.argv[2] == 'True' and 'dirty' in str(error)
+    print(json.dumps({'dirty_refused': True}))
+else:
+    assert sys.argv[2] == 'False' and len(result.sources) == 1
+    print(json.dumps({'revision': result.sources[0].revision, 'identity': result.identity}))
+"""
+    process = pg.popen_owned_group(
+        [sys.executable, "-B", "-I", "-c", script, str(Path.cwd()), str(dirty)],
+        cwd=str(tmp_path), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, _inspection_launch=launch)
+    try:
+        stdout, stderr = process.communicate(timeout=40)
+        assert process.wait(timeout=0) == 0, stderr.decode()
+        owner = process._astrid_custody._inventory_owner
+        owner.finish()
+        pg.verify_tree_absent(process)
+        result = json.loads(stdout)
+        if dirty:
+            assert result == {"dirty_refused": True}
+        else:
+            assert result["revision"] == revision and result["identity"]
+        operations = 2 if dirty else 4
+        assert len(owner.helpers) == operations
+        assert owner.pending is None and owner.error is None and owner.first_failure is None
+        assert owner.last_operation == operations and not owner.accepting
+        journal = [json.loads(line) for line in (process._astrid_custody.root / "custody.journal.jsonl").read_text().splitlines()]
+        pending = [row for row in journal if row.get("event") == "command_inventory_pending"]
+        completed = [row for row in journal if row.get("event") == "command_inventory_completed"]
+        assert [row["operation_id"] for row in pending] == list(range(1, operations + 1))
+        assert [row["operation_id"] for row in completed] == list(range(1, operations + 1))
+        assert all(row["helper_graph"] == "VERIFIED" and row["original_wait"] == 0 for row in completed)
+        assert all(helper.wait(timeout=0) == 0 and helper.pid != process.pid for helper in owner.helpers.values())
+        assert not (tmp_path / "absent").exists()
+    finally:
+        if process.poll() is None:
+            pg.terminate_tree(process)
+            process.wait(timeout=5)
+
+
 def test_vcs_revision_routes_only_fixed_request(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     calls = []
