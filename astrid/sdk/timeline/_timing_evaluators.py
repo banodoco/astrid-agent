@@ -867,7 +867,7 @@ class _TimingEvaluators:
 
     def _fit_sequences(self) -> list[str]:
         """Re-lay every sequence that has a fit (see ``timeline_intent.sequence_fit``) so it lands on its word."""
-        groups: dict[str, list[Clip]] = {}
+        groups: dict[tuple[str, str], list[Clip]] = {}
         for clip in self.clips():
             tag = intent.sequence(clip.data)
             if tag and not intent.orphan(clip.data):
@@ -965,7 +965,8 @@ class _TimingEvaluators:
                 new.pop("from", None), new.pop("to", None)
                 new["hold"] = _r(n / self.fps)
                 intent.set_sequence_fit(new, fit if i == 0 else None)
-                intent.set_sequence(new, seq_id, i)
+                # The group key scopes the fit to a shot; persisted IDs are sequence names.
+                intent.set_sequence(new, seq_id[1], i)
                 rows.append(new)
                 frame += n
             changes.append(f"sequence {seq_id}: {len(steps)} → {len(plan)} steps, lands on {land_name} at frame {life}")

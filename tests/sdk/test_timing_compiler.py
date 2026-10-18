@@ -66,7 +66,7 @@ def test_compiled_checkout_preserves_live_clip_and_params_handles():
 def test_open_ripple_scope_keeps_identity_based_music_exclusions():
     tl = Checkout(tiny())
     bed = next(c for c in tl.clips(audio=True) if c.track == "music")
-    bed.data["to"] = 8.0
+    bed.hold_for(8.0)
     original = copy.deepcopy(bed.data)
     with retime_scope(tl):
         tl.insert_time(1.0, 0.5, skip=[bed.data])
