@@ -3049,6 +3049,16 @@
         {
           "action": "_StoreAction",
           "default": null,
+          "dest": "message",
+          "nargs": null,
+          "options": [
+            "--message"
+          ],
+          "required": false
+        },
+        {
+          "action": "_StoreAction",
+          "default": null,
           "dest": "project",
           "nargs": null,
           "options": [

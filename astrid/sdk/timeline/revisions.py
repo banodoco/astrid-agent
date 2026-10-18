@@ -148,6 +148,7 @@ class RuntimeRevisions(RevisionStore):
             restored_from_revision_id=_text(summary.get("restored_from_revision_id")),
             provenance=summary.get("provenance"),
             message=_text(summary.get("message")),
+            content_digest=_text(summary.get("content_digest")),
         )
 
     def list(self, project: str, timeline: str, *, limit: int = 50) -> list[Revision] | None:
@@ -328,8 +329,8 @@ def _matches(revision: Revision, text: str) -> bool:
     return False
 
 
-def resolve_revision(project: str, timeline: str, ref: str | None, *, store: RevisionStore) -> str | None:
-    """A ref to a revision id. None means the head (``None``/``head``): the caller reads the working head."""
+def resolve_revision_record(project: str, timeline: str, ref: str | None, *, store: RevisionStore) -> Revision | None:
+    """Resolve a history event without discarding its publication/digest pins."""
     if ref is None or ref == "head":
         return None
     if ref == "prev" or (ref.startswith("-") and ref[1:].isdigit() and int(ref[1:]) > 0):
@@ -355,7 +356,7 @@ def resolve_revision(project: str, timeline: str, ref: str | None, *, store: Rev
                     raise TimelineEditError(f"{timeline}@{ref}: inconsistent publication ancestry")
                 seen.add(previous.publication_id)
                 node = previous
-            return node.id
+            return node
         if len(revisions) <= steps:
             raise TimelineEditError(
                 f"{timeline}@{ref}: only {len(revisions)} revision(s) back from the head are available "
@@ -371,23 +372,35 @@ def resolve_revision(project: str, timeline: str, ref: str | None, *, store: Rev
                 raise TimelineEditError(f"{timeline}@{ref}: revision ancestry is unavailable; use an explicit revision id")
             node = previous
             seen.add(node.id)
-        return node.id
+        return node
     if ref.startswith("-"):
         raise TimelineEditError(f"{timeline}@{ref}: not a revision ref (use prev, -N with N>0, head, or an id prefix)")
 
     revisions = store.list(project, timeline, limit=200)
     if revisions is None:
         try:
-            return store.get(project, timeline, ref).id
+            return store.get(project, timeline, ref)
         except TimelineEditError as exc:
             raise TimelineEditError(
                 f"{timeline}@{ref}: {CANNOT_LIST}, so only a full revision id resolves here ({exc})"
             ) from None
-    found = list({r.id: r for r in revisions if _matches(r, ref)}.values())
+    # One immutable revision may have several publication events. Keep the
+    # newest matching event for explicit IDs; positional refs return their exact node.
+    by_id = {}
+    for revision in revisions:
+        if _matches(revision, ref):
+            by_id.setdefault(revision.id, revision)
+    found = list(by_id.values())
     if len(found) == 1:
-        return found[0].id
+        return found[0]
     if not found:
         raise TimelineEditError(f"{timeline}@{ref}: no revision matches; available: {_available(revisions)}")
     raise TimelineEditError(
         f"{timeline}@{ref}: ambiguous, matches {', '.join(r.id for r in found[:5])}"
     )
+
+
+def resolve_revision(project: str, timeline: str, ref: str | None, *, store: RevisionStore) -> str | None:
+    """Resolve the revision ID, retaining the historical None-for-head interface."""
+    revision = resolve_revision_record(project, timeline, ref, store=store)
+    return revision.id if revision is not None else None

@@ -96,27 +96,29 @@ def show_ref(parsed: Any) -> int | None:
 
 
 def configure_restore(parser):
-    from astrid.packs.timeline.cli import _add_project_arg, _add_json_flag, _add_idempotency_key, _guarded
+    from astrid.packs.timeline.cli import (
+        _add_idempotency_key,
+        _add_json_flag,
+        _add_project_arg,
+        _guarded,
+    )
     _add_project_arg(parser, required=False)
     parser.add_argument("ref", help="Timeline to restore as a whole.")
     parser.add_argument("--from", dest="from_ref", required=True, help="Exact revision ID or @prev / @-N.")
     _add_idempotency_key(parser)
+    parser.add_argument("--message", default=None, help="Name this restore COMMIT in history.")
     _add_json_flag(parser)
     parser.set_defaults(handler=_guarded(2, run_restore))
 
 
 def run_restore(parsed):
     from astrid.packs.timeline.cli import print_result
-    store = _store(parsed)
-    expected = store.head(parsed.project, parsed.ref)
-    source = parsed.from_ref
-    if "@" in source:
-        name, _, source = source.rpartition("@")
-        if name and name != parsed.ref:
-            raise TimelineEditError("restore source must belong to the same timeline")
-    revision = resolve_revision(parsed.project, parsed.ref, source, store=store) or expected
-    result = store.restore(parsed.project, parsed.ref, revision, expected_head=expected,
-                           idempotency_key=getattr(parsed, "idempotency_key", None))
+    from astrid.sdk.timeline.restore_commit import restore_revision
+    result = restore_revision(
+        parsed.client, parsed.project, parsed.ref, parsed.from_ref,
+        idempotency_key=getattr(parsed, "idempotency_key", None),
+        message=getattr(parsed, "message", None),
+    )
     return print_result(result, as_json=parsed.json)
 
 
