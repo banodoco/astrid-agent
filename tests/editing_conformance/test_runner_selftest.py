@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -377,15 +379,23 @@ def test_other_malformed_scenarios_are_scenario_errors(overrides):
         _scenario(**overrides)
 
 
-def test_a_missing_path_is_an_exists_xfail_and_not_run():
-    scenario = _scenario(cli={"missing": "AUDIT bug 3: the CLI has no add verb"})
-    assert scenario.runnable() == ["sheet", "python"]
-    results = run_scenario(scenario)
-    assert set(results) == {"sheet", "python"}
-    failures = evaluate(scenario, results)
-    assert failures == {("cli", "exists"): "missing: AUDIT bug 3: the CLI has no add verb"}
-    unexpected, expected, fixed = classify(scenario, failures)
-    assert unexpected == [] and expected == [("cli", "exists")] and fixed == []
+@pytest.mark.parametrize("path", ["cli", "sheet", "python"])
+@pytest.mark.parametrize("mode", ["omitted", "missing"])
+def test_required_frontend_cannot_be_omitted_or_declared_missing(path, mode):
+    data = copy.deepcopy(ROCKET)
+    if mode == "omitted":
+        data.pop(path)
+    else:
+        data[path] = {"missing": "AUDIT: no runnable route"}
+    with pytest.raises(ScenarioError, match="requires runnable front-ends|missing paths cannot stand in"):
+        parse_scenario(data)
+
+
+def test_exists_xfail_cannot_stand_in_for_a_required_frontend():
+    data = copy.deepcopy(ROCKET)
+    data["xfail"] = [{"path": "cli", "check": "exists", "reason": "AUDIT: no CLI"}]
+    with pytest.raises(ScenarioError, match="'exists' cannot be xfailed"):
+        parse_scenario(data)
 
 
 def test_yaml_text_round_trips_through_the_loader(tmp_path):
@@ -608,20 +618,9 @@ def test_journal_comparison_does_not_hide_calls_labels_or_undo_identity():
 def test_repository_scenarios_have_the_expected_frontends():
     from tests.editing_conformance.runner import SCENARIOS
     scenarios = [load_scenario(p) for p in SCENARIOS.rglob("*.yaml") if p.parent.name != "extensions"]
-    # Operation cases have their own adapter; these scenarios are intentionally CLI-only.
-    cli_only = {
-        "audio.crossfade.music",
-        "look.add-like.card",
-        "look.clear.rocket-x",
-        "look.replace-asset.everywhere",
-    }
     assert len(scenarios) == 62
     for scenario in scenarios:
-        if scenario.id in cli_only:
-            assert scenario.present() == scenario.runnable() == ["cli"]
-        else:
-            assert scenario.present() == ["cli", "sheet", "python"]
-            assert scenario.runnable() == scenario.present()
+        assert scenario.present() == scenario.runnable() == ["cli", "sheet", "python"]
 
 
 def test_operation_scenarios_have_a_real_extension_path():
@@ -631,7 +630,72 @@ def test_operation_scenarios_have_a_real_extension_path():
         "timing.fit-to-beats.overlays", "timing.fit-to-beats.empty", "timing.fit-to-beats.refused",
     }
     for scenario in scenarios:
-        assert scenario.present() == scenario.runnable() == ["extension"]
+        assert scenario.present() == scenario.runnable() == ["cli", "sheet", "python", "extension"]
+
+
+def test_fit_to_beats_frontends_share_the_declared_operation_pin():
+    from astrid.sdk.timeline_sheet import parse_sheet
+    from astrid.sdk.timeline.tools import resolve_operation
+    from tests.editing_conformance.runner import REPO, SCENARIOS, _operation_scope
+
+    scenarios = [load_scenario(path) for path in (SCENARIOS / "extensions").glob("*.yaml")]
+    for scenario in scenarios:
+        extension = scenario.paths["extension"]
+        expected = {
+            "op": "timeline.operation",
+            "select": None,
+            "args": {
+                "identity": extension.operation,
+                "implementation_digest": extension.implementation_digest,
+                "inputs": extension.inputs,
+            },
+        }
+        command = shlex.split(extension_command := scenario.paths["cli"].commands[0])
+        assert command[:2] == ["edit", "--command"], extension_command
+        assert json.loads(command[2]) == expected
+        sheet_command = parse_sheet(scenario.paths["sheet"].text)["commands"][0]
+        assert {key: sheet_command[key] for key in expected} == expected
+
+        python_tree = ast.parse(scenario.paths["python"].snippet)
+        run_call = next(node for node in ast.walk(python_tree)
+                        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "run")
+        assert ast.literal_eval(run_call.args[1]) == expected
+
+        with _operation_scope(scenario):
+            operation = resolve_operation(extension.operation)
+        assert operation.implementation_digest == extension.implementation_digest
+        assert operation.pack_root == (REPO / "examples/packs/beat_tools").resolve()
+
+
+def test_sheet_transaction_boundary_requires_one_verified_declared_operation(monkeypatch):
+    from astrid.sdk import timeline
+    from tests.editing_conformance.runner import (
+        _operation_scope,
+        _sheet_transaction_boundary,
+    )
+
+    scenario = _repo_scenario("timing.fit-to-beats.refused")
+    extension = scenario.paths["extension"]
+    text = scenario.paths["sheet"].text
+    assert text is not None
+
+    with _operation_scope(scenario):
+        assert _sheet_transaction_boundary(scenario, text) == "transactional-edit"
+        assert _sheet_transaction_boundary(scenario, text + text) == "file-application"
+        assert _sheet_transaction_boundary(scenario, "edit {malformed") == "file-application"
+        stale = text.replace(extension.implementation_digest, "0" * 64)
+        assert _sheet_transaction_boundary(scenario, stale) == "file-application"
+
+    # A syntactically valid operation call still stays on file semantics when it has no declaration.
+    assert _sheet_transaction_boundary(_scenario(), text) == "file-application"
+
+    def unresolved(*_args, **_kwargs):
+        raise RuntimeError("operation is unresolved")
+
+    monkeypatch.setattr(timeline.tools, "resolve_operation", unresolved)
+    with _operation_scope(scenario):
+        assert _sheet_transaction_boundary(scenario, text) == "file-application"
 
 
 @pytest.mark.parametrize("value", ["not-a-spec", {}, {"operation": "fit_to_beats", "pack_roots": ["examples/packs"], "inputs": {}},
@@ -639,4 +703,4 @@ def test_operation_scenarios_have_a_real_extension_path():
     {"operation": "timeline.operation/p.name", "pack_roots": ["examples/packs"], "inputs": []}])
 def test_extension_adapter_rejects_malformed_specs(value):
     with pytest.raises(ScenarioError, match="extension"):
-        _scenario(cli=None, sheet=None, python=None, extension=value)
+        _scenario(extension=value)

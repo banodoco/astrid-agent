@@ -4,6 +4,13 @@ intent: Replace every use of asset R with the fixture task's project image, reta
 fixture: replace-asset
 expect: change
 cli: edit --replace-asset R=task:replace-fixture/sprites#0
+sheet:
+  text: |
+    edit {"op":"timeline.replace-asset","select":null,"args":{"key":"R","asset":"task:replace-fixture/sprites#0"}}
+python: |
+  from astrid.sdk.timeline.commands import run
+  run(tl, {"op": "timeline.replace-asset", "select": None,
+           "args": {"key": "R", "asset": "task:replace-fixture/sprites#0"}})
 check:
   - sorted(c.id for c in tl.clips() if c.asset == "R") == ["a-rocket", "b-rocket"]
   - all(tl._registry(sid)["R"].get("content_sha256") == "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" and tl._registry(sid)["R"].get("type") == "image/png" and tl._registry(sid)["R"].get("source") == "task:replace-fixture/sprites#0" for sid in ("A", "B"))

@@ -4,6 +4,18 @@ intent: Add an exact copy of the existing card layer later in the same cut, pres
 fixture: tiny_beats
 expect: change
 cli: 'edit --command ''{"op":"timeline.add","select":null,"args":{"from":"occurrence:occ-B/clip:b-type","at":"now","clip_id":"b-type-copy","relation_choices":[{"target":"occurrence:occ-B/clip:b-type","edge":"start","choice":"re-anchor","anchor":"now","offset_seconds":0.0},{"target":"occurrence:occ-B/clip:b-type","edge":"end","choice":"keep"}]}}'''
+sheet:
+  text: |
+    edit {"op":"timeline.add","select":null,"args":{"from":"occurrence:occ-B/clip:b-type","at":"now","clip_id":"b-type-copy","relation_choices":[{"target":"occurrence:occ-B/clip:b-type","edge":"start","choice":"re-anchor","anchor":"now","offset_seconds":0.0},{"target":"occurrence:occ-B/clip:b-type","edge":"end","choice":"keep"}]}}
+python: |
+  from astrid.sdk.timeline.commands import run
+  run(tl, {"op": "timeline.add", "select": None,
+           "args": {"from": "occurrence:occ-B/clip:b-type", "at": "now", "clip_id": "b-type-copy",
+                    "relation_choices": [
+                        {"target": "occurrence:occ-B/clip:b-type", "edge": "start", "choice": "re-anchor",
+                         "anchor": "now", "offset_seconds": 0.0},
+                        {"target": "occurrence:occ-B/clip:b-type", "edge": "end", "choice": "keep"},
+                    ]}})
 check:
   - tl.clip("b-type-copy").params["text"] == "Live."
   - tl.clip("b-type-copy").cut_id == "c2"

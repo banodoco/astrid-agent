@@ -4,6 +4,13 @@ intent: Add a known-duration music clip, then crossfade it against the existing 
 fixture: audio-crossfade
 expect: change
 cli: edit --crossfade a-music next-bed --over 0.5
+sheet:
+  text: |
+    edit {"op":"timeline.crossfade","select":null,"args":{"first":"a-music","second":"next-bed","curve":null,"overlap":0.5}}
+python: |
+  from astrid.sdk.timeline.commands import run
+  run(tl, {"op": "timeline.crossfade", "select": None,
+           "args": {"first": "a-music", "second": "next-bed", "curve": None, "overlap": 0.5}})
 check:
   - abs(tl.clip("next-bed").start - 3.5) < 1e-6
   - abs(tl.clip("next-bed").duration - 4) < 1e-6

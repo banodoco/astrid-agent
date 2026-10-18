@@ -502,6 +502,81 @@ def test_apply_file_single_opcall_noop_matches_cli_and_python_records(tmp_path, 
     assert comparable[0] == comparable[1] == comparable[2]
 
 
+def test_apply_file_dynamic_operation_refusal_matches_sdk_rollback_record(tmp_path, monkeypatch, capsys):
+    from astrid.core.pack.operations import operation_discovery_scope, resolve_operation
+    from astrid.sdk.timeline import journal, store
+    from astrid.sdk.timeline.apply_file import apply_file
+    from astrid.sdk.timeline.commands import run as run_command
+
+    repo = Path(__file__).resolve().parents[3]
+    discovery = {
+        "project_root": repo / "out/extension-harness",
+        "extra_pack_roots": (str(repo / "examples/packs"),),
+    }
+    identity = "timeline.operation/beat_tools.fit_to_beats"
+    with operation_discovery_scope(**discovery):
+        operation = resolve_operation(identity)
+    assert operation.implementation_digest == "dfd107e08a5ff42948cc24b83d72f09c42c67cec8f8a8c5cfef2ef417a0e125b"
+    call = {
+        "op": "timeline.operation",
+        "select": None,
+        "args": {
+            "identity": identity,
+            "implementation_digest": operation.implementation_digest,
+            "inputs": {
+                "clips": ["c1.rocket", "c1.plate"],
+                "beats": ["beat 1 after c1", "beat 2 after c1", "beat 3 after c1"],
+            },
+        },
+    }
+    label = f"{identity}@{operation.implementation_digest}"
+    refusal = "fit_to_beats refuses audio and picture beds; select overlay clips"
+
+    def exercise(route):
+        workspace = tmp_path / route
+        workspace.mkdir()
+        monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(workspace / "data"))
+        tl = _prepare_apply_file_draft(workspace, monkeypatch)
+        capsys.readouterr()
+        document_path = Path(tl.path)
+        journal_path = journal.journal_path("p", "t")
+        history_dir = store._history_dir(document_path)
+        redo_dir = store._redo_dir(document_path)
+        document_bytes = document_path.read_bytes()
+        journal_before = journal.read(journal_path)
+        history_before = _json_files(history_dir)
+        redo_before = _json_files(redo_dir)
+
+        if route == "sheet":
+            source = workspace / "refused.sheet"
+            source.write_text("edit " + json.dumps(call, separators=(",", ":")) + "\n", encoding="utf-8")
+            with operation_discovery_scope(**discovery), pytest.raises(TimelineEditError, match=refusal):
+                apply_file(tl, source)
+        else:
+            with operation_discovery_scope(**discovery), pytest.raises(TimelineEditError, match=refusal):
+                run_command(tl, call)
+
+        records = journal.read(journal_path)
+        assert len(records) == len(journal_before) + 1
+        assert records[:-1] == journal_before
+        record = records[-1]
+        assert record.kind == "edit" and record.outcome == "rolled-back"
+        assert record.label == label and record.error == refusal
+        assert record.undo_step is None
+        assert document_path.read_bytes() == document_bytes
+        assert _json_files(history_dir) == history_before
+        assert _json_files(redo_dir) == redo_before
+        assert journal.verify(journal_path) == []
+        return record.to_json()
+
+    sheet_record = exercise("sheet")
+    sdk_record = exercise("sdk")
+    variable = {"source", "actor", "at", "id", "seq", "prev", "hash"}
+    comparable = [{key: value for key, value in record.items() if key not in variable}
+                  for record in (sheet_record, sdk_record)]
+    assert comparable[0] == comparable[1]
+
+
 def _apply_file_contents(kind):
     first = {"op": "clip.set", "select": "c1.rocket", "args": {"x": 120}}
     second = {"op": "clip.set-duration", "select": "c2.card", "args": {"seconds": 2}}

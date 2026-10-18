@@ -3,8 +3,21 @@ source: EXT-ONE
 intent: A picture bed in a selected run refuses the whole operation before mutation.
 fixture: tiny_beats
 expect: refused
+cli: >-
+  edit --command '{"op":"timeline.operation","select":null,"args":{"identity":"timeline.operation/beat_tools.fit_to_beats","implementation_digest":"dfd107e08a5ff42948cc24b83d72f09c42c67cec8f8a8c5cfef2ef417a0e125b","inputs":{"clips":["c1.rocket","c1.plate"],"beats":["beat 1 after c1","beat 2 after c1","beat 3 after c1"]}}}'
+sheet:
+  text: |
+    edit {"op":"timeline.operation","select":null,"args":{"identity":"timeline.operation/beat_tools.fit_to_beats","implementation_digest":"dfd107e08a5ff42948cc24b83d72f09c42c67cec8f8a8c5cfef2ef417a0e125b","inputs":{"clips":["c1.rocket","c1.plate"],"beats":["beat 1 after c1","beat 2 after c1","beat 3 after c1"]}}}
+python: |
+  from astrid.sdk.timeline.commands import run
+  run(tl, {"op": "timeline.operation", "select": None,
+           "args": {"identity": "timeline.operation/beat_tools.fit_to_beats",
+                    "implementation_digest": "dfd107e08a5ff42948cc24b83d72f09c42c67cec8f8a8c5cfef2ef417a0e125b",
+                    "inputs": {"clips": ["c1.rocket", "c1.plate"],
+                               "beats": ["beat 1 after c1", "beat 2 after c1", "beat 3 after c1"]}}})
 extension:
   operation: timeline.operation/beat_tools.fit_to_beats
+  implementation_digest: dfd107e08a5ff42948cc24b83d72f09c42c67cec8f8a8c5cfef2ef417a0e125b
   pack_roots: [examples/packs]
   inputs:
     clips: [c1.rocket, c1.plate]

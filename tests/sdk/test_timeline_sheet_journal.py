@@ -161,6 +161,70 @@ def test_apply_file_single_opcall_noop_audits_but_declarative_sheets_stay_silent
     assert len(_history_files(history_dir)) == len(before_history) + 1
 
 
+def test_apply_file_dynamic_operation_noop_matches_sdk_audit(tmp_path, draft, monkeypatch):
+    from astrid.sdk.timeline.commands import run as run_command
+    from astrid.sdk.timeline.tools import operation_discovery_scope, resolve_operation
+
+    repo = Path(__file__).resolve().parents[2]
+    discovery = {
+        "project_root": repo / "out/extension-harness",
+        "extra_pack_roots": (str(repo / "examples/packs"),),
+    }
+    identity = "timeline.operation/beat_tools.fit_to_beats"
+    with operation_discovery_scope(**discovery):
+        operation = resolve_operation(identity)
+    assert operation.implementation_digest == "dfd107e08a5ff42948cc24b83d72f09c42c67cec8f8a8c5cfef2ef417a0e125b"
+    call = {
+        "op": "timeline.operation",
+        "select": None,
+        "args": {
+            "identity": identity,
+            "implementation_digest": operation.implementation_digest,
+            "inputs": {"clips": [], "beats": []},
+        },
+    }
+    label = f"{identity}@{operation.implementation_digest}"
+
+    def exercise(tl, route, source_path):
+        document_path = Path(tl.path)
+        journal_path = journal.journal_path("p", "t")
+        history_dir = store._history_dir(document_path)
+        redo_dir = store._redo_dir(document_path)
+        before_document = document_path.read_bytes()
+        before_records = journal.read(journal_path)
+        before_history = _history_files(history_dir)
+        before_redo = _history_files(redo_dir)
+        if route == "sheet":
+            source_path.write_text("edit " + json.dumps(call, separators=(",", ":")) + "\n", encoding="utf-8")
+            with operation_discovery_scope(**discovery):
+                assert apply_file(tl, source_path) == []
+        else:
+            with operation_discovery_scope(**discovery):
+                assert not run_command(tl, call).changed
+
+        records = journal.read(journal_path)
+        assert len(records) == len(before_records) + 1
+        record = records[-1]
+        assert record.kind == "edit" and record.outcome == "no-change"
+        assert record.label == label
+        assert record.before == record.after and record.before
+        assert record.undo_step is None
+        assert document_path.read_bytes() == before_document
+        assert _history_files(history_dir) == before_history
+        assert _history_files(redo_dir) == before_redo
+        assert journal.verify(journal_path) == []
+        return record.to_json()
+
+    sheet_record = exercise(draft, "sheet", tmp_path / "dynamic-noop.sheet")
+    monkeypatch.setenv("BANODOCO_LOCAL_DATA_ROOT", str(tmp_path / "sdk-data"))
+    sdk_draft = Checkout.draft("P", "t")
+    sdk_record = exercise(sdk_draft, "sdk", tmp_path / "unused.sheet")
+    variable = {"source", "actor", "at", "id", "seq", "prev", "hash"}
+    comparable = [{key: value for key, value in record.items() if key not in variable}
+                  for record in (sheet_record, sdk_record)]
+    assert comparable[0] == comparable[1]
+
+
 @pytest.mark.parametrize("suffix", [".jsonl", ".py"])
 def test_apply_file_non_sheet_noop_formats_remain_silent(tmp_path, draft, suffix):
     from astrid.sdk.timeline import journal, store
@@ -206,6 +270,7 @@ def test_apply_file_noneligible_or_refused_sheet_commands_stay_silent(tmp_path, 
         from astrid.sdk.timeline import chapter_storage
 
         tl.bundle["storage_policy"] = "chapters"
+        tl._accept_bundle()  # Admit this test's fixture setup before exercising the file adapter.
         tl.save(quiet=True)
         monkeypatch.setattr(chapter_storage, "resolved_chapters", lambda _bundle: [])
         monkeypatch.setattr(chapter_storage, "split_chapter_storage", lambda candidate, chapters: candidate)

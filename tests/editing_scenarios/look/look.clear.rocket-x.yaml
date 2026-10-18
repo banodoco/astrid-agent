@@ -4,6 +4,12 @@ intent: Clear the rocket's explicit x value so its element default applies.
 fixture: cuts-reserved
 expect: change
 cli: edit --clip c1.rocket --clear x
+sheet:
+  text: |
+    edit {"op":"clip.clear","select":"a-rocket","args":{"keys":["x"]}}
+python: |
+  from astrid.sdk.timeline.commands import run
+  run(tl, {"op": "clip.clear", "select": "a-rocket", "args": {"keys": ["x"]}})
 check:
   - '"x" not in tl.clip("c1.rocket").params'
   - 'tl.clip("c1.rocket").get("x") is None'

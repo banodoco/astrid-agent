@@ -91,3 +91,7 @@
   card: RUNNER-COMMAND-JOURNAL-172
   reason: "The adopted Registry adapter records one canonical timeline.crossfade OpCall instead of the legacy three primitive calls for None, linear and s-curve. Those three cases now assert the canonical call, exact arguments and scoped duration/curve guards. Their timing, fade values/curves, exact replay, same-property stale-state refusal, single-step undo/redo and journal verification remain intact, alongside test_canonical_crossfade_preserves_curves_guards_replay_and_one_undo_step and its unchanged-curve guard checks. Only the obsolete primitive journal shape is dispositioned."
   alias: "astrid.sdk.timeline.commands.run"
+- feature: "deliberate: tests/packs/timeline/test_verbs_working_copy.py::test_duplicate_is_all_or_nothing"
+  card: RUNNER-LITERAL-REMAINING-182
+  reason: "The duplicate all-or-nothing test double and failure injection now follow the current pinned-closure duplication protocol instead of obsolete copy_content. Invalid head still refuses before create, and the injected post-create failure still archives the exact acknowledged new timeline. Source revision and publication selection plus bootstrap revision, publication, and resource-version rollback fences remain asserted; no product behavior or safety assertion is removed."
+  alias: "astrid.sdk.timeline_duplicate.duplicate_timeline"

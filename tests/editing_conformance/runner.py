@@ -65,6 +65,7 @@ class PathSpec:
     operation: str | None = None
     pack_roots: tuple[str, ...] = ()
     inputs: dict | None = None
+    implementation_digest: str | None = None
     snippet: str | None = None  # python: runs with tl = Checkout.draft(P, t)
 
 
@@ -172,8 +173,15 @@ def parse_scenario(data: Any, where: str = "scenario") -> Scenario:
         raise ScenarioError(f"{where}: idempotent applies only to expect: change, not {data['expect']!r}")
 
     paths = {name: _parse_path(name, data[name], where) for name in PATHS if name in data}
-    if not any(spec.missing is None for spec in paths.values()):
-        raise ScenarioError(f"{where}: at least one path must be present (not only missing)")
+    required_paths = ("cli", "sheet", "python")
+    omitted = [name for name in required_paths if name not in paths]
+    if omitted:
+        raise ScenarioError(f"{where}: every scenario requires runnable front-ends {required_paths}; omitted {omitted}")
+    missing = [name for name, spec in paths.items() if spec.missing is not None]
+    if missing:
+        raise ScenarioError(f"{where}: missing paths cannot stand in for runnable coverage: {missing}")
+    if data["source"] == "EXT-ONE" and "extension" not in paths:
+        raise ScenarioError(f"{where}: declared-operation scenarios require their extension path")
 
     check = data.get("check", [])
     if not isinstance(check, list) or not all(isinstance(e, str) and e.strip() for e in check):
@@ -194,6 +202,8 @@ def parse_scenario(data: Any, where: str = "scenario") -> Scenario:
             raise ScenarioError(f"{where}: xfail path {path!r} must be one of {PATHS}")
         if check_name not in CHECKS:
             raise ScenarioError(f"{where}: xfail check {check_name!r} must be one of {CHECKS}")
+        if check_name == "exists":
+            raise ScenarioError(f"{where}: 'exists' cannot be xfailed; runnable paths are required")
         if path not in paths:
             raise ScenarioError(f"{where}: xfail names path {path!r}, which the scenario does not have")
         if paths[path].missing is not None and check_name != "exists":
@@ -233,16 +243,22 @@ def _parse_path(name: str, value: Any, where: str) -> PathSpec:
         return PathSpec(name=name, missing=value["missing"])
 
     if name == "extension":
-        if not isinstance(value, dict) or set(value) != {"operation", "pack_roots", "inputs"}:
-            raise ScenarioError(f"{where}: extension requires operation, pack_roots and inputs")
+        if not isinstance(value, dict) or set(value) != {
+            "operation", "implementation_digest", "pack_roots", "inputs",
+        }:
+            raise ScenarioError(f"{where}: extension requires operation, implementation_digest, pack_roots and inputs")
         if not isinstance(value["operation"], str) or not value["operation"].startswith("timeline.operation/"):
             raise ScenarioError(f"{where}: extension requires a point-qualified operation identity")
+        digest = value["implementation_digest"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ScenarioError(f"{where}: extension.implementation_digest must be a lowercase SHA-256 digest")
         if not isinstance(value["inputs"], dict):
             raise ScenarioError(f"{where}: extension.inputs must be an object")
         roots = value["pack_roots"]
         if not isinstance(roots, list) or not roots or not all(isinstance(p, str) and p for p in roots):
             raise ScenarioError(f"{where}: extension.pack_roots must be explicit paths")
-        return PathSpec(name=name, operation=value["operation"], inputs=value["inputs"], pack_roots=tuple(roots))
+        return PathSpec(name=name, operation=value["operation"], implementation_digest=digest,
+                        inputs=value["inputs"], pack_roots=tuple(roots))
 
     if name == "cli":
         if isinstance(value, str) and value.strip():
@@ -530,12 +546,14 @@ def _run_cli_path(scenario: Scenario, spec: PathSpec) -> PathResult:
         persistence_before = _persistence_snapshot()
         records_before = _journal_records()
         base = _document()
-        exits, stdout, stderr, error = _run_commands(spec.commands)
-        second = None
-        if scenario.idempotent and error is None and all(code == 0 for code in exits):
-            second = _rerun(lambda: _run_commands_again(spec.commands))
-        return _finish(scenario, spec.name, exits, stdout, stderr, error, base, _undo_redo_cli,
-                       second, persistence_before, records_before)
+        with _operation_scope(scenario):
+            exits, stdout, stderr, error = _run_commands(spec.commands)
+            second = None
+            if scenario.idempotent and error is None and all(code == 0 for code in exits):
+                second = _rerun(lambda: _run_commands_again(spec.commands))
+            boundary = "transactional-edit" if _declared_operation(scenario) else "implicit-command"
+            return _finish(scenario, spec.name, exits, stdout, stderr, error, base, _undo_redo_cli,
+                           second, persistence_before, records_before, boundary=boundary)
 
 
 def _run_sheet_path(scenario: Scenario, spec: PathSpec) -> PathResult:
@@ -555,12 +573,14 @@ def _run_sheet_path(scenario: Scenario, spec: PathSpec) -> PathResult:
             text = text.replace(old, new, 1)
         sheet_file = root / "scenario.sheet"
         sheet_file.write_text(text, encoding="utf-8")
-        code, out, err, exc = _apply_sheet(sheet_file)
-        second = None
-        if scenario.idempotent and exc is None and code == 0:
-            second = _rerun(lambda: _apply_sheet_again(sheet_file))
-        return _finish(scenario, spec.name, [code], out, err, exc, base, _undo_redo_cli,
-                       second, persistence_before, records_before, boundary="file-application")
+        with _operation_scope(scenario):
+            code, out, err, exc = _apply_sheet(sheet_file)
+            second = None
+            if scenario.idempotent and exc is None and code == 0:
+                second = _rerun(lambda: _apply_sheet_again(sheet_file))
+            boundary = _sheet_transaction_boundary(scenario, text)
+            return _finish(scenario, spec.name, [code], out, err, exc, base, _undo_redo_cli,
+                           second, persistence_before, records_before, boundary=boundary)
 
 
 def _apply_sheet(sheet_file: Path) -> tuple[int, str, str, str | None]:
@@ -579,17 +599,77 @@ def _run_python_path(scenario: Scenario, spec: PathSpec) -> PathResult:
         records_before = _journal_records()
         tl = Checkout.draft(PROJECT, TIMELINE)
         base = canon(tl.document())
-        stdout, error = _exec_snippet(spec.snippet, tl)
-        second = None
-        if scenario.idempotent and error is None:
-            second = _rerun(lambda: _rerun_python(spec))
-        return _finish(scenario, spec.name, [], stdout, "", error, base, _undo_redo_python,
-                       second, persistence_before, records_before)
+        with _operation_scope(scenario):
+            stdout, error = _exec_snippet(spec.snippet, tl)
+            second = None
+            if scenario.idempotent and error is None:
+                second = _rerun(lambda: _rerun_python(spec))
+            boundary = "transactional-edit" if _declared_operation(scenario) else "implicit-command"
+            return _finish(scenario, spec.name, [], stdout, "", error, base, _undo_redo_python,
+                           second, persistence_before, records_before, boundary=boundary)
 
 
 def _rerun_python(spec: PathSpec) -> tuple[list[int], str, str | None]:
     stdout, error = _exec_snippet(spec.snippet, Checkout.draft(PROJECT, TIMELINE))  # re-loaded from disk
     return [], stdout, error
+
+
+def _declared_operation(scenario: Scenario) -> bool:
+    return "extension" in scenario.paths
+
+
+@contextlib.contextmanager
+def _operation_scope(scenario: Scenario):
+    """Bind ordinary CLI/Sheet/SDK OpCalls to the operation route declared by the scenario."""
+    spec = scenario.paths.get("extension")
+    if spec is None:
+        yield
+        return
+    from astrid.sdk.timeline.tools import operation_discovery_scope
+
+    roots = tuple(str((REPO / path).resolve()) for path in spec.pack_roots)
+    with operation_discovery_scope(
+        project_root=(REPO / "out/extension-harness").resolve(),
+        extra_pack_roots=roots,
+    ):
+        yield
+
+
+def _sheet_transaction_boundary(scenario: Scenario, text: str) -> str:
+    """Use rollback-audit semantics only for a verified declared-operation Sheet OpCall."""
+    extension = scenario.paths.get("extension")
+    if extension is None:
+        return "file-application"
+    try:
+        from astrid.sdk.timeline.commands import EditCommand
+        from astrid.sdk.timeline.tools import resolve_operation
+        from astrid.sdk.timeline_sheet import parse_sheet
+        import jsonschema
+
+        commands = parse_sheet(text).get("commands", [])
+        if not isinstance(commands, list) or len(commands) != 1:
+            return "file-application"
+        command = EditCommand.coerce(commands[0])
+        if (command.op != "timeline.operation" or command.select is not None or command.resolved
+                or command.expect is not None or command.bindings is not None
+                or command.created is not None or command.authorship is not None):
+            return "file-application"
+        args = dict(command.args)
+        if (set(args) != {"identity", "implementation_digest", "inputs"}
+                or args["identity"] != extension.operation
+                or args["implementation_digest"] != extension.implementation_digest
+                or args["inputs"] != extension.inputs):
+            return "file-application"
+
+        operation = resolve_operation(extension.operation)
+        if (not operation.eligible or operation.identity != extension.operation
+                or operation.implementation_digest != extension.implementation_digest):
+            return "file-application"
+        jsonschema.Draft202012Validator(operation.descriptor["inputs"]).validate(args["inputs"])
+    except Exception:
+        # Classification is fail-closed; apply_file remains responsible for the real route result.
+        return "file-application"
+    return "transactional-edit"
 
 
 def _invoke_extension(spec):
@@ -603,6 +683,8 @@ def _invoke_extension(spec):
                 spec.operation, project_root=REPO / "out/extension-harness",
                 extra_pack_roots=tuple(str((REPO / p).resolve()) for p in spec.pack_roots),
             )
+            if operation.implementation_digest != spec.implementation_digest:
+                raise TimelineEditError("operation implementation changed; rediscover before invoking")
             preview = invoke_operation(Checkout.draft(PROJECT, TIMELINE), operation, spec.inputs)
             print(json.dumps(preview.to_json(), sort_keys=True))
             if not preview.changed:
@@ -690,7 +772,17 @@ run_path = run_case  # alias, kept for existing callers
 
 
 def run_scenario(scenario: Scenario) -> dict[str, PathResult]:
-    return {name: run_case(scenario, name) for name in scenario.runnable()}
+    required = {"cli", "sheet", "python"}
+    if not required <= scenario.paths.keys():
+        omitted = sorted(required - scenario.paths.keys())
+        raise ScenarioError(f"{scenario.id}: every scenario requires runnable front-ends; omitted {omitted}")
+    if any(spec.missing is not None for spec in scenario.paths.values()):
+        raise ScenarioError(f"{scenario.id}: missing paths cannot stand in for runnable coverage")
+    expected = required | ({"extension"} if "extension" in scenario.paths else set())
+    results = {name: run_case(scenario, name) for name in PATHS if name in expected}
+    if set(results) != expected:
+        raise ScenarioError(f"{scenario.id}: executed paths {sorted(results)} do not match required {sorted(expected)}")
+    return results
 
 
 # ---- evaluating --------------------------------------------------------------------------
