@@ -2253,6 +2253,32 @@ class _SelectedActionInterpreter:
 
 def _selected_action_policy(policy, retained, read_files):
     installed = Path(retained['source_root'])
+    searches = []
+    try:
+        if (not installed.is_absolute() or '..' in installed.parts
+                or installed.resolve(strict=True) != installed or not installed.is_dir()):
+            raise HostError('selected action installed root is unavailable or changed')
+        for raw in read_files:
+            file = Path(raw)
+            if not file.is_absolute() or '..' in file.parts or str(file) != raw:
+                raise HostError('selected action file path is not canonical absolute')
+            if not file.is_relative_to(installed):
+                # The independently retained launcher keeps its immediate
+                # parent exception; never enumerate its arbitrary ancestors.
+                searches.append(file.parent)
+                continue
+            if file.resolve(strict=True) != file or not file.is_file():
+                raise HostError('selected action installed file is unavailable or aliased')
+            directory = file.parent
+            while directory.is_relative_to(installed):
+                if directory.resolve(strict=True) != directory or not directory.is_dir():
+                    raise HostError('selected action installed directory is unavailable or aliased')
+                searches.append(directory)
+                if directory == installed:
+                    break
+                directory = directory.parent
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HostError('selected action installed ancestry is unavailable or changed') from exc
     roots = tuple(root for root in policy.bootstrap_roots
         if not (root == installed or root.is_relative_to(installed) or installed.is_relative_to(root)))
     files = tuple(file for file in policy.bootstrap_files if not file.is_relative_to(installed))
@@ -2260,8 +2286,8 @@ def _selected_action_policy(policy, retained, read_files):
     interpreter_files = FilePin.measure(Path(os.path.abspath(sys.executable))).aliases
     return replace(policy, bootstrap_roots=roots,
         bootstrap_files=tuple(dict.fromkeys((*files, *interpreter_files, *(Path(p) for p in read_files)))),
-        bootstrap_search_roots=tuple(dict.fromkeys((*policy.bootstrap_search_roots,
-            *(Path(p).parent for p in read_files)))), retained_profile=True)
+        bootstrap_search_roots=tuple(dict.fromkeys((*policy.bootstrap_search_roots, *searches))),
+        retained_profile=True)
 
 
 class _AttemptPolicyFactory:

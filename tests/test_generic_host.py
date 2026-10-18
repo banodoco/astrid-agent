@@ -5670,3 +5670,172 @@ def test_selected_renderer_absence_preserves_launch_environment(monkeypatch, lau
     before = dict(os.environ)
     assert generic_host._activate_selected_renderer_environment(launch) == (None, {})
     assert dict(os.environ) == before
+
+
+@pytest.fixture(params=["generation.generate_speech", "chiptune.compose"])
+def selected_package_data(tmp_path, monkeypatch, request):
+    """Offline selected file pins; real pack shape, projection and serializer."""
+    from runtime_protocol import verified_host_launch as gate
+    action_id = request.param
+    pack_id = action_id.split(".")[0]
+    source = Path(generic_host.__file__).resolve().parents[3]
+    pack_root = source / "astrid/packs" / pack_id
+    host = GenericPackHost(pack_roots=[pack_root])
+    record = generic_host._launch_static_records((pack_root,))[action_id]
+    installed = tmp_path / "installed"
+    fixture_host = installed / "astrid/core/fixture.py"
+    fixture_host.parent.mkdir(parents=True)
+    fixture_host.write_text("# retained Host fixture\n")
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text("# retained launcher fixture\n")
+    retained = {"source_root": str(installed), "host_files": {}, "actions": {},
+                "launcher": {"path": str(launcher), "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest()}}
+    selection = {"pack_id": pack_id, "action_id": action_id, "distributions": {}}
+    w = SimpleNamespace(host=host, retained=retained, selection=selection)
+    monkeypatch.setattr(gate, "installed_host_closure", lambda *a, **kw: {"files": dict(retained["host_files"])})
+    host._attempt_policy_factory = generic_host._AttemptPolicyFactory(host._executable_admission)
+    bootstrap = tmp_path / "bootstrap"
+    bootstrap.mkdir()
+    monkeypatch.setattr(host._attempt_policy_factory, "bootstrap_inputs", lambda _: (
+        (Path(sys.executable).resolve(),), (bootstrap,), (installed,), ()))
+    monkeypatch.setattr(generic_host.subprocess, "Popen", lambda *a, **kw: pytest.fail("offline fixture launched child"))
+    package = installed / "jsonschema_specifications"
+    leaf = package / "schemas/draft202012/vocab"
+    leaf.mkdir(parents=True)
+    data = leaf / "core.json"
+    data.write_text('{"selected":"nested package data"}\n')
+    module = package / "__init__.py"
+    module.write_text("# selected dependency fixture\n")
+    chosen = installed / "astrid/packs" / pack_id / "actions/selected.py"
+    chosen.parent.mkdir(parents=True)
+    chosen.write_text("# selected action fixture\n")
+    sibling = leaf / "unselected.json"
+    sibling.write_text('{"unselected":true}')
+    other_pack = installed / "astrid/packs/unselected/actions/run.py"
+    other_pack.parent.mkdir(parents=True)
+    other_pack.write_text("# another action's source\n")
+    ambient = tmp_path / "ambient-site/unselected/__init__.py"
+    ambient.parent.mkdir(parents=True)
+    ambient.write_text("# ambient code\n")
+    for path in (data, module, chosen, other_pack):
+        w.retained["host_files"][str(path.relative_to(installed))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    # All selected fixture files carry real pins. Host-source/owner transport
+    # is injected as in retained_cpu_storage; file identity uses the unchanged
+    # Runtime-owned reader, also called by the genuine child bootstrap.
+    fixture_host = installed / "astrid/core/fixture.py"
+    w.retained["host_files"][str(fixture_host.relative_to(installed))] = hashlib.sha256(fixture_host.read_bytes()).hexdigest()
+    launcher = Path(w.retained["launcher"]["path"])
+    w.retained["launcher"]["sha256"] = hashlib.sha256(launcher.read_bytes()).hexdigest()
+    w.selection.update(pack_id=pack_id, action_id=action_id)
+    measurements = []
+    def selected(record):
+        retained, selection, context = w.retained, w.selection, {}
+        for raw, pin in generic_host._selected_action_read_files(retained, selection).items():
+            measurements.append(raw)
+            gate._local_read(Path(raw), pin)
+        return retained, selection, context
+    monkeypatch.setattr(w.host, "_selected_action", selected)
+    attempt = tmp_path / "materialized-attempt"
+    for part in ("inputs", "outputs"):
+        (attempt / part).mkdir(parents=True)
+    files, roots, searches, excluded = w.host._attempt_policy_factory.bootstrap_inputs(record)
+    policy = generic_host._ConfinementPolicy(attempt, attempt / "outputs",
+        generic_host._SandboxProjectScope(attempt / "inputs", (attempt / "inputs",)),
+        files, (*roots, installed), generic_host._SandboxEnvironmentPolicy(),
+        bootstrap_search_roots=searches, excluded_python_roots=excluded)
+    return SimpleNamespace(host=w.host, retained=w.retained, selection=w.selection, record=record,
+        installed=installed, package=package, leaf=leaf, data=data, sibling=sibling,
+        other_pack=other_pack, ambient=ambient, launcher=launcher, policy=policy, measurements=measurements)
+
+
+def test_selected_package_data_ancestry_is_literal_and_budgeted(selected_package_data, monkeypatch):
+    w = selected_package_data
+    projected = []
+    serialize = generic_host._serialize_confinement_profile
+    def capture(policy, **kwargs):
+        result = serialize(policy, **kwargs)
+        projected.append((policy, result))
+        return result
+    monkeypatch.setattr(generic_host, "_serialize_confinement_profile", capture)
+    budget = w.host._host_control_storage_bound(w.record)
+    predicted, prediction = projected.pop()
+    read_files = generic_host._selected_action_read_files(w.retained, w.selection)
+    # This is a finite projection from pinned file paths, never a tree walk.
+    with monkeypatch.context() as no_scan:
+        no_scan.setattr(Path, "iterdir", lambda *_: pytest.fail("projection scanned a directory"))
+        no_scan.setattr(Path, "rglob", lambda *_: pytest.fail("projection scanned a tree"))
+        policy = generic_host._selected_action_policy(w.policy, w.retained, read_files)
+    ancestry = (w.installed, w.package, w.package / "schemas",
+                w.package / "schemas/draft202012", w.leaf)
+    # Launcher contributes only its existing immediate parent, never upward
+    # enumeration through a non-installed Runtime/interpreter location.
+    added = set(policy.bootstrap_search_roots) - set(w.policy.bootstrap_search_roots)
+    assert all(p.is_relative_to(w.installed) or p == w.launcher.parent for p in added)
+    monkeypatch.setattr(generic_host.sys, "platform", "darwin")
+    monkeypatch.setattr(generic_host.shutil, "which", lambda _: "/usr/bin/sandbox-exec")
+    policy = replace(policy, host_control_budget=budget)
+    plan = generic_host._confined_launch_plan([sys.executable], policy=policy)
+    materialized, profile = projected.pop()
+    assert plan.renderer_profile.path.read_text() == profile
+    plan.renderer_profile.validate()
+    assert len(prediction.encode()) == budget.scratch_bytes
+    assert len(profile.encode()) <= budget.scratch_bytes
+    for path in ancestry:
+        rule = f'(allow file-read* (literal "{path}"))'
+        assert rule in prediction and rule in profile
+        assert f'(allow file-map-executable (literal "{path}"))' not in profile
+    assert set(ancestry) <= set(policy.bootstrap_search_roots)
+    assert set(ancestry) <= set(predicted.bootstrap_search_roots)
+    for raw, pin in read_files.items():
+        assert f'(allow file-read* (literal "{raw}"))' in profile
+        assert hashlib.sha256(Path(raw).read_bytes()).hexdigest() == pin
+    assert w.measurements  # Original owner measurement ran during prediction.
+    for path in (w.sibling, w.other_pack, w.ambient):
+        assert f'(allow file-read* (literal "{path}"))' not in profile
+        assert not any(f'(allow file-read* (subpath "{p}"))' in profile for p in (path, *path.parents))
+        assert f'(allow file-map-executable (literal "{path}"))' not in profile
+    for directory in ancestry:
+        assert f'(allow file-read* (subpath "{directory}"))' not in profile
+        assert f'(allow file-write* (subpath "{directory}"))' not in profile
+        assert f'(allow file-map-executable (subpath "{directory}"))' not in profile
+    # Removing only the formerly omitted enumeration literals changes the
+    # serialized Host-control bytes, proving prediction includes the fix.
+    old_searches = set(w.policy.bootstrap_search_roots) | {Path(p).parent for p in read_files}
+    omitted = set(ancestry) - old_searches
+    assert w.package / "schemas" in omitted
+    prior = "\n".join(line for line in prediction.split("\n") if line not in {
+        f'(allow file-read* (literal "{p}"))' for p in omitted})
+    assert len(prediction.encode()) > len(prior.encode())
+    assert not any(line.startswith("(allow network") for line in profile.splitlines())
+
+
+@pytest.mark.parametrize("fault", ["traversal", "escaping-file", "escaping-directory", "not-directory", "root-alias", "changed-pin"])
+def test_selected_package_data_ancestry_refuses_invalid_selection(selected_package_data, tmp_path, fault):
+    from runtime_protocol import verified_host_launch as gate
+    w = selected_package_data
+    reads = generic_host._selected_action_read_files(w.retained, w.selection)
+    if fault == "changed-pin":
+        w.data.write_text('{"changed":true}')
+        with pytest.raises(gate.HostLaunchError, match="differs from its reviewed pin"):
+            w.host._host_control_storage_bound(w.record)
+        assert str(w.data) in w.measurements
+        return
+    if fault == "traversal":
+        reads[str(w.installed / "../outside.json")] = "0" * 64
+    elif fault == "escaping-file":
+        outside = tmp_path / "outside.json"
+        outside.write_bytes(w.data.read_bytes())
+        w.data.unlink(); w.data.symlink_to(outside)
+    elif fault in {"escaping-directory", "not-directory"}:
+        original = tmp_path / "original-data"
+        w.leaf.rename(original)
+        if fault == "escaping-directory":
+            w.leaf.symlink_to(original, target_is_directory=True)
+        else:
+            w.leaf.write_text("not a directory")
+    else:
+        moved = tmp_path / "original-installed"
+        w.installed.rename(moved)
+        w.installed.symlink_to(moved, target_is_directory=True)
+    with pytest.raises(HostError):
+        generic_host._selected_action_policy(w.policy, w.retained, reads)
