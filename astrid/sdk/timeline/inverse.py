@@ -336,8 +336,9 @@ def _music_writes(tl, writes, states):
         if not matches and sid not in states and any(w["id"] == sid and w["path"] == "" and w["after"]["state"] == "present" for w in writes):
             # Restore a removed authored owner solely from its guarded root
             # write. The compiler recreates any derived outputs afterward.
-            clips.append(copy.deepcopy(source))
-            matches = [clips[-1]]
+            root = next(w for w in writes if w["id"] == sid and not w["path"])
+            _root(tl, root)  # retain the recorded scoped membership order too
+            matches = [c for c in clips if c.get('id') == source['id']]
         if len(matches) != 1:
             raise commands.CommandError(f'{sid}: inverse source is unavailable or ambiguous')
         matches[0].clear()
@@ -379,13 +380,33 @@ def _music_writes(tl, writes, states):
 def _parent_write(tl, path, state):
     """Restore a parent property without overwriting owner-scoped carriers.
 
-    The semantic parent records only collection presence. Its source members
-    have already been restored by _music_writes, under their own exact guards.
+    The semantic parent excludes owned music members. Those have already
+    been restored by _music_writes, under their own exact guards.
     """
+    from astrid.sdk.timeline import music_beds
+    # Parent semantic clips exclude managed sources/outputs, just as parent
+    # config excludes the adopted bed. An enclosing restoration cannot erase
+    # the owner-scoped transfer which has already run in this transaction.
+    if path == "clips":
+        claimed = {cid for sid, entry in music_beds.sources(tl).items() if sid.startswith("parent/")
+                   for cid in entry["outputs"]}
+        current = tl.bundle["parent"].get("clips", [])
+        retained = [row for row in current if row["id"] in claimed]
+        if retained:
+            if state["state"] != "present" or not isinstance(state["value"], list):
+                raise commands.CommandError("parent clips inverse cannot discard remaining music sources")
+            rows = copy.deepcopy(state["value"])
+            if any(row["id"] in claimed for row in rows):
+                raise commands.CommandError("parent clips inverse cannot author owner-scoped music sources")
+            for row in retained:
+                index = current.index(row)
+                previous = {r["id"] for r in current[:index]}
+                positions = [i for i, r in enumerate(rows) if r["id"] in previous]
+                rows.insert(max(positions) + 1 if positions else 0, copy.deepcopy(row))
+            state = dict(state="present", value=rows)
     collection = ["config", "app", "astrid", "music_beds"]
     keys = _tokens(path)
     if keys == collection[:len(keys)]:
-        from astrid.sdk.timeline import music_beds
         carriers = music_beds.collection(tl)
         value = copy.deepcopy(state)
         node = value.get("value") if value["state"] == "present" else None
@@ -404,6 +425,22 @@ def _parent_write(tl, path, state):
         elif carriers:
             raise commands.SemanticConflict("dependent", "parent", path,
                                             state, {"state": "present", "value": copy.deepcopy(carriers)}, state)
+        state = value
+    bed_path = ["config", "app", "astrid", "bed"]
+    if keys == bed_path:
+        raise commands.CommandError("bed inverse requires owner-scoped music writes")
+    if keys == bed_path[:len(keys)] and len(keys) < len(bed_path):
+        value = copy.deepcopy(state)
+        namespace = value.get("value") if value["state"] == "present" else None
+        for key in bed_path[len(keys):-1]:
+            namespace = namespace.get(key) if isinstance(namespace, dict) else None
+        bed = music_beds.adopted(tl)
+        if isinstance(namespace, dict) and "bed" in namespace:
+            raise commands.CommandError("parent inverse cannot author owner-scoped bed metadata")
+        if bed is not None:
+            if not isinstance(namespace, dict) or namespace.get("v") != 2:
+                raise commands.CommandError("parent inverse cannot discard remaining adopted bed")
+            namespace["bed"] = copy.deepcopy(bed)
         state = value
     _write(tl.bundle["parent"], path, state)
 
@@ -436,7 +473,9 @@ def apply_inverse(self, writes, publication):
         current = commands.state_at(states, sid, path)
         if not commands._same_value(current, write["before"]):
             raise commands.SemanticConflict("same-property", sid, path, write["before"], current, write["after"])
-    from astrid.sdk.timeline.element_reference import guard_inverse as guard_element_reference_inverse
+    from astrid.sdk.timeline.element_reference import (
+        guard_inverse as guard_element_reference_inverse,
+    )
     guard_element_reference_inverse(tl, writes)
     from astrid.sdk.timeline.identity import cut_reservations, retain_cut_reservation_mark
     reservations = cut_reservations(tl.bundle)
@@ -524,6 +563,34 @@ def apply_inverse(self, writes, publication):
     validate_bound_dependencies(tl)
 
 
+def _representation_state(path, state, version):
+    """Retain validated format metadata in the recorded inverse, not at apply time.
+
+    Enclosing container absence is reversible content except for the current
+    representation declaration. Historical guards are verified before this
+    projection; the resulting ordinary write still guards the entire container.
+    """
+    keys = _tokens(path)
+    declaration = ["config", "app", "astrid", "v"]
+    if keys != declaration[:len(keys)] or len(keys) > len(declaration):
+        return state
+    if keys == declaration:
+        old = state.get("value", 0) if state["state"] == "present" else 0
+        return dict(state="present", value=max(old, version))
+    value = copy.deepcopy(state["value"]) if state["state"] == "present" else {}
+    parent = value
+    for key in reversed(keys):
+        parent = {key: parent}
+    from astrid.core.timeline import astrid_ns
+    # Reuse collision-preserving migration on this detached desired value only.
+    ns = astrid_ns.film_ns(parent["config"])
+    ns["v"] = max(ns.get("v", 0), version)
+    node = parent
+    for key in keys:
+        node = node[key]
+    return dict(state="present", value=node)
+
+
 def inverse_command(calls, before, after, publication, *, consequences=()):
     """Coalesce direct authored preconditions: first before, final after.
 
@@ -531,7 +598,12 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
     path and parent/child writes collapse to their first precondition, avoiding
     intermediate inverse compilation and preserving presence versus null.
     """
+    from astrid.core.timeline.compatibility import require_writable_candidate
     from astrid.sdk.timeline.checkout import Checkout
+    # Never normalize an unknown/malformed representation or a downgrade into
+    # an admissible inverse. Both exact inputs must already be writable.
+    require_writable_candidate(before)
+    require_writable_candidate(after)
     desired = {}
     materializers = set()
     presence_guards = set()
@@ -633,6 +705,11 @@ def inverse_command(calls, before, after, publication, *, consequences=()):
     desired = {(sid, path): state for (sid, path), state in desired.items() if not (
         sid == "parent" and path.startswith("config.app.astrid.cut_id_high_water"))}
     states = commands._recording_states(Checkout(copy.deepcopy(after)))
+    version = states["parent"].get("config", {}).get("app", {}).get("astrid", {}).get("v")
+    if version is not None:
+        desired = {(sid, path): _representation_state(path, state, version)
+                   if sid == "parent" and path else state
+                   for (sid, path), state in desired.items()}
     writes = [dict(id=sid, path=path, before=commands.state_at(states, sid, path), after=state)
               for (sid, path), state in sorted(desired.items())]
     writes = [w for w in writes if (w["id"], w["path"]) in presence_guards or

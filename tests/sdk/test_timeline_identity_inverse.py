@@ -69,8 +69,11 @@ def test_parent_music_carrier_inverse_stages_and_replays_exact_scoped_payload():
     assert any(w["id"] == "parent" and w["path"].startswith("config.app")
                for w in undo["args"]["writes"])
     restored, undo_plan, _ = apply(after, undo)
-    assert restored == before
-    assert apply(after, *undo_plan.calls)[0] == before
+    expected = copy.deepcopy(before)
+    # Logical undo retains the validated representation established by adoption/reflow.
+    expected["parent"]["config"]["app"]["astrid"]["v"] = 2
+    assert restored == expected
+    assert apply(after, *undo_plan.calls)[0] == expected
     redone, redo_plan, _ = apply(restored, backward(after, restored, undo_plan))
     assert redone == after
     assert apply(restored, *redo_plan.calls)[0] == after
@@ -319,6 +322,7 @@ def test_reflow_uses_recorded_causal_writes_instead_of_inferring_commands_from_a
     expected = copy.deepcopy(before)
     # IDENTITY deliberately retains reservation maxima across an inverse.
     retain_cut_reservation_mark(expected, cut_reservations(before))
+    expected["parent"]["config"]["app"]["astrid"]["v"] = 2
     assert restored == expected
 
 
@@ -343,9 +347,11 @@ def test_reflow_inverse_preserves_authored_container_presence_and_opaque_values(
     assert apply(before, *plan.calls)[0] == after
     undo = backward(before, after, plan)
     restored, undo_plan, _ = apply(after, undo)
-    assert restored == before
+    expected = copy.deepcopy(before)
+    expected["parent"]["config"]["app"]["astrid"]["v"] = 2
+    assert restored == expected
     # The same ordinary guarded inverse contract must support redo and replay.
-    assert apply(after, *undo_plan.calls)[0] == before
+    assert apply(after, *undo_plan.calls)[0] == expected
     assert apply(restored, backward(after, restored, undo_plan))[0] == after
 
 
@@ -365,6 +371,9 @@ def test_reflow_inverse_refuses_to_remove_collection_with_a_later_source_and_rol
                                           ripple_basis=[], outputs=["b-music"])
     music_beds.project(head)
     music_beds.validate(head)
+    # The later source is fixture state. Reload it before the inverse runner
+    # fingerprints the head so the refusal tests dependency semantics.
+    head = Checkout(head.document())
     current = head.document()
     with pytest.raises(commands.SemanticConflict, match="dependent"):
         commands.run(head, undo)

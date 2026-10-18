@@ -330,7 +330,9 @@ def test_first_film_end_enrollment_inverse_restores_unenrolled_authored_state(oc
             at=0., hold=.5, params={}))
     before = tl.document()
     assert not music_beds.sources(tl)
-    original_states = commands.entity_states(tl)
+    expected = copy.deepcopy(before)
+    expected["parent"]["config"]["app"]["astrid"]["v"] = 2
+    original_states = commands.entity_states(Checkout(copy.deepcopy(expected)))
     after, plan, _ = RuntimeCommitService._apply(before, [dict(
         op='timeline.film-end', select=None, args=dict(moment='after "now" +2.3s'))])
     assert music_beds.sources(Checkout(after))
@@ -339,11 +341,11 @@ def test_first_film_end_enrollment_inverse_restores_unenrolled_authored_state(oc
     restored, undo, _ = RuntimeCommitService._apply(after, [undo_call])
     assert not music_beds.sources(Checkout(restored))
     assert commands.entity_states(Checkout(restored)) == original_states
-    assert restored == before
+    assert restored == expected
     music_beds.validate(Checkout(restored))
     assert RuntimeCommitService._apply(after, undo.calls)[0] == restored
     redone, redo, _ = RuntimeCommitService._apply(restored, [back(after, restored, undo)])
     assert redone == after
     music_beds.validate(Checkout(redone))
     assert RuntimeCommitService._apply(restored, redo.calls)[0] == after
-    assert RuntimeCommitService._apply(redone, [back(restored, redone, redo)])[0] == before
+    assert RuntimeCommitService._apply(redone, [back(restored, redone, redo)])[0] == expected
