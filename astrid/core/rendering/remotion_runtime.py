@@ -803,7 +803,7 @@ def _prepare_remotion_validation_locked(*, artifact_directory: Path, host_enviro
             error.probe_receipt = node_wait
             raise error
         schema_probe, schema_wait = _owned_probe(
-            [python_executable, '-I', '-c', _schema_probe_source(), str(schema_root)],
+            [python_executable, '-I', '-B', '-c', _schema_probe_source(), str(schema_root)],
             cwd=schema_root.parent, env=context['schema_env'], timeout=5)
         if schema_probe.returncode:
             error = RemotionValidationError("clean timeline schema validation failed")
@@ -832,7 +832,7 @@ def _prepare_remotion_validation_locked(*, artifact_directory: Path, host_enviro
         # import: establish its complete closure binding before that import.
         complete_before = _runtime_inputs(project, environment, python_executable, closure, digest_memo=digest_memo)
         qualifying, qualifying_wait = _owned_probe(
-            [python_executable, '-I', '-c', _schema_probe_source(), str(schema_root)],
+            [python_executable, '-I', '-B', '-c', _schema_probe_source(), str(schema_root)],
             cwd=schema_root.parent, env=context['schema_env'], timeout=5)
         try:
             qualifying_closure = json.loads(qualifying.stdout)

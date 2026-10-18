@@ -228,6 +228,66 @@ def test_provisioned_launch_keeps_installed_tree_immutable_and_binds_readiness(m
         assert runtime._file_binding(Path(binding["path"])) == binding
 
 
+def test_real_isolated_schema_probes_preserve_selected_inventory(monkeypatch, tmp_path):
+    import sys
+    from pathlib import Path
+    from astrid.core.execution import remotion_closure
+
+    project, schema, _, environment, _, _ = _provisioned_launch_fixture(
+        tmp_path, monkeypatch, environment_overrides={"LC_ALL": "C", "LC_CTYPE": "C"})
+    package = schema / "banodoco_timeline_schema"
+    # Import real temporary Python modules with the probe's required API. A
+    # writable, cache-free package exposes bytecode writes hidden by warm caches.
+    sources = {
+        "__init__.py": (
+            "from .generated import AssetEntry, TimelineClip, TimelineConfig, TimelineOutput\n"
+            "from .materialize import materialize_output\n"
+            "from .theme import Theme, ThemeOverrides, resolve_theme\n"
+            "from .validate import load_schema, validate_timeline\n"
+        ),
+        "generated.py": "AssetEntry = TimelineClip = TimelineConfig = TimelineOutput = object\n",
+        "materialize.py": "def materialize_output(): pass\n",
+        "theme.py": "Theme = ThemeOverrides = object\ndef resolve_theme(): pass\n",
+        "validate.py": "def load_schema(): return {}\ndef validate_timeline(): pass\n",
+    }
+    for name, source in sources.items():
+        (package / name).write_text(source)
+
+    def inventory():
+        return [runtime._file_binding(path) for root in (project, schema)
+                for path in sorted(remotion_closure._tree_files(root))]
+
+    before = inventory()
+    schema_calls = []
+
+    def real_schema_probe(argv, **kwargs):
+        receipt = _receipt()
+        if argv[-1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "v20.19.4\n", ""), receipt
+        # Node and custody outcomes are synthetic; execute the production Python
+        # argv/source/environment without inheriting pytest's no-bytecode flags.
+        result = subprocess.run(argv, cwd=kwargs["cwd"], env=kwargs["env"],
+                                capture_output=True, text=True, timeout=kwargs["timeout"])
+        assert result.returncode == 0, result.stderr
+        schema_calls.append(argv)
+        assert inventory() == before
+        assert not list(schema.rglob("*.pyc"))
+        assert not list(schema.rglob("__pycache__"))
+        receipt["original_wait_exit_code"] = result.returncode
+        return result, receipt
+
+    monkeypatch.setattr(runtime, "_owned_probe", real_schema_probe)
+    reference = runtime.prepare_remotion_validation(
+        artifact_directory=tmp_path / "real-probe-artifacts", host_environment=environment,
+        python_executable=sys.executable, launch_id="b" * 32, contexts={"host": environment})
+    assert len(schema_calls) == 2  # Discovery and qualifying imports both ran.
+    assert all(argv[:4] == [sys.executable, "-I", "-B", "-c"] for argv in schema_calls)
+    entry = runtime._validated_runtime(project, environment={**environment, **reference})
+    assert entry["closure"]["origin"] == str(package / "__init__.py")
+    assert inventory() == before
+    assert Path(reference["ASTRID_REMOTION_VALIDATION_PATH"]).is_file()
+
+
 def test_provisioned_launch_rejects_registry_change_before_publication(monkeypatch, tmp_path):
     from astrid.packs.rendering.rendering.renderers.remotion import run, lock
     source_lock = tmp_path / "installed-site/remotion/.astrid-registry.lock"
