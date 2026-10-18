@@ -373,6 +373,79 @@ def test_exit_code_3_is_a_run_for_no_change_but_a_refusal_for_change():
     assert _refused(result([3]), "change")  # for change, only 0 is a run
 
 
+def _no_change_plan(**overrides):
+    from astrid.sdk.timeline.transaction import Plan
+
+    return json.dumps({**Plan("clip.set").to_json(), **overrides})
+
+
+def _report_result(**overrides):
+    values = dict(name="cli", exit_codes=[3], stdout=_no_change_plan(), stderr="", error=None,
+                  base="{}", after="{}", undone="{}", redone="{}", new_steps=0,
+                  undo_error=None, redo_error=None, checks={})
+    return PathResult(**{**values, **overrides})
+
+
+@pytest.mark.parametrize("stdout", [
+    _no_change_plan(), _no_change_plan(message="no change (the working copy already matches)"),
+    _no_change_plan() + "\nno change\n", "no change", "no change: clip.set",
+])
+def test_no_change_report_accepts_supported_json_and_legacy_text(stdout):
+    result = _report_result(stdout=stdout)
+    assert evaluate(_scenario(expect="no-change", check=None), {"cli": result}) == {}
+
+
+@pytest.mark.parametrize("stdout", [
+    '{"changed": false, "message": "no change"',
+    _no_change_plan() + "\nmalformed no change",
+    json.dumps({"changed": False}), json.dumps({"message": "no change"}),
+    json.dumps("no change"), json.dumps([{"changed": False}]),
+    _no_change_plan(changed=True, message="no change"), _no_change_plan(changed=0),
+    _no_change_plan(calls=None), _no_change_plan(error="refused", message="no change"),
+])
+def test_no_change_report_rejects_malformed_or_unsupported_json(stdout):
+    failures = evaluate(_scenario(expect="no-change", check=None), {"cli": _report_result(stdout=stdout)})
+    assert ("cli", "reports") in failures
+
+
+@pytest.mark.parametrize("overrides,check", [
+    ({"exit_codes": [1]}, "runs"),
+    ({"error": "refused:CommandError: no change is permitted"}, "runs"),
+    ({"error": "RuntimeError: crashed"}, "runs"),
+    ({"after": '{"x":1}'}, "changes"),
+    ({"new_steps": 1}, "steps"),
+])
+def test_no_change_report_cannot_hide_failure_or_document_or_undo_changes(overrides, check):
+    failures = evaluate(_scenario(expect="no-change", check=None), {"cli": _report_result(**overrides)})
+    assert ("cli", check) in failures
+    if "after" in overrides:
+        assert ("cli", "reports") in failures  # a false no-change claim remains a reporting failure
+
+
+@pytest.mark.parametrize("second_stdout,second_error,second_changed,second_steps,second_exits,passes", [
+    (_no_change_plan(), None, False, 0, [3], True),
+    ("no change", None, False, 0, [0], True),
+    ('{"changed":false,"message":"no change"', None, False, 0, [3], False),
+    (_no_change_plan(changed=True), None, False, 0, [3], False),
+    (_no_change_plan(), "refused:CommandError: refused", False, 0, [3], False),
+    (_no_change_plan(), "RuntimeError: crashed", False, 0, [3], False),
+    (_no_change_plan(), None, True, 0, [3], False),
+    (_no_change_plan(), None, False, 1, [3], False),
+    (_no_change_plan(), None, False, 0, [1], False),
+])
+def test_no_change_report_uses_same_strict_predicate_for_idempotent_runs(
+        second_stdout, second_error, second_changed, second_steps, second_exits, passes):
+    result = _report_result(
+        exit_codes=[0], stdout="edited working copy", after='{"x":1}', redone='{"x":1}',
+        new_steps=1, records=[{"calls": [{"op": "clip.set"}]}],
+        second_stdout=second_stdout, second_error=second_error, second_changed=second_changed,
+        second_steps=second_steps, second_exits=second_exits)
+    failures = evaluate(_scenario(idempotent=True, check=None), {"cli": result})
+    assert (("cli", "idempotent") not in failures) is passes
+    if passes:
+        assert failures == {}
+
+
 def test_tool_key_is_stored_and_validated():
     assert _scenario().tool is None
     assert _scenario(tool="timeline.opacity").tool == "timeline.opacity"

@@ -729,6 +729,29 @@ def _refused(r: PathResult, expect: str) -> bool:
     return any(code not in allowed for code in r.exit_codes)
 
 
+def _reports_no_change(stdout: str, exit_codes: list[int], error: str | None) -> bool:
+    """Read the supported Plan result or the legacy human-readable report."""
+    if error is not None or any(code not in NO_CHANGE_OK_CODES for code in exit_codes):
+        return False
+    text = stdout.strip()
+    try:
+        result, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        # A malformed JSON result must not pass on an embedded message string.
+        return not text.startswith(("{", "[", '"')) and "no change" in text
+    # The extension adapter retains its human-readable line after its JSON Plan.
+    if text[end:].strip() not in ("", "no change") or not isinstance(result, dict):
+        return False
+    arrays = ("calls", "changes", "clips", "cuts", "blocking", "sweep")
+    objects = ("diff", "lint_delta", "digests")
+    fields = {"label", "changed", *arrays, *objects}
+    return (fields <= result.keys() <= fields | {"message"}
+            and result["changed"] is False and isinstance(result["label"], str)
+            and all(isinstance(result[key], list) for key in arrays)
+            and all(isinstance(result[key], dict) for key in objects)
+            and ("message" not in result or isinstance(result["message"], str)))
+
+
 def _refusal_boundary_error(r: PathResult) -> str | None:
     """Enforce the persisted-state contract for this path's actual refusal boundary."""
     before, after = r.persistence_before, r.persistence_after
@@ -784,7 +807,7 @@ def _evaluate_path(scenario: Scenario, r: PathResult, fail, ref: PathResult | No
             fail(name, "changes", "the document changed, but the edit should be a no-op\n"
                  + _diff(r.base, r.after, "base", name))
         if name != "python":  # Python has no report yet
-            said = "no change" in r.stdout
+            said = _reports_no_change(r.stdout, r.exit_codes, r.error)
             if said == changed:
                 fail(name, "reports", "stdout says 'no change' but the document changed" if said
                      else "the document did not change, but stdout does not say 'no change'")
@@ -824,7 +847,7 @@ def _evaluate_path(scenario: Scenario, r: PathResult, fail, ref: PathResult | No
             problems.append("the second run changed the document")
         if r.second_steps:
             problems.append(f"the second run made {r.second_steps} undo step(s), expected 0")
-        if name != "python" and "no change" not in r.second_stdout:
+        if name != "python" and not _reports_no_change(r.second_stdout, r.second_exits, r.second_error):
             problems.append("the second run did not say 'no change'")
         if problems:
             fail(name, "idempotent", "; ".join(problems))
