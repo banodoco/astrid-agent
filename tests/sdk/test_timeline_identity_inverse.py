@@ -44,6 +44,138 @@ def seed(runtime, document):
     runtime.internals.update(internals)
 
 
+def parent_music_inverse_case():
+    from test_timeline_element_reference import base_document
+    tl = Checkout(base_document(source=False))
+    tl.bundle["parent"]["registry"] = copy.deepcopy(tl.bundle["shots"]["A"]["internal_timeline"]["registry"])
+    tl._registry(None)[tl.clip("a-music").asset]["duration"] = 2.
+    owner = "parent/clip:d211-music-bed"
+    retain_cut_reservation_mark(tl.bundle, cut_reservations(tl.bundle))
+    before = tl.document()
+    after, plan, _ = apply(before,
+        dict(op="timeline.add-media", select=None, created=[owner], args=dict(
+            asset=tl.clip("a-music").asset, track="music", at=0,
+            for_seconds=2., trim_in=0, clip_id="d211-music-bed")),
+        call("timeline.adopt", sources=[owner],
+             alignment={owner: dict(confidence=1, source_offset_s=0)}),
+        call("clip.enter-at", owner, when=1.266667))
+    return before, after, plan, owner
+
+
+def test_parent_music_carrier_inverse_stages_and_replays_exact_scoped_payload():
+    before, after, plan, owner = parent_music_inverse_case()
+    undo = backward(before, after, plan)
+    assert any(w["id"] == owner and w["path"] == "music_bed" for w in undo["args"]["writes"])
+    assert any(w["id"] == "parent" and w["path"].startswith("config.app")
+               for w in undo["args"]["writes"])
+    restored, undo_plan, _ = apply(after, undo)
+    assert restored == before
+    assert apply(after, *undo_plan.calls)[0] == before
+    redone, redo_plan, _ = apply(restored, backward(after, restored, undo_plan))
+    assert redone == after
+    assert apply(restored, *redo_plan.calls)[0] == after
+
+
+@pytest.mark.parametrize("damage", ["expected-source", "wrong-owner", "missing-metadata",
+                                     "retained-metadata", "stale-source", "stale-basis"])
+def test_parent_music_carrier_inverse_refuses_tampered_or_stale_state_atomically(damage):
+    from astrid.sdk.timeline import music_beds
+
+    before, after, plan, owner = parent_music_inverse_case()
+    undo = backward(before, after, plan)
+    root = next(w for w in undo["args"]["writes"] if w["id"] == owner and not w["path"])
+    metadata = next(w for w in undo["args"]["writes"] if w["id"] == owner and w["path"] == "music_bed")
+    head = Checkout(copy.deepcopy(after))
+    if damage == "expected-source":
+        root["before"]["value"]["asset"] = "tampered"
+    elif damage == "wrong-owner":
+        root["id"] = "occurrence:occ-A/clip:d211-music-bed"
+    elif damage == "missing-metadata":
+        undo["args"]["writes"].remove(metadata)
+    elif damage == "retained-metadata":
+        metadata["after"] = copy.deepcopy(metadata["before"])
+    elif damage == "stale-source":
+        music_beds.sources(head)[owner]["source"]["volume"] = .25
+        music_beds.project(head)
+    else:
+        music_beds.adopted(head)["ripple_basis"] = [dict(at_s=1.5, delta_s=.25)]
+        music_beds.project(head)
+    # Load the actual changed head, rather than bypassing the raw-mutation guard.
+    head = Checkout(head.document())
+    current = head.document()
+    with pytest.raises(TimelineEditError, match="same-property|unavailable|guarded music metadata"):
+        commands.run(head, undo)
+    assert head.document() == current
+    assert not head._journal
+
+
+def test_parent_music_carrier_redo_refuses_payload_identity_tampering_and_duplicate_replay():
+    before, after, plan, owner = parent_music_inverse_case()
+    restored, undo_plan, _ = apply(after, backward(before, after, plan))
+    assert rebase(undo_plan.calls, restored).conflicts
+    redo = backward(after, restored, undo_plan)
+    root = next(w for w in redo["args"]["writes"] if w["id"] == owner and not w["path"])
+    root["after"]["value"]["id"] = "unrelated"
+    head = Checkout(copy.deepcopy(restored))
+    with pytest.raises(TimelineEditError, match="ownership|identity"):
+        commands.run(head, redo)
+    assert head.document() == restored
+    assert not head._journal
+
+
+def test_music_carrier_inverse_cannot_remove_a_remaining_arrangement_source():
+    from test_timeline_bed_semantics import multi
+
+    tl, owners = multi()
+    before = tl.document()
+    sid = owners[1]
+    state = commands.state_at(commands._recording_states(tl), sid, "")
+    undo = call("timeline.inverse", writes=[dict(id=sid, path="", before=state,
+        after=dict(state="absent"))], publication="synthetic-publication")
+    with pytest.raises(TimelineEditError, match="dependent music source"):
+        commands.run(tl, undo)
+    assert tl.document() == before
+    assert not tl._journal
+
+
+def test_music_carrier_reference_still_blocks_element_source_inverse():
+    from test_timeline_element_reference import command, REF, ROW
+    from astrid.sdk.timeline import music_beds
+
+    _, before, _, owner = parent_music_inverse_case()
+    after, plan, _ = apply(before, command(before, row=ROW))
+    head = Checkout(copy.deepcopy(after))
+    music_beds.sources(head)[owner]["source"]["elementRef"] = copy.deepcopy(REF)
+    music_beds.project(head)
+    head = Checkout(head.document())
+    current = head.document()
+    with pytest.raises(TimelineEditError, match="dependent reference user"):
+        commands.run(head, backward(before, after, plan))
+    assert head.document() == current
+    assert not head._journal
+
+
+def test_parent_music_carrier_zero_output_edit_inverse_and_replay():
+    from astrid.sdk.timeline import music_beds
+
+    _, document, _, owner = parent_music_inverse_case()
+    fixture = Checkout(document)
+    source = music_beds.sources(fixture)[owner]["source"]
+    # Seed an intact authored source whose entire audible span is removed.
+    music_beds.adopted(fixture)["ripple_basis"] = [dict(at_s=source["at"], delta_s=-2.)]
+    music_beds.project(fixture)
+    before = Checkout(fixture.document()).document()
+    assert music_beds.sources(Checkout(before))[owner]["outputs"] == []
+    after, plan, _ = apply(before, call("clip.set-look", owner, volume=.25))
+    assert apply(before, *plan.calls)[0] == after
+    restored, undo, _ = apply(after, backward(before, after, plan))
+    assert restored == before
+    assert apply(after, *undo.calls)[0] == before
+    redone, _, _ = apply(restored, backward(after, restored, undo))
+    assert redone == after
+    assert music_beds.sources(Checkout(redone))[owner]["outputs"] == []
+
+
 @pytest.mark.parametrize("op", ["clip.remove", "clip.remove-layer"])
 def test_remove_resurrects_exact_payload_scope_order_and_keeps_later_work(setup, op):
     draft, runtime, client = setup

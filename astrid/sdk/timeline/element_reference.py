@@ -251,18 +251,11 @@ def direct_paths(call, selected):
 def guard_inverse(tl, writes):
     """Removing a newly inserted source cannot strand a later reference user."""
     from astrid.sdk.timeline import commands
-    from astrid.sdk.timeline.inverse import _write
+    from astrid.sdk.timeline.inverse import _inverse_states
     if not any(w["id"] == "parent" and w["path"].startswith("config.app") for w in writes):
         return
     states = commands._recording_states(tl)
-    trial = copy.deepcopy(states)
-    for w in writes:
-        if w["path"]:
-            _write(trial[w["id"]], w["path"], w["after"])
-        elif w["after"]["state"] == "absent":
-            trial.pop(w["id"], None)
-        else:
-            trial[w["id"]] = copy.deepcopy(w["after"]["value"])
+    trial = _inverse_states(states, writes)
     old_config = states["parent"].get("config", {})
     config = trial["parent"].get("config", {})
     for sid, row in trial.items():

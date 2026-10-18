@@ -238,6 +238,39 @@ def _root(tl, write):
     members.insert(index, copy.deepcopy(payload))
 
 
+def _inverse_states(states, writes):
+    """Simulate guarded roots and their separately recorded carrier metadata.
+
+    A source root excludes music_bed. Its deletion can therefore be followed
+    by an absent metadata write, without recreating the deleted source. All
+    preconditions are checked against the original state by apply_inverse.
+    """
+    desired = copy.deepcopy(states)
+    removed = {w["id"] for w in writes if not w["path"] and w["after"]["state"] == "absent"}
+    for write in writes:
+        sid, path, state = write["id"], write["path"], write["after"]
+        if not path:
+            if state["state"] == "absent":
+                desired.pop(sid, None)
+            else:
+                metadata = desired.get(sid, {}).get("music_bed")
+                desired[sid] = copy.deepcopy(state["value"])
+                if metadata is not None:
+                    desired[sid]["music_bed"] = metadata
+        else:
+            if sid not in desired:
+                if (sid in removed and state["state"] == "absent"
+                        and (path == "music_bed" or path.startswith("music_bed."))):
+                    continue  # the separately guarded metadata is removed with its root
+                raise commands.CommandError(f"inverse source is unavailable: {sid}.{path}")
+            path = "app.astrid." + path[7:] if path.startswith("intent.") else path
+            try:
+                _write(desired[sid], path, state)
+            except (KeyError, IndexError, TypeError, AttributeError) as exc:
+                raise commands.CommandError(f"inverse path is unavailable: {sid}.{path}") from exc
+    return desired
+
+
 def _music_writes(tl, writes, states):
     """Translate the existing owner-scoped semantic view back to I's authority.
 
@@ -252,24 +285,20 @@ def _music_writes(tl, writes, states):
     if not affected:
         return set()
     music_beds.validate(tl)
-    desired = copy.deepcopy(states)
-    handled = set()
-    for index, write in enumerate(writes):
-        if write["id"] not in affected:
-            continue
-        handled.add(index)
-        sid, path, state = write["id"], write["path"], write["after"]
-        if not path:
-            if state["state"] == "absent":
-                desired.pop(sid, None)
-            else:
-                metadata = desired.get(sid, {}).get("music_bed")
-                desired[sid] = copy.deepcopy(state["value"])
-                if metadata is not None:
-                    desired[sid]["music_bed"] = metadata
-        else:
-            path = "app.astrid." + path[7:] if path.startswith("intent.") else path
-            _write(desired[sid], path, state)
+    handled = {index for index, write in enumerate(writes) if write["id"] in affected}
+    desired = _inverse_states(states, [write for write in writes if write["id"] in affected])
+    removed = {w["id"] for w in writes if w["id"] in affected
+               and not w["path"] and w["after"]["state"] == "absent"}
+    referenced = {a['owner'] for data in desired.values() if isinstance(data, dict)
+                  for a in data.get('music_bed', {}).get('arrangements', [])}
+    for sid in removed:
+        metadata = states.get(sid, {}).get("music_bed")
+        if sid not in carriers or sid in referenced:
+            raise commands.CommandError(f'{sid}: inverse removal has a remaining dependent music source')
+        paths = {w["path"] for w in writes if w["id"] == sid and w["after"]["state"] == "absent"}
+        if metadata and not ("music_bed" in paths or
+                ("arrangements" not in metadata and "music_bed.ripple_basis" in paths)):
+            raise commands.CommandError(f'{sid}: inverse removal requires guarded music metadata absence')
     # A recorded absent basis is the unenrolled state of a legacy source.
     # Outputs/projection belong to the removed enrollment, not to the clip.
     # Only that guarded transition may discard them; adopted BED authority
@@ -289,11 +318,17 @@ def _music_writes(tl, writes, states):
     # Every formerly managed source is now present as an ordinary clip. This
     # also makes removing the last metadata field an exact storage transfer.
     restored_sources = {}
-    referenced = {a['owner'] for data in desired.values() if isinstance(data, dict)
-                  for a in data.get('music_bed', {}).get('arrangements', [])}
     for sid in affected | set(carriers) | referenced:
         if sid not in desired:
-            raise commands.CommandError('remove adopted sources through their authored owner')
+            if sid not in removed:
+                raise commands.CommandError('remove adopted sources through their authored owner')
+            source = carriers[sid]['source']
+            _, clips = music_beds.locate(tl, sid, source)
+            matches = [c for c in clips if c.get('id') == source['id']]
+            if len(matches) != 1:
+                raise commands.CommandError(f'{sid}: inverse source is unavailable or ambiguous')
+            clips.remove(matches[0])
+            continue
         source = copy.deepcopy(desired[sid])
         source.pop('music_bed', None)
         _, clips = music_beds.locate(tl, sid, source)
