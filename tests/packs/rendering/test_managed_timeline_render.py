@@ -430,6 +430,34 @@ def test_legacy_audio_registry_projects_exact_row_without_mutating_snapshot() ->
     assert runtime.parent_revisions == frozen_parent
 
 
+def test_legacy_registry_captured_prefixed_content_preserves_raw_bytes() -> None:
+    from astrid.core import timeline
+
+    # Exact current j195-music readback captured in G's 222 handback.
+    raw_bytes = (
+        b'{"content_sha256":"sha256:48c37fbad1d5b883a821fbe4081cd6eccca750eb329dd0d9ad05d4c28ba31faa",'
+        b'"digest":"sha256:48c37fbad1d5b883a821fbe4081cd6eccca750eb329dd0d9ad05d4c28ba31faa",'
+        b'"media_id":"sha256:48c37fbad1d5b883a821fbe4081cd6eccca750eb329dd0d9ad05d4c28ba31faa",'
+        b'"object_id":"sha256:48c37fbad1d5b883a821fbe4081cd6eccca750eb329dd0d9ad05d4c28ba31faa",'
+        b'"type":"audio"}'
+    )
+    row = json.loads(raw_bytes)
+    raw_registry = {"assets": {"j195-music": row}}
+    registry_bytes = json.dumps(raw_registry, separators=(",", ":")).encode()
+    _, projected = managed_timeline._render_compatible_projection({}, raw_registry)
+    assert projected == {"assets": {"j195-music": _J195_CANONICAL_ROW}}
+    timeline.validate_registry(projected)
+    assert json.dumps(row, separators=(",", ":")).encode() == raw_bytes
+    assert json.dumps(raw_registry, separators=(",", ":")).encode() == registry_bytes
+    # Normal request preparation consumes the same captured row privately.
+    runtime = _legacy_audio_runtime(row)
+    prepared, _ = _prepare_managed_render_inputs(
+        {"timeline_ref": "main"}, project="demo", _client=runtime
+    )
+    assert prepared["timeline_snapshot"]["registry"] == projected
+    assert json.dumps(runtime.timeline["registry"], separators=(",", ":")).encode() == registry_bytes
+
+
 @pytest.mark.parametrize("entry", [
     {**_J195_LEGACY_ROW, **_J195_CANONICAL_ROW},
     {"object_id": _J195_OBJECT_ID, "type": "audio"},
@@ -450,7 +478,8 @@ def test_legacy_registry_agreeing_aliases_prepare_canonical_row(entry) -> None:
     ("object_id", "sha256:" + "b" * 64),
     ("media_id", "sha256:" + "b" * 64),
     ("content_sha256", "b" * 64),
-], ids=["digest", "object-id", "media-id", "content-sha256"])
+    ("content_sha256", "sha256:" + "b" * 64),
+], ids=["digest", "object-id", "media-id", "content-sha256", "prefixed-content-sha256"])
 def test_legacy_registry_conflicting_identity_refuses(field, value) -> None:
     runtime = _legacy_audio_runtime({**_J195_LEGACY_ROW, field: value})
     original = deepcopy(runtime.timeline)
@@ -476,19 +505,34 @@ def test_legacy_registry_malformed_digest_refuses(bad_digest) -> None:
         )
 
 
+@pytest.mark.parametrize("bad_content", [
+    "md5:" + _J195_SHA256, "SHA256:" + _J195_SHA256,
+    "sha256:" + _J195_SHA256.upper(), "sha256:" + "a" * 63,
+    "sha256:" + "g" * 64, "sha256:" + _J195_OBJECT_ID,
+    _J195_OBJECT_ID + "\n", "", None, 123,
+], ids=["non-sha", "prefix-case", "hex-case", "short", "non-hex", "double-prefix",
+        "whitespace", "empty", "null", "number"])
+def test_legacy_registry_malformed_prefixed_content_refuses(bad_content) -> None:
+    with pytest.raises(CapabilityValidationError, match=r"j195-music.*content_sha256"):
+        _prepare_managed_render_inputs(
+            {"timeline_ref": "main"}, project="demo",
+            _client=_legacy_audio_runtime({**_J195_LEGACY_ROW, "content_sha256": bad_content}),
+        )
+
+
 @pytest.mark.parametrize("entry", [
     {**_J195_LEGACY_ROW, "object_id": _J195_SHA256},
     {**_J195_LEGACY_ROW, "object_id": "opaque-object"},
     {**_J195_LEGACY_ROW, "object_id": None},
     {**_J195_LEGACY_ROW, "media_id": ""},
     {**_J195_LEGACY_ROW, "media_id": None},
-    {**_J195_LEGACY_ROW, "content_sha256": _J195_OBJECT_ID},
+    {**_J195_LEGACY_ROW, "content_sha256": "sha256:" + _J195_OBJECT_ID},
     {**_J195_LEGACY_ROW, "content_sha256": None},
     {"digest": _J195_OBJECT_ID, "type": "audio"},
     {"type": "audio"},
     [_J195_LEGACY_ROW],
 ], ids=["bare-object", "opaque-object", "null-object", "empty-media", "null-media",
-        "prefixed-content", "null-content", "digest-without-identity", "no-identity",
+        "double-prefixed-content", "null-content", "digest-without-identity", "no-identity",
         "non-object-entry"])
 def test_legacy_registry_unsupported_identity_refuses(entry) -> None:
     with pytest.raises(CapabilityValidationError):

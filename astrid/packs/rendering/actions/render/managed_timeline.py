@@ -48,6 +48,7 @@ def _project_legacy_asset_identity(key: str, entry: dict[str, Any]) -> None:
 
     Only the historical ``object_id``/``digest`` spellings are consumed. All
     other metadata stays present for the strict registry validator to check.
+    A supplied content_sha256 may use the same exact sha256: identity prefix.
     Canonical-only rows retain their existing validation/admission behavior.
     """
     if not {"object_id", "digest"}.intersection(entry):
@@ -65,6 +66,8 @@ def _project_legacy_asset_identity(key: str, entry: dict[str, Any]) -> None:
             if not isinstance(value, str) or not value.startswith("sha256:"):
                 raise ValueError(f"{label}.{field} must be a sha256: managed identity")
             value = value[len("sha256:"):]
+        elif isinstance(value, str):
+            value = value.removeprefix("sha256:")
         try:
             digests.append(validate_digest(value))
         except (TypeError, ValueError) as exc:
