@@ -232,14 +232,26 @@ def test_detach_audio_inverse_keeps_video_identity_source_range_and_gain(setup):
     picture = tl.cut("c1").picture
     picture.data.update(clipType="media", asset="video", **{"from": 1.0, "to": 5.0, "volume": 0.6})
     picture.data.pop("hold", None)
-    tl._internal("A")["tracks"].append(dict(id="audio", kind="audio"))
     tl._registry("A")["video"] = {**copy.deepcopy(tl._registry("A")["P"]), "type": "video"}
+    # Reload the prepared video document before publishing the fake Runtime
+    # fixture.
+    tl = Checkout(tl.document())
     seed(runtime, tl.document())
     draft = Checkout.draft("p", "t", name="detachment", fresh=True)
+    # Declare the target lane through the supported track operation before
+    # detaching; the compiled fixture intentionally omits unused empty lanes.
+    track = "occurrence:occ-A/track:audio"
+    commands.run(draft, {**call("timeline.add", track,
+                                track=dict(id="audio", kind="audio", label="Detached audio")),
+                        "expect": {track + "::": {"state": "absent"}}})
     original = copy.deepcopy(draft.cut("c1").picture.data)
     commands.run(draft, call("clip.detach-audio", original["id"]))
     first = publish(draft, client, "detach audio")
-    audio_id = first["change"]["commands"][0]["created"][0].split("/clip:", 1)[1]
+    audio_id = next(
+        sid.split("/clip:", 1)[1]
+        for change in first["change"]["commands"]
+        for sid in change["created"] if "/clip:" in sid
+    )
     assert draft.clip(audio_id).data["from"] == 1.0 and draft.clip(audio_id).data["to"] == 5.0
     draft.undo(client=client)
     publish(draft, client, "Undo detach audio")
@@ -365,6 +377,9 @@ def test_reflow_inverse_refuses_to_remove_collection_with_a_later_source_and_rol
                                           ripple_basis=[], outputs=["b-music"])
     music_beds.project(head)
     music_beds.validate(head)
+    # The later source is fixture state. Reload it before the inverse runner
+    # fingerprints the head so the refusal tests dependency semantics.
+    head = Checkout(head.document())
     current = head.document()
     with pytest.raises(commands.SemanticConflict, match="dependent"):
         commands.run(head, undo)
@@ -398,6 +413,8 @@ def test_music_alias_allocation_replays_and_inverts_exact_ids_and_payloads(setup
     unrelated = dict(id='a-music:b', clipType='am-sprite', track='sprite', asset='R',
                      at=0., hold=.5, params={})
     tl._internal('A')['clips'].append(copy.deepcopy(unrelated))
+    # Load the deliberately colliding fixture as the runner's starting state.
+    tl = Checkout(tl.document())
     tl.insert_time(2, 1)
     before = tl.document()
     after, plan, _ = apply(before, call('timeline.insert-time', at=2, seconds=1))

@@ -88,6 +88,9 @@ def test_multi_source_edit_records_authored_gain_and_projection_consequences_onc
 
 def test_zero_output_owner_edits_replays_and_inverts_without_generated_identity():
     tl = enrolled()
+    # Reservation retention is fixture construction; load it as the runner's
+    # admitted starting document before exercising the edit.
+    tl = Checkout(tl.document())
     tl.ripple_delete(0, 9)
     tl = adopt_one(tl)
     before = tl.document()
