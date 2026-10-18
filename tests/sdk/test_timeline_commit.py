@@ -692,7 +692,7 @@ def test_exact_occurrence_scope_uses_current_identity_model_and_refuses_escape(b
         assert not port.accepts
 
 
-def test_exact_shared_child_with_duplicate_timing_identities_is_explicit_refusal(bundle):
+def test_exact_shared_child_preparation_scopes_duplicate_timing_identities(bundle):
     closure = exact_closure(bundle)
     parent = closure['parent_revision']['payload']
     occurrence = copy.deepcopy(parent['occurrences'][0])
@@ -704,10 +704,12 @@ def test_exact_shared_child_with_duplicate_timing_identities_is_explicit_refusal
     port = Port(body)
     port.revision_closure = lambda rid: copy.deepcopy(closure)
     result = create_runtime_commit_service().commit(body, port)
-    assert result['status'] == 'refused' and not port.accepts
-    assert 'Ambiguous occurrence timing identities' in result['error']['message']
-    assert 'cut:c1' in result['error']['message'] and 'line:s1' in result['error']['message']
-    assert result['id_map'] == {}  # no unsupported fork/identity result is invented
+    assert result['status'] == 'accepted' and len(port.accepts) == 1, result
+    original = closure['parent_revision']['payload']['occurrences']
+    published = port.accepts[0]['publication']['parent_composition']['occurrences']
+    assert published[:-1] == original[:-1]
+    assert published[-1]['shot_revision_id'] != original[-1]['shot_revision_id']
+
 
 
 @pytest.mark.parametrize("moved_head", [False, True])

@@ -1428,6 +1428,14 @@ class _MomentContext:
             cache["words"] = self.tl.words()
         return cache["words"]
 
+    def words_for(self, moment):
+        words = self.words()
+        if self.clip is not None and moment.source is None:
+            local = [word for word in words if word.shot_id == self.clip.shot_id]
+            if mo.find_words(moment, local) or (moment.line is not None and any(word.segment == moment.line for word in local)):
+                return local
+        return words
+
     def _beat_beds(self, kind: str):
         """Read the existing authored owners and their current sounding pieces."""
         from astrid.sdk.timeline import music_beds
@@ -1535,14 +1543,14 @@ class _MomentContext:
             stack.remove(key)
 
     def cut_start(self, cut_id: str) -> float:
-        cut_id = self.tl._cut_id(cut_id) or cut_id
+        cut_id = self.tl._cut_id(cut_id, self.clip) or cut_id
         for g in self.tl.cut_index.groups(self.tl):
             if g["id"] == cut_id:
                 return g["start"]
         raise mo.MomentError(self.tl._no_cut(cut_id))
 
     def cut_end(self, cut_id: str) -> float:
-        cut_id = self.tl._cut_id(cut_id) or cut_id
+        cut_id = self.tl._cut_id(cut_id, self.clip) or cut_id
         spans = self.tl._cut_spans()
         if cut_id not in spans:
             raise mo.MomentError(self.tl._no_cut(cut_id))
@@ -1558,7 +1566,9 @@ class _MomentContext:
     def line_in_point(self, line: str):
         """Where the take begins on the timeline (its file's zero: a trimmed or tightened take starts later)."""
         try:
-            first = Voice(self.tl, line).clips[0]
+            candidates = [c for c in self.tl.clips() if self.clip is not None and c.shot_id == self.clip.shot_id
+                          and c.is_audio and intent.line(c.data) == line]
+            first = min(candidates, key=lambda c: c.start) if candidates else Voice(self.tl, line).clips[0]
         except TimelineEditError:
             return None
         speed = _num(first.data.get("speed"), 1.0) or 1.0

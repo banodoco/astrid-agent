@@ -510,7 +510,7 @@ class _TimingEvaluators:
         for clip in self.clips():
             tag = intent.sequence(clip.data)
             if tag and not intent.orphan(clip.data):
-                sequences.setdefault(tag[0], []).append(clip)
+                sequences.setdefault((clip.shot_id, tag[0]), []).append(clip)
         ratios = {sid: [max(1, int(round(c.duration * self.fps))) for c in sorted(steps, key=lambda c: intent.sequence(c.data)[1])]
                   for sid, steps in sequences.items()}  # before anything moves: the unit's shape
         for g in groups:  # 1. cut starts
@@ -558,7 +558,7 @@ class _TimingEvaluators:
                     moved.setdefault(id(c.data), (c.address, a, c.start))
         self._mcache = {"cuts": cut_span}
         for clip in self.clips():  # 2. every clip on its moments
-            cut = intent.cut_of(clip.data)
+            cut = self._cut_key(clip)
             if (cut in orphan_cuts and not intent.on(clip.data)) or intent.orphan(clip.data):
                 continue  # an orphan keeps its time and length until it is re-homed
             seq = intent.sequence(clip.data)
@@ -753,7 +753,7 @@ class _TimingEvaluators:
             clip._set_start(t)
 
     def _own_cut_span(self, clip: "Clip") -> tuple[float, float] | None:
-        cut = intent.cut_of(clip.data)
+        cut = self._cut_key(clip)
         if not cut:
             return None
         spans = (self._mcache or {}).get("cuts")
@@ -871,7 +871,7 @@ class _TimingEvaluators:
         for clip in self.clips():
             tag = intent.sequence(clip.data)
             if tag and not intent.orphan(clip.data):
-                groups.setdefault(tag[0], []).append(clip)
+                groups.setdefault((clip.shot_id, tag[0]), []).append(clip)
         changes = []
         for seq_id, steps in groups.items():
             steps.sort(key=lambda c: intent.sequence(c.data)[1])
@@ -1142,7 +1142,7 @@ class _TimingEvaluators:
         for clip in self._internal(sid)["clips"]:
             tag = intent.sequence(clip)
             if tag and not intent.orphan(clip):
-                groups.setdefault(tag[0], []).append(clip)
+                groups.setdefault((clip.shot_id, tag[0]), []).append(clip)
         return [sorted(steps, key=lambda c: intent.sequence(c)[1]) for steps in groups.values()]
 
     def _relay_steps(self, steps: list[dict[str, Any]], at: float, length: float, frames: list[int] | None = None) -> None:

@@ -96,7 +96,7 @@ def _validate_dependencies(tl, *, music_end_owners=()):
         return moment
 
     def terminal_basis(text, clip):
-        if clip not in final_pictures or intent.cut_of(clip.data) != terminal:
+        if clip not in final_pictures or tl._cut_key(clip) != terminal:
             return False
         if not text:
             return True
@@ -105,7 +105,7 @@ def _validate_dependencies(tl, *, music_end_owners=()):
         except mo.MomentError:
             return False
         return ((m.kind == 'end' and intent.until_film_end(clip.data) is None)
-                or (m.kind == 'cut_end' and tl._cut_id(m.cut) == terminal))
+                or (m.kind == 'cut_end' and tl._cut_id(m.cut, clip) == terminal))
 
     def references(text, clip, *, film_end=None, compatibility=False):
         moment = checked_moment(text, clip, 'reference')
@@ -120,9 +120,10 @@ def _validate_dependencies(tl, *, music_end_owners=()):
             if m.kind == 'end' and film_end is not None:
                 return set()  # fixed timeline-end basis, independent of the clip's owning cut
             if m.kind in ('cut', 'cut_end', 'end', 'cut_start'):
-                if m.cut and m.cut not in aliases:
-                    aliases[m.cut] = tl._cut_id(m.cut)
-                cid = aliases[m.cut] if m.cut else intent.cut_of(clip.data)
+                alias = (clip.shot_id, m.cut)
+                if m.cut and alias not in aliases:
+                    aliases[alias] = tl._cut_id(m.cut, clip)
+                cid = aliases[alias] if m.cut else tl._cut_key(clip)
                 if cid not in cut_ids:
                     return set()
                 edge = 'end' if m.kind in ('cut_end', 'end') else 'start'
@@ -134,7 +135,8 @@ def _validate_dependencies(tl, *, music_end_owners=()):
                     raise TimelineEditError(f"Clip anchor {m.clip} has no evaluated authored owner")
                 return {node(target, m.kind.split('_')[1])}
             if m.kind == 'word':
-                hits = mo.find_words(m, words)
+                from astrid.sdk.timeline.model import _MomentContext
+                hits = mo.find_words(m, _MomentContext(tl, clip).words_for(m))
                 if m.n is not None:
                     hits = hits[m.n - 1:m.n] if m.n > 0 else []
                 return {node(by_word[w.shot_id, w.clip_id], 'start')
@@ -169,7 +171,7 @@ def _validate_dependencies(tl, *, music_end_owners=()):
     for clip in clips:
         tag = intent.sequence(clip.data)
         if tag and not intent.orphan(clip.data):
-            sequences.setdefault(tag[0], []).append(clip)
+            sequences.setdefault((clip.shot_id, tag[0]), []).append(clip)
     for steps in sequences.values():
         steps.sort(key=lambda c: intent.sequence(c.data)[1])
 
@@ -198,9 +200,9 @@ def _validate_dependencies(tl, *, music_end_owners=()):
                 if (word is None or expr.get('text') and _norm(word.text) != _norm(expr['text'])) and expr.get('text'):
                     checked_moment(json.dumps(str(expr['text'])), clip, field)
         start, end = node(clip, 'start'), node(clip, 'end')
-        cid = intent.cut_of(clip.data)
+        cid = tl._cut_key(clip)
         tag = intent.sequence(clip.data)
-        steps = sequences.get(tag[0], []) if tag else []
+        steps = sequences.get((clip.shot_id, tag[0]), []) if tag else []
         first = steps[0] if steps else clip
         on, until = intent.on(first.data), intent.until(first.data)
         if clip is first:

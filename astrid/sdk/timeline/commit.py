@@ -402,7 +402,7 @@ class RuntimeCommitService:
             args = copy.deepcopy(dict(call.args))
             if call.op == "timeline.batch":
                 args["commands"] = cls._capture_media(port, request, args.get("commands", []))
-            if call.op in {"timeline.add", "shot-group.set"} and "media" in args:
+            if call.op in {"timeline.add", "shot-group.set", "clip.swap-asset"} and "media" in args:
                 media = args["media"]
                 if not isinstance(media, Mapping) or set(media) != {"asset", "generation_id", "variant_id", "object_id", "catalog_digest"}:
                     raise _Refusal("Exact project media selection is required")
@@ -561,7 +561,13 @@ class RuntimeCommitService:
             return bool(values) and all(value.get("op") == "shot.set" or
                 (value.get("op") == "timeline.batch" and payload_only(value.get("args", {}).get("commands", [])))
                 for value in values)
-        if own & other and not payload_only(request["change"].get("commands", [])):
+        # Exact public preparation gives every occurrence an independent owner.
+        # The existing compiler now resolves duplicate authored anchors in that
+        # owner's context. Keep refusing unprepared/ambiguous ownership.
+        source = base.get("source_mapping", {}).get("shots", {}).get(selected_shot, {})
+        prepared_owner = source.get("linked") is True and sum(
+            row.get("shot_id") == selected_shot for row in base.get("placements", [])) == 1
+        if own & other and not prepared_owner and not payload_only(request["change"].get("commands", [])):
             raise _Refusal("Ambiguous occurrence timing identities: " +
                            ", ".join(f"{kind}:{value}" for kind, value in sorted(own & other)) +
                            "; exact occurrence timing support is required")
@@ -608,7 +614,8 @@ class RuntimeCommitService:
                 validate_spec(call.args.get("spec"))
             local_adoption = (call.op == "timeline.adopt" and call.args.get("sources") is not None
                               and call.args.get("timeline") is None and call.args.get("revision_id") is None)
-            if (call.op in external and not local_adoption) or "client" in call.args:
+            selected_swap = call.op == "clip.swap-asset" and set(call.args) in ({"media"}, {"media", "media_record"})
+            if (call.op in external and not local_adoption and not selected_swap) or "client" in call.args:
                 raise _Refusal(f"{call.op} requires an admitted scoped media/adapter producer")
             if call.op == "timeline.add" and any(call.args.get(key) is not None for key in ("asset", "standin")):
                 raise _Refusal("timeline.add with media requires an admitted scoped media/adapter producer")

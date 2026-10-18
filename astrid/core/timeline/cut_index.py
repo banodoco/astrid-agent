@@ -95,20 +95,27 @@ class CutIndex:
         """
         from astrid.sdk import timeline_intent as intent
         groups = {}
+        sources = tl.bundle.get('source_mapping', {}).get('shots', {})
         for clip in tl.clips():
             cid = intent.cut_of(clip.data)
             if cid:
-                groups.setdefault(cid, []).append(clip)
+                owner = clip.shot_id if sources.get(clip.shot_id, {}).get('linked') is True else None
+                groups.setdefault((owner, cid), []).append(clip)
         out = []
-        for cid, clips in groups.items():
+        for (shot_id, cid), clips in groups.items():
             orphan = all(intent.orphan(c.data) for c in clips)
             if orphan and not include_orphans:
                 continue
-            rows = [r for r in self.rows if r.get('cut_id') == cid]
+            rows = [r for r in self.rows if r.get('cut_id') == cid and (shot_id is None or r.get('shot_id') == shot_id)]
             pictures = {id(r['clip']) for r in rows if r['clip'] is not None}
             beds = sorted((c for c in clips if id(c.data) in pictures), key=lambda c: (c.start, c.id))
             picture = beds[0] if beds else None
-            out.append(dict(id=cid, clips=clips, picture=picture,
+            duplicates = sum(authored == cid for _, authored in groups) > 1
+            owners = [o['occurrence_id'] for o in self.occurrences if o['shot_id'] == shot_id]
+            # A derived resolver key, never an authored cut rename. Ambiguous
+            # unprepared owners retain the existing independent-owner refusal.
+            key = f'occurrence:{owners[0]}/cut:{cid}' if duplicates and len(owners) == 1 else cid
+            out.append(dict(id=key, authored_id=cid, shot_id=shot_id, clips=clips, picture=picture,
                             start=picture.start if picture else min(c.start for c in clips),
                             end=max((r['end'] for r in rows), default=max(c.end for c in clips)), orphan=orphan))
         return sorted(out, key=lambda g: (g['start'], g['id']))

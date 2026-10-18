@@ -315,23 +315,40 @@ class _LookupMixin:
 
     def _cut_clips(self, cut_id: str) -> list[Clip]:
         """Every clip of a cut, orphans included (an orphaned cut is not in the cut list until re-homed)."""
-        return [c for c in self.clips() if intent.cut_of(c.data) == cut_id]
+        if not any(source.get('linked') is True for source in self.bundle.get('source_mapping', {}).get('shots', {}).values()):
+            return [c for c in self.clips() if intent.cut_of(c.data) == cut_id]
+        key = self._cut_id(cut_id) or cut_id
+        return [c for c in self.clips() if self._cut_key(c) == key]
 
     def cut_picture(self, cut_id: str) -> Clip | None:
         """A cut's picture (its first bed clip), for live and orphaned cuts alike."""
         beds = sorted((c for c in self._cut_clips(cut_id) if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
         return beds[0] if beds else None
 
-    def _cut_id(self, text: str) -> str | None:
-        """The cut id as the sheet prints it: ``c1`` and ``c001`` are ``c01``; None when there is no such cut."""
-        m = re.fullmatch(r"c0*(\d+)([a-z]?)", str(text).strip().lower())
-        if not m:
+    def _cut_id(self, text: str, clip=None) -> str | None:
+        """Resolve an authored cut in its actual occurrence, refusing ambiguity."""
+        exact = str(text).strip()
+        value = exact.lower()
+        groups = self.cut_index.groups(self, include_orphans=True)
+        if any(group['id'] == exact and group['id'] != group['authored_id'] for group in groups):
+            return exact
+        def normalized(value):
+            match = re.fullmatch(r"c0*(\d+)([a-z]?)", value)
+            return match.groups() if match else None
+        key = normalized(value)
+        if key is None:
             return None
-        ids = [g["id"] for g in self.cut_index.groups(self, include_orphans=True)]
-        if str(text).strip().lower() in ids:
-            return str(text).strip().lower()
-        return next((cid for cid in ids if (mm := re.fullmatch(r"c0*(\d+)([a-z]?)", cid))
-                     and (mm.group(1), mm.group(2)) == (m.group(1), m.group(2))), None)
+        matches = [g for g in groups if normalized(g['authored_id']) == key]
+        local = [g for g in matches if clip is not None and g['shot_id'] == clip.shot_id]
+        if local:
+            matches = local
+        if len(matches) > 1:
+            raise TimelineEditError(f"cut {text!r} requires its occurrence/clip scope")
+        return matches[0]['id'] if matches else None
+
+    def _cut_key(self, clip, text=None):
+        authored = text if text is not None else intent.cut_of(clip.data)
+        return self._cut_id(authored, clip) if authored else None
 
     def _no_cut(self, cut_id: str) -> str:
         ids = [g["id"] for g in self.cut_index.groups(self)]

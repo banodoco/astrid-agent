@@ -329,6 +329,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
         raise CommandError("clip shader selector and recorded owner disagree")
     if entry.op == "timeline.add" and ("media" in command.args or isinstance(command.args.get("track"), Mapping)):
         entry = replace(entry, kind="track", handler=add_project_media if "media" in command.args else add_track)
+    if entry.op == "clip.swap-asset" and "media" in command.args:
+        entry = replace(entry, handler=swap_project_media)
     if entry.op == "timeline.add" and "text" in command.args:
         from astrid.sdk.timeline.manual_text import add as add_manual_text
         entry = replace(entry, handler=add_manual_text)
@@ -362,7 +364,8 @@ def _invoke(tl, command, entry, *, owner=None, sdk_args=None):
     if owner is None and entry.kind == "clip" and command.select and is_scoped_id(command.select):
         owner = recorded_owner(tl, replace(command, resolved=(command.select,)), "clip")
     if owner is None and entry.kind == "track":
-        owner = track_owner(tl, command.select, new=entry.op == "timeline.add" and "track" in command.args)
+        owner = track_owner(tl, command.select, new=entry.op == "timeline.add" and "track" in command.args,
+                            resolved=entry.op == "timeline.add" and "media" in command.args)
     if owner is None:
         if entry.kind == "timeline":
             if command.select is not None:
@@ -1269,7 +1272,17 @@ def check_expectations(tl, call, selected):
     states = _recording_states(tl)
     for key, expected in (call.expect or {}).items():
         sid, path = write_target(key, selected or call.resolved)
-        current = state_at(states, sid, path)
+        if sid.startswith("occurrence:") and sid.endswith("/shot") and path.startswith("internal_timeline.registry."):
+            # A read-only path into this shot's existing internal document;
+            # never add a registry mirror to placement or shot payload state.
+            oid = sid[len("occurrence:"):-len("/shot")]
+            rows = [row for row in tl.bundle.get("placements", []) if row.get("occurrence_id") == oid]
+            if len(rows) != 1:
+                raise CommandError("Registry expectation requires one exact occurrence")
+            observed = {**states, sid: {**states.get(sid, {}), "internal_timeline": tl._internal(rows[0]["shot_id"])}}
+            current = state_at(observed, sid, path)
+        else:
+            current = state_at(states, sid, path)
         if not _same_value(current, expected):
             kind = "delete-vs-edit" if ((sid not in states and expected["state"] == "present") or
                     call.op in {"clip.remove", "clip.remove-layer"}) else "same-property"
@@ -2325,7 +2338,7 @@ class _Track:
         self.id = data["id"]
 
 
-def track_owner(tl, sid, *, new=False):
+def track_owner(tl, sid, *, new=False, resolved=False):
     from astrid.sdk.timeline import commands
 
     if not isinstance(sid, str) or not commands.is_scoped_id(sid) or "/track:" not in sid:
@@ -2344,7 +2357,7 @@ def track_owner(tl, sid, *, new=False):
         shot = str(rows[0]["shot_id"])
     else:
         raise TimelineEditError("Select an occurrence or parent track, not shared-shot content")
-    tracks = [t for t in tl._tracks(shot) if t.get("id") == local]
+    tracks = [t for t in (tl._resolved_tracks(shot) if resolved else tl._tracks(shot)) if t.get("id") == local]
     if new and not tracks:
         tracks = [{"id": local}]
     if len(tracks) != 1:
@@ -2757,6 +2770,36 @@ def add_project_media(self, *, media, at, clip_id, media_record, duration=None, 
     return Clip(tl, self.shot_id, row)
 
 
+def swap_project_media(self, *, media, media_record):
+    """Replace the selected clip's source using one request-bound catalog capture.
+
+    Authored clocks, anchors, clip identity and opaque fields remain untouched.
+    No ambient file/media adapter is consulted by this semantic lowering.
+    """
+    import math
+
+    tl = self._tl
+    tl._require_independent_clip(self)
+    kind = media_record["entry"].get("media_type", "").split("/")[0]
+    if kind not in {"image", "video", "audio"} or (self.is_audio != (kind == "audio")):
+        raise CommandError("Selected replacement media is incompatible with the clip track")
+    if kind in {"video", "audio"}:
+        duration = media_record["entry"].get("duration_seconds")
+        if (isinstance(duration, bool) or not isinstance(duration, (int, float))
+                or not math.isfinite(duration) or duration <= 0):
+            raise CommandError("Replacement media requires finite intrinsic duration")
+        end = self.data.get("to", self.data.get("hold"))
+        if end is not None and (not isinstance(end, (int, float)) or end > duration):
+            raise CommandError("Replacement media is shorter than the authored source range")
+    key, entry, inserted = _register_selected_media(tl, self.shot_id, media, media_record)
+    self.data["asset"] = key
+    if inserted:
+        from astrid.sdk.timeline.commit import _digest
+        self.data.setdefault("app", {}).setdefault("astrid", {})["media_registry_insert"] = {
+            "asset": key, "entry_digest": _digest(entry)}
+    return self
+
+
 def undo_media_registry_consequences(tl, before):
     """Reverse only the removed insertion's still-unreferenced registry effect.
 
@@ -2777,7 +2820,7 @@ def undo_media_registry_consequences(tl, before):
         return isinstance(value, list) and any(refers(child, key) for child in value)
 
     for sid, row in before.items():
-        if "/clip:" not in sid or sid in after:
+        if "/clip:" not in sid or (sid in after and after[sid].get("asset") == row.get("asset")):
             continue
         mark = row.get("app", {}).get("astrid", {}).get("media_registry_insert")
         if (

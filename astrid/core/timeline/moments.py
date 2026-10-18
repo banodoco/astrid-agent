@@ -289,9 +289,10 @@ def resolve(moment: Moment | str, ctx: Context, *, in_point: bool = False) -> fl
     """Timeline seconds (not yet floored to a frame)."""
     m = parse(moment) if not isinstance(moment, Moment) else moment
     if m.kind == "word":
-        hits = find_words(m, ctx.words())
+        words = ctx.words_for(m) if hasattr(ctx, "words_for") else ctx.words()
+        hits = find_words(m, words)
         if not hits:
-            raise MomentError(_missing(m, ctx.words()))
+            raise MomentError(_missing(m, words))
         if m.n is None and len(hits) > 1:
             seen, choices = {}, []
             for h in hits:
