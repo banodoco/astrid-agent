@@ -12,6 +12,7 @@ from astrid.sdk.timeline import commands
 from astrid.sdk.timeline.checkout import Checkout
 from astrid.sdk.timeline.commit import _digest
 from astrid.sdk.timeline.rebase import rebase
+from astrid.sdk.timeline._common import TimelineEditError
 
 
 # These provider-unit tests share the current commit suite's explicit scene
@@ -71,6 +72,67 @@ def accepted(data, *calls):
     result = service.commit(body, port)
     assert result["status"] in {"accepted", "no_change"}, result["error"]
     return result, port
+
+
+def compiled_detach_video(track_kind="audio"):
+    from astrid.core.timeline.authoring_bundle import (
+        compile_authoring_candidate, open_authoring_bundle,
+    )
+
+    data = json.loads(
+        (Path(__file__).parents[1] / "fixtures/timeline_editing/tiny_publishable.json").read_text()
+    )
+    internal = data["shots"]["A"]["internal_timeline"]
+    picture = next(row for row in internal["clips"] if row["id"] == "a-plate")
+    picture.update(
+        clipType="media", asset="video", speed=2, volume=0.6,
+        **{"from": 1.0, "to": 9.0},
+    )
+    picture.pop("hold")
+    internal["registry"]["assets"]["video"] = {
+        **copy.deepcopy(internal["registry"]["assets"]["P"]), "type": "video",
+    }
+    if track_kind is not None:
+        internal["tracks"].append(dict(id="audio", kind=track_kind))
+    publication = compile_authoring_candidate(Checkout(data).document()).publication
+    parent = publication["parent_composition"]
+    return Checkout(open_authoring_bundle(
+        dict(
+            project_id="p", timeline_id="t", revision_id=publication["parent_revision_id"],
+            content_digest=publication["content_digest"], payload=parent,
+        ),
+        shot_revisions=[dict(row, project_id="p") for row in publication["shot_revisions"]],
+        internal_timeline_revisions=[
+            dict(row, project_id="p") for row in publication["internal_timeline_revisions"]
+        ],
+    ))
+
+
+def test_detach_audio_resolves_canonical_parent_track_and_preserves_source():
+    tl = compiled_detach_video()
+    before = tl.document()
+    assert dict(id="audio", kind="audio") in before["parent"]["config"]["tracks"]
+    assert before["shots"]["A"]["internal_timeline"]["tracks"] == []
+    picture = tl.clip("a-plate")
+    original = copy.deepcopy(picture.data)
+    audio = picture.detach_audio()
+    assert audio.id != picture.id and audio.is_audio
+    assert audio.data["track"] == "audio"
+    for key in ("asset", "at", "from", "to", "speed", "volume"):
+        assert audio.data[key] == original[key]
+    assert picture.data == {**original, "volume": 0}
+    after = tl.document()
+    assert after["parent"] == before["parent"]
+    assert after["shots"]["A"]["internal_timeline"]["tracks"] == []
+
+
+@pytest.mark.parametrize("track_kind", [None, "visual"])
+def test_detach_audio_refuses_missing_or_non_audio_canonical_track(track_kind):
+    tl = compiled_detach_video(track_kind)
+    before = tl.document()
+    with pytest.raises(TimelineEditError, match="no audio track 'audio' in shot A"):
+        tl.clip("a-plate").detach_audio()
+    assert tl.document() == before
 
 
 def test_published_parent_config_track_set_has_no_root_shadow():

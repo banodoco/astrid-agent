@@ -826,7 +826,7 @@ class Clip(_Suggest):
         if self.element != "media" or self.is_audio or _media_kind(entry) != "video":
             raise TimelineEditError("detach_audio requires a media video clip")
         if not any(t.get("id") == track and t.get("kind") in {"audio", "music", "voice"}
-                   for t in tl._tracks(self.shot_id)):
+                   for t in tl._resolved_tracks(self.shot_id)):
             raise TimelineEditError(f"no audio track {track!r} in shot {self.shot_id}")
         if self.data.get("volume") == 0:
             raise TimelineEditError("this video's audio is already muted/detached")
