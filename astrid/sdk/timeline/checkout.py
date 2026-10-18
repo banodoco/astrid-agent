@@ -75,6 +75,8 @@ class Checkout(_LookupMixin, _EditMixin, _ReflowMixin, _CheckMixin, _PublishMixi
 
     def _accept_bundle(self) -> None:
         """Pin state admitted by loading, runner execution or a storage transition."""
+        from astrid.sdk.timeline.audio_envelope import validate_bundle_audio
+        validate_bundle_audio(self.bundle)
         self._accepted_digest = _journal.document_digest(self.bundle)
 
     def _assert_runner_state(self) -> None:

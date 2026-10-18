@@ -382,7 +382,7 @@ _CLIP_ALLOWED = frozenset(
         "cropLeft", "cropRight", "opacity", "params", "text", "entrance", "exit",
         "continuous", "transition", "effects", "source_uuid", "generation",
         "pool_id", "clip_order", "app", "label", "keyframes", "keyframeOrigin",
-        "modifiers",
+        "modifiers", "audio",
         # Revision-pinned Astrid element identity. This is editor-owned
         # metadata projected to the Remotion fields during managed render.
         "elementRef",

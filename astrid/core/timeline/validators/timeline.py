@@ -254,6 +254,9 @@ def validate_timeline(config: Any, *, strict: bool = True) -> None:
         clip = _normalize_clip_for_validation(clip_raw)
         normalized_clips.append(clip)
         _raise_unknown_keys(f"clips[{index}]", clip, _CLIP_ALLOWED)
+        if "audio" in clip:
+            from astrid.core.timeline.audio_envelope import validate_authored_audio
+            validate_authored_audio(clip["audio"])
         for field in ("id", "at", "track"):
             if field not in clip:
                 raise ValueError(f"clips[{index}].{field} is required")

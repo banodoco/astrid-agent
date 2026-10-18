@@ -1,4 +1,7 @@
-"""Compiled audio gain, never an authored document field.
+"""Shared authored and compiled audio gain semantics.
+
+Only deliberately authored envelopes persist. Derived narration/occurrence
+projections, compiled_audio authority carriers and audio.render_source do not.
 
 Times are clip-local timeline seconds, independent of source trim/playback rate.
 Each point's curve controls the following segment. Descending segments use the
@@ -26,6 +29,13 @@ def _number(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise AudioEnvelopeError("key times and gains must be finite numbers")
     return float(value)
+
+
+def validate_authored_audio(audio: Any) -> None:
+    """The strict document boundary; renderer-owned fields never enter storage."""
+    if not isinstance(audio, Mapping) or set(audio) != {"envelope"}:
+        raise AudioEnvelopeError("authored audio must contain only envelope")
+    validate(audio["envelope"])
 
 
 def validate(envelope: Mapping[str, Any], *, host: str = "ffmpeg") -> None:
@@ -91,7 +101,7 @@ def evaluate(envelope: Mapping[str, Any], seconds: float) -> float:
 def compile_legacy(clip: Mapping[str, Any], fps: float) -> dict | None:
     """Project the existing Player's rounded frame windows, exactly once.
 
-    An existing compiled audio.envelope is authoritative: legacy params remain
+    An existing authored or compiled audio.envelope takes precedence: legacy params remain
     readable but must never be multiplied again by either consumer.
     """
     if _number(fps) <= 0:

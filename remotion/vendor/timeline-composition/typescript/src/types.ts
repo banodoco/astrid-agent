@@ -49,7 +49,7 @@ export type TimelineClip = {
   text?: unknown;
   to?: number;
   transition?: unknown;
-  /** Compiled runtime audio; not an authoring document field. */
+  /** Validated authored gain; render_source is attempt-owned and must never persist. */
   audio?: {envelope: import('./lib/audio-envelope').AudioEnvelope; render_source?: import('./lib/audio-envelope').EncodedEnvelopeSource};
   volume?: number;
   width?: number;

@@ -1,8 +1,9 @@
-# Compiled audio gain
+# Authored and compiled audio gain
 
-`audio_envelope.py` defines transient `clip.audio.envelope` render output. It is
-not an authoring field and must not be saved through the TimelineClip document
-schema. Each envelope has ordered `keyframes: [{at, value, curve?}]`; a point's
+`audio_envelope.py` validates deliberately authored `clip.audio.envelope` and
+compiles transient render projections using the same gain representation. The
+strict document schema admits only `{audio: {envelope: ...}}`; renderer-owned
+`audio.render_source` and `compiled_audio` carriers never persist. Each envelope has ordered `keyframes: [{at, value, curve?}]`; a point's
 curve controls its following segment, defaulting to `linear`. Times are seconds
 relative to the compiled clip's timeline start. Outside the keys, endpoint gains
 hold. Falling segments traverse the registry curve backwards, so equal-power
@@ -12,7 +13,7 @@ All leaves use this same keyframe primitive, and all curve definitions come from
 `audio_curves.json`. No expression or executable author data is accepted.
 
 `compile_legacy(clip, fps)` projects rounded legacy fade windows, including the
-product when fades overlap. Existing `audio.envelope` output takes precedence.
+product when fades overlap. Existing authored `audio.envelope` takes precedence.
 The equivalent Composition adapter is `compileAudioEnvelope`; the generated
 registry is synchronized with `scripts/gen_audio_curves.py --composition-root`
 and checked with `--check`. Base clip/track volume and mute remain independent.
@@ -66,4 +67,5 @@ serialization; FFmpeg calls it before support and filter construction. Request
 serialization, backend selection and replay retain the carrier and its identity.
 The service shifts envelope keys and rebinds occurrence IDs for its existing
 window projection, while finalizers consume already rendered audio artifacts.
-Canonical save/load, undo and publication never receive this transient audio.
+Canonical save/load and undo preserve deliberately authored envelopes only; derived
+narration/occurrence projections and their authority carriers never write back.

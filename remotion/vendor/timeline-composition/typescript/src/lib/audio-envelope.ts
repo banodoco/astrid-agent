@@ -27,12 +27,16 @@ export const validateAudioEnvelope = (envelope: AudioEnvelope, host = 'compositi
       !Array.isArray(envelope.keyframes) || !envelope.keyframes.length) {
     throw new AudioEnvelopeError('invalid compiled envelope');
   }
+  if (Object.prototype.hasOwnProperty.call(envelope, 'duck') && typeof envelope.duck !== 'boolean') {
+    throw new AudioEnvelopeError('duck marker must be boolean');
+  }
   let previous = -Infinity;
   for (const point of envelope.keyframes) {
     if (!point || Object.keys(point).some((k) => !['at', 'value', 'curve'].includes(k)) ||
         !Number.isFinite(point.at) || point.at <= previous ||
         !Number.isFinite(point.value) || point.value < 0 ||
-        !Object.hasOwn(AUDIO_GAIN_CURVES, point.curve ?? 'linear')) {
+        (Object.prototype.hasOwnProperty.call(point, 'curve') && (typeof point.curve !== 'string' ||
+          !Object.prototype.hasOwnProperty.call(AUDIO_GAIN_CURVES, point.curve)))) {
       throw new AudioEnvelopeError('invalid keyframe or unknown curve');
     }
     previous = point.at;

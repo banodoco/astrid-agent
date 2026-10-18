@@ -9,13 +9,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from jsonschema import ValidationError
 
 from astrid.core.rendering.compiled_audio import (
     attach_compiled_audio,
     compile_snapshot_audio,
     digest,
 )
-from astrid.core.rendering.contracts import RenderRequest, SCHEMA_VERSION, FrameWindow
+from astrid.core.rendering.contracts import SCHEMA_VERSION, FrameWindow, RenderRequest
 from astrid.core.rendering.envelope_pcm import prepare_envelope_pcm
 from astrid.core.timeline.audio_envelope import evaluate
 
@@ -109,8 +110,9 @@ def test_frozen_producer_matches_sdk_and_preserves_documents():
 
     saved = Timeline(data).to_json_data()
     assert all("audio" not in c for c in saved["clips"])
-    with pytest.raises(Exception):
-        Timeline(attach_compiled_audio(data, compiled, pin))
+    # Authored envelope values are now a document contract. Compilation still
+    # acts only on detached copies: derived narration never writes back.
+    assert Timeline(data).to_json_data() == saved
 
 
 def overlapping_beds():
@@ -452,6 +454,116 @@ def test_real_encoder_pcm_is_attempt_local_and_gain_only(tmp_path):
         prepare_envelope_pcm(data, SimpleNamespace(assets={}), None)
 
 
+def test_authored_native_chain_trim_rate_placement_repeats_and_gain_once(tmp_path, monkeypatch):
+    """Real FFmpeg PCM + HTTP handoff at the actual Remotion props boundary.
+
+    Remotion encoding is intercepted; this is source-consumer proof, not a
+    rendered-film or Player/native parity claim.
+    """
+    from astrid.core.timeline.banodoco_schema import canonical_timeline_config
+    from astrid.packs.rendering.rendering.renderers.remotion import run
+
+    source = tmp_path / "source.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    "aevalsrc=0.25:s=48000:d=4", "-c:a", "pcm_f32le", str(source)], check=True)
+    envelope = {"keyframes": [{"at": 0, "value": 2}, {"at": 1, "value": 3}],
+                "multiply": [{"keyframes": [{"at": 0, "value": 0.8}]}],
+                "minimum": [{"keyframes": [{"at": 0, "value": 0.5}]},
+                            {"keyframes": [{"at": 0, "value": 0.25}]}], "duck": True}
+    first = {"id": "one:bed", "at": 1.25, "asset": "bed", "clipType": "media", "track": "music",
+             "from": 0.51, "to": 3.5, "speed": 2, "volume": 0.4,
+             "params": {"fadeIn": 0.73, "fadeOut": 0.83}, "audio": {"envelope": envelope},
+             "app": {"astrid_shot_composition": {"occurrence_id": "one"}}}
+    second = copy.deepcopy(first)
+    second.update(id="two:bed", at=4.25, volume=0.7,
+                  app={"astrid_shot_composition": {"occurrence_id": "two"}})
+    second["audio"]["envelope"]["keyframes"][0]["value"] = 4
+    data = {"output": {"fps": 30, "resolution": "32x32", "file": "out.mp4"},
+            "tracks": [{"id": "music", "kind": "audio", "label": "Music", "volume": 0.6, "muted": False}],
+            "clips": [first, second]}
+    original = copy.deepcopy(data)
+    assert canonical_timeline_config(data) == data
+    req = request(tmp_path, data)
+    # duck:true is a diagnostic flag, not narration intent or render authority.
+    assert req.compiled_audio["clips"]["one:bed"]["envelope"] == envelope
+    with pytest.raises(ValueError, match="AUDIO_CONTEXT_MISSING"):
+        attach_compiled_audio(data, req.compiled_audio, authority())
+    for field, code in (("source_context_digest", "AUDIO_SOURCE_STALE"),
+                        ("timeline_config_digest", "AUDIO_CONFIG_STALE"),
+                        ("curve_registry_digest", "AUDIO_REGISTRY_STALE")):
+        damaged = copy.deepcopy(req.compiled_audio)
+        damaged[field] = "f" * 64
+        with pytest.raises(ValueError, match=code):
+            attach_compiled_audio(data, damaged, req.timeline_authority)
+    damaged = copy.deepcopy(req.compiled_audio)
+    damaged["clips"]["one:bed"]["envelope"]["keyframes"][0]["value"] = 9
+    with pytest.raises(ValueError, match="AUDIO_PAYLOAD_STALE"):
+        attach_compiled_audio(data, damaged, req.timeline_authority)
+    changed = copy.deepcopy(data)
+    changed["clips"][1]["id"] = "wrong-occurrence"
+    with pytest.raises(ValueError, match="AUDIO_OCCURRENCE_MISMATCH"):
+        attach_compiled_audio(data, req.compiled_audio, req.timeline_authority, renderer_config=changed)
+    with pytest.raises(ValueError, match="AUDIO_PAYLOAD_MISSING"):
+        attach_compiled_audio(data, None, req.timeline_authority)
+    with pytest.raises(ValueError, match="attempt-local"):
+        prepare_envelope_pcm(attach_compiled_audio(data, req.compiled_audio, req.timeline_authority),
+                             SimpleNamespace(assets={}), None)
+    Path(req.assets_registry_path).write_text(json.dumps({"assets": {"bed": {
+        "media_id": "tone", "digest": __import__("hashlib").sha256(source.read_bytes()).hexdigest(),
+        "file": str(source), "type": "audio"}}}))
+    for name, value in {
+        "_validate_project_dir": lambda p: SimpleNamespace(node_executable=Path("/node"), node_version="test", remotion_cli=Path("/cli")),
+        "_regenerate_element_registries": lambda *a: None,
+        "_validate_renderer_effect_registry": lambda *a: None,
+        "_effective_registry_state": lambda *a: {},
+        "_stage_effect_assets_for_timeline": lambda *a, **k: {},
+    }.items():
+        monkeypatch.setattr(run, name, value)
+    real_run = subprocess.run
+    captured = []
+
+    class AtEncoder(Exception):
+        pass
+
+    def intercept(argv, **kwargs):
+        if str(argv[0]) == "ffmpeg":
+            return real_run(argv, **kwargs)
+        props = json.loads(Path(argv[argv.index("--props") + 1]).read_text())
+        captured.append(props)
+        (tmp_path / "captured-props.json").write_text(json.dumps(props))
+        timeline = props["timeline"]
+        assert timeline["tracks"] == data["tracks"]  # one canonical definition
+        assert len({c["audio"]["render_source"]["file"] for c in timeline["clips"]}) == 2
+        import urllib.request
+        for clip, authored in zip(timeline["clips"], data["clips"]):
+            marker = clip["audio"]["render_source"]
+            assert marker["source_from"] == 0.5 and marker["playback_rate"] == 2
+            for field in ("at", "from", "to", "speed", "volume", "params"):
+                assert clip[field] == authored[field]
+            # Read the attempt-served WAV itself; no local-path substitute.
+            wav = urllib.request.urlopen(marker["file"]).read()
+            samples = np.frombuffer(subprocess.check_output(
+                ["ffmpeg", "-v", "error", "-i", "pipe:0", "-f", "f32le", "-"], input=wav), dtype="<f4")
+            assert len(samples) == 4 * 48000  # gain only, full source
+            for index in (0, 24000, 48000, 72000, 120000, 180000):
+                local_time = (index / 48000 - 0.5) / 2
+                # Placement, clip/track gain and mute remain downstream. Legacy
+                # fade and repeated-occurrence gain must not be baked again.
+                assert samples[index] == pytest.approx(0.25 * evaluate(authored["audio"]["envelope"], local_time), abs=1e-6)
+        with pytest.raises(ValidationError, match="render_source"):
+            canonical_timeline_config(timeline)  # render markers cannot persist
+        raise AtEncoder
+
+    monkeypatch.setattr(run.subprocess, "run", intercept)
+    with pytest.raises(AtEncoder):
+        run._execute_remotion_locked(Path(req.timeline_path), Path(req.assets_registry_path), tmp_path / "out.mp4",
+            provenance_out_path=tmp_path / "out.mp4", project_dir=tmp_path / "project", composition_id="TimelineComposition",
+            theme_path=None, min_free_gb=None, materialized_root=tmp_path, staging_parent=tmp_path,
+            compiled_audio=req.compiled_audio, timeline_authority=req.timeline_authority)
+    assert captured and data == original
+    assert not list(tmp_path.glob("astrid-render-assets-*"))
+
+
 def test_actual_managed_and_candidate_admission_use_same_frozen_producer(monkeypatch):
     from astrid.core.timeline.authoring_bundle import (
         open_authoring_bundle,
@@ -588,6 +700,8 @@ def test_action_creates_request_with_exact_payload_and_pin(tmp_path, monkeypatch
         return output
 
     monkeypatch.setattr(run, "_default_service", lambda: SimpleNamespace(render=render))
+    # This request-forwarding unit substitutes a renderer, not a playable MP4.
+    monkeypatch.setattr(run, "_write_render_manifest", lambda *args, **kwargs: None)
     run.render(
         Path(req.timeline_path),
         Path(req.assets_registry_path),
