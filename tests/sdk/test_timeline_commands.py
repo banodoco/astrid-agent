@@ -635,6 +635,168 @@ def test_preview_and_commit_have_the_same_film_length_digest(draft):
     assert journal.read(journal.journal_path("p", "t"))[-1].after == applied.digests["after"]
 
 
+def e212_owner_media_fixture():
+    # Exact selection/registry shape retained in E's refused request 128a257d
+    # (c196-visual-mounted-add-route-diagnosis-212.json). No live reads.
+    object_id = "sha256:a95bc2abe67e7de50fb4572334e15b0c59ad6bd08731f8602ac86ca4a6c03791"
+    media = dict(
+        asset=object_id,
+        generation_id="generation-task-9a054f1451c94e22913bc9636277c9c0",
+        variant_id="initial-4e27a08f18d5bd16f7b4eb027cc7a74578bd8294706af363d4010dad20d7e364",
+        object_id=object_id,
+        catalog_digest="sha256:364606acc40be05292f44c220c7f566260578d3c8f1fadbf15ce6fe838428429",
+    )
+    entry = dict(
+        file="/api/runtime/v1/objects/sha256%3Aa95bc2abe67e7de50fb4572334e15b0c59ad6bd08731f8602ac86ca4a6c03791",
+        media_id=object_id, type="image/png",
+        generationId=media["generation_id"], variantId=media["variant_id"],
+    )
+    bundle = json.loads(FIXTURE.read_text())
+    bundle["project_id"] = "fa20eee1bee84789b1351b9e821933af"
+    bundle["parent"] = dict(
+        config=dict(tracks=[dict(id="video-1", kind="visual")]),
+        registry=dict(assets={object_id: entry}), clips=[],
+    )
+    # The retained evidence does not contain the detached catalog metadata.
+    # These envelopes are offline stand-ins, not the authentic catalog preimage.
+    record = dict(
+        **media, realm_id="offline-e212", project_id=bundle["project_id"],
+        generation={"offline_fixture": None}, variant={"offline_fixture": None},
+        entry=dict(object_id=object_id, media_type="image/png"),
+    )
+    call = dict(
+        op="timeline.add", select="parent/track:video-1",
+        args=dict(at=21, clip_id="clip-4", duration=5, media=media),
+        created=["parent/clip:clip-4"],
+        expect={
+            "parent/clip:clip-4::": dict(state="absent"),
+            'parent::registry.assets["' + object_id + '"]': dict(state="present", value=copy.deepcopy(entry)),
+        },
+    )
+    return Checkout(bundle), record, call
+
+
+def test_e212_authentic_owner_selection_reuses_compact_image_entry_and_replays():
+    tl, record, call = e212_owner_media_fixture()
+    before = copy.deepcopy(tl.document())
+    # Exercise the SDK application boundary with the exact retained five fields.
+    captured = {**call, "args": {**call["args"], "media_record": record}}
+    with tl.edit("E212 offline representation regression", quiet=True) as tx:
+        commands.execute(tl, captured)
+    after = tl.document()
+    assert after["parent"]["registry"] == before["parent"]["registry"]
+    clip = after["parent"]["clips"][-1]
+    assert (clip["id"], clip["asset"], clip["at"], clip["hold"]) == (
+        "clip-4", record["asset"], 21, 5,
+    )
+    assert "media_registry_insert" not in clip.get("app", {}).get("astrid", {})
+    assert tx.plan.calls[0].args["media"] == call["args"]["media"]
+    replay, _, _ = e212_owner_media_fixture()
+    with replay.edit("E212 offline replay", quiet=True):
+        commands.execute(replay, tx.plan.calls[0])
+    assert replay.document() == after
+
+
+@pytest.mark.parametrize("change", [
+    {"media_id": "sha256:" + "b" * 64},
+    {"generationId": "different-owner-generation"},
+    {"variantId": "different-owner-variant"},
+    {"type": "image/jpeg"},
+    {"file": "/api/runtime/v1/objects/sha256%3A" + "b" * 64},
+    {"file": "https://foreign.invalid/object.png"},
+    {"content_sha256": "b" * 64},
+    {"object_id": "sha256:" + "b" * 64},
+    {"format": {"opaque": None}},
+    {"authoring_metadata": {"generation": {"project_id": "foreign"}}},
+    {"opaque": {"op": "clear", "value": None}},
+    {"duration": None},
+    {"variantId": None},
+    "missing-generation", "alias-key", "non-object", "empty",
+])
+def test_e212_compact_owner_collision_refuses_without_mutation(change):
+    tl, record, call = e212_owner_media_fixture()
+    assets = tl.bundle["parent"]["registry"]["assets"]
+    entry = assets[record["asset"]]
+    if isinstance(change, dict):
+        entry.update(copy.deepcopy(change))
+    elif change == "missing-generation":
+        entry.pop("generationId")
+    elif change == "alias-key":
+        assets["alias"] = assets.pop(record["asset"])
+        record["asset"] = call["args"]["media"]["asset"] = "alias"
+    else:
+        assets[record["asset"]] = [] if change == "non-object" else {}
+    before = copy.deepcopy(tl.document())
+    # Directly exercise registration so stale expectation guards cannot mask
+    # an incorrectly relaxed identity comparison.
+    with pytest.raises(commands.CommandError, match="Owner asset-key identity collision"):
+        commands._register_selected_media(tl, None, call["args"]["media"], record)
+    assert tl.document() == before
+
+
+@pytest.mark.parametrize("change", [None, "format", "authoring_metadata"])
+def test_e212_rich_entry_keeps_exact_metadata_comparison(change):
+    tl, record, call = e212_owner_media_fixture()
+    assets = tl.bundle["parent"]["registry"]["assets"]
+    assets.clear()
+    key, entry, inserted = commands._register_selected_media(tl, None, call["args"]["media"], record)
+    assert inserted
+    if change is not None:
+        entry[change]["opaque"] = {"op": "clear", "value": None}
+    before = copy.deepcopy(tl.document())
+    if change is None:
+        assert commands._register_selected_media(tl, None, call["args"]["media"], record) == (key, entry, False)
+    else:
+        with pytest.raises(commands.CommandError, match="Owner asset-key identity collision"):
+            commands._register_selected_media(tl, None, call["args"]["media"], record)
+    assert tl.document() == before
+
+
+@pytest.mark.parametrize("media_type,intrinsic", [("video/mp4", None), ("image/png", 2)])
+def test_e212_compact_exception_is_limited_to_untimed_still_images(media_type, intrinsic):
+    tl, record, call = e212_owner_media_fixture()
+    record["entry"].update(media_type=media_type, duration_seconds=intrinsic)
+    tl.bundle["parent"]["registry"]["assets"][record["asset"]]["type"] = media_type
+    before = copy.deepcopy(tl.document())
+    with pytest.raises(commands.CommandError, match="Owner asset-key identity collision"):
+        commands._register_selected_media(tl, None, call["args"]["media"], record)
+    assert tl.document() == before
+
+
+@pytest.mark.parametrize("change", [
+    None, "project_id", "asset", "object_id", "generation_id", "variant_id", "catalog", "entry", "realm",
+])
+def test_e212_compact_reuse_retains_request_bound_capture_checks(change):
+    from astrid.sdk.timeline.commit import _digest, _Refusal
+
+    tl, record, call = e212_owner_media_fixture()
+    # A valid synthetic catalog preimage exercises capture separately from the
+    # exact authentic-selection regression above. It is not a Runtime receipt.
+    record["catalog_digest"] = _digest({k: v for k, v in record.items() if k != "catalog_digest"})
+    call["args"]["media"]["catalog_digest"] = record["catalog_digest"]
+    if change in {"project_id", "asset", "object_id", "generation_id", "variant_id"}:
+        record[change] = "foreign"
+    elif change == "catalog":
+        record["generation"]["opaque"] = None
+    elif change == "entry":
+        record["entry"]["object_id"] = "sha256:" + "b" * 64
+        record["catalog_digest"] = _digest({k: v for k, v in record.items() if k != "catalog_digest"})
+        call["args"]["media"]["catalog_digest"] = record["catalog_digest"]
+    elif change == "realm":
+        record["realm_id"] = ""
+    before = copy.deepcopy(tl.document())
+    if change is not None:
+        with pytest.raises(_Refusal):
+            w46_capture(tl, record, [call])
+        assert tl.document() == before
+    else:
+        captured = w46_capture(tl, record, [call])
+        with tl.edit("E212 synthetic captured selection", quiet=True):
+            commands.execute(tl, captured[0])
+        assert tl.document()["parent"]["registry"] == before["parent"]["registry"]
+        assert tl.document()["parent"]["clips"][-1]["asset"] == record["asset"]
+
+
 # W46 source preparation only. This detached authority fixture exercises captured
 # media_record semantics; it is not a Runtime acquisition or acceptance receipt.
 def w46_clone_fixture(*, relation_edge=None):

@@ -2653,7 +2653,24 @@ def _register_selected_media(tl, shot_id, media, media_record):
         not isinstance(assets[key], Mapping)
         or any(not _same_value(assets[key].get(field), value) for field, value in entry.items())
     ):
-        raise CommandError("Owner asset-key identity collision")
+        from urllib.parse import quote
+
+        # The App's compact, object-keyed still-image entry has no detached
+        # format/catalog metadata. Reuse only that exact representation, with
+        # all owner-selection fields and its canonical object route matching.
+        # Extra/opaque fields must not be treated as missing SDK metadata.
+        compact = dict(
+            file="/api/runtime/v1/objects/" + quote(media_record["object_id"], safe=""),
+            media_id=entry["media_id"], type=entry["type"],
+            generationId=entry["generationId"], variantId=entry["variantId"],
+        )
+        if (
+            key != media_record["object_id"]
+            or not media_type.startswith("image/")
+            or intrinsic is not None
+            or not _same_value(assets[key], compact)
+        ):
+            raise CommandError("Owner asset-key identity collision")
     registry_inserted = key not in assets
     assets.setdefault(key, entry)
     return key, assets[key], registry_inserted
