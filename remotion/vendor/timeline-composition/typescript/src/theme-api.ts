@@ -74,3 +74,7 @@ export {interpolateKeyframeInterval} from './lib/keyframe-easing';
 export type {KeyframeValue} from './lib/keyframe-easing';
 export {motionCurveName, motionCurveProgress, motionCurveInverse} from './lib/motion-curves.generated';
 export type {MotionCurveName} from './lib/motion-curves.generated';
+
+export {ClipAnimationPhase, composeClipAnimationPhase} from './ClipAnimationPhase';
+export type {ClipAnimationPhaseProps} from './ClipAnimationPhase';
+export {normalizeAnimationRefs} from './lib/clip-look';

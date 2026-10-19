@@ -115,6 +115,9 @@ const normalizeOneAnimationRef = (ref: unknown, fps: number): AnimationReference
   if (record.easing !== undefined && typeof record.easing !== 'string') {
     throw new Error('Animation easing must be a declared curve name');
   }
+  if (record.duration !== undefined && (typeof record.duration !== 'number' || !Number.isFinite(record.duration) || record.duration < 0)) {
+    throw new Error('Animation duration must be a finite non-negative number of seconds');
+  }
   const duration = typeof record.duration === 'number' && Number.isFinite(record.duration)
     ? record.duration
     : undefined;
