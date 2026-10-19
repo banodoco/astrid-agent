@@ -640,5 +640,10 @@ for _entry in (
         canonical_flags=("--crossfade", "--over"), sdk_method="commands.run",
         sheet_token='edit {"op":"timeline.crossfade","select":null,"args":...}',
     ),
+    _commands.Operation(
+        op="timeline.noop", kind="timeline", method="noop", handler=_commands._timeline_noop,
+        inverse="working-copy-snapshot", canonical_name="timeline.noop", aliases=(), canonical_flags=(),
+        sdk_method="commands.run", sheet_token='edit {"op":"timeline.noop","select":null,"args":{}}',
+    ),
 ):
     _commands.register_operation(_entry)

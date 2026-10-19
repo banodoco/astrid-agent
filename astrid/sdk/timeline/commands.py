@@ -1730,6 +1730,11 @@ def execute(tl, value):
         return _invoke(tl, command, entry)
 
 
+def _timeline_noop(self):
+    """An explicit timeline OpCall adapter that leaves the working copy untouched."""
+    return None
+
+
 def _set_look_opacity(self, opacity: Any):
     """The explicit OpCall for the clip-level opacity field."""
     return self.set_look(opacity=opacity)

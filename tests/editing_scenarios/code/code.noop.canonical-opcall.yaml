@@ -1,0 +1,14 @@
+id: code.noop.canonical-opcall
+source: new
+intent: Audit a canonical timeline no-op through each supported OpCall route.
+fixture: tiny
+expect: no-change
+cli: edit --command '{"op":"timeline.noop","select":null,"args":{}}'
+sheet:
+  text: 'edit {"op":"timeline.noop","select":null,"args":{}}'
+python: |
+  from astrid.sdk.timeline import commands
+  call = {"op": "timeline.noop", "select": None, "args": {}}
+  commands.run(tl, call)
+check:
+  - "tl.log() and tl.log()[-1].outcome == 'no-change' and [call['op'] for call in tl.log()[-1].calls] == ['timeline.noop']"
