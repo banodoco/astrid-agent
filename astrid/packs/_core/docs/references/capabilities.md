@@ -9,6 +9,7 @@
 | `blender.render` | Render a Blender scene (declarative spec or .blend file) to a still or animation, locally or on a cloud render host. |
 | `capture.web_page` | Capture one admitted HTTPS web page to PNG with a provenance receipt. |
 | `chiptune.compose` | Compose a tempo-locked NES-style music cue with bar-snapped sections, a beat grid, and VO ducking. |
+| `chiptune.midi` | Play a MIDI file as an NES-style chiptune: melody on pulse 1, arpeggiated chords on pulse 2, bass on the triangle. |
 | `chiptune.sfx` | Render a retro one-shot sound effect (WAV plus JSON), or a batch of kinds as one zip. |
 | `comfy_wrap.run` | Generate an image by injecting a prompt into a ComfyUI workflow JSON and running it via vibecomfy. |
 | `discord_local.command` | Preview, submit once, or recover one Discord generation as an experiment-ready run. |
@@ -46,15 +47,14 @@
 | `h3_av.compose` | Settle an H3 candidate with explicit changed and protected permissions. |
 | `h3_av.prepare` | Normalize an H3 audiovisual request into masks and asset evidence. |
 | `h3_av.publication_finalizer` | Copy one verified H3 candidate into the Runtime publication spool. |
-| `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
 | `h3_av.verify` | Verify H3 artifact custody and protected-source evidence. |
-| `hivemind.contribute` | Submit and review immutable Hivemind resource revisions and evidence. |
+| `hivemind.contribute` | Submit a resource or distillation to the Hivemind corpus via the contribute edge function. |
 | `hivemind.get_item` | Fetch a single full row from the Hivemind corpus by kind and id. |
 | `hivemind.ingest_article` | Fetch a web article, extract readable text, and submit as a resource. |
 | `hivemind.ingest_workflow` | Parse a ComfyUI workflow JSON and submit as a resource with model metadata. |
 | `hivemind.ingest_youtube` | Extract YouTube captions via yt-dlp and submit as a transcript resource. |
 | `hivemind.refresh_media` | Refresh expiring Discord CDN attachment URLs for a message. |
-| `hivemind.search` | Search Discord messages and accepted current resource heads with per-token matching and client-side ranking. |
+| `hivemind.search` | Search the Hivemind corpus (messages, resources, distillations) with per-token matching and client-side ranking. |
 | `iteration.assemble` | Adapt runtime-materialized iteration data into result-only timeline and render artifacts. |
 | `iteration.experiment_import` | Import an unmanaged run root into an experiment without rewriting history or guessing ambiguous associations. |
 | `iteration.experiment_prepare` | Normalize an experiment's provider manifests into a provider-independent review model with diagnostics. |
@@ -63,12 +63,15 @@
 | `media.clip_extract` | Extract a clip segment from a video using ffmpeg stream copy. |
 | `media.gif_search` | Search GIPHY for GIF or sticker assets and optionally download a selected rendition. |
 | `media.speech_repair_lavasr` | Repair weak-mic speech with hotter pre-lift, fal.ai LavaSR, optional DeepFilterNet3, and a final loudness pass. |
+| `media.transcript_publish` | Publish an immutable transcript revision through the authenticated Astrid SDK. |
 | `moirae.moirae` | Run a Moirae screenplay through the terminal-as-cinema renderer to produce a video. |
 | `music.align` | Find the offset and tempo ratio between MIDI/audio or two recordings. |
 | `music.beats` | Infer beats, downbeats, and bars for imported music. |
 | `music.level` | Measure integrated EBU R128 loudness for a clip's used source span. |
 | `pixel.cutout` | Remove a flat, chroma-key, or light background into hard-alpha RGBA, optionally on the snapped pixel grid. |
 | `pixel.snap` | Snap a generated image onto a logical pixel grid with mode downsampling, optional palette, and a scaled preview. |
+| `pixel.sprites` | Turn one generated sheet into individually trimmed, native RGBA sprites. |
+| `pixel.strip` | Join ordered pixel-art frames into one shared-grid horizontal sprite strip. |
 | `rendering.assemble_timeline` | Author a canonical two-child timeline from runtime-resolved visual outputs. |
 | `rendering.html_canvas_effect` | Scaffold a local Remotion HTML-in-canvas effect element. |
 | `rendering.render` | Render a hype timeline to opaque MP4 or explicitly stamped alpha MOV through the selected backend. |
@@ -120,7 +123,7 @@
 
 | id | short_description |
 | --- | --- |
-| _(none)_ | |
+| `h3_av.transform` | Prepare, compile, validate, run, compose, and verify one bounded H3 continuation. |
 
 ### Elements
 
@@ -141,6 +144,7 @@
 | `effects/am-footage` | Real-footage slot: a filmed shot with crop, push and pixelate in/out; a slot card when the media is missing. |
 | `effects/am-orbit` | Small pixel orbit HUD: the Earth steps round the Sun past twelve month ticks, with a month readout. |
 | `effects/am-orgchart` | Recursive pixel org chart: agents managing agents, row by row, with an optional rubber stamp. |
+| `effects/am-pixel-shape` | Procedural pixel shape (ring, dot, underline, arrow or rect) on the sticker pixel grid. |
 | `effects/am-pixel-wipe` | Pixel-block wipe that covers or reveals the frame in a diagonal, seeded-random or scan order. |
 | `effects/am-presenter` | Animated pixel presenter overlay with mouth, blinks, bob, punch and crisp REC/label chrome. |
 | `effects/am-quote` | Quotation card that reveals on the VO's words, strikes through word by word and takes a rubber stamp. |

@@ -179,8 +179,6 @@ def finish_fixture(config, process, descendant=None):
             stream.close()
 
 
-@pytest.mark.xfail(strict=True, raises=UnexpectedWorkloadHandle,
-                   reason='Wan unavailable: custody trampoline retains an unapproved socket across exec')
 def test_confined_exec_descendant_denials_and_host_file_fds_absent(launch, tmp_path, private_socket_transport):
     lock = tmp_path / 'fake-wan-child.lock'
     sentinel = tmp_path / 'fake-host-handle'

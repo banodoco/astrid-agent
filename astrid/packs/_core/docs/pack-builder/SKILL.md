@@ -510,8 +510,8 @@ to the manager. A view contains **data only**, with no Python or browser entry.
    ordinary V3 pack metadata and `documentation: {kind: skill, path: docs/SKILL.md}`.
    Use a small dedicated pack (for example `story_views`), so its admitted closure
    does not contain the generated editor catalog that will project its digest.
-2. In the descriptor declare `point: timeline.view`, an owner-qualified
-   `id: story_views.story_overview`, `label`, `description` (help),
+2. In the descriptor declare `point: timeline.view`, an owner-qualified view
+   ID formed from its owning pack ID and view ID, `label`, `description` (help),
    `read_model: story_overview`, and exactly
    `reads: [project, timeline, revision_id]`. `schema` is an inline JSON Schema
    for the producer result; references must remain local (`#...`). Declare every

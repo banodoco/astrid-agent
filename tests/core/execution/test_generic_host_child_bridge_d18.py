@@ -1442,8 +1442,7 @@ def test_default_vendor_gap_is_explicit(world):
     # default import resolution or claiming the injected fixture is production.
     import inspect
     from banodoco_workspace_client import WorkspaceClient
-    if "derived_inputs" not in inspect.signature(WorkspaceClient.issue_child_authority).parameters:
-        pytest.xfail("B01 vendor sync prerequisite remains open")
+    assert "derived_inputs" in inspect.signature(WorkspaceClient.issue_child_authority).parameters
     assert "derived_inputs" in inspect.signature(type(world.client.generated).issue_child_authority).parameters
 
 
