@@ -195,7 +195,19 @@ def seed_history(runtime, document):
 @pytest.mark.parametrize("new_track", [False, True])
 def test_saved_publication_history_detach_undo_redo_and_later_child_refusal(publication_setup, new_track):
     draft, runtime, client = publication_setup
-    seed_history(runtime, fixture(draft.document()))
+    original = draft.document()
+    document = fixture(original)
+    # Untouched child snapshots still reference film-owned tracks (e.g. plate).
+    # Keep their definitions on the parent while adding this case's media lanes.
+    tracks = document['parent']['config']['tracks']
+    definitions = {track['id']: track for track in tracks}
+    for track in original['parent']['config']['tracks']:
+        if track['id'] in definitions:
+            assert definitions[track['id']] == track
+        else:
+            tracks.append(copy.deepcopy(track))
+            definitions[track['id']] = tracks[-1]
+    seed_history(runtime, document)
     draft = Checkout.draft("p", "t", name="writer-receipt", fresh=True)
     before = commands.entity_states(draft)
     track, child = "parent/track:detached", "parent/clip:allocated"
