@@ -61,7 +61,7 @@ def test_task_cleanup_preserves_powershell_success_and_failure(tmp_path, operati
 
 def test_register_scheduled_task_accepts_rendered_xml_string(tmp_path, monkeypatch):
     """Exercise the UTF-8 file -> PowerShell string -> Task Scheduler boundary."""
-    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    powershell = shutil.which("powershell.exe")
     assert powershell, "Windows PowerShell is required to register a native task"
     task_name = f"Astrid XML Smoke {uuid.uuid4().hex}"
     monkeypatch.setattr(service, "TASK", task_name)
