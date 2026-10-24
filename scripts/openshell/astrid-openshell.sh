@@ -501,6 +501,13 @@ cmd_login() {
     has_service "$1" || die "turn the service on first: astrid-openshell.sh services add $1"
     note=$(field "$1" note); [ -n "$note" ] && say "$note"
     note=$(field "$1" login_note); [ -n "$note" ] && say "$note"
+    # OAuth callbacks to localhost:<port> land on this machine; forward them in
+    # for the length of the sign-in.
+    port=$(field "$1" login_forward)
+    if [ -n "$port" ] && ! osh forward list 2>/dev/null | grep -w "$sandbox" | grep -qw "$port"; then
+        osh forward start "127.0.0.1:$port" "$sandbox" --background </dev/null >/dev/null 2>&1
+        trap 'osh forward stop "$port" "$sandbox" >/dev/null 2>&1 || true' EXIT
+    fi
     in_sandbox_tty "PATH=\$HOME/.local/bin:\$PATH; $command"
 }
 

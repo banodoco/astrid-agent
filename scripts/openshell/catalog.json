@@ -221,10 +221,11 @@
         "chatgpt_for_astrid"
       ],
       "login": "$HOME/.local/share/astrid/run-astrid",
-      "login_note": "Astrid's agent opens. Type /login, choose \"ChatGPT Plus/Pro (Codex, headless/device)\", open the link it shows in your browser and enter the code. Pick a model with /model, then quit with /exit.",
+      "login_note": "Astrid's agent opens. Type /login, choose a ChatGPT option and open the link it shows in your browser. The browser option calls back to localhost:1455, which is forwarded into the sandbox while you sign in; the \"headless/device\" option uses a code instead. Pick a model with /model, then quit with /exit.",
       "logout": "$HOME/.local/share/astrid/run-astrid",
       "logout_note": "Astrid's agent opens. Type /logout, choose the ChatGPT account, then quit with /exit.",
-      "note": "Turn on device code login first: ChatGPT > Settings > Security. The sign-in tokens are stored inside the sandbox (~/.omp/agent/agent.db)."
+      "note": "Turn on device code login first: ChatGPT > Settings > Security. The sign-in tokens are stored inside the sandbox (~/.omp/agent/agent.db).",
+      "login_forward": "1455"
     },
     "codex": {
       "title": "ChatGPT plan via Codex CLI",
