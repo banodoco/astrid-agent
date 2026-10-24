@@ -26,14 +26,16 @@
 #   status | shell | logs
 #   stop | resume      stop the VM keeping its disk, or start it again (then: start, door)
 #   destroy            delete the sandbox and its disk (asks first)
-#   up DIR             create + install DIR + services + start + check + door
+#   up DIR             pick services + create + install DIR + start + check + door
+#   rebuild DIR        recreate the sandbox with the saved selection (e.g. to share ComfyUI's output)
 #
 # Settings (environment):
 #   ASTRID_OPENSHELL_HOME     where install-openshell.sh put OpenShell
 #   ASTRID_OPENSHELL_GATEWAY  gateway name (default astrid)
 #   ASTRID_SANDBOX            sandbox name (default astrid)
 #   ASTRID_SANDBOX_IMAGE      sandbox image (default: buildpack-deps noble-scm, pinned by digest)
-#   ASTRID_MODE, ASTRID_SERVICES  non-interactive `up`: e.g. ASTRID_MODE=dev ASTRID_SERVICES="codex huggingface"
+#   ASTRID_MODE, ASTRID_SERVICES  non-interactive `up`: e.g. ASTRID_MODE=dev ASTRID_SERVICES="chatgpt huggingface comfyui@8188"
+#   ASTRID_COMFYUI_PORT, ASTRID_COMFYUI_OUTPUT  skip the ComfyUI questions
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -63,35 +65,49 @@ field() { compose field "$1" "$2"; }
 
 # --- saved selection (written by the menu; nobody needs to edit it) ----------
 # mode=dev
-# services=codex huggingface+cred      (+cred: its credential provider is attached;
-#                                        +anon: optional key skipped, don't ask again)
+# services=chatgpt huggingface+cred comfyui@8188
+#   +cred: its credential provider is attached; +anon: optional key skipped,
+#   don't ask again; @N: the service's parameter (ComfyUI's port)
+# comfyui_output=/path/ComfyUI/reports      shared into the sandbox at this path
+# comfyui_output_real=/its/real/path        ...from this real (symlink-free) host path
+# created_mount=/path/ComfyUI/reports       what the sandbox was created with
 
 load_state() {
     mode=locked
     selected=""
+    comfyui_output=""
+    comfyui_output_real=""
+    created_mount=""
     if [ -f "$state" ]; then
         mode=$(sed -n 's/^mode=\([a-z]*\)$/\1/p' "$state")
-        selected=$(sed -n 's/^services=\([a-z+ ]*\)$/\1/p' "$state")
+        selected=$(sed -n 's/^services=\([a-z0-9@+ ]*\)$/\1/p' "$state")
+        comfyui_output=$(sed -n 's/^comfyui_output=\(\/.*\)$/\1/p' "$state")
+        comfyui_output_real=$(sed -n 's/^comfyui_output_real=\(\/.*\)$/\1/p' "$state")
+        created_mount=$(sed -n 's/^created_mount=\(\/.*\)$/\1/p' "$state")
     fi
     [ -n "$mode" ] || mode=locked
 }
 
 save_state() {
     mkdir -p "$(dirname "$state")"
-    printf 'mode=%s\nservices=%s\n' "$mode" "$selected" >"$state"
+    printf 'mode=%s\nservices=%s\ncomfyui_output=%s\ncomfyui_output_real=%s\ncreated_mount=%s\n' \
+        "$mode" "$selected" "$comfyui_output" "$comfyui_output_real" "$created_mount" >"$state"
 }
 
-has_service() { case " $selected " in *" $1 "*|*" $1+cred "*|*" $1+anon "*) return 0 ;; esac; return 1; }
+has_service() { case " $selected " in *" $1 "*|*" $1+cred "*|*" $1+anon "*|*" $1@"*) return 0 ;; esac; return 1; }
 # The composer only knows +cred; +anon is the menu's own memory.
 for_compose() { echo "$*" | sed 's/+anon//g'; }
 has_credential() { case " $selected " in *" $1+cred "*) return 0 ;; esac; return 1; }
+service_param() { for s in $selected; do case "$s" in "$1@"*) s=${s#*@}; echo "${s%%+*}"; return ;; esac; done; }
 drop_service() {
     out=""
     for s in $selected; do
-        case "$s" in "$1"|"$1+cred"|"$1+anon") ;; *) out="$out $s" ;; esac
+        case "$s" in "$1"|"$1+cred"|"$1+anon"|"$1@"*) ;; *) out="$out $s" ;; esac
     done
     selected=$(echo $out)
 }
+# The shared ComfyUI output folder is part of every policy for this sandbox.
+mount_args() { [ -n "$created_mount" ] && printf -- '--mount %s' "$created_mount"; return 0; }
 
 # --- commands -----------------------------------------------------------------
 
@@ -116,7 +132,7 @@ EOF
 set_policy() {   # $1: compose arguments as one string
     file=$(mktemp --suffix=.json)
     # shellcheck disable=SC2086
-    compose $1 >"$file"
+    compose $(mount_args) $1 >"$file"
     osh policy set "$sandbox" --policy "$file" --wait >/dev/null
     rm -f "$file"
 }
@@ -126,13 +142,32 @@ cmd_create() {
         say "Sandbox '$sandbox' already exists."
         return
     fi
+    load_state
+    mounts=""
+    created_mount=""
+    if has_service comfyui && [ -n "$comfyui_output_real" ]; then
+        # One read-only virtiofs share: ComfyUI's output folder, at the path
+        # ComfyUI reports (Astrid passes that path as comfy_output_dir).
+        mounts=$(python3 -I -c 'import json,sys; print(json.dumps({"vm": {"mounts": [{"type": "bind", "source": sys.argv[1], "target": sys.argv[2], "read_only": True}]}}))' \
+            "$comfyui_output_real" "$comfyui_output")
+        created_mount=$comfyui_output
+        say "Sharing ComfyUI's output folder read-only: $comfyui_output_real -> $comfyui_output"
+    fi
     file=$(mktemp --suffix=.json)
-    compose install >"$file"
+    # shellcheck disable=SC2046
+    compose $(mount_args) install >"$file"
     # --no-auto-providers: never copy credentials from this shell into the
     # sandbox. `sleep infinity` keeps the VM up; Runtime runs beside it.
-    osh sandbox create --name "$sandbox" --from "$image" --policy "$file" \
-        --no-auto-providers --no-tty --label app=astrid --detach -- sleep infinity
+    if [ -n "$mounts" ]; then
+        osh sandbox create --name "$sandbox" --from "$image" --policy "$file" \
+            --no-auto-providers --no-tty --label app=astrid \
+            --driver-config-json "$mounts" --detach -- sleep infinity
+    else
+        osh sandbox create --name "$sandbox" --from "$image" --policy "$file" \
+            --no-auto-providers --no-tty --label app=astrid --detach -- sleep infinity
+    fi
     rm -f "$file"
+    save_state
 }
 
 # Copy the installer (and any local Git sources its manifest names) into the
@@ -252,6 +287,83 @@ detach_credential() {
     osh sandbox provider detach "$sandbox" "astrid-$1" --wait >/dev/null 2>&1 || true
 }
 
+detect_comfy_output() {
+    python3 -I - "$1" <<'EOF'
+import json, sys, urllib.request
+from pathlib import Path
+url = f"http://127.0.0.1:{sys.argv[1]}"
+get = lambda path: json.load(urllib.request.urlopen(url + path, timeout=5))
+argv = [str(a) for a in get("/system_stats").get("system", {}).get("argv", [])]
+for i, arg in enumerate(argv):
+    if arg == "--output-directory" and i + 1 < len(argv):
+        print(argv[i + 1]); raise SystemExit
+    if arg.startswith("--output-directory="):
+        print(arg.partition("=")[2]); raise SystemExit
+nodes = get("/internal/folder_paths").get("custom_nodes")
+nodes = nodes if isinstance(nodes, str) else next(p for p in nodes if isinstance(p, str) and p)
+print(Path(nodes).parent / "output")
+EOF
+}
+
+# Ask for ComfyUI's port, find its output folder the way Astrid's own scan does
+# (--output-directory, else <base>/output), and resolve it to a real path.
+configure_comfyui() {
+    port=${ASTRID_COMFYUI_PORT:-}
+    if [ -z "$port" ] && [ -t 0 ]; then
+        printf 'ComfyUI port on this machine [8188]: '
+        read -r port || port=""
+    fi
+    port=${port:-8188}
+    case "$port" in *[!0-9]*|'') die "not a port: $port" ;; esac
+    out=${ASTRID_COMFYUI_OUTPUT:-}
+    if [ -z "$out" ]; then
+        out=$(detect_comfy_output "$port" 2>/dev/null) || out=""
+        [ -n "$out" ] && say "  ComfyUI on port $port reports its output folder as $out"
+    fi
+    if [ -t 0 ]; then
+        printf 'ComfyUI output folder [%s]: ' "${out:-?}"
+        read -r answer || answer=""
+        [ -n "$answer" ] && out=$answer
+    fi
+    [ -n "$out" ] || die "could not find ComfyUI's output folder (is it running on port $port?); set ASTRID_COMFYUI_OUTPUT"
+    case "$out" in /*) ;; *) die "the output folder must be an absolute path" ;; esac
+    real=$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$out")
+    [ -d "$real" ] || die "$out is not a folder"
+    [ "$real" != "$out" ] && say "  $out is (or passes through) a symlink; sharing its real path $real"
+    comfyui_output=$out
+    comfyui_output_real=$real
+    drop_service comfyui
+    selected=$(echo "$selected comfyui@$port")
+}
+
+# Inside the sandbox: relay 127.0.0.1:PORT to the host's ComfyUI (Astrid only
+# accepts loopback URLs). Restarted by `start` after the VM resumes.
+setup_comfyui() {
+    staging=$(mktemp -d)
+    mkdir -p "$staging/astrid-openshell"
+    cp "$here/sandbox/comfyui-relay.py" "$staging/astrid-openshell/"
+    in_sandbox "rm -f '$guest_home/astrid-openshell/comfyui-relay.py'"
+    osh sandbox upload "$sandbox" "$staging/astrid-openshell" "$guest_home" >/dev/null
+    rm -rf "$staging"
+    # Restart so an updated relay script takes effect.
+    in_sandbox "d=\$HOME/astrid-openshell; [ -f \$d/relay.pid ] && kill \$(cat \$d/relay.pid) 2>/dev/null; rm -f \$d/relay.pid"
+    start_relay
+}
+
+start_relay() {
+    port=$(service_param comfyui)
+    [ -n "$port" ] || return 0
+    in_sandbox "d=\$HOME/astrid-openshell
+if [ -f \$d/relay.pid ] && kill -0 \$(cat \$d/relay.pid) 2>/dev/null; then
+    [ \"\$(cat \$d/relay.port 2>/dev/null)\" = $port ] && exit 0
+    kill \$(cat \$d/relay.pid)
+fi
+py=\$(ls \$HOME/.local/share/astrid/bootstrap/python/*/bin/python3 | head -1)
+setsid nohup \"\$py\" -I \$d/comfyui-relay.py $port >\$d/relay.log 2>&1 </dev/null &
+echo \$! >\$d/relay.pid; echo $port >\$d/relay.port"
+    say "  ComfyUI relay: 127.0.0.1:$port in the sandbox -> this machine's port $port."
+}
+
 # Make the sandbox match the saved mode and services.
 cmd_apply() {
     load_state
@@ -261,13 +373,13 @@ cmd_apply() {
         has_credential "$name" || detach_credential "$name"
     done
     for name in $selected; do
-        name=${name%+*}
+        name=${name%+*}; name=${name%@*}
         [ "$(field "$name" setup)" = codex ] && setup_codex
     done
     # Credential services: try to attach; optional ones fall back to no key.
     final=""
     for item in $selected; do
-        name=${item%+*}
+        name=${item%+*}; name=${name%@*}
         if [ -n "$(field "$name" credential_env)" ] && [ "$item" != "$name" ]; then
             final="$final $item"
         elif [ -n "$(field "$name" credential_env)" ]; then
@@ -284,16 +396,29 @@ cmd_apply() {
                 say "  $(field "$name" title): no key given, skipped."
             fi
         else
-            final="$final $name"
+            final="$final $item"
         fi
     done
     selected=$(echo $final)
     save_state
     # shellcheck disable=SC2086
     set_policy "run $mode $(for_compose $selected)"
+    # Keys saved in OpenShell earlier (e.g. before a rebuild) are re-attached.
+    for item in $selected; do
+        case "$item" in *+cred) ;; *) continue ;; esac
+        name=${item%+cred}
+        echo "$attached" | grep -qx "$name" || osh sandbox provider attach "$sandbox" "astrid-$name" --wait >/dev/null
+    done
     say "Applied: mode $mode; services: ${selected:-none}."
+    if has_service comfyui; then
+        if [ "$created_mount" = "$comfyui_output" ] && [ -n "$created_mount" ]; then
+            setup_comfyui
+        else
+            say "  ComfyUI: the sandbox was created without its output folder; run  astrid-openshell.sh rebuild DIR  to share it."
+        fi
+    fi
     for name in $selected; do
-        name=${name%+*}
+        name=${name%+*}; name=${name%@*}
         login=$(field "$name" login)
         [ -n "$login" ] && say "  $(field "$name" title): sign in with  astrid-openshell.sh login $name"
     done
@@ -318,7 +443,8 @@ cmd_services() {
             shift
             for name in "$@"; do
                 [ -n "$(field "$name" title 2>/dev/null)" ] || die "unknown service '$name' (see: services list)"
-                has_service "$name" || selected="$selected $name"
+                if [ "$name" = comfyui ]; then configure_comfyui
+                else has_service "$name" || selected="$selected $name"; fi
             done
             selected=$(echo $selected); save_state; cmd_apply; return ;;
         remove)
@@ -349,7 +475,8 @@ cmd_services() {
         read -r choice || choice=q
         case "$choice" in
             q) rm -f "${TMPDIR:-/tmp}/astrid-menu.$$"; say "No changes applied."; return ;;
-            a) rm -f "${TMPDIR:-/tmp}/astrid-menu.$$"; save_state; cmd_apply; return ;;
+            a) rm -f "${TMPDIR:-/tmp}/astrid-menu.$$"; save_state
+               [ -n "${menu_save_only:-}" ] || cmd_apply; return ;;
             m) if [ "$mode" = locked ]; then mode=dev; else mode=locked; fi ;;
             *[!0-9]*|'') say "?" ;;
             *)
@@ -357,9 +484,10 @@ cmd_services() {
                 if [ -z "$id" ]; then say "?"
                 elif has_service "$id"; then drop_service "$id"
                 else
-                    selected=$(echo "$selected $id")
                     note=$(field "$id" note)
                     [ -n "$note" ] && say "  note: $note"
+                    if [ "$id" = comfyui ]; then configure_comfyui
+                    else selected=$(echo "$selected $id"); fi
                 fi ;;
         esac
     done
@@ -417,6 +545,12 @@ print(\"Runtime starting; log:\", log)
     say "Runtime is up."
 }
 
+cmd_start_all() {
+    cmd_start
+    load_state
+    start_relay
+}
+
 cmd_door() {
     if osh forward list 2>/dev/null | grep -w "$sandbox" | grep -q "$door_port"; then
         say "Door already forwarded."
@@ -439,18 +573,33 @@ policy = json.load(sys.stdin)["policy"]
 policy["version"] = 1
 json.dump(policy, sys.stdout)' >"$tmp/live.json"
     # shellcheck disable=SC2086
-    compose boundary "$mode" $(for_compose $selected) >"$tmp/boundary.json"
-    # The prover cannot model allow_encoded_slash (npm's scoped packages), so
-    # it is checked separately and removed from both sides before proving.
-    python3 -I - "$tmp/live.json" "$tmp/boundary.json" <<'EOF'
+    compose $(mount_args) boundary "$mode" $(for_compose $selected) >"$tmp/boundary.json"
+    # The prover models neither allow_encoded_slash (npm scoped packages,
+    # ComfyUI's saved workflows) nor WebSocket endpoints (ComfyUI's /ws). Every
+    # such endpoint in the live policy must appear exactly in the composed one;
+    # then both are removed from both sides and the rest is proved.
+    python3 -I - "$tmp/live.json" "$tmp/boundary.json" <<'EOF' || die "the live policy has endpoints the selection does not"
 import json, sys
-for path in sys.argv[1:]:
+def split(path):
     policy = json.load(open(path))
+    extra = set()
     for name, rule in policy.get("network_policies", {}).items():
+        bins = json.dumps(sorted(b["path"] for b in rule.get("binaries", [])))
+        kept = []
         for e in rule.get("endpoints", []):
-            if e.pop("allow_encoded_slash", False) and e.get("host") != "registry.npmjs.org":
-                raise SystemExit(f"allow_encoded_slash on {e.get('host')} in {name}")
+            if e.get("protocol") == "websocket":
+                extra.add(json.dumps(e, sort_keys=True) + bins)
+                continue
+            if e.pop("allow_encoded_slash", False):
+                extra.add(e["host"] + ":" + str(e["port"]) + " encoded-slash " + bins)
+            kept.append(e)
+        rule["endpoints"] = kept
     json.dump(policy, open(path, "w"))
+    return extra
+live, intended = split(sys.argv[1]), split(sys.argv[2])
+for item in sorted(live - intended):
+    print("  unexpected:", item[:160])
+raise SystemExit(1 if live - intended else 0)
 EOF
     result=$("$prover" check --boundary "$tmp/boundary.json" "$tmp/live.json" || true)
     rm -rf "$tmp"
@@ -461,12 +610,14 @@ EOF
 
     allowed=""
     if [ "$mode" = dev ]; then allowed="https://pypi.org/simple/"; fi
+    comfy_port=$(service_param comfyui)
+    host_ports=""
+    for p in 8188 8000 8189; do [ "$p" = "$comfy_port" ] || host_ports="$host_ports http://host.openshell.internal:$p"; done
     say "Probing from inside the sandbox (mode $mode):"
     in_sandbox "
 fail=0
 probe() { curl --silent --max-time 6 --output /dev/null --write-out '%{http_code}' \"\$@\" 2>/dev/null; }
-for url in https://example.com https://astrid.haus \
-           http://host.openshell.internal:8188 http://host.openshell.internal:8000 \
+for url in https://example.com https://astrid.haus $host_ports \
            https://host.openshell.internal:17670 http://169.254.169.254/ http://10.0.0.1/ http://192.168.1.1/; do
     code=\$(probe \"\$url\") || true
     case \"\$code\" in 000|403) echo \"  blocked    \$url\" ;; *) echo \"  REACHABLE  \$url (HTTP \$code)\"; fail=1 ;; esac
@@ -478,9 +629,37 @@ for url in $allowed; do
     code=\$(probe \"\$url\") || true
     case \"\$code\" in 2??|3??) echo \"  allowed    \$url (HTTP \$code)\" ;; *) echo \"  FAILED     \$url should be reachable in this mode (HTTP \$code)\"; fail=1 ;; esac
 done
-for path in /mnt /home /root /var/run/docker.sock /run/docker.sock; do
+for path in /home /root /var/run/docker.sock /run/docker.sock $([ -n "$created_mount" ] || echo /mnt); do
     [ -e \"\$path\" ] && [ -n \"\$(ls -A \"\$path\" 2>/dev/null)\" ] && { echo \"  VISIBLE    \$path\"; fail=1; } || echo \"  absent     \$path\"
 done
+if [ -n '$comfy_port' ]; then
+    # ComfyUI through the relay: the core API answers, Manager and settings writes do not.
+    py=\$(ls \$HOME/.local/share/astrid/bootstrap/python/*/bin/python3 | head -1)
+    \"\$py\" -I - '$comfy_port' <<'PY' || fail=1
+import sys, urllib.request, urllib.error
+base = f\"http://127.0.0.1:{sys.argv[1]}\"
+def code(method, path, data=None):
+    try:
+        return urllib.request.urlopen(urllib.request.Request(base + path, data=data, method=method), timeout=8).status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except OSError:
+        return 0
+bad = 0
+for method, path, want in [(\"GET\", \"/system_stats\", \"ok\"), (\"GET\", \"/internal/folder_paths\", \"ok\"),
+                           (\"GET\", \"/api/manager/version\", \"deny\"), (\"GET\", \"/manager/version\", \"deny\"),
+                           (\"POST\", \"/userdata/astrid-probe.json\", \"deny\"), (\"POST\", \"/settings/astrid.probe\", \"deny\")]:
+    c = code(method, path, b\"{}\" if method == \"POST\" else None)
+    ok = (200 <= c < 300) if want == \"ok\" else c in (0, 403)
+    print(f\"  {'allowed' if want == 'ok' else 'blocked'}    {method} ComfyUI {path} (HTTP {c})\" if ok else f\"  WRONG      {method} ComfyUI {path} (HTTP {c})\")
+    bad |= not ok
+raise SystemExit(bad)
+PY
+fi
+if [ -n '$created_mount' ]; then
+    if ls '$created_mount' >/dev/null 2>&1; then echo '  readable   $created_mount (ComfyUI output, shared read-only)'; else echo '  UNREADABLE $created_mount'; fail=1; fi
+    if touch '$created_mount/.astrid-write-probe' 2>/dev/null; then echo '  WRITABLE   $created_mount'; rm -f '$created_mount/.astrid-write-probe'; fail=1; else echo '  read-only  $created_mount'; fi
+fi
 exit \$fail" || die "a network or host-path probe did not behave as expected"
     say "Check passed."
 }
@@ -499,26 +678,51 @@ cmd_destroy() {
 
 cmd_up() {
     [ $# -ge 1 ] || die "usage: up DIR (from: fetch)"
+    load_state
+    # Choose services before creating the sandbox: ComfyUI's shared folder is
+    # fixed at creation. A saved selection (e.g. from `rebuild`) is reused.
+    if [ -n "${ASTRID_MODE:-}${ASTRID_SERVICES:-}" ]; then
+        mode=${ASTRID_MODE:-locked}
+        selected=""
+        for name in ${ASTRID_SERVICES:-}; do
+            if [ "${name%%@*}" = comfyui ]; then
+                case "$name" in *@*) ASTRID_COMFYUI_PORT=${name#*@} ;; esac
+                configure_comfyui
+            else selected="$selected $name"; fi
+        done
+        selected=$(echo $selected)
+        save_state
+    elif [ ! -f "$state" ] && [ -t 0 ]; then
+        say "Pick what the sandbox may reach (you can change this later with: astrid-openshell.sh services)."
+        menu_save_only=1 cmd_services menu
+        [ -f "$state" ] || save_state
+    fi
     cmd_create
     cmd_install "$1"
-    load_state
-    if [ -n "${ASTRID_MODE:-}${ASTRID_SERVICES:-}" ] || [ ! -t 0 ]; then
-        mode=${ASTRID_MODE:-locked}
-        selected=${ASTRID_SERVICES:-}
-        save_state
-        cmd_apply
-    else
-        say ""
-        say "Pick what the sandbox may reach (you can change this later with: astrid-openshell.sh services)."
-        cmd_services menu
-        [ -f "$state" ] || { save_state; cmd_apply; }
-    fi
-    cmd_start
+    cmd_apply
+    cmd_start_all
     cmd_check
     cmd_door
 }
 
-[ $# -ge 1 ] || { sed -n '2,37p' "$0"; exit 2; }
+# Recreate the sandbox with the saved selection (needed to share ComfyUI's
+# output folder). Signed-in sessions and anything else inside are lost.
+cmd_rebuild() {
+    [ $# -ge 1 ] || die "usage: rebuild DIR (the installer folder, see: fetch)"
+    load_state
+    printf "Recreate sandbox '%s' (everything inside it is deleted, including sign-ins)? [y/N] " "$sandbox"
+    if [ "${ASTRID_YES:-}" = 1 ]; then answer=y; echo y; else read -r answer || answer=""; fi
+    [ "$answer" = y ] || [ "$answer" = Y ] || { say "Kept."; return; }
+    osh forward stop "$door_port" "$sandbox" >/dev/null 2>&1 || true
+    for name in $(osh sandbox provider list "$sandbox" 2>/dev/null | sed -n 's/.*astrid-\([a-z]*\).*/\1/p' | sort -u); do
+        detach_credential "$name"
+    done
+    osh sandbox delete "$sandbox" >/dev/null 2>&1 || true
+    # The keys stay in OpenShell; apply re-attaches them to the new sandbox.
+    cmd_up "$1"
+}
+
+[ $# -ge 1 ] || { sed -n '2,39p' "$0"; exit 2; }
 command=$1
 shift
 case "$command" in
@@ -530,7 +734,8 @@ case "$command" in
     login) cmd_login "$@" ;;
     logout) cmd_logout "$@" ;;
     lockdown) load_state; mode=locked; selected=""; save_state; cmd_apply ;;
-    start) cmd_start ;;
+    start) cmd_start_all ;;
+    rebuild) cmd_rebuild "$@" ;;
     door) cmd_door ;;
     check) cmd_check ;;
     status) load_state; say "Mode: $mode; services: ${selected:-none}"; osh sandbox get "$sandbox"; osh forward list ;;

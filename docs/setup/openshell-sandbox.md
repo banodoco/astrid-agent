@@ -72,6 +72,7 @@ scripts/openshell/astrid-openshell.sh services mode dev
 |---|---|---|
 | ChatGPT plan via Astrid's agent | Astrid's own agent (omp, a Pi derivative) may reach chatgpt.com and auth.openai.com, from Bun only. Sign in with `astrid-openshell.sh login chatgpt`: in the agent, `/login` → "ChatGPT Plus/Pro (Codex, headless/device)" (enable device code login under ChatGPT > Settings > Security first). | sign-in tokens live inside the sandbox (`~/.omp/agent/agent.db`); `logout chatgpt` to remove |
 | ChatGPT plan via Codex CLI | installs the official Codex CLI (pinned, matching Astrid's Codex adapter). Only Codex may reach chatgpt.com and auth.openai.com; Bun may fetch the adapter from npm. Sign in with `astrid-openshell.sh login codex` (device code; enable it under ChatGPT > Settings > Security first). | sign-in tokens live inside the sandbox; `logout codex` to remove |
+| ComfyUI on this machine | Astrid's local generation (`vibecomfy.run` with `comfy_url`) on your running ComfyUI: core API only on the port you give (queue, upload, history, view, `/ws`); ComfyUI-Manager, settings and userdata writes, and custom-node routes are refused. A relay inside the sandbox serves it as `127.0.0.1:<port>`, the only form Astrid accepts. ComfyUI's output folder is shared read-only (see below). | none |
 | Hugging Face | read-only model and dataset downloads (huggingface.co and its file CDNs) | optional `HF_TOKEN`, kept outside the sandbox |
 | OpenAI / Anthropic / OpenRouter API key | Astrid's own agent (Bun) to that API only | kept outside the sandbox |
 
@@ -86,6 +87,35 @@ add a service to the catalog, add an entry to `scripts/openshell/catalog.json`.
 `compose_policy.py` builds every policy and provider profile from it.
 `lockdown` is the emergency switch: mode `locked`, every service off, every
 provider detached.
+
+## Using your own ComfyUI
+
+Astrid's local generation attaches to a ComfyUI you already run, and it
+collects results by reading ComfyUI's output folder from disk. So the service
+needs two things: ComfyUI's port, and that folder shared into the sandbox.
+
+1. Allow folder shares once: `ASTRID_OPENSHELL_HOST_MOUNTS=1 scripts/openshell/install-openshell.sh`
+   (this restarts the gateway).
+2. Switch on "ComfyUI on this machine" in the menu, or with `services add comfyui`.
+   It asks for the port, then finds the output folder the way Astrid's own scan
+   does: `--output-directory`, otherwise `<ComfyUI>/output`. If that folder is a
+   symlink, its real path is shared.
+3. Run `astrid-openshell.sh rebuild DIR`. The shared folder is fixed when the
+   sandbox is created, so the sandbox is recreated. Saved keys are re-attached;
+   sign-ins inside the sandbox have to be redone.
+
+The folder is shared read-only at the path ComfyUI reports, so Astrid's
+`comfy_output_dir` checks pass inside the sandbox. Two cautions:
+
+- **The API is the boundary.** Whatever a loaded custom node can do when a
+  workflow is queued, the agent can do. Prefer a second ComfyUI instance for
+  Astrid: same models, its own input/output/temp/user folders, no
+  ComfyUI-Manager, and only the custom nodes you trust (`--disable-all-custom-nodes
+  --whitelist-custom-nodes ...`).
+- **The share relaxes isolation.** OpenShell calls host folder shares an "unsafe
+  operator override". libkrun does not confine a compromised guest kernel to the
+  shared folder: it may reach other files the gateway's user can read. Turn
+  shares on only if you accept that.
 
 ## Day to day
 

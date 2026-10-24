@@ -181,6 +181,18 @@
           "tcp": true
         }
       ]
+    },
+    "comfyui_host": {
+      "binaries": [
+        "astrid_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "host.openshell.internal",
+          "port": "{port}",
+          "comfy_api": true
+        }
+      ]
     }
   },
   "modes": {
@@ -293,6 +305,17 @@
           "bun"
         ]
       }
+    },
+    "comfyui": {
+      "title": "ComfyUI on this machine",
+      "summary": "Astrid's local generation runs on your ComfyUI; its output folder is shared read-only",
+      "rules": [
+        "comfyui_host"
+      ],
+      "param": "port",
+      "mount": "comfyui_output",
+      "setup": "comfyui",
+      "note": "The sandbox may call ComfyUI's core API (queue, upload, history, view) on that port only; ComfyUI-Manager, settings writes and custom-node routes are refused. Anything a custom node can do when queued, the agent can do, so prefer a ComfyUI instance with only the nodes you trust. Turning this on recreates the sandbox (the shared folder is fixed at creation)."
     }
   }
 }

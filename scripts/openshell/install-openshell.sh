@@ -16,6 +16,11 @@
 #   ASTRID_OPENSHELL_GATEWAY  CLI gateway name (default astrid)
 #   ASTRID_OPENSHELL_PORT     gateway port on 127.0.0.1 (default 17670)
 #   ASTRID_OPENSHELL_VCPUS / _MEM_MIB / _DISK_MIB  per-sandbox VM size (4 / 8192 / 32768)
+#   ASTRID_OPENSHELL_HOST_MOUNTS=1  allow read-only host folder shares (for the
+#                             "ComfyUI on this machine" service). OpenShell calls
+#                             this an unsafe operator override: libkrun does not
+#                             confine a compromised guest kernel to the shared
+#                             folder. Off by default.
 set -eu
 umask 077
 
@@ -26,6 +31,7 @@ port=${ASTRID_OPENSHELL_PORT:-17670}
 vcpus=${ASTRID_OPENSHELL_VCPUS:-4}
 mem_mib=${ASTRID_OPENSHELL_MEM_MIB:-8192}
 disk_mib=${ASTRID_OPENSHELL_DISK_MIB:-32768}
+host_mounts=${ASTRID_OPENSHELL_HOST_MOUNTS:-0}
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -168,8 +174,20 @@ krun_log_level = 1
 vcpus = $vcpus
 mem_mib = $mem_mib
 overlay_disk_mib = $disk_mib
-enable_bind_mounts = false
 EOF
+if [ "$host_mounts" = 1 ]; then
+    cat >>"$home/config/gateway.toml" <<'EOF'
+# ASTRID_OPENSHELL_HOST_MOUNTS=1: read-only host folder shares (virtiofs).
+# OpenShell's "unsafe operator override"; see docs/setup/openshell-sandbox.md.
+allow_driver_config = true
+enable_bind_mounts = true
+
+[openshell.drivers.vm.resource_admission]
+enabled = false
+EOF
+else
+    echo "enable_bind_mounts = false" >>"$home/config/gateway.toml"
+fi
 
 cat >"$home/gateway.env" <<EOF
 OPENSHELL_GATEWAY_CONFIG=$home/config/gateway.toml
@@ -207,7 +225,15 @@ EOF
 chmod 0755 "$home/start-gateway.sh" "$home/stop-gateway.sh"
 
 # --- start and register -----------------------------------------------------
+# A running gateway keeps its old config; restart it if the config changed.
+if [ -f "$home/state/gateway.pid" ] && kill -0 "$(cat "$home/state/gateway.pid")" 2>/dev/null \
+        && ! cmp -s "$home/config/gateway.toml" "$home/state/gateway.toml.running" 2>/dev/null; then
+    say "Gateway config changed; restarting the gateway (running sandboxes stop)."
+    "$home/stop-gateway.sh"
+    sleep 2
+fi
 "$home/start-gateway.sh"
+cp "$home/config/gateway.toml" "$home/state/gateway.toml.running"
 # Wait for the listener (curl exit 7 = nothing listening; mTLS refusals are fine).
 tries=0
 while :; do

@@ -2,14 +2,17 @@
 
 Used by astrid-openshell.sh; run with `python3 -I`.
 
-  compose_policy.py install                          install-time policy (JSON)
+  compose_policy.py [--mount PATH]... install        install-time policy (JSON)
   compose_policy.py run MODE [SERVICE ...]           run-time policy (JSON)
   compose_policy.py boundary MODE [SERVICE ...]      run-time policy + provider rules, for the prover
   compose_policy.py profile SERVICE                  OpenShell provider profile (YAML)
   compose_policy.py menu                             tab-separated lines for the menu
   compose_policy.py field SERVICE KEY                one service field ("" when absent)
 
-A SERVICE written as `name+cred` means its credential provider is attached.
+A SERVICE written as `name+cred` means its credential provider is attached;
+`name@PARAM` passes a parameter (the port for `comfyui`). Every --mount PATH is
+added read-only to the filesystem policy (it must match in every policy for a
+sandbox, since the filesystem policy is fixed when the sandbox starts).
 """
 
 from __future__ import annotations
@@ -49,11 +52,44 @@ def binaries(groups: list[str]) -> list[dict]:
     return [{"path": path} for path in paths]
 
 
-def endpoint(spec: dict) -> dict:
-    out = {"host": spec["host"], "port": spec.get("port", 443)}
+# ComfyUI's core HTTP API (server.py), served with and without an /api prefix.
+# Everything else on the server is refused: ComfyUI-Manager (installs code),
+# settings and userdata writes, and routes that custom nodes add.
+COMFY_GET = ["/system_stats", "/object_info", "/object_info/*", "/history", "/history/*", "/view",
+             "/view_metadata/*", "/queue", "/prompt", "/features", "/embeddings", "/extensions",
+             "/models", "/models/*", "/internal/folder_paths", "/userdata", "/userdata/*"]
+COMFY_POST = ["/prompt", "/upload/image", "/upload/mask", "/interrupt", "/queue", "/history", "/free"]
+COMFY_JOBS = [("GET", "/api/jobs"), ("GET", "/api/jobs/*"), ("POST", "/api/jobs/cancel"),
+              ("POST", "/api/jobs/*/cancel")]
+
+
+def comfy_endpoints(host: str, port: int) -> list[dict]:
+    rules = []
+    for method, paths in (("GET", COMFY_GET), ("POST", COMFY_POST)):
+        for path in paths:
+            rules.append({"allow": {"method": method, "path": path}})
+            rules.append({"allow": {"method": method, "path": "/api" + path}})
+    rules += [{"allow": {"method": m, "path": p}} for m, p in COMFY_JOBS]
+    api = {"host": host, "port": port, "protocol": "rest", "enforcement": "enforce", "rules": rules,
+           # Saved workflows are addressed as /userdata/workflows%2F<name>.json.
+           "allow_encoded_slash": True}
+    sockets = [{"host": host, "port": port, "path": path, "protocol": "websocket",
+                "enforcement": "enforce", "access": "read-write"} for path in ("/ws", "/api/ws")]
+    return [api, *sockets]
+
+
+def endpoints(spec: dict, param: str | None = None) -> list[dict]:
+    port = spec.get("port", 443)
+    if port == "{port}":
+        if not param or not param.isdigit() or not 1 <= int(param) <= 65535:
+            raise SystemExit(f"{spec['host']} needs a port (service@PORT)")
+        port = int(param)
+    if spec.get("comfy_api"):
+        return comfy_endpoints(spec["host"], port)
+    out = {"host": spec["host"], "port": port}
     if spec.get("tcp"):
         out["protocol"] = "tcp"
-        return out
+        return [out]
     out.update(protocol="rest", enforcement="enforce")
     if spec.get("git_read"):
         # Clone and fetch need POST .../git-upload-pack; pushes (git-receive-pack) stay blocked.
@@ -66,36 +102,54 @@ def endpoint(spec: dict) -> dict:
         out["access"] = spec["access"]
     if spec.get("allow_encoded_slash"):
         out["allow_encoded_slash"] = True
-    return out
+    return [out]
 
 
-def parse(services: list[str]) -> tuple[list[str], set[str]]:
-    names, with_credential = [], set()
+def endpoint(spec: dict) -> dict:
+    return endpoints(spec)[0]
+
+
+def parse(services: list[str]) -> tuple[list[str], set[str], dict[str, str]]:
+    """`name`, `name+cred`, `name@param`; returns names, credentialed names, params."""
+    names, with_credential, params = [], set(), {}
     for item in services:
-        name, _, flag = item.partition("+")
+        item, _, flag = item.partition("+")
+        name, _, param = item.partition("@")
         if name not in CATALOG["services"]:
             raise SystemExit(f"unknown service {name!r}")
         names.append(name)
         if flag == "cred":
             with_credential.add(name)
-    return names, with_credential
+        if param:
+            params[name] = param
+    return names, with_credential, params
 
 
-def run_policy(mode: str, services: list[str]) -> dict:
+def base_policy(mounts: list[str]) -> dict:
+    policy = json.loads(json.dumps(BASE))
+    for path in mounts:
+        if not path.startswith("/") or ".." in path.split("/"):
+            raise SystemExit(f"mount target must be an absolute path: {path!r}")
+        policy["filesystem_policy"]["read_only"].append(path)
+    return policy
+
+
+def run_policy(mode: str, services: list[str], mounts: list[str]) -> dict:
     if mode not in CATALOG["modes"]:
         raise SystemExit(f"unknown mode {mode!r}")
-    names, with_credential = parse(services)
-    wanted = list(CATALOG["modes"][mode]["rules"])
+    names, with_credential, params = parse(services)
+    wanted = [(rule, None) for rule in CATALOG["modes"][mode]["rules"]]
     for name in names:
-        wanted += CATALOG["services"][name].get("rules", [])
+        wanted += [(rule, params.get(name)) for rule in CATALOG["services"][name].get("rules", [])]
     dropped = {CATALOG["services"][n]["credential"].get("replaces_rule") for n in with_credential}
-    policy = json.loads(json.dumps(BASE))
+    policy = base_policy(mounts)
     rules = {}
-    for rule in dict.fromkeys(wanted):
+    for rule, param in dict.fromkeys(wanted):
         if rule in dropped:
             continue
         spec = CATALOG["rules"][rule]
-        rules[rule] = {"name": rule, "endpoints": [endpoint(e) for e in spec["endpoints"]],
+        rules[rule] = {"name": rule,
+                       "endpoints": [e for spec_e in spec["endpoints"] for e in endpoints(spec_e, param)],
                        "binaries": binaries(spec["binaries"])}
     if rules:
         policy["network_policies"] = rules
@@ -110,9 +164,13 @@ def provider_rule(name: str) -> dict:
 
 
 def main(argv: list[str]) -> None:
+    mounts = []
+    while argv[:1] == ["--mount"]:
+        mounts.append(argv[1])
+        argv = argv[2:]
     command, *args = argv
     if command == "install":
-        policy = json.loads(json.dumps(BASE))
+        policy = base_policy(mounts)
         policy["network_policies"] = {"astrid_install": {
             "name": "astrid-install",
             "endpoints": [endpoint({"host": h, "access": "read-only",
@@ -120,10 +178,10 @@ def main(argv: list[str]) -> None:
             "binaries": [{"path": p} for p in INSTALL_BINARIES]}}
         json.dump(policy, sys.stdout, indent=2)
     elif command == "run":
-        json.dump(run_policy(args[0], args[1:]), sys.stdout, indent=2)
+        json.dump(run_policy(args[0], args[1:], mounts), sys.stdout, indent=2)
     elif command == "boundary":
-        policy = run_policy(args[0], args[1:])
-        _, with_credential = parse(args[1:])
+        policy = run_policy(args[0], args[1:], mounts)
+        _, with_credential, _ = parse(args[1:])
         for name in sorted(with_credential):
             policy.setdefault("network_policies", {})[f"provider_{name}"] = provider_rule(name)
         json.dump(policy, sys.stdout, indent=2)
