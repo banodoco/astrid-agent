@@ -65,6 +65,9 @@ def test_register_scheduled_task_accepts_rendered_xml_string(tmp_path, monkeypat
     assert powershell, "Windows PowerShell is required to register a native task"
     task_name = f"Astrid XML Smoke {uuid.uuid4().hex}"
     monkeypatch.setattr(service, "TASK", task_name)
+    monkeypatch.setattr(
+        service, "TASK_QUERY",
+        f"$t=Get-ScheduledTask | Where-Object {{ $_.TaskName -eq '{task_name}' -and $_.TaskPath -eq '\\' }}; ")
     original_render = service.render
 
     def render_without_triggers(*args, **kwargs):
@@ -81,6 +84,7 @@ def test_register_scheduled_task_accepts_rendered_xml_string(tmp_path, monkeypat
 
     manager = Service(tmp_path / "program", tmp_path / "log", run,
                       home=tmp_path, system="win32")
+    manager.selection = tmp_path / "astrid-install.json"
     version = Version(tmp_path / "version", tmp_path / "pythonw.exe", tmp_path / "profile.json", {})
     try:
         manager.register(version, tmp_path / "data")
