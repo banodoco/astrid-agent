@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Astrid Runtime</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><UserId>S-1-5-21-1234</UserId></LogonTrigger><TimeTrigger><Enabled>true</Enabled><StartBoundary>2000-01-01T00:00:00+00:00</StartBoundary><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger></Triggers>
