@@ -18,6 +18,7 @@
 #   services [list | add NAME... | remove NAME... | mode locked|dev]
 #                      no arguments: interactive menu
 #   login NAME | logout NAME   sign a service in or out inside the sandbox (chatgpt, codex)
+#   mcp                Astrid as an MCP server on stdio (for Claude Code: claude mcp add astrid -- <this script> mcp)
 #   apply              re-apply the saved mode and services
 #   lockdown           emergency: mode locked, every service off, providers detached
 #   start              start Astrid's Runtime inside the sandbox if it isn't running
@@ -57,7 +58,8 @@ if [ -x "$home/bin/openshell-prover" ]; then prover="$home/bin/openshell-prover"
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 osh() { "$os_cli" -g "$gateway" "$@"; }
-in_sandbox() { osh sandbox exec -n "$sandbox" --no-tty -- sh -c "$1"; }
+# Never pass our stdin through: `mcp` owns it, and nothing here reads it.
+in_sandbox() { osh sandbox exec -n "$sandbox" --no-tty -- sh -c "$1" </dev/null; }
 in_sandbox_tty() { osh sandbox exec -n "$sandbox" --tty -- sh -c "$1"; }
 command -v python3 >/dev/null 2>&1 || die "python3 is needed on this machine."
 compose() { python3 -I "$here/compose_policy.py" "$@"; }
@@ -519,6 +521,34 @@ cmd_logout() {
     in_sandbox_tty "PATH=\$HOME/.local/bin:\$PATH; $command"
 }
 
+# MCP server (python -m astrid.mcp_server) inside the sandbox, on this
+# command's stdin/stdout, for an MCP client on this machine:
+#   claude mcp add astrid -- /path/to/astrid-openshell.sh mcp
+# Until Astrid ships the module, a copy from this checkout is uploaded when the
+# sandbox's copy is missing or different. Nothing but MCP goes to stdout.
+cmd_mcp() {
+    src="$here/../../astrid/mcp_server.py"
+    if in_sandbox "r=\$HOME/.local/share/astrid; \$r/versions/\$(cat \$r/current)/py/bin/python -I -c 'import astrid.mcp_server'" >/dev/null 2>&1; then
+        launch='exec "$py" -I -m astrid.mcp_server'
+    elif [ -f "$src" ]; then
+        want=$(sha256sum "$src" | cut -d' ' -f1)
+        have=$(in_sandbox "sha256sum \$HOME/astrid-mcp/mcp_server.py 2>/dev/null | cut -d' ' -f1" 2>/dev/null || true)
+        if [ "$want" != "$have" ]; then
+            staging=$(mktemp -d)
+            mkdir -p "$staging/astrid-mcp"
+            cp "$src" "$staging/astrid-mcp/mcp_server.py"
+            in_sandbox "rm -rf \$HOME/astrid-mcp" >&2
+            osh sandbox upload "$sandbox" "$staging/astrid-mcp" "$guest_home" >&2 2>&1
+            rm -rf "$staging"
+        fi
+        launch='exec "$py" -I "$HOME/astrid-mcp/mcp_server.py"'
+    else
+        die "this Astrid has no MCP server (astrid.mcp_server) and no copy was found at $src"
+    fi
+    exec "$os_cli" -g "$gateway" sandbox exec -n "$sandbox" --no-tty -- sh -c \
+        "r=\$HOME/.local/share/astrid; py=\$r/versions/\$(cat \$r/current)/py/bin/python; $launch"
+}
+
 door_answers() {
     in_sandbox "curl --silent --max-time 3 --output /dev/null --write-out '%{http_code}' -H 'Origin: https://astrid.haus' http://127.0.0.1:$door_port/" 2>/dev/null \
         | grep -qE '^(200|403|404)$'
@@ -730,7 +760,7 @@ cmd_rebuild() {
     cmd_up "$1"
 }
 
-[ $# -ge 1 ] || { sed -n '2,39p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,40p' "$0"; exit 2; }
 command=$1
 shift
 case "$command" in
@@ -741,6 +771,7 @@ case "$command" in
     apply) cmd_apply ;;
     login) cmd_login "$@" ;;
     logout) cmd_logout "$@" ;;
+    mcp) cmd_mcp ;;
     lockdown) load_state; mode=locked; selected=""; save_state; cmd_apply ;;
     start) cmd_start_all ;;
     rebuild) cmd_rebuild "$@" ;;
