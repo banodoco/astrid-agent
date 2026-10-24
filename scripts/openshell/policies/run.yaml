@@ -1,0 +1,21 @@
+# OpenShell policy for RUNNING Astrid inside a sandbox (after install).
+#
+# No network rules: every outbound connection is denied, including the host's
+# loopback and LAN. The one way in is the door, forwarded from the host's
+# 127.0.0.1:17340 by `astrid-openshell.sh door`. An LLM provider attached with
+# `astrid-openshell.sh provider <name>` adds its own rule for its API host
+# only, and only for Astrid's Bun binary (see providers/).
+#
+# Do not add a rule for host.openshell.internal: on the microVM driver that
+# name is the host's 127.0.0.1, so a rule for, say, port 8188 would hand the
+# sandbox a local ComfyUI.
+#
+# filesystem_policy, landlock and process must match install.yaml (they are
+# fixed when the sandbox starts).
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/bin, /usr, /lib, /proc, /dev/urandom, /etc, /var/log]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement

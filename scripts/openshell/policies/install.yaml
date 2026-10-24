@@ -1,0 +1,47 @@
+# OpenShell policy for INSTALLING Astrid inside a sandbox.
+#
+# Used only while `astrid-openshell.sh install` runs; `lockdown` swaps it for
+# run.yaml. Every endpoint is read-only REST with `enforcement: enforce`
+# (OpenShell's default is `audit`, which logs a violation and then allows it).
+#
+# Hosts are the ones the pinned installer and `astrid install` actually fetch
+# from: uv and Python (astral.sh, GitHub releases), agent/runtime/omp source
+# archives (GitHub), Bun/Node/FFmpeg (GitHub releases, nodejs.org,
+# johnvansickle.com), Python packages (PyPI), and npm packages (Bun, npm).
+# astrid.haus is NOT listed: the manifest is uploaded from the host, so the
+# exact bytes you reviewed are the ones that run.
+#
+# filesystem_policy, landlock and process take effect at sandbox start and
+# must stay identical in run.yaml.
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/bin, /usr, /lib, /proc, /dev/urandom, /etc, /var/log]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement
+network_policies:
+  astrid_install:
+    name: astrid-install
+    endpoints:
+      - { host: astral.sh, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: releases.astral.sh, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: github.com, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: codeload.github.com, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: objects.githubusercontent.com, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: release-assets.githubusercontent.com, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: nodejs.org, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: johnvansickle.com, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: pypi.org, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: files.pythonhosted.org, port: 443, protocol: rest, enforcement: enforce, access: read-only }
+      - { host: registry.npmjs.org, port: 443, protocol: rest, enforcement: enforce, access: read-only, allow_encoded_slash: true }
+    binaries:
+      # The bootstrap script and uv's own installer download with curl.
+      - path: /usr/bin/curl
+      # Astrid's pinned uv and the Python it installs. Child processes (the
+      # `astrid install` core, Bun, Node) inherit the rule from these.
+      - path: /sandbox/.local/share/astrid/bootstrap/uv
+      - path: /sandbox/.local/share/astrid/bootstrap/python/*/bin/python3*
+      # Listed too, so npm fetches don't depend on rule inheritance.
+      - path: /sandbox/.local/share/astrid/versions/*/tools/bun/*/bun
+      - path: /sandbox/.local/share/astrid/versions/*/tools/node/*/bin/node

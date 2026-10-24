@@ -1,0 +1,27 @@
+# OpenShell provider profile: OpenRouter for Astrid's agent inside an OpenShell sandbox.
+# Adapted from OpenShell's providers/openrouter.yaml (Apache-2.0). The sandbox only ever
+# sees a placeholder; OpenShell's proxy swaps in the real key for requests to
+# openrouter.ai from Astrid's Bun binary, and for nothing else.
+# Import and use:  scripts/openshell/astrid-openshell.sh provider openrouter
+id: astrid-openrouter
+display_name: OpenRouter (Astrid sandbox)
+description: OpenRouter API for Astrid's agent in an OpenShell sandbox
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: OpenRouter API key (use a throwaway key with a spend cap)
+    env_vars: [OPENROUTER_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: openrouter.ai
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - /sandbox/.local/share/astrid/versions/*/tools/bun/*/bun

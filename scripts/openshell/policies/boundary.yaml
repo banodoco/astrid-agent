@@ -1,0 +1,20 @@
+# Ceiling for `astrid-openshell.sh check`: OpenShell's prover proves that the
+# sandbox's live, fully composed policy stays inside this. Nothing may reach the
+# network except the three LLM APIs, and only from Astrid's Bun binary. If the
+# live policy ever gains a rule (an approved proposal, a hand edit, a provider
+# for another host), the check fails.
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/bin, /usr, /lib, /proc, /dev/urandom, /etc, /var/log]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: hard_requirement
+network_policies:
+  llm_apis:
+    endpoints:
+      - { host: api.anthropic.com, port: 443, protocol: rest, enforcement: enforce, access: read-write }
+      - { host: api.openai.com, port: 443, protocol: rest, enforcement: enforce, access: read-write }
+      - { host: openrouter.ai, port: 443, protocol: rest, enforcement: enforce, access: read-write }
+    binaries:
+      - path: /sandbox/.local/share/astrid/versions/*/tools/bun/*/bun
