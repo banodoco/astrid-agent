@@ -555,7 +555,8 @@ cmd_door() {
     if osh forward list 2>/dev/null | grep -w "$sandbox" | grep -q "$door_port"; then
         say "Door already forwarded."
     else
-        osh forward start "127.0.0.1:$door_port" "$sandbox" --background
+        # The background forward must not hold our stdout open (callers may pipe it).
+        osh forward start "127.0.0.1:$door_port" "$sandbox" --background </dev/null >/dev/null 2>&1
     fi
     code=$(curl --silent --output /dev/null --write-out '%{http_code}' -H 'Origin: https://astrid.haus' "http://127.0.0.1:$door_port/" || true)
     case "$code" in
