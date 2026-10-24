@@ -1,0 +1,298 @@
+{
+  "_about": "Network modes and services for astrid-openshell.sh. Users pick them with `astrid-openshell.sh services`; nobody edits this file to use Astrid. To add a service, add an entry here (hosts, binaries, optional credential or setup) and test it with `astrid-openshell.sh check`.",
+  "binaries": {
+    "astrid_tools": [
+      "/sandbox/.local/share/astrid/bootstrap/uv",
+      "/sandbox/.local/share/astrid/bootstrap/python/*/bin/python3*",
+      "/sandbox/.local/share/astrid/versions/*/tools/bun/*/bun",
+      "/sandbox/.local/share/astrid/versions/*/tools/node/*/bin/node"
+    ],
+    "shell_tools": [
+      "/usr/bin/curl",
+      "/usr/bin/wget",
+      "/usr/bin/git",
+      "/usr/lib/git-core/git-remote-http",
+      "/usr/bin/python3.12"
+    ],
+    "bun": [
+      "/sandbox/.local/share/astrid/versions/*/tools/bun/*/bun"
+    ],
+    "codex": [
+      "/sandbox/.local/lib/node_modules/@openai/**",
+      "/tmp/bunx-*/node_modules/@openai/**"
+    ]
+  },
+  "rules": {
+    "pypi": {
+      "binaries": [
+        "astrid_tools",
+        "shell_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "pypi.org",
+          "access": "read-only"
+        },
+        {
+          "host": "files.pythonhosted.org",
+          "access": "read-only"
+        }
+      ]
+    },
+    "npm": {
+      "binaries": [
+        "astrid_tools",
+        "shell_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "registry.npmjs.org",
+          "access": "read-only",
+          "allow_encoded_slash": true
+        }
+      ]
+    },
+    "npm_for_bun": {
+      "binaries": [
+        "bun"
+      ],
+      "endpoints": [
+        {
+          "host": "registry.npmjs.org",
+          "access": "read-only",
+          "allow_encoded_slash": true
+        }
+      ]
+    },
+    "github": {
+      "binaries": [
+        "astrid_tools",
+        "shell_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "github.com",
+          "git_read": true
+        },
+        {
+          "host": "codeload.github.com",
+          "access": "read-only"
+        },
+        {
+          "host": "api.github.com",
+          "access": "read-only"
+        },
+        {
+          "host": "raw.githubusercontent.com",
+          "access": "read-only"
+        },
+        {
+          "host": "objects.githubusercontent.com",
+          "access": "read-only"
+        },
+        {
+          "host": "release-assets.githubusercontent.com",
+          "access": "read-only"
+        }
+      ]
+    },
+    "huggingface_files": {
+      "binaries": [
+        "astrid_tools",
+        "shell_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "us.aws.cdn.hf.co",
+          "access": "read-only"
+        },
+        {
+          "host": "cdn-lfs.hf.co",
+          "access": "read-only"
+        },
+        {
+          "host": "cdn-lfs-us-1.hf.co",
+          "access": "read-only"
+        },
+        {
+          "host": "cdn-lfs-eu-1.hf.co",
+          "access": "read-only"
+        },
+        {
+          "host": "cas-bridge.xethub.hf.co",
+          "access": "read-only"
+        },
+        {
+          "host": "cas-server.xethub.hf.co",
+          "access": "read-only"
+        },
+        {
+          "host": "cdn-lfs.huggingface.co",
+          "access": "read-only"
+        }
+      ]
+    },
+    "huggingface_api": {
+      "binaries": [
+        "astrid_tools",
+        "shell_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "huggingface.co",
+          "access": "read-only"
+        }
+      ]
+    },
+    "openai_chatgpt": {
+      "binaries": [
+        "codex"
+      ],
+      "endpoints": [
+        {
+          "host": "chatgpt.com",
+          "tcp": true
+        },
+        {
+          "host": "ab.chatgpt.com",
+          "tcp": true
+        },
+        {
+          "host": "auth.openai.com",
+          "tcp": true
+        },
+        {
+          "host": "api.openai.com",
+          "tcp": true
+        }
+      ]
+    },
+    "chatgpt_for_astrid": {
+      "binaries": [
+        "bun"
+      ],
+      "endpoints": [
+        {
+          "host": "chatgpt.com",
+          "tcp": true
+        },
+        {
+          "host": "auth.openai.com",
+          "tcp": true
+        }
+      ]
+    }
+  },
+  "modes": {
+    "locked": {
+      "title": "Locked",
+      "summary": "no network except the services you turn on",
+      "rules": []
+    },
+    "dev": {
+      "title": "Dev sources, read-only",
+      "summary": "also download from PyPI, npm, GitHub and Hugging Face (no uploads or pushes)",
+      "rules": [
+        "pypi",
+        "npm",
+        "github",
+        "huggingface_files",
+        "huggingface_api"
+      ]
+    }
+  },
+  "services": {
+    "chatgpt": {
+      "title": "ChatGPT plan via Astrid's agent",
+      "summary": "Astrid's own agent (omp, a Pi derivative) on your ChatGPT plan; sign in once with a device code",
+      "rules": [
+        "chatgpt_for_astrid"
+      ],
+      "login": "$HOME/.local/share/astrid/run-astrid",
+      "login_note": "Astrid's agent opens. Type /login, choose \"ChatGPT Plus/Pro (Codex, headless/device)\", open the link it shows in your browser and enter the code. Pick a model with /model, then quit with /exit.",
+      "logout": "$HOME/.local/share/astrid/run-astrid",
+      "logout_note": "Astrid's agent opens. Type /logout, choose the ChatGPT account, then quit with /exit.",
+      "note": "Turn on device code login first: ChatGPT > Settings > Security. The sign-in tokens are stored inside the sandbox (~/.omp/agent/agent.db)."
+    },
+    "codex": {
+      "title": "ChatGPT plan via Codex CLI",
+      "summary": "chat with the Codex agent on your ChatGPT plan; sign in once with a device code",
+      "rules": [
+        "openai_chatgpt",
+        "npm_for_bun"
+      ],
+      "setup": "codex",
+      "login": "codex login --device-auth",
+      "note": "Turn on device code login first: ChatGPT > Settings > Security. The sign-in tokens are stored inside the sandbox (~/.codex/auth.json).",
+      "login_note": "Open the link Codex shows in your browser and enter the code.",
+      "logout": "codex logout"
+    },
+    "huggingface": {
+      "title": "Hugging Face",
+      "summary": "download models and datasets; a token (optional) unlocks gated models",
+      "rules": [
+        "huggingface_files",
+        "huggingface_api"
+      ],
+      "credential": {
+        "env": "HF_TOKEN",
+        "optional": true,
+        "prompt": "Hugging Face token (read-only is enough; Enter to skip for public models only)",
+        "host": "huggingface.co",
+        "access": "read-only",
+        "auth_style": "bearer",
+        "header_name": "authorization",
+        "binaries": [
+          "astrid_tools",
+          "shell_tools"
+        ],
+        "replaces_rule": "huggingface_api"
+      }
+    },
+    "openai": {
+      "title": "OpenAI API key",
+      "summary": "Astrid's own agent on api.openai.com (pay per token)",
+      "credential": {
+        "env": "OPENAI_API_KEY",
+        "prompt": "OpenAI API key (use a throwaway key with a spend cap)",
+        "host": "api.openai.com",
+        "access": "read-write",
+        "auth_style": "bearer",
+        "header_name": "authorization",
+        "binaries": [
+          "bun"
+        ]
+      }
+    },
+    "anthropic": {
+      "title": "Anthropic API key",
+      "summary": "Astrid's own agent on api.anthropic.com (pay per token)",
+      "credential": {
+        "env": "ANTHROPIC_API_KEY",
+        "prompt": "Anthropic API key (use a throwaway key with a spend cap)",
+        "host": "api.anthropic.com",
+        "access": "read-write",
+        "auth_style": "header",
+        "header_name": "x-api-key",
+        "binaries": [
+          "bun"
+        ]
+      }
+    },
+    "openrouter": {
+      "title": "OpenRouter API key",
+      "summary": "Astrid's own agent through openrouter.ai (pay per token)",
+      "credential": {
+        "env": "OPENROUTER_API_KEY",
+        "prompt": "OpenRouter API key (use a throwaway key with a spend cap)",
+        "host": "openrouter.ai",
+        "access": "read-write",
+        "auth_style": "bearer",
+        "header_name": "authorization",
+        "binaries": [
+          "bun"
+        ]
+      }
+    }
+  }
+}

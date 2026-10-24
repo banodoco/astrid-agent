@@ -13,6 +13,7 @@ scripts/openshell/astrid-openshell.sh fetch   # saves install.sh + manifest, pri
 scripts/openshell/astrid-openshell.sh up ~/.local/share/astrid-openshell/installers/<timestamp>
 ```
 
+`up` ends with a menu where you choose what the sandbox may reach (below).
 Then open https://astrid.haus, preferably in a separate browser profile. It
 reaches the sandbox's door through the same `127.0.0.1:17340` as a normal
 install.
@@ -24,16 +25,17 @@ install.
 | Kernel | yours | its own (libkrun microVM) |
 | Your files, `~/.ssh`, signed-in `claude`/`codex` | readable and writable | not present |
 | Network while installing | anything | read-only GET to the installer's hosts: astral.sh, GitHub, nodejs.org, johnvansickle.com, PyPI, npm |
-| Network afterwards | anything | nothing; an attached LLM API only, and only from Astrid's Bun |
-| Your machine's localhost and LAN (ComfyUI, databases) | reachable | blocked |
-| LLM key | in Astrid's store | stays in OpenShell; the sandbox sees a placeholder |
+| Network afterwards | anything | the mode and services you pick (below) |
+| Your machine's localhost and LAN (ComfyUI, databases) | reachable | blocked in every mode |
+| API keys | in Astrid's store | stay in OpenShell; the sandbox sees a placeholder |
 
 Every network rule sets `enforcement: enforce`. OpenShell's default,
 `audit`, logs a violation and then allows it. `astrid-openshell.sh check`
-proves the live policy stays inside `policies/boundary.yaml` with OpenShell's
-prover, then probes example.com, GitHub, astrid.haus, the host's loopback
-(8188, 8000, the gateway), cloud metadata and private LAN addresses from inside
-the sandbox. Every probe must fail.
+uses OpenShell's prover to prove the live policy allows nothing beyond your
+saved mode and services. Then it probes from inside the sandbox: example.com,
+astrid.haus, the host's loopback (8188, 8000, the gateway), cloud metadata,
+private LAN addresses and an upload to GitHub must all fail, and in `dev` mode
+PyPI must work.
 
 What it does not do: the hosted page and the agent can still do anything
 *inside* the sandbox, including spending whatever LLM key is attached. Use a
@@ -48,17 +50,42 @@ throwaway key with a spend cap.
   about 3 GB per installed sandbox (measured with Astrid e2cac213). Set
   `ASTRID_OPENSHELL_HOME` to put everything on a bigger drive.
 
-## LLM key
+## Choosing what the sandbox may reach
 
 ```sh
-export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY / OPENROUTER_API_KEY
-scripts/openshell/astrid-openshell.sh provider anthropic
+scripts/openshell/astrid-openshell.sh services        # menu: switch services on/off, change mode, apply
+scripts/openshell/astrid-openshell.sh services list
+scripts/openshell/astrid-openshell.sh services add huggingface codex
+scripts/openshell/astrid-openshell.sh services mode dev
 ```
 
-This imports `providers/astrid-anthropic.yaml` and stores the key in the
-OpenShell gateway, not in the sandbox. Inside the sandbox the variable holds
-`openshell:resolve:env:ANTHROPIC_API_KEY`. OpenShell's proxy substitutes the
-real key only on requests from Astrid's Bun binary to `api.anthropic.com`.
+**Modes.**
+
+- `locked` (the default): no network except the services you turn on.
+- `dev`: also read-only downloads from PyPI, npm, GitHub (including
+  `git clone`) and Hugging Face. Uploads and pushes are refused by OpenShell's
+  request inspection.
+
+**Services.**
+
+| Service | What it allows | Key |
+|---|---|---|
+| ChatGPT plan via Astrid's agent | Astrid's own agent (omp, a Pi derivative) may reach chatgpt.com and auth.openai.com, from Bun only. Sign in with `astrid-openshell.sh login chatgpt`: in the agent, `/login` → "ChatGPT Plus/Pro (Codex, headless/device)" (enable device code login under ChatGPT > Settings > Security first). | sign-in tokens live inside the sandbox (`~/.omp/agent/agent.db`); `logout chatgpt` to remove |
+| ChatGPT plan via Codex CLI | installs the official Codex CLI (pinned, matching Astrid's Codex adapter). Only Codex may reach chatgpt.com and auth.openai.com; Bun may fetch the adapter from npm. Sign in with `astrid-openshell.sh login codex` (device code; enable it under ChatGPT > Settings > Security first). | sign-in tokens live inside the sandbox; `logout codex` to remove |
+| Hugging Face | read-only model and dataset downloads (huggingface.co and its file CDNs) | optional `HF_TOKEN`, kept outside the sandbox |
+| OpenAI / Anthropic / OpenRouter API key | Astrid's own agent (Bun) to that API only | kept outside the sandbox |
+
+The menu asks for a key when you switch a service on (hidden input), or reads
+it from the service's environment variable. OpenShell stores it in the
+gateway. Inside the sandbox the variable holds a placeholder
+(`openshell:resolve:env:...`), and OpenShell's proxy swaps in the real key
+only for that service's host and binaries.
+
+The selection is saved per sandbox, so you never edit a policy by hand. To
+add a service to the catalog, add an entry to `scripts/openshell/catalog.json`.
+`compose_policy.py` builds every policy and provider profile from it.
+`lockdown` is the emergency switch: mode `locked`, every service off, every
+provider detached.
 
 ## Day to day
 
@@ -102,6 +129,13 @@ named local repository into the sandbox as a bare repository and rewrites
 - **GPU.** OpenShell's microVM GPU support is whole-card VFIO passthrough with a
   root gateway. That is no use on a one-GPU machine, so this setup has no GPU.
   Keep ComfyUI and other GPU work on the host or on a cloud backend.
+- **Codex's own sandbox can't run inside OpenShell** (bubblewrap needs user
+  namespaces, which OpenShell denies), so the setup sets
+  `sandbox_mode = "danger-full-access"` in the sandbox's `~/.codex/config.toml`.
+  The OpenShell VM is the boundary.
+- **Missing hosts.** If a download fails, `astrid-openshell.sh logs | grep
+  DENIED` names the blocked host and binary. Hugging Face's file CDN, for
+  example, recently moved Xet-backed files to `us.aws.cdn.hf.co`.
 - **Ports.** On the microVM driver, `host.openshell.internal` is the host's
   `127.0.0.1`. Never add a rule for it unless you mean to give the sandbox
   that service.
