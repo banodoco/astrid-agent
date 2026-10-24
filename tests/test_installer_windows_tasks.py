@@ -1,4 +1,4 @@
-"""Exercise Windows PowerShell exit semantics without touching real login tasks."""
+"""Exercise Windows PowerShell cleanup and task registration without touching installed tasks."""
 
 import shutil
 import subprocess
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.windows_installer
 @pytest.mark.parametrize("operation", ["disable", "stop", "unregister"])
 @pytest.mark.parametrize("scenario", ["absent", "present", "lookup_failure", "action_failure"])
 def test_task_cleanup_preserves_powershell_success_and_failure(tmp_path, operation, scenario):
-    powershell = shutil.which("powershell.exe")
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
     assert powershell, "Windows PowerShell is required to exercise its native exit semantics"
     invocations = []
 
