@@ -344,3 +344,15 @@ def test_windows_scope_dies_when_owner_process_exits(tmp_path):
     while platform.process_identity(child) is not None and time.monotonic() < deadline:
         time.sleep(0.02)
     assert platform.process_identity(child) is None
+
+
+def test_capability_children_configure_from_the_hosts_support_root(tmp_path, monkeypatch):
+    from runtime_protocol import process_control
+
+    process_control.write_setting(tmp_path, "sandbox")
+    monkeypatch.setattr(platform, "_process_control", None)
+    monkeypatch.setattr(platform_helpers, "_support_root", None)
+    monkeypatch.setenv(platform_helpers.PROCESS_CONTROL_SUPPORT_ENV, str(tmp_path))
+    platform_helpers._configure_from_environment()
+    assert platform.process_control() == "sandbox"
+    assert platform_helpers.process_control_support() == str(tmp_path)

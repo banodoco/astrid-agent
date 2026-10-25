@@ -34,6 +34,10 @@ def owned_by_current_user(path_or_fd, metadata, *, mode: int | None = None,
 
 
 _probes: dict[str, dict] = {}
+# Capability children are separate processes: the host names its support root
+# here so they read the same process-control.json (the file decides the mode).
+PROCESS_CONTROL_SUPPORT_ENV = "ASTRID_PROCESS_CONTROL_SUPPORT"
+_support_root: str | None = None
 
 
 def process_control_report() -> dict:
@@ -58,10 +62,26 @@ def configure_process_control(support_root, *, announce: bool = True) -> str:
     """
     from runtime_protocol import process_control
 
+    global _support_root
     mode = process_control.configure_from(support_root)
+    _support_root = str(support_root)
     if announce:
         process_control.announce(process_control_report())
     return mode
+
+
+def process_control_support() -> str | None:
+    """The support root this process configured from, for its children."""
+    return _support_root
+
+
+def _configure_from_environment() -> None:
+    support = os.environ.get(PROCESS_CONTROL_SUPPORT_ENV)
+    if support and platform.process_control() == "strict":
+        try:
+            configure_process_control(support, announce=False)
+        except Exception:  # noqa: BLE001 - an unreadable setting leaves strict, which fails closed
+            pass
 
 
 def signal_observed_group(pgid: int, signum: int, *, leader_birth: str | None) -> None:
@@ -119,3 +139,6 @@ def _signal_linux_observed_group(pgid: int, signum: int, leader_birth: str) -> N
     except ProcessLookupError as exc:
         if exc.strerror != "no process in the group could be signalled":
             raise  # nothing left to signal was a quiet no-op here before
+
+
+_configure_from_environment()

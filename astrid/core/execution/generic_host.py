@@ -44,7 +44,12 @@ from runtime_protocol.dirfd import filesystem as os
 from runtime_protocol.errors import ConflictError
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.platform_helpers import configure_process_control, owned_by_current_user
+from astrid.core.execution.platform_helpers import (
+    PROCESS_CONTROL_SUPPORT_ENV,
+    configure_process_control,
+    owned_by_current_user,
+    process_control_support,
+)
 
 # Startup observations use only the existing private stderr sink. Regular-file
 # latency is not bounded; this diagnostic never changes descriptor flags.
@@ -7737,6 +7742,9 @@ class GenericPackHost:
                 explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = str(authority_path)
             else:
                 explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = authority_json
+        support = process_control_support()
+        if support is not None:
+            explicit[PROCESS_CONTROL_SUPPORT_ENV] = support
         env = build_child_subprocess_env(
             explicit_env=explicit,
             passthrough=record.definition.isolation.env_passthrough,
