@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { formatAstridSignInLine, LOCAL_AGENT_TABLE } from './localAgents.ts';
+import { formatAstridSignInLine, localAgentSteps, localAgentCatalogSchema, agentCommand, EXTERNAL_AGENT_IDS, LOCAL_AGENT_TABLE } from './localAgents.ts';
 import { LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
 import { processHasExited } from './testProcess.ts';
 import { defaultShellFromPasswd, discoverLocalAgents, executableNames, localAgentLaunch, windowsLoginPath } from './astrid-local-agents.ts';
@@ -43,7 +43,7 @@ test('reports Not installed when external CLIs are absent and has no adapter fie
   try {
     const shell = loginShell(directory);
     const agents = await discoverLocalAgents({ env: testEnv(shell, directory), cwd: directory });
-    assert.deepEqual(agents, [
+    assert.deepEqual(agents.map(({ id, name, state, line }) => ({ id, name, state, line })), [
       { id: 'astrid', name: LOCAL_AGENT_TABLE.astrid.name, state: 'ready', line: null },
       { id: 'claude-code', name: LOCAL_AGENT_TABLE['claude-code'].name, state: 'not-installed', line: LOCAL_AGENT_TABLE['claude-code'].notInstalledLine },
       { id: 'codex', name: LOCAL_AGENT_TABLE.codex.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.codex.notInstalledLine },
@@ -53,6 +53,7 @@ test('reports Not installed when external CLIs are absent and has no adapter fie
     assert.equal(LOCAL_AGENT_TABLE.codex.notInstalledLine, 'Install with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`');
     assert.equal(LOCAL_AGENT_TABLE.codex.windowsNotInstalledLine, 'In PowerShell, run `irm https://chatgpt.com/codex/install.ps1 | iex`');
     assert.doesNotMatch(JSON.stringify(LOCAL_AGENT_TABLE), /npm install -g/);
+    assert.deepEqual(agents.map(agent => agent.signIn), ['unknown', 'unknown', 'unknown', 'unknown']);
     assert.equal('adapterInstalled' in agents[1]!, false);
     assert.equal('installCommand' in agents[1]!, false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -85,7 +86,7 @@ test('Windows discovery finds a user CLI .cmd shim from the registry PATH', asyn
     executable(directory, 'codex.EXE', '');
     const claudePackage = join(directory, 'node_modules', '@anthropic-ai', 'claude-code');
     mkdirSync(claudePackage, { recursive: true });
-    writeFileSync(join(claudePackage, 'cli.js'), `process.stdout.write(JSON.stringify({ loggedIn: true }));\n`);
+    writeFileSync(join(claudePackage, 'cli.js'), `require('node:fs').writeSync(1, JSON.stringify({ loggedIn: true }));\n`);
     const env = { ...process.env, PATH: '', PATHEXT: '.EXE;.CMD' };
     const registryReader = async (key: string) => key.startsWith('HKCU')
       ? `Path    REG_SZ    ${directory}\r\n`
@@ -106,12 +107,14 @@ test('Windows Claude npm shims resolve to the JavaScript entrypoint used by auth
     executable(prefix, 'claude.CMD', '@echo off\r\n');
     executable(prefix, 'bun.EXE', '');
     const entryPoint = join(packageDirectory, 'cli.js');
-    writeFileSync(entryPoint, `process.stdout.write(JSON.stringify({ loggedIn: false }));\n`);
+    writeFileSync(entryPoint, `require('node:fs').writeSync(1, JSON.stringify({ loggedIn: false }));\n`);
     const env = { ...process.env, PATH: '', PATHEXT: '.CMD;.EXE' };
     const registryReader = async (key: string) => key.startsWith('HKCU') ? `Path    REG_SZ    ${prefix}\r\n` : '';
 
     const agents = await discoverLocalAgents({ env, platform: 'win32', registryReader });
     assert.equal(agents.find(agent => agent.id === 'claude-code')?.state, 'sign-in');
+    assert.equal(agents.find(agent => agent.id === 'claude-code')?.signIn, 'signed-out');
+    assert.deepEqual(agents.find(agent => agent.id === 'claude-code')?.steps, [{ kind: 'sign-in', command: 'claude auth login', label: 'Sign in' }]);
     const launch = await localAgentLaunch('claude-code', env, { platform: 'win32', registryReader });
     assert.deepEqual(launch, {
       command: join(prefix, 'bun.EXE'),
@@ -131,7 +134,7 @@ test('Windows Codex npm shims run the package entrypoint for auth status and ret
     const shim = executable(prefix, 'codex.CMD', '@echo off\r\n');
     executable(prefix, 'bun.EXE', '');
     const entryPoint = join(packageDirectory, 'codex.js');
-    writeFileSync(entryPoint, `process.stdout.write(process.env.ASTRID_TEST_CODEX_SIGNED_IN === '1' ? 'Logged in using ChatGPT' : 'Not logged in. Run codex login to authenticate.');\n`);
+    writeFileSync(entryPoint, `require('node:fs').writeSync(1, process.env.ASTRID_TEST_CODEX_SIGNED_IN === '1' ? 'Logged in using ChatGPT' : 'Not logged in. Run codex login to authenticate.');\n`);
     const env = { ...process.env, PATH: '', PATHEXT: '.CMD;.EXE', ASTRID_TEST_CODEX_SIGNED_IN: '0' };
     const registryReader = async (key: string) => key.startsWith('HKCU') ? `Path    REG_SZ    ${prefix}\r\n` : '';
 
@@ -257,11 +260,13 @@ test('reads Claude JSON login status and falls back to text only when JSON is in
     fake(directory, 'claude', { json: '{"loggedIn":false}', text: 'Not logged in. Run claude auth login to authenticate.' });
     let agents = await discoverLocalAgents({ env: testEnv(shell, directory) });
     assert.equal(agents[1]?.state, 'sign-in');
+    assert.equal(agents[1]?.signIn, 'signed-out');
     assert.equal(agents[1]?.line, LOCAL_AGENT_TABLE['claude-code'].signInLine);
 
     fake(directory, 'claude', { json: '{invalid json', text: 'Authenticated with Claude Pro account' });
     agents = await discoverLocalAgents({ env: testEnv(shell, directory) });
     assert.equal(agents[1]?.state, 'ready');
+    assert.equal(agents[1]?.signIn, 'signed-in');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -297,11 +302,11 @@ for (const probe of ['claude-json', 'claude-text', 'codex'] as const) {
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (${JSON.stringify(probe)} === 'claude-text' && args.length === 2) {
-  process.stdout.write('{invalid json');
+  require('node:fs').writeSync(1, '{invalid json');
 } else {
   fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ pid: process.pid, args }) + '\\n');
   process.on('SIGTERM', () => {});
-  process.stdout.write(${JSON.stringify(probe === 'claude-json' ? '{"loggedIn":false}' : 'Not logged in. Run codex login to authenticate.')});
+  require('node:fs').writeSync(1, ${JSON.stringify(probe === 'claude-json' ? '{"loggedIn":false}' : 'Not logged in. Run codex login to authenticate.')});
   setInterval(() => {}, 1000);
 }
 `);
@@ -310,6 +315,7 @@ if (${JSON.stringify(probe)} === 'claude-text' && args.length === 2) {
       assert.ok(Date.now() - started < 9_000, 'one hanging probe must finish before the browser deadline');
       assert.equal(agents[0]?.state, 'ready');
       assert.equal(agents.find(agent => agent.id === (name === 'codex' ? 'codex' : 'claude-code'))?.state, 'ready', 'timed-out status remains unknown');
+      assert.equal(agents.find(agent => agent.id === (name === 'codex' ? 'codex' : 'claude-code'))?.signIn, 'unknown');
       assert.equal(agents.find(agent => agent.id === (name === 'codex' ? 'claude-code' : 'codex'))?.state, 'sign-in');
       const children = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { pid: number; args: string[] });
       assert.equal(children.length, 1, 'a timed-out Claude JSON probe must not start a text probe');
@@ -362,4 +368,61 @@ test('mixed external-agent authentication states stay associated with their agen
       ['astrid', 'ready'], ['claude-code', 'ready'], ['codex', 'ready'], ['hermes', 'sign-in'],
     ]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+for (const platform of ['linux', 'win32'] as const) {
+  test(`${platform} setup steps use the table's install and sign-in commands in order`, async () => {
+    const missing = await discoverLocalAgents({ env: { PATH: '', SHELL: '/missing' }, platform, registryReader: async () => '', passwdReader: () => '' });
+    for (const id of EXTERNAL_AGENT_IDS) {
+      const definition = LOCAL_AGENT_TABLE[id];
+      const install = platform === 'win32' ? definition.windowsNotInstalledLine! : definition.notInstalledLine!;
+      const signIn = { kind: 'sign-in', command: agentCommand(definition.signInLine), label: 'Sign in' };
+      assert.deepEqual(missing.find(agent => agent.id === id)?.steps, [
+        { kind: 'install', command: agentCommand(install), label: `Install ${definition.name}` }, signIn,
+      ]);
+      assert.deepEqual(localAgentSteps(id, 'sign-in', platform), [signIn]);
+      assert.deepEqual(localAgentSteps(id, 'ready', platform), []);
+    }
+    const env = { PATH: '', SHELL: '/missing' };
+    const options = { platform, registryReader: async () => '', passwdReader: () => '' };
+    await assert.rejects(localAgentLaunch('codex', env, options), {
+      code: 'agent_not_installed', next_action: localAgentSteps('codex', 'not-installed', platform)[0]!.command,
+    });
+  });
+
+  test(`${platform} missing Bun names the Astrid installer as the recovery command`, async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.agent-runtime-test-'));
+    try {
+      executable(directory, platform === 'win32' ? 'codex.EXE' : 'codex', '#!/bin/sh\nexit 0\n');
+      await assert.rejects(localAgentLaunch('codex', { PATH: directory, PATHEXT: '.EXE', SHELL: '/missing' }, { platform, registryReader: async () => '', passwdReader: () => '' }), {
+        code: 'agent_runtime_missing', next_action: platform === 'win32'
+          ? 'irm https://astrid.haus/install.ps1 | iex' : 'curl -fsSL https://astrid.haus/install | sh',
+      });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+}
+
+test('discovery retains each probe sign-in result without changing legacy readiness', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-auth-values-'));
+  try {
+    const shell = loginShell(directory);
+    const env = testEnv(shell, directory);
+    for (const signIn of ['signed-in', 'signed-out', 'unknown'] as const) {
+      fake(directory, 'claude', { json: signIn === 'unknown' ? '{}' : JSON.stringify({ loggedIn: signIn === 'signed-in' }), text: '' });
+      fake(directory, 'codex', signIn === 'signed-in' ? 'Logged in using ChatGPT' : signIn === 'signed-out' ? 'Not logged in' : 'Unrecognized');
+      executable(directory, 'hermes', signIn === 'unknown' ? '#!/bin/sh\nkill -TERM $$\n' : `#!/bin/sh\nexit ${signIn === 'signed-in' ? 0 : 7}\n`);
+      for (const agent of (await discoverLocalAgents({ env })).slice(1)) {
+        assert.equal(agent.signIn, signIn, agent.id);
+        assert.equal(agent.state, signIn === 'signed-out' ? 'sign-in' : 'ready');
+        assert.deepEqual(agent.steps, signIn === 'signed-out' ? localAgentSteps(agent.id, 'sign-in') : []);
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('agent schema accepts old rows and the optional contract fields, dropping future fields', () => {
+  const row = { id: 'astrid', name: 'Astrid', state: 'ready', line: null, models: [], defaultModel: null };
+  assert.deepEqual(localAgentCatalogSchema.parse({ defaultAgent: 'astrid', agents: [row] }).agents[0], row);
+  const extended = { ...row, signIn: 'unknown', steps: [], creditLine: 'Built on oh-my-pi', creditUrl: 'https://github.com/can1357/oh-my-pi', terminal: { command: 'astrid', skillSynced: false, detail: 'A plain sentence.' } };
+  assert.deepEqual(localAgentCatalogSchema.parse({ defaultAgent: 'astrid', agents: [{ ...extended, future: true }] }).agents[0], extended);
 });

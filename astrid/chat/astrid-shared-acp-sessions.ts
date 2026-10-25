@@ -326,7 +326,13 @@ export class SharedAcpSessions {
       session.activeRequestId = null;
       this.broadcastControl(session);
     });
-    if (key) session.dedupe.set(key, { payload: serialized, result: operation });
+    if (key) {
+      const entry = { payload: serialized, result: operation };
+      session.dedupe.set(key, entry);
+      void operation.catch(() => {
+        if (session.dedupe.get(key) === entry) session.dedupe.delete(key);
+      });
+    }
     return operation;
   }
 

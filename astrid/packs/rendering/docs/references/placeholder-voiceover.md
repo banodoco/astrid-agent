@@ -13,7 +13,7 @@ volume. This is a project precedent, not a mandatory voice for all projects.
 Edge TTS calls an online speech service; it is not an offline synthesizer. Astrid
 exposes it as `generation.generate_speech`, which writes WAV and managed provenance with
 the exact text, text hash, voice settings, audio hash, and measured duration.
-The reusable timeline workflow in the [video editing skill](../../../video_editing/skill/SKILL.md)
+The reusable timeline workflow in the [video editing skill](../../../video_editing/docs/SKILL.md)
 calls this executor and verifies its managed artifacts. If the service is
 unavailable, report that instead of silently changing the voice.
 

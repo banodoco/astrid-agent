@@ -128,8 +128,9 @@ def test_windows_uninstall_deletes_default_workspace_while_lock_is_held(tmp_path
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
     backend = Backend(root, platform.log_dir() / "install.log", local / "Astrid Installer/bootstrap/uv.exe")
-    backend.service = SimpleNamespace(recorded=lambda: {}, selection=local / "astrid-install.json", system="win32", say=print,
+    backend.service = SimpleNamespace(root=root, recorded=lambda: {}, selection=local / "astrid-install.json", system="win32", say=print,
                                      home=Path.home())
+    monkeypatch.setattr("astrid.installer.launcher._update_user_path", Mock())
     monkeypatch.setattr(backend, "existing", Mock(return_value=None))
     monkeypatch.setattr(backend, "stop", Mock())
     monkeypatch.setattr(backend, "unregister", Mock())

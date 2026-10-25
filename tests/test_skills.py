@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import io
 import shutil
 import unittest
 from pathlib import Path
@@ -40,7 +39,6 @@ class _Tmp:
             mock.patch.dict("os.environ", {
                 "HOME": str(self.home),
                 "ASTRID_STATE_HOME": str(self.tmp / "_state"),
-                "ASTRID_NO_NUDGE": "",
             }, clear=False),
             mock.patch.object(Path, "home", return_value=self.home),
         ]
@@ -436,131 +434,9 @@ class StateRoundtripTest(unittest.TestCase):
             path = Path(tmp) / "skills.json"
             data = state.load(path)
             state.record_install(data, "claude", "_core", target="/x", mechanism="symlink")
-            state.record_nudge(data, "codex")
             state.save(data, path)
             reloaded = state.load(path)
             self.assertEqual(reloaded["installs"]["claude"]["_core"]["target"], "/x")
-            self.assertIsNotNone(reloaded["nudge"]["codex"]["last_shown_at"])
-
-
-class AutoHealTest(unittest.TestCase):
-    """nudge_if_needed auto-links the gateway skill (gateway-only) on drift."""
-
-    def _core_link(self, fx: _Tmp, harness: str) -> Path:
-        return fx.home / f".{harness}" / "skills" / "astrid"
-
-    def test_auto_heal_links_gateway_for_all_detected(self) -> None:
-        fx = _Tmp()
-        try:
-            stream = io.StringIO()
-            fired = skills.nudge_if_needed(argv=["doctor"], stream=stream)
-            self.assertTrue(fired)
-            out = stream.getvalue()
-            self.assertIn("[astrid] auto-linked skills layer for", out)
-            self.assertIn("suppress: ASTRID_NO_NUDGE=1", out)
-            # The gateway link now exists in every detected harness; no per-pack
-            # astrid-* links were created (gateway-only).
-            for harness in ("claude", "codex", "hermes"):
-                link = self._core_link(fx, harness)
-                self.assertTrue(link.is_symlink(), f"missing gateway link for {harness}")
-                self.assertEqual(
-                    link.resolve(),
-                    (state.state_path().parent / "skills" / harness).resolve(),
-                )
-                others = [
-                    p.name
-                    for p in link.parent.iterdir()
-                    if p.name.startswith("astrid-")
-                ]
-                self.assertEqual(others, [], f"unexpected deep links for {harness}: {others}")
-        finally:
-            fx.close()
-
-    def test_auto_heal_idempotent_and_silent_second_run(self) -> None:
-        fx = _Tmp()
-        try:
-            stream = io.StringIO()
-            self.assertTrue(skills.nudge_if_needed(argv=["doctor"], stream=stream))
-            # Second run: no drift remains, so it stays silent and makes no change.
-            stream2 = io.StringIO()
-            self.assertFalse(skills.nudge_if_needed(argv=["doctor"], stream=stream2))
-            self.assertEqual(stream2.getvalue(), "")
-            for harness in ("claude", "codex", "hermes"):
-                self.assertTrue(self._core_link(fx, harness).is_symlink())
-        finally:
-            fx.close()
-
-    def test_auto_heal_re_links_deleted_gateway_link(self) -> None:
-        fx = _Tmp()
-        try:
-            self.assertTrue(skills.nudge_if_needed(argv=["doctor"], stream=io.StringIO()))
-            # Simulate the user deleting the claude gateway link by hand.
-            link = self._core_link(fx, "claude")
-            link.unlink()
-            stream = io.StringIO()
-            self.assertTrue(skills.nudge_if_needed(argv=["doctor"], stream=stream))
-            self.assertIn("Claude", stream.getvalue())
-            self.assertTrue(link.is_symlink())
-        finally:
-            fx.close()
-
-    def test_auto_heal_does_not_fire_inside_skills_subcommand(self) -> None:
-        fx = _Tmp()
-        try:
-            stream = io.StringIO()
-            fired = skills.nudge_if_needed(argv=["skills", "list"], stream=stream)
-            self.assertFalse(fired)
-            self.assertEqual(stream.getvalue(), "")
-            self.assertFalse(self._core_link(fx, "claude").exists())
-        finally:
-            fx.close()
-
-    def test_auto_heal_suppressed_by_env_no_links_no_output(self) -> None:
-        fx = _Tmp()
-        try:
-            with mock.patch.dict("os.environ", {"ASTRID_NO_NUDGE": "1"}):
-                stream = io.StringIO()
-                fired = skills.nudge_if_needed(argv=["doctor"], stream=stream)
-                self.assertFalse(fired)
-                self.assertEqual(stream.getvalue(), "")
-                for harness in ("claude", "codex", "hermes"):
-                    self.assertFalse(self._core_link(fx, harness).exists())
-        finally:
-            fx.close()
-
-    def test_auto_heal_quiet_flag_suppresses(self) -> None:
-        fx = _Tmp()
-        try:
-            stream = io.StringIO()
-            self.assertFalse(skills.nudge_if_needed(argv=["doctor", "--quiet"], stream=stream))
-            self.assertEqual(stream.getvalue(), "")
-            self.assertFalse(self._core_link(fx, "claude").exists())
-        finally:
-            fx.close()
-
-    def test_auto_heal_swallows_errors_and_does_not_raise(self) -> None:
-        fx = _Tmp()
-        try:
-            stream = io.StringIO()
-            with mock.patch.object(skills, "sync", side_effect=RuntimeError("boom")):
-                # Must not propagate; returns False (no heal performed).
-                fired = skills.nudge_if_needed(argv=["doctor"], stream=stream)
-            self.assertFalse(fired)
-            self.assertEqual(stream.getvalue(), "")
-        finally:
-            fx.close()
-
-    def test_auto_heal_never_writes_repo_skill_md(self) -> None:
-        """The auto path must not regenerate the committed gateway SKILL.md."""
-        core = next(d for d in _descriptors() if d.pack_id == "_core")
-        skill_md = core.skill_md
-        before = skill_md.read_bytes()
-        fx = _Tmp()
-        try:
-            self.assertTrue(skills.nudge_if_needed(argv=["doctor"], stream=io.StringIO()))
-        finally:
-            fx.close()
-        self.assertEqual(skill_md.read_bytes(), before, "auto-heal must not edit _core SKILL.md")
 
 
 class ExternalDiscoveryTest(unittest.TestCase):

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAstridAcpHttpServer } from './astrid-acp-bridge.ts';
 import { bridgeTestClient } from './bridge-test-client.ts';
-import { LOCAL_AGENT_TABLE, localAgentCatalogSchema, type LocalAgentChoice, type LocalAgentId } from './localAgents.ts';
+import { LOCAL_AGENT_TABLE, agentCommand, localAgentCatalogSchema, type LocalAgentChoice, type LocalAgentId } from './localAgents.ts';
 import type { ProjectChatRegistry } from './astrid-project-chat.ts';
 
 const ids: LocalAgentId[] = ['astrid', 'claude-code', 'codex'];
@@ -126,6 +126,11 @@ test('agents lazily share one bootstrap per ready agent, hide native sessions, a
       expect(response.status).toBe(200);
       const catalog = localAgentCatalogSchema.parse(await response.json());
       expect(catalog.defaultAgent).toBe('astrid');
+      expect(catalog.agents.find(agent => agent.id === 'astrid')?.signIn).toBe('signed-in');
+      for (const agent of catalog.agents.filter(agent => agent.id !== 'astrid')) {
+        expect(agent.creditLine).toBeUndefined();
+        expect(agent.creditUrl).toBeUndefined();
+      }
       for (const agent of catalog.agents) {
         expect(agent.models.map(model => model.modelId)).toEqual(modelIds(agent.id));
         expect(agent.defaultModel).toBe(modelIds(agent.id)[0]!);
@@ -214,11 +219,14 @@ test('Astrid sign-in preserves keyless model access; unknown auth remains ready'
   const unknown = fixture({ astridCatalogUnavailable: true });
   try {
     const unsignedCatalog = localAgentCatalogSchema.parse(await (await unsigned.call('/agents')).json());
-    expect(unsignedCatalog.agents.find(agent => agent.id === 'astrid')).toMatchObject({ state: 'sign-in', line: LOCAL_AGENT_TABLE.astrid.signInLine });
+    expect(unsignedCatalog.agents.find(agent => agent.id === 'astrid')).toMatchObject({ state: 'sign-in', signIn: 'signed-out', line: LOCAL_AGENT_TABLE.astrid.signInLine,
+      steps: [{ kind: 'sign-in', command: agentCommand(LOCAL_AGENT_TABLE.astrid.signInLine), label: 'Start Astrid in a terminal' }, { kind: 'sign-in', command: '/login', label: 'Then sign in' }],
+      creditLine: 'Built on oh-my-pi', creditUrl: 'https://github.com/can1357/oh-my-pi', terminal: { command: agentCommand(LOCAL_AGENT_TABLE.astrid.signInLine), skillSynced: true },
+    });
     const keylessCatalog = localAgentCatalogSchema.parse(await (await keyless.call('/agents')).json());
-    expect(keylessCatalog.agents.find(agent => agent.id === 'astrid')?.state).toBe('ready');
+    expect(keylessCatalog.agents.find(agent => agent.id === 'astrid')).toMatchObject({ state: 'ready', signIn: 'signed-in', steps: [] });
     const unknownCatalog = localAgentCatalogSchema.parse(await (await unknown.call('/agents')).json());
-    expect(unknownCatalog.agents.find(agent => agent.id === 'astrid')?.state).toBe('ready');
+    expect(unknownCatalog.agents.find(agent => agent.id === 'astrid')).toMatchObject({ state: 'ready', signIn: 'unknown', steps: [] });
   } finally { await unsigned.bridge.close(); await keyless.bridge.close(); await unknown.bridge.close(); }
 });
 

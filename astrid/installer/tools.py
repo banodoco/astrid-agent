@@ -20,7 +20,7 @@ from ..core.generation.vibecomfy_dependency import VIBECOMFY_FORK_URL
 ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libaom-av1", "libopus"}
 FILTERS = {"ebur128", "silencedetect", "astats", "signalstats", "blackdetect",
            "loudnorm", "psnr", "ssim", "scale", "fps", "aresample"}
-DEFAULT_OMP_SOURCE = "@oh-my-pi/pi-coding-agent@17.4.2"
+DEFAULT_OMP_SOURCE = "@oh-my-pi/pi-coding-agent@18.12.6"
 
 
 def omp_source(pin: dict) -> str | dict:
@@ -317,7 +317,7 @@ def source_tree_sha256(root: Path) -> str:
 def load_omp_recipe() -> dict:
     folder = Path(__file__).with_name("omp")
     recipe = json.loads((folder / "recipe.json").read_text(encoding="utf-8"))
-    if recipe["schema_version"] != 1 or recipe["version"] != "17.4.0":
+    if recipe["schema_version"] != 1 or recipe["version"] != "18.12.6":
         raise ValueError("Unsupported bundled OMP source recipe.")
     for asset in recipe["native"].values():
         if "sha256" not in asset:
@@ -388,7 +388,7 @@ def _install_omp_source(selected: dict, recipe: dict, root: Path, target: str, r
     # even in workspace mode, where the producer normally omits that guard.
     probe = ("import {pathToFileURL} from 'node:url';"
              "const b=await import(pathToFileURL(process.argv[1]).href);"
-             "if(typeof b.__piNativesV17_4_0!=='function')throw Error('OMP native ABI mismatch');")
+             "if(b.__piNativesBuildVersion?.()!=='18.12.6')throw Error('OMP native ABI mismatch');")
     run([bun, "-e", probe, destination / "index.js"], extra_env=build_env, cwd=source_root,
         clean_bun_env=True)
     run([bun, "link", "--frozen-lockfile", "--ignore-scripts", "--no-save"],

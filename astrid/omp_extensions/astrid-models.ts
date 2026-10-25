@@ -1,5 +1,6 @@
 /** Astrid metadata adapter; OMP owns registries and model-role persistence. */
 import { writeFileSync } from "node:fs";
+import { cfgDisabledProviders } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	getModelMatchPreferences,
@@ -18,6 +19,7 @@ type Snapshot = {
 	_catalogModel: string | null;
 	_hiddenProviderIds: string[];
 	_needsSignInProviderIds: string[];
+	_oauthProviderIds: string[];
 };
 
 async function makeSnapshot(ctx: any, settings: any): Promise<Snapshot> {
@@ -27,7 +29,7 @@ async function makeSnapshot(ctx: any, settings: any): Promise<Snapshot> {
 		.filter((model: any) => registry.hasConfiguredAuth(model));
 	const oauthProviders = getOAuthProviders();
 	const oauthById = new Map(oauthProviders.map((provider: any) => [provider.id, provider]));
-	const disabled = new Set<string>(settings.get("disabledProviders") ?? []);
+	const disabled = new Set<string>(cfgDisabledProviders.get(settings) ?? []);
 	const hiddenProviderIds = new Set(disabled);
 	for (const oauth of oauthProviders as any[]) {
 		if (oauth.storeCredentialsAs && disabled.has(oauth.storeCredentialsAs)) hiddenProviderIds.add(oauth.id);
@@ -49,9 +51,9 @@ async function makeSnapshot(ctx: any, settings: any): Promise<Snapshot> {
 				.filter((model: any) => model.provider === id)
 				.map((model: any) => ({ id: model.id, name: model.name, selector: `${model.provider}/${model.id}`, usable: true as const }))
 			.sort((a: ListedModel, b: ListedModel) => a.id.localeCompare(b.id));
-			const hasAuth = registry.authStorage.hasAuth(id) || oauthProviders.some((provider: any) =>
+			const hasAuth = registry.authStorage.keys.source(id) !== undefined || oauthProviders.some((provider: any) =>
 				(provider.id === id || provider.storeCredentialsAs === id) &&
-				registry.authStorage.hasAuth(provider.storeCredentialsAs ?? provider.id),
+				registry.authStorage.keys.source(provider.storeCredentialsAs ?? provider.id) !== undefined,
 			);
 			return { id, name: oauth?.name ?? id, signedIn: hasAuth, models };
 		});
@@ -74,6 +76,7 @@ async function makeSnapshot(ctx: any, settings: any): Promise<Snapshot> {
 		providers,
 		_catalogModel: allModels[0] ? `${allModels[0].provider}/${allModels[0].id}` : null,
 		_hiddenProviderIds: [...hiddenProviderIds].sort((a, b) => a.localeCompare(b)),
+		_oauthProviderIds: oauthProviders.map((provider: any) => provider.id),
 		_needsSignInProviderIds: [...providerIds].filter(id =>
 			allModels.some((model: any) => model.provider === id) &&
 			!allModels.some((model: any) => model.provider === id && registry.hasConfiguredAuth(model)),

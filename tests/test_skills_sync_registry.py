@@ -174,6 +174,33 @@ class RegistryBlockTest(unittest.TestCase):
 
 
 class SyncGatewayTest(unittest.TestCase):
+    def test_astrid_gateway_routes_skills_to_skills_cli(self) -> None:
+        from astrid.core.gateway import dispatch
+
+        calls = []
+        with mock.patch("astrid.skills.cli.main", side_effect=lambda argv: calls.append(argv) or 0):
+            self.assertEqual(dispatch._dispatch(["skills", "sync"]), 0)
+        self.assertEqual(calls, [["sync"]])
+
+    def test_harness_config_environment_variables_select_skill_homes(self) -> None:
+        fx = _Tmp()
+        try:
+            claude_home = fx.tmp / "custom-claude"
+            codex_home = fx.tmp / "custom-codex"
+            claude_home.mkdir()
+            codex_home.mkdir()
+            with mock.patch.dict("os.environ", {
+                "CLAUDE_CONFIG_DIR": str(claude_home), "CODEX_HOME": str(codex_home),
+            }):
+                self.assertEqual(ClaudeAdapter().home, claude_home)
+                self.assertEqual(CodexAdapter().home, codex_home)
+                skills.sync(state_path=fx.state_path)
+            self.assertTrue((claude_home / "skills" / "astrid").is_symlink())
+            self.assertTrue((codex_home / "skills" / "astrid").is_symlink())
+            self.assertIn("<!-- astrid:begin -->", (codex_home / "AGENTS.md").read_text())
+        finally:
+            fx.close()
+
     def test_normal_sync_uses_writable_composed_view(self) -> None:
         fx = _Tmp()
         try:
@@ -185,15 +212,15 @@ class SyncGatewayTest(unittest.TestCase):
             self.assertEqual(gateway.resolve(), view.resolve())
             self.assertTrue((view / "SKILL.md").is_file())
             pack_link = view / "packs" / "foley"
-            self.assertTrue(pack_link.is_symlink())
+            self.assertTrue(pack_link.is_dir())
+            self.assertFalse(pack_link.is_symlink())
             self.assertTrue((pack_link / "SKILL.md").is_file())
             video_skill = view / "packs" / "video_editing" / "SKILL.md"
-            video_source = next(
-                descriptor.skill_md for descriptor in _descriptors()
-                if descriptor.pack_id == "video_editing"
-            )
             self.assertTrue(video_skill.resolve().is_file())
-            self.assertEqual(video_skill.read_bytes(), video_source.read_bytes())
+            self.assertIn(
+                str(discovery.PACKS_DIR / "video_editing/actions/event_talks/run.py"),
+                video_skill.read_text(encoding="utf-8"),
+            )
             self.assertIn(registry.BEGIN_MARKER, (view / "creative-work" / "references" / "packs.md").read_text(encoding="utf-8"))
             for route in (
                 video_skill,
@@ -243,6 +270,23 @@ class SyncGatewayTest(unittest.TestCase):
         finally:
             fx.close()
 
+    def test_sync_cli_selects_only_requested_harness(self) -> None:
+        fx = _Tmp()
+        try:
+            args = skills_cli.build_parser().parse_args(["sync", "--harness", "codex", "--json"])
+            sync = skills.sync
+            with mock.patch.object(
+                skills_cli, "sync_fn",
+                side_effect=lambda **kwargs: sync(state_path=fx.state_path, **kwargs),
+            ) as called, contextlib.redirect_stdout(io.StringIO()):
+                skills_cli._cmd_sync(args)
+            self.assertEqual(called.call_args.kwargs["harness_names"], ["codex"])
+            self.assertTrue((fx.home / ".codex/skills/astrid").is_symlink())
+            self.assertFalse((fx.home / ".claude/skills/astrid").exists())
+            self.assertFalse((fx.home / ".hermes/skills/astrid").exists())
+        finally:
+            fx.close()
+
     def test_sync_is_idempotent(self) -> None:
         fx = _Tmp()
         try:
@@ -251,6 +295,9 @@ class SyncGatewayTest(unittest.TestCase):
                 skills.sync(skill_md_path=md, state_path=fx.state_path)
                 report2 = skills.sync(skill_md_path=md, state_path=fx.state_path)
                 self.assertFalse(report2["registry"]["changed"])
+                for harness in ("claude", "codex", "hermes"):
+                    self.assertTrue((fx.home / f".{harness}" / "skills" / "astrid").is_symlink())
+                self.assertIn("<!-- astrid:begin -->", (fx.home / ".codex" / "AGENTS.md").read_text())
                 for action in report2["actions"]:
                     for step in action["steps"]:
                         self.assertFalse(step["extras"].get("changed"))

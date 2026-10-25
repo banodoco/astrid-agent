@@ -26,7 +26,7 @@ Choose the route by the requested result. Read only that route's guidance:
 | Generate images, video, or audio (including Foley); understand, assemble, compare, or publish work | [Creative work](creative-work/SKILL.md), then the relevant pack |
 | Reuse a character or other saved subject | [References](../../media/docs/references.md) |
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
-| Find Banodoco advice, model settings, or workflow precedents | [Hivemind](packs/hivemind/SKILL.md) |
+| Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 
 Using an existing workflow and building a reusable extension are different
 requests: pack builder handles the latter, including deciding what to reuse.
@@ -56,36 +56,14 @@ developers.
 
 ## Commands for outside agents
 
-Use the installed stable launcher by its absolute path from the outside
-agent's terminal. Linux honors `XDG_DATA_HOME`; macOS uses
-`~/.local/share/astrid`. In Windows PowerShell, use the call operator `&` so
-the quoted path executes correctly.
-
-Linux:
-
-```sh
-"${XDG_DATA_HOME:-$HOME/.local/share}/astrid/run-astrid" projects list
-```
-
-macOS:
-
-```sh
-"$HOME/.local/share/astrid/run-astrid" projects list
-```
-
-Windows PowerShell:
-
-```powershell
-& "$env:LOCALAPPDATA\Astrid\run-astrid.cmd" projects list
-```
-
-The CLI examples below use `python3 -m astrid` as shorthand for commands
-inside Astrid's managed environment. For outside-agent use, replace the
-`python3 -m astrid` prefix with the stable launcher path for that OS, keeping
-the subcommand and its arguments. In Windows PowerShell, invoke the quoted
-launcher path with `&`.
+Synced skills use the absolute path of Astrid's own Python, so their
+commands work from a terminal without changing PATH.
 
 ## Start here
+
+Before acting on a project from a terminal, run `python3 -m astrid projects current`.
+If no project is selected, ask the user which project to use. Always name the
+project in your reply.
 
 ## Preferences and project documents
 
@@ -101,21 +79,22 @@ saved workflow names) to the user scope and say so; see the VibeComfy skill.
 Never put passwords, API keys, or other secrets in preferences; they are
 included in model prompts.
 
-Use `astrid preferences` for both scopes, `astrid preferences user` for the user
-document, and `astrid preferences project` for the selected project's
+Use `python3 -m astrid preferences` for both scopes,
+`python3 -m astrid preferences user` for the user document, and
+`python3 -m astrid preferences project` for the selected project's
 preferences. To change lasting guidance, read the correct scope, check it out
 to a new file, edit it, then check it in. For example:
 
 ```bash
-astrid preferences checkout --scope user --file /tmp/prefs.md
-astrid preferences checkin /tmp/prefs.md
+python3 -m astrid preferences checkout --scope user --file /tmp/prefs.md
+python3 -m astrid preferences checkin /tmp/prefs.md
 ```
 
 Read the [preferences and project documents guide](../../../../docs/guides/preferences-and-documents.md)
 for conflict recovery and the full CLI surface. Do not edit Runtime storage directly.
 
-Use `astrid documents list` to list reusable project documents and
-`astrid documents create --kind KIND --file FILE` to create one. The `show`,
+Use `python3 -m astrid documents list` to list reusable project documents and
+`python3 -m astrid documents create --kind KIND --file FILE` to create one. The `show`,
 `checkout`, and `checkin` verbs read a document and check a working copy in
 and out. Generic documents do not enter prompt context automatically.
 
@@ -123,8 +102,7 @@ and out. Generic documents do not enter prompt context automatically.
 Discover the requested project with `projects list`, then persist it with
 `projects select <project>` (workspace scope by default). Commands such as `runs open` use that selection without `--project`. Some
 family parsers still require an explicit `--project`; check their help.
-Use `projects current` when the user has not named a project. Use explicit
-`--project` when the command requires it or when inspecting another project
+Use explicit `--project` when the command requires it or when inspecting another project
 without changing the current selection.
 
 The persisted selection is the default for project-bound SDK invocations too:
@@ -237,11 +215,11 @@ runtime/SDK error, and `2` a usage or parse error.
 ## Shared knowledge: Hivemind
 
 For community practice, model behavior, settings, known failures, and workflow
-precedents, read the [Hivemind pack skill](packs/hivemind/SKILL.md) when the
-managed external pack is installed. Use its search capability, then retrieve
-the full source behind useful hits before presenting community advice. The
+precedents, read the managed external Hivemind pack's skill when it is
+installed. Use its search capability, then retrieve the full source behind
+useful hits before presenting community advice. The
 Astrid-side v2 compatibility and contributor-write contract is documented in
-[`docs/reference/hivemind-pack-contract.md`](../../docs/reference/hivemind-pack-contract.md).
+[`docs/reference/hivemind-pack-contract.md`](../../../../docs/reference/hivemind-pack-contract.md).
 
 The skill and executors belong to that pack. If the default pack or its skill is
 missing, follow the pack's documented installation recovery; do not redirect to

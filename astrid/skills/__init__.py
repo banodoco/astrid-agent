@@ -7,8 +7,6 @@ selects one Claude-style frontmatter document per pack.
 
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -88,8 +86,6 @@ def default_pack_ids(descriptors: Iterable[SkillDescriptor] | None = None) -> tu
     """Return stable ids for skills installed by default."""
     return tuple(d.pack_id for d in default_descriptors(descriptors))
 
-NUDGE_INTERVAL_DAYS = 7
-NUDGE_ENV = "ASTRID_NO_NUDGE"
 
 
 def install(
@@ -172,6 +168,7 @@ def uninstall(
 
 def sync(
     *,
+    harness_names: Iterable[str] | None = None,
     mechanism: str = "symlink",
     force: bool = False,
     deep: bool = False,
@@ -192,7 +189,7 @@ def sync(
     """
     all_descriptors = list_skills()
     selected_pack_ids = tuple(selected_pack_ids)
-    targets = _resolve_harnesses(None)
+    targets = _resolve_harnesses(harness_names)
     if proposed_state is not None and not dry_run:
         raise ValueError("proposed_state is only valid for a dry-run sync")
     current_state = proposed_state if proposed_state is not None else state.load(state_path)
@@ -607,91 +604,6 @@ def list_state(*, state_path: Path | None = None) -> dict:
     return {"packs": items, "detected": list(detected.keys())}
 
 
-def nudge_if_needed(*, argv: list[str], state_path: Path | None = None, stream=sys.stderr) -> bool:
-    """Auto-heal the gateway skill layer for every detected harness.
-
-    On every CLI invocation the gateway calls this. When a detected harness
-    (claude/codex/hermes) is missing the gateway ``astrid`` skill link, this
-    performs the idempotent **gateway-only** install for the affected harnesses
-    (the same link/state machinery as ``skills sync`` without ``--deep``) and
-    prints one terse line to ``stream``. It never sprays per-pack ``astrid-*``
-    links and never writes the repo (no registry regeneration) — only harness
-    skill dirs (``~/.claude/skills`` etc.) are touched.
-
-    Returns True if an auto-heal was performed (a line printed). Cheap path:
-    ``ASTRID_NO_NUDGE``/``--quiet``/``skills``/help, or no detected harness,
-    aborts before any FS work beyond the detect probes. ``state_path`` is the
-    test seam (with ``$HOME`` pinning the harness dirs).
-    """
-    if os.environ.get(NUDGE_ENV):
-        return False
-    if argv and "--quiet" in argv:
-        return False
-    if not argv or argv[0] == "skills":
-        return False
-
-    detected = {name: adapter for name, adapter in all_adapters().items() if adapter.detect()}
-    if not detected:
-        return False
-
-    descriptors = list_skills()
-    if not descriptors:
-        return False
-    default_set = default_descriptors(descriptors)
-    core_descriptor = next((d for d in default_set if d.pack_id == "_core"), None)
-    if core_descriptor is None:
-        return False
-
-    # Drift = a detected harness missing the gateway link on disk. We check the
-    # filesystem (verify) rather than only the state file so a deleted link
-    # re-heals even when state still claims it installed.
-    drifted: list[str] = []
-    for harness_name, adapter in detected.items():
-        current_state = state.load(state_path)
-        expected = _sync_descriptors_for_harness(
-            descriptors, current_state, harness_name, deep=False
-        )
-        core = next(d for d in expected if d.pack_id == "_core")
-        pack_descriptors = [d for d in expected if d.pack_id != "_core"]
-        from .view import compose_view
-
-        view_root = (state_path or state.state_path()).parent / "skills" / harness_name
-        gateway, _steps, _view_packs = compose_view(
-            view_root, core, pack_descriptors, dry_run=True
-        )
-        try:
-            # Sync installs the composed gateway into the harness. Verify that
-            # same view descriptor here; checking the source descriptor would
-            # report drift forever after a successful composed sync.
-            ok = adapter.verify(gateway)[0]
-        except Exception:  # noqa: BLE001 - a flaky probe must not block the command
-            ok = False
-        if not ok:
-            drifted.append(harness_name)
-
-    if not drifted:
-        return False
-
-    # Idempotent gateway-only install for exactly the drifted harnesses. This
-    # reuses install() (link machinery + state recording) and never regenerates
-    # the registry block, so the repo is never written on the auto path.
-    try:
-        # Heal through the same composed-view path as an explicit sync. The
-        # older direct install route bypassed the view and could verify a
-        # source descriptor while the harness actually points at the gateway.
-        sync(deep=False, state_path=state_path)
-    except Exception:  # noqa: BLE001 - never let auto-heal break the real command
-        return False
-
-    pretty = " / ".join(name.capitalize() for name in drifted)
-    message = (
-        f"[astrid] auto-linked skills layer for {pretty} "
-        f"(suppress: {NUDGE_ENV}=1)"
-    )
-    print(message, file=stream)
-    return True
-
-
 def _resolve_descriptors(pack_ids: Iterable[str] | None) -> list[SkillDescriptor]:
     available = list_skills()
     if pack_ids is None:
@@ -836,8 +748,6 @@ def _link_pack_id(link_name: str) -> str:
 
 __all__ = [
     "DEFAULT_FIRST_PARTY_SKILL_IDS",
-    "NUDGE_ENV",
-    "NUDGE_INTERVAL_DAYS",
     "check",
     "default_descriptors",
     "default_pack_ids",
@@ -845,7 +755,6 @@ __all__ = [
     "install",
     "list_skills",
     "list_state",
-    "nudge_if_needed",
     "sync",
     "uninstall",
 ]

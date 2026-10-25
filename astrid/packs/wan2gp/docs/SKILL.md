@@ -72,8 +72,8 @@ The candidate Python/CUDA pins are in `environment.windows-nvidia.json` and
 already admitted upstream checkout with the shared pack provisioner:
 
 ```powershell
-python -m astrid.core.generation.gpu_environment wan2gp --checkout C:\Astrid\Wan2GP --plan
-python -m astrid.core.generation.gpu_environment wan2gp --checkout C:\Astrid\Wan2GP
+python3 -m astrid.core.generation.gpu_environment wan2gp --checkout C:\Astrid\Wan2GP --plan
+python3 -m astrid.core.generation.gpu_environment wan2gp --checkout C:\Astrid\Wan2GP
 ```
 
 This needs user-local uv 0.11.32 and a network connection on the tester's

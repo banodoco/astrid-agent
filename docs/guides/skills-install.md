@@ -16,8 +16,9 @@ python3 -m astrid.skills.cli install --all
 Once an external pack is installed and selected, Astrid can compose its skill
 files. Discovery and `skills sync` do not install or download pack code. If a
 user removes an installed skill with `skills uninstall`, Astrid records that
-choice and leaves it removed. A missing link for a skill that remains installed
-is treated as drift and is restored by the normal auto-heal path or `skills sync`.
+choice and leaves it removed. Skills sync runs after install and upgrade. The
+app's first-connect sync is being added in parallel. These syncs are best-effort;
+run `skills sync` to restore a missing link for a skill that remains installed.
 
 The external pack manifest must be strict v2. Default selection belongs to the
 setup declaration, not to an installer-specific manifest field such as
@@ -137,10 +138,6 @@ skills:
 ## State file
 
 Install state lives at `$XDG_STATE_HOME/astrid/skills.json` (default `~/.local/state/astrid/skills.json`). Tests and CI can override with `ASTRID_STATE_HOME=...`.
-
-## Nudge
-
-If at least one harness is detected on disk and is missing one of the expected packs, Astrid prints a single-line nudge to stderr at most once every 7 days when you run any non-`skills` subcommand. The nudge is suppressed by `ASTRID_NO_NUDGE=1` or `--quiet`. The nudge is best-effort — it cannot break a real command.
 
 ## Related Guides
 

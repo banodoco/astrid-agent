@@ -72,6 +72,11 @@ def _dispatch_media(args: list[str]) -> int:
     return _dispatch_product(["media", *args])
 
 
+def _dispatch_skills(args: list[str]) -> int:
+    from astrid.skills.cli import main
+    return int(main(args))
+
+
 def _dispatch_status(args: list[str]) -> int:
     """Observe workspace/Runtime/readiness without launcher or provisioning."""
     import argparse
@@ -550,6 +555,7 @@ _TOP_LEVEL_HANDLERS = {
     "dev": lambda args: _dispatch_dev(args),
     "doctor": _dispatch_doctor,
     "backup": _dispatch_backup,
+    "skills": _dispatch_skills,
 }
 _CORE_ROUTE_NAMES = frozenset(_TOP_LEVEL_HANDLERS)
 

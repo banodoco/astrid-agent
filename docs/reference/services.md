@@ -25,8 +25,10 @@ Python's scripts directory to PATH to resolve that installed launcher.
 
 Release owners select the OMP producer with the single `tools.omp.source`
 manifest field. It names either an exact npm package and version or a fork
-repository and full commit. The published 17.4.2 default has the session-folder
-listing and recovery gap described in the [tester guide](../testing/TESTING.md#known-gaps).
+repository and full commit. Real installs select the reviewed `peteromallet/oh-my-pi`
+fork. The fallback for installs without a manifest source is
+`@oh-my-pi/pi-coding-agent@18.12.6`.
+This npm release has the session-folder listing and recovery gap described in the [tester guide](../testing/TESTING.md#known-gaps).
 See the [OMP producer landing guide](../install/OMP-LANDING.md) for the owner
 handoff, patch and pinning procedure. Astrid does not apply a downstream patch
 to the selected producer during an ordinary install.

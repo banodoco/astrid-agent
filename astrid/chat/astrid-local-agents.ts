@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { access, constants } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { delimiter, dirname, join, win32 as win32Path } from 'node:path';
-import { EXTERNAL_AGENT_IDS, LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, type LocalAgentChoice, type LocalAgentId } from './localAgents.ts';
+import { EXTERNAL_AGENT_IDS, LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, astridInstallCommand, localAgentSteps, type LocalAgentChoice, type LocalAgentId } from './localAgents.ts';
+import { AcpProcessHostError } from './acpProcessHost.ts';
 import { LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
 
 type RegistryReader = (key: string, env: NodeJS.ProcessEnv) => Promise<string>;
@@ -229,13 +230,13 @@ async function claudeStatus(command: string | null, env: NodeJS.ProcessEnv, cwd?
   return 'unknown';
 }
 
-function choice(id: LocalAgentId, state: LocalAgentChoice['state'], platform: NodeJS.Platform): LocalAgentChoice {
+function choice(id: LocalAgentId, state: LocalAgentChoice['state'], platform: NodeJS.Platform, signIn: AuthStatus = 'unknown'): LocalAgentChoice {
   const definition = LOCAL_AGENT_TABLE[id];
   const line = state === 'ready' ? null
     : state === 'sign-in' ? definition.signInLine
       : platform === 'win32' ? definition.windowsNotInstalledLine ?? definition.notInstalledLine ?? definition.signInLine
         : definition.notInstalledLine ?? definition.signInLine;
-  return { id, name: definition.name, state, line };
+  return { id, name: definition.name, state, line, signIn, steps: localAgentSteps(id, state, platform) };
 }
 
 export async function discoverLocalAgents(options: Options = {}): Promise<LocalAgentChoice[]> {
@@ -260,7 +261,7 @@ export async function discoverLocalAgents(options: Options = {}): Promise<LocalA
   const auth: Record<typeof EXTERNAL_AGENT_IDS[number], AuthStatus> = { 'claude-code': claudeAuth, codex: codexAuth, hermes: hermesAuth };
   return LOCAL_AGENT_IDS.map(id => id === 'astrid'
     ? choice(id, 'ready', platform)
-    : choice(id, !installed[id] ? 'not-installed' : auth[id] === 'signed-out' ? 'sign-in' : 'ready', platform));
+    : choice(id, !installed[id] ? 'not-installed' : auth[id] === 'signed-out' ? 'sign-in' : 'ready', platform, auth[id]));
 }
 
 
@@ -285,9 +286,9 @@ export async function localAgentLaunch(agentId: ExternalAgent, env: NodeJS.Proce
     executable(agentId === 'claude-code' ? 'claude' : agentId === 'codex' ? 'codex' : 'hermes', path, platform, env.PATHEXT),
   ]);
   const cli = cliShim && agentId === 'claude-code' ? await windowsClaudeEntryPoint(cliShim, platform) : cliShim;
-  if (!cli) throw new Error(`${LOCAL_AGENT_TABLE[agentId].name} is not installed on PATH.`);
+  if (!cli) throw new AcpProcessHostError(`${LOCAL_AGENT_TABLE[agentId].name} is not installed on PATH.`, { code: 'agent_not_installed', next_action: localAgentSteps(agentId, 'not-installed', platform)[0]!.command });
   if (agentId === 'hermes') return { command: cli, args: ['acp'], env: { PATH: path }, cliPath: cli };
-  if (!bun) throw new Error('Bun is not installed on PATH.');
+  if (!bun) throw new AcpProcessHostError('Bun is not installed on PATH.', { code: 'agent_runtime_missing', next_action: astridInstallCommand(platform) });
   return {
     command: bun,
     args: ['x', '--bun', LOCAL_AGENT_ADAPTERS[agentId]],

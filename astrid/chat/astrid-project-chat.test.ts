@@ -73,6 +73,27 @@ test('New assigns Main when the project has no previous Main chat', async () => 
   }
 });
 
+test('failed chat creation clears its claim so an immediate retry can succeed', async () => {
+  const project: Project = { project_id: 'p', realm_id: 'r', slug: 'p', name: 'p', metadata: {}, version: 1, created_at: '', updated_at: '' };
+  const { registry, cleanup } = registryFor(project);
+  try {
+    let creates = 0;
+    await assert.rejects(registry.create('p', 'new', 'retry-create', async () => {
+      creates++;
+      throw new Error('create failed');
+    }), /create failed/);
+    const result = await registry.create('p', 'new', 'retry-create', async () => {
+      creates++;
+      return { sessionId: 'retry-session' };
+    });
+    assert.equal(creates, 2);
+    assert.equal(result.operation_session_id, 'retry-session');
+    assert.equal(result.selected_session_id, 'retry-session');
+  } finally {
+    cleanup();
+  }
+});
+
 test('New preserves a concurrent Make Main choice while selecting its created chat', async () => {
   const project: Project = {
     project_id: 'p', realm_id: 'r', slug: 'p', name: 'p', version: 1,

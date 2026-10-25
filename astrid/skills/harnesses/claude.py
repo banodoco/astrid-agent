@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -20,7 +21,7 @@ class ClaudeAdapter(HarnessAdapter):
     name = "claude"
 
     def _default_home(self) -> Path:
-        return Path.home() / ".claude"
+        return Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")).expanduser()
 
     @property
     def skills_dir(self) -> Path:

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { AcpProcessHost, AcpProcessHostError, type AcpProcessHostOptions } from './acpProcessHost.ts';
 import { ASTRID_ACP_COMMAND, ASTRID_ACP_CONTEXT_SYSTEM_PROMPT, resolveAstridAcpSystemPromptFile, resolveAstridAgentContext, type AstridAcpLauncherOptions } from './astridAcpLauncher.ts';
-import { sessionAgentId, type LocalAgentId } from './localAgents.ts';
+import { localAgentSteps, sessionAgentId, type LocalAgentId } from './localAgents.ts';
 import { discoverLocalAgents, localAgentLaunch } from './astrid-local-agents.ts';
 
 type ExternalAgent = Exclude<LocalAgentId, 'astrid'>;
@@ -101,8 +101,8 @@ class LocalAgentAcpHost extends AcpProcessHost {
 export async function createLocalAgentAcpProcessHost(agent: ExternalAgent, options: AstridAcpLauncherOptions): Promise<AcpProcessHost> {
   const env = { ...process.env, ...options.env };
   const choice = (await discoverLocalAgents({ env, cwd: options.cwd })).find(item => item.id === agent)!;
-  if (choice.state === 'not-installed') throw new AcpProcessHostError(`${choice.name} is not installed on PATH.`, { code: 'acp_unavailable' });
-  if (choice.state === 'sign-in') throw new AcpProcessHostError(`${choice.name} sign-in is required. ${choice.line}`, { code: 'acp_unavailable' });
+  if (choice.state === 'not-installed') throw new AcpProcessHostError(`${choice.name} is not installed on PATH.`, { code: 'agent_not_installed', next_action: localAgentSteps(agent, 'not-installed')[0]!.command });
+  if (choice.state === 'sign-in') throw new AcpProcessHostError(`${choice.name} sign-in is required. ${choice.line}`, { code: 'agent_sign_in_required', next_action: localAgentSteps(agent, 'sign-in')[0]!.command });
   const launch = await localAgentLaunch(agent, env);
   const profilePath = (options.profileFileForCommand ?? resolveAstridAcpSystemPromptFile)(options.command ?? ASTRID_ACP_COMMAND, env);
   const profile = renderAgentProfile(readFileSync(profilePath, 'utf8'), profilePath);

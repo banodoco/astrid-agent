@@ -18,6 +18,7 @@ from pathlib import Path
 
 from astrid.core.foundation.paths import REPO_ROOT
 
+from .commands import rewrite_commands
 from .discovery import SkillDescriptor, list_skills
 
 BEGIN_MARKER = "<!-- PACKS:BEGIN (managed by `astrid skills sync`) -->"
@@ -32,10 +33,7 @@ CORE_SKILL_MD = REPO_ROOT / "astrid/packs/_core/docs/creative-work/references/pa
 def _repo_relative(path: Path, *, view_root: Path | None = None) -> Path:
     """Return *path* relative to the repo root when it lives under it, else as-is."""
     if view_root is not None:
-        # Keep the lexical view path. The pack entry is intentionally a
-        # symlink into a read-only source tree; resolving it here would turn a
-        # composed `packs/<id>/SKILL.md` route back into a checkout-relative
-        # path and defeat the writable view contract.
+        # Keep composed `packs/<id>/SKILL.md` routes relative to the view.
         try:
             return path.relative_to(view_root)
         except ValueError:
@@ -101,7 +99,7 @@ def render_registry_block(
 
     lines.append("")
     lines.append(END_MARKER)
-    return "\n".join(lines)
+    return rewrite_commands("\n".join(lines))
 
 
 def _splice_block(text: str, block: str) -> str:

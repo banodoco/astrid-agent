@@ -17,7 +17,10 @@ def test_real_omp_registers_and_executes_packaged_admission_tool(tmp_path):
     if not omp_root or not bun or os.environ.get("ASTRID_OMP_TEST_RUNTIME") != "1":
         unavailable("Provide OMP, Bun and ASTRID_OMP_TEST_RUNTIME=1 with a scoped Runtime for integration")
     root = Path(__file__).parents[1]
-    loader = Path(omp_root) / "src/extensibility/extensions/loader.ts"
+    package = Path(omp_root)
+    if (package / "packages/coding-agent").is_dir():
+        package /= "packages/coding-agent"
+    loader = package / "src/extensibility/extensions/loader.ts"
     extension = root / "astrid/omp_extensions/astrid-invoke.ts"
     probe = tmp_path / "probe.ts"
     probe.write_text(
@@ -49,3 +52,39 @@ def test_real_omp_registers_and_executes_packaged_admission_tool(tmp_path):
     assert json.loads(result.stdout.strip()) == {
         "registered": "astrid_invoke", "loadMode": "essential", "ok": False, "refs": [],
     }
+
+
+@pytest.mark.omp
+def test_real_omp_model_snapshot_respects_disabled_providers(tmp_path):
+    omp_root = os.environ.get("ASTRID_OMP_TEST_PACKAGE_ROOT")
+    bun = shutil.which("bun")
+    if not omp_root or not bun:
+        unavailable("Provide an OMP source checkout and Bun for the model snapshot probe")
+    root = Path(__file__).parents[1]
+    package = Path(omp_root)
+    if (package / "packages/coding-agent").is_dir():
+        package /= "packages/coding-agent"
+    config = tmp_path / ".omp/config.yml"
+    config.parent.mkdir()
+    config.write_text("disabledProviders:\n  - hidden-fixture\n")
+    snapshot = tmp_path / "snapshot.json"
+    probe = tmp_path / "models.ts"
+    probe.write_text(
+        f"import {{ loadExtensions }} from {json.dumps(str(package / 'src/extensibility/extensions/loader.ts'))};\n"
+        f"const loaded = await loadExtensions([{json.dumps(str(root / 'astrid/omp_extensions/astrid-models.ts'))}], {json.dumps(str(tmp_path))});\n"
+        "if (loaded.errors.length) throw Error(JSON.stringify(loaded.errors));\n"
+        "const registry = {getAll:()=>[{provider:'hidden-fixture',id:'model'},{provider:'visible-fixture',id:'model'}],getAvailable:()=>[],"
+        "hasConfiguredAuth:()=>false,getDiscoverableProviders:()=>[],authStorage:{keys:{source:(id)=>id==='visible-fixture'?{kind:'api_key'}:undefined}}};\n"
+        "const handlers = loaded.extensions[0].handlers.get('session_shutdown');\n"
+        f"await handlers[0]({{}}, {{cwd:{json.dumps(str(tmp_path))},modelRegistry:registry}});\n"
+        "process.exit(0);\n"
+    )
+    result = subprocess.run([bun, str(probe)], cwd=root,
+                            env={**os.environ, "ASTRID_OMP_MODELS_RESULT": str(snapshot)},
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stderr
+    value = json.loads(snapshot.read_text())
+    assert "hidden-fixture" in value["_hiddenProviderIds"]
+    assert "hidden-fixture" not in {row["id"] for row in value["providers"]}
+    assert value["currentModel"] is None
+    assert next(row for row in value["providers"] if row["id"] == "visible-fixture")["signedIn"] is True

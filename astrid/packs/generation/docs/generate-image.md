@@ -10,7 +10,7 @@ For Codex image generation (`execution: "codex"`), state the native pixel
 density in the prompt: "each icon about 44 pixels wide, every pixel a perfect
 square of identical size". A film with one art-pixel scale gets its on-screen
 sprite size from that drawn width. Generate the sheet, then pass its output
-handle to [`pixel.sprites`](../../../../pixel/skill/SKILL.md) to key, snap at
+handle to [`pixel.sprites`](../../pixel/docs/SKILL.md) to key, snap at
 the drawn lattice, split, and preview the sprites. Do not resample a finished
 sprite to change its size.
 

@@ -175,6 +175,29 @@ test('writer takeover is atomic around turns, retries dedupe, and detach retains
   registry.close();
 });
 
+test('rejected prompts release their request ID for same or different payload retries', async () => {
+  const failure = new Error('prompt failed');
+  let promptCalls = 0;
+  const host = fakeHost(method => {
+    if (method === 'session/new') return { sessionId: 'codex:retry' };
+    if (method === 'session/prompt' && (promptCalls++ === 0 || promptCalls === 3)) throw failure;
+    return { stopReason: 'end_turn' };
+  });
+  const registry = new SharedAcpSessions(() => {});
+  const writer = client('writer', 'codex', host.host);
+  await registry.request(writer, 'session/new');
+  const prompt = (requestId: string, text: string) => ({
+    sessionId: 'codex:retry', _astridRequestId: requestId, prompt: [{ type: 'text', text }],
+  });
+
+  await assert.rejects(registry.request(writer, 'session/prompt', prompt('same-payload', 'hello')), error => error === failure);
+  assert.deepEqual(await registry.request(writer, 'session/prompt', prompt('same-payload', 'hello')), { stopReason: 'end_turn' });
+  await assert.rejects(registry.request(writer, 'session/prompt', prompt('changed-payload', 'first')), error => error === failure);
+  assert.deepEqual(await registry.request(writer, 'session/prompt', prompt('changed-payload', 'second')), { stopReason: 'end_turn' });
+  assert.equal(host.requests.filter(item => item.method === 'session/prompt').length, 4);
+  registry.close();
+});
+
 test('session agent IDs remain isolated across Astrid, Claude Code, and Codex and hosted attach stays sticky', async () => {
   const astridHost = fakeHost(() => ({ sessionId: 'native-astrid' }));
   const claudeHost = fakeHost(() => ({ sessionId: 'claude-code:shared' }));

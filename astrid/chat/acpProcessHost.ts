@@ -58,11 +58,15 @@ export type AcpProcessHostOptions = {
 
 export class AcpProcessHostError extends Error {
   readonly code:
+    | 'agent_not_installed'
+    | 'agent_sign_in_required'
+    | 'agent_runtime_missing'
     | 'acp_unavailable'
     | 'acp_transport'
     | 'acp_timeout'
     | 'acp_process_exited'
     | 'acp_callback_unavailable';
+  readonly next_action?: string;
   readonly method?: string;
   readonly requestId?: AcpRpcId;
 
@@ -70,6 +74,7 @@ export class AcpProcessHostError extends Error {
     message: string,
     options: {
       readonly code: AcpProcessHostError['code'];
+      readonly next_action?: string;
       readonly method?: string;
       readonly requestId?: AcpRpcId;
       readonly cause?: unknown;
@@ -78,6 +83,7 @@ export class AcpProcessHostError extends Error {
     super(message);
     this.name = 'AcpProcessHostError';
     this.code = options.code;
+    this.next_action = options.next_action;
     this.method = options.method;
     this.requestId = options.requestId;
     if (options.cause !== undefined) {
@@ -449,8 +455,12 @@ export class AcpProcessHost {
     this.pending.delete(response.id);
     if (response.error) {
       const details = asRecord(response.error.data)?.details;
+      const reason = typeof details === 'string' ? details : response.error.message;
+      const recovery = (pending.method === 'session/load' || pending.method === 'session/resume')
+        && reason.startsWith('Could not restore model ')
+        ? ' This chat\'s saved model is unavailable. Start a new chat.' : '';
       pending.reject(new AcpProcessHostError(
-        `ACP request "${pending.method}" failed: ${typeof details === 'string' ? details : response.error.message}`,
+        `ACP request "${pending.method}" failed: ${reason}${recovery}`,
         { code: 'acp_transport', method: pending.method, requestId: response.id },
       ));
       return;

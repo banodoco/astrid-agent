@@ -1294,7 +1294,8 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
     from astrid.core.gateway import dispatch
 
     assert "media" in dispatch._top_level_commands()
-    # Current gateway surface: eight families (five product + three operational).
+    # Current gateway surface: eleven names (five product + operational families;
+    # skills routed by 316e3668).
     assert dispatch._top_level_commands() == frozenset(
         {
             "projects",
@@ -1307,5 +1308,6 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
             "doctor",
             "backup",
             "dev",
+            "skills",
         }
     )

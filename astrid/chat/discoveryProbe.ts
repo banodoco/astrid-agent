@@ -2,11 +2,11 @@ import { execFileSync, spawn, type ExecFileOptions } from 'node:child_process';
 import { join } from 'node:path';
 
 /** Discovery owns the whole probe tree, including CLIs launched by a wrapper. */
-export function discoveryProbe(command: string, args: string[], options: ExecFileOptions = {}): Promise<{ stdout: string; stderr: string }> {
+export function discoveryProbe(command: string, args: string[], options: ExecFileOptions & { input?: string } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd, env: options.env, detached: process.platform !== 'win32',
-      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true, stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     const output: Buffer[][] = [[], []];
     const sizes = [0, 0];
@@ -44,6 +44,10 @@ export function discoveryProbe(command: string, args: string[], options: ExecFil
       failure = Object.assign(new Error('Agent discovery probe timed out.'), { killed: true });
       stop();
     }, options.timeout ?? 5_000);
+    if (child.stdin) {
+      child.stdin.on('error', () => { failure = new Error('Agent input could not be delivered.'); stop(); });
+      child.stdin.end(options.input);
+    }
     [child.stdout, child.stderr].forEach((stream, index) => stream.on('data', (chunk: Buffer) => {
       if (stopping) return;
       sizes[index] += chunk.length;

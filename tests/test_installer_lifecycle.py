@@ -39,6 +39,7 @@ class LifecycleBackend:
         self.calls: list[tuple] = []
         self.candidate = None
         self.staged_manifest = None
+        self.sync_failure = False
 
     def existing(self, _data):
         return self.old
@@ -65,6 +66,16 @@ class LifecycleBackend:
         self.calls.append(("attach", version, data))
         return {"realm_id": "kept-realm", "realm_root": str(data / "runtime/realms/kept-realm")}
 
+    def workspace(self, *_args):
+        return {"realm_id": "kept-realm", "realm_root": str(self.data / "runtime/realms/kept-realm")}
+
+    def backup(self, *_args):
+        self.calls.append(("backup",))
+        return {"root": str(self.root / "backups" / "kept")}
+
+    def upgrade(self, version, data):
+        self.calls.append(("upgrade", version, data))
+
     def create(self, *_args):
         self.calls.append(("create",))
         return {"realm_id": "new-realm"}
@@ -77,6 +88,11 @@ class LifecycleBackend:
 
     def verify(self, version, data, realm_id):
         self.calls.append(("verify", version, data, realm_id))
+
+    def sync_skills(self, version):
+        self.calls.append(("sync_skills", version))
+        if self.sync_failure:
+            raise RuntimeError("sync failed")
 
     def finish(self, old, new, backup):
         self.calls.append(("finish", old, new, backup))
@@ -98,10 +114,6 @@ class LifecycleBackend:
         self.calls.append(("remove", root, data, delete_data))
         return []
 
-    def workspace(self, *_args):
-        raise AssertionError("a removed installation must be reattached from the selected realm")
-
-
 def test_reinstall_attaches_kept_realm_without_creating_another(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     catalog = data / "runtime" / "catalog.json"
@@ -116,11 +128,79 @@ def test_reinstall_attaches_kept_realm_without_creating_another(tmp_path):
     Installer(root, data, backend, say=lambda _line: None).run("install", {})
 
     assert [call[0] for call in backend.calls] == [
-        "reinstallable", "stage", "attach", "register", "start", "verify", "finish", "open"
+        "reinstallable", "stage", "attach", "register", "start", "verify", "sync_skills", "finish", "open"
     ]
     assert not any(call[0] == "create" for call in backend.calls)
     assert backend.calls[5][3] == "kept-realm"
     assert sentinel.read_bytes() == b"keep"
+
+
+def test_fresh_install_runs_skills_sync_after_verify(tmp_path):
+    root, data = tmp_path / "program", tmp_path / "data"
+    backend = LifecycleBackend(root, data)
+
+    Installer(root, data, backend, say=lambda _line: None).run("install", {})
+
+    names = [call[0] for call in backend.calls]
+    assert names.index("verify") < names.index("sync_skills") < names.index("finish")
+
+
+def test_upgrade_runs_skills_sync_after_verify(tmp_path):
+    root, data = tmp_path / "program", tmp_path / "data"
+    old_root = root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    old = Version(old_root, old_root / "py/bin/python", old_root / "profile.json", {})
+    old.python.parent.mkdir(parents=True)
+    old.python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    write_json(old_root / "version.json", old.document())
+    backend = LifecycleBackend(root, data)
+    backend.old = old
+
+    Installer(root, data, backend, say=lambda _line: None).run("update", {})
+
+    names = [call[0] for call in backend.calls]
+    assert names.index("upgrade") < names.index("verify") < names.index("sync_skills") < names.index("finish")
+
+
+def test_skills_sync_failure_is_logged_as_one_line_and_install_succeeds(tmp_path, capsys):
+    root, data = tmp_path / "program", tmp_path / "data"
+    catalog = data / "runtime" / "catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({"selected_realm_id": "kept-realm"}), encoding="utf-8")
+    (data / "runtime" / "realms" / "kept-realm").mkdir(parents=True)
+    backend = LifecycleBackend(root, data)
+    backend.sync_failure = True
+
+    Installer(root, data, backend).run("install", {})
+
+    assert [call[0] for call in backend.calls][-3:] == ["sync_skills", "finish", "open"]
+    assert capsys.readouterr().out.splitlines().count(
+        "Couldn't add Astrid's skill to your agents; see the log."
+    ) == 1
+
+
+def test_backend_skill_sync_logs_output_and_failure_result(tmp_path, monkeypatch):
+    from astrid.installer.backend import Backend
+
+    log = tmp_path / "install.log"
+    messages = []
+    backend = Backend(tmp_path / "program", log, Path(sys.executable), say=messages.append)
+    calls = []
+
+    def fail(argv, *, extra_env, timeout):
+        calls.append((argv, extra_env, timeout))
+        log.write_text("sync diagnostic output\n", encoding="utf-8")
+        raise subprocess.CalledProcessError(1, argv, output="sync diagnostic output")
+
+    monkeypatch.setattr(backend, "run", fail)
+    version = Version(tmp_path / "version", Path(sys.executable), tmp_path / "profile.json", {})
+    backend.sync_skills(version)
+
+    assert calls[0][0] == [Path(sys.executable), "-I", "-m", "astrid.skills", "sync"]
+    assert calls[0][2] == 60
+    assert "sync diagnostic output" in log.read_text(encoding="utf-8")
+    assert "Astrid skills sync failed (CalledProcessError)." in log.read_text(encoding="utf-8")
+    assert messages == ["Couldn't add Astrid's skill to your agents; see the log."]
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("Runtime realm creation failed"), KeyboardInterrupt()])
@@ -164,7 +244,7 @@ def test_reinstall_ignores_current_pointer_to_removed_interpreter(tmp_path):
     Installer(root, data, backend, say=lambda _line: None).run("install", {})
 
     assert [call[0] for call in backend.calls] == [
-        "reinstallable", "stage", "attach", "register", "start", "verify", "finish", "open"
+        "reinstallable", "stage", "attach", "register", "start", "verify", "sync_skills", "finish", "open"
     ]
     assert backend.calls[5][3] == "kept-realm"
 

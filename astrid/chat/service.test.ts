@@ -51,15 +51,16 @@ for (const bindFails of [false, true]) {
   });
 }
 
-test('chat defaults to an ephemeral port and registers the actual loopback listener', async () => {
+test('chat creates its working directory before serving and registers the actual loopback listener', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-chat-port-'));
+  const cwd = join(directory, 'fresh', 'chat');
   const path = join(directory, 'chat.json');
   const stdin = new PassThrough();
   let running: Promise<void> | undefined;
   try {
     running = runChatService({
       ASTRID_WORKSPACE_DISCOVERY: join(directory, 'discovery.json'),
-      ASTRID_ACP_CWD: directory,
+      ASTRID_ACP_CWD: cwd,
       ASTRID_ACP_BRIDGE_TOKEN: 'ephemeral-token',
     }, undefined, stdin);
     let registration: { endpoint: string; token: string } | undefined;
@@ -68,6 +69,7 @@ test('chat defaults to an ephemeral port and registers the actual loopback liste
       if (!registration) await new Promise(resolve => setTimeout(resolve, 10));
     }
     expect(registration).toBeDefined();
+    expect(existsSync(cwd)).toBe(true);
     const endpoint = new URL(registration!.endpoint);
     expect(endpoint.hostname).toBe('127.0.0.1');
     expect(Number(endpoint.port)).toBeGreaterThan(0);

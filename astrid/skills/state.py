@@ -40,7 +40,6 @@ def _empty_state() -> dict[str, Any]:
         # the existing skills state avoids treating a deliberate uninstall
         # as filesystem drift on the next command.
         "disabled_defaults": {harness: [] for harness in HARNESSES},
-        "nudge": {harness: {"last_shown_at": None} for harness in HARNESSES},
         # Setup composition belongs with the existing source/skill selection
         # state.  Runtime remains authoritative for the selected workspace;
         # this is the durable binding of Astrid's choices to that identity.
@@ -62,12 +61,10 @@ def load(path: Path | None = None) -> dict[str, Any]:
     data.setdefault("version", STATE_VERSION)
     installs = data.setdefault("installs", {})
     disabled_defaults = data.setdefault("disabled_defaults", {})
-    nudge = data.setdefault("nudge", {})
     data.setdefault("setup_selection", None)
     for harness in HARNESSES:
         installs.setdefault(harness, {})
         disabled_defaults.setdefault(harness, [])
-        nudge.setdefault(harness, {"last_shown_at": None})
     return data
 
 
@@ -103,10 +100,6 @@ def record_uninstall(
         disabled = state.setdefault("disabled_defaults", {}).setdefault(harness, [])
         if pack_id not in disabled:
             disabled.append(pack_id)
-
-
-def record_nudge(state: dict[str, Any], harness: str) -> None:
-    state["nudge"].setdefault(harness, {})["last_shown_at"] = now_iso()
 
 
 def record_setup_selection(
@@ -168,7 +161,6 @@ __all__ = [
     "load",
     "now_iso",
     "record_install",
-    "record_nudge",
     "record_setup_selection",
     "record_uninstall",
     "save",

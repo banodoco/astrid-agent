@@ -79,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Dry-run drift report only; make no changes and exit non-zero if drift exists.",
     )
+    add_choice_arg(sync_parser, "--harness", values=HARNESS_CHOICES, action="append")
     sync_parser.add_argument("--force", action="store_true")
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.add_argument("--json", action="store_true")
@@ -160,6 +161,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         report = check_fn(deep=args.deep)
         return _emit_check_report(report, args)
     report = sync_fn(
+        harness_names=_resolve_harness_arg(args),
         mechanism=args.mechanism,
         force=args.force,
         deep=args.deep,

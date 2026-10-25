@@ -17,4 +17,6 @@ def test_video_editing_canonical_doc_route_survives_view_composition(tmp_path: P
     installed_route = (view_root / "creative-work" / "SKILL.md").read_text(encoding="utf-8")
     assert "[video editing](../packs/video_editing/SKILL.md)" in installed_route
     assert "../../../video_editing/docs/SKILL.md" not in installed_route
-    assert (view_root / "packs" / "video_editing" / "SKILL.md").read_bytes() == video.skill_md.read_bytes()
+    installed = (view_root / "packs" / "video_editing" / "SKILL.md").read_text(encoding="utf-8")
+    assert str(discovery.PACKS_DIR / "video_editing/actions/event_talks/run.py") in installed
+    assert str(discovery.PACKS_DIR / "rendering/docs/SKILL.md") in installed

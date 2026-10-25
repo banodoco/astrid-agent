@@ -97,12 +97,12 @@ live server before queueing and record any failure in task history.
 
 ### Run, follow, stop
 
-Use the selected project (editor context, or `astrid projects current`).
+Use the selected project (editor context, or `python3 -m astrid projects current`).
 Import the workflow file, and the image ZIP if any; the `digest` in each
 response is what the run's file inputs take:
 
 ```sh
-astrid media import "$WORK/portrait_flux.json" --project PROJECT --json
+python3 -m astrid media import "$WORK/portrait_flux.json" --project PROJECT --json
 ```
 
 Then admit `vibecomfy.run`. Astrid's own agent uses the `astrid_invoke` tool
@@ -134,12 +134,12 @@ For stills, follow in the same turn with a limit, and tell the user they can
 watch it in their ComfyUI window:
 
 ```sh
-astrid tasks follow TASK_ID --project PROJECT --timeout-seconds 600
+python3 -m astrid tasks follow TASK_ID --project PROJECT --timeout-seconds 600
 ```
 
 Video can take longer: when the limit passes, the task keeps running; check it
-later with `astrid tasks show TASK_ID --project PROJECT --json`. "Stop" or
-"cancel" means `astrid tasks cancel TASK_ID --project PROJECT`, which removes
+later with `python3 -m astrid tasks show TASK_ID --project PROJECT --json`. "Stop" or
+"cancel" means `python3 -m astrid tasks cancel TASK_ID --project PROJECT`, which removes
 only Astrid's prompt from their queue.
 
 ### Image inputs
@@ -197,7 +197,7 @@ Never use `vibecomfy prepare`, `vibecomfy run --ensure-*` or
 
 The outputs settle as normal task outputs in the project: in Astrid App they
 appear in chat and Project media; elsewhere name them from
-`astrid tasks show TASK_ID --project PROJECT --json`.
+`python3 -m astrid tasks show TASK_ID --project PROJECT --json`.
 Report the seed and the time taken. Place results on the timeline only when
 asked. "Another one" means the same workflow with a new seed; "same but X"
 means edit the copy and pass the previous seed unless asked otherwise.
@@ -210,7 +210,7 @@ blocks: VibeComfy uses their ComfyUI's GPU, not Astrid's detection.
 
 Wan2GP is manual for now: the user runs it themselves, then you import the
 results from its output folder (usually `outputs/` in their Wan2GP folder)
-with `astrid media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
+with `python3 -m astrid media import /abs/Wan2GP/outputs/clip.mp4 --project PROJECT --json`.
 
 ### Remember the setup
 
@@ -228,9 +228,9 @@ Read, check out to a new file, edit, then check in. A conflict keeps your
 file; check out again to another new file and merge:
 
 ```sh
-astrid preferences user
-astrid preferences checkout --scope user --file /tmp/astrid-prefs.md
-astrid preferences checkin /tmp/astrid-prefs.md
+python3 -m astrid preferences user
+python3 -m astrid preferences checkout --scope user --file /tmp/astrid-prefs.md
+python3 -m astrid preferences checkin /tmp/astrid-prefs.md
 ```
 
 Keep one section in this shape; the "Defaults" and "Prefer" lines are taste,

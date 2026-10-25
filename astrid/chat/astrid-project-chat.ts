@@ -279,45 +279,52 @@ export class ProjectChatRegistry {
       claimed = true;
     });
     if (!claimed) return { ...existing, operation_session_id: operationSessionId ?? existing.selected_session_id ?? undefined };
-    // A lost reply may mean OMP created a session. Never infer or delete that session.
-    const result = record(await create());
-    const sessionId = result.sessionId;
-    if (typeof sessionId !== 'string' || !sessionId) throw new ChatError(502, 'invalid_session', 'OMP did not return a session ID');
-    const modelId = typeof record(result.models)?.currentModelId === 'string' ? record(result.models)!.currentModelId as string : undefined;
-    const targetProject = await this.store.getProject(projectId);
-    this.claim(sessionId, `${targetProject.realm_id}:${projectId}`);
-    const completed = await this.change(projectId, state => {
-      if (state.creating?.owner !== owner) throw new ChatError(409, 'chat_claim_expired', 'Session creation claim expired; the unassigned OMP session is preserved');
-      const recoveryIndex = recoverableSession
-        ? state.sessions.findIndex(session => session.id === recoverableSession?.id && session.missing)
-        : -1;
-      if (recoveryIndex >= 0 && recoverableSession) {
-        const entry = { ...state.sessions[recoveryIndex]! };
-        delete entry.missing;
-        state.sessions[recoveryIndex] = { ...entry, id: sessionId, pending_first_message: true, ...(modelId ? { model_id: modelId } : {}) };
-        state.operations = Object.fromEntries(Object.entries(state.operations ?? {}).map(([id, previousSessionId]) => [
-          id,
-          previousSessionId === recoverableSession.id ? sessionId : previousSessionId,
-        ]));
-        state.draft.queued_messages = state.draft.queued_messages.map(message =>
-          message.session_id === recoverableSession?.id ? { ...message, session_id: sessionId } : message,
-        );
-        if (state.selected_session_id === recoverableSession.id) state.selected_session_id = sessionId;
-        if (state.main_session_id === recoverableSession.id) state.main_session_id = sessionId;
-      } else {
-        state.sessions.push({ id: sessionId, ...(modelId ? { model_id: modelId } : {}), ...(isExternalAgentSession(sessionId) ? { pending_first_message: true } : {}) });
-      }
-      // New promotes itself unless the user chose a different Main after this claim began.
-      if (mode === 'new') {
-        state.selected_session_id = sessionId;
-        if (state.creating.main_session_id === state.main_session_id) state.main_session_id = sessionId;
-      } else if (!recoverSessionId && (mode !== 'ensure_main' || !state.main_session_id)) {
-        state.selected_session_id = sessionId;
-      }
-      state.operations = { ...state.operations, [operationId]: sessionId };
-      delete state.creating;
-      state.revision++;
-    });
-    return { ...completed, operation_session_id: sessionId };
+    try {
+      // A lost reply may mean OMP created a session. Never infer or delete that session.
+      const result = record(await create());
+      const sessionId = result.sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) throw new ChatError(502, 'invalid_session', 'OMP did not return a session ID');
+      const modelId = typeof record(result.models)?.currentModelId === 'string' ? record(result.models)!.currentModelId as string : undefined;
+      const targetProject = await this.store.getProject(projectId);
+      this.claim(sessionId, `${targetProject.realm_id}:${projectId}`);
+      const completed = await this.change(projectId, state => {
+        if (state.creating?.owner !== owner) throw new ChatError(409, 'chat_claim_expired', 'Session creation claim expired; the unassigned OMP session is preserved');
+        const recoveryIndex = recoverableSession
+          ? state.sessions.findIndex(session => session.id === recoverableSession?.id && session.missing)
+          : -1;
+        if (recoveryIndex >= 0 && recoverableSession) {
+          const entry = { ...state.sessions[recoveryIndex]! };
+          delete entry.missing;
+          state.sessions[recoveryIndex] = { ...entry, id: sessionId, pending_first_message: true, ...(modelId ? { model_id: modelId } : {}) };
+          state.operations = Object.fromEntries(Object.entries(state.operations ?? {}).map(([id, previousSessionId]) => [
+            id,
+            previousSessionId === recoverableSession.id ? sessionId : previousSessionId,
+          ]));
+          state.draft.queued_messages = state.draft.queued_messages.map(message =>
+            message.session_id === recoverableSession?.id ? { ...message, session_id: sessionId } : message,
+          );
+          if (state.selected_session_id === recoverableSession.id) state.selected_session_id = sessionId;
+          if (state.main_session_id === recoverableSession.id) state.main_session_id = sessionId;
+        } else {
+          state.sessions.push({ id: sessionId, ...(modelId ? { model_id: modelId } : {}), ...(isExternalAgentSession(sessionId) ? { pending_first_message: true } : {}) });
+        }
+        // New promotes itself unless the user chose a different Main after this claim began.
+        if (mode === 'new') {
+          state.selected_session_id = sessionId;
+          if (state.creating.main_session_id === state.main_session_id) state.main_session_id = sessionId;
+        } else if (!recoverSessionId && (mode !== 'ensure_main' || !state.main_session_id)) {
+          state.selected_session_id = sessionId;
+        }
+        state.operations = { ...state.operations, [operationId]: sessionId };
+        delete state.creating;
+        state.revision++;
+      });
+      return { ...completed, operation_session_id: sessionId };
+    } finally {
+      await this.change(projectId, state => {
+        if (state.creating?.operation_id !== operationId) return false;
+        delete state.creating;
+      });
+    }
   }
 }

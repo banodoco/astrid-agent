@@ -18,18 +18,22 @@ SNAPSHOT: dict[str, Any] = {
             "name": "Alpha Provider",
             "signedIn": True,
             "usable": True,
+            "reason": None,
+            "login": "oauth",
             "models": [
                 {"id": "model/team/name", "name": "Team Model", "selector": "alpha/model/team/name", "usable": True},
                 {"id": "small", "name": "Small", "selector": "alpha/small", "usable": True},
             ],
         },
         {"id": "closed", "name": "Closed Provider", "signedIn": False, "usable": False,
-         "reason": "needs_sign_in", "models": []},
+         "reason": "needs_sign_in", "login": "api-key", "models": []},
         {
             "id": "keyless",
             "name": "Keyless Provider",
             "signedIn": False,
             "usable": True,
+            "reason": None,
+            "login": "api-key",
             "models": [{"id": "public", "name": "Public Model", "selector": "keyless/public", "usable": True}],
         },
     ],
@@ -44,6 +48,9 @@ import sys
 log = Path(os.environ["FAKE_OMP_LOG"])
 args = sys.argv[1:]
 record = {{"argv": args, "cwd": os.getcwd()}}
+if args[:1] == ["--profile"]:
+    record["profile"] = args[1]
+    args = args[2:]
 if args[:2] == ["--mode", "rpc"]:
     record["input"] = sys.stdin.read()
 with log.open("a", encoding="utf-8") as stream:
@@ -152,6 +159,7 @@ def _setup(
     fake_snapshot["_catalogModel"] = "alpha/model/team/name"
     fake_snapshot.setdefault("_hiddenProviderIds", [])
     fake_snapshot["_needsSignInProviderIds"] = ["closed"]
+    fake_snapshot.setdefault("_oauthProviderIds", ["alpha"])
     env.update(
         {
             "OMP_BIN": str(fake_omp),
@@ -203,6 +211,7 @@ def test_models_json_returns_selector_snapshot_and_uses_only_fake_omp(tmp_path: 
     assert calls[1]["input"] == '{"id":"astrid-login-providers","type":"get_login_providers"}\n'
     assert "_catalogModel" not in result.stdout and "_hiddenProviderIds" not in result.stdout
     assert "_needsSignInProviderIds" not in result.stdout
+    assert "_oauthProviderIds" not in result.stdout
 
 
 def test_models_only_advertises_omp_available_selectors_and_read_does_not_save(tmp_path: Path) -> None:
@@ -238,6 +247,7 @@ def test_models_only_advertises_omp_available_selectors_and_read_does_not_save(t
         assert providers[name]["reason"] == "needs_sign_in"
         assert providers[name]["models"] == []
     assert providers["ollama"]["reason"] == "no_available_models"
+    assert providers["ollama"]["login"] == "local"
     assert state_path.read_text(encoding="utf-8") == before
     assert not any(call["argv"][:2] == ["config", "set"] for call in _calls(log))
 
@@ -245,6 +255,25 @@ def test_models_only_advertises_omp_available_selectors_and_read_does_not_save(t
     assert refused.returncode != 0
     assert state_path.read_text(encoding="utf-8") == before
     assert not any(call["argv"][:2] == ["config", "set"] for call in _calls(log))
+
+
+def test_models_and_use_pass_installed_service_profile_to_fake_omp(tmp_path: Path) -> None:
+    env, log, _state = _setup(tmp_path)
+    home = Path(env["HOME"])
+    data_home = Path(env.get("XDG_DATA_HOME", home / ".local" / "share"))
+    selection = data_home / "astrid-install.json"
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    selection.write_text(json.dumps({"chat_settings": {"ASTRID_ACP_PROFILE": "app-profile"}}), encoding="utf-8")
+
+    listed = _run(tmp_path, env, "agent", "models", "--json")
+    used = _run(tmp_path, env, "agent", "use", "alpha/small")
+    explicit = _run(tmp_path, env, "agent", "models", "--profile", "user-profile", "--json")
+
+    assert listed.returncode == used.returncode == explicit.returncode == 0
+    calls = _calls(log)
+    assert calls
+    assert all(call.get("profile") == "app-profile" for call in calls[:-3])
+    assert all(call.get("profile") == "user-profile" for call in calls[-3:])
 
 
 def test_login_rpc_cannot_downgrade_configured_auth_to_keyless(tmp_path: Path) -> None:
@@ -296,7 +325,7 @@ def test_login_only_provider_is_merged_and_hidden_provider_is_excluded(tmp_path:
     assert [provider["id"] for provider in payload["providers"]] == ["alpha", "closed", "keyless", "plugin-only"]
     plugin = payload["providers"][-1]
     assert plugin == {"id": "plugin-only", "name": "Custom Login Plugin", "signedIn": False,
-                      "usable": False, "reason": "needs_sign_in", "models": []}
+                      "usable": False, "reason": "needs_sign_in", "login": "api-key", "models": []}
     assert "secret-hidden" not in result.stdout and "Must Stay Hidden" not in result.stdout
 
 
@@ -313,6 +342,33 @@ def test_login_only_signed_out_provider_gets_named_sign_in_hint(tmp_path: Path) 
     assert result.stdout == ""
     assert result.stderr.strip() == "astrid: Sign in: run `omp`, then /login and pick Custom Login Plugin"
     assert state_path.read_text(encoding="utf-8") == before
+
+
+def test_models_json_classifies_known_login_methods_and_only_recommends_openrouter(tmp_path: Path) -> None:
+    snapshot = json.loads(json.dumps(SNAPSHOT))
+    snapshot["providers"].extend([
+        {"id": "openrouter", "name": "OpenRouter", "signedIn": False, "models": []},
+        {"id": "mystery", "name": "Mystery", "signedIn": False, "models": []},
+        {"id": "llama-cpp", "name": "llama.cpp", "signedIn": False, "models": []},
+    ])
+    env, _log, _state = _setup(tmp_path, snapshot=snapshot)
+    env["FAKE_OMP_LOGIN_PROVIDERS"] = json.dumps([
+        {"id": "alpha", "name": "Alpha Provider", "authenticated": True},
+        {"id": "closed", "name": "Closed Provider", "authenticated": False},
+        {"id": "openrouter", "name": "OpenRouter", "authenticated": False},
+    ])
+
+    result = _run(tmp_path, env, "agent", "models", "--json")
+
+    assert result.returncode == 0, result.stderr
+    providers = {provider["id"]: provider for provider in json.loads(result.stdout)["providers"]}
+    assert providers["alpha"]["login"] == "oauth"
+    assert providers["closed"]["login"] == "api-key"
+    assert providers["openrouter"]["login"] == "api-key"
+    assert providers["openrouter"]["recommended"] is True
+    assert providers["llama-cpp"]["login"] == "local"
+    assert "login" not in providers["mystery"]
+    assert "recommended" not in providers["alpha"]
 
 
 def test_models_json_does_not_emit_raw_account_or_scope_usage_fields(tmp_path: Path) -> None:
@@ -521,6 +577,28 @@ def test_usage_failure_or_unavailable_usage_is_optional(tmp_path: Path) -> None:
     malformed = _run(tmp_path, env, "agent", "models", "--json")
     assert malformed.returncode == 0
     assert "usage" not in json.loads(malformed.stdout)["providers"][0]
+
+
+def test_usage_timeout_keeps_model_discovery_available(monkeypatch) -> None:
+    from astrid import omp_agent
+
+    def timeout(*args, **kwargs):
+        assert kwargs["timeout"] == 3
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    snapshot = {"providers": [{"id": "openrouter", "signedIn": True, "models": []}]}
+    omp_agent._add_model_usage("omp", snapshot)
+    assert "usage" not in snapshot["providers"][0]
+
+
+def test_usage_skips_accounts_that_are_not_signed_in(monkeypatch) -> None:
+    from astrid import omp_agent
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    omp_agent._add_model_usage("omp", {"providers": [{"id": "openrouter", "signedIn": False}]})
+    assert calls == []
 
 
 def test_missing_or_malformed_snapshot_and_nonzero_omp_are_errors(tmp_path: Path) -> None:

@@ -33,7 +33,6 @@ def _repo_env() -> dict[str, str]:
     return {
         **os.environ,
         "PYTHONPATH": repo_root if not prior else repo_root + os.pathsep + prior,
-        "ASTRID_NO_NUDGE": "1",
     }
 
 

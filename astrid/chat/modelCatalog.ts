@@ -12,6 +12,8 @@ const modelUsageSchema = z.strictObject({
 export const modelCatalogSchema = z.strictObject({
   providers: z.array(z.strictObject({
     id: z.string().min(1), name: z.string().min(1), signedIn: z.boolean(),
+    usable: z.boolean(), reason: z.enum(['needs_sign_in', 'no_available_models']).nullable().optional(),
+    login: z.enum(['oauth', 'api-key', 'local']).optional(), recommended: z.boolean().optional(),
     models: z.array(z.strictObject({ id: z.string().min(1), name: z.string().min(1) })),
     usage: modelUsageSchema.optional(),
   })),

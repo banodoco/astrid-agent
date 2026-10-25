@@ -65,7 +65,7 @@ print(json.dumps({'module':astrid.services.__file__,'declaration':declaration,
     )
     assert declared.returncode == 0, declared.stdout + declared.stderr
     value = json.loads(declared.stdout)
-    assert value["omp_recipe_version"] == "17.4.0"
+    assert value["omp_recipe_version"] == "18.12.6"
     assert Path(value["module"]) == installed / "astrid" / "services.py"
     chat = next(row for row in value["declaration"]["services"] if row["name"] == "chat")
     assert chat["argv"] == [bun, str(installed / "astrid" / "chat" / "service.mjs")]

@@ -506,8 +506,8 @@ source_bytes = client.media.read_bytes(clip["source_object_id"])
 Open those bytes in an image viewer (or save a temporary inspection copy and
 use the agent's image-viewing tool). This verifies the source image, not its
 crop, effects, or appearance in the composition. Use the installed Astrid
-Python environment for these commands; in a checkout, activate `.venv` or use
-`.venv/bin/python -m astrid` so declared dependencies are available.
+Python environment for these commands (`python3 -m astrid`) so declared
+dependencies are available.
 
 To compare composed pixels, use `--render-run <exact-run-id>` to select the
 saved revision pinned by that successful run, or `--revision-id <revision-id>`

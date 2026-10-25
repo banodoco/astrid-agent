@@ -396,7 +396,7 @@ Record its title and a sentence you can find again.
 - Two folders under `versions` (the new one and the previous one) and one under `backups`.
 - Your earlier conversations still appear once in the session list and reopen with their messages.
   If you selected a custom chat folder or session directory, that selection is retained.
-  The currently published OMP 17.4.2 has a known session-folder gap described under
+  The non-manifest npm fallback OMP 18.12.6 has a known session-folder gap described under
   [Known gaps](#known-gaps); record what happens there without treating it as workspace loss.
 
 **The "Update Astrid" screen.** The page shows **Update Astrid** only when your Astrid is older than the page. You
@@ -585,15 +585,18 @@ These are known. Report what you see, but don't stop testing for them.
 
 **Chat history with the published OMP producer**
 
-- Published OMP 17.4.2 does not consistently use the configured session folder when listing or recovering
-  conversations. A conversation can be missing from the list or fail to reopen after a restart, even though the
-  Astrid workspace is still present. Record whether the conversation appears and whether its messages reopen; do
-  not report this symptom as loss of the Astrid workspace.
-- The bundled fixed fork commit is `9e282751c0059e37d2f6fbc14ffa0b450710bd23`. The configured-session-folder
-  listing and recovery gap is closed only after the owner pushes that exact commit to GitHub and the app manifest
-  selects its full commit SHA. Like the selected Agent and Runtime commits, this fork commit must be available on GitHub before the app deploys. Until both conditions
-  hold, treat the published-default gap as open. Installer and live ACP qualification used the fixed producer
-  locally and do not qualify the published default. See the [OMP producer landing guide](../install/OMP-LANDING.md).
+- Real installs select the reviewed `peteromallet/oh-my-pi` fork through
+  `tools.omp.source`; the npm 18.12.6 fallback is for non-manifest installs and
+  lacks the fork's session-store fix and `omp onboard`.
+- The complete fork has been rebased onto `v18.12.6` and is delivered as
+  `omp-fork-18.12.6.bundle` (`refs/heads/astrid/18.12.6`). Local ACP tests and a
+  live process restart cover listing/loading the explicit store and legacy
+  history. An unavailable saved model produces "Start a new chat" and leaves
+  the old transcript intact.
+- Deployment still requires the bundled fork head to be pushed unchanged to
+  GitHub and selected by full SHA in the published app manifest. Local proofs
+  do not qualify a deployed manifest or native macOS/Windows builds. See the
+  [OMP producer landing guide](../install/OMP-LANDING.md).
 
 **Windows**
 

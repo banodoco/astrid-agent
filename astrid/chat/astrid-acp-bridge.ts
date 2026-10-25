@@ -7,12 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { delimiter } from 'node:path';
 import { isAbsolutePath, isPathWithin } from './paths.ts';
 import { getAstridAgentModelCatalog } from './astrid-agent-models.ts';
+import { setAstridAgentKey } from './astrid-agent-key.ts';
 import { AgentModelState } from './agent-model-state.ts';
 import { acpClientCapabilities } from './acp-client-capabilities.ts';
 import { discoverLocalAgents } from './astrid-local-agents.ts';
+import { LocalAgentSkills } from './astrid-local-agent-skills.ts';
 import { createLocalAgentAcpProcessHost } from './astrid-local-agent-host.ts';
 import { SharedAcpSessions, sharedSessionModels } from './astrid-shared-acp-sessions.ts';
-import { LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, localAgentIdSchema, sessionAgentId, type LocalAgentId, type LocalAgentModels } from './localAgents.ts';
+import { LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, localAgentSteps, localAgentIdSchema, sessionAgentId, type LocalAgentId, type LocalAgentModels } from './localAgents.ts';
 
 import {
   AcpProcessHost,
@@ -105,6 +107,7 @@ type BridgeOptions = {
   readonly hostFactory?: (options: AstridAcpLauncherOptions) => AcpProcessHost;
   readonly localAgentHostFactory?: typeof createLocalAgentAcpProcessHost;
   readonly discoverAgents?: typeof discoverLocalAgents;
+  readonly localAgentSkills?: LocalAgentSkills;
   readonly astridModelCatalog?: typeof getAstridAgentModelCatalog;
   readonly idFactory?: () => string;
   readonly now?: () => number;
@@ -346,7 +349,7 @@ function hostError(error: unknown): { status: number; body: JsonRecord } {
     return { status: error.status, body: { error: error.code, detail: error.message } };
   }
   if (error instanceof AcpProcessHostError) {
-    return { status: 502, body: { error: error.code, detail: error.message } };
+    return { status: 502, body: { error: error.code, detail: error.message, ...(error.next_action ? { next_action: error.next_action } : {}) } };
   }
   return {
     status: 500,
@@ -380,11 +383,13 @@ export class AstridAcpBridge {
   private readonly bootstraps = new Map<LocalAgentId, Promise<void>>();
   private readonly bootstrapped = new Set<LocalAgentId>();
   private readonly discoverAgents: typeof discoverLocalAgents;
+  private readonly localAgentSkills: LocalAgentSkills;
   private readonly astridModelCatalog: typeof getAstridAgentModelCatalog;
   private readonly sweeper: ReturnType<typeof setInterval>;
 
   constructor(options: BridgeOptions) {
     this.config = options.config;
+    this.localAgentSkills = options.localAgentSkills ?? new LocalAgentSkills(process.env, this.config.cwd);
     this.modelState = new AgentModelState(this.config.modelStateFile);
     this.discoverAgents = options.discoverAgents ?? discoverLocalAgents;
     this.astridModelCatalog = options.astridModelCatalog ?? getAstridAgentModelCatalog;
@@ -429,8 +434,11 @@ export class AstridAcpBridge {
         // A provider with available models can be used without a configured key.
         // A failed catalog lookup is unknown, and unknown sign-in counts as ready.
         const astridReady = astridModels?.providers.some(provider => provider.signedIn || provider.models.length > 0) ?? true;
-        const choices = agents.map(agent => agent.id === 'astrid' && !astridReady
-          ? { ...agent, state: 'sign-in' as const, line: LOCAL_AGENT_TABLE.astrid.signInLine }
+        const choices = agents.map(agent => agent.id === 'astrid'
+          ? { ...agent, state: astridReady ? agent.state : 'sign-in' as const,
+            line: astridReady ? agent.line : LOCAL_AGENT_TABLE.astrid.signInLine,
+            signIn: astridModels === null ? 'unknown' as const : astridReady ? 'signed-in' as const : 'signed-out' as const,
+            steps: localAgentSteps('astrid', astridReady ? 'ready' : 'sign-in') }
           : agent);
         await Promise.all(choices.map(async agent => {
           if (agent.state === 'ready') await this.ensureAgentModels(agent.id, this.localMediaOnly(request));
@@ -438,7 +446,8 @@ export class AstridAcpBridge {
         jsonResponse(response, 200, {
           defaultAgent: this.modelState.defaultAgent,
           agents: choices.map(agent => ({ ...agent,
-            ...(agent.id === 'astrid' ? { signInLine: LOCAL_AGENT_TABLE.astrid.signInLine } : {}),
+            ...(agent.id === 'astrid' ? { signInLine: LOCAL_AGENT_TABLE.astrid.signInLine, creditLine: 'Built on oh-my-pi', creditUrl: 'https://github.com/can1357/oh-my-pi' } : {}),
+            terminal: this.localAgentSkills.terminal(agent.id),
             models: this.modelState.catalogs.get(agent.id)?.availableModels ?? [],
             defaultModel: this.modelState.defaults.get(agent.id) ?? null,
           })),
@@ -448,6 +457,19 @@ export class AstridAcpBridge {
       if (request.method === 'GET' && url.pathname === '/models') {
         const catalog = await this.astridModelCatalog({ command: this.config.command, cwd: this.config.cwd, profile: this.config.profile });
         jsonResponse(response, 200, catalog);
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/astrid/api-key') {
+        const body = asRecord(await readJson(request));
+        if (body?.provider !== 'openrouter' || typeof body.key !== 'string'
+          || body.key.length < 20 || body.key.length > 512 || /\s/u.test(body.key)) {
+          throw new ChatError(400, 'invalid_key', 'Enter an OpenRouter key with 20 to 512 characters and no whitespace.');
+        }
+        const result = await setAstridAgentKey({ command: this.config.command, cwd: this.config.cwd, profile: this.config.profile }, body.key);
+        this.modelState.catalogs.delete('astrid');
+        this.bootstrapped.delete('astrid');
+        if (result.currentModel !== null) this.modelState.remember('astrid', result.currentModel);
+        jsonResponse(response, 200, result);
         return;
       }
       if (request.method === 'POST' && url.pathname === '/model') {
@@ -705,6 +727,8 @@ export class AstridAcpBridge {
     if (temporary) this.temporaryConnections.add(connection);
     else this.connections.set(connectionId, connection);
     try {
+      if (!temporary && agent !== 'astrid') await this.localAgentSkills.sync(agent);
+      if (this.closing) throw new ChatError(503, 'chat_stopping', 'The chat service is stopping.');
       const initialize = await host.initialize({
         protocolVersion: 1,
         clientCapabilities: acpClientCapabilities(agent),

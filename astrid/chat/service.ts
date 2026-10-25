@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { chatStoreIdentity } from './astrid-project-chat.ts';
@@ -13,6 +14,7 @@ export async function runChatService(env = process.env, createServer = createAst
     ASTRID_ACP_BRIDGE_TOKEN: env.ASTRID_ACP_BRIDGE_TOKEN?.trim() || randomBytes(32).toString('base64url'),
     ASTRID_ACP_LOCAL_MEDIA_ONLY: '1',
   });
+  mkdirSync(config.cwd, { recursive: true });
   const { server, bridge } = createServer({ config: {
     ...config,
     modelStateFile: join(dirname(discovery), `chat-models-${chatStoreIdentity(config)}.json`),

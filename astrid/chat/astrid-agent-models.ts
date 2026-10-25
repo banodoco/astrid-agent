@@ -12,6 +12,10 @@ type AstridModelSnapshot = {
     id: string;
     name: string;
     signedIn: boolean;
+    usable: boolean;
+    reason?: 'needs_sign_in' | 'no_available_models' | null;
+    login?: 'oauth' | 'api-key' | 'local';
+    recommended?: boolean;
     models: Array<{ id: string; name: string; selector: string }>;
     usage?: Array<{ limits: Array<{
       amount: Omit<UsageLimit, 'durationMs' | 'resetsAt' | 'status'>;
@@ -29,7 +33,8 @@ async function runAstrid(options: AstridModelOptions, args: string[]): Promise<s
       cwd: options.cwd,
       env: { ...process.env, ...(options.profile ? { OMP_PROFILE: options.profile } : {}) },
       encoding: 'utf8',
-      timeout: 5_000,
+      // The wrapper starts OMP once for models and again for login providers.
+      timeout: 10_000,
       killSignal: 'SIGKILL',
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -51,6 +56,10 @@ function modelCatalog(output: string): AcpModelCatalog {
         id: provider.id,
         name: provider.name,
         signedIn: provider.signedIn,
+        usable: provider.usable,
+        ...(provider.reason !== undefined ? { reason: provider.reason } : {}),
+        ...(provider.login !== undefined ? { login: provider.login } : {}),
+        ...(provider.recommended !== undefined ? { recommended: provider.recommended } : {}),
         models: provider.models.map(({ id, name }) => ({ id, name })),
         ...(provider.usage ? { usage: { limits: provider.usage.flatMap(report => report.limits.map(limit => {
           const amount = limit.amount;

@@ -31,6 +31,7 @@ from .core import (
     read_json,
     write_json,
 )
+from .launcher import install_shim, owned_shim, remove_shim
 from .service import Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, install_tools, source
@@ -560,6 +561,26 @@ class Backend:
             raise VerificationError(f"Astrid Runtime did not start: {cause} (details: {self.service.log})")
         raise VerificationError(f"Astrid's browser door did not become ready: {error}")
 
+    def sync_skills(self, version: Version) -> None:
+        """Best-effort install of Astrid's skill view into detected harnesses."""
+        argv = [version.python, "-I", "-m", "astrid.skills", "sync"]
+        failed = False
+        try:
+            self.run(argv, extra_env=version.env, timeout=60)
+            outcome = "Astrid skills sync completed successfully.\n"
+        except (OSError, subprocess.SubprocessError) as exc:
+            failed = True
+            output = "" if isinstance(exc, subprocess.CalledProcessError) else (
+                getattr(exc, "output", None) or getattr(exc, "stdout", None) or ""
+            )
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
+        with self.log.open("a", encoding="utf-8") as stream:
+            stream.write(outcome)
+        if failed:
+            self.say("Couldn't add Astrid's skill to your agents; see the log.")
+
     def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
         # Keep the immediately previous program and backup. Failures cleaning an
         # older locked version are residue, not grounds to roll back a good update.
@@ -641,6 +662,7 @@ class Backend:
         if marker.get("owner") != "haus.astrid.runtime" and not (kept and bootstrap_only):
             raise ValueError("Refusing to remove an unowned installation directory.")
         realm_root = self.preflight_remove(root, data, delete_data=delete_data)
+        remove_shim(self.service)
         data_targets = [data] if delete_data else []
         if delete_data and realm_root is not None and realm_root != data and data not in realm_root.parents:
             data_targets.insert(0, realm_root)
@@ -648,6 +670,9 @@ class Backend:
         # gone, so rerunning the line can finish removal after a Windows lock.
         for path in list(root.iterdir()) if root.exists() else []:
             if path.name == "install.json":
+                continue
+            if path.name == "astrid.cmd" and not owned_shim(path):
+                residue.append(path)
                 continue
             try:
                 if path.is_dir() and not linked(path):
@@ -690,7 +715,22 @@ class Backend:
         return residue
 
     def open(self) -> None:
+        def report(line):
+            self.say(line)
+            with self.log.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+
+        shim = hint = None
+        try:
+            shim, hint = install_shim(self.service, say=report)
+        except Exception as exc:  # noqa: BLE001 - the command shim is optional; installation must still finish
+            report(f"Astrid command shim setup failed ({type(exc).__name__}); use the run-astrid launcher.")
+        marker = self.root / "install.json"
+        command_shim = shim if self.service.system == "win32" or hint is None else None
+        write_json(marker, {**read_json(marker), "command_shim": str(command_shim) if command_shim else None})
         try:
             webbrowser.open("https://astrid.haus/?connect=1")
         except OSError:
             pass  # The printed URL remains usable on headless computers.
+        if hint:
+            self.say(hint)

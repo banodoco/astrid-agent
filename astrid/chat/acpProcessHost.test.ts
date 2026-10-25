@@ -124,6 +124,27 @@ describe('AcpProcessHost', () => {
     await host.dispose();
   });
 
+  for (const method of ['session/load', 'session/resume']) {
+    it(`explains an unavailable saved model on ${method} and permits a new chat`, async () => {
+      const process = new FakeProcess();
+      const host = new AcpProcessHost({ process: process.asProcess() });
+      const loading = host.request(method, { sessionId: 'old-chat' });
+      await flush();
+      process.stdout.emit('data', `${JSON.stringify({
+        jsonrpc: '2.0', id: lastRequest(process).id,
+        error: { code: -32603, message: 'Internal error', data: { details: 'Could not restore model retired/model' } },
+      })}\n`);
+      await expect(loading).rejects.toMatchObject({
+        code: 'acp_transport', message: expect.stringContaining("This chat's saved model is unavailable. Start a new chat."),
+      });
+      const creating = host.newSession({ cwd: '/chat', mcpServers: [] });
+      await flush();
+      respond(process, lastRequest(process).id, { sessionId: 'new-chat' });
+      await expect(creating).resolves.toEqual({ sessionId: 'new-chat' });
+      await host.dispose();
+    });
+  }
+
   it('forwards notifications and answers explicit permission callbacks without ambient authority', async () => {
     const notifications: Record<string, unknown>[] = [];
     const process = new FakeProcess();

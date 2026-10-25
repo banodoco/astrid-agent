@@ -25,6 +25,7 @@ def installation(tmp_path, monkeypatch, system=None):
     write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
     if system == "win32":
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+        monkeypatch.setattr("astrid.installer.launcher._update_user_path", Mock())
     bootstrap = bootstrap_root(home, system)
     bootstrap.mkdir(parents=True)
     uv = bootstrap / ("uv.exe" if system == "win32" else "uv")

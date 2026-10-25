@@ -176,9 +176,6 @@ result = sdk.invoke(
 )
 ```
 
-Event talk videos run their step subcommands through the orchestrator module:
-
-```bash
-python3 -m astrid.packs.video_editing.orchestrators.event_talks.run \
-  ados-sunday-template --out ./talk-output
-```
+Astrid's runner executes event talk step subcommands through
+[actions/event_talks/run.py](../actions/event_talks/run.py). This internal entry
+rejects direct terminal invocation; use the SDK example above from a terminal.

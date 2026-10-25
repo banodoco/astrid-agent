@@ -204,16 +204,16 @@ class Installer:
                 pass
             else:
                 if not self.backend.restart_required():
-                    self.backend.open()
                     self.say("Open https://astrid.haus")
+                    self.backend.open()
                     return
             self.say("Restarting Astrid with the installed version.")
             self.backend.stop(old, self.data)
             self.backend.register(old, self.data)
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
-            self.backend.open()
             self.say("Open https://astrid.haus")
+            self.backend.open()
             return
 
         has_workspace = self.backend.has_workspace(self.data)
@@ -271,6 +271,10 @@ class Installer:
             self.backend.verify(candidate, self.data, realm["realm_id"])
             if transaction is not None:
                 self._save_update(transaction, "verified")
+            try:
+                self.backend.sync_skills(candidate)
+            except Exception:  # noqa: BLE001 - skill setup must never fail installation
+                self.say("Couldn't add Astrid's skill to your agents; see the log.")
             self.backend.finish(old, candidate, backup)
             if transaction is not None:
                 self._save_update(transaction, "complete")
@@ -300,8 +304,8 @@ class Installer:
             raise
         if backup:
             self.say(f"A backup of your workspace is kept at {backup['root']}.")
-        self.backend.open()
         self.say("Open https://astrid.haus")
+        self.backend.open()
 
 
 def new_version_id(manifest: dict) -> str:

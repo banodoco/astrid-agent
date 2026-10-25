@@ -122,13 +122,6 @@ ASTRID_LOG_MAX_BYTES = "ASTRID_LOG_MAX_BYTES"
 runtime/log_capture.py. Defaults to 10 MiB when unset."""
 
 # ---------------------------------------------------------------------------
-# Feature flags / opt-outs
-# ---------------------------------------------------------------------------
-
-ASTRID_NO_NUDGE = "ASTRID_NO_NUDGE"
-"""Set to ``1`` to suppress the skill-nudge banner that ``astrid`` prints when
-a new skill is available. Read by skills/__init__.py."""
-
 # ---------------------------------------------------------------------------
 # External catalog (Banodoco)
 # ---------------------------------------------------------------------------
@@ -166,7 +159,6 @@ __all__ = [
     "ASTRID_ENV_FILE",
     "ASTRID_INTERNAL_INVOCATION",
     "ASTRID_LOG_MAX_BYTES",
-    "ASTRID_NO_NUDGE",
     "ASTRID_PACKS_PATH",
     "ASTRID_PROJECT_RUN",
     "ASTRID_PROJECT_SLUG",

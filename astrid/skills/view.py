@@ -2,8 +2,7 @@
 
 The package checkout (and an installed wheel) is an input, never a generated
 output location.  A view contains a real root ``SKILL.md``, real copies of the
-core guidance files whose links are rewritten for the view, and symlinked pack
-skill directories.
+core and pack guidance files whose links and commands are rewritten for the view.
 
 Every relative link in a materialised file is resolved from where it lives in
 the checkout and then re-pointed at what it means in the view:
@@ -19,15 +18,17 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
 from astrid.core.contracts.errors import AstridError
 
+from .commands import rewrite_commands
 from .discovery import SkillDescriptor
-from .harnesses.base import PlannedStep, ensure_symlink
-from .links import DROP, iter_link_targets, rewrite_links, split_target
+from .harnesses.base import PlannedStep
+from .links import DROP, iter_link_targets, iter_markdown_files, rewrite_links, split_target
 
 # Core guidance copied into every view.  Keys are view-relative paths; the
 # root ``SKILL.md`` is written separately from the descriptor's skill_md.
@@ -127,19 +128,23 @@ def _materialise(source: Path, target: Path, links: _ViewLinks, *, pre: dict[str
     for old, new in (pre or {}).items():
         text = text.replace(old, new)
     text = rewrite_links(text, lambda raw: links.target(raw, source=source, dest=target))
-    _write_view_file(target, text)
+    _write_view_file(target, rewrite_commands(text))
 
 
-def _safe_link(target: Path, source: Path) -> None:
+def _materialise_pack(target: Path, source: Path, links: _ViewLinks, *, managed: bool) -> None:
     if target.exists() or target.is_symlink():
-        if target.is_symlink() and target.resolve() == source.resolve():
-            return
-        if not target.is_symlink():
+        if target.is_symlink():
+            target.unlink()
+        elif managed and target.is_dir():
+            shutil.rmtree(target)
+        else:
             raise AstridError(
                 f"Astrid skill view target is occupied: {target}",
                 recovery_command="remove the foreign entry or choose another profile",
             )
-    ensure_symlink(target, source)
+    shutil.copytree(source, target)
+    for md in iter_markdown_files(source):
+        _materialise(md, target / md.relative_to(source), links)
 
 
 def view_descriptors(root: Path, packs: list[SkillDescriptor]) -> list[SkillDescriptor]:
@@ -188,7 +193,7 @@ def compose_view(
 ) -> tuple[SkillDescriptor, list[PlannedStep], list[SkillDescriptor]]:
     """Compose one harness view and return ``(gateway, steps, view_packs)``.
 
-    Pack links are keyed by pack id and are therefore safe to reconcile without
+    Pack copies are keyed by pack id and are therefore safe to reconcile without
     touching unrelated user files.  The returned gateway descriptor points at
     the writable view, so registry writes cannot follow a symlink into source.
     """
@@ -213,17 +218,20 @@ def compose_view(
         previous_ids = {line.strip() for line in marker.read_text(encoding="utf-8").splitlines() if line.strip()}
     for pack_id in sorted(previous_ids - enabled_ids):
         target = root / "packs" / pack_id
-        if target.is_symlink():
+        if target.is_symlink() or target.is_dir():
             steps.append(PlannedStep(f"prune disabled pack {target}", target=target))
             if not dry_run:
-                target.unlink()
+                if target.is_symlink():
+                    target.unlink()
+                else:
+                    shutil.rmtree(target)
 
     for descriptor in view_packs:
         target = root / "packs" / descriptor.pack_id
         source = next(item.skill_dir for item in packs if item.pack_id == descriptor.pack_id)
-        steps.append(PlannedStep(f"link {target} -> {source}", target=target))
+        steps.append(PlannedStep(f"materialise {target} from {source}", target=target))
         if not dry_run:
-            _safe_link(target, source)
+            _materialise_pack(target, source, links, managed=descriptor.pack_id in previous_ids)
 
     if not dry_run:
         root.mkdir(parents=True, exist_ok=True)
@@ -237,7 +245,7 @@ def compose_view(
         # The registry is regenerated in place by sync, so copy it only once.
         source_packs = core_dir / _PACKS_REGISTRY
         if source_packs.is_file() and not (root / _PACKS_REGISTRY).exists():
-            _write_view_file(root / _PACKS_REGISTRY, source_packs.read_text(encoding="utf-8"))
+            _materialise(source_packs, root / _PACKS_REGISTRY, links)
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("\n".join(sorted(enabled_ids)) + "\n", encoding="utf-8")
 
