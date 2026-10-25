@@ -219,8 +219,10 @@ cmd_install() {
     say "Install-time policy: read-only access to package and release hosts."
     set_policy install
     stage_installer "$1"
+    # OpenShell's seccomp filter denies pidfd_open and process-group kill, so the
+    # install always turns on Runtime's sandbox process control.
     say "Running Astrid's installer inside '$sandbox' (several minutes the first time)."
-    in_sandbox "cd '$guest_home/$stage_name' && sha256sum install.sh install-manifest.json && ASTRID_INSTALL_MANIFEST_URL='file://$guest_home/$stage_name/install-manifest.json' sh ./install.sh"
+    in_sandbox "cd '$guest_home/$stage_name' && sha256sum install.sh install-manifest.json && ASTRID_INSTALL_MANIFEST_URL='file://$guest_home/$stage_name/install-manifest.json' sh ./install.sh --sandbox"
 }
 
 # --- service setup ------------------------------------------------------------
