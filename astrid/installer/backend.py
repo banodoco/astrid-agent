@@ -59,8 +59,10 @@ def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
 
 
 class Backend:
-    def __init__(self, root: Path, log: Path, uv: Path, *, say=print):
+    def __init__(self, root: Path, log: Path, uv: Path, *, say=print, process_control: str | None = None):
         self.root, self.log, self.uv, self.say = root, log, uv, say
+        # None keeps the workspace's current setting (strict on a new one).
+        self.process_control = process_control
         self.service = Service(root, log, self.run, say=say)
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
@@ -443,12 +445,16 @@ class Backend:
     def create(self, version: Version, data: Path) -> dict:
         realm_id = str(uuid.uuid4())
         return self.runtime(version, data, "workspace", "create", "--realm-root",
-                            str(data / "runtime" / "realms" / realm_id), "--realm-id", realm_id, profile=True)
+                            str(data / "runtime" / "realms" / realm_id), "--realm-id", realm_id,
+                            *self._process_control_args(), profile=True)
 
     def attach_existing(self, version: Version, data: Path) -> dict:
         realm = self.workspace(version, data)
         return self.runtime(version, data, "workspace", "attach", "--realm-root", realm["realm_root"],
-                            "--realm-id", realm["realm_id"], profile=True)
+                            "--realm-id", realm["realm_id"], *self._process_control_args(), profile=True)
+
+    def _process_control_args(self) -> tuple[str, ...]:
+        return ("--process-control", self.process_control) if self.process_control else ()
 
     def doctor(self, version: Version, data: Path, bundle: Path) -> Path:
         bundle = absolute(bundle)
