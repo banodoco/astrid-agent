@@ -263,6 +263,12 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         workdir = Path(scratch)
         if kind == "invoke":
             return _invoke(arguments, workdir)
+        if kind == "comfy_scan":
+            done = _run([sys.executable, "-m", "astrid.packs.vibecomfy.local", "scan",
+                         "--ports", str(arguments.get("ports") or "8188,8000")], workdir)
+            return done if isinstance(done, dict) else _cli_result(done)
+        if kind == "comfy_workflow_import":
+            return _comfy_workflow_import(arguments, workdir)
         if kind == "timeline_document":
             if tool["command"] == "add_shot":
                 return _timeline_document_add_shot(arguments)
@@ -285,6 +291,42 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             # Clients that show structuredContent (Claude Code) drop the extra text blocks.
             result["structuredContent"] = {**result.get("structuredContent", {}), "files": files}
         return result
+
+
+def _comfy_workflow_import(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
+    """Read one saved workflow from the user's ComfyUI (GET only) and import it into the project.
+
+    The vibecomfy skill's "fetch it read-only, then astrid media import" step, for a
+    client that cannot reach Astrid's filesystem."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    url = str(arguments.get("comfy_url") or "http://127.0.0.1:8188").rstrip("/")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost") or parts.path not in ("", "/"):
+        return _text("comfy_url must be loopback, e.g. http://127.0.0.1:8188", error=True)
+    name = str(arguments.get("name") or "")
+    if not name.endswith(".json") or "/" in name or "\\" in name or name.startswith("."):
+        return _text("name must be a saved workflow file name such as portrait.json (see comfy_scan)", error=True)
+    source = f"{url}/userdata/{urllib.parse.quote('workflows/' + name, safe='')}"
+    try:
+        with urllib.request.urlopen(source, timeout=30) as response:
+            raw = response.read(64 * 1024 * 1024 + 1)
+    except (OSError, urllib.error.URLError) as exc:
+        return _text(f"could not read {source}: {exc}", error=True)
+    if len(raw) > 64 * 1024 * 1024:
+        return _text("workflow is larger than 64 MiB", error=True)
+    try:
+        json.loads(raw)
+    except ValueError:
+        return _text(f"{name} is not JSON", error=True)
+    target = workdir / name
+    target.write_bytes(raw)
+    executable = Path(sys.executable).with_name("astrid-tools")
+    command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
+    done = _run([*command, "media", "import", str(target), "--project", str(arguments["project"]), "--json"], workdir)
+    return done if isinstance(done, dict) else _cli_result(done)
 
 
 def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
@@ -409,6 +451,18 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
               "inputs": {"type": "object", "description": "The capability's inputs as a JSON object."},
               "execution_request": {"type": "object", "description": "Optional target-aware execution request."}},
              ["capability_id", "project"], False, kind="invoke"),
+        tool("comfy_scan",
+             "Find the user's running ComfyUI (vibecomfy local scan): URL, output folder, saved "
+             "workflows, Manager, its Python. Read-only.",
+             {"ports": {"type": "string", "description": "Comma-separated ports (default 8188,8000)."}},
+             [], True, kind="comfy_scan"),
+        tool("comfy_workflow_import",
+             "Read one saved workflow from the user's ComfyUI (read-only GET of /userdata/workflows/NAME) "
+             "and import it into the project; the result's digest is vibecomfy.run's workflow input.",
+             {"project": {"type": "string", "description": "Project slug or ID."},
+              "name": {"type": "string", "description": "Saved workflow file name from comfy_scan, e.g. portrait.json."},
+              "comfy_url": {"type": "string", "description": "Loopback ComfyUI URL (default http://127.0.0.1:8188)."}},
+             ["project", "name"], False, kind="comfy_workflow_import"),
         tool("timeline_document_checkout",
              "Check out a timeline as one editable JSON document (placements, shots, clips). "
              "Use it to put the first clips on an empty timeline, then check and publish it.",
