@@ -1,6 +1,6 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { formatAstridSignInLine, localAgentSteps, localAgentCatalogSchema, agentCommand, EXTERNAL_AGENT_IDS, LOCAL_AGENT_TABLE, isExternalAgentSession, sessionAgentId } from './localAgents.ts';
@@ -454,9 +454,10 @@ test('discovers DeepSeek Harness from its credential store and launches its pinn
     const dsh = executable(directory, 'dsh', '#!/bin/sh\nexit 0\n');
     const node = executable(directory, 'node', '#!/bin/sh\nprintf \'v22.1.0\\n\'\n');
     const npx = executable(directory, 'npx', '#!/bin/sh\nexit 0\n');
-    const env = testEnv(shell, directory);
+    const env = { ...testEnv(shell, directory), ASTRID_STATE_HOME: join(directory, 'state') };
     mkdirSync(join(directory, '.dsh-home'), { recursive: true });
     writeFileSync(join(directory, '.dsh-home', '.credentials.yaml'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
+    writeFileSync(join(directory, '.dsh-home', 'cordis.patch.yml'), '- id: llm-pi-ai\n  name: "@deepseek-ai/dsh-llm-pi-ai"\n');
 
     const agents = await discoverLocalAgents({ env });
     const choice = agents.find(agent => agent.id === 'dsh');
@@ -466,12 +467,25 @@ test('discovers DeepSeek Harness from its credential store and launches its pinn
     assert.deepEqual(choice?.steps, []);
 
     assert.ok(node && npx);
-    assert.deepEqual(await localAgentLaunch('dsh', env), {
+    const launch = await localAgentLaunch('dsh', env);
+    // Astrid boots its own copy, so the launcher that deletes settings.yaml on
+    // boot can never take the config away from the person's own DSH.
+    const instance = join(directory, 'state', 'astrid', 'dsh');
+    assert.deepEqual(launch, {
       command: npx,
       args: ['--yes', '@deepseek-ai/dsh@0.2.1-rc.3', '--profile', 'acp'],
-      env: { PATH: directory, DSH_HOME: join(directory, '.dsh-home') },
+      env: { PATH: directory, DSH_HOME: instance },
       cliPath: dsh,
     });
+    // Providers and keys carry over as readable copies, never as links back home.
+    for (const name of ['.credentials.yaml', 'cordis.patch.yml']) {
+      const seeded = join(instance, name);
+      assert.equal(statSync(seeded).mode & 0o777, 0o600, `${name} is private`);
+      assert.equal(statSync(seeded).isSymbolicLink(), false, `${name} is a copy, not a link`);
+      assert.deepEqual(readFileSync(seeded), readFileSync(join(directory, '.dsh-home', name)));
+    }
+    // The person's own settings stay exactly as they were.
+    assert.deepEqual(readFileSync(join(directory, '.dsh-home', '.credentials.yaml'), 'utf8'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -538,7 +552,8 @@ test('win32 discovers the dsh executable through PATHEXT and launches the same p
     const home = join(directory, '.dsh-home');
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, '.credentials.yaml'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
-    const env = { PATH: directory, PATHEXT: '.EXE', SHELL: '/missing', DSH_HOME: home, DEEPSEEK_API_KEY: '' };
+    const state = join(directory, 'state');
+    const env = { PATH: directory, PATHEXT: '.EXE', SHELL: '/missing', DSH_HOME: home, DEEPSEEK_API_KEY: '', ASTRID_STATE_HOME: state };
     const options = { platform: 'win32' as const, registryReader: async () => '', passwdReader: () => '' };
     const choice = (await discoverLocalAgents({ ...options, env })).find(agent => agent.id === 'dsh');
     assert.equal(choice?.state, 'ready');
@@ -547,7 +562,7 @@ test('win32 discovers the dsh executable through PATHEXT and launches the same p
     assert.deepEqual(await localAgentLaunch('dsh', env, options), {
       command: npx,
       args: ['--yes', '@deepseek-ai/dsh@0.2.1-rc.3', '--profile', 'acp'],
-      env: { PATH: directory, DSH_HOME: home },
+      env: { PATH: directory, DSH_HOME: join(state, 'astrid', 'dsh') },
       cliPath: dsh,
     });
   } finally { rmSync(directory, { recursive: true, force: true }); }

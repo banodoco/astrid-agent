@@ -1,6 +1,6 @@
 import { discoveryProbe as execFileAsync } from './discoveryProbe.ts';
 import { readFileSync } from 'node:fs';
-import { access, constants, readFile } from 'node:fs/promises';
+import { access, chmod, constants, copyFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, win32 as win32Path } from 'node:path';
 import { EXTERNAL_AGENT_IDS, LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, astridInstallCommand, localAgentSteps, type LocalAgentChoice, type LocalAgentId } from './localAgents.ts';
@@ -307,6 +307,50 @@ async function dshStatus(command: string | null, env: NodeJS.ProcessEnv, platfor
 }
 
 /**
+ * Astrid runs its own harness instance, so it must not boot against the home the
+ * person's own DSH is using: the pinned launcher deletes that home's
+ * `settings.yaml` on boot, which silently takes the config away from the DSH the
+ * person is actually running. This is the private home Astrid keeps instead.
+ */
+export function dshInstanceHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const explicit = env.ASTRID_DSH_INSTANCE_HOME?.trim();
+  if (explicit) return explicit;
+  const home = (platform === 'win32' ? env.USERPROFILE : env.HOME) || homedir();
+  const root = env.ASTRID_STATE_HOME?.trim() || env.XDG_STATE_HOME?.trim()
+    || (platform === 'win32' ? join(env.LOCALAPPDATA?.trim() || home, 'AppData', 'Local') : join(home, '.local', 'state'));
+  return join(root, 'astrid', 'dsh');
+}
+
+/**
+ * Copied in from the person's home so their providers and keys still apply. The
+ * home-level patch layer is the durable half: it survives the launcher rewriting
+ * or deleting `settings.yaml`, so providers defined there keep working either way.
+ */
+const DSH_SEEDED_FILES = ['.credentials.yaml', 'settings.yaml', 'cordis.patch.yml'] as const;
+
+/**
+ * Copies are deliberate: a symlink would let the harness rewrite the person's
+ * real files through the link, which is exactly the contention being avoided.
+ * The source is only ever read, and a re-seed follows the source's timestamp.
+ */
+async function seedDshInstanceHome(source: string, target: string): Promise<void> {
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  for (const name of DSH_SEEDED_FILES) {
+    const from = join(source, name);
+    let source_mtime: number;
+    try {
+      source_mtime = (await stat(from)).mtimeMs;
+    } catch { continue; }
+    const to = join(target, name);
+    try {
+      if ((await stat(to)).mtimeMs >= source_mtime) continue;
+    } catch { /* first seed for this file */ }
+    await copyFile(from, to);
+    await chmod(to, 0o600);
+  }
+}
+
+/**
  * The harness needs a modern V8 Node, and Astrid's bundled Node is older than
  * that floor, so the first PATH directory with a new enough `node` wins before
  * the plain PATH order does. Returns null when no such runtime exists.
@@ -350,10 +394,15 @@ export async function localAgentLaunch(agentId: ExternalAgent, env: NodeJS.Proce
     if (!node) throw new AcpProcessHostError(`Node ${DSH_ACP_MIN_NODE_MAJOR} or newer is not installed on PATH.`, { code: 'agent_runtime_missing', next_action: nodeInstallCommand(platform) });
     // npx resolves next to that Node, so the profile boots on the same runtime.
     const npx = await executable('npx', node.directory, platform, env.PATHEXT) ?? 'npx';
+    // Astrid's instance reads a copy of the person's settings and credentials
+    // instead of booting against their live home, so neither side rewrites the
+    // other's files.
+    const instance = dshInstanceHome(env, platform);
+    await seedDshInstanceHome(dshHome(env, platform), instance);
     return {
       command: npx,
       args: ['--yes', DSH_ACP_LAUNCHER, '--profile', DSH_ACP_PROFILE],
-      env: { PATH: combinedPath(platform, node.directory, path), DSH_HOME: dshHome(env, platform) },
+      env: { PATH: combinedPath(platform, node.directory, path), DSH_HOME: instance },
       cliPath: cli,
     };
   }

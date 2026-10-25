@@ -71,6 +71,7 @@ const write = value => process.stdout.write(JSON.stringify(value) + '\\n');
 const record = value => fs.appendFileSync(log, JSON.stringify({agent, value}) + '\\n');
 const waiting = new Map();
 let nextPermission = 0;
+let dshSessions = 0;
 record({startup: true, cliPath: process.env.CODEX_PATH ?? null, adapter});
 const askPermission = params => new Promise(resolve => {
   const id = 'permission-' + (++nextPermission);
@@ -93,14 +94,28 @@ rl.on('line', async line => {
     return;
   }
   record({method:message.method, params:message.params});
-  if (message.method === 'session/new') { write({jsonrpc:'2.0',id:message.id,result:{sessionId:'shared-native-id',configOptions:configOptions()}}); return; }
+  if (message.method === 'session/new') {
+    // The harness replaces a vanished chat with a session of its own id.
+    const sessionId = agent === 'dsh-acp' && ++dshSessions > 1 ? 'fresh-native-id' : 'shared-native-id';
+    write({jsonrpc:'2.0',id:message.id,result:{sessionId,configOptions:configOptions()}}); return;
+  }
   if (message.method === 'session/set_config_option') {
     if (message.params.configId === 'model') model = message.params.value;
     else if (message.params.configId === effortId) effort = message.params.value;
     write({jsonrpc:'2.0',id:message.id,result:{configOptions:configOptions()}}); return;
   }
   if (message.method === 'session/list') { write({jsonrpc:'2.0',id:message.id,result:{sessions:[{sessionId:'shared-native-id'}]}}); return; }
-  if (message.method === 'session/load' || message.method === 'session/resume') { write({jsonrpc:'2.0',id:message.id,result:{sessionId:message.params.sessionId}}); return; }
+  if (message.method === 'session/load' || message.method === 'session/resume') {
+    // Mirror the harness: no session/load at all, and a resume of the session it
+    // is already serving is refused as invalid params.
+    if (agent === 'dsh-acp') {
+      if (message.method === 'session/load') { write({jsonrpc:'2.0',id:message.id,error:{code:-32601,message:'\\"Method not found\\": session/load'}}); return; }
+      if (message.params.sessionId === 'shared-native-id') { write({jsonrpc:'2.0',id:message.id,error:{code:-32602,message:'Invalid params: session is already active: shared-native-id'}}); return; }
+      // A chat the harness no longer holds is refused the same way dsh refuses it.
+      write({jsonrpc:'2.0',id:message.id,error:{code:-32602,message:'Invalid params: session is not resumable: ' + message.params.sessionId}}); return;
+    }
+    write({jsonrpc:'2.0',id:message.id,result:{sessionId:message.params.sessionId}}); return;
+  }
   if (message.method === 'session/fork') { write({jsonrpc:'2.0',id:message.id,result:{sessionId:'forked-native-id'}}); return; }
   if (message.method === 'session/prompt') {
     record({receivedPrompt:message.params.prompt});
@@ -284,6 +299,36 @@ test('external agent readiness fails closed for missing CLIs and sign-in, but do
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('dsh opens saved chats by resuming, because the harness answers -32601 to session/load', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-agent-dsh-load-'));
+  const f = fixture(directory);
+  const host = await createLocalAgentAcpProcessHost('dsh', {
+    cwd: f.cwd,
+    env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
+    profileFileForCommand: () => f.profile,
+  });
+  try {
+    await host.initialize({ protocolVersion: 1, clientCapabilities: {} });
+    const created = await host.newSession<Json>({ cwd: f.cwd, mcpServers: [] });
+    // Re-opening the chat this process already owns must not fail the screen.
+    const reopened = await host.loadSession({ sessionId: created.sessionId, cwd: f.cwd });
+    assert.equal(reopened.sessionId, created.sessionId);
+    // A chat the harness no longer holds still opens, and keeps its own identity
+    // while the work moves to a replacement session.
+    const older = await host.loadSession({ sessionId: 'dsh:older-chat', cwd: f.cwd });
+    assert.equal(older.sessionId, 'dsh:older-chat');
+    await host.prompt({ sessionId: 'dsh:older-chat', prompt: [{ type: 'text', text: 'after the replacement' }] });
+    const rows = records(f.logs).map(row => row.value as Json).filter(row => typeof row.method === 'string');
+    assert.deepEqual(rows.filter(row => row.method === 'session/load'), [], 'never asks for an unsupported method');
+    const resumes = rows.filter(row => row.method === 'session/resume').map(row => (row.params as Json).sessionId);
+    assert.ok(resumes.includes('older-chat'), `resume params were ${JSON.stringify(resumes)}`);
+    assert.ok(rows.some(row => row.method === 'session/new'), 'falls back to a fresh session');
+    // The person's prompt reaches the replacement session, not the stale one.
+    const prompted = rows.filter(row => row.method === 'session/prompt').map(row => (row.params as Json).sessionId);
+    assert.deepEqual(prompted.slice(-1), ['fresh-native-id']);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 for (const agent of EXTERNAL_AGENT_IDS) {
   test(`${agent} delivers grounding through its capability and preserves it across session operations`, async () => {
     const directory = mkdtempSync(join(tmpdir(), 'astrid-agent-grounding-'));
@@ -330,7 +375,10 @@ for (const agent of EXTERNAL_AGENT_IDS) {
       for (const [index, prompt] of prompts.entries()) {
         const text = prompt.map(part => part.text).join('\n');
         assert.match(text, /astrid_editor_context/);
-        if (agent !== 'claude-code' && index === 0) {
+        // The harness drops sessions it cannot resume, so a reopened chat starts a
+        // replacement session and needs the grounding block on that first message.
+        const replacement = agent === 'dsh' && (index === 2 || index === 3);
+        if (agent !== 'claude-code' && (index === 0 || replacement)) {
           assert.match(text, /<astrid_agent_context>[\s\S]*PROFILE_SENTINEL[\s\S]*PREFS_SENTINEL/);
           assert.match(text, /Load the relevant Astrid SKILL\.md/);
         } else {
