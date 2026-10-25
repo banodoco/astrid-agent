@@ -200,8 +200,8 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 manifest, staging, guest = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 pins = json.loads(manifest.read_text(encoding="utf-8"))
-for name in ("agent", "runtime"):
-    repo = pins[name].get("repo")
+for name in ("agent", "runtime", "vibecomfy"):
+    repo = pins.get(name, {}).get("repo")
     if not repo:
         continue
     if repo.startswith("file://"):
