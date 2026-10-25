@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,13 @@ def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
     return found
 
 
+def _runtime_json(output: str) -> dict:
+    """Runtime's one JSON result. Its stderr notes (merged into this output, for
+    example the sandbox fallback notice) may come before it."""
+    start = next((match.start() for match in re.finditer(r"^\{", output, re.MULTILINE)), 0)
+    return json.loads(output[start:])
+
+
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print, process_control: str | None = None):
         self.root, self.log, self.uv, self.say = root, log, uv, say
@@ -108,7 +116,7 @@ class Backend:
         argv = [python, "-I", "-m", "astrid_runtime", *args, "--data-root", str(data), "--json"]
         if profile and version:
             argv += ["--source-manifest", str(version.profile)]
-        result = json.loads(self.run(argv, extra_env=version.env if version else None, timeout=timeout))
+        result = _runtime_json(self.run(argv, extra_env=version.env if version else None, timeout=timeout))
         if result.get("ok") is False:
             raise RuntimeError(str(result.get("error") or result))
         return result
