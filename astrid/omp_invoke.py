@@ -59,6 +59,9 @@ def main(argv=None) -> int:
         request = json.loads(args[0])
         if not isinstance(request, dict):
             raise ValueError("Invocation must be an object")
+        from astrid.core.execution.platform_helpers import configure_process_control_from_install
+
+        configure_process_control_from_install()
         with redirect_stdout(sys.stderr):
             result = invoke_tool(request)
         print(json.dumps(result))

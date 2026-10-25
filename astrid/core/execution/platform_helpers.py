@@ -70,6 +70,27 @@ def configure_process_control(support_root, *, announce: bool = True) -> str:
     return mode
 
 
+def configure_process_control_from_install() -> None:
+    """Signal like the selected Runtime install (strict unless it was set up --sandbox).
+
+    For entry points Runtime does not start (the CLI, omp_invoke). Best effort: a
+    root that cannot be resolved or a setting that cannot be read leaves this
+    process strict; Runtime itself refuses to start on a broken setting.
+    """
+    if platform.process_control() != "strict":
+        return
+    try:
+        from runtime_protocol import process_control
+
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+
+        support = resolve_runtime_data_root() / "runtime"
+        if process_control.setting_path(support).exists():
+            configure_process_control(support, announce=False)
+    except Exception:  # noqa: BLE001 - strict is the safe default
+        pass
+
+
 def process_control_support() -> str | None:
     """The support root this process configured from, for its children."""
     return _support_root
