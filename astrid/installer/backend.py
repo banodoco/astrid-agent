@@ -102,14 +102,17 @@ class Backend:
         lock_hash = hashlib.sha256((remotion / "package-lock.json").read_bytes()).hexdigest()
         modules = remotion / "node_modules"
         marker = modules / ".astrid-package-lock.sha256"
-        if (modules.is_dir() and marker.is_file()
+        if not (modules.is_dir() and marker.is_file()
                 and marker.read_text(encoding="ascii").strip() == lock_hash):
-            return
-        # Node's official archives expose npm through this JavaScript entrypoint
-        # on every OS; neither shell shims nor an ambient npm are required.
-        self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
+            # Node's official archives expose npm through this JavaScript entrypoint
+            # on every OS; neither shell shims nor an ambient npm are required.
+            self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
+                     cwd=remotion, extra_env=env)
+            marker.write_text(lock_hash + "\n", encoding="ascii")
+        # Renders never download: fetch Remotion's browser now, once per Remotion
+        # version into the shared cache (a no-op when it is already there).
+        self.run([env["ASTRID_NODE_EXECUTABLE"], remotion / "scripts" / "fetch-shared-browser.mjs"],
                  cwd=remotion, extra_env=env)
-        marker.write_text(lock_hash + "\n", encoding="ascii")
 
     def runtime(self, version: Version | None, data: Path, *args, profile=False, timeout=1800) -> dict:
         python = version.python if version else Path(sys.executable)
