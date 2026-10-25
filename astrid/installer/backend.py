@@ -63,6 +63,10 @@ class Backend:
         self.root, self.log, self.uv, self.say = root, log, uv, say
         # None keeps the workspace's current setting (strict on a new one).
         self.process_control = process_control
+        if process_control:
+            from runtime_protocol import platform
+
+            platform.configure_process_control(process_control)  # this process signals too
         self.service = Service(root, log, self.run, say=say)
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
@@ -230,6 +234,12 @@ class Backend:
     def stop(self, version: Version | None, data: Path) -> None:
         self.service.disable()
         if version is not None and not version.python.is_file():
+            version = None
+        if self.process_control == "sandbox":
+            # An install from before sandbox mode cannot signal inside the
+            # sandbox, so it cannot stop itself. Record the mode now and stop
+            # with this installer's own Runtime, which reads it.
+            self._write_process_control(data)
             version = None
         discovery = data / "runtime" / "discovery.json"
         owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
@@ -452,6 +462,13 @@ class Backend:
         realm = self.workspace(version, data)
         return self.runtime(version, data, "workspace", "attach", "--realm-root", realm["realm_root"],
                             "--realm-id", realm["realm_id"], *self._process_control_args(), profile=True)
+
+    def _write_process_control(self, data: Path) -> None:
+        from runtime_protocol import process_control
+
+        support = data / "runtime"
+        if support.is_dir() and process_control.read_setting(support) != self.process_control:
+            process_control.write_setting(support, self.process_control)
 
     def _process_control_args(self) -> tuple[str, ...]:
         return ("--process-control", self.process_control) if self.process_control else ()
