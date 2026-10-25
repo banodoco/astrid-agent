@@ -211,7 +211,7 @@ for name in ("agent", "runtime"):
 (staging / "install-manifest.json").write_text(json.dumps(pins, indent=2) + "\n", encoding="utf-8")
 EOF
     in_sandbox "rm -rf '$guest_home/$stage_name'"
-    osh sandbox upload "$sandbox" "$staging/$stage_name" "$guest_home" >/dev/null
+    osh sandbox upload --no-git-ignore "$sandbox" "$staging/$stage_name" "$guest_home" >/dev/null
     rm -rf "$staging"
     trap - EXIT
 }
@@ -361,7 +361,7 @@ setup_comfyui() {
     mkdir -p "$staging/astrid-openshell"
     cp "$here/sandbox/comfyui-relay.py" "$staging/astrid-openshell/"
     in_sandbox "rm -f '$guest_home/astrid-openshell/comfyui-relay.py'"
-    osh sandbox upload "$sandbox" "$staging/astrid-openshell" "$guest_home" >/dev/null
+    osh sandbox upload --no-git-ignore "$sandbox" "$staging/astrid-openshell" "$guest_home" >/dev/null
     rm -rf "$staging"
     # Restart so an updated relay script takes effect.
     in_sandbox "d=\$HOME/astrid-openshell; [ -f \$d/relay.pid ] && kill \$(cat \$d/relay.pid) 2>/dev/null; rm -f \$d/relay.pid"
@@ -554,7 +554,7 @@ cmd_mcp() {
             mkdir -p "$staging/astrid-mcp"
             cp "$src" "$staging/astrid-mcp/mcp_server.py"
             in_sandbox "rm -rf \$HOME/astrid-mcp" >&2
-            osh sandbox upload "$sandbox" "$staging/astrid-mcp" "$guest_home" >&2 2>&1
+            osh sandbox upload --no-git-ignore "$sandbox" "$staging/astrid-mcp" "$guest_home" >&2 2>&1
             rm -rf "$staging"
         fi
         launch='exec "$py" -I "$HOME/astrid-mcp/mcp_server.py"'
