@@ -6,7 +6,13 @@ from the same argparse parsers that `scripts/gen_cli_surface.py` walks, so the
 tools follow the CLI. Pack skills (SKILL.md) are served as MCP prompts.
 
 Each tool call runs `astrid-tools <family> <verb...> ... --json` and returns its
-JSON envelope. Tools are annotated read-only or mutating so clients can ask
+JSON envelope. JSON-valued flags take real JSON; file arguments take the file's
+text (the server writes and reads private temporary files), so a client that
+cannot see Astrid's filesystem, for example one outside a sandbox, can use them.
+Three more tools serve what the CLI lacks: `skills_list`/`skill_get` (the pack
+skills, also offered as MCP prompts, which only users can invoke) and the
+`timeline_document_*` tools (the rendering pack's JSON timeline route, needed to
+put the first clips on an empty timeline). Tools are annotated read-only or mutating so clients can ask
 before changes. Preference writes are not exposed: preferences are added to
 every agent's system prompt, so an outside agent must not be able to set them.
 
@@ -23,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +79,13 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
         return {"type": "boolean"}
     if isinstance(action, argparse._CountAction):
         return {"type": "integer", "minimum": 0}
+    kind = _value_kind(action)
+    if kind == "json-object":
+        return {"type": "object"}
+    if kind == "json-array":
+        return {"type": "array"}
+    if kind == "file":
+        return {"type": "string"}
     item: dict[str, Any] = {"type": "string"}
     if action.type is int:
         item = {"type": "integer"}
@@ -82,6 +96,18 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
     if isinstance(action, argparse._AppendAction) or action.nargs in ("*", "+") or isinstance(action.nargs, int) and action.nargs > 1:
         return {"type": "array", "items": item}
     return item
+
+
+def _value_kind(action: argparse.Action) -> str:
+    """How a value travels: plain, JSON, or a file whose text the server handles."""
+    if action.type is Path:
+        return "file"
+    name = getattr(action.type, "__name__", "")
+    if "json_array" in name:
+        return "json-array"
+    if "json" in name or name == "_parse_execution_request":
+        return "json-object"
+    return "plain"
 
 
 def _tool_name(path: tuple[str, ...]) -> str:
@@ -104,17 +130,24 @@ def build_tools() -> dict[str, dict[str, Any]]:
                 if "--json" in action.option_strings:
                     supports_json = True
                     continue
+                value_kind = _value_kind(action)
+                output_file = value_kind == "file" and path[-1] == "checkout"
+                args.append({"dest": action.dest, "option": action.option_strings[0] if action.option_strings else None,
+                             "kind": type(action).__name__, "nargs": action.nargs, "value": value_kind,
+                             "output": output_file})
+                if output_file:
+                    continue  # the server picks the path and returns the file's text
                 schema = _schema(action)
                 if action.help and action.help != argparse.SUPPRESS:
                     try:
                         schema["description"] = action.help % {"default": action.default, "prog": "astrid"}
                     except (KeyError, TypeError, ValueError):
                         schema["description"] = action.help
+                if value_kind == "file":
+                    schema["description"] = "The file's text (written to a private temporary file for Astrid)."
                 properties[action.dest] = schema
                 if action.required or (not action.option_strings and action.nargs not in ("?", "*")):
                     required.append(action.dest)
-                args.append({"dest": action.dest, "option": action.option_strings[0] if action.option_strings else None,
-                             "kind": type(action).__name__, "nargs": action.nargs})
             verb = path[-1]
             read_only = verb in READ_ONLY_VERBS
             description = summary or leaf.description or f"astrid-tools {' '.join(path)}"
@@ -129,21 +162,42 @@ def build_tools() -> dict[str, dict[str, Any]]:
                                     "destructiveHint": (not read_only) and verb in DESTRUCTIVE_VERBS,
                                     "openWorldHint": False},
                 },
-                "path": path, "args": args, "json": supports_json,
+                "kind": "cli", "path": path, "args": args, "json": supports_json,
             }
     return tools
 
 
-def argv_for(tool: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
-    unknown = set(arguments) - {a["dest"] for a in tool["args"]}
+def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | None = None,
+             outputs: dict[str, Path] | None = None) -> list[str]:
+    """CLI argv for a tool call. File arguments are written to (or, for checkout
+    outputs, reserved in) ``workdir``; ``outputs`` collects files to read back."""
+    unknown = set(arguments) - {a["dest"] for a in tool["args"] if not a.get("output")}
     if unknown:
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
     argv = list(tool["path"])
     flags: list[str] = []
     for spec in tool["args"]:
-        if spec["dest"] not in arguments or arguments[spec["dest"]] is None:
+        if spec.get("output"):
+            if workdir is None:
+                raise ValueError("file output needs a working directory")
+            target = workdir / f"{spec['dest']}.out"
+            if outputs is not None:
+                outputs[spec["dest"]] = target
+            value = str(target)
+        elif spec["dest"] not in arguments or arguments[spec["dest"]] is None:
             continue
-        value = arguments[spec["dest"]]
+        else:
+            value = arguments[spec["dest"]]
+        if spec.get("value") == "file" and not spec.get("output"):
+            if workdir is None:
+                raise ValueError("file argument needs a working directory")
+            if not isinstance(value, str):
+                raise TypeError(f"{spec['dest']} must be the file's text")
+            target = workdir / f"{spec['dest']}.in"
+            target.write_text(value, encoding="utf-8")
+            value = str(target)
+        elif spec.get("value", "").startswith("json") and not isinstance(value, str):
+            value = json.dumps(value)
         option, kind = spec["option"], spec["kind"]
         if option is None:
             argv += [str(v) for v in value] if isinstance(value, list) else [str(value)]
@@ -172,19 +226,54 @@ def _astrid_env() -> dict[str, str]:
     return env
 
 
-def call_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
+def _text(text: str, *, error: bool = False, structured: Any = None) -> dict[str, Any]:
+    result: dict[str, Any] = {"content": [{"type": "text", "text": text}], "isError": error}
+    if structured is not None:
+        result["structuredContent"] = structured
+    return result
+
+
+def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess | dict[str, Any]:
     try:
-        argv = argv_for(tool, arguments)
-    except (TypeError, ValueError) as exc:
-        return {"content": [{"type": "text", "text": f"invalid arguments: {exc}"}], "isError": True}
-    executable = Path(sys.executable).with_name("astrid-tools")
-    command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
-    try:
-        done = subprocess.run([*command, *argv], capture_output=True, text=True, timeout=TIMEOUT,
+        return subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT, cwd=cwd,
                               stdin=subprocess.DEVNULL, env=_astrid_env())
     except subprocess.TimeoutExpired:
-        return {"content": [{"type": "text", "text": f"astrid {' '.join(argv)} timed out after {TIMEOUT:.0f}s"}],
-                "isError": True}
+        return _text(f"{' '.join(argv[-4:])} timed out after {TIMEOUT:.0f}s", error=True)
+
+
+def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
+    kind = tool.get("kind", "cli")
+    if kind == "skills_list":
+        skills = [{"name": p["definition"]["name"], "description": p["definition"]["description"]}
+                  for p in (state or {}).get("prompts", {}).values()]
+        return _text(json.dumps(skills, indent=1), structured={"skills": skills})
+    if kind == "skill_get":
+        prompt = (state or {}).get("prompts", {}).get(arguments.get("name"))
+        if prompt is None:
+            return _text(f"unknown skill {arguments.get('name')!r}; see skills_list", error=True)
+        return _text(prompt["text"])
+    with tempfile.TemporaryDirectory(prefix="astrid-mcp-") as scratch:
+        workdir = Path(scratch)
+        if kind == "timeline_document":
+            return _timeline_document(tool["command"], arguments, workdir)
+        outputs: dict[str, Path] = {}
+        try:
+            argv = argv_for(tool, arguments, workdir, outputs)
+        except (TypeError, ValueError) as exc:
+            return _text(f"invalid arguments: {exc}", error=True)
+        executable = Path(sys.executable).with_name("astrid-tools")
+        command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
+        done = _run([*command, *argv], workdir)
+        if isinstance(done, dict):
+            return done
+        result = _cli_result(done)
+        for dest, path in outputs.items():
+            if path.is_file():
+                result["content"].append({"type": "text", "text": f"{dest} contents:\n" + path.read_text(encoding="utf-8")})
+        return result
+
+
+def _cli_result(done: subprocess.CompletedProcess) -> dict[str, Any]:
     text = done.stdout.strip() or done.stderr.strip()
     result: dict[str, Any] = {"content": [{"type": "text", "text": text or f"exit status {done.returncode}"}],
                               "isError": done.returncode != 0}
@@ -198,6 +287,70 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]
     if done.returncode != 0 and done.stderr.strip() and done.stdout.strip():
         result["content"].append({"type": "text", "text": done.stderr.strip()[-4000:]})
     return result
+
+
+# --- timeline documents (the rendering pack's JSON route) ---------------------
+
+def _timeline_script() -> Path:
+    import astrid
+
+    return Path(astrid.__file__).resolve().parent / "packs" / "rendering" / "docs" / "scripts" / "timeline_document.py"
+
+
+def _timeline_document(command: str, arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
+    document = workdir / "timeline.json"
+    argv = [sys.executable, str(_timeline_script()), command, "--file", str(document)]
+    try:
+        if command == "checkout":
+            argv += ["--project", str(arguments["project"]), "--timeline", str(arguments["timeline"])]
+        else:
+            body = arguments["document"]
+            document.write_text(body if isinstance(body, str) else json.dumps(body, indent=2), encoding="utf-8")
+            if command == "publish":
+                argv += ["--idempotency-key", str(arguments["idempotency_key"])]
+    except KeyError as exc:
+        return _text(f"invalid arguments: missing {exc.args[0]}", error=True)
+    done = _run(argv, workdir)
+    if isinstance(done, dict):
+        return done
+    result = _cli_result(done)
+    extra = {"checkout": document, "check": document.with_suffix(".check.json")}.get(command)
+    if done.returncode == 0 and extra is not None and extra.is_file():
+        result["content"].append({"type": "text", "text": extra.read_text(encoding="utf-8")})
+    return result
+
+
+def _extra_tools() -> dict[str, dict[str, Any]]:
+    def tool(name, description, properties, required, read_only, **extra):
+        return name, {"definition": {
+            "name": name, "title": "astrid " + name.replace("_", " "), "description": description,
+            "inputSchema": {"type": "object", "properties": properties, "required": required,
+                            "additionalProperties": False},
+            "annotations": {"readOnlyHint": read_only, "destructiveHint": False, "openWorldHint": False},
+        }, **extra}
+    document = {"type": ["object", "string"],
+                "description": "The timeline document from timeline_document_checkout, edited (JSON)."}
+    return dict([
+        tool("skills_list", "List Astrid's pack skills (name and when to use each).", {}, [], True,
+             kind="skills_list"),
+        tool("skill_get", "Read one Astrid skill (SKILL.md) before multi-step work in its area.",
+             {"name": {"type": "string", "description": "Skill name from skills_list."}}, ["name"], True,
+             kind="skill_get"),
+        tool("timeline_document_checkout",
+             "Check out a timeline as one editable JSON document (placements, shots, clips). "
+             "Use it to put the first clips on an empty timeline, then check and publish it.",
+             {"project": {"type": "string", "description": "Project slug or ID."},
+              "timeline": {"type": "string", "description": "Timeline slug or ID."}},
+             ["project", "timeline"], True, kind="timeline_document", command="checkout"),
+        tool("timeline_document_check",
+             "Validate an edited timeline document and show its diff and media imports, without publishing.",
+             {"document": document}, ["document"], True, kind="timeline_document", command="check"),
+        tool("timeline_document_publish",
+             "Publish an edited timeline document as one new timeline revision.",
+             {"document": document,
+              "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
+             ["document", "idempotency_key"], False, kind="timeline_document", command="publish"),
+    ])
 
 
 # --- prompts from pack skills -----------------------------------------------
@@ -269,7 +422,7 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return error(-32602, "arguments must be an object")
-        return ok(call_tool(tool, arguments))
+        return ok(call_tool(tool, arguments, state))
     if method == "prompts/list":
         return ok({"prompts": [p["definition"] for p in state["prompts"].values()]})
     if method == "prompts/get":
@@ -282,7 +435,7 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
 
 
 def main() -> int:
-    state = {"tools": build_tools(), "prompts": build_prompts()}
+    state = {"tools": {**build_tools(), **_extra_tools()}, "prompts": build_prompts()}
     log(f"ready: {len(state['tools'])} tools, {len(state['prompts'])} prompts")
     for line in sys.stdin:
         if not line.strip():

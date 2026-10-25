@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+from pathlib import Path
 
 from astrid import mcp_server
 
@@ -83,3 +85,78 @@ def test_frontmatter_handles_quotes_and_folded_values():
     meta, body = mcp_server._frontmatter('---\nname: "astrid"\ndescription: >\n  Two\n  lines.\n---\nBody\n')
     assert meta == {"name": "astrid", "description": "Two lines."}
     assert body == "Body\n"
+
+
+def _json_and_file_parser() -> argparse.ArgumentParser:
+    def _parse_json_object(text):
+        return json.loads(text)
+
+    def _parse_json_array(text):
+        return json.loads(text)
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers()
+    create = sub.add_parser("create", help="Create a task.")
+    create.add_argument("--spec", type=_parse_json_object, required=True)
+    create.add_argument("--inputs", type=_parse_json_array)
+    checkin = sub.add_parser("checkin", help="Check a file in.")
+    checkin.add_argument("file", type=Path)
+    checkout = sub.add_parser("checkout", help="Check a file out.")
+    checkout.add_argument("--file", type=Path, required=True)
+    return parser
+
+
+def test_json_flags_take_real_json(monkeypatch):
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"tasks": _json_and_file_parser()})
+    tools = mcp_server.build_tools()
+    schema = tools["tasks_create"]["definition"]["inputSchema"]["properties"]
+    assert schema["spec"]["type"] == "object" and schema["inputs"]["type"] == "array"
+    argv = mcp_server.argv_for(tools["tasks_create"], {"spec": {"size": 1}, "inputs": ["a"]})
+    assert argv == ["tasks", "create", "--spec", '{"size": 1}', "--inputs", '["a"]']
+
+
+def test_file_arguments_travel_as_text(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"documents": _json_and_file_parser()})
+    tools = mcp_server.build_tools()
+    argv = mcp_server.argv_for(tools["documents_checkin"], {"file": "# notes\n"}, tmp_path)
+    assert argv[:2] == ["documents", "checkin"] and Path(argv[2]).read_text() == "# notes\n"
+    checkout = tools["documents_checkout"]
+    assert "file" not in checkout["definition"]["inputSchema"]["properties"]
+    outputs = {}
+    argv = mcp_server.argv_for(checkout, {}, tmp_path, outputs)
+    assert argv == ["documents", "checkout", "--file", str(tmp_path / "file.out")]
+    assert outputs == {"file": tmp_path / "file.out"} and not outputs["file"].exists()
+
+
+def test_skills_are_tools_too():
+    state = {"prompts": {"vibecomfy": {"definition": {"name": "vibecomfy", "description": "ComfyUI"}, "text": "Body"}}}
+    tools = mcp_server._extra_tools()
+    listed = mcp_server.call_tool(tools["skills_list"], {}, state)
+    assert listed["structuredContent"]["skills"] == [{"name": "vibecomfy", "description": "ComfyUI"}]
+    assert mcp_server.call_tool(tools["skill_get"], {"name": "vibecomfy"}, state)["content"][0]["text"] == "Body"
+    assert mcp_server.call_tool(tools["skill_get"], {"name": "nope"}, state)["isError"] is True
+
+
+def test_timeline_document_tools_wrap_the_rendering_script(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        document = Path(argv[argv.index("--file") + 1])
+        if argv[2] == "checkout":
+            document.write_text('{"placements": []}')
+        elif argv[2] == "check":
+            document.with_suffix(".check.json").write_text('{"validation": {"ok": true}}')
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    monkeypatch.setattr(mcp_server, "_timeline_script", lambda: Path("/astrid/timeline_document.py"))
+    tools = mcp_server._extra_tools()
+    out = mcp_server.call_tool(tools["timeline_document_checkout"], {"project": "p", "timeline": "t"})
+    assert calls[-1][2:4] == ["checkout", "--file"] and calls[-1][-4:] == ["--project", "p", "--timeline", "t"]
+    assert out["content"][-1]["text"] == '{"placements": []}'
+    checked = mcp_server.call_tool(tools["timeline_document_check"], {"document": {"placements": []}})
+    assert '"ok": true' in checked["content"][-1]["text"]
+    mcp_server.call_tool(tools["timeline_document_publish"], {"document": "{}", "idempotency_key": "k1"})
+    assert calls[-1][-2:] == ["--idempotency-key", "k1"]
+    assert tools["timeline_document_publish"]["definition"]["annotations"]["readOnlyHint"] is False
