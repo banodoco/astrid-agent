@@ -39,6 +39,7 @@ INSTALL_HOSTS = [
     "astral.sh", "releases.astral.sh", "github.com", "codeload.github.com",
     "objects.githubusercontent.com", "release-assets.githubusercontent.com", "nodejs.org",
     "johnvansickle.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+    "remotion.media",  # Remotion's headless browser (fetched on first render; install-time fetch is a TODO)
 ]
 INSTALL_BINARIES = ["/usr/bin/curl", *CATALOG["binaries"]["astrid_tools"]]
 

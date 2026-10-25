@@ -144,6 +144,17 @@
         }
       ]
     },
+    "remotion_browser": {
+      "binaries": [
+        "astrid_tools"
+      ],
+      "endpoints": [
+        {
+          "host": "remotion.media",
+          "access": "read-only"
+        }
+      ]
+    },
     "openai_chatgpt": {
       "binaries": [
         "codex"
@@ -203,13 +214,14 @@
     },
     "dev": {
       "title": "Dev sources, read-only",
-      "summary": "also download from PyPI, npm, GitHub and Hugging Face (no uploads or pushes)",
+      "summary": "also download from PyPI, npm, GitHub, Hugging Face and Remotion's browser host (no uploads or pushes)",
       "rules": [
         "pypi",
         "npm",
         "github",
         "huggingface_files",
-        "huggingface_api"
+        "huggingface_api",
+        "remotion_browser"
       ]
     }
   },
