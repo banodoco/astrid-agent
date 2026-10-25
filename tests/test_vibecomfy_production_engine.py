@@ -355,13 +355,13 @@ def test_managed_result_is_rebased_and_keeps_producer_identity(
         "managed-generation/managed-generation-result.json"
     )
     assert manifest["managed_generation_result"]["outputs"][0]["path"] == (
-        "outputs/0000-video.mp4"
+        "outputs/final.mp4"
     )
-    assert manifest["outputs"][0]["path"] == "outputs/0000-video.mp4"
+    assert manifest["outputs"][0]["path"] == "outputs/final.mp4"
     receipt = next(item for item in manifest["outputs"] if item["name"] == "result_manifest")
     assert receipt["path"] == "outputs/managed-generation-result.json"
     assert receipt["media_type"] == "application/json"
-    assert (tmp_path / "host-spool" / "outputs" / "0000-video.mp4").read_bytes() == b"managed-video"
+    assert (tmp_path / "host-spool" / "outputs" / "final.mp4").read_bytes() == b"managed-video"
     assert (tmp_path / "host-spool" / "outputs" / "managed-generation-result.json").is_file()
 
 
@@ -585,3 +585,16 @@ def test_local_server_failure_has_runnable_discovery_hint(tmp_path, monkeypatch,
     assert "missing nodes: MissingNode" in error
     assert "recovery: python3 -m astrid.packs.vibecomfy.local scan" in error
     assert "astrid executors" not in error
+
+
+def test_generated_outputs_are_named_after_the_users_save_prefix():
+    # local_server_bundle turns SaveVideo's "astrid/fasth3_t2v" into
+    # "astrid/fasth3_t2v_astrid_<attempt>"; ComfyUI adds "_00001_".
+    run = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
+    taken = {"managed-generation-result.json"}
+    name = run._friendly_output_name
+    assert name("fasth3_t2v_astrid_b1b970705073424b_00001_.mp4", "SaveVideo", taken) == "fasth3_t2v.mp4"
+    assert name("fasth3_t2v_astrid_b1b970705073424b_00002_.mp4", "SaveVideo", taken) == "fasth3_t2v-2.mp4"
+    assert name("_astrid_b1b97070_00001_.png", "SaveImage", taken) == "SaveImage.png"
+    assert name("lantern scene (v2)_00003_.MP4", "SaveVideo", taken) == "lantern_scene_v2.mp4"
+    assert name("managed-generation-result.json", "x", taken) == "managed-generation-result-2.json"

@@ -12,6 +12,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -216,6 +217,31 @@ def _stage_managed_assets(
     }
 
 
+# ``local_server_bundle`` appends "_astrid_<attempt>" to each SaveVideo/
+# SaveImage prefix (identities carry no "_"), and ComfyUI adds a counter.
+_ASTRID_PREFIX_TOKEN = re.compile(r"_astrid_[A-Za-z0-9.:-]+")
+_COMFY_COUNTER = re.compile(r"_\d{4,6}_?$")
+
+
+def _friendly_output_name(source_name: str, fallback: str, taken: set[str]) -> str:
+    """The project-facing file name for a generated output.
+
+    The user's own SaveVideo/SaveImage prefix ("astrid/fasth3_t2v" ->
+    "fasth3_t2v.mp4"), without the attempt token and ComfyUI's counter;
+    a repeat within one run gets "-2", "-3".
+    """
+    path = Path(source_name)
+    stem = _COMFY_COUNTER.sub("", _ASTRID_PREFIX_TOKEN.sub("", path.stem))
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")[:120] or fallback
+    suffix = path.suffix.lower()
+    name, number = f"{stem}{suffix}", 1
+    while name in taken:
+        number += 1
+        name = f"{stem}-{number}{suffix}"
+    taken.add(name)
+    return name
+
+
 def _materialize_managed_generation_result(
     output_root: Path,
     production_result: Any,
@@ -259,6 +285,7 @@ def _materialize_managed_generation_result(
     outputs_root.mkdir(parents=True, exist_ok=True)
     rebased_payload = result.to_dict()
     rebased_outputs: list[dict[str, Any]] = []
+    taken = {"managed-generation-result.json"}
     for output in result.outputs:
         source = (producer_root / output.path).resolve(strict=True)
         try:
@@ -267,7 +294,7 @@ def _materialize_managed_generation_result(
             raise AstridValueError(f"managed output escapes producer custody: {output.path}") from exc
         if not source.is_file() or source.is_symlink():
             raise AstridValueError(f"managed output is not a regular file: {output.path}")
-        destination = outputs_root / f"{output.ordinal:04d}-{output.output_port}{source.suffix}"
+        destination = outputs_root / _friendly_output_name(source.name, output.output_port, taken)
         if destination.exists():
             raise AstridValueError(f"managed output destination collides: {destination.name}")
         shutil.copy2(source, destination)
@@ -642,8 +669,9 @@ def _run_and_settle(
     artifacts_root = output_root / "artifacts"
     artifacts_root.mkdir(parents=True, exist_ok=True)
     outputs: list[dict[str, Any]] = []
+    taken: set[str] = set()
     for ordinal, source in enumerate(sources):
-        destination = artifacts_root / f"{ordinal:04d}-{source.name}"
+        destination = artifacts_root / _friendly_output_name(source.name, "output", taken)
         if source != destination.resolve():
             shutil.copy2(source, destination)
         outputs.append(
