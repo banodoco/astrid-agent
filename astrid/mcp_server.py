@@ -30,6 +30,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -255,6 +256,8 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
     with tempfile.TemporaryDirectory(prefix="astrid-mcp-") as scratch:
         workdir = Path(scratch)
         if kind == "timeline_document":
+            if tool["command"] == "add_shot":
+                return _timeline_document_add_shot(arguments)
             return _timeline_document(tool["command"], arguments, workdir)
         outputs: dict[str, Path] = {}
         try:
@@ -267,9 +270,12 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         if isinstance(done, dict):
             return done
         result = _cli_result(done)
-        for dest, path in outputs.items():
-            if path.is_file():
-                result["content"].append({"type": "text", "text": f"{dest} contents:\n" + path.read_text(encoding="utf-8")})
+        files = {dest: path.read_text(encoding="utf-8") for dest, path in outputs.items() if path.is_file()}
+        for dest, text in files.items():
+            result["content"].append({"type": "text", "text": f"{dest} contents:\n{text}"})
+        if files:
+            # Clients that show structuredContent (Claude Code) drop the extra text blocks.
+            result["structuredContent"] = {**result.get("structuredContent", {}), "files": files}
         return result
 
 
@@ -314,10 +320,37 @@ def _timeline_document(command: str, arguments: dict[str, Any], workdir: Path) -
     if isinstance(done, dict):
         return done
     result = _cli_result(done)
-    extra = {"checkout": document, "check": document.with_suffix(".check.json")}.get(command)
-    if done.returncode == 0 and extra is not None and extra.is_file():
-        result["content"].append({"type": "text", "text": extra.read_text(encoding="utf-8")})
+    extra = {"checkout": ("document", document), "check": ("report", document.with_suffix(".check.json"))}.get(command)
+    if done.returncode == 0 and extra is not None and extra[1].is_file():
+        text = extra[1].read_text(encoding="utf-8")
+        result["content"].append({"type": "text", "text": text})
+        # Clients that show structuredContent (Claude Code) drop the extra text blocks.
+        result["structuredContent"] = {"summary": result.get("structuredContent"), extra[0]: json.loads(text)}
     return result
+
+
+def _timeline_document_add_shot(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Seed one new, empty shot (optionally placed) with the SDK's own helper; no Runtime call."""
+    from astrid.sdk.timeline_editing import TimelineEditError, add_authoring_shot
+
+    try:
+        body = arguments["document"]
+        work = json.loads(body) if isinstance(body, str) else body
+        before = {row.get("shot_id") for row in work.get("placements", [])}
+        # An occurrence ID is what makes the helper place the shot on the timeline.
+        occurrence = arguments.get("occurrence_id") or f"occurrence-{uuid.uuid4().hex[:12]}"
+        shot = add_authoring_shot(work, name=arguments.get("name"), shot_id=arguments.get("shot_id"),
+                                  occurrence_id=occurrence, start_ms=arguments.get("start_ms", 0))
+        shot_id = next((key for key, value in work["shots"].items() if value is shot), arguments.get("shot_id"))
+        if "duration_ms" in arguments:
+            for row in work.get("placements", []):
+                if row.get("shot_id") == shot_id and row.get("shot_id") not in before:
+                    row["duration_ms"] = arguments["duration_ms"]
+    except (KeyError, TypeError, ValueError, TimelineEditError) as exc:
+        return _text(f"could not add a shot: {exc}", error=True)
+    summary = {"shot_id": shot_id, "placements": len(work.get("placements", [])),
+               "next": "add tracks and clips to document['shots'][shot_id]['internal_timeline'], then check and publish"}
+    return _text(json.dumps(summary), structured={**summary, "document": work})
 
 
 def _extra_tools() -> dict[str, dict[str, Any]]:
@@ -342,6 +375,18 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"project": {"type": "string", "description": "Project slug or ID."},
               "timeline": {"type": "string", "description": "Timeline slug or ID."}},
              ["project", "timeline"], True, kind="timeline_document", command="checkout"),
+        tool("timeline_document_add_shot",
+             "Add one new, empty shot to a timeline document (Astrid SDK add_authoring_shot) and place it; "
+             "returns the updated document. For an empty timeline: checkout, add_shot, put a track and clips "
+             "in document['shots'][shot_id]['internal_timeline'] (clip times in seconds: at, hold/from/to), "
+             "then check and publish. The rendering skill's document-checkout reference has the clip fields.",
+             {"document": document,
+              "name": {"type": "string", "description": "Shot display name."},
+              "shot_id": {"type": "string", "description": "Optional explicit shot ID."},
+              "occurrence_id": {"type": "string", "description": "Optional explicit placement (occurrence) ID."},
+              "start_ms": {"type": "number", "description": "Placement start in milliseconds (default 0)."},
+              "duration_ms": {"type": "number", "description": "Placement window duration in milliseconds."}},
+             ["document"], True, kind="timeline_document", command="add_shot"),
         tool("timeline_document_check",
              "Validate an edited timeline document and show its diff and media imports, without publishing.",
              {"document": document}, ["document"], True, kind="timeline_document", command="check"),

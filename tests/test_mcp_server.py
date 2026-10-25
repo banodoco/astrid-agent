@@ -154,9 +154,39 @@ def test_timeline_document_tools_wrap_the_rendering_script(monkeypatch, tmp_path
     tools = mcp_server._extra_tools()
     out = mcp_server.call_tool(tools["timeline_document_checkout"], {"project": "p", "timeline": "t"})
     assert calls[-1][2:4] == ["checkout", "--file"] and calls[-1][-4:] == ["--project", "p", "--timeline", "t"]
-    assert out["content"][-1]["text"] == '{"placements": []}'
+    # Clients such as Claude Code show only structuredContent when it is present.
+    assert out["structuredContent"]["document"] == {"placements": []}
     checked = mcp_server.call_tool(tools["timeline_document_check"], {"document": {"placements": []}})
-    assert '"ok": true' in checked["content"][-1]["text"]
+    assert checked["structuredContent"]["report"] == {"validation": {"ok": True}}
     mcp_server.call_tool(tools["timeline_document_publish"], {"document": "{}", "idempotency_key": "k1"})
     assert calls[-1][-2:] == ["--idempotency-key", "k1"]
     assert tools["timeline_document_publish"]["definition"]["annotations"]["readOnlyHint"] is False
+
+
+def test_add_shot_places_a_new_empty_shot():
+    from astrid.sdk.timeline_editing import add_authoring_shot  # noqa: F401  (real SDK helper)
+
+    document = {"project_id": "p", "timeline_id": "t", "shots": {}, "placements": [],
+                "source_mapping": {"shots": {}, "placements": {}}}
+    result = mcp_server.call_tool(mcp_server._extra_tools()["timeline_document_add_shot"],
+                                  {"document": document, "name": "Title", "duration_ms": 3000})
+    assert result["isError"] is False
+    work = result["structuredContent"]["document"]
+    shot_id = result["structuredContent"]["shot_id"]
+    assert work["shots"][shot_id]["payload"]["name"] == "Title"
+    [row] = work["placements"]
+    assert (row["shot_id"], row["duration_ms"], row["placement"]["start_ms"]) == (shot_id, 3000, 0)
+
+
+def test_file_outputs_are_in_structured_content(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"documents": _json_and_file_parser()})
+    tool = mcp_server.build_tools()["documents_checkout"]
+
+    def fake_run(argv, cwd):
+        Path(argv[argv.index("--file") + 1]).write_text("# working copy")
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "data": {}}', stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    result = mcp_server.call_tool(tool, {})
+    assert result["structuredContent"]["files"] == {"file": "# working copy"}
+    assert result["structuredContent"]["ok"] is True
