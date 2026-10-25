@@ -163,7 +163,8 @@ def test_load_workflow_path_unions_ready_template_and_ui_canonicalization(
     assert loaded_ready.workflow_revision == "ready-revision"
     assert (loaded_ui.model_id, loaded_ui.template_id) == ("vibecomfy", "ui-identity")
     assert loaded_ui.workflow_revision == "ui-revision"
-    canonicalize.assert_called_once_with(ui.resolve(), {"nodes": [], "links": []}, (tmp_path / "ui-scratch").resolve())
+    canonicalize.assert_called_once_with(ui.resolve(), {"nodes": [], "links": []}, (tmp_path / "ui-scratch").resolve(),
+                                         schema_url="")
 
 
 def test_canonical_bundle_compiles_through_single_production_boundary(
