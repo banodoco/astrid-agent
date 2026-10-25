@@ -69,6 +69,16 @@ def _render_compatible_projection(
         if isinstance(raw_entry, dict):
             for metadata_key in EDITOR_ASSET_METADATA_KEYS & set(raw_entry):
                 del raw_entry[metadata_key]
+            # Authoring media import (astrid.sdk.authoring_media) describes an
+            # imported file with media_type/width/height/duration_seconds; the
+            # renderer's registry names those resolution and duration.
+            width, height = raw_entry.pop("width", None), raw_entry.pop("height", None)
+            if width and height and "resolution" not in raw_entry:
+                raw_entry["resolution"] = f"{width}x{height}"
+            seconds = raw_entry.pop("duration_seconds", None)
+            if seconds is not None and "duration" not in raw_entry:
+                raw_entry["duration"] = seconds
+            raw_entry.pop("media_type", None)
 
     def media_identity(value: Any) -> str | None:
         if not isinstance(value, str) or not value.strip():
