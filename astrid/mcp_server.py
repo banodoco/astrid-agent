@@ -493,7 +493,7 @@ def main() -> int:
         else:
             try:
                 reply = handle(message, state) if isinstance(message, dict) else None
-            except Exception as exc:  # one bad request must not end the session
+            except Exception as exc:  # noqa: BLE001 - one bad request must not end the session
                 log(f"error handling {message.get('method')}: {exc!r}")
                 reply = {"jsonrpc": "2.0", "id": message.get("id"),
                          "error": {"code": -32603, "message": str(exc)}}
