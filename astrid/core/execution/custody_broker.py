@@ -29,7 +29,7 @@ from typing import Any, Callable, Mapping, Sequence
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
-from astrid.core.execution.platform_helpers import owned_by_current_user
+from astrid.core.execution.platform_helpers import owned_by_current_user, process_control_report
 
 SOL_LOCAL = 0
 LOCAL_PEERTOKEN = 0x006
@@ -2878,6 +2878,47 @@ def _check_reconciliation_deadline(deadline: float) -> None:
 _PIDFD_RELEASED = object()
 
 
+class _CheckedPidTarget:
+    """Sandbox process control on Linux, where pidfd_open answers ENOSYS.
+
+    No kernel handle exists to retain. Our own unreaped launch is signalled
+    through its Popen, which is as exact as a pidfd until it is reaped (and a
+    no-op after). Any other incarnation is signalled through Runtime's
+    signal_process, which rechecks its /proc start time before kill(pid).
+    """
+
+    __slots__ = ("identity",)
+
+    def __init__(self, identity: Mapping[str, Any] | None):
+        self.identity = identity  # None: the held launch itself
+
+    def signal(self, process: Any, signum: int) -> None:
+        if self.identity is None:
+            process.send_signal(signum)
+            return
+        try:
+            platform.signal_process(self.identity, signum)
+        except OSError as exc:
+            if str(exc) == "process incarnation changed":
+                # It exited (its pid may be reused): nothing of ours is left to signal.
+                raise ProcessLookupError(errno.ESRCH, str(exc)) from exc
+            raise
+
+
+def _checked_pid_target(pid: int, birth: str, *, held: bool) -> _CheckedPidTarget | None:
+    """Bind a sandbox registration to Runtime's identity; None when it is gone or differs."""
+    if held:
+        return _CheckedPidTarget(None)
+    identity = platform.process_identity(pid)
+    if identity is None or identity.get("birth_id") != "proc-start-ticks:" + birth.rpartition(":")[2]:
+        return None
+    return _CheckedPidTarget(identity)
+
+
+def _sandbox_without_pidfd(exc: OSError) -> bool:
+    return exc.errno == errno.ENOSYS and platform.process_control() == "sandbox"
+
+
 class ProcessCustody:
     """Retain every registered incarnation independently of ancestry/session.
 
@@ -2911,9 +2952,9 @@ class ProcessCustody:
         if sys.platform == "win32":
             return list(argv), {}
         if sys.platform != "darwin":
-            if not (callable(getattr(platform, "pidfd_open", None))
-                    and callable(getattr(platform, "pidfd_send_signal", None))):
-                raise CustodyError("incarnation-bound kernel custody is unavailable")
+            probe = process_control_report()
+            if not probe["ok"]:
+                raise CustodyError(probe.get("reason") or "incarnation-bound kernel custody is unavailable")
             return list(argv), {}
         policy = _inventory_launch_policy(inventory_context["environment"], inventory_context["cwd"]) if inventory_context is not None and role == "command" else None
         broker = RoleBoundCustodyBroker(
@@ -3165,6 +3206,16 @@ class ProcessCustody:
                     except ProcessLookupError:
                         if held:
                             raise
+                        return
+                    except OSError as exc:
+                        if not _sandbox_without_pidfd(exc):
+                            raise
+                        target = _checked_pid_target(pid, birth, held=held)
+                        if target is None or identify(pid) != birth:
+                            if held:
+                                raise CustodyError("launch changed during sandbox registration") from exc
+                            return
+                        self._handles[pid] = (birth, target)
                         return
                     retained = False
                     try:
@@ -3927,11 +3978,15 @@ class ProcessCustody:
             try:
                 if cleanup_deadline is not None and time.monotonic() >= cleanup_deadline:
                     raise CustodyError("retained cleanup deadline expired")
-                platform.pidfd_send_signal(handle, signum)
+                if isinstance(handle, _CheckedPidTarget):
+                    handle.signal(self.process, signum)
+                else:
+                    platform.pidfd_send_signal(handle, signum)
             except ProcessLookupError:
                 return
             except OSError as exc:
-                raise CustodyError("retained pidfd signal failed") from exc
+                raise CustodyError("retained pidfd signal failed" if type(handle) is int
+                                   else "sandbox start-time-checked signal failed") from exc
 
     def release_pidfds(self, *, only_exited: bool = False) -> None:
         """Close retained Linux pidfds so they do not outlive their incarnations.
@@ -3941,9 +3996,15 @@ class ProcessCustody:
         A signal to a released entry is a no-op, since its target is absent.
         With ``only_exited`` just the pidfds the kernel reports readable (the exact
         incarnation has terminated) are closed; live ones remain the obligation.
+        Sandbox targets without a descriptor (_CheckedPidTarget) retire the same way.
         """
         with self._lock:
             for pid, (birth, handle) in tuple(self._handles.items()):
+                if isinstance(handle, _CheckedPidTarget):
+                    if only_exited and not self._checked_pid_target_exited(handle):
+                        continue
+                    self._handles[pid] = (birth, _PIDFD_RELEASED)
+                    continue
                 if type(handle) is not int:
                     continue
                 if only_exited:
@@ -3956,6 +4017,15 @@ class ProcessCustody:
                     os.close(handle)
                 except OSError:
                     pass
+
+    def _checked_pid_target_exited(self, target: _CheckedPidTarget) -> bool:
+        if target.identity is None:
+            return self.process is not None and self.process.poll() is not None
+        try:
+            current = platform.process_identity(int(target.identity["pid"]))
+        except OSError:
+            return False  # unknown is not exit
+        return current is None or current.get("birth_id") != target.identity.get("birth_id")
 
     def observe(self, members: Mapping[int, str]) -> None:
         with self._lock:

@@ -41,9 +41,10 @@ from urllib.parse import quote, urlsplit
 
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
+from runtime_protocol.errors import ConflictError
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.platform_helpers import owned_by_current_user
+from astrid.core.execution.platform_helpers import configure_process_control, owned_by_current_user
 
 # Startup observations use only the existing private stderr sink. Regular-file
 # latency is not bounded; this diagnostic never changes descriptor flags.
@@ -13892,6 +13893,10 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         support_root = Path(args.support_root).expanduser()
         if not support_root.is_absolute() or support_root.is_symlink() or not support_root.is_dir():
             parser.error("--support-root must be an absolute non-symlink directory")
+        try:
+            configure_process_control(support_root)
+        except (ConflictError, OSError, RuntimeError, ValueError) as exc:
+            parser.error(f"process control: {exc}")
     else:
         support_root = None
     if support_root is not None and args.command in ("run", "supervise"):

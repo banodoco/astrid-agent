@@ -135,7 +135,31 @@ def _main_impl(raw: list[str]) -> int:
 
 
 def _dispatch(raw: list[str]) -> int:
+    _configure_process_control()
     return _gateway_dispatch._dispatch(raw)
+
+
+def _configure_process_control() -> None:
+    """Signal like the selected Runtime install (strict unless it was set up --sandbox).
+
+    Best effort: a root that cannot be resolved or a setting that cannot be read
+    leaves this process strict; Runtime itself refuses to start on a broken setting.
+    """
+    from runtime_protocol import platform
+
+    if platform.process_control() != "strict":
+        return
+    try:
+        from runtime_protocol import process_control
+
+        from astrid.core.execution.platform_helpers import configure_process_control
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+
+        support = resolve_runtime_data_root() / "runtime"
+        if process_control.setting_path(support).exists():
+            configure_process_control(support, announce=False)
+    except Exception:  # noqa: BLE001 - strict is the safe default
+        pass
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import sys
 import subprocess
@@ -164,8 +165,14 @@ def test_windows_cleanup_requires_closed_job(monkeypatch):
     assert job.handle is None
 
 
+@pytest.fixture
+def agent_census_walk(monkeypatch):
+    """Off Linux the agent still walks its own census; Linux uses Runtime's walk."""
+    monkeypatch.setattr(platform_helpers.sys, "platform", "darwin")
+
+
 @pytest.mark.parametrize("birth", [None, "old"])
-def test_recovered_group_refuses_missing_or_reused_birth(monkeypatch, birth):
+def test_recovered_group_refuses_missing_or_reused_birth(agent_census_walk, monkeypatch, birth):
     monkeypatch.setattr(platform, "process_group", lambda pid: 10)
     monkeypatch.setattr(process_group, "_process_snapshot", lambda: {
         100: SimpleNamespace(birth="new", pgid=100),
@@ -175,7 +182,7 @@ def test_recovered_group_refuses_missing_or_reused_birth(monkeypatch, birth):
         platform_helpers.signal_observed_group(100, platform.KILL, leader_birth=birth)
 
 
-def test_recovered_group_signals_only_runtime_bound_members(monkeypatch):
+def test_recovered_group_signals_only_runtime_bound_members(agent_census_walk, monkeypatch):
     monkeypatch.setattr(platform, "process_group", lambda pid: 10)
     census = {100: SimpleNamespace(birth="root", pgid=100),
               101: SimpleNamespace(birth="child", pgid=100),
@@ -190,7 +197,7 @@ def test_recovered_group_signals_only_runtime_bound_members(monkeypatch):
 
 
 @pytest.mark.parametrize("change", ["birth", "group", "missing"])
-def test_recovered_group_refuses_member_drift_before_any_signal(monkeypatch, change):
+def test_recovered_group_refuses_member_drift_before_any_signal(agent_census_walk, monkeypatch, change):
     monkeypatch.setattr(platform, "process_group", lambda pid: 10)
     original = {100: SimpleNamespace(birth="root", pgid=100),
                 101: SimpleNamespace(birth="child", pgid=100)}
@@ -207,6 +214,81 @@ def test_recovered_group_refuses_member_drift_before_any_signal(monkeypatch, cha
 
     with pytest.raises(ProcessLookupError, match="member changed"):
         platform_helpers.signal_observed_group(100, platform.KILL, leader_birth="root")
+
+
+@pytest.fixture
+def linux_walk(monkeypatch):
+    monkeypatch.setattr(platform_helpers.sys, "platform", "linux")
+    monkeypatch.setattr(platform, "process_group", lambda pid: 10)
+    calls = []
+    monkeypatch.setattr(platform, "signal_observed_group",
+                        lambda pgid, sig, *, leader=None: calls.append((pgid, sig, leader)))
+    return calls
+
+
+def test_linux_recovery_uses_runtime_walk_with_checked_leader(monkeypatch, linux_walk):
+    leader = {"pid": 100, "uid": 1000, "birth_id": "proc-start-ticks:5", "process_group": 100}
+    monkeypatch.setattr(platform, "process_identity", lambda pid: dict(leader))
+    monkeypatch.setattr(process_group, "process_birth_identity", lambda pid=None: "boot:5")
+    platform_helpers.signal_observed_group(100, platform.KILL, leader_birth="boot:5")
+    assert linux_walk == [(100, platform.KILL, leader)]
+
+
+def test_linux_recovery_refuses_a_replaced_leader_before_any_signal(monkeypatch, linux_walk):
+    monkeypatch.setattr(platform, "process_identity",
+                        lambda pid: {"pid": 100, "birth_id": "proc-start-ticks:9", "process_group": 100})
+    monkeypatch.setattr(process_group, "process_birth_identity", lambda pid=None: "boot:9")
+    with pytest.raises(ProcessLookupError, match="leader was replaced"):
+        platform_helpers.signal_observed_group(100, platform.KILL, leader_birth="boot:5")
+    assert linux_walk == []
+
+
+@pytest.mark.parametrize("leader_state", ["reaped", "left-group"])
+def test_linux_recovery_without_its_leader_walks_members_only(monkeypatch, linux_walk, leader_state):
+    identity = None if leader_state == "reaped" else {"pid": 100, "birth_id": "proc-start-ticks:5", "process_group": 300}
+    monkeypatch.setattr(platform, "process_identity", lambda pid: identity)
+    monkeypatch.setattr(process_group, "process_birth_identity", lambda pid=None: "boot:5")
+    platform_helpers.signal_observed_group(100, platform.TERM, leader_birth="boot:5")
+    assert linux_walk == [(100, platform.TERM, None)]
+
+
+def test_linux_recovery_of_an_empty_group_stays_quiet(monkeypatch):
+    monkeypatch.setattr(platform_helpers.sys, "platform", "linux")
+    monkeypatch.setattr(platform, "process_group", lambda pid: 10)
+    monkeypatch.setattr(platform, "process_identity", lambda pid: None)
+
+    def nothing(pgid, sig, *, leader=None):
+        raise ProcessLookupError(errno.ESRCH, "no process in the group could be signalled")
+
+    monkeypatch.setattr(platform, "signal_observed_group", nothing)
+    platform_helpers.signal_observed_group(100, platform.TERM, leader_birth="boot:5")
+
+
+@pytest.mark.linux_native
+def test_linux_recovery_stops_a_real_group_whose_leader_was_reaped(tmp_path):
+    code = ("import subprocess,sys,time; "
+            "[subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']) for _ in range(2)]; "
+            "time.sleep(60)")
+    leader = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
+    pgid = leader.pid
+    birth = process_group.process_birth_identity(pgid)
+    import time
+
+    def members():
+        return [p for p, info in process_group._process_snapshot().items()
+                if info.pgid == pgid and platform.process_identity(p) is not None]  # zombies are gone
+
+    deadline = time.monotonic() + 10
+    while len(members()) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    leader.kill()
+    leader.wait(timeout=5)  # reaped: the pgid no longer names a live leader
+    assert members()
+    platform_helpers.signal_observed_group(pgid, platform.KILL, leader_birth=birth)
+    deadline = time.monotonic() + 10
+    while members() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not members()
 
 
 WINDOWS_ONLY = pytest.mark.windows_native

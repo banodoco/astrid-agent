@@ -22,6 +22,14 @@ import pytest
 from astrid.packs.runpod import worker_process as subject
 
 MODULE = Path(subject.__file__).resolve()
+
+
+@pytest.fixture(autouse=True)
+def pidfd_probe(monkeypatch: Any) -> dict[str, Any]:
+    """Exact stop reads Runtime's startup probe; tests here fake the pidfd calls themselves."""
+    report: dict[str, Any] = {"pidfd": "available", "ok": True}
+    monkeypatch.setattr(subject, "process_control_report", lambda: report)
+    return report
 EVIDENCE = "sha256:" + "e" * 64
 
 
@@ -195,15 +203,15 @@ def test_stop_pins_process_and_never_signals_after_identity_drift(
     assert events == [("pin", os.getpid()), ("close", 77)]
 
 
-@pytest.mark.parametrize("missing", ["pidfd_open", "pidfd_send_signal"])
-@pytest.mark.parametrize("availability", ["absent", "not-callable"])
+@pytest.mark.parametrize("pidfd", ["enosys", "unsupported", "error:EPERM"])
+@pytest.mark.parametrize("process_control", ["strict", "sandbox"])
 def test_stop_has_no_pid_or_group_fallback(
-    tmp_path: Path, monkeypatch: Any, missing: str, availability: str
+    tmp_path: Path, monkeypatch: Any, pidfd_probe: dict[str, Any], pidfd: str, process_control: str
 ) -> None:
-    if availability == "absent":
-        monkeypatch.delattr(subject.platform, missing)
-    else:
-        monkeypatch.setattr(subject.platform, missing, None)
+    # Pods run a full kernel: even sandbox mode's checked-PID fallback is not used here.
+    pidfd_probe.update(pidfd=pidfd, process_control=process_control)
+    monkeypatch.setattr(subject.platform, "pidfd_open", lambda *_: pytest.fail("pidfd opened"))
+    monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("numeric PID fallback"))
     with pytest.raises(subject.WorkerProcessError, match="no PID fallback"):
         subject.stop_owned_process(handle(tmp_path))
 
