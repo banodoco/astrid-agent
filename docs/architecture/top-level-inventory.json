@@ -26,6 +26,11 @@
       "notes": "Executable package gateway; delegates to astrid.core.gateway.main()."
     },
     {
+      "name": "mcp_server.py",
+      "classification": "cli_entrypoint",
+      "notes": "MCP stdio server exposing Astrid's product commands as tools (python -m astrid.mcp_server)."
+    },
+    {
       "name": "services.py",
       "classification": "service_composition",
       "notes": "Concrete shell-free service argv and environment declarations for Runtime-managed pack-host and chat services."
