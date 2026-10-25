@@ -14,7 +14,8 @@
 # Commands:
 #   fetch [DIR]        download https://astrid.haus/install + manifest into DIR, print hashes and pins
 #   create             create the sandbox (install-time policy)
-#   install DIR        run DIR/install.sh --sandbox with DIR/install-manifest.json inside the sandbox
+#   install DIR [--update]  run DIR/install.sh --sandbox with DIR/install-manifest.json inside the
+#                      sandbox (--update installs a newer pinned version over an existing one)
 #   services [list | add NAME... | remove NAME... | mode locked|dev]
 #                      no arguments: interactive menu
 #   login NAME | logout NAME   sign a service in or out inside the sandbox (chatgpt, codex)
@@ -215,15 +216,20 @@ EOF
 }
 
 cmd_install() {
-    [ $# -ge 1 ] || die "usage: install DIR (from: fetch)"
+    [ $# -ge 1 ] || die "usage: install DIR [--update] (from: fetch)"
     load_state  # the install policy keeps the sandbox's read-only share
+    dir=$1; shift
+    flags=""
+    for flag in "$@"; do
+        case "$flag" in --update) flags="$flags $flag" ;; *) die "install passes only --update to the installer" ;; esac
+    done
     say "Install-time policy: read-only access to package and release hosts."
     set_policy install
-    stage_installer "$1"
+    stage_installer "$dir"
     # OpenShell's seccomp filter denies pidfd_open and process-group kill, so the
     # install always turns on Runtime's sandbox process control.
     say "Running Astrid's installer inside '$sandbox' (several minutes the first time)."
-    in_sandbox "cd '$guest_home/$stage_name' && sha256sum install.sh install-manifest.json && ASTRID_INSTALL_MANIFEST_URL='file://$guest_home/$stage_name/install-manifest.json' sh ./install.sh --sandbox"
+    in_sandbox "cd '$guest_home/$stage_name' && sha256sum install.sh install-manifest.json && ASTRID_INSTALL_MANIFEST_URL='file://$guest_home/$stage_name/install-manifest.json' sh ./install.sh --sandbox$flags"
 }
 
 # --- service setup ------------------------------------------------------------
