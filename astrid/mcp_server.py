@@ -9,7 +9,8 @@ Each tool call runs `astrid-tools <family> <verb...> ... --json` and returns its
 JSON envelope. JSON-valued flags take real JSON; file arguments take the file's
 text (the server writes and reads private temporary files), so a client that
 cannot see Astrid's filesystem, for example one outside a sandbox, can use them.
-Three more tools serve what the CLI lacks: `skills_list`/`skill_get` (the pack
+More tools serve what the CLI lacks: `invoke` (admit a capability run, like
+Astrid's own agent tool), `skills_list`/`skill_get` (the pack
 skills, also offered as MCP prompts, which only users can invoke) and the
 `timeline_document_*` tools (the rendering pack's JSON timeline route, needed to
 put the first clips on an empty timeline). Tools are annotated read-only or mutating so clients can ask
@@ -146,7 +147,8 @@ def build_tools() -> dict[str, dict[str, Any]]:
                         schema["description"] = action.help
                 if value_kind == "file":
                     schema["description"] = "The file's text (written to a private temporary file for Astrid)."
-                properties[action.dest] = schema
+                # Paired flags share a dest (--wait/--detach): the first one names it.
+                properties.setdefault(action.dest, schema)
                 if action.required or (not action.option_strings and action.nargs not in ("?", "*")):
                     required.append(action.dest)
             verb = path[-1]
@@ -202,8 +204,12 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
         option, kind = spec["option"], spec["kind"]
         if option is None:
             argv += [str(v) for v in value] if isinstance(value, list) else [str(value)]
-        elif kind in ("_StoreTrueAction", "_StoreFalseAction"):
+        elif kind == "_StoreTrueAction":
             if value:
+                flags.append(option)
+        elif kind == "_StoreFalseAction":
+            # The dest's value is what argparse stores: false selects this flag.
+            if value is False:
                 flags.append(option)
         elif kind == "_CountAction":
             flags += [option] * int(value)
@@ -255,6 +261,8 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         return _text(prompt["text"])
     with tempfile.TemporaryDirectory(prefix="astrid-mcp-") as scratch:
         workdir = Path(scratch)
+        if kind == "invoke":
+            return _invoke(arguments, workdir)
         if kind == "timeline_document":
             if tool["command"] == "add_shot":
                 return _timeline_document_add_shot(arguments)
@@ -277,6 +285,26 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             # Clients that show structuredContent (Claude Code) drop the extra text blocks.
             result["structuredContent"] = {**result.get("structuredContent", {}), "files": files}
         return result
+
+
+def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
+    """Admit one capability through astrid.omp_invoke, Astrid's own agent tool boundary."""
+    request = {key: arguments[key] for key in ("capability_id", "kind", "project", "inputs", "execution_request")
+               if arguments.get(key) is not None}
+    request.setdefault("kind", "executor")
+    done = _run([sys.executable, "-m", "astrid.omp_invoke", json.dumps(request)], workdir)
+    if isinstance(done, dict):
+        return done
+    try:
+        reply = json.loads(done.stdout.strip().splitlines()[-1])
+        payload = json.loads(reply["content"][0]["text"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return _cli_result(done)
+    if not isinstance(payload, dict):
+        payload = {"ok": False, "error": payload}
+    structured = {**payload, "task_refs": reply.get("details", {}).get("astridTaskRefs", [])}
+    return _text(json.dumps(structured, default=str)[:20000], error=done.returncode != 0 or payload.get("ok") is False,
+                 structured=structured)
 
 
 def _cli_result(done: subprocess.CompletedProcess) -> dict[str, Any]:
@@ -369,6 +397,18 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
         tool("skill_get", "Read one Astrid skill (SKILL.md) before multi-step work in its area.",
              {"name": {"type": "string", "description": "Skill name from skills_list."}}, ["name"], True,
              kind="skill_get"),
+        tool("invoke",
+             "Admit one capability run (an executor or orchestrator, e.g. vibecomfy.run or "
+             "generation.generate_video), the way Astrid's own agent does. Returns at admission "
+             "with the task id; follow it with tasks_follow or tasks_show, stop it with tasks_cancel. "
+             "Read the capability's skill (skill_get) for its inputs first.",
+             {"capability_id": {"type": "string", "description": "Capability id, e.g. vibecomfy.run."},
+              "kind": {"type": "string", "enum": ["executor", "orchestrator"],
+                       "description": "Capability kind (default executor)."},
+              "project": {"type": "string", "description": "Project slug or ID."},
+              "inputs": {"type": "object", "description": "The capability's inputs as a JSON object."},
+              "execution_request": {"type": "object", "description": "Optional target-aware execution request."}},
+             ["capability_id", "project"], False, kind="invoke"),
         tool("timeline_document_checkout",
              "Check out a timeline as one editable JSON document (placements, shots, clips). "
              "Use it to put the first clips on an empty timeline, then check and publish it.",
