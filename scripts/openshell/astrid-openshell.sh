@@ -117,6 +117,10 @@ mount_args() { [ -n "$created_mount" ] && printf -- '--mount %s' "$created_mount
 # variables). Astrid's render launch refuses unknown GIT_* variables, so Astrid
 # processes we start get the same trust from ~/.gitconfig instead.
 git_ca_to_config='if [ -n "${GIT_SSL_CAINFO:-}" ]; then git config --global http.sslCAInfo "$GIT_SSL_CAINFO" 2>/dev/null || true; unset GIT_SSL_CAINFO; fi'
+# Landlock lets the sandbox write /tmp but not /var/tmp, while access() still
+# reports /var/tmp writable; SQLite picks /var/tmp for its temp files, so a
+# large Runtime write failed with "unable to open database file".
+git_ca_to_config="$git_ca_to_config; export TMPDIR=/tmp"
 
 # --- commands -----------------------------------------------------------------
 
