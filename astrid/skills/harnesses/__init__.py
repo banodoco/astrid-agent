@@ -5,11 +5,13 @@ from __future__ import annotations
 from .base import Action, HarnessAdapter, InstallRecord, PlannedStep
 from .claude import ClaudeAdapter
 from .codex import CodexAdapter
+from .dsh import DshAdapter
 from .hermes import HermesAdapter
 
 ADAPTERS: dict[str, type[HarnessAdapter]] = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
+    "dsh": DshAdapter,
     "hermes": HermesAdapter,
 }
 
@@ -28,6 +30,7 @@ __all__ = [
     "Action",
     "ClaudeAdapter",
     "CodexAdapter",
+    "DshAdapter",
     "HarnessAdapter",
     "HermesAdapter",
     "InstallRecord",

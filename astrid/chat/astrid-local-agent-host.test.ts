@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EXTERNAL_AGENT_IDS } from './localAgents.ts';
-import { LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
+import { DSH_ACP_LAUNCHER, LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
 import { createAstridAcpHttpServer } from './astrid-acp-bridge.ts';
 import { createLocalAgentAcpProcessHost, renderAgentProfile } from './astrid-local-agent-host.ts';
 import { resolveAstridAgentContext } from './astridAcpLauncher.ts';
@@ -36,6 +36,11 @@ function fixture(directory: string) {
   writeFileSync(profile, '# Packaged Astrid profile\nPROFILE_SENTINEL');
   executable(join(bin, 'claude'), `#!${process.execPath}\nprocess.stdout.write('Logged in\\n');\n`);
   executable(join(bin, 'codex'), `#!${process.execPath}\nprocess.stderr.write('Logged in using ChatGPT\\n');\n`);
+  executable(join(bin, 'dsh'), `#!${process.execPath}\nprocess.exit(0);\n`);
+  executable(join(bin, 'node'), `#!/bin/sh\nprintf 'v22.1.0\\n'\n`);
+  const dshHome = join(directory, 'dsh-home');
+  mkdirSync(dshHome, { recursive: true });
+  writeFileSync(join(dshHome, '.credentials.yaml'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
   const shell = join(directory, 'login-shell');
   executable(shell, `#!/bin/sh\n[ "$1" = "-lic" ] || exit 98\nprintf '\\n__ASTRID_LOGIN_PATH__%s\\n' "$ASTRID_TEST_LOGIN_PATH"\n`);
   const adapterProgram = `#!${process.execPath}
@@ -44,14 +49,20 @@ const readline = require('node:readline');
 const log = ${JSON.stringify(logs)};
 const native = process.argv[1].endsWith('/hermes');
 if (native && process.argv[2] === 'acp' && process.argv[3] === '--check') process.exit(0);
+const viaNpx = process.argv[1].endsWith('/npx');
 const adapter = process.argv[4];
 const expected = ${JSON.stringify(LOCAL_AGENT_ADAPTERS)};
-if (!native && (process.argv[2] !== 'x' || process.argv[3] !== '--bun' || !Object.values(expected).includes(adapter))) process.exit(98);
+const dshLauncher = ${JSON.stringify(DSH_ACP_LAUNCHER)};
+// DeepSeek Harness runs the pinned launcher on a real Node, so it arrives as
+// npx --yes <launcher> --profile acp rather than through the Bun adapters.
+if (viaNpx && (process.argv[2] !== '--yes' || process.argv[3] !== dshLauncher
+  || process.argv[4] !== '--profile' || process.argv[5] !== 'acp')) process.exit(97);
+if (!native && !viaNpx && (process.argv[2] !== 'x' || process.argv[3] !== '--bun' || !Object.values(expected).includes(adapter))) process.exit(98);
 if (native && process.argv[2] !== 'acp') process.exit(98);
-const agent = native ? 'hermes' : adapter === expected['claude-code'] ? 'claude-agent-acp' : 'codex-acp';
+const agent = native ? 'hermes' : viaNpx ? 'dsh-acp' : adapter === expected['claude-code'] ? 'claude-agent-acp' : 'codex-acp';
 let model = 'model-a';
 let effort = 'low';
-const effortId = agent === 'codex-acp' ? 'reasoning_effort' : 'effort';
+const effortId = agent === 'codex-acp' || agent === 'dsh-acp' ? 'reasoning_effort' : 'effort';
 const configOptions = () => native ? [] : [
   {id:'model',name:'Model',category:'model',type:'select',currentValue:model,options:[{value:'model-a',name:'A'},{value:'model-b',name:'B'}]},
   {id:effortId,name:'Effort',category:'thought_level',type:'select',currentValue:effort,options:[{value:'low',name:'Low'},{value:'high',name:'High'}],_meta:{jetbrains:{air:{version:1,recommendedValue:'high'}}}}
@@ -104,8 +115,9 @@ rl.on('line', async line => {
 rl.on('close', () => process.exit(0));
 `;
   executable(join(bin, 'bun'), adapterProgram);
+  executable(join(bin, 'npx'), adapterProgram);
   executable(join(bin, 'hermes'), adapterProgram);
-  return { bin, cwd, logs, profile, shell };
+  return { bin, cwd, logs, profile, shell, dshHome };
 }
 
 async function listen(server: import('node:http').Server): Promise<string> {
@@ -136,7 +148,7 @@ test('external ACP bridge namespaces sessions and routes context, permissions, a
     idFactory: () => `connection-${++nextConnection}`,
     localAgentHostFactory: (agent, options) => createLocalAgentAcpProcessHost(agent, {
       ...options,
-      env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin },
+      env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
       profileFileForCommand: () => f.profile,
     }),
   });
@@ -278,7 +290,7 @@ for (const agent of EXTERNAL_AGENT_IDS) {
     const f = fixture(directory);
     const host = await createLocalAgentAcpProcessHost(agent, {
       cwd: f.cwd,
-      env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin },
+      env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
       profileFileForCommand: () => f.profile,
       agentContextForCommand: async () => '<astrid_agent_context>\nPREFS_SENTINEL\n</astrid_agent_context>\n',
       callbacks: { requestPermission: () => ({ outcome: { outcome: 'cancelled' } }) },
@@ -358,7 +370,7 @@ for (const agent of ['codex', 'hermes'] as const) {
       idFactory: () => `c${++nextConnection}`,
       localAgentHostFactory: async (selected, options) => {
         const host = await createLocalAgentAcpProcessHost(selected, {
-          ...options, env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin },
+          ...options, env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
           profileFileForCommand: () => f.profile,
         });
         const nativeRequest = host.request.bind(host);
@@ -420,7 +432,7 @@ for (const [label, agentContextForCommand] of [
       const f = fixture(directory);
       const host = await createLocalAgentAcpProcessHost(agent, {
         cwd: f.cwd,
-        env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin },
+        env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
         profileFileForCommand: () => f.profile,
         agentContextForCommand,
         callbacks: { requestPermission: () => ({ outcome: { outcome: 'cancelled' } }) },

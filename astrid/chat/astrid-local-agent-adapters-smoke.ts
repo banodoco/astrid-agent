@@ -70,6 +70,8 @@ async function initialize(adapterId: AdapterId, packageName: string): Promise<vo
 }
 
 // Hermes speaks ACP from its own CLI, so it deliberately has no pinned Bun adapter.
+// DeepSeek Harness is pinned in the adapters module but boots a named ACP profile
+// rather than a bare bin, so it is covered by the chat host tests, not this smoke.
 for (const [adapterId, packageName] of Object.entries(LOCAL_AGENT_ADAPTERS) as Array<[AdapterId, string]>) {
   await initialize(adapterId, packageName);
 }
