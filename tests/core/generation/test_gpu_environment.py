@@ -73,7 +73,7 @@ def test_comfy_plan_requires_admitted_vibecomfy_source(tmp_path):
 
 @pytest.mark.parametrize("capability", ["wan2gp.generate_video", "vibecomfy.run", "vibecomfy.generate_image", "vibecomfy.video_enhance", "comfy_wrap.run"])
 @pytest.mark.parametrize("opt_in", ["", "true", "0", "1"])
-def test_unqualified_label_is_a_warning_and_opt_in_is_retained(capability, opt_in):
+def test_unqualified_label_is_a_warning_and_the_retired_opt_in_changes_nothing(capability, opt_in):
     status = gpu.windows_gpu_status(capability, platform="win32", environ={gpu.ALLOW_UNQUALIFIED_ENV: opt_in}, detection=DEVICE)
     assert status["ok"] is True
     assert status["qualified"] is False
@@ -84,8 +84,7 @@ def test_unqualified_label_is_a_warning_and_opt_in_is_retained(capability, opt_i
         f"{label} on Windows with this NVIDIA GPU is untested. It will probably work, "
         "but please tell us how it went (GPU model and driver from `nvidia-smi`)."
     )
-    assert status["opted_in"] is (opt_in == "1")
-    assert status["opt_in_env"] == "ASTRID_ALLOW_UNQUALIFIED_GPU=1"
+    assert "opted_in" not in status and "opt_in_env" not in status
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])

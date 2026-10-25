@@ -35,6 +35,29 @@ from .support import reveal_bundle
 from .tools import binary, install_tools, source
 
 
+def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
+    """The last ``"error"`` field the Runtime wrote to its service log, if any."""
+    try:
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size - tail))
+            text = stream.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    decoder = json.JSONDecoder()
+    found = None
+    index = text.find("{")
+    while index != -1:
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except ValueError:
+            index = text.find("{", index + 1)
+            continue
+        if isinstance(value, dict) and isinstance(value.get("error"), str) and value["error"]:
+            found = value["error"]
+        index = text.find("{", end)
+    return found
+
+
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print):
         self.root, self.log, self.uv, self.say = root, log, uv, say
@@ -496,6 +519,11 @@ class Backend:
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
                 error = exc
                 time.sleep(0.25)
+        # A Runtime that died at startup records why in its service log; that is
+        # the real cause, not the missing door it leads to.
+        cause = _last_logged_error(self.service.log)
+        if cause:
+            raise VerificationError(f"Astrid Runtime did not start: {cause} (details: {self.service.log})")
         raise VerificationError(f"Astrid's browser door did not become ready: {error}")
 
     def finish(self, old: Version | None, candidate: Version, backup: dict | None) -> None:
