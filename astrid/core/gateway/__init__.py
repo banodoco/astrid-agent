@@ -135,7 +135,14 @@ def _main_impl(raw: list[str]) -> int:
 
 
 def _dispatch(raw: list[str]) -> int:
+    _configure_process_control()
     return _gateway_dispatch._dispatch(raw)
+
+
+def _configure_process_control() -> None:
+    from astrid.core.execution.platform_helpers import configure_process_control_from_install
+
+    configure_process_control_from_install()
 
 
 if __name__ == "__main__":

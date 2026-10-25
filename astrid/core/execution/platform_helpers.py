@@ -33,16 +33,93 @@ def owned_by_current_user(path_or_fd, metadata, *, mode: int | None = None,
             and not metadata.st_mode & forbidden)
 
 
+_probes: dict[str, dict] = {}
+# Capability children are separate processes: the host names its support root
+# here so they read the same process-control.json (the file decides the mode).
+PROCESS_CONTROL_SUPPORT_ENV = "ASTRID_PROCESS_CONTROL_SUPPORT"
+_support_root: str | None = None
+
+
+def process_control_report() -> dict:
+    """Runtime's live signalling probe, taken once per process (and mode).
+
+    The one answer to "can we signal safely here": custody and exact-stop
+    gates read it instead of checking whether pidfd wrappers are callable,
+    which they are in seccomp sandboxes where the syscall itself fails.
+    """
+    mode = platform.process_control()
+    report = _probes.get(mode)
+    if report is None:
+        report = _probes[mode] = platform.process_control_probe()
+    return report
+
+
+def configure_process_control(support_root, *, announce: bool = True) -> str:
+    """Fix this process's signalling mode from Runtime support before spawning.
+
+    Runtime's process-control.json (``workspace create|attach --process-control``)
+    is the only switch; missing means strict. Hosts announce the live probe once.
+    """
+    from runtime_protocol import process_control
+
+    global _support_root
+    mode = process_control.configure_from(support_root)
+    _support_root = str(support_root)
+    if announce:
+        process_control.announce(process_control_report())
+    return mode
+
+
+def configure_process_control_from_install() -> None:
+    """Signal like the selected Runtime install (strict unless it was set up --sandbox).
+
+    For entry points Runtime does not start (the CLI, omp_invoke). Best effort: a
+    root that cannot be resolved or a setting that cannot be read leaves this
+    process strict; Runtime itself refuses to start on a broken setting.
+    """
+    if platform.process_control() != "strict":
+        return
+    try:
+        from runtime_protocol import process_control
+
+        from astrid.sdk.storage_root import resolve_runtime_data_root
+
+        support = resolve_runtime_data_root() / "runtime"
+        if process_control.setting_path(support).exists():
+            configure_process_control(support, announce=False)
+    except Exception:  # noqa: BLE001 - strict is the safe default
+        pass
+
+
+def process_control_support() -> str | None:
+    """The support root this process configured from, for its children."""
+    return _support_root
+
+
+def _configure_from_environment() -> None:
+    support = os.environ.get(PROCESS_CONTROL_SUPPORT_ENV)
+    if support and platform.process_control() == "strict":
+        try:
+            configure_process_control(support, announce=False)
+        except Exception:  # noqa: BLE001 - an unreadable setting leaves strict, which fails closed
+            pass
+
+
 def signal_observed_group(pgid: int, signum: int, *, leader_birth: str | None) -> None:
     """Recover a journalled group without granting signal authority to a PGID.
 
     Each member is revalidated by Runtime while binding its kernel signal
-    handle. A reused leader invalidates the entire observation.
+    handle. A reused leader invalidates the entire observation. On Linux the
+    walk is Runtime's (one identity, and its sandbox fallback); the leader
+    check stays here because the journalled birth is in the agent's format.
     """
     from .process_group import _process_snapshot
 
     if pgid <= 1 or pgid == platform.process_group(os.getpid()) or not leader_birth:
         raise ValueError("process group lacks a safe birth anchor")
+    if sys.platform.startswith("linux"):
+        _signal_linux_observed_group(pgid, signum, leader_birth)
+        return
     census = _process_snapshot()
     if not census:
         raise OSError("process census unavailable")
@@ -67,3 +144,22 @@ def signal_observed_group(pgid: int, signum: int, *, leader_birth: str | None) -
             platform.signal_process(identity, signum)
         except ProcessLookupError:
             pass
+
+
+def _signal_linux_observed_group(pgid: int, signum: int, leader_birth: str) -> None:
+    from .process_group import process_birth_identity
+
+    leader = platform.process_identity(pgid)
+    if leader is not None:
+        if process_birth_identity(pgid) != leader_birth:
+            raise ProcessLookupError("process group leader was replaced")
+        if leader.get("process_group") != pgid:
+            leader = None  # the leader left its group: signal only the members
+    try:
+        platform.signal_observed_group(pgid, signum, leader=leader)
+    except ProcessLookupError as exc:
+        if exc.strerror != "no process in the group could be signalled":
+            raise  # nothing left to signal was a quiet no-op here before
+
+
+_configure_from_environment()

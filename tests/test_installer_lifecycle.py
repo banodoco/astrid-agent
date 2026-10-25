@@ -373,7 +373,7 @@ def test_cli_explains_backup_space_failure_with_one_sentence(tmp_path, monkeypat
     message = "There is not enough free disk space to back up your workspace."
     monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
 
-    def no_space(*_args):
+    def no_space(*_args, **_kwargs):
         raise BackupSpaceError(message)
 
     monkeypatch.setattr(cli, "Backend", no_space)

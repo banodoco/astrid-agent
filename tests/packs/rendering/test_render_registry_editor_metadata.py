@@ -27,3 +27,13 @@ def test_retired_locators_and_unknown_keys_still_fail():
         _config, projected = _render_compatible_projection({"clips": []}, {"assets": {"A": _entry(**extra)}})
         with pytest.raises(ValueError, match="unknown key"):
             timeline.validate_registry(projected)
+
+
+def test_authoring_import_description_is_projected_to_render_fields():
+    # astrid.sdk.authoring_media writes media_type/filename/width/height/duration_seconds.
+    imported = _entry(media_type="video/mp4", filename="clip.mp4", width=1280, height=720, duration_seconds=4.0)
+    _config, projected = _render_compatible_projection({"clips": []}, {"assets": {"clip": imported}})
+    timeline.validate_registry(projected)
+    entry = projected["assets"]["clip"]
+    assert entry["resolution"] == "1280x720" and entry["duration"] == 4.0
+    assert not {"media_type", "filename", "width", "height", "duration_seconds"} & set(entry)

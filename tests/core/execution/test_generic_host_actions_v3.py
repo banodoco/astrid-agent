@@ -1325,7 +1325,7 @@ def test_host_identity_uses_shared_canonical_bundle_staging(tmp_path, monkeypatc
     )
     staged = []
 
-    def load_boundary(workflow_path, loader_scratch):
+    def load_boundary(workflow_path, loader_scratch, comfy_url=""):
         helper = inspect.currentframe().f_back.f_locals["staged_workflow_path"]
         assert helper.__module__ == "astrid.packs.vibecomfy.shared.bundle_inputs"
         assert Path(inspect.getsourcefile(helper.__wrapped__)).name == "bundle_inputs.py"

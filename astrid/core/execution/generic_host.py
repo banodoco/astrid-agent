@@ -41,9 +41,15 @@ from urllib.parse import quote, urlsplit
 
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
+from runtime_protocol.errors import ConflictError
 
 from astrid.core.execution.pipe_io import PipeReader, PipeWriter, close_pipe_workers
-from astrid.core.execution.platform_helpers import owned_by_current_user
+from astrid.core.execution.platform_helpers import (
+    PROCESS_CONTROL_SUPPORT_ENV,
+    configure_process_control,
+    owned_by_current_user,
+    process_control_support,
+)
 
 # Startup observations use only the existing private stderr sink. Regular-file
 # latency is not bounded; this diagnostic never changes descriptor flags.
@@ -1317,9 +1323,17 @@ def _prepare_vibecomfy_execution_identity(
             source=inputs.get("source"),
             scratch=scratch,
         ) as (workflow_path, _authority):
+            comfy_url = str(inputs.get("comfy_url") or "")
+            if comfy_url:
+                from astrid.core.generation.backends.vibecomfy_local_server import (
+                    validate_comfy_url,
+                )
+
+                comfy_url = validate_comfy_url(comfy_url)
             loaded = load_workflow_path(
                 workflow_path,
                 scratch / "canonical-loader",
+                comfy_url=comfy_url,
             )
             return (
                 loaded_workflow_execution_identity(loaded, readiness_profile),
@@ -7736,6 +7750,9 @@ class GenericPackHost:
                 explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = str(authority_path)
             else:
                 explicit["ASTRID_TIMELINE_VISUALIZE_AUTHORITY_CONTEXT"] = authority_json
+        support = process_control_support()
+        if support is not None:
+            explicit[PROCESS_CONTROL_SUPPORT_ENV] = support
         env = build_child_subprocess_env(
             explicit_env=explicit,
             passthrough=record.definition.isolation.env_passthrough,
@@ -13892,6 +13909,10 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         support_root = Path(args.support_root).expanduser()
         if not support_root.is_absolute() or support_root.is_symlink() or not support_root.is_dir():
             parser.error("--support-root must be an absolute non-symlink directory")
+        try:
+            configure_process_control(support_root)
+        except (ConflictError, OSError, RuntimeError, ValueError) as exc:
+            parser.error(f"process control: {exc}")
     else:
         support_root = None
     if support_root is not None and args.command in ("run", "supervise"):

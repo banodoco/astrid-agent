@@ -39,7 +39,7 @@ from typing import Any, Callable, Mapping, Protocol
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
-from astrid.core.execution.platform_helpers import owned_by_current_user
+from astrid.core.execution.platform_helpers import owned_by_current_user, process_control_report
 from astrid.core.execution.process_group import process_birth_identity
 
 OWNERSHIP_ROOT = "/tmp/astrid-runpod-worker-owners"
@@ -416,8 +416,8 @@ def stop_owned_process(
     """Pin, signal, and prove the exact incarnation exited before acknowledging."""
     if not 0 < timeout_seconds <= 30:
         raise WorkerProcessError("exact stop timeout must be bounded")
-    if not (callable(getattr(platform, "pidfd_open", None))
-            and callable(getattr(platform, "pidfd_send_signal", None))):
+    # Pods run a full kernel: this stays pidfd-only even in sandbox mode.
+    if process_control_report().get("pidfd") != "available":
         raise WorkerProcessError("exact stop requires Linux pidfd support; no PID fallback")
     def stopped(*, already_exited: bool) -> dict[str, Any]:
         return {

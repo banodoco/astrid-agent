@@ -33,20 +33,32 @@ def runtime_pidfd_provider(without_stdlib_pidfds, monkeypatch):
     monkeypatch.setattr(platform, "pidfd_send_signal", provider.pidfd_send_signal)
     monkeypatch.setattr(os, "kill", lambda *_: pytest.fail("numeric PID fallback"))
     monkeypatch.setattr(os, "killpg", lambda *_: pytest.fail("numeric process-group fallback"), raising=False)
+    monkeypatch.setattr(custody, "process_control_report", lambda: {"ok": True, "pidfd": "available"})
     return provider
 
 
-@pytest.mark.parametrize("missing", ["pidfd_open", "pidfd_send_signal"])
-@pytest.mark.parametrize("availability", ["absent", "not-callable"])
-def test_custody_launch_refuses_unavailable_runtime_pidfds(
-    tmp_path, monkeypatch, runtime_pidfd_provider, missing, availability,
-):
-    if availability == "absent":
-        monkeypatch.delattr(platform, missing)
-    else:
-        monkeypatch.setattr(platform, missing, None)
+@pytest.fixture
+def sandbox_mode(monkeypatch):
+    """Sandbox process control with pidfd_open answering ENOSYS, as in OpenShell."""
+    monkeypatch.setattr(platform, "_process_control", "sandbox")
+    monkeypatch.setattr(platform, "_fallbacks_noted", set())
+
+    def enosys(*_args):
+        raise OSError(errno.ENOSYS, "pidfd_open failed: Function not implemented")
+
+    monkeypatch.setattr(platform, "pidfd_open", enosys)
+    monkeypatch.setattr(platform, "pidfd_send_signal", lambda *_: pytest.fail("pidfd signal without a pidfd"))
+    monkeypatch.setattr(custody, "process_control_report", lambda: {"ok": True, "signalling": "pid-with-start-time-check"})
+
+
+@pytest.mark.parametrize("reason", [None, "Runtime cannot stop processes safely here (pidfd: enosys, ...); install with --sandbox"])
+def test_custody_launch_refuses_when_the_probe_cannot_signal(tmp_path, monkeypatch, runtime_pidfd_provider, reason):
+    report = {"ok": False, "pidfd": "enosys"}
+    if reason:
+        report["reason"] = reason
+    monkeypatch.setattr(custody, "process_control_report", lambda: report)
     owner = custody.ProcessCustody(scope_root=tmp_path)
-    with pytest.raises(custody.CustodyError, match="kernel custody is unavailable"):
+    with pytest.raises(custody.CustodyError, match="--sandbox" if reason else "kernel custody is unavailable"):
         owner.prepare_launch([sys.executable, "-c", "pass"], start_new_session=True)
     runtime_pidfd_provider.pidfd_open.assert_not_called()
     runtime_pidfd_provider.pidfd_send_signal.assert_not_called()
@@ -177,3 +189,122 @@ def test_pack_host_and_retained_custody_without_stdlib_pidfds(tmp_path, without_
         child.wait(timeout=5)
         owner.release_pidfds()
         host.shutdown()
+
+
+# --- sandbox process control: pidfd_open answers ENOSYS -----------------------
+
+def test_strict_custody_never_falls_back_when_pidfd_open_is_missing(tmp_path, monkeypatch, runtime_pidfd_provider):
+    runtime_pidfd_provider.pidfd_open.side_effect = OSError(errno.ENOSYS, "pidfd_open failed")
+    monkeypatch.setattr(platform, "_process_control", "strict")
+    monkeypatch.setattr(groups, "held_child_birth_identity", lambda _pid: "boot:5")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:5")
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    with pytest.raises(OSError) as error:
+        owner.bind_launch(SimpleNamespace(pid=123))
+    assert error.value.errno == errno.ENOSYS and not owner._handles
+
+
+def test_sandbox_held_launch_is_signalled_through_its_popen(tmp_path, monkeypatch, sandbox_mode):
+    monkeypatch.setattr(groups, "held_child_birth_identity", lambda _pid: "boot:5")
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:5")
+    monkeypatch.setattr(platform, "signal_process", lambda *_: pytest.fail("held launch signalled by PID"))
+    process = SimpleNamespace(pid=123, send_signal=Mock(), poll=Mock(return_value=None))
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    owner.bind_launch(process)
+    birth, target = owner._handles[123]
+    assert birth == "boot:5" and isinstance(target, custody._CheckedPidTarget) and target.identity is None
+    owner.signal(123, "boot:5", platform.TERM)
+    process.send_signal.assert_called_once_with(platform.TERM)
+    owner.release_pidfds(only_exited=True)
+    assert owner._handles[123][1] is not custody._PIDFD_RELEASED  # still running: still the obligation
+    process.poll.return_value = 0
+    owner.release_pidfds(only_exited=True)
+    assert owner._handles[123][1] is custody._PIDFD_RELEASED
+    owner.signal(123, "boot:5", platform.KILL)  # released: a no-op
+    process.send_signal.assert_called_once()
+
+
+def test_sandbox_descendant_binds_runtime_identity_and_signals_through_runtime(tmp_path, monkeypatch, sandbox_mode):
+    identity = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:77", "process_group": 123}
+    monkeypatch.setattr(platform, "process_identity", lambda pid: dict(identity) if pid == 456 else None)
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    sent = []
+    monkeypatch.setattr(platform, "signal_process", lambda expected, sig: sent.append((expected, sig)))
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    owner._actor_birth = "actor"
+    owner.register(456, "boot:77")
+    target = owner._handles[456][1]
+    assert isinstance(target, custody._CheckedPidTarget) and target.identity == identity
+    owner.signal(456, "boot:77", platform.TERM)
+    assert sent == [(identity, platform.TERM)]
+
+
+def test_sandbox_descendant_with_another_start_time_is_not_admitted(tmp_path, monkeypatch, sandbox_mode):
+    monkeypatch.setattr(platform, "process_identity",
+                        lambda pid: {"pid": pid, "uid": 1000, "birth_id": "proc-start-ticks:99"})
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    owner.register(456, "boot:77")
+    assert 456 not in owner._handles
+
+
+def test_sandbox_signal_to_an_exited_descendant_is_not_an_error(tmp_path, monkeypatch, sandbox_mode):
+    identity = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:77"}
+    current = {"value": dict(identity)}
+    monkeypatch.setattr(platform, "process_identity", lambda pid: current["value"])
+    monkeypatch.setattr(groups, "process_birth_identity", lambda pid=None: "actor" if pid is None else "boot:77")
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    owner._actor_birth = "actor"
+    owner.register(456, "boot:77")
+
+    def changed(*_):
+        raise OSError("process incarnation changed")
+
+    monkeypatch.setattr(platform, "signal_process", changed)
+    owner.signal(456, "boot:77", platform.TERM)  # exited (pid maybe reused): nothing of ours to signal
+    current["value"] = {"pid": 456, "uid": 1000, "birth_id": "proc-start-ticks:500"}
+    owner.release_pidfds(only_exited=True)
+    assert owner._handles[456][1] is custody._PIDFD_RELEASED
+
+    def denied(*_):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    owner._handles[456] = ("boot:77", custody._CheckedPidTarget(identity))
+    monkeypatch.setattr(platform, "signal_process", denied)
+    with pytest.raises(custody.CustodyError, match="start-time-checked signal failed"):
+        owner.signal(456, "boot:77", platform.TERM)
+
+
+@pytest.mark.linux_native
+def test_sandbox_custody_stops_a_real_tree_without_pidfds(tmp_path, monkeypatch, sandbox_mode):
+    """End to end in sandbox mode: the launch and a real descendant, no pidfd anywhere."""
+    owner = custody.ProcessCustody(scope_root=tmp_path)
+    marker = tmp_path / "child.pid"
+    code = ("import subprocess,sys,pathlib,time; "
+            "c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+            "pathlib.Path(sys.argv[1]).write_text(str(c.pid)); time.sleep(60)")
+    argv, _ = owner.prepare_launch([sys.executable, "-c", code, str(marker)], start_new_session=True)
+    root = subprocess.Popen(argv, start_new_session=True)
+    try:
+        owner.bind_launch(root)
+        import time
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        child = int(marker.read_text())
+        child_birth = groups.process_birth_identity(child)
+        owner.register(child, child_birth)
+        assert isinstance(owner._handles[child][1], custody._CheckedPidTarget)
+        owner.signal(child, child_birth, platform.KILL)
+        owner.signal(root.pid, owner._handles[root.pid][0], platform.KILL)
+        assert root.wait(timeout=10) == -platform.KILL
+        deadline = time.monotonic() + 10
+        while platform.process_identity(child) is not None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert platform.process_identity(child) is None
+        owner.release_pidfds(only_exited=True)
+        assert all(handle is custody._PIDFD_RELEASED for _, handle in owner._handles.values())
+    finally:
+        if root.poll() is None:
+            root.kill()
+            root.wait(timeout=5)

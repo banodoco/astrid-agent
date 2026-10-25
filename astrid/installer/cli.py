@@ -35,6 +35,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--data-root", type=Path, help="absolute workspace support directory")
     result.add_argument("--manifest", type=Path, help="local copy of the pinned hosted install manifest")
     result.add_argument("--uv", type=Path, help="absolute pinned uv executable supplied by the bootstrap")
+    result.add_argument("--sandbox", action="store_true",
+                        help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
+                             "(docs/setup/openshell-sandbox.md); kept by later updates")
     return result
 
 
@@ -44,13 +47,15 @@ def main(argv: list[str] | None = None) -> int:
             else "doctor" if args.doctor is not None else "install")
     if args.delete_data and mode != "uninstall":
         parser().error("--delete-data is only valid for uninstall.")
+    if args.sandbox and mode not in ("install", "update"):
+        parser().error("--sandbox is only valid for install or update.")
     from runtime_protocol import platform
     log = platform.log_dir() / "install.log"
     try:
         platform.private_directory(log.parent)
         root = absolute(args.root or default_program_root(Path.home(), sys.platform))
         uv = args.uv or Path(os.environ.get("ASTRID_INSTALL_UV", bootstrap_root(Path.home(), sys.platform) / ("uv.exe" if sys.platform == "win32" else "uv")))
-        backend = Backend(root, log, uv)
+        backend = Backend(root, log, uv, process_control="sandbox" if args.sandbox else None)
         recorded = backend.service.recorded()
         if not recorded:
             prior = read_json(root / "install.json")
@@ -61,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.root and recorded_root != root:
                 raise ValueError(f"The login service already belongs to {recorded_root}.")
             root = recorded_root
-            backend = Backend(root, log, uv)
+            backend = Backend(root, log, uv, process_control="sandbox" if args.sandbox else None)
         # Windows keeps open files locked, so its per-user lock must survive
         # removal of both the program directory and the default workspace.
         lock_parent = default_program_root(Path.home(), sys.platform).parent

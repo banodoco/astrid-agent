@@ -260,15 +260,28 @@ def _canonicalize_ui_workflow(
     source: Path,
     raw_workflow: Mapping[str, Any],
     scratch: Path,
+    *,
+    schema_url: str = "",
 ) -> Any:
-    """Convert UI JSON through VibeComfy's canonical import service."""
+    """Convert UI JSON through VibeComfy's canonical import service.
+
+    With ``schema_url`` (the run's own ComfyUI), widget values map to input names
+    from that server's live node schema. The newer ComfyUI frontend no longer
+    lists every widget as a node input, so without it they stay widget_N.
+    """
     try:
         source_bytes = source.read_bytes()
         from vibecomfy.porting.import_service import import_workflow_bytes
 
+        schema_provider = None
+        if schema_url:
+            from vibecomfy.schema.provider import get_target_schema_provider
+
+            schema_provider = get_target_schema_provider(schema_url, cache_dir=scratch / ".vibecomfy-schema")
         artifacts = import_workflow_bytes(
             source_bytes,
             workflow_id=_ui_workflow_identity(raw_workflow, source_bytes),
+            schema_provider=schema_provider,
         )
     except ImportError as exc:
         raise ProductionEngineError(
@@ -316,8 +329,13 @@ def load_workflow_path(
     *,
     model_id: str = "vibecomfy",
     template_id: str = "vibecomfy.run",
+    comfy_url: str = "",
 ) -> LoadedWorkflow:
-    """Load one canonical workflow and return its effective execution profile."""
+    """Load one canonical workflow and return its effective execution profile.
+
+    ``comfy_url`` (a validated loopback ComfyUI) converts UI JSON against that
+    server's live schema; callers that compare execution identities pass the same.
+    """
     source = Path(workflow_path).expanduser().resolve(strict=True)
     scratch_path = Path(scratch).expanduser().resolve()
     scratch_path.mkdir(parents=True, exist_ok=True)
@@ -350,6 +368,7 @@ def load_workflow_path(
                 source,
                 raw_workflow,
                 scratch_path,
+                schema_url=comfy_url,
             )
     bundle = _canonical_bundle_value(resolved)
     metadata = getattr(bundle.workflow, "metadata", {})
@@ -928,6 +947,7 @@ def run_workflow_path(
         destination_path,
         model_id=model_id,
         template_id=template_id,
+        comfy_url=comfy_url,
     )
     if expected_execution_identity is not None:
         actual_identity = loaded_workflow_execution_identity(loaded, hc03_profile)

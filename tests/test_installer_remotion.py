@@ -30,7 +30,10 @@ def test_remotion_dependencies_follow_lockfile_marker(tmp_path):
     backend.install_remotion_dependencies(agent, env, npm)
     lockfile.write_text('{"lockfileVersion":3,"changed":true}\n')
     backend.install_remotion_dependencies(agent, env, npm)
-    assert calls == [(["/pinned/node", npm, "ci", "--no-audit", "--no-fund"], remotion, env)] * 2
+    ci = (["/pinned/node", npm, "ci", "--no-audit", "--no-fund"], remotion, env)
+    browser = (["/pinned/node", remotion / "scripts" / "fetch-shared-browser.mjs"], remotion, env)
+    # The browser is fetched (or found) on every install, so renders never download it.
+    assert calls == [ci, browser, browser, ci, browser]
     marker = remotion / "node_modules" / ".astrid-package-lock.sha256"
     assert marker.read_text() == hashlib.sha256(lockfile.read_bytes()).hexdigest() + "\n"
 

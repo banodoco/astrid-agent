@@ -28,7 +28,7 @@ from typing import Any, Sequence
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
-from .platform_helpers import signal_observed_group
+from .platform_helpers import process_control_report, signal_observed_group
 
 _DARWIN_ZOMBIE = 5
 
@@ -253,10 +253,21 @@ def _killpg(pgid: int, sig: int) -> str:
     except ProcessLookupError:
         return ""
     except PermissionError as exc:  # a zombie-only group can answer EPERM on macOS
-        return f"killpg({int(sig)}): {exc}"
+        return f"killpg({int(sig)}): {exc}{_signal_denied_cause()}"
     except (OSError, ValueError) as exc:
         return f"scope signal({int(sig)}): {exc}"
     return ""
+
+
+def _signal_denied_cause() -> str:
+    """Name the real cause when this platform cannot signal process groups at all."""
+    if not sys.platform.startswith("linux"):
+        return ""
+    try:
+        probe = process_control_report()
+    except Exception:  # noqa: BLE001 - the report must still be written
+        return ""
+    return f" ({probe['reason']})" if not probe.get("ok") and probe.get("reason") else ""
 
 
 def stop(process: subprocess.Popen, grace: float = 2.0, kill_wait: float = 3.0) -> ScopeReport:
@@ -311,6 +322,8 @@ def _stop(process: subprocess.Popen, grace: float, kill_wait: float) -> ScopeRep
             process.wait(timeout=kill_wait)
         except (ProcessLookupError, subprocess.TimeoutExpired):
             pass
+        except PermissionError as exc:
+            notes.append(f"final killpg({int(platform.KILL)}): {exc}{_signal_denied_cause()}")
     detail = "; ".join(n for n in (*notes, problem) if n)
     if alive or problem:
         return ScopeReport("unresolved", pgid,

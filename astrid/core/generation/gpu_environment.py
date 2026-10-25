@@ -18,6 +18,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+# No longer changes anything; still accepted in service-env.json so old
+# settings files load (astrid/installer/service.py SERVICE_SETTINGS).
 ALLOW_UNQUALIFIED_ENV = "ASTRID_ALLOW_UNQUALIFIED_GPU"
 # Add an exact (pack, OS, device name) only after testers qualify it.
 QUALIFIED_COMBINATIONS: frozenset[tuple[str, str, str]] = frozenset()
@@ -69,13 +71,11 @@ def windows_gpu_status(
     pack = gpu_pack(capability_id)
     if platform != "win32" or pack is None:
         return None
-    env = os.environ if environ is None else environ
     device = dict(detect_nvidia() if detection is None else detection)
     names = device.get("devices", [])
     qualified = bool(device.get("available") and names) and all(
         (pack, platform, name) in QUALIFIED_COMBINATIONS for name in names
     )
-    opted_in = env.get(ALLOW_UNQUALIFIED_ENV) == "1"
     label = "Wan2GP" if pack == "wan2gp" else "ComfyUI"
     reason = "" if qualified else f"{label} on Windows with this NVIDIA GPU is not qualified yet."
     if not device.get("available"):
@@ -94,8 +94,6 @@ def windows_gpu_status(
         "status": "qualified" if qualified else "not qualified yet",
         "reason": reason,
         "warning": warning,
-        "opted_in": opted_in,
-        "opt_in_env": f"{ALLOW_UNQUALIFIED_ENV}=1",
         "device": device,
     }
 

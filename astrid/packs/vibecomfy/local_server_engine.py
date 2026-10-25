@@ -163,7 +163,8 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
         parent_revision=bundle.revision_id, operation="authored",
         parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
         source_format="ready_template",
-        extra_members={"source.json": source.read_bytes()} if source and source.is_file() else None,
+        # A full path: a bare name is published relative to the process cwd.
+        extra_members={root / "source.json": source.read_bytes()} if source and source.is_file() else None,
     )
     return load_bundle(derived.python_path, trust=Provenance.USER_CONFIRMED)
 

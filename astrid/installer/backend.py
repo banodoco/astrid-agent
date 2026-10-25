@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,9 +37,45 @@ from .support import reveal_bundle
 from .tools import binary, install_tools, source
 
 
+def _last_logged_error(log: Path, *, tail: int = 65536) -> str | None:
+    """The last ``"error"`` field the Runtime wrote to its service log, if any."""
+    try:
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size - tail))
+            text = stream.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    decoder = json.JSONDecoder()
+    found = None
+    index = text.find("{")
+    while index != -1:
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except ValueError:
+            index = text.find("{", index + 1)
+            continue
+        if isinstance(value, dict) and isinstance(value.get("error"), str) and value["error"]:
+            found = value["error"]
+        index = text.find("{", end)
+    return found
+
+
+def _runtime_json(output: str) -> dict:
+    """Runtime's one JSON result. Its stderr notes (merged into this output, for
+    example the sandbox fallback notice) may come before it."""
+    start = next((match.start() for match in re.finditer(r"^\{", output, re.MULTILINE)), 0)
+    return json.loads(output[start:])
+
+
 class Backend:
-    def __init__(self, root: Path, log: Path, uv: Path, *, say=print):
+    def __init__(self, root: Path, log: Path, uv: Path, *, say=print, process_control: str | None = None):
         self.root, self.log, self.uv, self.say = root, log, uv, say
+        # None keeps the workspace's current setting (strict on a new one).
+        self.process_control = process_control
+        if process_control:
+            from runtime_protocol import platform
+
+            platform.configure_process_control(process_control)  # this process signals too
         self.service = Service(root, log, self.run, say=say)
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
@@ -66,21 +103,24 @@ class Backend:
         lock_hash = hashlib.sha256((remotion / "package-lock.json").read_bytes()).hexdigest()
         modules = remotion / "node_modules"
         marker = modules / ".astrid-package-lock.sha256"
-        if (modules.is_dir() and marker.is_file()
+        if not (modules.is_dir() and marker.is_file()
                 and marker.read_text(encoding="ascii").strip() == lock_hash):
-            return
-        # Node's official archives expose npm through this JavaScript entrypoint
-        # on every OS; neither shell shims nor an ambient npm are required.
-        self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
+            # Node's official archives expose npm through this JavaScript entrypoint
+            # on every OS; neither shell shims nor an ambient npm are required.
+            self.run([env["ASTRID_NODE_EXECUTABLE"], npm, "ci", "--no-audit", "--no-fund"],
+                     cwd=remotion, extra_env=env)
+            marker.write_text(lock_hash + "\n", encoding="ascii")
+        # Renders never download: fetch Remotion's browser now, once per Remotion
+        # version into the shared cache (a no-op when it is already there).
+        self.run([env["ASTRID_NODE_EXECUTABLE"], remotion / "scripts" / "fetch-shared-browser.mjs"],
                  cwd=remotion, extra_env=env)
-        marker.write_text(lock_hash + "\n", encoding="ascii")
 
     def runtime(self, version: Version | None, data: Path, *args, profile=False, timeout=1800) -> dict:
         python = version.python if version else Path(sys.executable)
         argv = [python, "-I", "-m", "astrid_runtime", *args, "--data-root", str(data), "--json"]
         if profile and version:
             argv += ["--source-manifest", str(version.profile)]
-        result = json.loads(self.run(argv, extra_env=version.env if version else None, timeout=timeout))
+        result = _runtime_json(self.run(argv, extra_env=version.env if version else None, timeout=timeout))
         if result.get("ok") is False:
             raise RuntimeError(str(result.get("error") or result))
         return result
@@ -206,6 +246,12 @@ class Backend:
     def stop(self, version: Version | None, data: Path) -> None:
         self.service.disable()
         if version is not None and not version.python.is_file():
+            version = None
+        if self.process_control == "sandbox":
+            # An install from before sandbox mode cannot signal inside the
+            # sandbox, so it cannot stop itself. Record the mode now and stop
+            # with this installer's own Runtime, which reads it.
+            self._write_process_control(data)
             version = None
         discovery = data / "runtime" / "discovery.json"
         owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
@@ -421,12 +467,23 @@ class Backend:
     def create(self, version: Version, data: Path) -> dict:
         realm_id = str(uuid.uuid4())
         return self.runtime(version, data, "workspace", "create", "--realm-root",
-                            str(data / "runtime" / "realms" / realm_id), "--realm-id", realm_id, profile=True)
+                            str(data / "runtime" / "realms" / realm_id), "--realm-id", realm_id,
+                            *self._process_control_args(), profile=True)
 
     def attach_existing(self, version: Version, data: Path) -> dict:
         realm = self.workspace(version, data)
         return self.runtime(version, data, "workspace", "attach", "--realm-root", realm["realm_root"],
-                            "--realm-id", realm["realm_id"], profile=True)
+                            "--realm-id", realm["realm_id"], *self._process_control_args(), profile=True)
+
+    def _write_process_control(self, data: Path) -> None:
+        from runtime_protocol import process_control
+
+        support = data / "runtime"
+        if support.is_dir() and process_control.read_setting(support) != self.process_control:
+            process_control.write_setting(support, self.process_control)
+
+    def _process_control_args(self) -> tuple[str, ...]:
+        return ("--process-control", self.process_control) if self.process_control else ()
 
     def doctor(self, version: Version, data: Path, bundle: Path) -> Path:
         bundle = absolute(bundle)
@@ -497,6 +554,11 @@ class Backend:
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
                 error = exc
                 time.sleep(0.25)
+        # A Runtime that died at startup records why in its service log; that is
+        # the real cause, not the missing door it leads to.
+        cause = _last_logged_error(self.service.log)
+        if cause:
+            raise VerificationError(f"Astrid Runtime did not start: {cause} (details: {self.service.log})")
         raise VerificationError(f"Astrid's browser door did not become ready: {error}")
 
     def sync_skills(self, version: Version) -> None:
