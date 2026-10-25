@@ -14,7 +14,7 @@
 # Commands:
 #   fetch [DIR]        download https://astrid.haus/install + manifest into DIR, print hashes and pins
 #   create             create the sandbox (install-time policy)
-#   install DIR        run DIR/install.sh with DIR/install-manifest.json inside the sandbox
+#   install DIR        run DIR/install.sh --sandbox with DIR/install-manifest.json inside the sandbox
 #   services [list | add NAME... | remove NAME... | mode locked|dev]
 #                      no arguments: interactive menu
 #   login NAME | logout NAME   sign a service in or out inside the sandbox (chatgpt, codex)
@@ -216,6 +216,7 @@ EOF
 
 cmd_install() {
     [ $# -ge 1 ] || die "usage: install DIR (from: fetch)"
+    load_state  # the install policy keeps the sandbox's read-only share
     say "Install-time policy: read-only access to package and release hosts."
     set_policy install
     stage_installer "$1"
@@ -773,7 +774,7 @@ shift
 case "$command" in
     fetch) cmd_fetch "$@" ;;
     create) cmd_create ;;
-    install) cmd_install "$@" ;;
+    install) cmd_install "$@"; cmd_apply ;;  # back to the saved policy
     services) cmd_services "$@" ;;
     apply) cmd_apply ;;
     login) cmd_login "$@" ;;
