@@ -111,6 +111,11 @@ drop_service() {
 # The shared ComfyUI output folder is part of every policy for this sandbox.
 mount_args() { [ -n "$created_mount" ] && printf -- '--mount %s' "$created_mount"; return 0; }
 
+# OpenShell trusts its TLS proxy through GIT_SSL_CAINFO (among other CA
+# variables). Astrid's render launch refuses unknown GIT_* variables, so Astrid
+# processes we start get the same trust from ~/.gitconfig instead.
+git_ca_to_config='if [ -n "${GIT_SSL_CAINFO:-}" ]; then git config --global http.sslCAInfo "$GIT_SSL_CAINFO" 2>/dev/null || true; unset GIT_SSL_CAINFO; fi'
+
 # --- commands -----------------------------------------------------------------
 
 cmd_fetch() {
@@ -546,7 +551,7 @@ cmd_mcp() {
         die "this Astrid has no MCP server (astrid.mcp_server) and no copy was found at $src"
     fi
     exec "$os_cli" -g "$gateway" sandbox exec -n "$sandbox" --no-tty -- sh -c \
-        "r=\$HOME/.local/share/astrid; py=\$r/versions/\$(cat \$r/current)/py/bin/python; $launch"
+        "$git_ca_to_config; r=\$HOME/.local/share/astrid; py=\$r/versions/\$(cat \$r/current)/py/bin/python; $launch"
 }
 
 door_answers() {
@@ -564,7 +569,7 @@ cmd_start() {
     # no-systemd fallback does. Stopping a running Runtime is not possible from
     # here: OpenShell's seccomp filter denies pidfds and Runtime refuses to
     # signal a bare PID, so restart = stop + resume the VM, then start.
-    in_sandbox "cd '$guest_home/.local/share/astrid' && V=versions/\$(cat current) && \"\$V/py/bin/python\" -I -c '
+    in_sandbox "$git_ca_to_config; cd '$guest_home/.local/share/astrid' && V=versions/\$(cat current) && \"\$V/py/bin/python\" -I -c '
 from pathlib import Path
 from astrid.installer.core import current
 from astrid.installer.service import Service
