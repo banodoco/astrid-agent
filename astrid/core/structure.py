@@ -34,6 +34,8 @@ TOP_LEVEL_ASTRID_FILES = {
     "__main__.py",
     # Product composition consumed by Runtime's service supervisor.
     "services.py",
+    # `python -m astrid.mcp_server`: the product commands for any MCP client.
+    "mcp_server.py",
 }
 TOP_LEVEL_ASTRID_DIRS = {
     "chat",
