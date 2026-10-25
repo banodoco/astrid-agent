@@ -96,7 +96,8 @@ def test_execution_runs_and_labels_settlement_without_opt_in(tmp_path, monkeypat
     assert result["gpu_qualification"]["qualified"] is False
     assert result["gpu_qualification"]["status"] == "not qualified yet"
     assert result["gpu_qualification"]["warning"].startswith("ComfyUI on Windows with this NVIDIA GPU is untested.")
-    assert result["gpu_qualification"]["opted_in"] is opted_in
+    # ASTRID_ALLOW_UNQUALIFIED_GPU changes nothing; the dead opt-in is no longer reported.
+    assert "opted_in" not in result["gpu_qualification"]
 
 
 def test_vibecomfy_remains_ready_when_nvidia_detection_is_lost(tmp_path, monkeypatch, windows_gpu):
