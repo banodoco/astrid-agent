@@ -23,6 +23,7 @@
 #   apply              re-apply the saved mode and services
 #   lockdown           emergency: mode locked, every service off, providers detached
 #   start              start Astrid's Runtime inside the sandbox if it isn't running
+#   restart            stop Runtime (its own `down`, sandbox process control) and start it again
 #   door               forward 127.0.0.1:17340 on this machine to the sandbox's door
 #   check              prove the live policy matches your selection, then probe the network
 #   status | shell | logs
@@ -229,7 +230,8 @@ cmd_install() {
     # OpenShell's seccomp filter denies pidfd_open and process-group kill, so the
     # install always turns on Runtime's sandbox process control.
     say "Running Astrid's installer inside '$sandbox' (several minutes the first time)."
-    in_sandbox "cd '$guest_home/$stage_name' && sha256sum install.sh install-manifest.json && ASTRID_INSTALL_MANIFEST_URL='file://$guest_home/$stage_name/install-manifest.json' sh ./install.sh --sandbox$flags"
+    # The installer starts Runtime's services, which must not inherit GIT_SSL_CAINFO.
+    in_sandbox "$git_ca_to_config; cd '$guest_home/$stage_name' && sha256sum install.sh install-manifest.json && ASTRID_INSTALL_MANIFEST_URL='file://$guest_home/$stage_name/install-manifest.json' sh ./install.sh --sandbox$flags"
 }
 
 # --- service setup ------------------------------------------------------------
@@ -575,9 +577,7 @@ cmd_start() {
     fi
     # Without systemd, Astrid's documented restart is the install line, which
     # re-bootstraps from the network. Start Runtime the way the installer's
-    # no-systemd fallback does. Stopping a running Runtime is not possible from
-    # here: OpenShell's seccomp filter denies pidfds and Runtime refuses to
-    # signal a bare PID, so restart = stop + resume the VM, then start.
+    # no-systemd fallback does (restart: `restart`).
     in_sandbox "$git_ca_to_config; cd '$guest_home/.local/share/astrid' && V=versions/\$(cat current) && \"\$V/py/bin/python\" -I -c '
 from pathlib import Path
 from astrid.installer.core import current
@@ -594,6 +594,15 @@ print(\"Runtime starting; log:\", log)
         sleep 2
     done
     say "Runtime is up."
+}
+
+# Stop Runtime with its own `down` (sandbox process control makes that work
+# under OpenShell's seccomp filter), then start it and the relay again.
+cmd_restart() {
+    in_sandbox "$git_ca_to_config; r=\$HOME/.local/share/astrid; v=\$r/versions/\$(cat \$r/current); \"\$v/py/bin/python\" -I -m astrid_runtime down --data-root \$HOME/.local/share/astrid-runtime --source-manifest \"\$v/profile.json\" --json" >/dev/null \
+        || die "Runtime did not stop; see $guest_home/.local/state/astrid-runtime/logs/ (astrid-openshell.sh shell)"
+    say "Runtime stopped."
+    cmd_start_all
 }
 
 cmd_start_all() {
@@ -788,6 +797,7 @@ case "$command" in
     mcp) cmd_mcp ;;
     lockdown) load_state; mode=locked; selected=""; save_state; cmd_apply ;;
     start) cmd_start_all ;;
+    restart) cmd_restart ;;
     rebuild) cmd_rebuild "$@" ;;
     door) cmd_door ;;
     check) cmd_check ;;
