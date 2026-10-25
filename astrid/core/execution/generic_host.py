@@ -1325,7 +1325,9 @@ def _prepare_vibecomfy_execution_identity(
         ) as (workflow_path, _authority):
             comfy_url = str(inputs.get("comfy_url") or "")
             if comfy_url:
-                from astrid.core.generation.backends.vibecomfy_local_server import validate_comfy_url
+                from astrid.core.generation.backends.vibecomfy_local_server import (
+                    validate_comfy_url,
+                )
 
                 comfy_url = validate_comfy_url(comfy_url)
             loaded = load_workflow_path(
