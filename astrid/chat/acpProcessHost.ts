@@ -65,6 +65,7 @@ export type AcpProcessHostOptions = {
   /** Explicit named-agent prompt file; never inline or discover ambiently. */
   readonly systemPrompt?: string;
   readonly env?: Record<string, string | undefined>;
+  /** Deadline for control RPCs; session/prompt waits for actual completion or disconnect. */
   readonly requestTimeoutMs?: number;
   readonly callbacks?: AcpProcessHostCallbacks;
 };
@@ -114,7 +115,7 @@ type PendingRequest = {
   readonly method: string;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: unknown) => void;
-  readonly timeout: ReturnType<typeof setTimeout>;
+  readonly timeout: ReturnType<typeof setTimeout> | undefined;
 };
 
 type IncomingResponse = {
@@ -325,7 +326,10 @@ export class AcpProcessHost {
     const id = this.nextRequestId;
     this.nextRequestId += 1;
     const response = new Promise<unknown>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // A prompt response ends the entire agent turn, which can legitimately run
+      // for hours. Expiring only our waiter neither stops the agent nor proves
+      // failure, and would incorrectly release the shared turn reservation.
+      const timeout = method === 'session/prompt' ? undefined : setTimeout(() => {
         this.pending.delete(id);
         reject(new AcpProcessHostError(
           `ACP request "${method}" timed out.`,

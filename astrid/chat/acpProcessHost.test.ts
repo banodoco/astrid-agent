@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { JsonRpcProcessLike } from './process-types.ts';
+import { SharedAcpSessions } from './astrid-shared-acp-sessions.ts';
 import {
   AcpProcessHost,
   commandForPlatform,
@@ -80,6 +81,79 @@ async function flush(): Promise<void> {
 }
 
 describe('AcpProcessHost', () => {
+  it('keeps a long prompt active and deduplicated past the control deadline, then delivers its result', async () => {
+    const process = new FakeProcess();
+    const host = new AcpProcessHost({ process: process.asProcess(), requestTimeoutMs: 10 });
+    const shared = new SharedAcpSessions(() => {});
+    const writer = { id: 'writer', agent: 'codex' as const, localMediaOnly: false, host };
+    const sessionId = 'codex:long-turn';
+    const creating = shared.request(writer, 'session/new');
+    await flush();
+    respond(process, lastRequest(process).id, { sessionId });
+    await creating;
+    const params = { sessionId, _astridRequestId: 'long-request', prompt: [{ type: 'text', text: 'Do the work' }] };
+    const first = shared.request(writer, 'session/prompt', params);
+    const outcome = first.then(result => ({ result }), error => ({ error }));
+    let settled = false;
+    void outcome.then(() => { settled = true; });
+    try {
+      await flush();
+      const promptId = lastRequest(process).id;
+      // Control calls still time out while a quiet prompt remains running.
+      await expect(host.listSessions()).rejects.toMatchObject({ code: 'acp_timeout', method: 'session/list' });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(settled).toBe(false);
+      const loaded = await shared.request(writer, 'session/load', { sessionId });
+      expect(loaded).toMatchObject({ _astridSession: { active: true, activeRequestId: 'long-request' } });
+      const retry = shared.request(writer, 'session/prompt', params);
+      await expect(shared.request(writer, 'session/prompt', { ...params, _astridRequestId: 'different-request' }))
+        .rejects.toMatchObject({ code: 'session_busy' });
+      expect(process.stdin.writes.map(line => JSON.parse(line)).filter(request => request.method === 'session/prompt')).toHaveLength(1);
+      respond(process, promptId, { stopReason: 'end_turn' });
+      await expect(outcome).resolves.toEqual({ result: { stopReason: 'end_turn' } });
+      await expect(retry).resolves.toEqual({ stopReason: 'end_turn' });
+      await expect(shared.request(writer, 'session/load', { sessionId })).resolves.toMatchObject({ _astridSession: { active: false } });
+      await expect(shared.request(writer, 'session/prompt', params)).resolves.toEqual({ stopReason: 'end_turn' });
+      expect(process.stdin.writes.map(line => JSON.parse(line)).filter(request => request.method === 'session/prompt')).toHaveLength(1);
+    } finally {
+      await host.dispose();
+      shared.close();
+    }
+  });
+
+  it('can cancel a prompt after the control deadline and waits for the agent cancellation response', async () => {
+    const process = new FakeProcess();
+    const host = new AcpProcessHost({ process: process.asProcess(), requestTimeoutMs: 10 });
+    const pending = host.prompt({ sessionId: 'long-turn', prompt: [] });
+    const outcome = pending.then(result => ({ result }), error => ({ error }));
+    try {
+      await flush();
+      const promptId = lastRequest(process).id;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      await host.cancel({ sessionId: 'long-turn' });
+      expect(lastRequest(process)).toEqual({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: 'long-turn' } });
+      respond(process, promptId, { stopReason: 'cancelled' });
+      await expect(outcome).resolves.toEqual({ result: { stopReason: 'cancelled' } });
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('rejects a long prompt when its process exits instead of leaving it pending forever', async () => {
+    const process = new FakeProcess();
+    const host = new AcpProcessHost({ process: process.asProcess(), requestTimeoutMs: 10 });
+    const pending = host.prompt({ sessionId: 'long-turn', prompt: [] });
+    const outcome = pending.then(result => ({ result }), error => ({ error }));
+    try {
+      await flush();
+      await new Promise(resolve => setTimeout(resolve, 30));
+      process.emit('exit', 1, null);
+      await expect(outcome).resolves.toMatchObject({ error: { code: 'acp_process_exited' } });
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it('runs Windows command shims through cmd.exe with a quoted entry and arguments', () => {
     expect(commandForPlatform('C:\\Program Files\\Hermes.CMD', ['acp', 'two words & more'], 'win32')).toEqual({
       command: 'cmd.exe',
