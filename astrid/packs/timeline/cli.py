@@ -63,12 +63,14 @@ import re
 import shlex
 import sys
 import uuid
-from functools import wraps
 from collections.abc import Mapping
 from fractions import Fraction
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.argtypes import input_file, json_object
+from astrid.core.cli.argtypes import json_object_or_path as _json_object_or_path
 from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_result, render_human
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
@@ -94,25 +96,7 @@ _FAMILY = "timelines"
 _IN_VERB = False
 
 
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a ``--config``/``--registry`` JSON object argument."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(f"invalid JSON object: {exc.msg}") from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
-
-
 PRESET_CHOICES = ("overview", "scan", "motion", "beat", "frame", "cut", "compare")
-
-
-def _json_object_or_path(value: str) -> Any:
-    """A JSON object given inline, or a path to the file that holds it (resolved by the verb)."""
-    from astrid.packs.timeline.cli_visualize import _lenient_json_or_path
-
-    return _lenient_json_or_path(value)
 
 
 def _add_json_flag(subparser: argparse.ArgumentParser, *, default: bool = True) -> None:
@@ -2021,7 +2005,7 @@ def _configure_inspect(subparser: argparse.ArgumentParser) -> None:
     from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import INSPECTION_SECTIONS
 
     subparser.description = "Inspect a verified materialized filmstrip offline; no runtime or render admission. Responses are capped at 8 KiB."
-    subparser.add_argument("--manifest", required=True, help="Materialized filmstrip manifest.json; bundle members are verified before reading.")
+    subparser.add_argument("--manifest", type=input_file, required=True, help="Materialized filmstrip manifest.json; bundle members are verified before reading.")
     subparser.add_argument("--section", default="summary", help="Named section: " + ", ".join(INSPECTION_SECTIONS))
     subparser.add_argument("--limit", type=int, default=10, help="Records per response: 1–50, default 10; byte cap may reduce the page.")
     subparser.add_argument("--cursor", default=None, help="Opaque cursor from this bundle and identical query.")
@@ -2392,7 +2376,7 @@ def _configure_update_element(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument('--revision',required=True)
     subparser.add_argument('--expected-head',required=True)
     subparser.add_argument('--duration',type=float)
-    subparser.add_argument('--params-json',type=_parse_json_object)
+    subparser.add_argument('--params-json',type=json_object)
     _add_idempotency_key(subparser)
     _add_json_flag(subparser)
     subparser.set_defaults(handler=_cmd_update_element)
@@ -2680,7 +2664,7 @@ def _configure_render(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--profile",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         metavar="JSON",
         help=(
@@ -3648,7 +3632,7 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", nargs="?", default=None,
                            help="Timeline id or slug with a saved working copy (or use --file).")
-    subparser.add_argument("--file", default=None, help="Edit a local checkout file instead of the working copy.")
+    subparser.add_argument("--file", type=input_file, default=None, help="Edit a local checkout file instead of the working copy.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
     subparser.add_argument("--clip", help="Clip by address (c30.cover), layer name, asset key, id or prefix, element, or on-screen text.")
     subparser.add_argument("--near", default=None, help="With --clip: the match nearest this word or time.")
@@ -3729,9 +3713,9 @@ def _configure_edit(subparser: argparse.ArgumentParser) -> None:
     narration = subparser.add_mutually_exclusive_group()
     narration.add_argument("--replace-line", "--line", metavar="LINE", help="Replace one line's selected take and word timings.")
     narration.add_argument("--insert-line", metavar="LINE", help="Insert a line after --after.")
-    narration.add_argument("--from-script", metavar="PATH", help="Apply a JSON narration script and its local takes.")
+    narration.add_argument("--from-script", type=input_file, metavar="PATH", help="Apply a JSON narration script and its local takes.")
     subparser.add_argument("--take", help="Selected WAV or registered take for --replace-line/--insert-line.")
-    subparser.add_argument("--words", help="Word-timing JSON for --replace-line/--insert-line.")
+    subparser.add_argument("--words", type=input_file, help="Word-timing JSON for --replace-line/--insert-line.")
     subparser.add_argument("--after", help="Existing line after which --insert-line is placed.")
     subparser.add_argument("--insert-gap-after", "--gap", dest="insert_gap_after", type=float, help="Declared gap after a newly inserted line, in seconds.")
     subparser.add_argument("--text", "--line-text", dest="line_text",
@@ -3830,7 +3814,7 @@ def _configure_apply(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser, required=False)
     subparser.add_argument("ref", help="Timeline id or slug with a saved working copy.")
     subparser.add_argument("--draft", default=None, help="Working copy name (default: current working copy).")
-    subparser.add_argument("sheet_file", type=Path, help="Path to the edited cut sheet.")
+    subparser.add_argument("sheet_file", type=input_file, help="Path to the edited cut sheet.")
     subparser.set_defaults(handler=_as_timeline_verb(_guarded(2, _cmd_apply)))
 
 

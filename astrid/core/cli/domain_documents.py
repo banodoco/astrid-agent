@@ -4,9 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.argtypes import input_file, output_file
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.sdk.contracts import DomainResult, ErrorObject
@@ -77,7 +77,7 @@ def _configure_list(parser):
 def _configure_create(parser):
     _common(parser)
     parser.add_argument("--kind", required=True, help="Namespaced kind, e.g. editorial.brief.")
-    parser.add_argument("--file", required=True, type=Path)
+    parser.add_argument("--file", required=True, type=input_file)
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     parser.add_argument("--document-id", help="Stable ID for a pack's one-per-project document.")
     parser.add_argument("--idempotency-key")
@@ -92,12 +92,12 @@ def _configure_show(parser):
 
 def _configure_checkout(parser):
     _configure_show(parser)
-    parser.add_argument("--file", required=True, type=Path, help="New working-copy path; existing paths are refused.")
+    parser.add_argument("--file", required=True, type=output_file, help="New working-copy path; existing paths are refused.")
     parser.set_defaults(handler=_checkout)
 
 
 def _configure_checkin(parser):
-    parser.add_argument("file", type=Path)
+    parser.add_argument("file", type=input_file)
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(handler=_checkin)
 

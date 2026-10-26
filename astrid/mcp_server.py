@@ -34,6 +34,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.argtypes import (
+    execution_request,
+    input_file,
+    json_array,
+    json_object,
+    json_object_or_path,
+    output_file,
+)
 from astrid.core.cli.domain_product import family_parsers
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
@@ -68,7 +76,9 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
         return {"type": "object"}
     if kind == "json-array":
         return {"type": "array"}
-    if kind == "file":
+    if kind == "json-object-or-path":
+        return {"type": ["object", "array"]}
+    if kind in {"input-file", "output-file"}:
         return {"type": "string"}
     item: dict[str, Any] = {"type": "string"}
     if action.type is int:
@@ -83,14 +93,17 @@ def _schema(action: argparse.Action) -> dict[str, Any]:
 
 
 def _value_kind(action: argparse.Action) -> str:
-    """How a value travels: plain, JSON, or a file whose text the server handles."""
-    if action.type is Path:
-        return "file"
-    name = getattr(action.type, "__name__", "")
-    if "json_array" in name:
+    """How a value travels, based on the parser's declared argument type."""
+    if action.type is json_array:
         return "json-array"
-    if "json" in name or name == "_parse_execution_request":
+    if action.type is json_object or action.type is execution_request:
         return "json-object"
+    if action.type is json_object_or_path:
+        return "json-object-or-path"
+    if action.type is input_file:
+        return "input-file"
+    if action.type is output_file:
+        return "output-file"
     return "plain"
 
 
@@ -117,11 +130,11 @@ def build_tools() -> dict[str, dict[str, Any]]:
                     supports_json = True
                     continue
                 value_kind = _value_kind(action)
-                output_file = value_kind == "file" and path[-1] == "checkout"
+                output_argument = value_kind == "output-file"
                 args.append({"dest": action.dest, "option": action.option_strings[0] if action.option_strings else None,
                              "kind": type(action).__name__, "nargs": action.nargs, "value": value_kind,
-                             "output": output_file})
-                if output_file:
+                             "output": output_argument})
+                if output_argument:
                     continue  # the server picks the path and returns the file's text
                 schema = _schema(action)
                 if action.help and action.help != argparse.SUPPRESS:
@@ -129,7 +142,7 @@ def build_tools() -> dict[str, dict[str, Any]]:
                         schema["description"] = action.help % {"default": action.default, "prog": "astrid"}
                     except (KeyError, TypeError, ValueError):
                         schema["description"] = action.help
-                if value_kind == "file":
+                if value_kind == "input-file":
                     schema["description"] = "The file's text (written to a private temporary file for Astrid)."
                 # Paired flags share a dest (--wait/--detach): the first one names it.
                 properties.setdefault(action.dest, schema)
@@ -151,8 +164,8 @@ def build_tools() -> dict[str, dict[str, Any]]:
 
 def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | None = None,
              outputs: dict[str, Path] | None = None) -> list[str]:
-    """CLI argv for a tool call. File arguments are written to (or, for checkout
-    outputs, reserved in) ``workdir``; ``outputs`` collects files to read back."""
+    """CLI argv for a tool call. File inputs are written to, and outputs reserved in,
+    ``workdir``; ``outputs`` collects files to read back."""
     unknown = set(arguments) - {a["dest"] for a in tool["args"] if not a.get("output")}
     if unknown:
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
@@ -172,7 +185,7 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             continue
         else:
             value = arguments[spec["dest"]]
-        if spec.get("value") == "file" and not spec.get("output"):
+        if spec.get("value") == "input-file":
             if workdir is None:
                 raise ValueError("file argument needs a working directory")
             if not isinstance(value, str):
@@ -180,6 +193,18 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             target = workdir / f"{spec['dest']}.in"
             target.write_text(value, encoding="utf-8")
             value = str(target)
+        elif spec.get("value") == "json-object-or-path":
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value)
+            elif isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"{spec['dest']} must be JSON; file paths are not accepted") from exc
+                if not isinstance(parsed, (dict, list)):
+                    raise ValueError(f"{spec['dest']} must be a JSON object or array")
+            else:
+                raise TypeError(f"{spec['dest']} must be a JSON object or array")
         elif spec.get("value", "").startswith("json") and not isinstance(value, str):
             value = json.dumps(value)
         option, kind = spec["option"], spec["kind"]

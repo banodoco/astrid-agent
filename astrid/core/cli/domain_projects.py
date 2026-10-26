@@ -32,28 +32,15 @@ returned envelope.
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Any
 
+from astrid.core.cli.argtypes import json_object
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 
 __all__ = ["COMMANDS", "build_parser"]
 
 _FAMILY = "projects"
-
-
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a ``--settings`` JSON object argument (usage error otherwise)."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid JSON object: {exc.msg}"
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
 
 
 def _add_json_flag(subparser: argparse.ArgumentParser) -> None:
@@ -129,7 +116,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--name", required=True, help="Display name.")
     subparser.add_argument(
         "--settings",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Settings as a JSON object (e.g. '{\"owner\": \"team\"}').",
     )
@@ -154,7 +141,7 @@ def _configure_update(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--name", default=None, help="New display name.")
     subparser.add_argument(
         "--settings",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Settings delta as a JSON object.",
     )

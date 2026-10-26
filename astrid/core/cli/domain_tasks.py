@@ -51,6 +51,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from astrid.core.cli.argtypes import execution_request, json_array, json_object
 from astrid.core.cli.domain_output import exit_code, print_result
 from astrid.core.cli.list_narrow import primary_output_name, resolve_cli_id
 from astrid.core.cli.registration import CommandSpec, register_product_commands
@@ -61,53 +62,11 @@ from astrid.core.cli.task_progress import (
     render_observation_line,
     task_handoff,
 )
-from astrid.sdk.execution_request import ExecutionRequestError, normalize_execution_request
-
 from astrid.sdk.contracts import DomainResult
 
 __all__ = ["COMMANDS", "build_parser"]
 
 _FAMILY = "tasks"
-
-
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a JSON object argument (usage error otherwise)."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid JSON object: {exc.msg}"
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
-
-
-def _parse_json_array(value: str) -> list[Any]:
-    """Parse a JSON array argument (usage error otherwise)."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid JSON array: {exc.msg}"
-        ) from exc
-    if not isinstance(parsed, list):
-        raise argparse.ArgumentTypeError("must be a JSON array")
-    return parsed
-
-def _parse_execution_request(value: str) -> dict[str, Any]:
-    """Parse and normalize one target-aware execution request."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(f"invalid execution request: {exc.msg}") from exc
-    try:
-        normalized = normalize_execution_request(parsed)
-    except ExecutionRequestError as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-    if normalized is None:
-        raise argparse.ArgumentTypeError("execution request must be an object")
-    return normalized
 
 
 def _positive_float(value: str) -> float:
@@ -332,21 +291,21 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--spec",
-        type=_parse_json_object,
+        type=json_object,
         required=True,
         help="Immutable task spec as a JSON object (e.g. '{\"size\": 1}').",
     )
     subparser.add_argument(
         "--input-manifest",
         dest="input_manifest",
-        type=_parse_json_array,
+        type=json_array,
         default=None,
         help="Optional input manifest as a JSON array.",
     )
     subparser.add_argument(
         "--generation-intent",
         dest="generation_intent",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help=(
             "Optional generation publication declaration JSON. The runtime "
@@ -356,7 +315,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--settlement-effect",
         dest="settlement_effect",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help=(
             "Optional generic settlement effect JSON. Pair this with "
@@ -366,7 +325,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--execution-request",
         dest="execution_request",
-        type=_parse_execution_request,
+        type=execution_request,
         default=None,
         help=(
             "Target-aware execution request JSON. The target must be exactly "

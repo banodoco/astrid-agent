@@ -44,29 +44,16 @@ reserved for pack ``run.py`` modules).
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.argtypes import input_file, json_object
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 
 __all__ = ["COMMANDS", "build_parser"]
 
 _FAMILY = "shots"
-
-
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a ``--metadata`` JSON object argument (usage error otherwise)."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid JSON object: {exc.msg}"
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
 
 
 def _parse_item_ids(value: str) -> list[str]:
@@ -157,7 +144,7 @@ def _configure_text(subparser: argparse.ArgumentParser) -> None:
             command.add_argument("shot", help="Registered shot id.")
             content = command.add_mutually_exclusive_group(required=True)
             content.add_argument("--text", help="Exact narration, prompt, or transcript text.")
-            content.add_argument("--text-file", type=Path, help="UTF-8 text file (including its exact whitespace).")
+            content.add_argument("--text-file", type=input_file, help="UTF-8 text file (including its exact whitespace).")
             command.add_argument("--expected-head", type=int, required=True, help="0 for creation; current binding head for edits.")
             _add_idempotency_key(command)
 
@@ -234,7 +221,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--name", required=True, help="Shot name.")
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Metadata as a JSON object.",
     )
@@ -266,7 +253,7 @@ def _configure_add(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Metadata as a JSON object.",
     )

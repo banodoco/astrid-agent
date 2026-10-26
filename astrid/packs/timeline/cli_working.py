@@ -9,16 +9,23 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import re
 import shlex
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.argtypes import input_file
 from astrid.core.cli.domain_output import print_result
 from astrid.packs.timeline.cli_common import (
-    VerbError, clips_changed, draft_name, guard, need_project, working_banner, working_copy, working_copy_view,
+    VerbError,
+    clips_changed,
+    draft_name,
+    guard,
+    need_project,
+    working_banner,
+    working_copy,
+    working_copy_view,
 )
 
 
@@ -255,12 +262,12 @@ def _configure_lint(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--cut", default=None, help="Only this cut (number in timelines show, clip id, or @SECONDS).")
     subparser.add_argument("--range", dest="range", default=None, help="Only cuts overlapping START..END seconds.")
     subparser.add_argument("--revision-id", default=None, help="Lint a saved revision instead of the head.")
-    subparser.add_argument("--beats", default=None, metavar="BEATS_JSON",
+    subparser.add_argument("--beats", type=input_file, default=None, metavar="BEATS_JSON",
                            help="Override the beats the music clips carry (app.beats, written by the EDL builder) "
                                 "with a cue's beats.json. Beats add accents 0.10–0.20 s off a music hit or downbeat.")
     subparser.add_argument("--min-text-px", dest="min_text_px", type=float, default=None,
                            help="Smallest acceptable text size in px at 1080p (default 32, or the rules file's).")
-    subparser.add_argument("--rules", default=None, metavar="FILE",
+    subparser.add_argument("--rules", type=input_file, default=None, metavar="FILE",
                            help="Project rules (thresholds/severities) TOML; default: the nearest astrid-lint.toml "
                                 "from the working directory upwards.")
     subparser.add_argument("--no-rules", dest="no_rules", action="store_true",
@@ -379,7 +386,7 @@ def _configure_words(subparser: argparse.ArgumentParser) -> None:
                            help='One word: its scoped form, time, cut, what is on screen and what is anchored to it '
                                 '(Live, \'"Building" in v27\'); a word said more than once lists its scoped forms.')
     subparser.add_argument("--beats", action="store_true", help="With a word: the music beats near it, with their moments.")
-    subparser.add_argument("--file", default=None, help="Read a local checkout file instead.")
+    subparser.add_argument("--file", type=input_file, default=None, help="Read a local checkout file instead.")
     subparser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
     subparser.add_argument("--find", default=None, help="Only words containing this text.")
     subparser.add_argument("--range", default=None, metavar="A..B", help="Only words between two times (seconds or m:ss).")

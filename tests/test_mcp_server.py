@@ -12,6 +12,14 @@ from pathlib import Path
 from threading import Thread
 
 from astrid import mcp_server
+from astrid.core.cli.argtypes import (
+    execution_request,
+    input_file,
+    json_array,
+    json_object,
+    json_object_or_path,
+    output_file,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -93,21 +101,15 @@ def test_frontmatter_handles_quotes_and_folded_values():
 
 
 def _json_and_file_parser() -> argparse.ArgumentParser:
-    def _parse_json_object(text):
-        return json.loads(text)
-
-    def _parse_json_array(text):
-        return json.loads(text)
-
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers()
     create = sub.add_parser("create", help="Create a task.")
-    create.add_argument("--spec", type=_parse_json_object, required=True)
-    create.add_argument("--inputs", type=_parse_json_array)
+    create.add_argument("--spec", type=json_object, required=True)
+    create.add_argument("--inputs", type=json_array)
     checkin = sub.add_parser("checkin", help="Check a file in.")
-    checkin.add_argument("file", type=Path)
+    checkin.add_argument("file", type=input_file)
     checkout = sub.add_parser("checkout", help="Check a file out.")
-    checkout.add_argument("--file", type=Path, required=True)
+    checkout.add_argument("--file", type=output_file, required=True)
     return parser
 
 
@@ -118,6 +120,48 @@ def test_json_flags_take_real_json(monkeypatch):
     assert schema["spec"]["type"] == "object" and schema["inputs"]["type"] == "array"
     argv = mcp_server.argv_for(tools["tasks_create"], {"spec": {"size": 1}, "inputs": ["a"]})
     assert argv == ["tasks", "create", "--spec", '{"size": 1}', "--inputs", '["a"]']
+
+
+def test_value_kinds_use_argtype_identity():
+    parser = argparse.ArgumentParser()
+    for name, value_type in (
+        ("object", json_object),
+        ("array", json_array),
+        ("request", execution_request),
+        ("input", input_file),
+        ("output", output_file),
+        ("dual", json_object_or_path),
+    ):
+        parser.add_argument(f"--{name}", type=value_type)
+    assert [mcp_server._value_kind(action) for action in parser._actions[1:]] == [
+        "json-object", "json-array", "json-object", "input-file", "output-file", "json-object-or-path",
+    ]
+
+    def json_object_named_but_unrelated(value):
+        return value
+
+    json_object_named_but_unrelated.__name__ = "json_object"
+    unrelated = argparse.ArgumentParser()
+    unrelated.add_argument("--value", type=json_object_named_but_unrelated)
+    assert mcp_server._value_kind(unrelated._actions[-1]) == "plain"
+
+
+def test_json_object_or_path_is_json_only_for_mcp(monkeypatch):
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers()
+    visualize = sub.add_parser("visualize")
+    visualize.add_argument("--rules", type=json_object_or_path)
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"timelines": parser})
+    tool = mcp_server.build_tools()["timelines_visualize"]
+    assert tool["definition"]["inputSchema"]["properties"]["rules"]["type"] == ["object", "array"]
+    assert mcp_server.argv_for(tool, {"rules": {"params": {"motion": 0.4}}}) == [
+        "timelines", "visualize", "--rules", '{"params": {"motion": 0.4}}',
+    ]
+    encoded = '{"params": {"motion": 0.4}}'
+    assert mcp_server.argv_for(tool, {"rules": encoded})[-1] == encoded
+    result = mcp_server.call_tool(tool, {"rules": "/etc/passwd"})
+    assert result["isError"] is True
+    assert "must be JSON" in result["content"][0]["text"]
 
 
 def test_file_arguments_travel_as_text(monkeypatch, tmp_path):
@@ -197,6 +241,25 @@ def test_file_outputs_are_in_structured_content(monkeypatch, tmp_path):
     assert result["structuredContent"]["ok"] is True
 
 
+def test_output_file_round_trip(monkeypatch):
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers()
+    export = sub.add_parser("export")
+    export.add_argument("--file", type=output_file, required=True)
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"documents": parser})
+    tool = mcp_server.build_tools()["documents_export"]
+    assert "file" not in tool["definition"]["inputSchema"]["properties"]
+
+    def fake_run(argv, cwd):
+        Path(argv[argv.index("--file") + 1]).write_text("document contents")
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    result = mcp_server.call_tool(tool, {})
+    assert result["isError"] is False
+    assert result["structuredContent"]["files"] == {"file": "document contents"}
+
+
 def test_every_tool_returns_without_following_long_running_work():
     tools = {**mcp_server.build_tools(), **mcp_server._extra_tools()}
     for name, tool in tools.items():
@@ -224,9 +287,16 @@ def test_mcp_edit_forces_no_sweep_but_check_can_request_one():
 def test_cli_subprocesses_use_server_cwd_for_relative_paths(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     calls = []
+    file_contents = []
 
     def fake_run(argv, cwd):
         calls.append((argv, cwd))
+        if "media" in argv and argv[argv.index("media") + 1] == "import":
+            file_contents.append(Path(argv[argv.index("media") + 2]).read_text())
+        elif "timelines" in argv and argv[argv.index("timelines") + 1] == "find":
+            file_contents.append(Path(argv[argv.index("--file") + 1]).read_text())
+        elif "timelines" in argv and argv[argv.index("timelines") + 1] == "words":
+            file_contents.append(Path(argv[argv.index("--file") + 1]).read_text())
         return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true}', stderr="")
 
     monkeypatch.setattr(mcp_server, "_run", fake_run)
@@ -244,10 +314,11 @@ def test_cli_subprocesses_use_server_cwd_for_relative_paths(monkeypatch, tmp_pat
         assert result["isError"] is False, name
 
     assert [cwd for _, cwd in calls] == [tmp_path] * len(examples)
-    assert "media/clip.mp4" in calls[0][0]
+    assert file_contents == ["media/clip.mp4", "edit.json", "words.json"]
+    assert calls[0][0][calls[0][0].index("media") + 2] != "media/clip.mp4"
     assert calls[1][0][calls[1][0].index("--out") + 1] == "frames"
-    assert calls[3][0][calls[3][0].index("--file") + 1] == "edit.json"
-    assert calls[4][0][calls[4][0].index("--file") + 1] == "words.json"
+    assert calls[3][0][calls[3][0].index("--file") + 1] != "edit.json"
+    assert calls[4][0][calls[4][0].index("--file") + 1] != "words.json"
 
 
 def test_module_docstring_does_not_claim_tool_annotations():

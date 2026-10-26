@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from astrid.core.cli.argtypes import input_file
+
 
 def configure_find(parser: argparse.ArgumentParser, add_project_arg: Any) -> None:
     parser.description = (
@@ -21,7 +23,7 @@ def configure_find(parser: argparse.ArgumentParser, add_project_arg: Any) -> Non
     parser.add_argument("--cut", default=None, metavar="CUT", help="Only in cut CUT (c32).")
     parser.add_argument("--last", action="store_true", help="Only the last hit (in time).")
     add_find_flags(parser)
-    parser.add_argument("--file", default=None, help="Read a local checkout file instead.")
+    parser.add_argument("--file", type=input_file, default=None, help="Read a local checkout file instead.")
     parser.add_argument("--published", action="store_true", help="Read the published head, not the working copy.")
 
 

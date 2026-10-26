@@ -48,6 +48,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from astrid.core.cli.argtypes import input_file, json_object
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 
@@ -73,27 +74,18 @@ MEDIA_RELATION_KINDS: tuple[str, ...] = (
 """The frozen five media relation kinds (m1 decision artifact section 7)."""
 
 
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a ``--metadata`` JSON object argument (usage error otherwise)."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid JSON object: {exc.msg}"
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
+class _ExistingFileOrDirectoryAction(argparse.Action):
+    """Keep media import's existing file-or-directory usage validation."""
 
-
-def _existing_file_or_directory(value: str) -> str:
-    """Accept only an existing regular file or directory (usage error else)."""
-    path = Path(value)
-    if path.is_file() or path.is_dir():
-        return value
-    raise argparse.ArgumentTypeError(
-        f"import accepts only an existing file or directory, got {value!r}"
-    )
+    def __call__(self, parser, namespace, values, option_string=None):
+        path = Path(values)
+        if path.is_file() or path.is_dir():
+            setattr(namespace, self.dest, path)
+            return
+        raise argparse.ArgumentError(
+            self,
+            f"import accepts only an existing file or directory, got {str(values)!r}",
+        )
 
 
 def _add_json_flag(subparser: argparse.ArgumentParser) -> None:
@@ -259,7 +251,8 @@ def _configure_import(subparser: argparse.ArgumentParser) -> None:
     _add_project_arg(subparser)
     subparser.add_argument(
         "path",
-        type=_existing_file_or_directory,
+        type=input_file,
+        action=_ExistingFileOrDirectoryAction,
         help=(
             "Existing file or directory to import (files/folders only); "
             "video/audio containers must be ffprobe-decodable."
@@ -370,7 +363,7 @@ def _configure_relate(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Optional edge metadata as a JSON object.",
     )

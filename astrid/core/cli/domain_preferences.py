@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.argtypes import input_file, output_file
 from astrid.core.cli.domain_documents import _render
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
@@ -71,12 +71,12 @@ def _configure_edit(parser):
 
 def _configure_checkout(parser):
     _configure_edit(parser)
-    parser.add_argument("--file", type=Path, required=True, help="New Markdown working-copy path.")
+    parser.add_argument("--file", type=output_file, required=True, help="New Markdown working-copy path.")
     parser.set_defaults(handler=_checkout)
 
 
 def _configure_checkin(parser):
-    parser.add_argument("file", type=Path)
+    parser.add_argument("file", type=input_file)
     parser.add_argument("--json", action="store_true")
     parser.set_defaults(handler=_checkin)
 

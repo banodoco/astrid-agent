@@ -49,9 +49,9 @@ reserved for pack ``run.py`` modules).
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Any
 
+from astrid.core.cli.argtypes import json_object
 from astrid.core.cli.domain_output import print_result
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 
@@ -82,17 +82,6 @@ REFERENCE_LINK_KINDS: tuple[str, ...] = (
 __all__ = ["COMMANDS", "build_parser"]
 
 _FAMILY = "references"
-
-
-def _parse_json_object(value: str) -> dict[str, Any]:
-    """Parse a ``--metadata`` JSON object argument (usage error otherwise)."""
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError(f"invalid JSON object: {exc.msg}") from exc
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("must be a JSON object")
-    return parsed
 
 
 def _add_json_flag(subparser: argparse.ArgumentParser) -> None:
@@ -254,7 +243,7 @@ def _configure_create(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Metadata as a JSON object.",
     )
@@ -274,7 +263,7 @@ def _configure_update(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Metadata delta as a JSON object.",
     )
@@ -339,7 +328,7 @@ def _configure_associate(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Association metadata as a JSON object.",
     )
@@ -370,7 +359,7 @@ def _configure_link(subparser: argparse.ArgumentParser) -> None:
     )
     subparser.add_argument(
         "--metadata",
-        type=_parse_json_object,
+        type=json_object,
         default=None,
         help="Link metadata as a JSON object.",
     )
