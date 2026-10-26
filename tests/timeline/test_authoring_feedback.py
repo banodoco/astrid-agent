@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import argparse
 import copy
-import importlib.util
 import json
 import shlex
-from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -208,10 +206,9 @@ def test_next_actions_quote_authoritative_scope_and_parse_supported_options():
 
 
 def test_document_publish_stdout_and_durable_receipt_contain_shared_feedback(tmp_path, monkeypatch, capsys):
-    script = Path(__file__).resolve().parents[2] / "astrid/packs/rendering/docs/scripts/timeline_document.py"
-    spec = importlib.util.spec_from_file_location("timeline_document_feedback_test", script)
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
+    from astrid.packs.timeline import cli_document
+    from tests.timeline.test_document_cli import invoke
+
     work = bundle(images=3)
     replace_images(work)
     path = tmp_path / "batch 'one' edit.json"
@@ -220,24 +217,26 @@ def test_document_publish_stdout_and_durable_receipt_contain_shared_feedback(tmp
     client = SimpleNamespace(timelines=SimpleNamespace(open_composition=lambda *args: SimpleNamespace(
         ok=True, data={"summary": {"head_revision_id": "parent-1"}},
     )))
-    monkeypatch.setattr(helper.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
     writer = Writer()
-    monkeypatch.setattr(helper, "workspace", lambda: writer)
-    monkeypatch.setattr("sys.argv", [str(script), "publish", "--file", str(path), "--idempotency-key", "batch-feedback"])
-    helper.main()
-    output = json.loads(capsys.readouterr().out)
-    saved = json.loads(path.with_suffix(".publication.json").read_text())
+    monkeypatch.setattr(cli_document, "workspace", lambda: writer)
+    report, prepared, imports, receipt = (tmp_path / name for name in ("check.json", "prepared.json", "imports.json", "receipt.json"))
+    result = invoke(client, ["publish", "--file", path, "--idempotency-key", "batch-feedback",
+                            "--report", report, "--prepared-file", prepared,
+                            "--imports-file", imports, "--receipt-file", receipt, "--json"])
+    assert result == 0
+    output = json.loads(capsys.readouterr().out)["data"]
+    saved = json.loads(receipt.read_text())
     assert output["update"].startswith("Updated 3 image selections.")
     for field in ("update", "summary", "next_actions"):
         assert output[field] == saved[field]
     assert output["publication"]["new_head"] == "saved-revision"
     assert saved["media_imports"] == []
     assert output["artifacts"] == saved["artifacts"]
-    for key, suffix in (("check", ".check.json"), ("prepared", ".prepared.json"), ("publication", ".publication.json")):
-        assert output["artifacts"][key] == str(path.with_suffix(suffix))
+    for key, expected in (("check", report), ("prepared", prepared), ("publication", receipt)):
+        assert output["artifacts"][key] == str(expected)
         assert Path(output["artifacts"][key]).is_file()
     check_action = next(action for action in output["next_actions"] if action["scope"] == "candidate_preflight")
-    assert shlex.split(check_action["command"]) == ["python3", "-m", "json.tool", str(path.with_suffix(".check.json"))]
+    assert shlex.split(check_action["command"]) == ["python3", "-m", "json.tool", str(report)]
     diff_actions = [action for action in output["next_actions"] if action["scope"] == "saved_revision_pair"]
     assert [action["format"] for action in diff_actions] == ["readable", "details"]
     for diff_action in diff_actions:

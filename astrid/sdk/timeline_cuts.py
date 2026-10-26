@@ -5,7 +5,7 @@ said": timeline seconds and timecode, the shot (chapter) name, the picture
 clip, the layers over it, and the words spoken under it.
 
 These are pure functions over an *authoring bundle*: the JSON that
-``timeline_document.py checkout`` writes and ``client.timelines.open_bundle``
+``astrid timelines document checkout`` writes and ``client.timelines.open_bundle``
 returns. Nothing here reads or writes the Runtime.
 
 Definitions (shared by ``timelines show`` and ``timelines diff``):

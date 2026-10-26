@@ -179,15 +179,15 @@ For the everyday edit loop (checkout, cut sheet, moments, check, publish), start
 [the editing front door](references/editing.md). This section is the low-level document route.
 
 For “check it out, edit it in a text document, then check it back in”, use the
-[complete checkout/edit/check-in recipe](references/document-checkout.md) and
-its runnable [SDK example](scripts/timeline_document.py). Start with the
-connected runtime's project and timeline slugs: export the complete pinned
-composition, edit its JSON, validate and inspect the diff, then publish one
-revision against the original head. The example defines every variable; no
-pre-supplied `target`, `pinned_parent`, or `runtime_writer` is needed.
-Temporary local media paths in the edited document are rejected by the
-read-only check. Import new media first through the public media client, then
-use its managed digest in the checkout before validating and publishing.
+[complete checkout/edit/check-in recipe](references/document-checkout.md),
+implemented by the timeline CLI in
+[`astrid/packs/timeline/cli_document.py`](../../timeline/cli_document.py).
+Its `checkout`, `check`, and `publish` functions demonstrate the public SDK
+authoring flow. Start with the connected runtime's project and timeline slugs:
+export the complete pinned composition, edit its JSON, validate and inspect the
+diff, then publish one revision against the original head.
+The read-only preflight resolves local media inputs and prepares their managed
+digests; see the detailed recipe for accepted paths and import behavior.
 Image, video, and audio imports appear in the ordinary gallery; audio keeps its
 own type and native playback controls. An unchanged checkout has an empty diff.
 
@@ -776,14 +776,18 @@ are explicit supported steps; registration alone does not change an existing
 composition's pinned narration. A stale head requires a fresh checkout and explicit
 reconciliation, never substitution of the latest text.
 
-The runnable checkout example includes this complete path for a registered shot:
+The command sequence for a registered shot includes this complete path:
 
 ```bash
-python3 scripts/timeline_document.py checkout --project <project> --timeline <timeline> --file /tmp/edit.json
-python3 scripts/timeline_document.py bind-script --file /tmp/edit.json --shot <registered-shot-id> \
-  --text-file <script.txt> --expected-head 0 --idempotency-key narration-01
-python3 scripts/timeline_document.py check --file /tmp/edit.json
-python3 scripts/timeline_document.py publish --file /tmp/edit.json --idempotency-key pin-narration-01
+python3 -m astrid timelines document checkout --project <project> --timeline <timeline> --file /tmp/edit.json
+python3 -m astrid timelines document bind-script --file /tmp/edit.json --shot <registered-shot-id> \
+  --text-file <script.txt> --expected-head 0 --idempotency-key narration-01 \
+  --binding-file /tmp/timeline-edit.text-binding.json
+python3 -m astrid timelines document check --file /tmp/edit.json --report /tmp/timeline-edit.check.json
+python3 -m astrid timelines document publish --file /tmp/edit.json \
+  --report /tmp/timeline-edit.check.json --prepared-file /tmp/timeline-edit.prepared.json \
+  --imports-file /tmp/timeline-edit.imports.json --receipt-file /tmp/timeline-edit.publication.json \
+  --idempotency-key pin-narration-01
 python3 -m astrid timelines script <timeline> --project <project> --json
 # Historical read: use the publication receipt's exact parent revision.
 python3 -m astrid timelines script <timeline> --project <project> --revision <parent-revision> --json

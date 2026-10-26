@@ -1193,7 +1193,7 @@ class RemoteTimelines(_RemoteFamily):
     def open_bundle(self, project, ref, *, revision_id=None):
         """Read one complete, read-only authoring bundle (parent → shots → internal timelines).
 
-        The same closure ``timeline_document.py checkout`` writes, pinned to the
+        The same closure ``astrid timelines document checkout`` writes, pinned to the
         current head or to ``revision_id``. ``timelines show`` builds its cut
         table from it and ``timelines diff`` compares two of them. Nothing is
         written. Returns ``{bundle, project_id, timeline_id, revision_id,

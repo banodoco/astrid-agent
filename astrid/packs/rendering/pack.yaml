@@ -1378,8 +1378,6 @@ resources:
   path: actions/timeline_visualize/readable_timing.py
 - kind: support
   path: docs/scripts/timeline_data.py
-- kind: support
-  path: docs/scripts/timeline_document.py
 - kind: documentation
   path: docs/references/document-checkout.md
 - kind: documentation

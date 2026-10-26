@@ -4,14 +4,15 @@ Use this for an ordinary user-authorized edit starting with a project and
 timeline slug, without a coordinator-supplied target. A checkout is a detached
 snapshot, not a lock. The runtime remains authoritative until publication.
 
-The complete executable example is
-[`../scripts/timeline_document.py`](../scripts/timeline_document.py). It defines
-all connection, discovery, immutable-closure, validation, and writer variables;
-read it when adapting the workflow. `AstridClient.open_from_launcher` resolves
-project/timeline names and pins the head. The public launcher receipt and
-`WorkspaceClient` supply the revision reads and publication port that the
-high-level client does not yet expose as a general checkout method. It never
-constructs a pretend coordinator capability or accesses private client fields.
+The `astrid timelines document` commands implement this workflow in
+`astrid/packs/timeline/cli_document.py`. Its `checkout`, `check`, and `publish`
+functions are a compact example of the public SDK authoring flow: launcher
+selection, an immutable composition closure, local preflight, and one parent
+compare-and-swap publication. Checkout resolves the project with
+`client.projects.show`, opens the composition through
+`client.timelines.open_bundle`, and confirms the returned project and current
+head. For media import and publication, the public launcher receipt supplies a
+`WorkspaceClient` transport.
 
 Run with Python from the environment where Astrid is installed. Keep the same
 launcher configuration as Astrid App; for a checkout-backed installation this may
@@ -20,30 +21,39 @@ Do not guess another root when the expected project is absent. Use project and
 timeline **slugs or IDs**, not display titles.
 
 ```bash
-# From this skill directory; replace the two names with the selected scope.
-python3 scripts/timeline_document.py checkout \
+# Replace the two names with the selected scope.
+python3 -m astrid timelines document checkout \
   --project astrid-intro --timeline main-final-blackend2 \
   --file /tmp/timeline-edit.json
 
-# Edit /tmp/timeline-edit.json with a text editor or a Python transformation.
-python3 scripts/timeline_document.py check --file /tmp/timeline-edit.json
+# Add an empty shot and placement, then edit its internal clips in the JSON.
+python3 -m astrid timelines document add-shot --file /tmp/timeline-edit.json \
+  --shot-id opening --name Opening --duration-ms 3000
 
-# After inspecting the resulting .check.json and completing the requested edit:
-python3 scripts/timeline_document.py publish --file /tmp/timeline-edit.json \
-  --idempotency-key intro-edit-pass-01
+# Or edit /tmp/timeline-edit.json with a text editor or Python transformation.
+python3 -m astrid timelines document check --file /tmp/timeline-edit.json \
+  --report /tmp/timeline-edit.check.json
+
+# After inspecting /tmp/timeline-edit.check.json and completing the requested edit:
+python3 -m astrid timelines document publish --file /tmp/timeline-edit.json \
+  --report /tmp/timeline-edit.check.json \
+  --prepared-file /tmp/timeline-edit.prepared.json \
+  --imports-file /tmp/timeline-edit.imports.json \
+  --receipt-file /tmp/timeline-edit.publication.json \
+  --idempotency-key intro-edit-pass-01 --json
 ```
 
 `checkout` reads the full pinned parent → shot revisions → internal timelines,
 not the bounded `timelines show` projection. `check` probes every referenced
 local file, prepares a detached copy with calculated media digests, validates,
-and diffs locally. It does not connect to or write runtime state. Its `.check.json`
+and diffs locally. It does not connect to or write runtime state. Its report file
 lists the files and import keys that publication will use. `publish` repeats
 that preflight, rechecks the selected head, imports through the existing project
 catalog, validates the durable result, and sends one parent-CAS publication.
-Keep its `.prepared.json` durable rewrite, `.imports.json` catalog receipts,
-and `.publication.json` receipt,
-including `new_head` and `dependency_manifest`; use a new checkout for the next
-edit. Choose a distinct idempotency key for each intended publication.
+Retain the files named by `--prepared-file`, `--imports-file`, and
+`--receipt-file`, including `new_head` and `dependency_manifest`; use a new
+checkout for the next edit. Choose a distinct idempotency key for each intended
+publication.
 
 After publication, report the returned `update`: it counts selected clips by
 identity, with additions/replacements/removals separate in `summary`, and keeps
@@ -51,7 +61,7 @@ catalog imports/reuse separate from timeline selection changes. Forward the
 summary's `Other properties changed` fallback for crop, volume, effects,
 metadata, order, and unknown authored properties; it is not an edit count.
 Verified mirror-only representation changes are media bookkeeping. The result's
-`artifacts` references the actual local check report, prepared document, and
+`artifacts` references the explicit local report, prepared document, and
 publication receipt. Its check-report action opens indexed property differences
 and the import plan; retain these files explicitly, especially for `/tmp`
 checkouts. These files are not automatically stored by the Runtime and are not

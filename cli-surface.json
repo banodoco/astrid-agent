@@ -1904,6 +1904,126 @@
           ],
           "verbs": {}
         },
+        "document": {
+          "flags": {},
+          "positionals": [],
+          "verbs": {
+            "add-shot": {
+              "flags": {
+                "--duration-ms": {
+                  "required": false
+                },
+                "--file": {
+                  "required": true
+                },
+                "--json": {
+                  "required": false
+                },
+                "--name": {
+                  "required": false
+                },
+                "--occurrence-id": {
+                  "required": false
+                },
+                "--shot-id": {
+                  "required": false
+                },
+                "--start-ms": {
+                  "required": false
+                }
+              },
+              "positionals": [],
+              "verbs": {}
+            },
+            "bind-script": {
+              "flags": {
+                "--binding-file": {
+                  "required": true
+                },
+                "--expected-head": {
+                  "required": true
+                },
+                "--file": {
+                  "required": true
+                },
+                "--idempotency-key": {
+                  "required": true
+                },
+                "--json": {
+                  "required": false
+                },
+                "--shot": {
+                  "required": true
+                },
+                "--text-file": {
+                  "required": true
+                }
+              },
+              "positionals": [],
+              "verbs": {}
+            },
+            "check": {
+              "flags": {
+                "--file": {
+                  "required": true
+                },
+                "--json": {
+                  "required": false
+                },
+                "--report": {
+                  "required": true
+                }
+              },
+              "positionals": [],
+              "verbs": {}
+            },
+            "checkout": {
+              "flags": {
+                "--file": {
+                  "required": true
+                },
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--timeline": {
+                  "required": true
+                }
+              },
+              "positionals": [],
+              "verbs": {}
+            },
+            "publish": {
+              "flags": {
+                "--file": {
+                  "required": true
+                },
+                "--idempotency-key": {
+                  "required": true
+                },
+                "--imports-file": {
+                  "required": true
+                },
+                "--json": {
+                  "required": false
+                },
+                "--prepared-file": {
+                  "required": true
+                },
+                "--receipt-file": {
+                  "required": true
+                },
+                "--report": {
+                  "required": true
+                }
+              },
+              "positionals": [],
+              "verbs": {}
+            }
+          }
+        },
         "duplicate": {
           "flags": {
             "--name": {

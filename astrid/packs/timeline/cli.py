@@ -75,6 +75,7 @@ from astrid.core.cli.domain_output import DomainResult, envelope_dict, print_res
 from astrid.core.cli.registration import CommandSpec, register_product_commands
 from astrid.core.cli.task_progress import task_handoff
 from astrid.core.timeline.clip_names import clip_media_name
+from astrid.packs.timeline.cli_document import configure_document
 from astrid.packs.timeline.cli_visualize import (  # noqa: F401  (re-exported: the verb's helpers live beside it)
     _changed_cuts_line,
     _clips_changed,
@@ -1175,10 +1176,8 @@ def _timeline_editing_resources() -> dict[str, Any]:
     """Locate the installed checkout recipe without depending on cwd."""
     docs_root = Path(__file__).resolve().parents[1] / "rendering" / "docs"
     guide = docs_root / "references" / "document-checkout.md"
-    script = docs_root / "scripts" / "timeline_document.py"
     return {
         "guide": str(guide),
-        "script": str(script),
         "workflow": ["checkout", "edit", "check", "publish"],
         "scope": "complete parent/shot/internal-timeline composition",
         "checkout_revision": "current Runtime head at checkout; historical revisions remain read-only",
@@ -1192,17 +1191,19 @@ def _editing_navigation(
     resources = _timeline_editing_resources()
     file_path = "/tmp/timeline-edit.json"
     checkout = shlex.join([
-        "python3", "-m", "astrid.packs.rendering.docs.scripts.timeline_document",
+        "python3", "-m", "astrid", "timelines", "document",
         "checkout", "--project", project or "<project>", "--timeline", timeline or "<timeline>",
         "--file", file_path,
     ])
     check = shlex.join([
-        "python3", "-m", "astrid.packs.rendering.docs.scripts.timeline_document",
-        "check", "--file", file_path,
+        "python3", "-m", "astrid", "timelines", "document",
+        "check", "--file", file_path, "--report", "/tmp/timeline-edit.check.json",
     ])
     publish = shlex.join([
-        "python3", "-m", "astrid.packs.rendering.docs.scripts.timeline_document",
+        "python3", "-m", "astrid", "timelines", "document",
         "publish", "--file", file_path, "--idempotency-key", "<edit-key>",
+        "--report", "/tmp/timeline-edit.check.json", "--prepared-file", "/tmp/timeline-edit.prepared.json",
+        "--imports-file", "/tmp/timeline-edit.imports.json", "--receipt-file", "/tmp/timeline-edit.publication.json",
     ])
     resources["commands"] = {"checkout": checkout, "check": check, "publish": publish}
     return resources
@@ -3828,6 +3829,7 @@ def _configure_history_edit(subparser: argparse.ArgumentParser, handler) -> None
 
 
 COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec("document", help="Check out, edit, check and publish a detached JSON composition.", configure=configure_document),
     CommandSpec("checkout", help="Create or open a detached editable working copy.", configure=_configure_checkout),
     CommandSpec("edit", help="Edit a detached timeline working copy.", configure=_configure_edit),
     CommandSpec("assets", help="List timeline asset keys, media details, and every clip using each key.", configure=_configure_assets),

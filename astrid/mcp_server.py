@@ -11,11 +11,10 @@ text (the server writes and reads private temporary files), so a client that
 cannot see Astrid's filesystem, for example one outside a sandbox, can use them.
 More tools serve what the CLI lacks: `invoke` (admit a capability run, like
 Astrid's own agent tool), `skills_list`/`skill_get` (the pack
-skills, also offered as MCP prompts, which only users can invoke) and the
-`timeline_document_*` tools (the rendering pack's JSON timeline route, needed to
-put the first clips on an empty timeline). Tool definitions omit read-only and
-mutating annotations. Preference writes are not exposed: preferences are added to
-every agent's system prompt, so an outside agent must not be able to set them.
+skills, also offered as MCP prompts, which only users can invoke). Tool
+definitions omit read-only and mutating annotations. Preference writes are not
+exposed: preferences are added to every agent's system prompt, so an outside
+agent must not be able to set them.
 
 Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout (MCP stdio). Logs go
 to stderr. Standard library only.
@@ -30,7 +29,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -279,10 +277,6 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             return done if isinstance(done, dict) else _cli_result(done)
         if kind == "comfy_workflow_import":
             return _comfy_workflow_import(arguments, workdir)
-        if kind == "timeline_document":
-            if tool["command"] == "add_shot":
-                return _timeline_document_add_shot(arguments)
-            return _timeline_document(tool["command"], arguments, workdir)
         outputs: dict[str, Path] = {}
         try:
             argv = argv_for(tool, arguments, workdir, outputs)
@@ -390,66 +384,6 @@ def _cli_result(done: subprocess.CompletedProcess) -> dict[str, Any]:
     return result
 
 
-# --- timeline documents (the rendering pack's JSON route) ---------------------
-
-def _timeline_script() -> Path:
-    import astrid
-
-    return Path(astrid.__file__).resolve().parent / "packs" / "rendering" / "docs" / "scripts" / "timeline_document.py"
-
-
-def _timeline_document(command: str, arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
-    document = workdir / "timeline.json"
-    argv = [sys.executable, str(_timeline_script()), command, "--file", str(document)]
-    try:
-        if command == "checkout":
-            argv += ["--project", str(arguments["project"]), "--timeline", str(arguments["timeline"])]
-        else:
-            body = arguments["document"]
-            document.write_text(body if isinstance(body, str) else json.dumps(body, indent=2), encoding="utf-8")
-            if command == "publish":
-                argv += ["--idempotency-key", str(arguments["idempotency_key"])]
-    except KeyError as exc:
-        return _text(f"invalid arguments: missing {exc.args[0]}", error=True)
-    done = _run(argv, Path.cwd())
-    if isinstance(done, dict):
-        return done
-    result = _cli_result(done)
-    extra = {"checkout": ("document", document), "check": ("report", document.with_suffix(".check.json"))}.get(command)
-    if done.returncode == 0 and extra is not None and extra[1].is_file():
-        text = extra[1].read_text(encoding="utf-8")
-        result["content"].append({"type": "text", "text": text})
-        # Clients that show structuredContent (Claude Code) drop the extra text blocks.
-        result["structuredContent"] = {"summary": result.get("structuredContent"), extra[0]: json.loads(text)}
-    return result
-
-
-def _timeline_document_add_shot(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Seed one new, empty shot (optionally placed) with the SDK's own helper; no Runtime call."""
-    from astrid.sdk.timeline_editing import TimelineEditError, add_authoring_shot
-
-    try:
-        body = arguments["document"]
-        work = json.loads(body) if isinstance(body, str) else body
-        if not isinstance(work, dict):
-            raise TypeError("document must be a JSON object")
-        before = {row.get("shot_id") for row in work.get("placements", [])}
-        # An occurrence ID is what makes the helper place the shot on the timeline.
-        occurrence = arguments.get("occurrence_id") or f"occurrence-{uuid.uuid4().hex[:12]}"
-        shot = add_authoring_shot(work, name=arguments.get("name"), shot_id=arguments.get("shot_id"),
-                                  occurrence_id=occurrence, start_ms=arguments.get("start_ms", 0))
-        shot_id = next((key for key, value in work["shots"].items() if value is shot), arguments.get("shot_id"))
-        if "duration_ms" in arguments:
-            for row in work.get("placements", []):
-                if row.get("shot_id") == shot_id and row.get("shot_id") not in before:
-                    row["duration_ms"] = arguments["duration_ms"]
-    except (KeyError, TypeError, ValueError, TimelineEditError) as exc:
-        return _text(f"could not add a shot: {exc}", error=True)
-    summary = {"shot_id": shot_id, "placements": len(work.get("placements", [])),
-               "next": "add tracks and clips to document['shots'][shot_id]['internal_timeline'], then check and publish"}
-    return _text(json.dumps(summary), structured={**summary, "document": work})
-
-
 def _extra_tools() -> dict[str, dict[str, Any]]:
     def tool(name, description, properties, required, **extra):
         return name, {"definition": {
@@ -457,8 +391,6 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
             "inputSchema": {"type": "object", "properties": properties, "required": required,
                             "additionalProperties": False},
         }, **extra}
-    document = {"type": ["object", "string"],
-                "description": "The timeline document from timeline_document_checkout, edited (JSON)."}
     return dict([
         tool("skills_list", "List Astrid's pack skills (name and when to use each).", {}, [],
              kind="skills_list"),
@@ -489,32 +421,6 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
               "name": {"type": "string", "description": "Saved workflow file name from comfy_scan, e.g. portrait.json."},
               "comfy_url": {"type": "string", "description": "Loopback ComfyUI URL (default http://127.0.0.1:8188)."}},
              ["project", "name"], kind="comfy_workflow_import"),
-        tool("timeline_document_checkout",
-             "Check out a timeline as one editable JSON document (placements, shots, clips). "
-             "Use it to put the first clips on an empty timeline, then check and publish it.",
-             {"project": {"type": "string", "description": "Project slug or ID."},
-              "timeline": {"type": "string", "description": "Timeline slug or ID."}},
-             ["project", "timeline"], kind="timeline_document", command="checkout"),
-        tool("timeline_document_add_shot",
-             "Add one new, empty shot to a timeline document (Astrid SDK add_authoring_shot) and place it; "
-             "returns the updated document. For an empty timeline: checkout, add_shot, put a track and clips "
-             "in document['shots'][shot_id]['internal_timeline'] (clip times in seconds: at, hold/from/to), "
-             "then check and publish. The rendering skill's document-checkout reference has the clip fields.",
-             {"document": document,
-              "name": {"type": "string", "description": "Shot display name."},
-              "shot_id": {"type": "string", "description": "Optional explicit shot ID."},
-              "occurrence_id": {"type": "string", "description": "Optional explicit placement (occurrence) ID."},
-              "start_ms": {"type": "number", "description": "Placement start in milliseconds (default 0)."},
-              "duration_ms": {"type": "number", "description": "Placement window duration in milliseconds."}},
-             ["document"], kind="timeline_document", command="add_shot"),
-        tool("timeline_document_check",
-             "Validate an edited timeline document and show its diff and media imports, without publishing.",
-             {"document": document}, ["document"], kind="timeline_document", command="check"),
-        tool("timeline_document_publish",
-             "Publish an edited timeline document as one new timeline revision.",
-             {"document": document,
-              "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
-             ["document", "idempotency_key"], kind="timeline_document", command="publish"),
     ])
 
 

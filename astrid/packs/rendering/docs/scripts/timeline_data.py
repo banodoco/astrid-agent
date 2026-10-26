@@ -1,7 +1,7 @@
 """Attach, list and validate data tracks (``app.data.<name>``) in a V3 checked-out timeline document.
 
-Works on the JSON that ``timeline_document.py checkout`` writes; publish the
-result with ``timeline_document.py check`` then ``publish``. Every layer and
+Works on the JSON that ``astrid timelines document checkout`` writes; publish
+the result with ``astrid timelines document check`` then ``publish``. Every layer and
 check reads tracks through ``motion.data.tracks`` (see the visualize
 extension guide).
 
@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, handler, extra in (("list", cmd_list, None), ("validate", cmd_validate, None),
                                  ("add", cmd_add, "add"), ("loudness", cmd_loudness, "loudness")):
         sub = commands.add_parser(name)
-        sub.add_argument("--file", required=True, type=Path, help="the checkout JSON (timeline_document.py checkout)")
+        sub.add_argument("--file", required=True, type=Path, help="the checkout JSON (astrid timelines document checkout)")
         if extra == "add":
             sub.add_argument("--clip", required=True, help="clip id in the document (timelines show prints them)")
             sub.add_argument("--name", required=True, help="track name, e.g. face, claw_contact, loudness")

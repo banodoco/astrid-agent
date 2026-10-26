@@ -502,12 +502,15 @@ python3 -m astrid timelines replace-parent-media primary --project demo \
 
 # Complete-document edits use the detached checkout recipe. Edit the JSON
 # between checkout and check; publish performs one parent compare-and-swap.
-python3 astrid/packs/rendering/docs/scripts/timeline_document.py checkout \
+python3 -m astrid timelines document checkout \
   --project demo --timeline primary --file /tmp/timeline-edit.json
-python3 astrid/packs/rendering/docs/scripts/timeline_document.py check \
-  --file /tmp/timeline-edit.json
-python3 astrid/packs/rendering/docs/scripts/timeline_document.py publish \
-  --file /tmp/timeline-edit.json --idempotency-key EDIT_01ABC
+python3 -m astrid timelines document check \
+  --file /tmp/timeline-edit.json --report /tmp/timeline-edit.check.json
+python3 -m astrid timelines document publish \
+  --file /tmp/timeline-edit.json --report /tmp/timeline-edit.check.json \
+  --prepared-file /tmp/timeline-edit.prepared.json \
+  --imports-file /tmp/timeline-edit.imports.json \
+  --receipt-file /tmp/timeline-edit.publication.json --idempotency-key EDIT_01ABC
 
 # archive — event-backed terminal mutation
 python3 -m astrid timelines archive --project demo primary --json

@@ -627,6 +627,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     from astrid.packs.timeline.cli import COMMANDS, build_parser
 
     assert tuple(spec.name for spec in COMMANDS) == (
+        "document",
         "checkout",
         "edit",
         "assets",
@@ -665,6 +666,7 @@ def test_timelines_parser_has_visualize_and_no_aliases() -> None:
     # manifest-declared nested ``shots`` mount (task T29) and the nested
     # ``transcripts`` mount (narration transcript sync).
     assert _subparser_choices(build_parser(_FakeClient())) == {
+        "document",
         "checkout",
         "edit",
         "assets",
@@ -1097,11 +1099,17 @@ def test_timelines_show_defaults_to_readable_authored_rows(capsys) -> None:
     assert "visualize: python3 -m astrid timelines visualize" in output
     assert "controls: python3 -m astrid timelines visualize --help" in output
     assert "edit guide:" in output
-    assert "edit JSON (current head): python3 -m astrid.packs.rendering.docs.scripts.timeline_document checkout" in output
+    assert "edit JSON (current head): python3 -m astrid timelines document checkout" in output
 
 
 def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() -> None:
-    from astrid.packs.timeline.cli import _show_navigation_help, _visualization_navigation_help
+    import shlex
+
+    from astrid.packs.timeline.cli import (
+        _show_navigation_help,
+        _visualization_navigation_help,
+        build_parser,
+    )
 
     parsed = SimpleNamespace(
         revision_id=None,
@@ -1126,7 +1134,12 @@ def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() ->
     assert shown["editing"]["workflow"] == ["checkout", "edit", "check", "publish"]
     assert shown["editing"]["checkout_revision"].startswith("current Runtime head")
     assert Path(shown["editing"]["guide"]).is_file()
-    assert Path(shown["editing"]["script"]).is_file()
+    assert "script" not in shown["editing"]
+    for verb, command in shown["editing"]["commands"].items():
+        argv = shlex.split(command)
+        assert argv[:5] == ["python3", "-m", "astrid", "timelines", "document"]
+        command_args = build_parser(None).parse_args(argv[4:])
+        assert command_args.document_command == verb
 
     visual = _visualization_navigation_help(
         project=None,
@@ -1137,7 +1150,7 @@ def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() ->
     assert "main-final" in visual["commands"]["show"]
     assert "--revision-id rev-42" in visual["commands"]["show"]
     assert "--frame FRAME" in visual["commands"]["exact_frame"]
-    assert visual["editing"]["commands"]["check"].endswith("--file /tmp/timeline-edit.json")
+    assert visual["editing"]["commands"]["check"].endswith("--report /tmp/timeline-edit.check.json")
 
 
 def test_visualization_human_navigation_footer_is_compact(capsys) -> None:
@@ -1157,7 +1170,7 @@ def test_visualization_human_navigation_footer_is_compact(capsys) -> None:
                 "editing": {
                     "guide": "/tmp/document-checkout.md",
                     "commands": {
-                        "checkout": "python3 -m astrid.packs.rendering.docs.scripts.timeline_document checkout",
+                        "checkout": "python3 -m astrid timelines document checkout",
                     },
                 },
             }

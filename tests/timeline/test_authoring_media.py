@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import shutil
 import wave
-from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -237,15 +235,12 @@ def test_import_failure_cannot_reach_publication(tmp_path):
         import_authoring_media(plan, catalog)
 
 
-def test_document_publish_forwards_new_stale_head_to_runtime(tmp_path, monkeypatch):
-    import sys
-    from contextlib import nullcontext
+def test_document_publish_forwards_new_stale_head_to_runtime(tmp_path, monkeypatch, capsys):
     from types import SimpleNamespace
 
-    script = Path(__file__).parents[2] / "astrid/packs/rendering/docs/scripts/timeline_document.py"
-    spec = importlib.util.spec_from_file_location("timeline_document_test", script)
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
+    from astrid.packs.timeline import cli_document
+    from tests.timeline.test_document_cli import invoke
+
     path = picture(tmp_path)
     work = bundle()
     edit(work, path.name)
@@ -258,24 +253,21 @@ def test_document_publish_forwards_new_stale_head_to_runtime(tmp_path, monkeypat
             raise RuntimeError("parent composition head is stale")
 
     stale_workspace = StaleWorkspace()
-    monkeypatch.setattr(
-        helper.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client)
-    )
-    monkeypatch.setattr(
-        helper, "workspace", lambda: stale_workspace
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [str(script), "publish", "--file", str(document), "--idempotency-key", "stale-edit"],
-    )
-    with pytest.raises(RuntimeError, match="parent composition head is stale"):
-        helper.main()
+    monkeypatch.setattr(cli_document, "workspace", lambda: stale_workspace)
+    report = tmp_path / "report.json"
+    prepared = tmp_path / "prepared.json"
+    imports = tmp_path / "imports.json"
+    receipt = tmp_path / "receipt.json"
+    result = invoke(client, ["publish", "--file", document, "--idempotency-key", "stale-edit",
+                            "--report", report, "--prepared-file", prepared,
+                            "--imports-file", imports, "--receipt-file", receipt, "--json"])
+    assert result == 1
+    assert "parent composition head is stale" in json.loads(capsys.readouterr().out)["error"]["message"]
     assert document.read_text() == json.dumps(work)
-    assert document.with_suffix(".check.json").exists()
-    assert document.with_suffix(".imports.json").exists()
-    assert document.with_suffix(".prepared.json").exists()
-    assert not document.with_suffix(".publication.json").exists()
+    assert report.exists()
+    assert imports.exists()
+    assert prepared.exists()
+    assert not receipt.exists()
     assert len(stale_workspace.calls) == 1
 
 
@@ -799,34 +791,3 @@ def test_catalog_import_remains_reusable_after_later_parent_cas_conflict(tmp_pat
     replay = import_authoring_media(plan, catalog)
     assert replay["imports"][0]["reused"] is True
     assert len(catalog.calls) == 1
-
-
-@pytest.mark.parametrize("command", ["check", "publish"])
-def test_public_document_refuses_unsupported_locator_before_artifacts_or_connection(
-    tmp_path, monkeypatch, command
-):
-    import sys
-
-    script = Path(__file__).parents[2] / "astrid/packs/rendering/docs/scripts/timeline_document.py"
-    spec = importlib.util.spec_from_file_location("timeline_document_locator_test", script)
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
-    work = bundle()
-    next(iter(work["shots"].values()))["internal_timeline"]["clips"][0]["src"] = "new.png"
-    document = tmp_path / "timeline.json"
-    original = json.dumps(work)
-    document.write_text(original)
-    monkeypatch.setattr(helper, "workspace", lambda: pytest.fail("no Runtime connection expected"))
-    monkeypatch.setattr(
-        helper.AstridClient, "open_from_launcher",
-        lambda **kwargs: pytest.fail("no launcher connection expected"),
-    )
-    argv = [str(script), command, "--file", str(document)]
-    if command == "publish":
-        argv.extend(["--idempotency-key", "unsupported-input"])
-    monkeypatch.setattr(sys, "argv", argv)
-    with pytest.raises(ValueError, match="Unconsumed media locator"):
-        helper.main()
-    assert document.read_text() == original
-    for suffix in (".check.json", ".prepared.json", ".imports.json", ".publication.json"):
-        assert not document.with_suffix(suffix).exists()

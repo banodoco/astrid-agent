@@ -186,45 +186,30 @@ def test_skills_are_tools_too():
     assert mcp_server.call_tool(tools["skill_get"], {"name": "nope"}, state)["isError"] is True
 
 
-def test_timeline_document_tools_wrap_the_rendering_script(monkeypatch, tmp_path):
-    calls = []
+def test_timeline_document_verbs_are_generated_and_checkout_returns_file(monkeypatch):
+    tools = mcp_server.build_tools()
+    names = {f"timelines_document_{verb}" for verb in ("checkout", "add_shot", "bind_script", "check", "publish")}
+    assert names <= tools.keys()
+    assert not any(name.startswith("timeline_document_") for name in mcp_server._extra_tools())
+    for name in names:
+        assert tools[name]["kind"] == "cli"
+    checkout = tools["timelines_document_checkout"]
+    assert checkout["definition"]["inputSchema"]["required"] == ["project", "timeline"]
+    check = tools["timelines_document_check"]
+    assert check["definition"]["inputSchema"]["properties"]["file"]["type"] == "string"
+    assert "report" not in check["definition"]["inputSchema"]["properties"]
 
     def fake_run(argv, cwd):
-        calls.append(argv)
-        document = Path(argv[argv.index("--file") + 1])
-        if argv[2] == "checkout":
-            document.write_text('{"placements": []}')
-        elif argv[2] == "check":
-            document.with_suffix(".check.json").write_text('{"validation": {"ok": true}}')
-        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true}', stderr="")
+        start = argv.index("timelines")
+        assert argv[start:start + 3] == ["timelines", "document", "checkout"]
+        assert argv[-1] == "--json"
+        Path(argv[argv.index("--file") + 1]).write_text('{"placements": []}')
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "data": {}}', stderr="")
 
     monkeypatch.setattr(mcp_server, "_run", fake_run)
-    monkeypatch.setattr(mcp_server, "_timeline_script", lambda: Path("/astrid/timeline_document.py"))
-    tools = mcp_server._extra_tools()
-    out = mcp_server.call_tool(tools["timeline_document_checkout"], {"project": "p", "timeline": "t"})
-    assert calls[-1][2:4] == ["checkout", "--file"] and calls[-1][-4:] == ["--project", "p", "--timeline", "t"]
-    # Clients such as Claude Code show only structuredContent when it is present.
-    assert out["structuredContent"]["document"] == {"placements": []}
-    checked = mcp_server.call_tool(tools["timeline_document_check"], {"document": {"placements": []}})
-    assert checked["structuredContent"]["report"] == {"validation": {"ok": True}}
-    mcp_server.call_tool(tools["timeline_document_publish"], {"document": "{}", "idempotency_key": "k1"})
-    assert calls[-1][-2:] == ["--idempotency-key", "k1"]
-    assert "annotations" not in tools["timeline_document_publish"]["definition"]
-
-
-def test_add_shot_places_a_new_empty_shot():
-    from astrid.sdk.timeline_editing import add_authoring_shot  # noqa: F401  (real SDK helper)
-
-    document = {"project_id": "p", "timeline_id": "t", "shots": {}, "placements": [],
-                "source_mapping": {"shots": {}, "placements": {}}}
-    result = mcp_server.call_tool(mcp_server._extra_tools()["timeline_document_add_shot"],
-                                  {"document": document, "name": "Title", "duration_ms": 3000})
+    result = mcp_server.call_tool(checkout, {"project": "p", "timeline": "t"})
     assert result["isError"] is False
-    work = result["structuredContent"]["document"]
-    shot_id = result["structuredContent"]["shot_id"]
-    assert work["shots"][shot_id]["payload"]["name"] == "Title"
-    [row] = work["placements"]
-    assert (row["shot_id"], row["duration_ms"], row["placement"]["start_ms"]) == (shot_id, 3000, 0)
+    assert result["structuredContent"]["files"] == {"file": '{"placements": []}'}
 
 
 def test_file_outputs_are_in_structured_content(monkeypatch, tmp_path):
@@ -432,12 +417,6 @@ def test_comfy_workflow_import_handles_non_http_reply_as_tool_error(monkeypatch,
                                     {"project": "demo", "name": "portrait.json", "comfy_url": url})
     assert "result" in malformed and "error" not in malformed
     assert malformed["result"]["isError"] is True
-
-
-def test_timeline_document_add_shot_rejects_non_object_as_tool_error(monkeypatch, capsys):
-    bad_document = _main_tool_call(monkeypatch, capsys, "timeline_document_add_shot", {"document": []})
-    assert "result" in bad_document and "error" not in bad_document
-    assert bad_document["result"]["isError"] is True
 
 
 def test_comfy_workflow_import_ignores_http_proxy_for_loopback(monkeypatch):

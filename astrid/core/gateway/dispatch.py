@@ -65,6 +65,9 @@ def _dispatch_timelines(args: list[str]) -> int:
     if args and args[0] == "inspect":
         from astrid.packs.timeline.cli import offline_inspect_main
         return offline_inspect_main(args[1:])
+    if args[:2] in (["document", "check"], ["document", "add-shot"]):
+        from astrid.core.cli.domain_product import run_product_family
+        return run_product_family("timelines", args, client=None)
     return _dispatch_product(["timelines", *args])
 
 

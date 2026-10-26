@@ -163,13 +163,16 @@ Attach a track to a checked-out document (a local copy; nothing changes until yo
 and publish as usual. Use a scratch folder of your own for the files:
 
 ```bash
-python3 -m astrid.packs.rendering.docs.scripts.timeline_document checkout --project P --timeline T --file <scratch>/edit.json
+python3 -m astrid timelines document checkout --project P --timeline T --file <scratch>/edit.json
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data add --file <scratch>/edit.json --clip v17-04-am-sprite --name claw_contact --track track.json
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data loudness --file <scratch>/edit.json   # producer: RMS dBFS per VO/music clip
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data list --file <scratch>/edit.json
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data validate --file <scratch>/edit.json
-python3 -m astrid.packs.rendering.docs.scripts.timeline_document check --file <scratch>/edit.json
-python3 -m astrid.packs.rendering.docs.scripts.timeline_document publish --file <scratch>/edit.json --idempotency-key <key>
+python3 -m astrid timelines document check --file <scratch>/edit.json --report <scratch>/edit.check.json
+python3 -m astrid timelines document publish --file <scratch>/edit.json \
+  --report <scratch>/edit.check.json --prepared-file <scratch>/edit.prepared.json \
+  --imports-file <scratch>/edit.imports.json --receipt-file <scratch>/edit.publication.json \
+  --idempotency-key <key>
 ```
 
 A check reads a track by name:
