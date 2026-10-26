@@ -188,6 +188,10 @@ export the complete pinned composition, edit its JSON, validate and inspect the
 diff, then publish one revision against the original head.
 The read-only preflight resolves local media inputs and prepares their managed
 digests; see the detailed recipe for accepted paths and import behavior.
+`check --json` returns validation, diff, and the import plan. `bind-script` and
+`add-shot` rewrite `--file`; `publish` writes the prepared document there before
+the parent CAS. All three return the edited `document` in their JSON result,
+so MCP clients receive it through the ordinary command envelope.
 Image, video, and audio imports appear in the ordinary gallery; audio keeps its
 own type and native playback controls. An unchanged checkout has an empty diff.
 
@@ -781,13 +785,10 @@ The command sequence for a registered shot includes this complete path:
 ```bash
 python3 -m astrid timelines document checkout --project <project> --timeline <timeline> --file /tmp/edit.json
 python3 -m astrid timelines document bind-script --file /tmp/edit.json --shot <registered-shot-id> \
-  --text-file <script.txt> --expected-head 0 --idempotency-key narration-01 \
-  --binding-file /tmp/timeline-edit.text-binding.json
-python3 -m astrid timelines document check --file /tmp/edit.json --report /tmp/timeline-edit.check.json
+  --text-file <script.txt> --expected-head 0 --idempotency-key narration-01 --json
+python3 -m astrid timelines document check --file /tmp/edit.json --json
 python3 -m astrid timelines document publish --file /tmp/edit.json \
-  --report /tmp/timeline-edit.check.json --prepared-file /tmp/timeline-edit.prepared.json \
-  --imports-file /tmp/timeline-edit.imports.json --receipt-file /tmp/timeline-edit.publication.json \
-  --idempotency-key pin-narration-01
+  --idempotency-key pin-narration-01 --json
 python3 -m astrid timelines script <timeline> --project <project> --json
 # Historical read: use the publication receipt's exact parent revision.
 python3 -m astrid timelines script <timeline> --project <project> --revision <parent-revision> --json

@@ -31,27 +31,23 @@ python3 -m astrid timelines document add-shot --file /tmp/timeline-edit.json \
   --shot-id opening --name Opening --duration-ms 3000
 
 # Or edit /tmp/timeline-edit.json with a text editor or Python transformation.
-python3 -m astrid timelines document check --file /tmp/timeline-edit.json \
-  --report /tmp/timeline-edit.check.json
+python3 -m astrid timelines document check --file /tmp/timeline-edit.json --json
 
-# After inspecting /tmp/timeline-edit.check.json and completing the requested edit:
+# After inspecting the returned report and completing the requested edit:
 python3 -m astrid timelines document publish --file /tmp/timeline-edit.json \
-  --report /tmp/timeline-edit.check.json \
-  --prepared-file /tmp/timeline-edit.prepared.json \
-  --imports-file /tmp/timeline-edit.imports.json \
-  --receipt-file /tmp/timeline-edit.publication.json \
   --idempotency-key intro-edit-pass-01 --json
 ```
 
 `checkout` reads the full pinned parent → shot revisions → internal timelines,
 not the bounded `timelines show` projection. `check` probes every referenced
 local file, prepares a detached copy with calculated media digests, validates,
-and diffs locally. It does not connect to or write runtime state. Its report file
-lists the files and import keys that publication will use. `publish` repeats
-that preflight, rechecks the selected head, imports through the existing project
-catalog, validates the durable result, and sends one parent-CAS publication.
-Retain the files named by `--prepared-file`, `--imports-file`, and
-`--receipt-file`, including `new_head` and `dependency_manifest`; use a new
+and diffs locally. It does not connect to or write runtime state. Its JSON result
+contains `validation`, `diff`, and `media_imports`, including the paths and import
+keys publication will use. `publish` repeats that preflight, inspects the selected
+composition, imports through the existing project catalog, and writes the
+prepared candidate with managed digests back to `--file` before the parent CAS.
+It returns the publication receipt with `media_imports` and `document`. Retain
+the returned receipt, including `new_head` and `dependency_manifest`; use a new
 checkout for the next edit. Choose a distinct idempotency key for each intended
 publication.
 
@@ -60,13 +56,11 @@ identity, with additions/replacements/removals separate in `summary`, and keeps
 catalog imports/reuse separate from timeline selection changes. Forward the
 summary's `Other properties changed` fallback for crop, volume, effects,
 metadata, order, and unknown authored properties; it is not an edit count.
-Verified mirror-only representation changes are media bookkeeping. The result's
-`artifacts` references the explicit local report, prepared document, and
-publication receipt. Its check-report action opens indexed property differences
-and the import plan; retain these files explicitly, especially for `/tmp`
-checkouts. These files are not automatically stored by the Runtime and are not
-a guaranteed complete historical diff when whole-shot baselines were removed.
-For the exact saved batch, use the returned `saved_revision_pair` actions:
+Verified mirror-only representation changes are media bookkeeping. The returned
+check action runs `astrid timelines document check --file ...` to inspect local
+property differences and the import plan again. This local preflight is not a
+complete historical diff when whole-shot baselines were removed. For the exact
+saved batch, use the returned `saved_revision_pair` actions:
 
 ```bash
 python3 -m astrid timelines diff <timeline> --project <project> \
@@ -204,10 +198,12 @@ filename retains its distinct import provenance even when bytes match.
 
 Imports and parent publication are separate existing transactions. If a later
 import or parent CAS fails, the timeline is unchanged; completed imports remain
-ordinary project catalog media. Keep the source JSON and retry after resolving
-the failure. If the parent head advanced, check out a fresh document and reapply
-the edit. The helper preserves the editable source JSON and writes the durable
-rewrite separately.
+ordinary project catalog media. After all imports succeed, `--file` contains
+the prepared document even if the parent CAS fails, so a retry uses managed
+digests without reading or re-importing the local media. A CAS error also returns
+this document and the completed imports in `error.details`. If the parent head
+advanced, check out a fresh document and reapply the edit using those managed
+identities.
 
 ## Review and recover
 
@@ -249,8 +245,8 @@ kind of edit it expresses and mirrors the module's `__all__` export list.
   authoring bundle stores `shots` as a mapping; use `add_authoring_shot(...)`
   for that shape instead.
 - `place_media(container, media, track=..., start=..., end=...)` — place a
-  managed media selector on a track. Import the file first; never put a local
-  filesystem path in the checkout.
+  managed media selector on a track. For local files, use the preparation
+  fields described above before publication.
 - `replace_media(container, clip_id, media, preserve_interval=True)` — swap a
   selected asset while retaining its timing by default.
 - `duplicate(value, ...)` and `remove(container, item_id, ...)` — copy or

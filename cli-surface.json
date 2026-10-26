@@ -1937,9 +1937,6 @@
             },
             "bind-script": {
               "flags": {
-                "--binding-file": {
-                  "required": true
-                },
                 "--expected-head": {
                   "required": true
                 },
@@ -1969,9 +1966,6 @@
                 },
                 "--json": {
                   "required": false
-                },
-                "--report": {
-                  "required": true
                 }
               },
               "positionals": [],
@@ -2003,20 +1997,8 @@
                 "--idempotency-key": {
                   "required": true
                 },
-                "--imports-file": {
-                  "required": true
-                },
                 "--json": {
                   "required": false
-                },
-                "--prepared-file": {
-                  "required": true
-                },
-                "--receipt-file": {
-                  "required": true
-                },
-                "--report": {
-                  "required": true
                 }
               },
               "positionals": [],

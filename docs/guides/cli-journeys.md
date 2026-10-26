@@ -501,16 +501,15 @@ python3 -m astrid timelines replace-parent-media primary --project demo \
   --source-object-id MEDIA_SHA256 --expected-head REV_01ABC --json
 
 # Complete-document edits use the detached checkout recipe. Edit the JSON
-# between checkout and check; publish performs one parent compare-and-swap.
+# between checkout and check. Check returns its report; publish rewrites the
+# file with managed media digests before one parent compare-and-swap, then
+# returns the receipt, media_imports, and edited document.
 python3 -m astrid timelines document checkout \
   --project demo --timeline primary --file /tmp/timeline-edit.json
 python3 -m astrid timelines document check \
-  --file /tmp/timeline-edit.json --report /tmp/timeline-edit.check.json
+  --file /tmp/timeline-edit.json --json
 python3 -m astrid timelines document publish \
-  --file /tmp/timeline-edit.json --report /tmp/timeline-edit.check.json \
-  --prepared-file /tmp/timeline-edit.prepared.json \
-  --imports-file /tmp/timeline-edit.imports.json \
-  --receipt-file /tmp/timeline-edit.publication.json --idempotency-key EDIT_01ABC
+  --file /tmp/timeline-edit.json --idempotency-key EDIT_01ABC --json
 
 # archive — event-backed terminal mutation
 python3 -m astrid timelines archive --project demo primary --json

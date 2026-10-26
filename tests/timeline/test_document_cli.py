@@ -147,21 +147,21 @@ def test_add_shot_to_empty_document_generates_and_returns_complete_shot(tmp_path
     assert saved["placements"][0]["occurrence_id"].startswith("occurrence-")
 
 
-def test_bind_script_registers_and_writes_explicit_binding_file(tmp_path, capsys):
+def test_bind_script_registers_and_returns_binding_and_document(tmp_path, capsys):
     client = Client()
     work = bundle()
     document = tmp_path / "timeline.json"
     document.write_text(json.dumps(work))
     text = tmp_path / "narration.txt"
     text.write_text("hello narration")
-    binding_file = tmp_path / "binding.json"
     shot_id = next(iter(work["shots"]))
     result = invoke(client, ["bind-script", "--file", document, "--shot", shot_id, "--text-file", text,
-                             "--expected-head", "0", "--idempotency-key", "bind-1", "--binding-file", binding_file, "--json"])
+                             "--expected-head", "0", "--idempotency-key", "bind-1", "--json"])
     assert result == 0
-    assert envelope(capsys)["data"]["binding"]["binding_id"] == "binding-1"
+    output = envelope(capsys)["data"]
+    assert output["binding"]["binding_id"] == "binding-1"
+    assert output["document"] == json.loads(document.read_text())
     assert client.binding_calls[0][1]["text"] == "hello narration"
-    assert json.loads(binding_file.read_text())["binding_id"] == "binding-1"
     assert json.loads(document.read_text())["shots"][shot_id]["payload"]["text_bindings"][-1]["text"] == "hello narration"
 
 
@@ -174,7 +174,7 @@ def test_bind_script_rejects_conflict_and_stale_checkout(tmp_path, capsys):
     text = tmp_path / "narration.txt"
     text.write_text("new")
     common = ["bind-script", "--file", document, "--shot", shot_id, "--text-file", text,
-              "--expected-head", "0", "--idempotency-key", "bind-2", "--binding-file", tmp_path / "binding.json", "--json"]
+              "--expected-head", "0", "--idempotency-key", "bind-2", "--json"]
     client = Client()
     assert invoke(client, common) == 1
     assert "conflicts" in envelope(capsys)["error"]["message"]
@@ -189,52 +189,37 @@ def test_bind_script_rejects_conflict_and_stale_checkout(tmp_path, capsys):
     assert not stale.binding_calls
 
 
-def test_check_is_offline_and_writes_explicit_report(tmp_path, monkeypatch, capsys):
+def test_check_is_offline_and_returns_report_without_rewriting_document(tmp_path, monkeypatch, capsys):
     work = bundle()
     document = tmp_path / "timeline.json"
     document.write_text(json.dumps(work))
-    report = tmp_path / "check-report.json"
     monkeypatch.setattr(cli_document, "workspace", lambda: pytest.fail("check must remain offline"))
-    result = invoke(Client(work), ["check", "--file", document, "--report", report, "--json"])
+    result = invoke(Client(work), ["check", "--file", document, "--json"])
     assert result == 0
     data = envelope(capsys)["data"]
     assert "validation" in data and "diff" in data and "media_imports" in data
-    assert json.loads(report.read_text()) == data
+    assert data["validation"]["valid"] is True
+    assert data["diff"]["change_count"] == 0
+    assert data["media_imports"] == []
+    assert json.loads(document.read_text()) == work
 
 
 @pytest.mark.parametrize("verb", ["check", "publish"])
-def test_document_rejects_unconsumed_local_locator_before_connection_or_artifacts(tmp_path, capsys, monkeypatch, verb):
+def test_document_rejects_unconsumed_local_locator_before_connection_or_rewrite(tmp_path, capsys, monkeypatch, verb):
     work = bundle()
     work["shots"][next(iter(work["shots"]))]["internal_timeline"]["clips"][0]["src"] = "new.png"
     document = tmp_path / "timeline.json"
     original = json.dumps(work)
     document.write_text(original)
-    report = tmp_path / "report.json"
     client = Client(work)
     monkeypatch.setattr(cli_document, "workspace", lambda: pytest.fail("unsupported locator must fail before Runtime connection"))
-    argv = [verb, "--file", document, "--report", report, "--json"]
+    argv = [verb, "--file", document, "--json"]
     if verb == "publish":
-        argv.extend(["--idempotency-key", "unsupported", "--prepared-file", tmp_path / "prepared.json",
-                     "--imports-file", tmp_path / "imports.json", "--receipt-file", tmp_path / "receipt.json"])
+        argv.extend(["--idempotency-key", "unsupported"])
     assert invoke(client, argv) == 1
     assert "Unconsumed media locator" in envelope(capsys)["error"]["message"]
     assert client.composition_calls == []
     assert document.read_text() == original
-    assert not any(path.exists() for path in (report, tmp_path / "prepared.json", tmp_path / "imports.json", tmp_path / "receipt.json"))
-
-
-@pytest.mark.parametrize("locator", ["new.png", "file://{path}"])
-def test_reject_local_media_inputs_detects_relative_and_file_uri(tmp_path, locator):
-    media = tmp_path / "new.png"
-    media.write_bytes(b"image")
-    value = {"clips": [{"src": locator.format(path=media)}]}
-    with pytest.raises(ValueError, match="points to local media"):
-        cli_document.reject_local_media_inputs(value, tmp_path)
-
-
-def test_reject_local_media_inputs_detects_local_path_field(tmp_path):
-    with pytest.raises(ValueError, match="local media input"):
-        cli_document.reject_local_media_inputs({"registry": {"local_path": "new.png"}}, tmp_path)
 
 
 @pytest.mark.parametrize("verb", ["check", "add-shot"])
@@ -250,10 +235,8 @@ def test_gateway_runs_offline_document_verbs_without_launcher(tmp_path, monkeypa
     document = tmp_path / "timeline.json"
     document.write_text(json.dumps(work))
     if verb == "check":
-        report = tmp_path / "report.json"
-        argv = ["document", "check", "--file", str(document), "--report", str(report), "--json"]
+        argv = ["document", "check", "--file", str(document), "--json"]
         assert _dispatch_timelines(argv) == 0
-        assert report.is_file()
     else:
         argv = ["document", "add-shot", "--file", str(document), "--shot-id", "offline-added", "--json"]
         assert _dispatch_timelines(argv) == 0

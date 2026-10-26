@@ -1,9 +1,11 @@
 """Attach, list and validate data tracks (``app.data.<name>``) in a V3 checked-out timeline document.
 
 Works on the JSON that ``astrid timelines document checkout`` writes; publish
-the result with ``astrid timelines document check`` then ``publish``. Every layer and
-check reads tracks through ``motion.data.tracks`` (see the visualize
-extension guide).
+the result with ``astrid timelines document check --file ... --json`` then
+``astrid timelines document publish --file ... --idempotency-key ... --json``.
+Check returns its report; publish rewrites the file with managed media digests
+and returns the receipt and document. Every layer and check reads tracks through
+``motion.data.tracks`` (see the visualize extension guide).
 
     python3 -m astrid.packs.rendering.docs.scripts.timeline_data list --file /tmp/edit.json
     python3 -m astrid.packs.rendering.docs.scripts.timeline_data add --file /tmp/edit.json \\

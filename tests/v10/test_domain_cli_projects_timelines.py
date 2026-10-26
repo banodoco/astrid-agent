@@ -1150,7 +1150,7 @@ def test_timeline_navigation_preserves_resolved_scope_and_editing_resources() ->
     assert "main-final" in visual["commands"]["show"]
     assert "--revision-id rev-42" in visual["commands"]["show"]
     assert "--frame FRAME" in visual["commands"]["exact_frame"]
-    assert visual["editing"]["commands"]["check"].endswith("--report /tmp/timeline-edit.check.json")
+    assert visual["editing"]["commands"]["check"].endswith("check --file /tmp/timeline-edit.json")
 
 
 def test_visualization_human_navigation_footer_is_compact(capsys) -> None:

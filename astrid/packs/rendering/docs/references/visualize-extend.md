@@ -168,11 +168,9 @@ python3 -m astrid.packs.rendering.docs.scripts.timeline_data add --file <scratch
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data loudness --file <scratch>/edit.json   # producer: RMS dBFS per VO/music clip
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data list --file <scratch>/edit.json
 python3 -m astrid.packs.rendering.docs.scripts.timeline_data validate --file <scratch>/edit.json
-python3 -m astrid timelines document check --file <scratch>/edit.json --report <scratch>/edit.check.json
+python3 -m astrid timelines document check --file <scratch>/edit.json --json
 python3 -m astrid timelines document publish --file <scratch>/edit.json \
-  --report <scratch>/edit.check.json --prepared-file <scratch>/edit.prepared.json \
-  --imports-file <scratch>/edit.imports.json --receipt-file <scratch>/edit.publication.json \
-  --idempotency-key <key>
+  --idempotency-key <key> --json
 ```
 
 A check reads a track by name:

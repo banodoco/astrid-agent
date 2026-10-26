@@ -1301,3 +1301,9 @@
 - test: tests/integrations/test_c06_public_timeline_visualizer.py::test_saved_actual_filmstrip_v2_composed_capture_readback (6 parametrized cases)
   reason: "Deleted at the owner's call: it could only run on one Mac because it needs a file that was never in git (the saved public C06 frame-index artifact named by ASTRID_C06_SAVED_FRAME_INDEX, with its render-snapshot.json sidecar)."
   removed_by: "lanes work: owner decision 23 Oct 2026 (unrunnable outside one workstation)"
+- test: tests/timeline/test_document_cli.py::test_reject_local_media_inputs_detects_relative_and_file_uri
+  reason: "Removed the unused reject_local_media_inputs helper; it never guarded a command. Supported local-media planning and unsupported-locator rejection remain covered by tests/timeline/test_authoring_media.py and test_document_rejects_unconsumed_local_locator_before_connection_or_rewrite."
+  removed_by: "mcp/clean-x1 round 2"
+- test: tests/timeline/test_document_cli.py::test_reject_local_media_inputs_detects_local_path_field
+  reason: "Removed the unused reject_local_media_inputs helper; local_path is a supported media preparation input covered by tests/timeline/test_authoring_media.py."
+  removed_by: "mcp/clean-x1 round 2"

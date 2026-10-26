@@ -50,6 +50,12 @@ def test_cli_surface_covers_the_timelines_verbs_consumers_prompt() -> None:
     timelines = json.loads((ROOT / "cli-surface.json").read_text(encoding="utf-8"))["families"]["timelines"]["verbs"]
     assert {"show", "checkout", "edit", "publish", "document"} <= set(timelines)
     assert set(timelines["document"]["verbs"]) == {"checkout", "add-shot", "bind-script", "check", "publish"}
+    document = timelines["document"]["verbs"]
+    assert set(document["check"]["flags"]) == {"--file", "--json"}
+    assert set(document["publish"]["flags"]) == {"--file", "--idempotency-key", "--json"}
+    assert set(document["bind-script"]["flags"]) == {
+        "--file", "--shot", "--text-file", "--expected-head", "--idempotency-key", "--json",
+    }
     assert "--at" in timelines["show"]["flags"]
 
 

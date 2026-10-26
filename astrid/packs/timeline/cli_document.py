@@ -6,12 +6,10 @@ import json
 import shlex
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
 
 from astrid.core.cli.argtypes import input_file, output_file
 from astrid.core.cli.domain_output import DomainResult, ErrorObject, print_result
 from astrid.core.cli.registration import CommandSpec, register_commands
-from astrid.core.path_utils import file_uri_to_path
 from astrid.sdk.authoring_bundle import (
     diff_authoring_candidate,
     import_authoring_media,
@@ -42,35 +40,6 @@ def candidate(args):
     if not isinstance(value, dict):
         raise TypeError("document must be a JSON object")
     return value
-
-
-def reject_local_media_inputs(value, base_directory, path="candidate"):
-    """Avoid silently publishing an old media pin when a local path was edited."""
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}"
-            if key == "local_path" and child:
-                raise ValueError(
-                    f"{child_path} is a local media input; import it with the public "
-                    "Astrid media client first, then pin the returned digest"
-                )
-            if key in {"file", "path", "src"} and isinstance(child, str):
-                parsed = urlparse(child)
-                local_value = file_uri_to_path(child) if parsed.scheme == "file" else child
-                local_path = Path(local_value)
-                if parsed.scheme == "file" or local_path.is_absolute():
-                    resolved_path = local_path
-                else:
-                    resolved_path = base_directory / local_path
-                if resolved_path.is_file():
-                    raise ValueError(
-                        f"{child_path} points to local media; import it with the public "
-                        "Astrid media client first, then pin the returned digest"
-                    )
-            reject_local_media_inputs(child, base_directory, child_path)
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            reject_local_media_inputs(child, base_directory, f"{path}[{index}]")
 
 
 def workspace():
@@ -147,50 +116,58 @@ def bind_script(args):
     ] + [pin]
     metadata.pop("voiceover_script", None)
     dump(args.file, work)
-    dump(args.binding_file, pin)
     return {"binding": pin, "file": str(args.file), "document": work,
             "next": "check then publish to pin this binding"}
 
 
-def preflight(args, work):
-    plan = plan_authoring_media(work, base_directory=args.file.parent)
-    report = {"validation": plan["validation"], "diff": diff_authoring_candidate(plan["candidate"]),
-              "media_imports": plan["imports"]}
-    dump(args.report, report)
-    return plan, report
-
-
 def check(args):
-    _, report = preflight(args, candidate(args))
-    return report
+    plan = plan_authoring_media(candidate(args), base_directory=args.file.parent)
+    return {"validation": plan["validation"], "diff": diff_authoring_candidate(plan["candidate"]),
+            "media_imports": plan["imports"]}
 
 
 def publish(args):
     work = candidate(args)
-    plan, _ = preflight(args, work)
+    plan = plan_authoring_media(work, base_directory=args.file.parent)
     typed(args.client.timelines.open_composition(work["project_id"], work["timeline_id"]))
     # Runtime evaluates accepted-request replay before the publication's expected head.
     transport = workspace()
     imported = import_authoring_media(plan, transport)
-    # Preserve the editable source for review/retry if import or parent CAS fails.
-    dump(args.prepared_file, imported["candidate"])
-    dump(args.imports_file, imported["imports"])
-    receipt = publish_authoring_candidate(
-        imported["candidate"], Writer(transport), idempotency_key=args.idempotency_key,
-        media_imports=imported["imports"],
-    )
+    # A failed parent CAS can retry without the original local media files.
+    dump(args.file, imported["candidate"])
+    try:
+        receipt = publish_authoring_candidate(
+            imported["candidate"], Writer(transport), idempotency_key=args.idempotency_key,
+            media_imports=imported["imports"],
+        )
+    except RuntimeError as exc:
+        exc.details = {**getattr(exc, "details", {}), "document": imported["candidate"],
+                       "media_imports": imported["imports"]}
+        raise
     receipt["media_imports"] = imported["imports"]
-    receipt["artifacts"] = {"check": str(args.report), "prepared": str(args.prepared_file),
-                            "imports": str(args.imports_file), "publication": str(args.receipt_file)}
+    receipt["document"] = imported["candidate"]
     check_action = {
-        "command": shlex.join(["python3", "-m", "json.tool", str(args.report)]),
+        "command": shlex.join(["python3", "-m", "astrid", "timelines", "document", "check", "--file", str(args.file)]),
         "scope": "candidate_preflight",
-        "description": "Inspect the check report's indexed property differences and import plan; this is a local file, not complete historical navigation.",
+        "description": "Check the document's validation, property differences and media import plan.",
     }
     receipt["next_actions"].append(check_action)
-    receipt["update"] += "\nInspect the local check report (indexed property differences and import plan):\n" + check_action["command"]
-    dump(args.receipt_file, receipt)
+    receipt["update"] += "\n" + check_action["description"] + "\n" + check_action["command"]
     return receipt
+
+
+def _human(result):
+    value = result.data
+    if "update" in value:
+        return value["update"].splitlines()[0] + "\nnext: " + value["next_actions"][0]["command"]
+    if "validation" in value:
+        return (f"Document valid. Property differences: {value['diff']['change_count']}; "
+                f"media imports planned: {len(value['media_imports'])}. Use --json for details.")
+    if "binding" in value:
+        return f"Pinned narration in {value['file']}. Check then publish."
+    if "shot_id" in value:
+        return f"Added shot {value['shot_id']}; {value['placements']} placements. Check then publish."
+    return f"Checked out {value['head']} to {value['file']}; {value['placements']} placements."
 
 
 def _run(args):
@@ -200,7 +177,7 @@ def _run(args):
         result = DomainResult.failure(ErrorObject(
             getattr(exc, "code", "validation_error"), str(exc), getattr(exc, "details", {})
         ))
-    return print_result(result, as_json=args.json)
+    return print_result(result, as_json=args.json, human_renderer=_human)
 
 
 def configure_document(parser):
@@ -209,8 +186,8 @@ def configure_document(parser):
         ("checkout", checkout, "Check out the complete pinned composition as an editable JSON document."),
         ("add-shot", add_shot, "Add and place a new empty shot in a document, editing the file in place."),
         ("bind-script", bind_script, "Register narration and pin its descriptor in a document, editing the file in place."),
-        ("check", check, "Validate a document and write its diff and media import report locally."),
-        ("publish", publish, "Publish a document as one timeline revision with explicit receipt files."),
+        ("check", check, "Validate a document and report its diff and media import plan."),
+        ("publish", publish, "Import media, rewrite the document with managed digests, and publish one timeline revision."),
     ):
         def configure(subparser, name=name, handler=handler):
             subparser.add_argument("--file", type=output_file if name == "checkout" else input_file, required=True)
@@ -228,14 +205,7 @@ def configure_document(parser):
                 subparser.add_argument("--shot", required=True)
                 subparser.add_argument("--text-file", type=input_file, required=True)
                 subparser.add_argument("--expected-head", type=int, required=True)
-                subparser.add_argument("--binding-file", type=output_file, required=True, help="Write the registered text binding here.")
             if name in {"bind-script", "publish"}:
                 subparser.add_argument("--idempotency-key", required=True)
-            if name in {"check", "publish"}:
-                subparser.add_argument("--report", type=output_file, required=True, help="Write validation, diff and media import plan here.")
-            if name == "publish":
-                subparser.add_argument("--prepared-file", type=output_file, required=True, help="Write the durable candidate rewrite here.")
-                subparser.add_argument("--imports-file", type=output_file, required=True, help="Write media catalog receipts here.")
-                subparser.add_argument("--receipt-file", type=output_file, required=True, help="Write the publication receipt here.")
             subparser.set_defaults(handler=_run, document_handler=handler)
         register_commands(commands, (CommandSpec(name, help=help_text, configure=configure),))

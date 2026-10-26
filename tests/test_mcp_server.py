@@ -6,10 +6,12 @@ import json
 import socketserver
 import subprocess
 import urllib.request
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+
+import pytest
 
 from astrid import mcp_server
 from astrid.core.cli.argtypes import (
@@ -197,7 +199,9 @@ def test_timeline_document_verbs_are_generated_and_checkout_returns_file(monkeyp
     assert checkout["definition"]["inputSchema"]["required"] == ["project", "timeline"]
     check = tools["timelines_document_check"]
     assert check["definition"]["inputSchema"]["properties"]["file"]["type"] == "string"
-    assert "report" not in check["definition"]["inputSchema"]["properties"]
+    assert set(check["definition"]["inputSchema"]["properties"]) == {"file"}
+    publish = tools["timelines_document_publish"]
+    assert set(publish["definition"]["inputSchema"]["properties"]) == {"file", "idempotency_key"}
 
     def fake_run(argv, cwd):
         start = argv.index("timelines")
@@ -210,6 +214,49 @@ def test_timeline_document_verbs_are_generated_and_checkout_returns_file(monkeyp
     result = mcp_server.call_tool(checkout, {"project": "p", "timeline": "t"})
     assert result["isError"] is False
     assert result["structuredContent"]["files"] == {"file": '{"placements": []}'}
+
+
+@pytest.mark.parametrize("verb", ["add-shot", "bind-script", "publish", "publish-conflict"])
+def test_document_edits_reach_mcp_clients_in_the_command_result(monkeypatch, verb):
+    from types import SimpleNamespace
+
+    from astrid.packs.timeline import cli_document
+    from tests.timeline.test_document_cli import Client, bundle, invoke
+
+    work = bundle()
+    client = Client(work)
+    arguments = {"file": json.dumps(work)}
+    command = verb.removesuffix("-conflict")
+    if command == "add-shot":
+        arguments["shot_id"] = "added"
+    if command == "bind-script":
+        arguments.update(shot=next(iter(work["shots"])), text_file="narration", expected_head=0)
+    if command in {"bind-script", "publish"}:
+        arguments["idempotency_key"] = "edit-1"
+
+    def publish(*args, **kwargs):
+        if verb == "publish-conflict":
+            raise RuntimeError("parent CAS conflict")
+        return {"data": {"old_head": "parent-1", "new_head": "parent-2"}}
+
+    monkeypatch.setattr(cli_document, "workspace", lambda: SimpleNamespace(publish_parent_composition=publish))
+    saved = {}
+
+    def run(argv, cwd):
+        start = argv.index("timelines")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = invoke(client, argv[start + 2:])
+        saved.update(json.loads(Path(argv[argv.index("--file") + 1]).read_text()))
+        return subprocess.CompletedProcess(argv, code, stdout=stdout.getvalue(), stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", run)
+    result = mcp_server.call_tool(mcp_server.build_tools()[f"timelines_document_{command.replace('-', '_')}"], arguments)
+    envelope = result["structuredContent"]
+    assert result["isError"] is (verb == "publish-conflict")
+    returned = envelope["error"]["details"] if result["isError"] else envelope["data"]
+    assert returned["document"] == saved
+    assert "files" not in envelope
 
 
 def test_file_outputs_are_in_structured_content(monkeypatch, tmp_path):

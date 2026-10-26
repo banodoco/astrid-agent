@@ -1197,13 +1197,11 @@ def _editing_navigation(
     ])
     check = shlex.join([
         "python3", "-m", "astrid", "timelines", "document",
-        "check", "--file", file_path, "--report", "/tmp/timeline-edit.check.json",
+        "check", "--file", file_path,
     ])
     publish = shlex.join([
         "python3", "-m", "astrid", "timelines", "document",
         "publish", "--file", file_path, "--idempotency-key", "<edit-key>",
-        "--report", "/tmp/timeline-edit.check.json", "--prepared-file", "/tmp/timeline-edit.prepared.json",
-        "--imports-file", "/tmp/timeline-edit.imports.json", "--receipt-file", "/tmp/timeline-edit.publication.json",
     ])
     resources["commands"] = {"checkout": checkout, "check": check, "publish": publish}
     return resources

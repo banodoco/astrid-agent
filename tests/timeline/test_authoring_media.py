@@ -254,20 +254,25 @@ def test_document_publish_forwards_new_stale_head_to_runtime(tmp_path, monkeypat
 
     stale_workspace = StaleWorkspace()
     monkeypatch.setattr(cli_document, "workspace", lambda: stale_workspace)
-    report = tmp_path / "report.json"
-    prepared = tmp_path / "prepared.json"
-    imports = tmp_path / "imports.json"
-    receipt = tmp_path / "receipt.json"
-    result = invoke(client, ["publish", "--file", document, "--idempotency-key", "stale-edit",
-                            "--report", report, "--prepared-file", prepared,
-                            "--imports-file", imports, "--receipt-file", receipt, "--json"])
+    result = invoke(client, ["publish", "--file", document, "--idempotency-key", "stale-edit", "--json"])
     assert result == 1
-    assert "parent composition head is stale" in json.loads(capsys.readouterr().out)["error"]["message"]
-    assert document.read_text() == json.dumps(work)
-    assert report.exists()
-    assert imports.exists()
-    assert prepared.exists()
-    assert not receipt.exists()
+    output = json.loads(capsys.readouterr().out)
+    assert "parent composition head is stale" in output["error"]["message"]
+    rewritten = json.loads(document.read_text())
+    asset = next(iter(rewritten["shots"].values()))["internal_timeline"]["registry"]["assets"]["old-picture"]
+    assert "local_path" not in asset
+    assert asset["media_id"] == stale_workspace.calls[0][2]["expected_digest"]
+    details = output["error"]["details"]
+    assert details["document"] == rewritten
+    assert len(details["media_imports"]) == 1
+    assert details["media_imports"][0]["asset_id"] == asset["media_id"]
+    assert details["media_imports"][0]["status"] == "completed"
+    assert details["media_imports"][0]["generation_id"] == "generation-1"
+    assert details["media_imports"][0]["variant_id"] == "variant-generation-1"
+    assert len(stale_workspace.calls) == 1
+    path.unlink()
+    assert invoke(client, ["publish", "--file", document, "--idempotency-key", "stale-edit", "--json"]) == 1
+    capsys.readouterr()
     assert len(stale_workspace.calls) == 1
 
 
