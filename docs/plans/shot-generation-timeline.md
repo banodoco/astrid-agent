@@ -14,7 +14,7 @@ Reuse the existing child timeline rather than creating a second timeline store. 
 | --- | --- | --- |
 | Shot composition | Registered shots, ordered media items, child timeline linkage; `astrid/sdk/shot_grouping.py`, `astrid/packs/shots/cli.py`, rendering skill | Explicit bounded generation-intent layer and its invariants |
 | Prompts | Runtime-owned immutable text bindings with named prompt slots and optimistic head checks; [SDK reference](../reference/sdk.md#shot-text-bindings) | General-versus-segment prompt semantics and frozen compilation into a generation request |
-| References | Reusable subjects and canonical/used-as-input/depicts/inspired-by associations; [reference skill](../../astrid/packs/references/skill/SKILL.md) | Shot input bindings with explicit generation roles; association alone does not wire model inputs |
+| References | Reusable subjects and canonical/used-as-input/depicts/inspired-by associations; [reference guide](../../astrid/packs/media/docs/references.md) | Shot input bindings with explicit generation roles; association alone does not wire model inputs |
 | Video generation | `image_ref` and `image_end_ref`; [video contract](../generation/31-video-contract.md) | Multiple timed anchors/reference inputs, video spans, and capability-specific lowering |
 | Execution | Runtime tasks/runs, managed media, VibeComfy custom graphs | Durable segment dependencies, approval gates, provenance-complete resume and selection |
 | Playback | Versioned child/parent timeline saves and managed renders; [rendering skill](../../astrid/packs/rendering/skill/SKILL.md) | Explicit, reversible selection of a generated take versus a reference still |

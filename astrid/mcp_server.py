@@ -6,10 +6,10 @@ argparse parsers that `scripts/gen_cli_surface.py` walks, so the tools follow
 the CLI. Pack skills come from Astrid's skill loader as MCP prompts.
 
 Product tools run `astrid-tools <family> <verb...> ... --json`; pack tools run
-their Python command. JSON-valued flags take real JSON; file arguments take
-the file's text (the server writes and reads private temporary files), so a
-client that cannot see Astrid's filesystem can use them. The hand-written
-`invoke` tool admits a capability run, like Astrid's own agent tool. Use
+their Python command. JSON-valued flags take real JSON. Input-file arguments
+take the file's text, and output-file contents are returned to the client.
+The hand-written `invoke` tool admits a capability run, like Astrid's own agent
+tool. Use
 `skills_show` to read the `astrid` skill and linked guides, such as
 `creative-work/SKILL.md`, with its `file` argument. Tool definitions omit
 read-only and mutating annotations. Preference writes are not exposed:
@@ -40,7 +40,7 @@ from astrid.core.cli.argtypes import (
     json_object_or_path,
     output_file,
 )
-from astrid.core.cli.domain_product import family_parsers
+from astrid.core.cli.domain_product import family_parsers, walk_parsers
 from astrid.packs.vibecomfy import local as vibecomfy_local
 from astrid.skills import cli as skills_cli
 from astrid.skills import discovery as skills_discovery
@@ -64,6 +64,10 @@ TOOL_SOURCES = {
         (sys.executable, "-m", "astrid.packs.vibecomfy.local"),
     ),
 }
+COMMAND_RULES = {
+    ("timelines", "render"): {"drop": ("wait",), "append": ("--detach",)},
+    ("timelines", "edit"): {"append": ("--no-sweep",)},
+}
 
 
 def log(message: str) -> None:
@@ -71,16 +75,6 @@ def log(message: str) -> None:
 
 
 # --- tools from the CLI parsers ---------------------------------------------
-
-def _leaves(parser: argparse.ArgumentParser, path: tuple[str, ...], summary: str):
-    subs = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
-    if not subs:
-        yield path, parser, summary
-        return
-    for action in subs:
-        helps = {choice.dest: choice.help or "" for choice in action._choices_actions}
-        for name, sub in action.choices.items():
-            yield from _leaves(sub, (*path, name), helps.get(name, ""))
 
 
 def _schema(action: argparse.Action) -> dict[str, Any]:
@@ -136,9 +130,12 @@ def build_tools() -> dict[str, dict[str, Any]]:
     }
     sources.update(TOOL_SOURCES)
     for family, (build_parser, command) in sources.items():
-        for path, leaf, summary in _leaves(build_parser(), (family,), ""):
-            if path[:2] in EXCLUDED:
+        parsers = list(walk_parsers(build_parser(), (family,)))
+        parents = {path[:depth] for path, _, _ in parsers for depth in range(1, len(path))}
+        for path, leaf, summary in parsers:
+            if path in parents or path[:2] in EXCLUDED:
                 continue
+            rules = COMMAND_RULES.get(path, {})
             properties: dict[str, Any] = {}
             required: list[str] = []
             args: list[dict[str, Any]] = []
@@ -146,7 +143,7 @@ def build_tools() -> dict[str, dict[str, Any]]:
             for action in leaf._actions:
                 if isinstance(action, argparse._HelpAction):
                     continue
-                if path == ("timelines", "render") and action.dest == "wait":
+                if action.dest in rules.get("drop", ()):
                     continue
                 if "--json" in action.option_strings:
                     supports_json = True
@@ -193,10 +190,11 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
     if unknown:
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
     path = tool.get("family_path", tool["path"])
+    rules = COMMAND_RULES.get(path, {})
     argv = list(tool["path"])
     flags: list[str] = []
     for spec in tool["args"]:
-        if path == ("timelines", "render") and spec["dest"] == "wait":
+        if spec["dest"] in rules.get("drop", ()):
             continue
         if spec.get("output"):
             if workdir is None:
@@ -250,10 +248,9 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             flags += [option, *[str(v) for v in value]]
         else:
             flags += [option, str(value)]
-    if path == ("timelines", "render"):
-        flags.append("--detach")
-    if path == ("timelines", "edit") and "--no-sweep" not in flags:
-        flags.append("--no-sweep")
+    for flag in rules.get("append", ()):
+        if flag not in flags:
+            flags.append(flag)
     return argv + flags + (["--json"] if tool["json"] else [])
 
 
@@ -282,7 +279,7 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess | dict[str, 
         return _text(f"{' '.join(argv[-4:])} timed out after {TIMEOUT:.0f}s", error=True)
 
 
-def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
+def call_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> dict[str, Any]:
     kind = tool.get("kind", "cli")
     with tempfile.TemporaryDirectory(prefix="astrid-mcp-") as scratch:
         workdir = Path(scratch)
@@ -295,20 +292,26 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             return _text(f"invalid arguments: {exc}", error=True)
         command = list(tool["command"])
         if command[0] == "astrid-tools":
-            executable = Path(sys.executable).with_name("astrid-tools")
-            command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
-            command.extend(tool["command"][1:])
+            command = _astrid_tools_command() + command[1:]
         done = _run([*command, *argv], Path.cwd())
         if isinstance(done, dict):
             return done
-        result = _cli_result(done)
-        files = {dest: path.read_text(encoding="utf-8") for dest, path in outputs.items() if path.is_file()}
-        for dest, text in files.items():
-            result["content"].append({"type": "text", "text": f"{dest} contents:\n{text}"})
-        if files:
-            # Clients that show structuredContent (Claude Code) drop the extra text blocks.
-            result["structuredContent"] = {**result.get("structuredContent", {}), "files": files}
-        return result
+        return _attach_output_files(_cli_result(done), outputs)
+
+
+def _astrid_tools_command() -> list[str]:
+    executable = Path(sys.executable).with_name("astrid-tools")
+    return [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
+
+
+def _attach_output_files(result: dict[str, Any], outputs: dict[str, Path]) -> dict[str, Any]:
+    files = {dest: path.read_text(encoding="utf-8") for dest, path in outputs.items() if path.is_file()}
+    for dest, text in files.items():
+        result["content"].append({"type": "text", "text": f"{dest} contents:\n{text}"})
+    if files:
+        # Clients that show structuredContent drop extra text blocks.
+        result["structuredContent"] = {**result.get("structuredContent", {}), "files": files}
+    return result
 
 
 def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
@@ -348,26 +351,34 @@ def _cli_result(done: subprocess.CompletedProcess) -> dict[str, Any]:
 
 
 def _extra_tools() -> dict[str, dict[str, Any]]:
-    def tool(name, description, properties, required, **extra):
-        return name, {"definition": {
-            "name": name, "title": "astrid " + name.replace("_", " "), "description": description,
-            "inputSchema": {"type": "object", "properties": properties, "required": required,
-                            "additionalProperties": False},
-        }, **extra}
-    return dict([
-        tool("invoke",
-             "Admit one capability run (an executor or orchestrator, e.g. vibecomfy.run or "
-             "generation.generate_video), the way Astrid's own agent does. Returns after admission "
-             "with the task id; poll it with tasks_show. Render runs detached, so poll its task the same way. "
-             "Read the capability's skill (skills_show) for its inputs first.",
-             {"capability_id": {"type": "string", "description": "Capability id, e.g. vibecomfy.run."},
-              "kind": {"type": "string", "enum": ["executor", "orchestrator"],
-                       "description": "Capability kind (default executor)."},
-              "project": {"type": "string", "description": "Project slug or ID."},
-              "inputs": {"type": "object", "description": "The capability's inputs as a JSON object."},
-              "execution_request": {"type": "object", "description": "Optional target-aware execution request."}},
-             ["capability_id", "project"], kind="invoke"),
-    ])
+    return {
+        "invoke": {
+            "definition": {
+                "name": "invoke",
+                "title": "astrid invoke",
+                "description": (
+                    "Admit one capability run (an executor or orchestrator, e.g. vibecomfy.run or "
+                    "generation.generate_video), the way Astrid's own agent does. Returns after admission "
+                    "with the task id; poll it with tasks_show. Render runs detached, so poll its task the same way. "
+                    "Read the capability's skill (skills_show) for its inputs first."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "capability_id": {"type": "string", "description": "Capability id, e.g. vibecomfy.run."},
+                        "kind": {"type": "string", "enum": ["executor", "orchestrator"],
+                                 "description": "Capability kind (default executor)."},
+                        "project": {"type": "string", "description": "Project slug or ID."},
+                        "inputs": {"type": "object", "description": "The capability's inputs as a JSON object."},
+                        "execution_request": {"type": "object", "description": "Optional target-aware execution request."},
+                    },
+                    "required": ["capability_id", "project"],
+                    "additionalProperties": False,
+                },
+            },
+            "kind": "invoke",
+        },
+    }
 
 
 # --- prompts from the skill loader ---------------------------------------
@@ -400,7 +411,7 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
             "serverInfo": {"name": "astrid", "title": "Astrid", "version": "0.1.0"},
             "instructions": ("Astrid CLI commands are tools; each returns Astrid's JSON envelope. Load the "
                              "matching skill prompt before multi-step work. Use skills_show to read the astrid "
-                             "skill and linked guides, with the file argument."),
+                             "skill and linked guides such as creative-work/SKILL.md, with the file argument."),
         })
     if method == "ping":
         return ok({})
@@ -413,7 +424,7 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return error(-32602, "arguments must be an object")
-        return ok(call_tool(tool, arguments, state))
+        return ok(call_tool(tool, arguments))
     if method == "prompts/list":
         return ok({"prompts": [p["definition"] for p in state["prompts"].values()]})
     if method == "prompts/get":

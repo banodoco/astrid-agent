@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
 import io
 import json
 import shutil
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock

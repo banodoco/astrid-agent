@@ -60,8 +60,8 @@ def test_tools_mirror_the_parser(monkeypatch):
 def test_argv_maps_arguments_and_rejects_unknown(monkeypatch):
     tools = _tools(monkeypatch)
     argv = mcp_server.argv_for(tools["things_show"], {"thing": "a", "project": "p", "tag": ["x", "y"], "all": True})
-    assert argv == ["things", "show", "a", "--project", "p", "--tag", "x", "--tag", "y", "--all", "--json"]
-    assert mcp_server.argv_for(tools["things_archive"], {"ids": ["1", "2"]}) == ["things", "archive", "1", "2"]
+    assert argv == ["show", "a", "--project", "p", "--tag", "x", "--tag", "y", "--all", "--json"]
+    assert mcp_server.argv_for(tools["things_archive"], {"ids": ["1", "2"]}) == ["archive", "1", "2"]
     try:
         mcp_server.argv_for(tools["things_show"], {"thing": "a", "rm": "-rf"})
     except ValueError as exc:
@@ -76,7 +76,19 @@ def test_preference_writes_are_not_exposed(monkeypatch):
     for verb in ("checkin", "edit", "context"):
         sub.add_parser(verb)
     monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"preferences": parser})
-    assert sorted(mcp_server.build_tools()) == ["preferences_context", "skills_list", "skills_show"]
+    monkeypatch.setattr(mcp_server, "TOOL_SOURCES", {})
+    assert sorted(mcp_server.build_tools()) == ["preferences_context"]
+
+
+def test_comfy_tools_are_generated_from_the_pack_parser(monkeypatch):
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {})
+    monkeypatch.setattr(mcp_server, "TOOL_SOURCES", {"comfy": mcp_server.TOOL_SOURCES["comfy"]})
+    tools = mcp_server.build_tools()
+
+    assert sorted(tools) == ["comfy_import_workflow", "comfy_scan"]
+    imported = tools["comfy_import_workflow"]["definition"]["inputSchema"]
+    assert imported["required"] == ["name", "project"]
+    assert "comfy_url" in imported["properties"]
 
 
 def test_protocol_handshake_and_errors(monkeypatch):
@@ -125,7 +137,7 @@ def test_json_flags_take_real_json(monkeypatch):
     schema = tools["tasks_create"]["definition"]["inputSchema"]["properties"]
     assert schema["spec"]["type"] == "object" and schema["inputs"]["type"] == "array"
     argv = mcp_server.argv_for(tools["tasks_create"], {"spec": {"size": 1}, "inputs": ["a"]})
-    assert argv == ["tasks", "create", "--spec", '{"size": 1}', "--inputs", '["a"]']
+    assert argv == ["create", "--spec", '{"size": 1}', "--inputs", '["a"]']
 
 
 def test_value_kinds_use_argtype_identity():
@@ -161,7 +173,7 @@ def test_json_object_or_path_is_json_only_for_mcp(monkeypatch):
     tool = mcp_server.build_tools()["timelines_visualize"]
     assert tool["definition"]["inputSchema"]["properties"]["rules"]["type"] == ["object", "array"]
     assert mcp_server.argv_for(tool, {"rules": {"params": {"motion": 0.4}}}) == [
-        "timelines", "visualize", "--rules", '{"params": {"motion": 0.4}}',
+        "visualize", "--rules", '{"params": {"motion": 0.4}}',
     ]
     encoded = '{"params": {"motion": 0.4}}'
     assert mcp_server.argv_for(tool, {"rules": encoded})[-1] == encoded
@@ -174,17 +186,18 @@ def test_file_arguments_travel_as_text(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"documents": _json_and_file_parser()})
     tools = mcp_server.build_tools()
     argv = mcp_server.argv_for(tools["documents_checkin"], {"file": "# notes\n"}, tmp_path)
-    assert argv[:2] == ["documents", "checkin"] and Path(argv[2]).read_text() == "# notes\n"
+    assert argv[0] == "checkin" and Path(argv[1]).read_text() == "# notes\n"
     checkout = tools["documents_checkout"]
     assert "file" not in checkout["definition"]["inputSchema"]["properties"]
     outputs = {}
     argv = mcp_server.argv_for(checkout, {}, tmp_path, outputs)
-    assert argv == ["documents", "checkout", "--file", str(tmp_path / "file.out")]
+    assert argv == ["checkout", "--file", str(tmp_path / "file.out")]
     assert outputs == {"file": tmp_path / "file.out"} and not outputs["file"].exists()
 
 
 def test_skills_are_cli_tools_and_show_runs_the_cli(monkeypatch):
     monkeypatch.setattr(mcp_server, "family_parsers", lambda: {})
+    monkeypatch.setattr(mcp_server, "TOOL_SOURCES", {"skills": mcp_server.TOOL_SOURCES["skills"]})
     tools = mcp_server.build_tools()
     assert sorted(tools) == ["skills_list", "skills_show"]
     show = tools["skills_show"]
@@ -327,7 +340,7 @@ def test_every_tool_returns_without_following_long_running_work():
     tools = {**mcp_server.build_tools(), **mcp_server._extra_tools()}
     for name, tool in tools.items():
         assert "annotations" not in tool["definition"], name
-        path = tool.get("path")
+        path = tool.get("family_path", tool.get("path"))
         assert path != ("tasks", "follow"), name
         if path == ("timelines", "render"):
             assert "wait" not in tool["definition"]["inputSchema"]["properties"]

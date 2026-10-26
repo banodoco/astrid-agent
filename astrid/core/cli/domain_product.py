@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+from collections.abc import Iterator
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -35,6 +36,7 @@ from astrid.core.cli.registration import CommandSpec
 __all__ = [
     "FAMILY_PARSER_MODULES",
     "family_parsers",
+    "walk_parsers",
     "PRODUCT_FAMILIES",
     "PRODUCT_FAMILY_SET",
     "EXCLUDED_FROM_PRODUCT_CENSUS",
@@ -303,6 +305,21 @@ def family_parsers() -> dict[str, argparse.ArgumentParser]:
             kwargs["reference_commands"] = references.COMMANDS
         parsers[family] = module.build_parser(None, **kwargs)
     return parsers
+
+
+def walk_parsers(
+    parser: argparse.ArgumentParser,
+    path: tuple[str, ...] = (),
+    summary: str = "",
+) -> Iterator[tuple[tuple[str, ...], argparse.ArgumentParser, str]]:
+    """Walk parser nodes in command order, carrying each verb's help summary."""
+    yield path, parser, summary
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        helps = {choice.dest: choice.help or "" for choice in action._choices_actions}
+        for name, subparser in sorted(action.choices.items()):
+            yield from walk_parsers(subparser, (*path, name), helps.get(name, ""))
 
 
 def command_requires_pack_host(family: str, args: Sequence[str]) -> bool:

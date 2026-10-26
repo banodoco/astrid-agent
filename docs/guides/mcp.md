@@ -22,9 +22,10 @@ proxies, and imports the JSON into the selected project. `pack-images` stays
 out of MCP because it accepts host file paths.
 
 CLI subprocesses run in the directory where the MCP server was started, so
-relative paths refer to that directory. Arguments whose CLI parser type is
-`Path` take file text: the server writes that text to an absolute temporary
-file and passes its path to the CLI. Other path strings keep their normal local
+relative paths refer to that directory. Declared input-file arguments take
+file text: the server writes it to an absolute temporary file and passes its
+path to the CLI. Output-file arguments get a temporary path, and the written
+text is returned in the MCP result. Other path strings keep their normal local
 path meaning.
 
 Timeline renders always run detached. After `invoke` or a render returns a

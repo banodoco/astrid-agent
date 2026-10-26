@@ -23,22 +23,33 @@ OUTPUT = "cli-surface.json"
 
 
 def _walk(parser: argparse.ArgumentParser) -> dict:
-    node: dict = {"flags": {}, "positionals": [], "verbs": {}}
-    for action in parser._actions:
-        if isinstance(action, argparse._HelpAction):
-            continue
-        if isinstance(action, argparse._SubParsersAction):
-            node["verbs"].update({name: _walk(sub) for name, sub in sorted(action.choices.items())})
-        elif action.option_strings:
-            flag: dict = {"required": bool(action.required)}
-            if action.choices is not None:
-                flag["choices"] = sorted(str(c) for c in action.choices)
-            for name in action.option_strings:
-                node["flags"][name] = flag
+    from astrid.core.cli.domain_product import walk_parsers
+
+    def empty_node() -> dict:
+        return {"flags": {}, "positionals": [], "verbs": {}}
+
+    root = empty_node()
+    nodes = {(): root}
+    for path, current, _ in walk_parsers(parser):
+        if path:
+            node = empty_node()
+            nodes[path[:-1]]["verbs"][next(reversed(path))] = node
+            nodes[path] = node
         else:
-            node["positionals"].append(action.dest)
-    node["flags"] = dict(sorted(node["flags"].items()))
-    return node
+            node = root
+        for action in current._actions:
+            if isinstance(action, (argparse._HelpAction, argparse._SubParsersAction)):
+                continue
+            if action.option_strings:
+                flag: dict = {"required": bool(action.required)}
+                if action.choices is not None:
+                    flag["choices"] = sorted(str(c) for c in action.choices)
+                for name in action.option_strings:
+                    node["flags"][name] = flag
+            else:
+                node["positionals"].append(action.dest)
+        node["flags"] = dict(sorted(node["flags"].items()))
+    return root
 
 
 def build() -> dict:

@@ -59,6 +59,10 @@ def output_file(value: str) -> Path:
 
 def json_object_or_path(value: str) -> Any:
     """Timeline CLI input: inline JSON or a path; MCP accepts inline JSON only."""
-    from astrid.packs.timeline.cli_visualize import _lenient_json_or_path
-
-    return _lenient_json_or_path(value)
+    text = str(value)
+    if text.lstrip().startswith(("{", "[")):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise argparse.ArgumentTypeError(f"invalid JSON: {exc.msg}") from exc
+    return text

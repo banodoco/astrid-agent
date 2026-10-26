@@ -557,18 +557,6 @@ def _print_visualization_timing(timing: Any, requested_at: float) -> None:
     print(f"captured {int(timing.get('frames') or 0)} frames in {float(timing['capture_s']):.0f} s{queue_text}")
 
 
-def _lenient_json_or_path(value: str) -> Any:
-    """``--beats`` / ``--rules`` take the JSON object itself or a path to the file that holds it."""
-    text = str(value)
-    if text.lstrip().startswith("{") or text.lstrip().startswith("["):
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise argparse.ArgumentTypeError(f"invalid JSON: {exc.msg}") from exc
-        return parsed
-    return text
-
-
 def add_visualize_flags(subparser: argparse.ArgumentParser) -> None:
     """The flags ``visualize`` had before the combined port (working copy, compare, plan, layers, review)."""
     subparser.add_argument("--published", action="store_true", default=False,
