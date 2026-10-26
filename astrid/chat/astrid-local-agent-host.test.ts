@@ -42,13 +42,14 @@ function fixture(directory: string) {
 const fs = require('node:fs');
 const readline = require('node:readline');
 const log = ${JSON.stringify(logs)};
-const native = process.argv[1].endsWith('/hermes');
-if (native && process.argv[2] === 'acp' && process.argv[3] === '--check') process.exit(0);
+const native = process.argv[1].endsWith('/hermes') || process.argv[1].endsWith('/octop');
+if (process.argv[1].endsWith('/hermes') && process.argv[2] === 'acp' && process.argv[3] === '--check') process.exit(0);
+if (process.argv[1].endsWith('/octop') && process.argv[2] === 'models' && process.argv[3] === 'active') { process.stdout.write('provider / model\\n'); process.exit(0); }
 const adapter = process.argv[4];
 const expected = ${JSON.stringify(LOCAL_AGENT_ADAPTERS)};
 if (!native && (process.argv[2] !== 'x' || process.argv[3] !== '--bun' || !Object.values(expected).includes(adapter))) process.exit(98);
 if (native && process.argv[2] !== 'acp') process.exit(98);
-const agent = native ? 'hermes' : adapter === expected['claude-code'] ? 'claude-agent-acp' : 'codex-acp';
+const agent = process.argv[1].endsWith('/octop') ? 'octop' : native ? 'hermes' : adapter === expected['claude-code'] ? 'claude-agent-acp' : 'codex-acp';
 let model = 'model-a';
 let effort = 'low';
 const effortId = agent === 'codex-acp' ? 'reasoning_effort' : 'effort';
@@ -105,6 +106,7 @@ rl.on('close', () => process.exit(0));
 `;
   executable(join(bin, 'bun'), adapterProgram);
   executable(join(bin, 'hermes'), adapterProgram);
+  executable(join(bin, 'octop'), adapterProgram);
   return { bin, cwd, logs, profile, shell };
 }
 
@@ -347,7 +349,7 @@ for (const agent of EXTERNAL_AGENT_IDS) {
   });
 }
 
-for (const agent of ['codex', 'hermes'] as const) {
+for (const agent of ['codex', 'hermes', 'octop'] as const) {
   test(`${agent} preserves an empty chat, thinking level and first grounding during browser handoff`, async () => {
     const directory = mkdtempSync(join(tmpdir(), 'astrid-grounding-handoff-'));
     const f = fixture(directory);

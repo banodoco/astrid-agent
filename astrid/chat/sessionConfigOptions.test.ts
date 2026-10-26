@@ -41,7 +41,7 @@ describe('ACP session config options', () => {
     expect(parsed?.thoughtLevel?.options.map(option => option.name)).toEqual(['High', 'Extra high', 'Max']);
   });
 
-  it.each(['Hermes', 'Astrid'])('does not invent levels for %s without a thought_level option', () => {
+  it.each(['Hermes', 'Astrid', 'Octop'])('does not invent levels for %s without a thought_level option', () => {
     expect(sessionConfigModels({ models: { currentModelId: 'a', availableModels: [{ modelId: 'a', name: 'A' }] } })?.thoughtLevel).toBeUndefined();
     expect(sessionConfigModels({ configOptions: [model] })?.thoughtLevel).toBeUndefined();
   });

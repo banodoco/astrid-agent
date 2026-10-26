@@ -69,7 +69,7 @@ async function initialize(adapterId: AdapterId, packageName: string): Promise<vo
   console.log(`${adapterId}: ACP initialize passed under Bun (${packageName}).`);
 }
 
-// Hermes speaks ACP from its own CLI, so it deliberately has no pinned Bun adapter.
+// Hermes and Octop speak ACP from their own CLIs, so they deliberately have no pinned Bun adapter.
 for (const [adapterId, packageName] of Object.entries(LOCAL_AGENT_ADAPTERS) as Array<[AdapterId, string]>) {
   await initialize(adapterId, packageName);
 }

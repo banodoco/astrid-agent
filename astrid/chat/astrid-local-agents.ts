@@ -245,20 +245,21 @@ export async function discoverLocalAgents(options: Options = {}): Promise<LocalA
   const loginPath = await loginShellPath(baseEnv, platform, options.registryReader, options.passwdReader, options.systemShellReader);
   const path = combinedPath(platform, loginPath, baseEnv.PATH);
   const env = { ...baseEnv, PATH: path };
-  const [claudeShim, codex, hermes] = await Promise.all([
-    executable('claude', path, platform, baseEnv.PATHEXT), executable('codex', path, platform, baseEnv.PATHEXT), executable('hermes', path, platform, baseEnv.PATHEXT),
+  const [claudeShim, codex, hermes, octop] = await Promise.all([
+    executable('claude', path, platform, baseEnv.PATHEXT), executable('codex', path, platform, baseEnv.PATHEXT), executable('hermes', path, platform, baseEnv.PATHEXT), executable('octop', path, platform, baseEnv.PATHEXT),
   ]);
   const [claude, codexEntryPoint] = await Promise.all([
     claudeShim ? windowsClaudeEntryPoint(claudeShim, platform) : null,
     codex ? windowsCodexEntryPoint(codex, platform) : null,
   ]);
-  const [hermesAuth, claudeAuth, codexAuth] = await Promise.all([
+  const [hermesAuth, claudeAuth, codexAuth, octopAuth] = await Promise.all([
     hermesStatus(hermes, env, options.cwd),
     claudeStatus(claude, env, options.cwd, platform),
     status(codexEntryPoint, ['login', 'status'], env, /Logged in using/i, /Not logged in|Run `?codex login/i, options.cwd, platform),
+    octopStatus(octop, env, options.cwd, platform),
   ]);
-  const installed: Record<typeof EXTERNAL_AGENT_IDS[number], string | null> = { 'claude-code': claude, codex, hermes };
-  const auth: Record<typeof EXTERNAL_AGENT_IDS[number], AuthStatus> = { 'claude-code': claudeAuth, codex: codexAuth, hermes: hermesAuth };
+  const installed: Record<typeof EXTERNAL_AGENT_IDS[number], string | null> = { 'claude-code': claude, codex, hermes, octop };
+  const auth: Record<typeof EXTERNAL_AGENT_IDS[number], AuthStatus> = { 'claude-code': claudeAuth, codex: codexAuth, hermes: hermesAuth, octop: octopAuth };
   return LOCAL_AGENT_IDS.map(id => id === 'astrid'
     ? choice(id, 'ready', platform)
     : choice(id, !installed[id] ? 'not-installed' : auth[id] === 'signed-out' ? 'sign-in' : 'ready', platform, auth[id]));
@@ -276,6 +277,10 @@ async function hermesStatus(command: string | null, env: NodeJS.ProcessEnv, cwd?
   }
 }
 
+async function octopStatus(command: string | null, env: NodeJS.ProcessEnv, cwd?: string, platform = process.platform): Promise<AuthStatus> {
+  return status(command, ['models', 'active'], env, /\S+\s*\/\s*\S+/, /unset|no active model|not configured|no provider/i, cwd, platform);
+}
+
 export async function localAgentLaunch(agentId: ExternalAgent, env: NodeJS.ProcessEnv = process.env, options: LaunchOptions = {}): Promise<{ command: string; args: string[]; env: Record<string, string | undefined>; cliPath: string }> {
   const platform = options.platform ?? process.platform;
   const loginPath = await loginShellPath(env, platform, options.registryReader, options.passwdReader, options.systemShellReader);
@@ -283,11 +288,11 @@ export async function localAgentLaunch(agentId: ExternalAgent, env: NodeJS.Proce
   const bunPath = combinedPath(platform, env.PATH, loginPath);
   const [bun, cliShim] = await Promise.all([
     executable('bun', bunPath, platform, env.PATHEXT),
-    executable(agentId === 'claude-code' ? 'claude' : agentId === 'codex' ? 'codex' : 'hermes', path, platform, env.PATHEXT),
+    executable(agentId === 'claude-code' ? 'claude' : agentId === 'codex' ? 'codex' : agentId === 'hermes' ? 'hermes' : 'octop', path, platform, env.PATHEXT),
   ]);
   const cli = cliShim && agentId === 'claude-code' ? await windowsClaudeEntryPoint(cliShim, platform) : cliShim;
   if (!cli) throw new AcpProcessHostError(`${LOCAL_AGENT_TABLE[agentId].name} is not installed on PATH.`, { code: 'agent_not_installed', next_action: localAgentSteps(agentId, 'not-installed', platform)[0]!.command });
-  if (agentId === 'hermes') return { command: cli, args: ['acp'], env: { PATH: path }, cliPath: cli };
+  if (agentId === 'hermes' || agentId === 'octop') return { command: cli, args: ['acp'], env: { PATH: path }, cliPath: cli };
   if (!bun) throw new AcpProcessHostError('Bun is not installed on PATH.', { code: 'agent_runtime_missing', next_action: astridInstallCommand(platform) });
   return {
     command: bun,

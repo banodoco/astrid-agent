@@ -108,7 +108,7 @@ test('PATCH chat rename route validates the body without opening a listener', as
 });
 
 test('session model and thought-level routes use advertised config IDs and refresh options without a socket', async () => {
-  for (const [agent, effortId] of [['codex', 'reasoning_effort'], ['claude-code', 'effort'], ['astrid', 'thinking'], ['hermes', null]] as const) {
+  for (const [agent, effortId] of [['codex', 'reasoning_effort'], ['claude-code', 'effort'], ['astrid', 'thinking'], ['hermes', null], ['octop', null]] as const) {
     const sessionId = agent === 'astrid' ? 'omp-session' : `${agent}:session`;
     let model = 'a';
     let effort = 'low';

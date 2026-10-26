@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 STATE_VERSION = 1
-HARNESSES = ("claude", "codex", "hermes")
+HARNESSES = ("claude", "codex", "hermes", "octop")
 
 
 def state_path() -> Path:

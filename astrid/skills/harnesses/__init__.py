@@ -6,11 +6,13 @@ from .base import Action, HarnessAdapter, InstallRecord, PlannedStep
 from .claude import ClaudeAdapter
 from .codex import CodexAdapter
 from .hermes import HermesAdapter
+from .octop import OctopAdapter
 
 ADAPTERS: dict[str, type[HarnessAdapter]] = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
     "hermes": HermesAdapter,
+    "octop": OctopAdapter,
 }
 
 
@@ -30,6 +32,7 @@ __all__ = [
     "CodexAdapter",
     "HarnessAdapter",
     "HermesAdapter",
+    "OctopAdapter",
     "InstallRecord",
     "PlannedStep",
     "adapter_for",

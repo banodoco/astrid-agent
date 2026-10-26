@@ -17,7 +17,7 @@ from . import sync as sync_fn
 from . import uninstall as uninstall_fn
 from .harnesses import ADAPTERS
 
-HARNESS_CHOICES = ("claude", "codex", "hermes", "all")
+HARNESS_CHOICES = ("claude", "codex", "hermes", "octop", "all")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = RecoverableArgumentParser(
         prog="python3 -m astrid skills",
-        description="Install the Astrid skills layer into supported agent harnesses (claude, codex, hermes).",
+        description="Install the Astrid skills layer into supported agent harnesses (claude, codex, hermes, octop).",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command")

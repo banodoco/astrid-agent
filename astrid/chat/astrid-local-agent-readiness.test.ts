@@ -34,11 +34,11 @@ for (const agent of EXTERNAL_AGENT_IDS) {
     try {
       await check('agent_not_installed', `${LOCAL_AGENT_TABLE[agent].name} is not installed on PATH.`, localAgentSteps(agent, 'not-installed')[0]!.command);
       const cli = join(bin, agent === 'claude-code' ? 'claude' : agent);
-      executable(cli, agent === 'hermes' ? '#!/bin/sh\nexit 7\n' : agent === 'codex'
+      executable(cli, agent === 'hermes' ? '#!/bin/sh\nexit 7\n' : agent === 'octop' ? '#!/bin/sh\necho "unset"\nexit 1\n' : agent === 'codex'
         ? '#!/bin/sh\nprintf "Not logged in" >&2\nexit 1\n'
         : '#!/bin/sh\nprintf \'{"loggedIn":false}\'\n');
       await check('agent_sign_in_required', `${LOCAL_AGENT_TABLE[agent].name} sign-in is required. ${LOCAL_AGENT_TABLE[agent].signInLine}`, localAgentSteps(agent, 'sign-in')[0]!.command);
-      if (agent !== 'hermes') {
+      if (agent !== 'hermes' && agent !== 'octop') {
         executable(cli, agent === 'codex' ? '#!/bin/sh\nprintf "Logged in using ChatGPT" >&2\n' : '#!/bin/sh\nprintf \'{"loggedIn":true}\'\n');
         await check('agent_runtime_missing', 'Bun is not installed on PATH.', 'curl -fsSL https://astrid.haus/install | sh');
       }
