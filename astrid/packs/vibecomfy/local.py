@@ -1,10 +1,12 @@
-"""Read-only discovery and managed image helpers for a user's local ComfyUI."""
+"""Loopback ComfyUI discovery and managed image helpers."""
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import io
 import json
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,8 +14,14 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from astrid.core.cli.domain_output import print_result
 from astrid.core.contracts.errors import AstridError, AstridValueError, render_astrid_error
 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
+from astrid.sdk import AstridClient
+from astrid.sdk.contracts import DomainResult
+from astrid.sdk.exceptions import ServiceUnavailableError
+
+_WORKFLOW_LIMIT = 64 * 1024 * 1024
 
 
 def _get_json(url: str) -> Any:
@@ -133,6 +141,52 @@ def scan(ports: list[int]) -> dict[str, Any]:
     return {"servers": servers, "errors": errors}
 
 
+def import_workflow(name: str, project: str, comfy_url: str | None = None) -> Any:
+    """Fetch one saved workflow from loopback ComfyUI and import it into Astrid."""
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("project is required")
+    url = str(comfy_url or "http://127.0.0.1:8188").rstrip("/")
+    try:
+        parts = urllib.parse.urlsplit(url)
+        loopback = parts.hostname in ("127.0.0.1", "localhost")
+    except ValueError:
+        parts = None
+        loopback = False
+    if (parts is None or parts.scheme != "http" or not loopback or parts.path not in ("", "/") or
+            parts.username is not None or parts.password is not None or parts.query or parts.fragment):
+        raise ValueError("comfy_url must be loopback, e.g. http://127.0.0.1:8188")
+    name = str(name or "")
+    if "\x00" in name or not name.endswith(".json") or "/" in name or "\\" in name or name.startswith("."):
+        raise ValueError("name must be a saved workflow file name such as portrait.json (see scan)")
+    source = f"{url}/userdata/{urllib.parse.quote('workflows/' + name, safe='')}"
+    try:
+        class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirects)
+        with opener.open(source, timeout=30) as response:
+            raw = response.read(_WORKFLOW_LIMIT + 1)
+    except (http.client.HTTPException, OSError, urllib.error.URLError) as exc:
+        raise ValueError(f"could not read {source}: {exc}") from exc
+    if len(raw) > _WORKFLOW_LIMIT:
+        raise ValueError("workflow is larger than 64 MiB")
+    try:
+        json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} is not JSON") from exc
+    with tempfile.TemporaryDirectory(prefix="astrid-comfy-workflow-") as scratch:
+        target = Path(scratch) / name
+        target.write_bytes(raw)
+        with AstridClient.open_from_launcher(start_pack_host=False) as client:
+            return client.media.import_file(
+                project=project,
+                path=target,
+                realm="managed_local",
+                idempotency_key=None,
+            )
+
+
 def pack_images(out_path: str, images: list[str]) -> dict[str, Any]:
     """Write the canonical managed_assets archive accepted by vibecomfy.run."""
     target = Path(out_path).expanduser()
@@ -173,13 +227,21 @@ def pack_images(out_path: str, images: list[str]) -> dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Read-only helpers for local ComfyUI.")
+    parser = argparse.ArgumentParser(description="Helpers for local ComfyUI workflows and managed images.")
     commands = parser.add_subparsers(dest="command", required=True)
     scan_parser = commands.add_parser("scan", help="discover running loopback ComfyUI servers")
     scan_parser.add_argument("--ports", default="8188,8000")
     images_parser = commands.add_parser("pack-images", help="build a managed_assets ZIP")
     images_parser.add_argument("out")
     images_parser.add_argument("images", nargs="+")
+    workflow_parser = commands.add_parser("import-workflow", help="import a saved loopback ComfyUI workflow")
+    workflow_parser.add_argument("name", help="Saved workflow file name, such as portrait.json.")
+    workflow_parser.add_argument("--project", required=True, help="Owning project id or immutable slug.")
+    workflow_parser.add_argument(
+        "--comfy-url",
+        default="http://127.0.0.1:8188",
+        help="Loopback ComfyUI URL (default http://127.0.0.1:8188).",
+    )
     return parser
 
 
@@ -208,8 +270,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
                 return 0
             result = scan(ports)
-        else:
+        elif args.command == "pack-images":
             result = pack_images(args.out, args.images)
+        else:
+            try:
+                result = import_workflow(args.name, args.project, args.comfy_url)
+            except ServiceUnavailableError as exc:
+                result = DomainResult.failure(exc.to_error_object())
+            return print_result(result, as_json=True)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
     except (OSError, ValueError) as exc:

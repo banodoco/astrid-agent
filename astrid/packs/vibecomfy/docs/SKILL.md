@@ -69,10 +69,9 @@ Match the request to a saved workflow name from `workflows`. One clear match:
 use it and say which. Several plausible ones: ask with the short list. None:
 show the list.
 
-Fetch it read-only into a scratch folder of your own (`$WORK` below), e.g.
-`curl -s "http://127.0.0.1:8188/userdata/workflows%2Fportrait_flux.json" -o "$WORK/portrait_flux.json"`,
-or copy it from `<base>/user/default/workflows/`. Never write into their
-ComfyUI folders.
+For inspection, copy it from `<base>/user/default/workflows/` when that folder
+is available. Never write into their ComfyUI folders. The import command below
+can fetch it directly when you cannot read a local copy.
 
 Read the JSON yourself before running. `vibecomfy.run` auto-detects a few
 inputs, and the detection is rough:
@@ -98,12 +97,15 @@ live server before queueing and record any failure in task history.
 ### Run, follow, stop
 
 Use the selected project (editor context, or `python3 -m astrid projects current`).
-Import the workflow file, and the image ZIP if any; the `digest` in each
-response is what the run's file inputs take:
+Import the saved workflow by name, and the image ZIP if any; the `digest` in
+each response is what the run's file inputs take. The workflow command uses a
+read-only GET and imports the validated JSON into the project:
 
 ```sh
-python3 -m astrid media import "$WORK/portrait_flux.json" --project PROJECT --json
+python3 -m astrid.packs.vibecomfy.local import-workflow portrait_flux.json --project PROJECT
 ```
+
+Pass `--comfy-url http://127.0.0.1:PORT` when the scan found another port.
 
 Then admit `vibecomfy.run`. Astrid's own agent uses the `astrid_invoke` tool
 with these fields; Claude Code, Codex and Hermes run

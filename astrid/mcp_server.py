@@ -1,20 +1,19 @@
-"""`python -m astrid.mcp_server`: Astrid's product commands as an MCP server (stdio).
+"""`python -m astrid.mcp_server`: Astrid's commands as an MCP server (stdio).
 
 Any MCP client (Claude Code, Codex, Claude Desktop, ...) can drive Astrid
-without its own shell: each `astrid-tools` command becomes one MCP tool, built
-from the same argparse parsers that `scripts/gen_cli_surface.py` walks, so the
-tools follow the CLI. Pack skills (SKILL.md) are served as MCP prompts.
+without its own shell: CLI commands become MCP tools, built from the same
+argparse parsers that `scripts/gen_cli_surface.py` walks, so the tools follow
+the CLI. Pack skills (SKILL.md) are served as MCP prompts.
 
-Each tool call runs `astrid-tools <family> <verb...> ... --json` and returns its
-JSON envelope. JSON-valued flags take real JSON; file arguments take the file's
-text (the server writes and reads private temporary files), so a client that
-cannot see Astrid's filesystem, for example one outside a sandbox, can use them.
-More tools serve what the CLI lacks: `invoke` (admit a capability run, like
-Astrid's own agent tool), `skills_list`/`skill_get` (the pack
-skills, also offered as MCP prompts, which only users can invoke). Tool
-definitions omit read-only and mutating annotations. Preference writes are not
-exposed: preferences are added to every agent's system prompt, so an outside
-agent must not be able to set them.
+Each product tool call runs `astrid-tools <family> <verb...> ... --json` and
+returns its JSON envelope. Pack tool calls run the pack's Python command.
+JSON-valued flags take real JSON; file arguments take the file's text (the
+server writes and reads private temporary files), so a client that cannot see
+Astrid's filesystem, for example one outside a sandbox, can use them. The
+hand-written `invoke` tool admits a capability run, like Astrid's own agent
+tool. Tool definitions omit read-only and mutating annotations. Preference
+writes are not exposed: preferences are added to every agent's system prompt,
+so an outside agent must not be able to set them.
 
 Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout (MCP stdio). Logs go
 to stderr. Standard library only.
@@ -41,10 +40,22 @@ from astrid.core.cli.argtypes import (
     output_file,
 )
 from astrid.core.cli.domain_product import family_parsers
+from astrid.packs.vibecomfy import local as vibecomfy_local
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
-EXCLUDED = {("preferences", "checkin"), ("preferences", "edit"), ("tasks", "follow")}
+EXCLUDED = {
+    ("preferences", "checkin"),
+    ("preferences", "edit"),
+    ("tasks", "follow"),
+    ("comfy", "pack-images"),
+}
 TIMEOUT = float(os.environ.get("ASTRID_MCP_TIMEOUT", "900"))
+TOOL_SOURCES = {
+    "comfy": (
+        vibecomfy_local.build_parser,
+        (sys.executable, "-m", "astrid.packs.vibecomfy.local"),
+    ),
+}
 
 
 def log(message: str) -> None:
@@ -111,8 +122,13 @@ def _tool_name(path: tuple[str, ...]) -> str:
 
 def build_tools() -> dict[str, dict[str, Any]]:
     tools: dict[str, dict[str, Any]] = {}
-    for family, parser in family_parsers().items():
-        for path, leaf, summary in _leaves(parser, (family,), ""):
+    sources = {
+        family: (lambda parser=parser: parser, ("astrid-tools", family))
+        for family, parser in family_parsers().items()
+    }
+    sources.update(TOOL_SOURCES)
+    for family, (build_parser, command) in sources.items():
+        for path, leaf, summary in _leaves(build_parser(), (family,), ""):
             if path[:2] in EXCLUDED:
                 continue
             properties: dict[str, Any] = {}
@@ -155,7 +171,8 @@ def build_tools() -> dict[str, dict[str, Any]]:
                     "inputSchema": {"type": "object", "properties": properties, "required": required,
                                     "additionalProperties": False},
                 },
-                "kind": "cli", "path": path, "args": args, "json": supports_json,
+                "kind": "cli", "path": path[1:], "family_path": path,
+                "command": command, "args": args, "json": supports_json,
             }
     return tools
 
@@ -167,10 +184,11 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
     unknown = set(arguments) - {a["dest"] for a in tool["args"] if not a.get("output")}
     if unknown:
         raise ValueError(f"unknown arguments: {', '.join(sorted(unknown))}")
+    path = tool.get("family_path", tool["path"])
     argv = list(tool["path"])
     flags: list[str] = []
     for spec in tool["args"]:
-        if tool["path"] == ("timelines", "render") and spec["dest"] == "wait":
+        if path == ("timelines", "render") and spec["dest"] == "wait":
             continue
         if spec.get("output"):
             if workdir is None:
@@ -224,9 +242,9 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             flags += [option, *[str(v) for v in value]]
         else:
             flags += [option, str(value)]
-    if tool["path"] == ("timelines", "render"):
+    if path == ("timelines", "render"):
         flags.append("--detach")
-    if tool["path"] == ("timelines", "edit") and "--no-sweep" not in flags:
+    if path == ("timelines", "edit") and "--no-sweep" not in flags:
         flags.append("--no-sweep")
     return argv + flags + (["--json"] if tool["json"] else [])
 
@@ -271,19 +289,16 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
         workdir = Path(scratch)
         if kind == "invoke":
             return _invoke(arguments, workdir)
-        if kind == "comfy_scan":
-            done = _run([sys.executable, "-m", "astrid.packs.vibecomfy.local", "scan",
-                         "--ports", str(arguments.get("ports") or "8188,8000")], Path.cwd())
-            return done if isinstance(done, dict) else _cli_result(done)
-        if kind == "comfy_workflow_import":
-            return _comfy_workflow_import(arguments, workdir)
         outputs: dict[str, Path] = {}
         try:
             argv = argv_for(tool, arguments, workdir, outputs)
         except (TypeError, ValueError) as exc:
             return _text(f"invalid arguments: {exc}", error=True)
-        executable = Path(sys.executable).with_name("astrid-tools")
-        command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
+        command = list(tool["command"])
+        if command[0] == "astrid-tools":
+            executable = Path(sys.executable).with_name("astrid-tools")
+            command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
+            command.extend(tool["command"][1:])
         done = _run([*command, *argv], Path.cwd())
         if isinstance(done, dict):
             return done
@@ -295,57 +310,6 @@ def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, 
             # Clients that show structuredContent (Claude Code) drop the extra text blocks.
             result["structuredContent"] = {**result.get("structuredContent", {}), "files": files}
         return result
-
-
-def _comfy_workflow_import(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
-    """Read one saved workflow from the user's ComfyUI (GET only) and import it into the project.
-
-    The vibecomfy skill's "fetch it read-only, then astrid media import" step, for a
-    client that cannot reach Astrid's filesystem."""
-    import http.client
-    import urllib.error
-    import urllib.parse
-    import urllib.request
-
-    project = arguments.get("project")
-    if not isinstance(project, str) or not project.strip():
-        return _text("project is required", error=True)
-    url = str(arguments.get("comfy_url") or "http://127.0.0.1:8188").rstrip("/")
-    try:
-        parts = urllib.parse.urlsplit(url)
-        loopback = parts.hostname in ("127.0.0.1", "localhost")
-    except ValueError:
-        parts = None
-        loopback = False
-    if (parts is None or parts.scheme != "http" or not loopback or parts.path not in ("", "/") or
-            parts.username is not None or parts.password is not None or parts.query or parts.fragment):
-        return _text("comfy_url must be loopback, e.g. http://127.0.0.1:8188", error=True)
-    name = str(arguments.get("name") or "")
-    if "\x00" in name or not name.endswith(".json") or "/" in name or "\\" in name or name.startswith("."):
-        return _text("name must be a saved workflow file name such as portrait.json (see comfy_scan)", error=True)
-    source = f"{url}/userdata/{urllib.parse.quote('workflows/' + name, safe='')}"
-    try:
-        class RefuseRedirects(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                return None
-
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirects)
-        with opener.open(source, timeout=30) as response:
-            raw = response.read(64 * 1024 * 1024 + 1)
-    except (http.client.HTTPException, OSError, urllib.error.URLError) as exc:
-        return _text(f"could not read {source}: {exc}", error=True)
-    if len(raw) > 64 * 1024 * 1024:
-        return _text("workflow is larger than 64 MiB", error=True)
-    try:
-        json.loads(raw)
-    except ValueError:
-        return _text(f"{name} is not JSON", error=True)
-    target = workdir / name
-    target.write_bytes(raw)
-    executable = Path(sys.executable).with_name("astrid-tools")
-    command = [str(executable)] if executable.exists() else [sys.executable, "-m", "astrid.core.gateway"]
-    done = _run([*command, "media", "import", str(target), "--project", project, "--json"], Path.cwd())
-    return done if isinstance(done, dict) else _cli_result(done)
 
 
 def _invoke(arguments: dict[str, Any], workdir: Path) -> dict[str, Any]:
@@ -409,18 +373,6 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
               "inputs": {"type": "object", "description": "The capability's inputs as a JSON object."},
               "execution_request": {"type": "object", "description": "Optional target-aware execution request."}},
              ["capability_id", "project"], kind="invoke"),
-        tool("comfy_scan",
-             "Find the user's running ComfyUI (vibecomfy local scan): URL, output folder, saved "
-             "workflows, Manager, its Python. Read-only.",
-             {"ports": {"type": "string", "description": "Comma-separated ports (default 8188,8000)."}},
-             [], kind="comfy_scan"),
-        tool("comfy_workflow_import",
-             "Read one saved workflow from the user's ComfyUI (read-only GET of /userdata/workflows/NAME) "
-             "and import it into the project; the result's digest is vibecomfy.run's workflow input.",
-             {"project": {"type": "string", "description": "Project slug or ID."},
-              "name": {"type": "string", "description": "Saved workflow file name from comfy_scan, e.g. portrait.json."},
-              "comfy_url": {"type": "string", "description": "Loopback ComfyUI URL (default http://127.0.0.1:8188)."}},
-             ["project", "name"], kind="comfy_workflow_import"),
     ])
 
 

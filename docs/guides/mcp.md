@@ -12,6 +12,13 @@ the product CLI commands generated from Astrid's argparse parsers, an `invoke`
 tool for admitting capability runs, and pack skills as MCP prompts. The skills
 are also available through the `skills_list` and `skill_get` tools.
 
+The VibeComfy pack parser adds `comfy_scan` and `comfy_import_workflow`, which
+run `python -m astrid.packs.vibecomfy.local scan` and
+`python -m astrid.packs.vibecomfy.local import-workflow`. Workflow import reads
+the saved name from a loopback ComfyUI with GET only, refuses redirects and
+proxies, and imports the JSON into the selected project. `pack-images` stays
+out of MCP because it accepts host file paths.
+
 CLI subprocesses run in the directory where the MCP server was started, so
 relative paths refer to that directory. Arguments whose CLI parser type is
 `Path` take file text: the server writes that text to an absolute temporary
