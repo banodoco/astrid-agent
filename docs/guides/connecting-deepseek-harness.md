@@ -99,6 +99,49 @@ The probe reports honestly rather than guessing:
 `unknown` still counts as usable, matching how the other agents treat an unreadable
 probe: Astrid does not invent a sign-in requirement it cannot confirm.
 
+## Choosing the model provider (optional)
+
+Astrid makes **no provider decision** for you. The `dsh-acp-app` bundle carries its own
+default for ACP sessions — DeepSeek's cloud `deepseek-official` / `deepseek-v4-flash` —
+and it honours that default regardless of `agent-default-model`, so a fresh install talks
+to the cloud and nothing needs configuring.
+
+To use a different provider (a self-hosted gateway, a proxy, another vendor), override the
+`acp` entry in the **home-level patch layer**, `<DSH_HOME>/cordis.patch.yml`:
+
+```yaml
+- id: acp
+  config:
+    provider: my-provider      # as declared by your provider plugin
+    model: my-model-id
+```
+
+Two properties make this the durable place for that choice:
+
+- Astrid seeds the harness's instance home with a copy of that same file on every launch,
+  so the override survives the instance home being recreated or reset.
+- Leaving the entry out is a valid, complete configuration — it is exactly how you stay on
+  the cloud default.
+
+The `- id: acp` shape is what works; a `defaultModel:` nesting under the same id is
+silently ignored, and the same entry placed only in `profiles/acp/cordis.patch.yml` works
+too but is lost when the instance home is rebuilt.
+
+### Private certificate authorities
+
+If the provider's endpoint presents a certificate from a CA your system does not trust,
+the harness fails TLS and falls back to whatever else it can authenticate — usually the
+cloud key. Give the **process that launches the harness** the extra trust, for example:
+
+```sh
+NODE_EXTRA_CA_CERTS=/path/to/private-ca-bundle.pem
+```
+
+Prefer `NODE_EXTRA_CA_CERTS` over `SSL_CERT_FILE`: the latter *replaces* the trust store,
+so a bundle holding only private CAs breaks every other HTTPS connection in the same
+process tree. Both are per-process, so a service manager (launchd, systemd, a container)
+must carry the variable itself — a shell export is not enough.
+
 ## Verification
 
 ```bash
