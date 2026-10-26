@@ -7,12 +7,15 @@ import { ProjectChatRegistry } from './astrid-project-chat.ts';
 import { ApiError, type Project } from './runtime-client.ts';
 import { isExternalAgentSession, sessionAgentId } from './localAgents.ts';
 
-test('routes prefixed external sessions, including Hermes, to their own agent identity', () => {
+test('routes prefixed external sessions, including Hermes and Octop, to their own agent identity', () => {
   assert.equal(isExternalAgentSession('hermes:session-1'), true);
   assert.equal(isExternalAgentSession('hermes:session-1', 'hermes'), true);
+  assert.equal(isExternalAgentSession('octop:session-1'), true);
+  assert.equal(isExternalAgentSession('octop:session-1', 'octop'), true);
   assert.equal(isExternalAgentSession('astrid:session-1'), false);
   assert.equal(sessionAgentId('hermes:session-1'), 'hermes');
   assert.equal(sessionAgentId('codex:session-1'), 'codex');
+  assert.equal(sessionAgentId('octop:session-1'), 'octop');
 });
 
 function registryFor(project: Project) {

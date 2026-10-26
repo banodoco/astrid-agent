@@ -48,12 +48,13 @@ test('reports Not installed when external CLIs are absent and has no adapter fie
       { id: 'claude-code', name: LOCAL_AGENT_TABLE['claude-code'].name, state: 'not-installed', line: LOCAL_AGENT_TABLE['claude-code'].notInstalledLine },
       { id: 'codex', name: LOCAL_AGENT_TABLE.codex.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.codex.notInstalledLine },
       { id: 'hermes', name: LOCAL_AGENT_TABLE.hermes.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.hermes.notInstalledLine },
+      { id: 'octop', name: LOCAL_AGENT_TABLE.octop.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.octop.notInstalledLine },
     ]);
     assert.equal(LOCAL_AGENT_TABLE['claude-code'].windowsNotInstalledLine, 'In PowerShell, run `irm https://claude.ai/install.ps1 | iex`');
     assert.equal(LOCAL_AGENT_TABLE.codex.notInstalledLine, 'Install with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`');
     assert.equal(LOCAL_AGENT_TABLE.codex.windowsNotInstalledLine, 'In PowerShell, run `irm https://chatgpt.com/codex/install.ps1 | iex`');
     assert.doesNotMatch(JSON.stringify(LOCAL_AGENT_TABLE), /npm install -g/);
-    assert.deepEqual(agents.map(agent => agent.signIn), ['unknown', 'unknown', 'unknown', 'unknown']);
+    assert.deepEqual(agents.map(agent => agent.signIn), ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
     assert.equal('adapterInstalled' in agents[1]!, false);
     assert.equal('installCommand' in agents[1]!, false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -344,6 +345,18 @@ test('discovers Hermes with hermes acp --check and launches its native ACP comma
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('discovers Octop with octop models active and launches its native ACP command', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-octop-'));
+  try {
+    const shell = loginShell(directory);
+    const octop = executable(directory, 'octop', '#!/bin/sh\n[ "$*" = "models active" ] || exit 91\nif [ "${OCTOP_CHECK_EXIT:-0}" = "0" ]; then echo "default / model-1"; exit 0; else echo "unset"; exit 7; fi\n');
+    const env = testEnv(shell, directory);
+    assert.equal((await discoverLocalAgents({ env }))[4]?.state, 'ready');
+    assert.deepEqual(await localAgentLaunch('octop', env), { command: octop, args: ['acp'], env: { PATH: directory }, cliPath: octop });
+    assert.equal((await discoverLocalAgents({ env: { ...env, OCTOP_CHECK_EXIT: '7' } }))[4]?.state, 'sign-in');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('keeps Hermes ready when ACP check is inconclusive or times out', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-hermes-check-'));
   try {
@@ -354,7 +367,19 @@ test('keeps Hermes ready when ACP check is inconclusive or times out', async () 
       assert.equal(agents[3]?.state, 'ready', `${mode} check should remain usable`);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
-});
+}, 12_000);
+
+test('keeps Octop ready when model check is inconclusive or times out', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-octop-check-'));
+  try {
+    const shell = loginShell(directory);
+    executable(directory, 'octop', '#!/bin/sh\n[ "$*" = "models active" ] || exit 91\ncase "$OCTOP_CHECK_MODE" in unknown) kill -TERM $$ ;; timeout) /bin/sleep 10 ;; esac\n');
+    for (const mode of ['unknown', 'timeout']) {
+      const agents = await discoverLocalAgents({ env: { ...testEnv(shell, directory), OCTOP_CHECK_MODE: mode } });
+      assert.equal(agents[4]?.state, 'ready', `${mode} check should remain usable`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 12_000);
 
 test('mixed external-agent authentication states stay associated with their agent', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-mixed-auth-'));
@@ -363,9 +388,10 @@ test('mixed external-agent authentication states stay associated with their agen
     fake(directory, 'claude', { json: '{"loggedIn":true}', text: 'Logged in' });
     fake(directory, 'codex', 'Logged in using ChatGPT', 0, 'stderr');
     executable(directory, 'hermes', '#!/bin/sh\nexit 7\n');
+    executable(directory, 'octop', '#!/bin/sh\necho "provider / model"\nexit 0\n');
     const agents = await discoverLocalAgents({ env: testEnv(shell, directory) });
     assert.deepEqual(agents.map(agent => [agent.id, agent.state]), [
-      ['astrid', 'ready'], ['claude-code', 'ready'], ['codex', 'ready'], ['hermes', 'sign-in'],
+      ['astrid', 'ready'], ['claude-code', 'ready'], ['codex', 'ready'], ['hermes', 'sign-in'], ['octop', 'ready'],
     ]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -411,6 +437,7 @@ test('discovery retains each probe sign-in result without changing legacy readin
       fake(directory, 'claude', { json: signIn === 'unknown' ? '{}' : JSON.stringify({ loggedIn: signIn === 'signed-in' }), text: '' });
       fake(directory, 'codex', signIn === 'signed-in' ? 'Logged in using ChatGPT' : signIn === 'signed-out' ? 'Not logged in' : 'Unrecognized');
       executable(directory, 'hermes', signIn === 'unknown' ? '#!/bin/sh\nkill -TERM $$\n' : `#!/bin/sh\nexit ${signIn === 'signed-in' ? 0 : 7}\n`);
+      executable(directory, 'octop', signIn === 'unknown' ? '#!/bin/sh\nkill -TERM $$\n' : signIn === 'signed-in' ? '#!/bin/sh\necho "provider / model"\nexit 0\n' : '#!/bin/sh\necho "unset"\nexit 1\n');
       for (const agent of (await discoverLocalAgents({ env })).slice(1)) {
         assert.equal(agent.signIn, signIn, agent.id);
         assert.equal(agent.state, signIn === 'signed-out' ? 'sign-in' : 'ready');

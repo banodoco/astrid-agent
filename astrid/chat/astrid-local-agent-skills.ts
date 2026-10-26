@@ -6,7 +6,7 @@ import { agentCommand, astridSignInLine, LOCAL_AGENT_TABLE, type LocalAgentId } 
 
 type ExternalAgent = Exclude<LocalAgentId, 'astrid'>;
 type SkillStatus = { skillSynced: boolean; detail?: string };
-const HARNESSES = { 'claude-code': 'claude', codex: 'codex', hermes: 'hermes' } as const;
+const HARNESSES = { 'claude-code': 'claude', codex: 'codex', hermes: 'hermes', octop: 'octop' } as const;
 
 /** One service-owned attempt per harness, including failed and timed-out attempts. */
 export class LocalAgentSkills {
@@ -18,7 +18,7 @@ export class LocalAgentSkills {
   private check(agent: ExternalAgent): SkillStatus {
     const harness = HARNESSES[agent];
     const home = (process.platform === 'win32' ? this.env.USERPROFILE : this.env.HOME) || homedir();
-    const harnessHome = (agent === 'claude-code' ? this.env.CLAUDE_CONFIG_DIR : agent === 'codex' ? this.env.CODEX_HOME : this.env.HERMES_HOME) || join(home, `.${harness}`);
+    const harnessHome = (agent === 'claude-code' ? this.env.CLAUDE_CONFIG_DIR : agent === 'codex' ? this.env.CODEX_HOME : agent === 'octop' ? this.env.OCTOP_HOME : this.env.HERMES_HOME) || join(home, `.${harness}`);
     const skills = join(harnessHome, 'skills');
     const view = join(this.env.ASTRID_STATE_HOME || this.env.XDG_STATE_HOME || join(home, '.local', 'state'), 'astrid', 'skills', harness);
     try {
