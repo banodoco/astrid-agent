@@ -3,17 +3,18 @@
 Any MCP client (Claude Code, Codex, Claude Desktop, ...) can drive Astrid
 without its own shell: CLI commands become MCP tools, built from the same
 argparse parsers that `scripts/gen_cli_surface.py` walks, so the tools follow
-the CLI. Pack skills (SKILL.md) are served as MCP prompts.
+the CLI. Pack skills come from Astrid's skill loader as MCP prompts.
 
-Each product tool call runs `astrid-tools <family> <verb...> ... --json` and
-returns its JSON envelope. Pack tool calls run the pack's Python command.
-JSON-valued flags take real JSON; file arguments take the file's text (the
-server writes and reads private temporary files), so a client that cannot see
-Astrid's filesystem, for example one outside a sandbox, can use them. The
-hand-written `invoke` tool admits a capability run, like Astrid's own agent
-tool. Tool definitions omit read-only and mutating annotations. Preference
-writes are not exposed: preferences are added to every agent's system prompt,
-so an outside agent must not be able to set them.
+Product tools run `astrid-tools <family> <verb...> ... --json`; pack tools run
+their Python command. JSON-valued flags take real JSON; file arguments take
+the file's text (the server writes and reads private temporary files), so a
+client that cannot see Astrid's filesystem can use them. The hand-written
+`invoke` tool admits a capability run, like Astrid's own agent tool. Use
+`skills_show` to read the `astrid` skill and linked guides, such as
+`creative-work/SKILL.md`, with its `file` argument. Tool definitions omit
+read-only and mutating annotations. Preference writes are not exposed:
+preferences are added to every agent's system prompt, so an outside agent must
+not be able to set them.
 
 Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout (MCP stdio). Logs go
 to stderr. Standard library only.
@@ -397,9 +398,9 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
             "protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
             "capabilities": {"tools": {"listChanged": False}, "prompts": {"listChanged": False}},
             "serverInfo": {"name": "astrid", "title": "Astrid", "version": "0.1.0"},
-            "instructions": ("Astrid's product commands (projects, documents, media, tasks, runs, timelines, "
-                             "preferences, skills, comfy) as tools; each returns Astrid's JSON envelope. Load "
-                             "the matching Astrid skill prompt before multi-step work; use skills_show to read one."),
+            "instructions": ("Astrid CLI commands are tools; each returns Astrid's JSON envelope. Load the "
+                             "matching skill prompt before multi-step work. Use skills_show to read the astrid "
+                             "skill and linked guides, with the file argument."),
         })
     if method == "ping":
         return ok({})

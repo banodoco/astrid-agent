@@ -189,22 +189,34 @@ def test_skills_are_cli_tools_and_show_runs_the_cli(monkeypatch):
     assert sorted(tools) == ["skills_list", "skills_show"]
     show = tools["skills_show"]
     assert show["definition"]["inputSchema"]["required"] == ["name"]
-    assert show["definition"]["inputSchema"]["properties"] == {
-        "name": {"type": "string", "description": "Skill name from list."},
+    assert show["definition"]["inputSchema"]["properties"]["name"] == {
+        "type": "string", "description": "Skill name from list.",
     }
+    assert show["definition"]["inputSchema"]["properties"]["file"]["type"] == "string"
 
     calls = []
 
     def fake_run(argv, cwd):
         calls.append(argv)
         return subprocess.CompletedProcess(
-            argv, 0, stdout='{"name":"vibecomfy","description":"ComfyUI","text":"Body"}', stderr="",
+            argv, 0, stdout='{"name":"astrid","file":"creative-work/SKILL.md","text":"Guide"}', stderr="",
         )
 
     monkeypatch.setattr(mcp_server, "_run", fake_run)
-    result = mcp_server.call_tool(show, {"name": "vibecomfy"})
-    assert calls[0][-3:] == ["show", "vibecomfy", "--json"]
-    assert result["structuredContent"] == {"name": "vibecomfy", "description": "ComfyUI", "text": "Body"}
+    result = mcp_server.call_tool(show, {"name": "astrid", "file": "creative-work/SKILL.md"})
+    assert calls[0][-4:] == ["show", "astrid", "creative-work/SKILL.md", "--json"]
+    assert result["structuredContent"] == {"name": "astrid", "file": "creative-work/SKILL.md", "text": "Guide"}
+
+
+def test_initialize_instructions_direct_clients_to_skills_show():
+    result = mcp_server.handle(
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"tools": {}, "prompts": {}},
+    )
+    instructions = result["result"]["instructions"]
+    assert "skills_show" in instructions
+    assert "astrid skill" in instructions
+    assert "creative-work/SKILL.md" in instructions
 
 
 def test_timeline_document_verbs_are_generated_and_checkout_returns_file(monkeypatch):

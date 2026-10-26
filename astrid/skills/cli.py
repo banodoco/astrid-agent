@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Any
 
 from astrid.core.cli_choices import RecoverableArgumentParser, add_choice_arg
@@ -19,6 +20,8 @@ from . import uninstall as uninstall_fn
 from .harnesses import ADAPTERS
 
 HARNESS_CHOICES = ("claude", "codex", "hermes", "all")
+# Text extensions linked from files inside discovered skill folders.
+SKILL_TEXT_EXTENSIONS = {".md", ".py", ".ts"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -48,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_parser = subparsers.add_parser("show", help="Show one skill.")
     show_parser.add_argument("name", help="Skill name from list.")
+    show_parser.add_argument("file", nargs="?", help="Optional relative file inside the skill folder.")
     show_parser.add_argument("--json", action="store_true")
     show_parser.set_defaults(handler=_cmd_show)
 
@@ -131,6 +135,36 @@ def _cmd_show(args: argparse.Namespace) -> int:
     descriptor = next((skill for skill in discovery.list_skills() if skill.name == args.name), None)
     if descriptor is None:
         raise KeyError(f"no skill named {args.name!r}")
+    if args.file is not None:
+        relative = Path(args.file)
+        if relative.is_absolute():
+            raise ValueError("skill file must be relative to the skill folder")
+        skill_dir = descriptor.skill_dir.resolve()
+        candidate = skill_dir / relative
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"could not resolve skill file {args.file!r}") from exc
+        if not resolved.is_relative_to(skill_dir):
+            raise ValueError("skill file must stay inside the skill folder")
+        if not resolved.exists():
+            raise ValueError(f"skill file {args.file!r} does not exist")
+        if not resolved.is_file():
+            raise ValueError(f"skill file {args.file!r} is not a file")
+        if resolved.suffix.lower() not in SKILL_TEXT_EXTENSIONS:
+            raise ValueError(f"skill file must be one of {', '.join(sorted(SKILL_TEXT_EXTENSIONS))}")
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"skill file {args.file!r} is not readable text") from exc
+        if "\0" in text:
+            raise ValueError(f"skill file {args.file!r} is not readable text")
+        file_name = resolved.relative_to(skill_dir).as_posix()
+        if args.json:
+            print(json.dumps({"name": descriptor.name, "file": file_name, "text": text}, indent=2))
+        else:
+            print(text, end="")
+        return 0
     text = descriptor.body.strip()
     if args.json:
         print(json.dumps({"name": descriptor.name, "description": descriptor.description, "text": text}, indent=2))

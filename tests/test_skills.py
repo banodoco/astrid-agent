@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
+import io
 import json
 import shutil
 import unittest
@@ -14,6 +16,7 @@ import yaml
 
 from astrid import skills
 from astrid.core.cli_choices import StaticChoices
+from astrid.core.contracts.errors import AstridError
 from astrid.skills import cli as skills_cli
 from astrid.skills import discovery, state
 from astrid.skills.harnesses import (
@@ -101,6 +104,43 @@ class AdapterPlanTest(unittest.TestCase):
         self.assertEqual(shown, {
             "name": "vibecomfy", "description": descriptor.description, "text": descriptor.body.strip(),
         })
+
+    def test_show_reads_skill_files_and_rejects_paths_outside_skill(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            descriptor = _write_fake_descriptor(root, "demo")
+            guide = descriptor.skill_dir / "references" / "guide.md"
+            guide.parent.mkdir()
+            guide.write_text("# Guide\nLinked text.\n", encoding="utf-8")
+            outside = root / "outside.md"
+            outside.write_text("private\n", encoding="utf-8")
+            (descriptor.skill_dir / "escape.md").symlink_to(outside)
+            (descriptor.skill_dir / "data.json").write_text("{}\n", encoding="utf-8")
+
+            with mock.patch.object(discovery, "list_skills", return_value=[descriptor]):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(skills_cli.main(["show", descriptor.name, "references/guide.md"]), 0)
+                self.assertEqual(output.getvalue(), "# Guide\nLinked text.\n")
+
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(
+                        skills_cli.main(["show", descriptor.name, "references/guide.md", "--json"]), 0,
+                    )
+                self.assertEqual(json.loads(output.getvalue()), {
+                    "name": descriptor.name,
+                    "file": "references/guide.md",
+                    "text": "# Guide\nLinked text.\n",
+                })
+
+                for file_name in ("../outside.md", str(outside), "escape.md"):
+                    with self.subTest(file=file_name), self.assertRaisesRegex(AstridError, "skill file"):
+                        skills_cli.main(["show", descriptor.name, file_name])
+                with self.assertRaisesRegex(AstridError, "skill file must be one of"):
+                    skills_cli.main(["show", descriptor.name, "data.json"])
+                with self.assertRaisesRegex(AstridError, "does not exist"):
+                    skills_cli.main(["show", descriptor.name, "missing.md"])
 
     def test_claude_target_for_core_uses_astrid_path(self) -> None:
         fx = _Tmp()
