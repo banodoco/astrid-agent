@@ -36,7 +36,10 @@ function dshFixtureEnv(directory: string, credentials?: string): NodeJS.ProcessE
 }
 
 function testEnv(shell: string, ownPath: string, loginPath = ownPath): NodeJS.ProcessEnv {
-  return { ...process.env, ...dshFixtureEnv(ownPath), PATH: ownPath, SHELL: shell, ASTRID_TEST_LOGIN_PATH: loginPath };
+  // ASTRID_STATE_HOME is isolated as well: the launch seeds the harness's
+  // instance home there, and a test must never seed into a developer's real
+  // state directory (that is how fixture credentials could reach a live agent).
+  return { ...process.env, ...dshFixtureEnv(ownPath), ASTRID_STATE_HOME: join(ownPath, '.state'), PATH: ownPath, SHELL: shell, ASTRID_TEST_LOGIN_PATH: loginPath };
 }
 
 test('Astrid sign-in line uses absolute OS-specific launcher syntax and quotes custom roots', () => {

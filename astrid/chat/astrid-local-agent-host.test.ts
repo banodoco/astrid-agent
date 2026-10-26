@@ -163,7 +163,7 @@ test('external ACP bridge namespaces sessions and routes context, permissions, a
     idFactory: () => `connection-${++nextConnection}`,
     localAgentHostFactory: (agent, options) => createLocalAgentAcpProcessHost(agent, {
       ...options,
-      env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
+      env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome, ASTRID_STATE_HOME: join(directory, 'state') },
       profileFileForCommand: () => f.profile,
     }),
   });
@@ -304,7 +304,7 @@ test('dsh opens saved chats by resuming, because the harness answers -32601 to s
   const f = fixture(directory);
   const host = await createLocalAgentAcpProcessHost('dsh', {
     cwd: f.cwd,
-    env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
+    env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome, ASTRID_STATE_HOME: join(directory, 'state') },
     profileFileForCommand: () => f.profile,
   });
   try {
@@ -335,7 +335,7 @@ for (const agent of EXTERNAL_AGENT_IDS) {
     const f = fixture(directory);
     const host = await createLocalAgentAcpProcessHost(agent, {
       cwd: f.cwd,
-      env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
+      env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome, ASTRID_STATE_HOME: join(directory, 'state') },
       profileFileForCommand: () => f.profile,
       agentContextForCommand: async () => '<astrid_agent_context>\nPREFS_SENTINEL\n</astrid_agent_context>\n',
       callbacks: { requestPermission: () => ({ outcome: { outcome: 'cancelled' } }) },
@@ -418,7 +418,7 @@ for (const agent of ['codex', 'hermes'] as const) {
       idFactory: () => `c${++nextConnection}`,
       localAgentHostFactory: async (selected, options) => {
         const host = await createLocalAgentAcpProcessHost(selected, {
-          ...options, env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
+          ...options, env: { ...options.env, PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome, ASTRID_STATE_HOME: join(directory, 'state') },
           profileFileForCommand: () => f.profile,
         });
         const nativeRequest = host.request.bind(host);
@@ -480,7 +480,7 @@ for (const [label, agentContextForCommand] of [
       const f = fixture(directory);
       const host = await createLocalAgentAcpProcessHost(agent, {
         cwd: f.cwd,
-        env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome },
+        env: { PATH: f.bin, SHELL: f.shell, ASTRID_TEST_LOGIN_PATH: f.bin, DSH_HOME: f.dshHome, ASTRID_STATE_HOME: join(directory, 'state') },
         profileFileForCommand: () => f.profile,
         agentContextForCommand,
         callbacks: { requestPermission: () => ({ outcome: { outcome: 'cancelled' } }) },

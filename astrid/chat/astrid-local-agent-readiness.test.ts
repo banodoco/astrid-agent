@@ -21,7 +21,7 @@ for (const agent of EXTERNAL_AGENT_IDS) {
     executable(shell, `#!/bin/sh\nprintf '\\n__ASTRID_LOGIN_PATH__%s\\n' "$ASTRID_TEST_LOGIN_PATH"\n`);
     const dshHome = join(directory, 'dsh-home');
     mkdirSync(dshHome, { recursive: true });
-    const options = { cwd: directory, env: { PATH: bin, SHELL: shell, ASTRID_TEST_LOGIN_PATH: bin, DSH_HOME: dshHome } };
+    const options = { cwd: directory, env: { PATH: bin, SHELL: shell, ASTRID_TEST_LOGIN_PATH: bin, DSH_HOME: dshHome, ASTRID_STATE_HOME: join(directory, 'state') } };
     const { bridge } = createAstridAcpHttpServer({
       config: { token: 'readiness', cwd: directory, port: 0 },
       localAgentHostFactory: (id, launchOptions) => createLocalAgentAcpProcessHost(id, { ...launchOptions, ...options }),
