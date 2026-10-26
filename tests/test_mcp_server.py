@@ -37,6 +37,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _tools(monkeypatch):
     monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"things": _parser()})
+    monkeypatch.setattr(mcp_server, "TOOL_SOURCES", {})
     return mcp_server.build_tools()
 
 
@@ -75,7 +76,7 @@ def test_preference_writes_are_not_exposed(monkeypatch):
     for verb in ("checkin", "edit", "context"):
         sub.add_parser(verb)
     monkeypatch.setattr(mcp_server, "family_parsers", lambda: {"preferences": parser})
-    assert sorted(mcp_server.build_tools()) == ["preferences_context"]
+    assert sorted(mcp_server.build_tools()) == ["preferences_context", "skills_list", "skills_show"]
 
 
 def test_protocol_handshake_and_errors(monkeypatch):
@@ -92,10 +93,17 @@ def test_protocol_handshake_and_errors(monkeypatch):
     json.dumps(listed)
 
 
-def test_frontmatter_handles_quotes_and_folded_values():
-    meta, body = mcp_server._frontmatter('---\nname: "astrid"\ndescription: >\n  Two\n  lines.\n---\nBody\n')
-    assert meta == {"name": "astrid", "description": "Two lines."}
-    assert body == "Body\n"
+def test_prompts_follow_skill_discovery(monkeypatch):
+    from astrid.skills.discovery import SkillDescriptor
+
+    skill = SkillDescriptor(
+        "demo", "demo-skill", "A demo.", "Demo", Path("/demo"), Path("/demo/SKILL.md"), body="\n# Demo\n",
+    )
+    monkeypatch.setattr(mcp_server.skills_discovery, "list_skills", lambda: [skill])
+    prompts = mcp_server.build_prompts()
+    assert list(prompts) == ["demo-skill"]
+    assert prompts["demo-skill"]["definition"]["description"] == "A demo."
+    assert prompts["demo-skill"]["text"] == "# Demo"
 
 
 def _json_and_file_parser() -> argparse.ArgumentParser:
@@ -175,13 +183,28 @@ def test_file_arguments_travel_as_text(monkeypatch, tmp_path):
     assert outputs == {"file": tmp_path / "file.out"} and not outputs["file"].exists()
 
 
-def test_skills_are_tools_too():
-    state = {"prompts": {"vibecomfy": {"definition": {"name": "vibecomfy", "description": "ComfyUI"}, "text": "Body"}}}
-    tools = mcp_server._extra_tools()
-    listed = mcp_server.call_tool(tools["skills_list"], {}, state)
-    assert listed["structuredContent"]["skills"] == [{"name": "vibecomfy", "description": "ComfyUI"}]
-    assert mcp_server.call_tool(tools["skill_get"], {"name": "vibecomfy"}, state)["content"][0]["text"] == "Body"
-    assert mcp_server.call_tool(tools["skill_get"], {"name": "nope"}, state)["isError"] is True
+def test_skills_are_cli_tools_and_show_runs_the_cli(monkeypatch):
+    monkeypatch.setattr(mcp_server, "family_parsers", lambda: {})
+    tools = mcp_server.build_tools()
+    assert sorted(tools) == ["skills_list", "skills_show"]
+    show = tools["skills_show"]
+    assert show["definition"]["inputSchema"]["required"] == ["name"]
+    assert show["definition"]["inputSchema"]["properties"] == {
+        "name": {"type": "string", "description": "Skill name from list."},
+    }
+
+    calls = []
+
+    def fake_run(argv, cwd):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='{"name":"vibecomfy","description":"ComfyUI","text":"Body"}', stderr="",
+        )
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    result = mcp_server.call_tool(show, {"name": "vibecomfy"})
+    assert calls[0][-3:] == ["show", "vibecomfy", "--json"]
+    assert result["structuredContent"] == {"name": "vibecomfy", "description": "ComfyUI", "text": "Body"}
 
 
 def test_timeline_document_verbs_are_generated_and_checkout_returns_file(monkeypatch):

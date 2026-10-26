@@ -10,7 +10,7 @@ python -m astrid.mcp_server
 Configure your MCP client to start that command as a stdio server. It exposes
 the product CLI commands generated from Astrid's argparse parsers, an `invoke`
 tool for admitting capability runs, and pack skills as MCP prompts. The skills
-are also available through the `skills_list` and `skill_get` tools.
+are also available through the generated `skills_list` and `skills_show` tools.
 
 The VibeComfy pack parser adds `comfy_scan` and `comfy_import_workflow`, which
 run `python -m astrid.packs.vibecomfy.local scan` and

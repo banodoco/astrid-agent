@@ -38,6 +38,7 @@ class SkillDescriptor:
     skill_dir: Path
     skill_md: Path
     hermes_metadata: dict = field(default_factory=dict)
+    body: str = ""
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -136,6 +137,7 @@ def _try_add_skill(
             skill_dir=skill_md.parent,
             skill_md=skill_md,
             hermes_metadata=hermes_meta,
+            body=body,
         )
     )
     return True

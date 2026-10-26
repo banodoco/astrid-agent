@@ -597,6 +597,7 @@ def list_state(*, state_path: Path | None = None) -> dict:
             {
                 "pack_id": descriptor.pack_id,
                 "name": descriptor.name,
+                "description": descriptor.description,
                 "short_description": descriptor.short_description,
                 "harnesses": per_harness,
             }

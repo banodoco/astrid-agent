@@ -10,6 +10,7 @@ from astrid.core.cli_choices import RecoverableArgumentParser, add_choice_arg
 from astrid.core.contracts.errors import AstridError
 
 from . import check as check_fn
+from . import discovery
 from . import doctor as doctor_fn
 from . import install as install_fn
 from . import list_state
@@ -44,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list", help="List installable packs and per-harness install state.")
     list_parser.add_argument("--json", action="store_true")
     list_parser.set_defaults(handler=_cmd_list)
+
+    show_parser = subparsers.add_parser("show", help="Show one skill.")
+    show_parser.add_argument("name", help="Skill name from list.")
+    show_parser.add_argument("--json", action="store_true")
+    show_parser.set_defaults(handler=_cmd_show)
 
     install_parser = subparsers.add_parser("install", help="Install pack(s) into harness(es).")
     install_parser.add_argument("pack", nargs="?", help="Pack id, or omit with --all.")
@@ -118,6 +124,18 @@ def _cmd_list(args: argparse.Namespace) -> int:
                 mark = " "
             states.append(f"{harness}[{mark}]")
         print(f"  {item['pack_id']:<12} {' '.join(states)}  {item['short_description']}")
+    return 0
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    descriptor = next((skill for skill in discovery.list_skills() if skill.name == args.name), None)
+    if descriptor is None:
+        raise KeyError(f"no skill named {args.name!r}")
+    text = descriptor.body.strip()
+    if args.json:
+        print(json.dumps({"name": descriptor.name, "description": descriptor.description, "text": text}, indent=2))
+    else:
+        print(text)
     return 0
 
 

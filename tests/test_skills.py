@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import unittest
 from pathlib import Path
@@ -81,6 +82,26 @@ def _write_fake_descriptor(root: Path, pack_id: str) -> discovery.SkillDescripto
 
 
 class AdapterPlanTest(unittest.TestCase):
+    def test_cli_list_json_has_name_and_description_and_show_prints_body(self) -> None:
+        with mock.patch.object(skills_cli, "list_state", return_value={
+            "detected": [], "packs": [{"name": "demo", "description": "Demo skill."}],
+        }), mock.patch("builtins.print") as print_output:
+            self.assertEqual(skills_cli.main(["list", "--json"]), 0)
+            listed = json.loads(print_output.call_args.args[0])
+        self.assertEqual(listed["packs"][0]["name"], "demo")
+        self.assertEqual(listed["packs"][0]["description"], "Demo skill.")
+
+        descriptor = next(item for item in discovery.list_skills() if item.name == "vibecomfy")
+        with mock.patch("builtins.print") as print_output:
+            self.assertEqual(skills_cli.main(["show", "vibecomfy"]), 0)
+            self.assertEqual(print_output.call_args.args[0], descriptor.body.strip())
+        with mock.patch("builtins.print") as print_output:
+            self.assertEqual(skills_cli.main(["show", "vibecomfy", "--json"]), 0)
+            shown = json.loads(print_output.call_args.args[0])
+        self.assertEqual(shown, {
+            "name": "vibecomfy", "description": descriptor.description, "text": descriptor.body.strip(),
+        })
+
     def test_claude_target_for_core_uses_astrid_path(self) -> None:
         fx = _Tmp()
         try:

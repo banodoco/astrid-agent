@@ -41,6 +41,8 @@ from astrid.core.cli.argtypes import (
 )
 from astrid.core.cli.domain_product import family_parsers
 from astrid.packs.vibecomfy import local as vibecomfy_local
+from astrid.skills import cli as skills_cli
+from astrid.skills import discovery as skills_discovery
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 EXCLUDED = {
@@ -48,9 +50,14 @@ EXCLUDED = {
     ("preferences", "edit"),
     ("tasks", "follow"),
     ("comfy", "pack-images"),
+    ("skills", "install"),
+    ("skills", "uninstall"),
+    ("skills", "sync"),
+    ("skills", "doctor"),
 }
 TIMEOUT = float(os.environ.get("ASTRID_MCP_TIMEOUT", "900"))
 TOOL_SOURCES = {
+    "skills": (skills_cli.build_parser, ("astrid-tools", "skills")),
     "comfy": (
         vibecomfy_local.build_parser,
         (sys.executable, "-m", "astrid.packs.vibecomfy.local"),
@@ -276,15 +283,6 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess | dict[str, 
 
 def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
     kind = tool.get("kind", "cli")
-    if kind == "skills_list":
-        skills = [{"name": p["definition"]["name"], "description": p["definition"]["description"]}
-                  for p in (state or {}).get("prompts", {}).values()]
-        return _text(json.dumps(skills, indent=1), structured={"skills": skills})
-    if kind == "skill_get":
-        prompt = (state or {}).get("prompts", {}).get(arguments.get("name"))
-        if prompt is None:
-            return _text(f"unknown skill {arguments.get('name')!r}; see skills_list", error=True)
-        return _text(prompt["text"])
     with tempfile.TemporaryDirectory(prefix="astrid-mcp-") as scratch:
         workdir = Path(scratch)
         if kind == "invoke":
@@ -356,16 +354,11 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
                             "additionalProperties": False},
         }, **extra}
     return dict([
-        tool("skills_list", "List Astrid's pack skills (name and when to use each).", {}, [],
-             kind="skills_list"),
-        tool("skill_get", "Read one Astrid skill (SKILL.md) before multi-step work in its area.",
-             {"name": {"type": "string", "description": "Skill name from skills_list."}}, ["name"],
-             kind="skill_get"),
         tool("invoke",
              "Admit one capability run (an executor or orchestrator, e.g. vibecomfy.run or "
              "generation.generate_video), the way Astrid's own agent does. Returns after admission "
              "with the task id; poll it with tasks_show. Render runs detached, so poll its task the same way. "
-             "Read the capability's skill (skill_get) for its inputs first.",
+             "Read the capability's skill (skills_show) for its inputs first.",
              {"capability_id": {"type": "string", "description": "Capability id, e.g. vibecomfy.run."},
               "kind": {"type": "string", "enum": ["executor", "orchestrator"],
                        "description": "Capability kind (default executor)."},
@@ -376,41 +369,15 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
     ])
 
 
-# --- prompts from pack skills -----------------------------------------------
-
-def _frontmatter(text: str) -> tuple[dict[str, str], str]:
-    if not text.startswith("---\n"):
-        return {}, text
-    head, _, body = text[4:].partition("\n---\n")
-    meta: dict[str, str] = {}
-    key = None
-    for line in head.splitlines():
-        match = re.match(r"^([A-Za-z_-]+):\s*(.*)$", line)
-        if match:
-            key, value = match[1], match[2].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            meta[key] = "" if value in (">", "|", ">-", "|-") else value
-        elif key and line.startswith((" ", "\t")):
-            meta[key] = (meta[key] + " " + line.strip()).strip()
-    return meta, body
-
+# --- prompts from the skill loader ---------------------------------------
 
 def build_prompts() -> dict[str, dict[str, Any]]:
-    import astrid
-
-    packs = Path(astrid.__file__).resolve().parent / "packs"
     prompts: dict[str, dict[str, Any]] = {}
-    for path in sorted(packs.rglob("SKILL.md")):
-        if any(part in {"tests", "fixtures"} for part in path.parts):
-            continue
-        meta, body = _frontmatter(path.read_text(encoding="utf-8"))
-        name = re.sub(r"[^A-Za-z0-9_-]+", "-", meta.get("name") or "").strip("-")
-        if not name or name in prompts:
-            name = re.sub(r"[^A-Za-z0-9_-]", "-", "-".join(path.relative_to(packs).parts[:-1]))
+    for skill in skills_discovery.list_skills():
+        name = skill.name
         prompts[name] = {"definition": {"name": name, "title": f"Astrid skill: {name}",
-                                        "description": meta.get("description", "")[:1000], "arguments": []},
-                         "text": body.strip()}
+                                        "description": skill.description[:1000], "arguments": []},
+                         "text": skill.body.strip()}
     return prompts
 
 
@@ -431,8 +398,8 @@ def handle(message: dict[str, Any], state: dict[str, Any]) -> dict[str, Any] | N
             "capabilities": {"tools": {"listChanged": False}, "prompts": {"listChanged": False}},
             "serverInfo": {"name": "astrid", "title": "Astrid", "version": "0.1.0"},
             "instructions": ("Astrid's product commands (projects, documents, media, tasks, runs, timelines, "
-                             "preferences) as tools; each returns Astrid's JSON envelope. Load the matching "
-                             "Astrid skill prompt (e.g. creative-work, vibecomfy) before multi-step work."),
+                             "preferences, skills, comfy) as tools; each returns Astrid's JSON envelope. Load "
+                             "the matching Astrid skill prompt before multi-step work; use skills_show to read one."),
         })
     if method == "ping":
         return ok({})
