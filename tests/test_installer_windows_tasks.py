@@ -13,7 +13,7 @@ from astrid.installer.service import Service
 pytestmark = pytest.mark.windows_installer
 
 
-@pytest.mark.parametrize("operation", ["disable", "stop", "unregister"])
+@pytest.mark.parametrize("operation", ["stop", "unregister"])
 @pytest.mark.parametrize("scenario", ["absent", "present", "lookup_failure", "action_failure"])
 def test_task_cleanup_preserves_powershell_success_and_failure(tmp_path, operation, scenario):
     powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
@@ -57,6 +57,25 @@ def test_task_cleanup_preserves_powershell_success_and_failure(tmp_path, operati
     else:
         getattr(manager, operation)()
     assert invocations
+
+
+def test_disable_preserves_saved_task_registration_and_autostart_choice(tmp_path):
+    calls = []
+    manager = Service(tmp_path / "program", tmp_path / "log",
+                      lambda argv: calls.append(argv) or "", home=tmp_path, system="win32")
+    manager.path.parent.mkdir(parents=True, exist_ok=True)
+    manager.path.write_text("registered task", encoding="utf-8")
+    manager.selection = tmp_path / "astrid-install.json"
+    manager.selection.write_text(
+        '{"owner":"haus.astrid.runtime","preferences":{"autostart":true}}',
+        encoding="utf-8",
+    )
+
+    manager.disable()
+
+    assert calls == []
+    assert manager.path.read_text(encoding="utf-8") == "registered task"
+    assert '"preferences":{"autostart":true}' in manager.selection.read_text(encoding="utf-8")
 
 
 def test_register_scheduled_task_accepts_rendered_xml_string(tmp_path, monkeypatch):

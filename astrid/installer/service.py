@@ -9,7 +9,6 @@ import plistlib
 import subprocess
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -110,7 +109,9 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
     if system == "darwin":
         return plistlib.dumps({
             "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
-            "KeepAlive": True, "ExitTimeOut": 90,
+            # KeepAlive's SuccessfulExit condition is false: launchd respawns
+            # crashes, while an orderly Runtime exit stays stopped.
+            "KeepAlive": {"SuccessfulExit": False}, "ExitTimeOut": 90,
             "EnvironmentVariables": version.env,
             "StandardOutPath": str(log), "StandardErrorPath": str(log),
         }, sort_keys=True).decode("utf-8")
@@ -118,7 +119,7 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
         executable = " ".join(systemd_quote(s).replace("$", "$$") for s in argv)
         environment = "".join("Environment=" + systemd_quote(k + "=" + v) + "\n" for k, v in sorted(version.env.items()))
         return ("[Unit]\nDescription=Astrid Runtime\n\n[Service]\n"
-                f"ExecStart={executable}\n{environment}Restart=always\nRestartSec=5\n"
+                f"ExecStart={executable}\n{environment}Restart=on-failure\nRestartSec=5\n"
                 "KillMode=mixed\nTimeoutStopSec=90\n"
                 f"StandardOutput={systemd_quote('append:' + str(log))}\n"
                 f"StandardError={systemd_quote('append:' + str(log))}\n"
@@ -126,13 +127,12 @@ def render(system: str, version: Version, data: Path, log: Path, *, user: str = 
     if system != "win32":
         raise ValueError(f"Unsupported operating system: {system}")
     arguments = subprocess.list2cmdline(argv[1:])
-    start_boundary = datetime.now().astimezone().isoformat(timespec="seconds")
     # Register-ScheduledTask's -Xml parameter receives a PowerShell string,
     # not encoded bytes. An encoding declaration makes Task Scheduler reject
     # that string because PowerShell cannot provide the declared byte encoding.
     return f'''<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Astrid Runtime</Description></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><UserId>{escape(user)}</UserId></LogonTrigger><TimeTrigger><Enabled>true</Enabled><StartBoundary>{escape(start_boundary)}</StartBoundary><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger></Triggers>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{escape(user)}</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Owner"><UserId>{escape(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
@@ -257,23 +257,27 @@ class Service:
     def disable(self) -> None:
         if self.system == "darwin":
             if self.path.exists():
-                # bootout both disables KeepAlive and waits for the foreground owner.
+                # This runs in the post-fence stop callback. Unload the job for
+                # this GUI session, but retain its LaunchAgents plist so
+                # launchd can honor the saved autostart choice next login.
                 target = f"gui/{platform.current_user()}/{LABEL}"
                 try:
                     self.run(["launchctl", "print", target])
                 except subprocess.CalledProcessError as exc:
                     if "Could not find service" not in str(exc.output) and "Could not find specified service" not in str(exc.output):
                         raise
-                    return  # A missing/unloaded login item is already stopped.
+                    return  # Already unloaded after an orderly Runtime stop.
                 self.run(["launchctl", "bootout", target])
-        elif self.system == "linux":
+            return
+        if self.system == "linux":
             available = self.systemd()
             if getattr(self, "_validated_systemd_stop", False) and not available:
                 raise RuntimeError("The validated systemd manager is no longer available.")
-            if available and self.path.exists():
-                self.run(["systemctl", "--user", "disable", "astrid.service"])
-        else:
-            self.powershell(TASK_QUERY + "if ($t) { $t | Disable-ScheduledTask | Out-Null }")
+            # Do not disable the unit: an orderly Runtime exit plus systemctl
+            # stop below preserves its saved enablement for the next login.
+            return
+        # Linux systemctl stop and Windows Stop-ScheduledTask stop the current
+        # invocation without changing whether the service starts at sign-in.
 
     def stop_foreground(self) -> None:
         """Legacy entry point: Runtime owns unpublished-child stop authority."""

@@ -7,7 +7,7 @@ Environment="ASTRID_INSTALL_MANAGED_BY="
 Environment="ASTRID_INSTALL_RELEASE=0"
 Environment="PATH=/astrid/tools:/usr/bin:/bin"
 Environment="PYTHONUTF8=1"
-Restart=always
+Restart=on-failure
 RestartSec=5
 KillMode=mixed
 TimeoutStopSec=90
