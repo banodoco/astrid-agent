@@ -14,10 +14,10 @@ import pytest
 from runtime_protocol.door import DEFAULT_DOOR_PORT
 
 from astrid.core.util import process as _process
+from astrid.installer import launcher
 from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, VerificationError, Version, write_json
 from astrid.installer.launcher import install
-from astrid.installer import launcher
 
 
 def test_absolute_launcher_works_with_clean_home_and_unchanged_path(tmp_path):
@@ -125,7 +125,7 @@ def test_generated_runner_windows_handoff_waits_and_keeps_argv_and_environment(t
 
 
 def test_generated_windows_launcher_sets_utf8_before_isolation(tmp_path, monkeypatch):
-    monkeypatch.setattr(launcher, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(launcher, "os", SimpleNamespace(name="nt", fdopen=os.fdopen, fsync=os.fsync))
     root = tmp_path / "Astrid Program"
     root.mkdir()
     generated, _runner = install(root)

@@ -984,9 +984,10 @@ class Backend:
     def restart_required(self) -> bool:
         return self.service.restart_required()
 
-    def verify(self, version: Version, data: Path, realm_id: str, *, timeout: float = 90) -> None:
+    def verify(self, version: Version, data: Path, realm_id: str, *, timeout: float = 90,
+               hosted: bool = True) -> None:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        port = int(version.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)))
+        port = int(version.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))) if hosted else None
         deadline = time.monotonic() + timeout
         error = None
         identity_ok = False
@@ -995,16 +996,18 @@ class Backend:
                 status = self.runtime(version, data, "status", timeout=3)
                 discovery = read_json(data / "runtime" / "discovery.json")
                 endpoint = discovery.get("door_endpoint", "")
-                if endpoint != f"http://127.0.0.1:{port}":
+                if hosted and endpoint != f"http://127.0.0.1:{port}":
                     raise ValueError("Astrid's recorded door is not on the configured loopback port.")
 
                 def get(path):
+                    if not hosted:
+                        return self.runtime(version, data, "status", timeout=3).get("health", {})
                     request = urllib.request.Request(endpoint + path, headers={"Origin": "https://astrid.haus"})
                     with opener.open(request, timeout=2) as response:
                         return json.load(response)
 
-                health = get("/api/runtime/v1/health")
-                realm = get("/api/runtime/v1/realm")
+                health = get("/api/runtime/v1/health") if hosted else status.get("health", {})
+                realm = get("/api/runtime/v1/realm") if hosted else {"realm_id": discovery.get("active_realm")}
                 services = health.get("services", [])
                 if (health.get("status") != "ok" or realm.get("realm_id") != realm_id
                         or discovery.get("active_realm") != realm_id

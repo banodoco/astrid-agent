@@ -178,6 +178,12 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
     return value
 
 
+def update_required(mode: str, manifest: dict, old: Version) -> bool:
+    """C2b numeric dispatch, shared by service and foreground adapters."""
+    release = install_release(manifest)
+    return mode == "update" or release > old.release
+
+
 def current(root: Path, *, managed_by: str | None = None) -> Version | None:
     pointer = root / "current"
     if not pointer.exists():
@@ -470,6 +476,12 @@ class Installer:
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
+        if (self.managed_by == "pinokio" and mode in {"install", "update"}
+                and current(self.root) is not None):
+            from .app_update import update_pinokio
+
+            return update_pinokio(self.root, self.backend, manifest, say=self.say,
+                                  force=mode == "update")
         # App updates use the same durable journal but have a separate entry
         # point. Serialize operations that recover or write that journal. Doctor
         # and uninstall do not run journal recovery; a first install has no
@@ -493,8 +505,7 @@ class Installer:
         # only after journal recovery and after resolving the active owner;
         # explicit ``update`` remains the forced restage operation.
         if old is not None and mode not in {"doctor", "uninstall"}:
-            candidate_release = install_release(manifest)
-            if mode != "update" and candidate_release > old.release:
+            if update_required(mode, manifest, old):
                 mode = "update"
         if mode == "doctor":
             if old is None:

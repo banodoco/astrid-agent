@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import runpy
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -204,6 +205,108 @@ def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path
         foreground._run(root, [], "linux", 123)
 
 
+@pytest.mark.parametrize("binding", ["matching", "wrong-operation"])
+def test_foreground_binds_migration_journal_to_exact_retained_session(
+        tmp_path, monkeypatch, binding):
+    root, data, version = _installation(tmp_path)
+    operation_id = "1" * 32
+    transaction = {
+        "format": "astrid-install-update/v1", "operation_id": operation_id,
+        "transaction_kind": "migration", "step": "migrated", "data_root": str(data),
+        "old": version.document(), "candidate": version.document(),
+        "launch_intent": {
+            "operation_id": operation_id, "purpose": "pinokio_start", "version": version.document(),
+        },
+    }
+    write_json(root / "update-transaction.json", transaction)
+    monkeypatch.setenv(
+        "ASTRID_INSTALLER_OPERATION_ID", operation_id if binding == "matching" else "2" * 32,
+    )
+
+    class ExecCalled(Exception):
+        pass
+
+    monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: (_ for _ in ()).throw(ExecCalled()))
+    with (tmp_path / "installer.lock").open("a+b") as lock:
+        if binding == "wrong-operation":
+            with pytest.raises(ValueError, match="does not match the pending app update"):
+                foreground._run(root, [], "linux", lock.fileno())
+        else:
+            with pytest.raises(ExecCalled):
+                foreground._run(root, [], "linux", lock.fileno())
+
+
+@pytest.mark.parametrize("kind", ["app", "migration"])
+@pytest.mark.parametrize("binding", [
+    "matching", "wrong-operation", "invalid-operation", "wrong-intent-operation",
+    "wrong-data", "wrong-purpose", "wrong-version", "complete", "unbound",
+])
+def test_generated_foreground_retains_exact_admission_across_rollback(
+        tmp_path, monkeypatch, kind, binding):
+    root, data, version = _installation(tmp_path)
+    operation_id = "a" * 32
+    transaction = {
+        "operation_id": operation_id, "transaction_kind": kind,
+        "step": "rollback_selected", "data_root": str(data),
+        "old": version.document(), "candidate": version.document(),
+        "launch_intent": {
+            "operation_id": operation_id, "purpose": "pinokio_start",
+            "version": version.document(),
+        },
+    }
+    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", operation_id)
+    if binding == "wrong-operation":
+        monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "b" * 32)
+    elif binding == "invalid-operation":
+        monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "invalid")
+    elif binding == "wrong-intent-operation":
+        transaction["launch_intent"]["operation_id"] = "b" * 32
+    elif binding == "wrong-data":
+        transaction["data_root"] = str(data / "other")
+    elif binding == "wrong-purpose":
+        transaction["launch_intent"]["purpose"] = "service_start"
+    elif binding == "wrong-version":
+        transaction["launch_intent"]["version"]["identity"]["release"] += 1
+    elif binding == "complete":
+        transaction["step"] = "complete"
+    elif binding == "unbound":
+        monkeypatch.delenv("ASTRID_INSTALLER_OPERATION_ID")
+    write_json(root / "update-transaction.json", transaction)
+    launcher.install(root)
+
+    # The selected package's launch entry may predate the transaction kind.
+    # The generated entry must retain admission without importing that entry.
+    def obsolete_launch(*_args, **_kwargs):
+        raise AssertionError("selected package foreground entry was imported")
+
+    monkeypatch.setattr(foreground, "launch", obsolete_launch)
+    monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py"), "--hosted-origin", "off"])
+    observed = []
+
+    class ExecCalled(Exception):
+        pass
+
+    def capture(_file, arguments, environment):
+        observed.append((arguments, environment))
+        raise ExecCalled
+
+    monkeypatch.setattr(os, "execvpe", capture)
+    if binding == "matching":
+        with pytest.raises(ExecCalled):
+            runpy.run_path(str(root / "run_runtime.py"))
+        arguments, environment = observed[0]
+        assert arguments[0] == str(version.python)
+        assert _runtime_args(arguments) == [
+            "run", "--profile", "astrid", "--data-root", str(data),
+            "--source-manifest", str(version.profile), "--hosted-origin", "off",
+        ]
+        assert environment["ASTRID_INSTALLER_OPERATION_ID"] == operation_id
+    else:
+        with pytest.raises(ValueError, match="binding|Recover the interrupted update"):
+            runpy.run_path(str(root / "run_runtime.py"))
+        assert observed == []
+
+
 def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, data, first = _installation(tmp_path, "v1")
     second_root = root / "versions" / "v2"
@@ -246,3 +349,36 @@ def test_run_renderings_keep_arguments_and_windows_console_owner(tmp_path):
     assert '"%ASTRID_PROGRAM_ROOT%versions\\%ASTRID_VERSION%\\py\\Scripts\\python.exe" -X utf8 -I "%ASTRID_PROGRAM_ROOT%run_runtime.py" %*' in windows
     assert 'exit /b %errorlevel%' in windows
     assert 'pythonw' not in windows and 'start ' not in windows.lower()
+
+
+def test_publish_runtime_runner_fsyncs_before_atomic_replace_and_preserves_wrappers(tmp_path, monkeypatch):
+    from runtime_protocol import platform
+
+    root, _data, _version = _installation(tmp_path)
+    launcher.install(root)
+    wrappers = {path: path.read_bytes() for path in root.iterdir() if path.is_file()}
+    runner = root / "run_runtime.py"
+    runner.write_text("# obsolete admission\n")
+    events = []
+    fsync, replace = os.fsync, platform.durable_replace
+
+    def flushed(fd):
+        events.append("fsync")
+        fsync(fd)
+
+    def publish(source, target):
+        assert events == ["fsync"]
+        assert source.parent == root
+        assert target == runner
+        assert runner.read_text() == "# obsolete admission\n"
+        compile(source.read_text(), str(source), "exec")
+        replace(source, target)
+        events.append("replaced")
+
+    monkeypatch.setattr(os, "fsync", flushed)
+    monkeypatch.setattr(platform, "durable_replace", publish)
+    assert launcher.publish_runtime_runner(root) == runner
+    assert events[-1] == "replaced"
+    assert runner.read_bytes() == wrappers.pop(runner)
+    assert all(path.read_bytes() == content for path, content in wrappers.items())
+    assert list(root.glob(".run_runtime.py.*")) == []

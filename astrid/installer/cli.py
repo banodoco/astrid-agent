@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import sys
 import traceback
@@ -75,28 +76,31 @@ def main(argv: list[str] | None = None) -> int:
         uv = args.uv or Path(os.environ.get("ASTRID_INSTALL_UV", bootstrap_root(Path.home(), sys.platform) / ("uv.exe" if sys.platform == "win32" else "uv")))
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log, uv, process_control=process_control)
-        if args.update_app:
-            from .app_update import selection, update_app
+        marker = read_json(root / "install.json")
+        if (args.update_app or (mode in {"install", "update"} and args.root
+                and marker.get("managed_by") == "pinokio")):
+            from .app_update import recover_app, selection, update_app, update_pinokio
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
-            # Only the shared app transaction may pass this initial ownership
-            # read; update_app will recover it under the app-update lock.
-            selection(root, backend, allow_transaction=(
-                bool(pending) and pending.get("transaction_kind") == "app"))
+            # The session holds the lifetime installer lock. The shared update
+            # adapter serializes the journal separately and takes that lock
+            # only for pointer writes, then hands it to its bound foreground.
+            selection(root, backend, allow_transaction=bool(pending))
             if pending and pending.get("step") not in {"complete", "rolled_back"}:
-                if pending.get("transaction_kind") != "app":
-                    raise ValueError("Finish recovering the interrupted migration update through the regular installer.")
-                from .app_update import recover_app
-
                 recover_app(root, backend)
                 return 0
+            backend.preflight_stop(absolute(marker["data_root"]))
             if not uv.is_absolute() or not uv.is_file():
                 raise ValueError("Run the install line to provide the pinned user-local uv.")
             manifest_path = args.manifest or root / "install-manifest.json"
             if not args.manifest:
                 download("https://astrid.haus/install-manifest.json", manifest_path)
-            update_app(root, backend, validate_manifest(read_json(manifest_path)))
+            manifest = validate_manifest(read_json(manifest_path))
+            if args.update_app:
+                update_app(root, backend, manifest)
+            else:
+                update_pinokio(root, backend, manifest, force=args.update)
             return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)
@@ -256,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         print(FAILURE_MESSAGE)
         if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
             print(str(failure))
+            if isinstance(failure, RuntimeOperationError) and failure.details is not None:
+                print(json.dumps(failure.details, ensure_ascii=False))
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
         print(f"Details: {log}")
