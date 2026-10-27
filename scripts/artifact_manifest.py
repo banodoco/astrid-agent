@@ -24,6 +24,7 @@ PATTERNS = [
     "schemas/public-boundary/**/*.json",
     "schemas/public-boundary/README.md",
     "LICENSE",
+    "NOTICE",
     TOOL_CATALOG,
     "astrid/packs/rendering/elements/catalog.ts",
     "astrid/packs/local/rendering/elements/**/*.ts",

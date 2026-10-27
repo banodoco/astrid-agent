@@ -1,6 +1,7 @@
 {
   "name": "astrid-workspace",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Build tooling for the Astrid agent chat service.",
   "type": "module",
   "_private_packages": {

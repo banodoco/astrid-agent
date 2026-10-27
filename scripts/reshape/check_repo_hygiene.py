@@ -24,6 +24,7 @@ ROOT_FILE_ALLOWLIST = {
     ".gitignore",
     ".node-version",
     "LICENSE",
+    "NOTICE",
     "Makefile",
     "README.md",
     "package.json",

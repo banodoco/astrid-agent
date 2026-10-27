@@ -1,6 +1,7 @@
 {
   "artifacts": {
-    "LICENSE": "sha256:d4b2605d17cc8f84c757f3698b2660ab1382adeee76e9a31b13d7b0d8b37e3a7",
+    "LICENSE": "sha256:cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "NOTICE": "sha256:31de35a094bb895649d6a691bf4895aa6be98a5e35fd3c537eac5ea0c64b2979",
     "astrid/packs/astrid_motion/rendering/elements/_shared/am.tsx": "sha256:b62a5bee94258f8ab260e272b7f4b2abf2c976bf3ee22e06f2a1bd0846f34618",
     "astrid/packs/astrid_motion/rendering/elements/_shared/mosaic.tsx": "sha256:78e0c73d02daa1ef2c64f228a41458fce28f442bf19082af3007de3270a42646",
     "astrid/packs/astrid_motion/rendering/elements/effects/am-burst/component.tsx": "sha256:be6f2f61c8428255186357a937aff388327b5b50b72bebae45de01fda1b8ea84",
@@ -18,7 +19,7 @@
     "astrid/packs/astrid_motion/rendering/elements/effects/am-flap/component.tsx": "sha256:aa1dce0476fde244281bd532368dece6408b9c9275bc5fd74b19f91475bd6af6",
     "astrid/packs/astrid_motion/rendering/elements/effects/am-flap/element.yaml": "sha256:c9c2b6c5a26f692f19d4c4a646a86d7bca16714f7de9e761ea83b8866332a431",
     "astrid/packs/astrid_motion/rendering/elements/effects/am-flap/flap.tsx": "sha256:aa7bf8827547c357824047b57a2e1fda4eaee452e0ac97781f9d52958476b087",
-    "astrid/packs/astrid_motion/rendering/elements/effects/am-footage/component.tsx": "sha256:6e70d9bd341cf77d5c6e99e106f9e84d1451a109cb354ed0fca54aa998967937",
+    "astrid/packs/astrid_motion/rendering/elements/effects/am-footage/component.tsx": "sha256:bc7a1c0e4516703206de3964fac52c1682bec3fe6c2b150dbb9b42ef355316ec",
     "astrid/packs/astrid_motion/rendering/elements/effects/am-footage/element.yaml": "sha256:a7c4d86719331bc76ca580c4ae9e220c6a5ef93cbf8e258dff529f6a9a72aeab",
     "astrid/packs/astrid_motion/rendering/elements/effects/am-footage/volume.ts": "sha256:b5fc7040551c6ef8e3e7d83afee7b431fc93ac70bd64ae6ddf9a3fa35ebc6ce6",
     "astrid/packs/astrid_motion/rendering/elements/effects/am-orbit/component.tsx": "sha256:e294619aaedbbe76320539a8f279ce1b78b7bb2d4e0d6e0457247d4c058f82d5",
@@ -172,5 +173,5 @@
     "schemas/public-boundary/fixtures/redaction.json": "sha256:d827821a8b1c1bd9b50fa695550deeb770175e283b9949635d1c85ee03bece46"
   },
   "producer": "astrid-agent",
-  "version": "sha256:73e16dd345ddbb2dc2390e87b9f726e258d9ab78e68dc09a094c3c6c23e79d05"
+  "version": "sha256:795af7cde1b18298319b7c9e2d4aabec76ec1a2f438e43acd67f7d40fd5f149c"
 }

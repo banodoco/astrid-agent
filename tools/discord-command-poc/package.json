@@ -1,6 +1,7 @@
 {
   "name": "astrid-discord-command-poc",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "start": "node discord-command-poc.mjs",

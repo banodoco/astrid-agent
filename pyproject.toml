@@ -5,6 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "astrid"
 version = "0.1.0"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 description = "A harness toolkit for agents and humans to make art"
 requires-python = ">=3.11"
 dependencies = [
