@@ -5,11 +5,12 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from astrid.installer import app_update as update
-from astrid.installer.core import Version, current, switch, write_json
+from astrid.installer.core import Version, current, read_json, switch, write_json
 from astrid.installer.service import LABEL
 
 
@@ -18,36 +19,50 @@ def installed(tmp_path, monkeypatch):
     root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     calls = []
 
-    def version(name):
+    def version(name, release):
         folder = root / "versions" / name
         folder.mkdir(parents=True)
         python, profile, node = folder / "python", folder / "profile.json", folder / "node"
         python.touch()
         node.touch()
         profile.write_text("{}")
-        value = Version(folder, python, profile, {"ASTRID_NODE_EXECUTABLE": str(node)})
+        value = Version(folder, python, profile, {"ASTRID_NODE_EXECUTABLE": str(node)},
+                        release=release, managed_by="pinokio")
         write_json(folder / "version.json", value.document())
         return value
 
-    old, candidate = version("old"), version("new")
+    old, candidate = version("old", 11), version("new", 12)
     switch(root, old)
     marker = {"owner": LABEL, "managed_by": "pinokio", "data_root": str(data)}
-    record = {**marker, "program_root": str(root)}
+    record = {**marker, "program_root": str(root), "identity": old.document()["identity"],
+              "unrelated": {"keep": True}}
     write_json(root / "install.json", marker)
     realm = {"realm_id": "realm", "realm_root": str(data / "realm")}
     schema = {"identity": {"version": 31, "kind": "v31", "realm_id": "realm"}, "target": 31}
+
+    def persist_identity(value):
+        if value.root.parent == root / "versions":
+            write_json(value.root / "version.json", value.document())
+        record["identity"] = value.document()["identity"]
+
     backend = SimpleNamespace(
         service=SimpleNamespace(home=tmp_path, system=sys.platform, recorded=lambda: record.copy()),
         workspace=lambda *_: realm.copy(),
         stage=lambda *_: calls.append("stage") or candidate,
+        persist_identity=persist_identity,
         run=lambda *_args, **_kwargs: json.dumps(schema),
     )
+
+    def start(value, *_args):
+        assert record["identity"] == value.document()["identity"]
+        calls.append("start:" + value.root.name)
+
     lifecycle = SimpleNamespace(
         node=lambda v: Path(v.env["ASTRID_NODE_EXECUTABLE"]),
         validate=lambda v: None,
         running=lambda *_: True,
         stop=lambda v, *_: calls.append("stop:" + v.root.name),
-        start=lambda v, *_: calls.append("start:" + v.root.name),
+        start=start,
     )
     return SimpleNamespace(**locals())
 
@@ -56,10 +71,52 @@ def run(env):
     update.update_app(env.root, env.backend, {}, lifecycle=env.lifecycle, say=lambda _: None)
 
 
+def test_selection_check_is_read_only(installed):
+    installed.backend.persist_identity = Mock(side_effect=AssertionError("selection must not write"))
+
+    version, data, record = update.selection(installed.root, installed.backend)
+
+    assert (version, data) == (installed.old, installed.data)
+    assert record["identity"] == installed.old.document()["identity"]
+    installed.backend.persist_identity.assert_not_called()
+
+
 def test_stages_online_then_restarts_without_workspace_mutations(installed):
     run(installed)
     assert installed.calls == ["stage", "stop:old", "start:new"]
     assert current(installed.root) == installed.candidate
+    assert installed.record["identity"] == installed.candidate.document()["identity"]
+    assert installed.record["unrelated"] == {"keep": True}
+
+
+def test_app_update_migrates_legacy_selected_identity_before_activation(installed):
+    legacy = installed.old.document()
+    legacy.pop("identity")
+    write_json(installed.old.root / "version.json", legacy)
+    write_json(installed.old.root / "manifest.json", {"release": 11})
+    installed.record.pop("identity")
+
+    run(installed)
+
+    assert installed.record["identity"] == installed.candidate.document()["identity"]
+    assert read_json(installed.old.root / "version.json")["identity"] == installed.old.document()["identity"]
+
+
+def test_selection_identity_change_during_staging_refuses_before_stop(installed):
+    changed = {"release": 99, "managed_by": "pinokio"}
+
+    def stage(*_args):
+        installed.record["identity"] = changed.copy()
+        return installed.candidate
+
+    installed.backend.stage = stage
+
+    with pytest.raises(ValueError, match="selected installation changed while preparing"):
+        run(installed)
+
+    assert installed.calls == []
+    assert current(installed.root) == installed.old
+    assert installed.record["identity"] == changed
 
 
 @pytest.mark.parametrize("failure", ["stage", "schema", "selection", "realm"])
@@ -84,10 +141,12 @@ def test_preparation_failure_keeps_old_running(installed, failure):
         run(env)
     assert not any(call.startswith(("stop:", "start:")) for call in env.calls)
     assert current(env.root) == env.old
+    assert env.record["identity"] == env.old.document()["identity"]
 
 
 def test_start_failure_restores_only_app_pointer_and_relaunches_old(installed):
     def start(version, *_):
+        assert installed.record["identity"] == version.document()["identity"]
         installed.calls.append("start:" + version.root.name)
         if version == installed.candidate:
             raise RuntimeError("unhealthy")
@@ -97,6 +156,8 @@ def test_start_failure_restores_only_app_pointer_and_relaunches_old(installed):
         run(installed)
     assert current(installed.root) == installed.old
     assert installed.calls == ["stage", "stop:old", "start:new", "stop:new", "start:old"]
+    assert installed.record["identity"] == installed.old.document()["identity"]
+    assert installed.record["unrelated"] == {"keep": True}
 
 
 def test_stop_refusal_never_switches_or_starts_candidate(installed):
@@ -108,6 +169,7 @@ def test_stop_refusal_never_switches_or_starts_candidate(installed):
         run(installed)
     assert current(installed.root) == installed.old
     assert installed.calls == ["stage"]
+    assert installed.record["identity"] == installed.old.document()["identity"]
 
 
 def test_controller_cleanup_failure_after_down_restarts_old(installed):
@@ -147,6 +209,7 @@ def test_lock_failure_after_stop_restarts_old(installed, monkeypatch):
         run(installed)
     assert installed.calls == ["stage", "stop:old", "start:old"]
     assert current(installed.root) == installed.old
+    assert installed.record["identity"] == installed.old.document()["identity"]
 
 
 def test_start_runs_after_lifetime_lock_released(installed, monkeypatch):

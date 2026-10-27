@@ -76,6 +76,7 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
     # Task Scheduler cannot set an environment and Hidden does not hide a
     # console. pythonw executes the foreground Runtime in this same process.
     script = "import json,os,sys\nfrom pathlib import Path\n"
+    script += f"os.environ.update({version.env!r})\n"
     if lock_fd is not None:
         # The foreground owner inherited this locked descriptor across exec.
         # Keep it open here, but never pass it to a subsequently exec'd child.
@@ -84,8 +85,7 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
         if log is None:
             raise ValueError("A log path is required for the Windows Runtime service.")
         log = log.with_name("runtime-service.log")
-        script += (f"os.environ.update({version.env!r})\n"
-                   f"sys.stdout=sys.stderr=open({str(log)!r},'a',encoding='utf-8',buffering=1)\n")
+        script += f"sys.stdout=sys.stderr=open({str(log)!r},'a',encoding='utf-8',buffering=1)\n"
     if env_file is not None:
         script += (f"path=Path({str(env_file)!r})\n"
                    "settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\n"
@@ -266,9 +266,11 @@ class Service:
         else:
             xml_path = str(self.path).replace("'", "''")
             self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
-        record = {"owner": LABEL, "program_root": str(self.root),
-                  "data_root": str(data),
-                  "service_settings": settings}
+        record = self.recorded()
+        record.pop("uninstalled", None)
+        record = {**record, "owner": LABEL, "program_root": str(self.root),
+                  "data_root": str(data), "service_settings": settings,
+                  "identity": {"release": version.release, "managed_by": version.managed_by}}
         write_json(self.selection, record)
 
     def settings(self) -> dict:

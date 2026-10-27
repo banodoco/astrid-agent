@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -763,6 +765,201 @@ def test_connect_protocol_rejection_is_not_masked_by_bootstrap(monkeypatch, tmp_
     with pytest.raises(autobootstrap.AutoBootstrapError, match="incompatible"):
         autobootstrap.ensure_runtime(start_pack_host=False, data_root=data_root)
     assert [command[1] for command in seen] == ["connect"]
+
+
+def test_identity_mismatch_refuses_connect_first_without_fallback_or_metadata_writes(monkeypatch, tmp_path):
+    data_root = tmp_path / "support"
+    runtime_support = data_root / "runtime"
+    source_profiles = runtime_support / "source-profiles"
+    credentials = data_root / "credentials"
+    source_profiles.mkdir(parents=True)
+    credentials.mkdir(parents=True)
+    files = {
+        runtime_support / "discovery.json": b'{"pid":123,"runtime_instance_id":"old-owner"}',
+        runtime_support / "catalog.json": b'{"selected_realm_id":"realm-1"}',
+        source_profiles / "astrid.json": b'{"profile":"astrid","source_checkout":"old"}',
+        credentials / "astrid.json": b'{"token":"existing"}',
+    }
+    for path, content in files.items():
+        path.write_bytes(content)
+    before = {path: path.read_bytes() for path in files}
+    seen = []
+    refusal = "An older Astrid is still running. Run `astrid-runtime restart`; it waits for running tasks."
+
+    def fake_run(command, **kwargs):
+        seen.append(command)
+        return subprocess.CompletedProcess(
+            command, 1, json.dumps({"ok": False, "error": refusal}), "",
+        )
+
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
+    monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: True)
+
+    with pytest.raises(autobootstrap.AutoBootstrapError) as caught:
+        autobootstrap.ensure_runtime(start_pack_host=False, data_root=data_root)
+
+    assert str(caught.value) == refusal
+    assert caught.value.code == "runtime_identity_mismatch"
+    assert caught.value.next_action == "astrid-runtime restart"
+    assert len(seen) == 1
+    assert seen[0][1] == "connect"
+    assert before == {path: path.read_bytes() for path in files}
+
+
+@pytest.mark.integration
+def test_loopback_old_owner_refuses_agent_callers_until_explicit_dirty_restart(monkeypatch, tmp_path):
+    from astrid.runtime_cli import RuntimeCLI
+    from tests.helpers.runtime import runtime_checkout
+
+    agent_root = Path(__file__).resolve().parents[2]
+    runtime_root = runtime_checkout()
+    runtime_python = sys.executable
+    python_path = os.pathsep.join((
+        str(runtime_root), str(runtime_root / "packages" / "python"), str(agent_root),
+    ))
+    monkeypatch.setenv("PYTHONPATH", python_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    if sys.platform == "win32":
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.delenv("ASTRID_INSTALL_RELEASE", raising=False)
+    monkeypatch.delenv("ASTRID_INSTALL_MANAGED_BY", raising=False)
+
+    def git_checkout(root: Path, source_root: Path, trees: tuple[str, ...]):
+        root.mkdir(parents=True)
+        for tree in trees:
+            target = root / tree
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(
+                source_root / tree, target,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"),
+            )
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+        (root / "tracked.txt").write_text("baseline", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "baseline"], check=True)
+
+    source_runtime = tmp_path / "source-runtime"
+    source_agent = tmp_path / "source-agent"
+    git_checkout(
+        source_runtime, runtime_root,
+        ("runtime_protocol", "astrid_runtime", "packages/python/astrid_runtime_client"),
+    )
+    git_checkout(source_agent, agent_root, ("astrid",))
+    manifest = tmp_path / "source-profile.json"
+    manifest.write_text(json.dumps({
+        "profile": "astrid",
+        "runtime_checkout": str(source_runtime),
+        "source_checkout": str(source_agent),
+        "runtime_command": [],
+        "protocol_version": "workspace.v1",
+        "schema_version": "workspace-schema-v1",
+    }), encoding="utf-8")
+    monkeypatch.setenv("ASTRID_RUNTIME_SOURCE_MANIFEST", str(manifest))
+
+    monkeypatch.syspath_prepend(str(runtime_root / "packages" / "python"))
+    monkeypatch.syspath_prepend(str(runtime_root))
+    runtime_module_names = ("astrid_runtime", "runtime_protocol")
+    saved_modules = {
+        name: module for name, module in sys.modules.items()
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in runtime_module_names)
+    }
+    for name in tuple(sys.modules):
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in runtime_module_names):
+            del sys.modules[name]
+    from astrid_runtime import BootstrapConfig, LocalRuntimeBoundary, RuntimePaths, SourceProfile
+    from astrid_runtime import bootstrap as runtime_bootstrap
+    from astrid_runtime import configure_workspace
+    from astrid_runtime.bootstrap import restart as runtime_restart
+
+    profile = SourceProfile(
+        profile="astrid", runtime_checkout=str(source_runtime),
+        source_checkout=str(source_agent), capability_digest="caps-v1",
+    )
+    config = BootstrapConfig(source_profile=profile)
+    paths = RuntimePaths.sandbox(tmp_path / "support")
+    first_boundary = LocalRuntimeBoundary()
+    restart_boundary = None
+
+    def read_authority():
+        return {
+            path: path.read_bytes()
+            for path in (
+                paths.catalog_path,
+                paths.source_profiles_dir / "astrid.json",
+                paths.discovery_path,
+                paths.instance_lock_path,
+                paths.credentials_dir / "astrid.json",
+            )
+        }
+
+    try:
+        configure_workspace(
+            paths, first_boundary, config, mode="create",
+            realm_root=paths.realms_dir / "explicit-realm", realm_id="explicit-realm",
+        )
+        first = runtime_bootstrap(paths, first_boundary, config)
+        discovery_before = json.loads(paths.discovery_path.read_text(encoding="utf-8"))
+        identity_before = discovery_before["identity"]
+        assert identity_before["dirty"] is False
+
+        (source_agent / "astrid" / "UPD-B1-test-edit.txt").write_text("edited source", encoding="utf-8")
+        authority_before = read_authority()
+        monkeypatch.setattr(
+            autobootstrap, "_launcher_command",
+            lambda: [runtime_python, "-m", "astrid_runtime"],
+        )
+        with pytest.raises(autobootstrap.AutoBootstrapError) as caught:
+            autobootstrap.ensure_runtime(start_pack_host=False, data_root=paths.app_support)
+        refusal = "An older Astrid is still running. Run `astrid-runtime restart`; it waits for running tasks."
+        assert str(caught.value) == refusal
+        assert caught.value.code == "runtime_identity_mismatch"
+        assert authority_before == read_authority()
+        assert first_boundary._process is not None and first_boundary._process.poll() is None
+
+        runtime_cli = RuntimeCLI(command=(runtime_python, "-m", "astrid_runtime"))
+        cli_result = runtime_cli.up(
+            support_root=paths.app_support,
+            expected_realm_id=first.realm_id,
+            realm_root=paths.realms_dir / "explicit-realm",
+        )
+        assert not cli_result.ok
+        assert cli_result.data["error"] == refusal
+        assert authority_before == read_authority()
+        assert first_boundary._process.poll() is None
+
+        restart_boundary = LocalRuntimeBoundary()
+        restart_boundary.prepare_restart(
+            source_profile=profile,
+            realm_id=first.realm_id,
+            realm_root=paths.realms_dir / "explicit-realm",
+            support_root=paths.runtime_support,
+            pid=int(discovery_before["pid"]),
+        )
+        restarted = runtime_restart(paths, restart_boundary, config)
+        updated = json.loads(paths.discovery_path.read_text(encoding="utf-8"))
+        assert restarted.runtime_instance_id != first.runtime_instance_id
+        assert updated["runtime_instance_id"] == restarted.runtime_instance_id
+        assert updated["identity"]["dirty"] is True
+        assert updated["identity"]["dirty_hash"] != identity_before["dirty_hash"]
+        reconnected = autobootstrap.ensure_runtime(start_pack_host=False, data_root=paths.app_support)
+        assert reconnected["status"] == "reconnected"
+        assert reconnected["runtime_instance_id"] == restarted.runtime_instance_id
+    finally:
+        if restart_boundary is not None:
+            process = getattr(restart_boundary, "_process", None)
+            if process is not None and process.poll() is None:
+                restart_boundary.stop()
+        process = getattr(first_boundary, "_process", None)
+        if process is not None and process.poll() is None:
+            first_boundary.stop()
+        for name in tuple(sys.modules):
+            if any(name == prefix or name.startswith(prefix + ".") for prefix in runtime_module_names):
+                del sys.modules[name]
+        sys.modules.update(saved_modules)
 
 
 def test_interrupted_bootstrap_gets_one_bounded_recovery_attempt(monkeypatch, tmp_path):

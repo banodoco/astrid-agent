@@ -13,6 +13,7 @@ import time
 import urllib.request
 import uuid
 import webbrowser
+from dataclasses import replace
 from pathlib import Path
 
 from runtime_protocol import platform
@@ -25,6 +26,7 @@ from .core import (
     Version,
     absolute,
     current,
+    install_release,
     linked,
     new_version_id,
     read_json,
@@ -172,7 +174,7 @@ class Backend:
         record = self.service.recorded()
         if record.get("uninstalled"):
             return None
-        version = current(self.root)
+        version = current(self.root, managed_by=self.managed_by)
         if version is not None:
             return version if version.python.is_file() else None
         profile = data / "runtime" / "source-profiles" / "astrid.json"
@@ -184,7 +186,8 @@ class Backend:
         if not python.is_file():
             return None  # The bootstrap Runtime can inspect a retained workspace.
         return Version(environment.parent, python, profile,
-                       {"PATH": str(python.parent) + os.pathsep + os.defpath})
+                       {"PATH": str(python.parent) + os.pathsep + os.defpath},
+                       managed_by=self.managed_by)
 
     def has_workspace(self, data: Path) -> bool:
         # A nonempty selected root is never mistaken for a fresh installation.
@@ -459,6 +462,7 @@ class Backend:
                 copy_support(item, target)
 
     def stage(self, manifest: dict, root: Path, data: Path) -> Version:
+        release = install_release(manifest)
         # Older release manifests omit this source. Record the effective pin
         # alongside the other sources without changing the caller's document.
         manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}
@@ -480,12 +484,14 @@ class Backend:
         self.run([self.uv, "pip", "install", "--python", python, "--no-deps", runtime,
                   runtime / "packages" / "python", agent, vibecomfy])
         env = install_tools(manifest, folder / "tools", platform_target(), self.run)
-        prior = current(root) or self.existing(data)
+        prior = current(root, managed_by=self.managed_by) or self.existing(data)
         env.update({"ASTRID_RUNTIME_DATA_ROOT": str(data),
                     "ASTRID_RUNTIME_DOOR_PORT": os.environ.get(
                         "ASTRID_RUNTIME_DOOR_PORT",
                         prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)) if prior else str(DEFAULT_DOOR_PORT)),
                     "PATH": str(python.parent) + os.pathsep + env["PATH"]})
+        env["ASTRID_INSTALL_RELEASE"] = str(release)
+        env["ASTRID_INSTALL_MANAGED_BY"] = self.managed_by or ""
         npm = binary(folder / "tools" / "node", "npm-cli.js")
         npm_installed = self.install_remotion_dependencies(agent, env, npm)
         # The lockfile's transitive @banodoco/timeline-schema package is the
@@ -505,7 +511,7 @@ class Backend:
         write_json(profile, {"profile": "astrid", "runtime_checkout": str(runtime),
                              "source_checkout": str(agent), "runtime_environment": str(environment),
                              "source_digest": digest, "service_declaration": str(services_path)})
-        version = Version(folder, python, profile, env)
+        version = Version(folder, python, profile, env, release, self.managed_by)
         write_json(folder / "version.json", version.document())
         write_json(folder / "manifest.json", manifest)
         return version
@@ -553,11 +559,18 @@ class Backend:
             self._write_process_control(data)
 
     def register(self, version: Version, data: Path) -> None:
+        if version.managed_by != self.managed_by:
+            # The current install context is authoritative for hand-built or
+            # legacy Version objects that predate the identity field.
+            version = replace(version, managed_by=self.managed_by)
+        self.persist_identity(version)
         chat_cwd, chat_options = self._prior_chat_settings(version)
         if chat_cwd == data / "chat":
             platform.private_directory(chat_cwd)
         if self.managed_by == "pinokio":
-            write_json(self.service.selection, {
+            prior = self.service.recorded()
+            prior.pop("uninstalled", None)
+            write_json(self.service.selection, {**prior,
                 "owner": "haus.astrid.runtime", "program_root": str(self.root),
                 "data_root": str(data), "managed_by": "pinokio",
             })
@@ -566,8 +579,21 @@ class Backend:
         realm = self.workspace(version, data)
         record = self.service.recorded()
         settings = {"ASTRID_ACP_CWD": str(chat_cwd), **chat_options} if chat_cwd else {}
-        write_json(self.service.selection, {**record, "realm_id": realm["realm_id"],
+        write_json(self.service.selection, {**record,
+                                           "identity": {"release": version.release,
+                                                        "managed_by": self.managed_by},
+                                           "realm_id": realm["realm_id"],
                                            "realm_root": realm["realm_root"], "chat_settings": settings})
+
+    def persist_identity(self, version: Version) -> None:
+        """Upgrade legacy version and selection records without service changes."""
+        if version.root.parent == self.root / "versions":
+            write_json(version.root / "version.json", version.document())
+        record = self.service.recorded()
+        if record:
+            record.pop("uninstalled", None)
+            write_json(self.service.selection, {**record, "identity": {
+                "release": version.release, "managed_by": version.managed_by}})
 
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
@@ -716,9 +742,8 @@ class Backend:
     def unregister(self) -> None:
         record = self.service.recorded()
         if record:
-            kept = {key: record[key] for key in ("owner", "program_root", "data_root", "realm_id", "realm_root", "chat_settings", "managed_by")
-                    if key in record}
-            version = current(self.root)
+            kept = dict(record)
+            version = current(self.root, managed_by=self.managed_by)
             if "chat_settings" not in kept and version is not None:
                 chat_cwd, options = self._selected_chat_settings(version, Path(record["data_root"]))
                 kept["chat_settings"] = {"ASTRID_ACP_CWD": str(chat_cwd), **options}
@@ -744,7 +769,7 @@ class Backend:
         record = self.service.recorded()
         recorded_realm = absolute(record["realm_root"]) if record.get("realm_root") else None
         catalog = data / "runtime" / "catalog.json"
-        version = current(root) or (self.existing(data) if data.exists() else None)
+        version = current(root, managed_by=self.managed_by) or (self.existing(data) if data.exists() else None)
         realm_root = None
         if catalog.exists():
             realm_root = absolute(self.workspace(version, data)["realm_root"])

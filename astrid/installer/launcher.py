@@ -142,6 +142,28 @@ python = str(Path(record["python"]))
 env = dict(os.environ)
 env.update({str(key): str(value) for key, value in record["env"].items()})
 env["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
+identity = record.get("identity")
+if "identity" in record:
+    if not isinstance(identity, dict):
+        raise SystemExit("Astrid's selected install identity is invalid.")
+else:
+    manifest_path = version_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    marker_path = root / "install.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8")) if marker_path.is_file() else {}
+    identity = {"release": manifest.get("release", 0),
+                "managed_by": marker.get("managed_by")}
+release = identity.get("release")
+managed_by = identity.get("managed_by")
+install_marker = root / "install.json"
+if install_marker.is_file():
+    marker = json.loads(install_marker.read_text(encoding="utf-8"))
+    if "managed_by" in marker:
+        managed_by = marker.get("managed_by")
+if type(release) is not int or release < 0 or managed_by not in (None, "pinokio"):
+    raise SystemExit("Astrid's selected install identity is invalid.")
+env["ASTRID_INSTALL_RELEASE"] = str(release)
+env["ASTRID_INSTALL_MANAGED_BY"] = managed_by or ""
 if sys.argv[1:2] == ["credential"]:
     os.environ.update(env)
     from astrid.core.util.credential_store import main

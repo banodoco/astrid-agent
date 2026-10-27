@@ -37,7 +37,8 @@ def _installation(tmp_path: Path, name: str = "v1") -> tuple[Path, Path, Version
     python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     python.chmod(0o755)
     profile.write_text("{}\n", encoding="utf-8")
-    version = Version(version_root, python, profile, {"ASTRID_VERSION_MARKER": name})
+    version = Version(version_root, python, profile, {"ASTRID_VERSION_MARKER": name},
+                      release=52, managed_by="pinokio")
     write_json(version_root / "version.json", version.document())
     write_json(root / "install.json", {
         "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data)
@@ -104,7 +105,8 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         windows_python = version.root / "py" / "Scripts" / "python.exe"
         windows_python.parent.mkdir(parents=True)
         windows_python.write_text("fake console Python", encoding="utf-8")
-        version = Version(version.root, windows_python, version.profile, version.env)
+        version = Version(version.root, windows_python, version.profile, version.env,
+                          version.release, version.managed_by)
         write_json(version.root / "version.json", version.document())
         expected = service.command(
             version,
@@ -151,6 +153,7 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         assert Path(task_command[0]).name == "pythonw.exe"
         assert str(root / "service-env.json") in expected[-1]
         assert windows_env["ASTRID_INSTALL_MANAGED_BY"] == "pinokio"
+        assert windows_env["ASTRID_INSTALL_RELEASE"] == "52"
         assert windows_env["ASTRID_VERSION_MARKER"] == "v1"
         assert "PYTHONPATH" not in windows_env
         assert windows_env["ASTRID_WARM_IDLE_SECONDS"] == "17"
@@ -159,8 +162,10 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     with pytest.raises(ExecCalled):
         foreground.launch(root, extra_args, system=system)
 
+    selected = current(root)
+    assert selected is not None
     expected = service.command(
-        version,
+        selected,
         data,
         windows=False,
         env_file=root / "service-env.json",
@@ -169,8 +174,9 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     )
     assert seen["file"] == expected[0]
     assert seen["argv"] == expected
-    assert seen["env"] == _clean_environment(version)
+    assert seen["env"] == _clean_environment(selected)
     assert seen["env"]["ASTRID_INSTALL_MANAGED_BY"] == "pinokio"  # type: ignore[index]
+    assert seen["env"]["ASTRID_INSTALL_RELEASE"] == "52"  # type: ignore[index]
     for key in (
         "PYTHONPATH",
         "PYTHONHOME",
@@ -195,7 +201,7 @@ def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypa
     second_python.parent.mkdir(parents=True)
     second_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     second_python.chmod(0o755)
-    second = Version(second_root, second_python, second_root / "profile.json", {"ASTRID_VERSION_MARKER": "v2"})
+    second = Version(second_root, second_python, second_root / "profile.json", {"ASTRID_VERSION_MARKER": "v2"}, managed_by="pinokio")
     write_json(second_root / "version.json", second.document())
     calls: list[list[str]] = []
 

@@ -40,18 +40,19 @@ def _kill(point, wanted):
         os.kill(os.getpid(), signal.SIGKILL)
 
 
-def _version(root, name):
+def _version(root, name, release=0, managed_by=None):
     folder = root / "versions" / name
     folder.mkdir(parents=True)
-    version = Version(folder, Path(sys.executable), folder / "profile.json", {})
+    version = Version(folder, Path(sys.executable), folder / "profile.json", {}, release, managed_by)
     write_json(folder / "version.json", version.document())
     return version
 
 
 def _setup(base, *, previous_schema=True):
     root, data = base / "program", base / "data"
-    old = _version(root, "old")
+    old = _version(root, "old", release=17)
     switch(root, old)
+    write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
     paths = RuntimePaths.current(data_root=data)
     paths.ensure_support_dirs()
     realm = paths.realms_dir / "realm-1"
@@ -83,6 +84,17 @@ class _Backend(Backend):
         self.base, self.root, self.kill_at = base, base / "program", kill_at
         self.log = base / "install.log"
         self.say = print
+        self.managed_by = None
+        from astrid.installer.service import Service
+
+        self.service = Service(self.root, self.log, self.run, home=base / "home", system="linux")
+        self.service.selection = base / "install-selection.json"
+        if not self.service.selection.exists():
+            write_json(self.service.selection, {
+                "owner": "haus.astrid.runtime", "program_root": str(self.root),
+                "data_root": str(base / "data"), "identity": {"release": 17, "managed_by": None},
+                "unrelated": "preserved",
+            })
 
     def existing(self, _data):
         return None
@@ -129,7 +141,7 @@ class _Backend(Backend):
         return result
 
     def stage(self, _manifest, root, _data):
-        candidate = _version(root, "new-" + uuid.uuid4().hex[:8])
+        candidate = _version(root, "new-" + uuid.uuid4().hex[:8], release=18)
         _kill("stage-return", self.kill_at)
         return candidate
 
@@ -146,7 +158,11 @@ class _Backend(Backend):
         super().restore(old, data, realm, backup)
         _kill("restore-return", self.kill_at)
 
-    def register(self, _version, _data):
+    def register(self, version, _data):
+        record = self.service.recorded()
+        record.pop("uninstalled", None)
+        write_json(self.service.selection, {**record, "identity": {
+            "release": version.release, "managed_by": version.managed_by}})
         _event(self.base, "register")
 
     def start(self, _version, _data):
@@ -245,7 +261,13 @@ def test_repair_also_recovers_before_workspace_inspection(tmp_path):
     assert _run(tmp_path, "runtime:stopped").returncode == -signal.SIGKILL
     result = _run(tmp_path, mode="install")
     assert result.returncode == 0, result.stderr
-    assert current(tmp_path / "program").root.name == "old"
+    selected = current(tmp_path / "program")
+    assert selected.root.name == "old"
+    assert selected.document()["identity"] == read_json(selected.root / "version.json")["identity"]
+    assert selected.document()["identity"] == {"release": 17, "managed_by": None}
+    selection = read_json(tmp_path / "install-selection.json")
+    assert selection["identity"] == selected.document()["identity"]
+    assert selection["unrelated"] == "preserved"
     assert read_json(tmp_path / "program/update-transaction.json")["step"] == "rolled_back"
     assert not (tmp_path / "data/runtime/upgrade-journal.json").exists()
 
