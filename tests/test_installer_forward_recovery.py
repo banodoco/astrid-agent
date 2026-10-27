@@ -8,11 +8,13 @@ from tests.test_installer_lifecycle import LifecycleBackend
 
 
 def failed_update(tmp_path):
+    from runtime_protocol import platform
+
     root, data = tmp_path / 'program', tmp_path / 'data'
-    root.mkdir()
-    data.mkdir()
+    platform.private_directory(root)
+    platform.private_directory(data)
     folder = root / 'versions' / 'old'
-    folder.mkdir(parents=True)
+    platform.private_directory(folder)
     python = folder / 'python'
     python.write_text('retained interpreter')
     old = Version(folder, python, folder / 'profile.json', {})
@@ -67,6 +69,8 @@ def recovery_fixture(tmp_path, monkeypatch):
     import shutil
     from types import SimpleNamespace
 
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
     from runtime_protocol.store import RealmStore
     from runtime_protocol.upgrade import inspect_canonical_schema
 
@@ -79,24 +83,28 @@ def recovery_fixture(tmp_path, monkeypatch):
         installer.run('update', {})
     tx = read_json(installer.root / 'update-transaction.json')
     candidate, old = Version.load(tx['candidate']), backend.old
+    # Use the real support-directory factory before realm publication: POSIX
+    # chmod does not establish the protected DACL required on Windows.
+    RuntimePaths.current(data_root=installer.data).ensure_support_dirs()
     realm = Path(tx['realm']['realm_root'])
     # Runtime publishes its staged canonical directory at an absent name.
     RealmStore.initialize(realm, realm_id=tx['realm']['realm_id']).close()
     (realm / 'new-user-data').write_text('newer than retained backup')
     support = installer.data / 'runtime'
-    support.chmod(0o700)
     write_json(support / 'catalog.json', {'selected_realm_id': tx['realm']['realm_id'], 'realms': [
         {'realm_id': tx['realm']['realm_id'], 'data_root': str(realm)}]})
     write_json(support / 'generic-host.json', {'legacy': True})
     write_json(support / 'generic-host.ready.json', {'legacy': True})
+    for name in recovery.MARKERS:
+        platform.owner_only(support / name)
     write_json(installer.root / 'install.json', {'owner': 'haus.astrid.runtime', 'data_root': str(installer.data)})
     backup = Path(tx['backup']['root'])
-    backup.mkdir(parents=True)
+    platform.private_directory(backup)
     write_json(backup / 'backup.json', tx['backup'])
     (backup / 'old-user-data').write_text('older backup')
     for version in (old, candidate):
         runtime = version.root / 'r'
-        runtime.mkdir()
+        platform.private_directory(runtime)
         (runtime / 'bootstrap.py').write_text('retained runtime code')
         write_json(version.profile, {'runtime_checkout': str(runtime)})
         write_json(version.root / 'manifest.json', {'schema_version': 1,
@@ -121,7 +129,7 @@ def recovery_fixture(tmp_path, monkeypatch):
 
     def retire(support_root, _proof, **kwargs):
         target = kwargs['quarantine']
-        target.mkdir(parents=True, exist_ok=True)
+        platform.private_directory(target)
         for name in recovery.MARKERS:
             source = support_root / name
             if source.exists():
