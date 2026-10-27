@@ -248,6 +248,28 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
+    def bootstrap(self) -> None:
+        """Load the login item, retrying launchd's transient rejections.
+
+        `launchctl bootstrap` answers EIO (status 5) while a job that was just
+        booted out is still terminating, and rejects a label it already loaded.
+        Both settle within a second, so retry instead of failing the update.
+        """
+        target = f"gui/{platform.current_user()}"
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                self.run(["launchctl", "bootstrap", target, self.path])
+                return
+            except subprocess.CalledProcessError as exc:
+                detail = str(exc.output or "")
+                transient = ("Input/output error" in detail
+                             or "already bootstrapped" in detail
+                             or "service already loaded" in detail)
+                if not transient or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
+
     def register(self, version: Version, data: Path) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():
@@ -256,7 +278,7 @@ class Service:
         user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
         self.path.write_text(render(self.system, version, data, self.log, user=user, env_file=self.env_file), encoding="utf-8", newline="\n")
         if self.system == "darwin":
-            self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+            self.bootstrap()
         elif self.system == "linux":
             if self.systemd():
                 self.run(["systemctl", "--user", "daemon-reload"])

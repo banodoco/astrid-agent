@@ -1,6 +1,6 @@
 """Public API for the multi-harness skills install layer.
 
-Three harnesses: Claude Code, Codex, Hermes. One source of truth: per-pack
+Four harnesses: Claude Code, Codex, DeepSeek Harness, Hermes. One source of truth: per-pack
 The pack manifest's ``documentation: {kind: skill, path: ...}`` declaration
 selects one Claude-style frontmatter document per pack.
 """

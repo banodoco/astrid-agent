@@ -9,7 +9,7 @@ import { bridgeTestClient } from './bridge-test-client.ts';
 import { agentCommand, astridSignInLine, EXTERNAL_AGENT_IDS, formatAstridSignInLine, LOCAL_AGENT_TABLE, type LocalAgentId } from './localAgents.ts';
 import { processHasExited } from './testProcess.ts';
 
-const harnesses = { 'claude-code': 'claude', codex: 'codex', hermes: 'hermes' } as const;
+const harnesses = { 'claude-code': 'claude', codex: 'codex', hermes: 'hermes', dsh: 'dsh' } as const;
 function fixture(mode: 'success' | 'failure' | 'timeout' = 'success') {
   const home = mkdtempSync(join(process.cwd(), '.agent-skills-test-'));
   writeFileSync(join(home, 'package.json'), '{"type":"commonjs"}');
@@ -71,7 +71,7 @@ for (const mode of ['success', 'failure', 'timeout'] as const) {
       const responses = await Promise.all(EXTERNAL_AGENT_IDS.flatMap(agent => [f.call('/connect', { agent }), f.call('/connect', { agent })]));
       assert.ok(responses.every(response => response.status === 200));
       assert.ok(Date.now() - started < 3_000);
-      assert.equal(f.calls().length, 3);
+      assert.equal(f.calls().length, EXTERNAL_AGENT_IDS.length);
       for (const agent of EXTERNAL_AGENT_IDS) {
         assert.deepEqual(f.calls().filter(call => call.args[4] === harnesses[agent]).map(call => call.args), [['-m', 'astrid.skills', 'sync', '--harness', harnesses[agent]]]);
         assert.equal((await f.call('/connect', { agent })).status, 200);
@@ -83,7 +83,7 @@ for (const mode of ['success', 'failure', 'timeout'] as const) {
       }
       const after = await (await f.call('/agents')).json();
       assert.ok(after.agents.filter((row: { id: string }) => row.id !== 'astrid').every((row: { terminal: { skillSynced: boolean } }) => row.terminal.skillSynced === (mode === 'success')));
-      assert.equal(f.calls().length, 3);
+      assert.equal(f.calls().length, EXTERNAL_AGENT_IDS.length);
       if (mode === 'timeout') for (const call of f.calls()) assert.equal(processHasExited(call.pid), true);
       if (mode === 'success') {
         rmSync(join(f.home, '.codex', 'skills', 'astrid'));
@@ -101,7 +101,7 @@ test('cheap check requires a live entry pointing at the generated view and honor
       const harnessHome = join(f.home, 'custom', harness);
       const stateHome = join(f.home, 'custom-state');
       const env = { ...f.env, ASTRID_STATE_HOME: stateHome,
-        [agent === 'claude-code' ? 'CLAUDE_CONFIG_DIR' : agent === 'codex' ? 'CODEX_HOME' : 'HERMES_HOME']: harnessHome };
+        [agent === 'claude-code' ? 'CLAUDE_CONFIG_DIR' : agent === 'codex' ? 'CODEX_HOME' : agent === 'dsh' ? 'DSH_HOME' : 'HERMES_HOME']: harnessHome };
       const skills = new LocalAgentSkills(env);
       const view = join(stateHome, 'astrid', 'skills', harness);
       const entry = join(harnessHome, 'skills', 'astrid');

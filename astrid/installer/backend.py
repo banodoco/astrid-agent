@@ -341,7 +341,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         discovery = data / "runtime" / "discovery.json"
         owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
         if owner_state == "live":
-            self.runtime(version, data, "down", profile=True)
+            self._down(version, data)
         elif owner_state in {"stopped", "stale"} and self.managed_by != "pinokio":
             # A candidate can fail before its foreground owner publishes fresh
             # discovery. Old absent-owner records remain Runtime's to reconcile.
@@ -352,10 +352,28 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             # A manager may still be draining after its stop operation.
             owner_state = self._discovery_owner_state(discovery)
             if owner_state == "live" and version:
-                self.runtime(version, data, "down", profile=True)
+                self._down(version, data)
                 owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
             if owner_state == "live":
                 raise RuntimeError("Astrid did not release its recorded Runtime owner.")
+
+    def _down(self, version: Version | None, data: Path, *, drain: float = 30) -> None:
+        """Drain the recorded owner, tolerating its own withdrawal mid-stop."""
+        try:
+            self.runtime(version, data, "down", profile=True)
+        except (RuntimeError, subprocess.CalledProcessError):
+            # `disable` signals the owner before `down` runs, so the owner can
+            # withdraw the selection it is draining from while `down` reads it.
+            # That stop already happened; only a still-live recorded incarnation
+            # keeps this a failure.
+            discovery = data / "runtime" / "discovery.json"
+            deadline = time.monotonic() + drain
+            while discovery.exists() and time.monotonic() < deadline:
+                if self._discovery_owner_state(discovery) != "live":
+                    return
+                time.sleep(0.2)
+            if discovery.exists() and self._discovery_owner_state(discovery) == "live":
+                raise
 
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:

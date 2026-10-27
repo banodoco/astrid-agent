@@ -1,11 +1,11 @@
 import { discoveryProbe as execFileAsync } from './discoveryProbe.ts';
 import { readFileSync } from 'node:fs';
-import { access, constants } from 'node:fs/promises';
-import { userInfo } from 'node:os';
+import { access, chmod, constants, copyFile, mkdir, readFile, stat } from 'node:fs/promises';
+import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, join, win32 as win32Path } from 'node:path';
 import { EXTERNAL_AGENT_IDS, LOCAL_AGENT_IDS, LOCAL_AGENT_TABLE, astridInstallCommand, localAgentSteps, type LocalAgentChoice, type LocalAgentId } from './localAgents.ts';
 import { AcpProcessHostError } from './acpProcessHost.ts';
-import { LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
+import { DSH_ACP_LAUNCHER, DSH_ACP_MIN_NODE_MAJOR, DSH_ACP_PROFILE, LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
 
 type RegistryReader = (key: string, env: NodeJS.ProcessEnv) => Promise<string>;
 type SystemShellReader = (username: string) => Promise<string | null>;
@@ -245,20 +245,22 @@ export async function discoverLocalAgents(options: Options = {}): Promise<LocalA
   const loginPath = await loginShellPath(baseEnv, platform, options.registryReader, options.passwdReader, options.systemShellReader);
   const path = combinedPath(platform, loginPath, baseEnv.PATH);
   const env = { ...baseEnv, PATH: path };
-  const [claudeShim, codex, hermes] = await Promise.all([
+  const [claudeShim, codex, hermes, dsh] = await Promise.all([
     executable('claude', path, platform, baseEnv.PATHEXT), executable('codex', path, platform, baseEnv.PATHEXT), executable('hermes', path, platform, baseEnv.PATHEXT),
+    executable('dsh', path, platform, baseEnv.PATHEXT),
   ]);
   const [claude, codexEntryPoint] = await Promise.all([
     claudeShim ? windowsClaudeEntryPoint(claudeShim, platform) : null,
     codex ? windowsCodexEntryPoint(codex, platform) : null,
   ]);
-  const [hermesAuth, claudeAuth, codexAuth] = await Promise.all([
+  const [hermesAuth, claudeAuth, codexAuth, dshAuth] = await Promise.all([
     hermesStatus(hermes, env, options.cwd),
     claudeStatus(claude, env, options.cwd, platform),
     status(codexEntryPoint, ['login', 'status'], env, /Logged in using/i, /Not logged in|Run `?codex login/i, options.cwd, platform),
+    dshStatus(dsh, env, platform),
   ]);
-  const installed: Record<typeof EXTERNAL_AGENT_IDS[number], string | null> = { 'claude-code': claude, codex, hermes };
-  const auth: Record<typeof EXTERNAL_AGENT_IDS[number], AuthStatus> = { 'claude-code': claudeAuth, codex: codexAuth, hermes: hermesAuth };
+  const installed: Record<typeof EXTERNAL_AGENT_IDS[number], string | null> = { 'claude-code': claude, codex, hermes, dsh };
+  const auth: Record<typeof EXTERNAL_AGENT_IDS[number], AuthStatus> = { 'claude-code': claudeAuth, codex: codexAuth, hermes: hermesAuth, dsh: dshAuth };
   return LOCAL_AGENT_IDS.map(id => id === 'astrid'
     ? choice(id, 'ready', platform)
     : choice(id, !installed[id] ? 'not-installed' : auth[id] === 'signed-out' ? 'sign-in' : 'ready', platform, auth[id]));
@@ -276,6 +278,102 @@ async function hermesStatus(command: string | null, env: NodeJS.ProcessEnv, cwd?
   }
 }
 
+/** Where DeepSeek Harness keeps its profile, credential store and skills. */
+export function dshHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const override = env.DSH_HOME?.trim();
+  if (override) return override;
+  const home = (platform === 'win32' ? env.USERPROFILE : env.HOME) || homedir();
+  return join(home, '.dsh');
+}
+
+/**
+ * DeepSeek Harness has no sign-in subcommand, so its states are read from the
+ * credential store its own Settings surface writes: a stored provider key is
+ * signed-in, an absent or empty store is signed-out, and a store that exists but
+ * cannot be read stays unknown rather than being guessed either way.
+ */
+async function dshStatus(command: string | null, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Promise<AuthStatus> {
+  if (!command) return 'unknown';
+  const apiKey = env.DEEPSEEK_API_KEY?.trim();
+  let stored: string;
+  try {
+    stored = await readFile(join(dshHome(env, platform), '.credentials.yaml'), 'utf8');
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+    if (code === 'ENOENT') return apiKey ? 'signed-in' : 'signed-out';
+    return 'unknown';
+  }
+  return /^\s*[A-Za-z_][\w.-]*\s*:\s*\S/m.test(stored) || apiKey ? 'signed-in' : 'signed-out';
+}
+
+/**
+ * Astrid runs its own harness instance, so it must not boot against the home the
+ * person's own DSH is using: the pinned launcher deletes that home's
+ * `settings.yaml` on boot, which silently takes the config away from the DSH the
+ * person is actually running. This is the private home Astrid keeps instead.
+ */
+export function dshInstanceHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const explicit = env.ASTRID_DSH_INSTANCE_HOME?.trim();
+  if (explicit) return explicit;
+  const home = (platform === 'win32' ? env.USERPROFILE : env.HOME) || homedir();
+  const root = env.ASTRID_STATE_HOME?.trim() || env.XDG_STATE_HOME?.trim()
+    || (platform === 'win32' ? join(env.LOCALAPPDATA?.trim() || home, 'AppData', 'Local') : join(home, '.local', 'state'));
+  return join(root, 'astrid', 'dsh');
+}
+
+/**
+ * Copied in from the person's home so their providers and keys still apply. The
+ * home-level patch layer is the durable half: it survives the launcher rewriting
+ * or deleting `settings.yaml`, so providers defined there keep working either way.
+ */
+const DSH_SEEDED_FILES = ['.credentials.yaml', 'settings.yaml', 'cordis.patch.yml'] as const;
+
+/**
+ * Copies are deliberate: a symlink would let the harness rewrite the person's
+ * real files through the link, which is exactly the contention being avoided.
+ * The source is only ever read, and a re-seed follows the source's timestamp.
+ */
+async function seedDshInstanceHome(source: string, target: string): Promise<void> {
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  for (const name of DSH_SEEDED_FILES) {
+    const from = join(source, name);
+    let source_mtime: number;
+    try {
+      source_mtime = (await stat(from)).mtimeMs;
+    } catch { continue; }
+    const to = join(target, name);
+    try {
+      if ((await stat(to)).mtimeMs >= source_mtime) continue;
+    } catch { /* first seed for this file */ }
+    await copyFile(from, to);
+    await chmod(to, 0o600);
+  }
+}
+
+/**
+ * The harness needs a modern V8 Node, and Astrid's bundled Node is older than
+ * that floor, so the first PATH directory with a new enough `node` wins before
+ * the plain PATH order does. Returns null when no such runtime exists.
+ */
+async function nodeRuntimeForDsh(path: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Promise<{ command: string; directory: string } | null> {
+  for (const directory of path.split(pathDelimiter(platform))) {
+    if (!directory.trim()) continue;
+    const command = await executable('node', directory, platform, env.PATHEXT);
+    if (!command) continue;
+    try {
+      const { stdout } = await execFileAsync(command, ['--version'], { timeout: 5_000, windowsHide: true } as never);
+      const major = /^v?(\d+)\./.exec(String(stdout).trim())?.[1];
+      if (major && Number(major) >= DSH_ACP_MIN_NODE_MAJOR) return { command, directory };
+    } catch { /* an unrunnable node is simply not a candidate */ }
+  }
+  return null;
+}
+
+/** Node 22 or newer is the one runtime DSH cannot substitute for. */
+function nodeInstallCommand(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'winget install OpenJS.NodeJS.LTS' : 'brew install node';
+}
+
 export async function localAgentLaunch(agentId: ExternalAgent, env: NodeJS.ProcessEnv = process.env, options: LaunchOptions = {}): Promise<{ command: string; args: string[]; env: Record<string, string | undefined>; cliPath: string }> {
   const platform = options.platform ?? process.platform;
   const loginPath = await loginShellPath(env, platform, options.registryReader, options.passwdReader, options.systemShellReader);
@@ -283,11 +381,31 @@ export async function localAgentLaunch(agentId: ExternalAgent, env: NodeJS.Proce
   const bunPath = combinedPath(platform, env.PATH, loginPath);
   const [bun, cliShim] = await Promise.all([
     executable('bun', bunPath, platform, env.PATHEXT),
-    executable(agentId === 'claude-code' ? 'claude' : agentId === 'codex' ? 'codex' : 'hermes', path, platform, env.PATHEXT),
+    executable(agentId === 'claude-code' ? 'claude' : agentId === 'codex' ? 'codex' : agentId === 'dsh' ? 'dsh' : 'hermes', path, platform, env.PATHEXT),
   ]);
   const cli = cliShim && agentId === 'claude-code' ? await windowsClaudeEntryPoint(cliShim, platform) : cliShim;
   if (!cli) throw new AcpProcessHostError(`${LOCAL_AGENT_TABLE[agentId].name} is not installed on PATH.`, { code: 'agent_not_installed', next_action: localAgentSteps(agentId, 'not-installed', platform)[0]!.command });
   if (agentId === 'hermes') return { command: cli, args: ['acp'], env: { PATH: path }, cliPath: cli };
+  if (agentId === 'dsh') {
+    // The pinned launcher boots the profile by name on a real Node: Bun cannot
+    // satisfy the harness's native bindings. DSH_HOME is the person's own
+    // harness home, so their providers, credentials and skills apply.
+    const node = await nodeRuntimeForDsh(path, platform, env);
+    if (!node) throw new AcpProcessHostError(`Node ${DSH_ACP_MIN_NODE_MAJOR} or newer is not installed on PATH.`, { code: 'agent_runtime_missing', next_action: nodeInstallCommand(platform) });
+    // npx resolves next to that Node, so the profile boots on the same runtime.
+    const npx = await executable('npx', node.directory, platform, env.PATHEXT) ?? 'npx';
+    // Astrid's instance reads a copy of the person's settings and credentials
+    // instead of booting against their live home, so neither side rewrites the
+    // other's files.
+    const instance = dshInstanceHome(env, platform);
+    await seedDshInstanceHome(dshHome(env, platform), instance);
+    return {
+      command: npx,
+      args: ['--yes', DSH_ACP_LAUNCHER, '--profile', DSH_ACP_PROFILE],
+      env: { PATH: combinedPath(platform, node.directory, path), DSH_HOME: instance },
+      cliPath: cli,
+    };
+  }
   if (!bun) throw new AcpProcessHostError('Bun is not installed on PATH.', { code: 'agent_runtime_missing', next_action: astridInstallCommand(platform) });
   return {
     command: bun,

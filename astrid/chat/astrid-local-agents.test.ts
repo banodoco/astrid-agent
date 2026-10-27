@@ -1,9 +1,9 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
-import { formatAstridSignInLine, localAgentSteps, localAgentCatalogSchema, agentCommand, EXTERNAL_AGENT_IDS, LOCAL_AGENT_TABLE } from './localAgents.ts';
+import { formatAstridSignInLine, localAgentSteps, localAgentCatalogSchema, agentCommand, EXTERNAL_AGENT_IDS, LOCAL_AGENT_TABLE, isExternalAgentSession, sessionAgentId } from './localAgents.ts';
 import { LOCAL_AGENT_ADAPTERS } from './astrid-local-agent-adapters.ts';
 import { processHasExited } from './testProcess.ts';
 import { defaultShellFromPasswd, discoverLocalAgents, executableNames, localAgentLaunch, windowsLoginPath } from './astrid-local-agents.ts';
@@ -27,8 +27,19 @@ function loginShell(directory: string): string {
   return executable(directory, 'login-shell', `#!/bin/sh\n[ "$1" = "-lic" ] || exit 98\nprintf '\\n__ASTRID_LOGIN_PATH__%s\\n' "$ASTRID_TEST_LOGIN_PATH"\n`);
 }
 
+/** DeepSeek Harness reads its credential store from DSH_HOME, so fixtures own it too. */
+function dshFixtureEnv(directory: string, credentials?: string): NodeJS.ProcessEnv {
+  const home = join(directory, '.dsh-home');
+  mkdirSync(home, { recursive: true });
+  if (credentials !== undefined) writeFileSync(join(home, '.credentials.yaml'), credentials);
+  return { DSH_HOME: home, DEEPSEEK_API_KEY: '' };
+}
+
 function testEnv(shell: string, ownPath: string, loginPath = ownPath): NodeJS.ProcessEnv {
-  return { ...process.env, PATH: ownPath, SHELL: shell, ASTRID_TEST_LOGIN_PATH: loginPath };
+  // ASTRID_STATE_HOME is isolated as well: the launch seeds the harness's
+  // instance home there, and a test must never seed into a developer's real
+  // state directory (that is how fixture credentials could reach a live agent).
+  return { ...process.env, ...dshFixtureEnv(ownPath), ASTRID_STATE_HOME: join(ownPath, '.state'), PATH: ownPath, SHELL: shell, ASTRID_TEST_LOGIN_PATH: loginPath };
 }
 
 test('Astrid sign-in line uses absolute OS-specific launcher syntax and quotes custom roots', () => {
@@ -48,12 +59,15 @@ test('reports Not installed when external CLIs are absent and has no adapter fie
       { id: 'claude-code', name: LOCAL_AGENT_TABLE['claude-code'].name, state: 'not-installed', line: LOCAL_AGENT_TABLE['claude-code'].notInstalledLine },
       { id: 'codex', name: LOCAL_AGENT_TABLE.codex.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.codex.notInstalledLine },
       { id: 'hermes', name: LOCAL_AGENT_TABLE.hermes.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.hermes.notInstalledLine },
+      { id: 'dsh', name: LOCAL_AGENT_TABLE.dsh.name, state: 'not-installed', line: LOCAL_AGENT_TABLE.dsh.notInstalledLine },
     ]);
     assert.equal(LOCAL_AGENT_TABLE['claude-code'].windowsNotInstalledLine, 'In PowerShell, run `irm https://claude.ai/install.ps1 | iex`');
     assert.equal(LOCAL_AGENT_TABLE.codex.notInstalledLine, 'Install with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`');
     assert.equal(LOCAL_AGENT_TABLE.codex.windowsNotInstalledLine, 'In PowerShell, run `irm https://chatgpt.com/codex/install.ps1 | iex`');
-    assert.doesNotMatch(JSON.stringify(LOCAL_AGENT_TABLE), /npm install -g/);
-    assert.deepEqual(agents.map(agent => agent.signIn), ['unknown', 'unknown', 'unknown', 'unknown']);
+    const withoutDsh = Object.fromEntries(Object.entries(LOCAL_AGENT_TABLE).filter(([id]) => id !== 'dsh'));
+    assert.doesNotMatch(JSON.stringify(withoutDsh), /npm install -g/);
+    assert.equal(LOCAL_AGENT_TABLE.dsh.notInstalledLine, 'Install with `npm install -g @deepseek-ai/dsh`');
+    assert.deepEqual(agents.map(agent => agent.signIn), ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
     assert.equal('adapterInstalled' in agents[1]!, false);
     assert.equal('installCommand' in agents[1]!, false);
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -363,9 +377,12 @@ test('mixed external-agent authentication states stay associated with their agen
     fake(directory, 'claude', { json: '{"loggedIn":true}', text: 'Logged in' });
     fake(directory, 'codex', 'Logged in using ChatGPT', 0, 'stderr');
     executable(directory, 'hermes', '#!/bin/sh\nexit 7\n');
-    const agents = await discoverLocalAgents({ env: testEnv(shell, directory) });
+    executable(directory, 'dsh', '#!/bin/sh\nexit 0\n');
+    const env = testEnv(shell, directory);
+    writeFileSync(join(directory, '.dsh-home', '.credentials.yaml'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
+    const agents = await discoverLocalAgents({ env });
     assert.deepEqual(agents.map(agent => [agent.id, agent.state]), [
-      ['astrid', 'ready'], ['claude-code', 'ready'], ['codex', 'ready'], ['hermes', 'sign-in'],
+      ['astrid', 'ready'], ['claude-code', 'ready'], ['codex', 'ready'], ['hermes', 'sign-in'], ['dsh', 'ready'],
     ]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
@@ -411,6 +428,12 @@ test('discovery retains each probe sign-in result without changing legacy readin
       fake(directory, 'claude', { json: signIn === 'unknown' ? '{}' : JSON.stringify({ loggedIn: signIn === 'signed-in' }), text: '' });
       fake(directory, 'codex', signIn === 'signed-in' ? 'Logged in using ChatGPT' : signIn === 'signed-out' ? 'Not logged in' : 'Unrecognized');
       executable(directory, 'hermes', signIn === 'unknown' ? '#!/bin/sh\nkill -TERM $$\n' : `#!/bin/sh\nexit ${signIn === 'signed-in' ? 0 : 7}\n`);
+      executable(directory, 'dsh', '#!/bin/sh\nexit 0\n');
+      const store = join(directory, '.dsh-home', '.credentials.yaml');
+      rmSync(store, { force: true, recursive: true });
+      if (signIn === 'signed-in') writeFileSync(store, 'DEEPSEEK_API_KEY: sk-test-fixture\n');
+      // An unreadable store (a directory where the file belongs) must stay unknown.
+      else if (signIn === 'unknown') mkdirSync(store);
       for (const agent of (await discoverLocalAgents({ env })).slice(1)) {
         assert.equal(agent.signIn, signIn, agent.id);
         assert.equal(agent.state, signIn === 'signed-out' ? 'sign-in' : 'ready');
@@ -425,4 +448,135 @@ test('agent schema accepts old rows and the optional contract fields, dropping f
   assert.deepEqual(localAgentCatalogSchema.parse({ defaultAgent: 'astrid', agents: [row] }).agents[0], row);
   const extended = { ...row, signIn: 'unknown', steps: [], creditLine: 'Built on oh-my-pi', creditUrl: 'https://github.com/can1357/oh-my-pi', terminal: { command: 'astrid', skillSynced: false, detail: 'A plain sentence.' } };
   assert.deepEqual(localAgentCatalogSchema.parse({ defaultAgent: 'astrid', agents: [{ ...extended, future: true }] }).agents[0], extended);
+});
+
+test('discovers DeepSeek Harness from its credential store and launches its pinned ACP profile', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-dsh-'));
+  try {
+    const shell = loginShell(directory);
+    const dsh = executable(directory, 'dsh', '#!/bin/sh\nexit 0\n');
+    const node = executable(directory, 'node', '#!/bin/sh\nprintf \'v22.1.0\\n\'\n');
+    const npx = executable(directory, 'npx', '#!/bin/sh\nexit 0\n');
+    const env = { ...testEnv(shell, directory), ASTRID_STATE_HOME: join(directory, 'state') };
+    mkdirSync(join(directory, '.dsh-home'), { recursive: true });
+    writeFileSync(join(directory, '.dsh-home', '.credentials.yaml'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
+    writeFileSync(join(directory, '.dsh-home', 'cordis.patch.yml'), '- id: llm-pi-ai\n  name: "@deepseek-ai/dsh-llm-pi-ai"\n');
+
+    const agents = await discoverLocalAgents({ env });
+    const choice = agents.find(agent => agent.id === 'dsh');
+    assert.equal(choice?.state, 'ready');
+    assert.equal(choice?.line, null);
+    assert.equal(choice?.signIn, 'signed-in');
+    assert.deepEqual(choice?.steps, []);
+
+    assert.ok(node && npx);
+    const launch = await localAgentLaunch('dsh', env);
+    // Astrid boots its own copy, so the launcher that deletes settings.yaml on
+    // boot can never take the config away from the person's own DSH.
+    const instance = join(directory, 'state', 'astrid', 'dsh');
+    assert.deepEqual(launch, {
+      command: npx,
+      args: ['--yes', '@deepseek-ai/dsh@0.2.1-rc.3', '--profile', 'acp'],
+      env: { PATH: directory, DSH_HOME: instance },
+      cliPath: dsh,
+    });
+    // Providers and keys carry over as readable copies, never as links back home.
+    for (const name of ['.credentials.yaml', 'cordis.patch.yml']) {
+      const seeded = join(instance, name);
+      assert.equal(statSync(seeded).mode & 0o777, 0o600, `${name} is private`);
+      assert.equal(statSync(seeded).isSymbolicLink(), false, `${name} is a copy, not a link`);
+      assert.deepEqual(readFileSync(seeded), readFileSync(join(directory, '.dsh-home', name)));
+    }
+    // The person's own settings stay exactly as they were.
+    assert.deepEqual(readFileSync(join(directory, '.dsh-home', '.credentials.yaml'), 'utf8'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness reports not-installed, signed-out and unknown states honestly', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-dsh-states-'));
+  try {
+    const shell = loginShell(directory);
+    const home = join(directory, '.dsh-home');
+    mkdirSync(home, { recursive: true });
+    const store = join(home, '.credentials.yaml');
+
+    // Absent CLI: not-installed with the install command as its recovery step.
+    const absent = await discoverLocalAgents({ env: testEnv(shell, directory) });
+    const missing = absent.find(agent => agent.id === 'dsh');
+    assert.equal(missing?.state, 'not-installed');
+    assert.deepEqual(missing?.steps?.[0], {
+      kind: 'install',
+      command: 'npm install -g @deepseek-ai/dsh',
+      label: `Install ${LOCAL_AGENT_TABLE.dsh.name}`,
+    });
+
+    executable(directory, 'dsh', '#!/bin/sh\nexit 0\n');
+    const env = testEnv(shell, directory);
+
+    // An empty credential store is a confident signed-out.
+    rmSync(store, { force: true });
+    const signedOut = (await discoverLocalAgents({ env })).find(agent => agent.id === 'dsh');
+    assert.equal(signedOut?.signIn, 'signed-out');
+    assert.equal(signedOut?.state, 'sign-in');
+    assert.deepEqual(signedOut?.steps, [{ kind: 'sign-in', command: 'dsh web', label: 'Sign in' }]);
+
+    // A store that exists but cannot be read is unknown, never signed-out.
+    mkdirSync(store);
+    const unknown = (await discoverLocalAgents({ env })).find(agent => agent.id === 'dsh');
+    assert.equal(unknown?.signIn, 'unknown');
+    assert.equal(unknown?.state, 'ready');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness refuses to launch on an old Node and says which runtime it needs', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-dsh-runtime-'));
+  try {
+    const shell = loginShell(directory);
+    executable(directory, 'dsh', '#!/bin/sh\nexit 0\n');
+    // Astrid's bundled Node is 20, and the harness exits silently on it instead
+    // of reporting an error, so the launcher refuses before spawning anything.
+    executable(directory, 'node', '#!/bin/sh\nprintf \'v20.19.4\\n\'\n');
+    executable(directory, 'npx', '#!/bin/sh\nexit 0\n');
+    const env = testEnv(shell, directory);
+    await assert.rejects(localAgentLaunch('dsh', env), {
+      code: 'agent_runtime_missing',
+      next_action: process.platform === 'win32' ? 'winget install OpenJS.NodeJS.LTS' : 'brew install node',
+    });
+    await assert.rejects(localAgentLaunch('dsh', env), /Node 22 or newer is not installed on PATH\./);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('win32 discovers the dsh executable through PATHEXT and launches the same pinned profile', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-dsh-win-'));
+  try {
+    const dsh = executable(directory, 'dsh.EXE', '#!/bin/sh\nexit 0\n');
+    const node = executable(directory, 'node.EXE', '#!/bin/sh\nprintf \'v22.1.0\\n\'\n');
+    const npx = executable(directory, 'npx.EXE', '#!/bin/sh\nexit 0\n');
+    const home = join(directory, '.dsh-home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, '.credentials.yaml'), 'DEEPSEEK_API_KEY: sk-test-fixture\n');
+    const state = join(directory, 'state');
+    const env = { PATH: directory, PATHEXT: '.EXE', SHELL: '/missing', DSH_HOME: home, DEEPSEEK_API_KEY: '', ASTRID_STATE_HOME: state };
+    const options = { platform: 'win32' as const, registryReader: async () => '', passwdReader: () => '' };
+    const choice = (await discoverLocalAgents({ ...options, env })).find(agent => agent.id === 'dsh');
+    assert.equal(choice?.state, 'ready');
+    assert.equal(choice?.signIn, 'signed-in');
+    assert.ok(node && npx);
+    assert.deepEqual(await localAgentLaunch('dsh', env, options), {
+      command: npx,
+      args: ['--yes', '@deepseek-ai/dsh@0.2.1-rc.3', '--profile', 'acp'],
+      env: { PATH: directory, DSH_HOME: join(state, 'astrid', 'dsh') },
+      cliPath: dsh,
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('DeepSeek Harness keeps its own session namespace without changing existing ids', () => {
+  assert.equal(sessionAgentId('dsh:abc'), 'dsh');
+  assert.equal(sessionAgentId('hermes:abc'), 'hermes');
+  assert.equal(sessionAgentId('codex:abc'), 'codex');
+  assert.equal(sessionAgentId('claude-code:abc'), 'claude-code');
+  assert.equal(sessionAgentId('astrid-opaque'), 'astrid');
+  assert.equal(isExternalAgentSession('dsh:abc'), true);
+  assert.equal(isExternalAgentSession('astrid-opaque'), false);
 });

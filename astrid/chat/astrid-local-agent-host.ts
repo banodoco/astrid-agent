@@ -23,13 +23,22 @@ export function renderAgentProfile(text: string, profilePath: string): string {
 class LocalAgentAcpHost extends AcpProcessHost {
   private supportsSystemPrompt = false;
   private readonly needsGrounding = new Set<string>();
+  /**
+   * Harness chats that had to be replaced because their session was gone: the
+   * chat keeps its identity while requests follow the replacement session.
+   */
+  private readonly replacedSessions = new Map<string, string>();
 
   constructor(private readonly agent: ExternalAgent, private readonly context: string, private readonly cliPath: string, options: AcpProcessHostOptions) {
     const callbacks = options.callbacks;
     super({ ...options, callbacks: { ...callbacks, onNotification: value => {
       const params = record(value.params);
-      callbacks?.onNotification?.(params && typeof params.sessionId === 'string'
-        ? { ...value, params: { ...params, sessionId: `${agent}:${params.sessionId}` } }
+      const served = params && typeof params.sessionId === 'string' ? params.sessionId : null;
+      const original = served !== null
+        ? [...this.replacedSessions.entries()].find(([, actual]) => actual === served)?.[0] ?? served
+        : null;
+      callbacks?.onNotification?.(params && original !== null
+        ? { ...value, params: { ...params, sessionId: `${agent}:${original}` } }
         : value);
     } } });
   }
@@ -40,7 +49,8 @@ class LocalAgentAcpHost extends AcpProcessHost {
     if (sessionAgentId(input.sessionId) !== this.agent) {
       throw new AcpProcessHostError('This saved chat belongs to a different agent.', { code: 'acp_unavailable' });
     }
-    return { ...input, sessionId: input.sessionId.slice(this.agent.length + 1) };
+    const native = input.sessionId.slice(this.agent.length + 1);
+    return { ...input, sessionId: this.replacedSessions.get(native) ?? native };
   }
 
   override async request<T = unknown>(method: string, params?: unknown): Promise<T> {
@@ -67,7 +77,36 @@ class LocalAgentAcpHost extends AcpProcessHost {
         input = { ...prompt, prompt: [...prompt.prompt, { type: 'text', text: `\n<astrid_agent_context>\n${this.context}\n</astrid_agent_context>` }] };
       }
     }
-    const result = await super.request<unknown>(method, input);
+    // The harness serves resume/list/close but not load, answering -32601 to it,
+    // so opening a saved chat resumes that session instead.
+    const nativeMethod = method === 'session/load' && this.agent === 'dsh' ? 'session/resume' : method;
+    let result: unknown;
+    try {
+      result = await super.request<unknown>(nativeMethod, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const native = record(input)?.sessionId;
+      if (nativeMethod === 'session/resume' && typeof native === 'string') {
+        // Resuming the session this process already owns is the same open request,
+        // so report it as opened rather than failing the person's saved chat.
+        if (/already active/i.test(message)) return { sessionId: `${this.agent}:${native}` } as T;
+        // The harness also refuses chats its store no longer holds (a rebuilt
+        // instance home, or a chat another harness install started). A saved chat
+        // must still open, so this conversation continues in a fresh session.
+        if (/(not resumable|not found|unknown session|no such session)/i.test(message)) {
+          const { sessionId: _stale, ...opened } = record(input) ?? {};
+          const fresh = await super.request<unknown>('session/new', { ...opened, mcpServers: Array.isArray(opened.mcpServers) ? opened.mcpServers : [] });
+          const freshId = record(fresh)?.sessionId;
+          if (typeof freshId !== 'string') return fresh as T;
+          // A brand-new session still needs the first-message grounding block.
+          if (!this.supportsSystemPrompt) this.needsGrounding.add(freshId);
+          // The saved chat keeps its own id; its traffic follows the new session.
+          this.replacedSessions.set(native, freshId);
+          return { ...record(fresh), sessionId: `${this.agent}:${native}` } as T;
+        }
+      }
+      throw error;
+    }
     if (method === 'initialize') {
       const capabilities = record(record(result)?.agentCapabilities);
       this.supportsSystemPrompt = Boolean(record(capabilities?.sessionCapabilities)?.systemPrompt);

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, win32 } from 'node:path';
 
-export const localAgentIdSchema = z.enum(['astrid', 'claude-code', 'codex', 'hermes']);
+export const localAgentIdSchema = z.enum(['astrid', 'claude-code', 'codex', 'hermes', 'dsh']);
 export type LocalAgentId = z.infer<typeof localAgentIdSchema>;
 export const LOCAL_AGENT_IDS = localAgentIdSchema.options;
 export const EXTERNAL_AGENT_IDS = LOCAL_AGENT_IDS.filter((id): id is Exclude<LocalAgentId, 'astrid'> => id !== 'astrid');
@@ -62,6 +62,14 @@ export const LOCAL_AGENT_TABLE: Record<LocalAgentId, {
     signInLine: 'Run `codex login`, then come back.',
     notInstalledLine: 'Install with `curl -fsSL https://chatgpt.com/codex/install.sh | sh`',
     windowsNotInstalledLine: 'In PowerShell, run `irm https://chatgpt.com/codex/install.ps1 | iex`',
+  },
+  dsh: {
+    name: 'DeepSeek Harness',
+    // DeepSeek Harness has no sign-in subcommand: its provider keys live in
+    // `${DSH_HOME:-~/.dsh}/.credentials.yaml`, which its own Settings surface writes.
+    signInLine: 'Run `dsh web`, add your DeepSeek API key in Settings, then come back.',
+    notInstalledLine: 'Install with `npm install -g @deepseek-ai/dsh`',
+    windowsNotInstalledLine: 'In PowerShell, run `npm install -g @deepseek-ai/dsh`',
   },
 };
 
@@ -139,6 +147,7 @@ export function sessionAgentId(sessionId: string): LocalAgentId {
   if (sessionId.startsWith('claude-code:')) return 'claude-code';
   if (sessionId.startsWith('codex:')) return 'codex';
   if (sessionId.startsWith('hermes:')) return 'hermes';
+  if (sessionId.startsWith('dsh:')) return 'dsh';
   return 'astrid';
 }
 
