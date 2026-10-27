@@ -24,23 +24,17 @@ class VerificationError(RuntimeError):
 
 
 class RuntimeOperationError(RuntimeError):
-    """A Runtime command failed, retaining its machine-readable refusal.
+    """A Runtime command failed, retaining its machine-readable report."""
 
-    ``stop_refused`` is true when the enclosing stop operation supplies that
-    context, or when Runtime returns its explicit lifecycle refusal report
-    (including upgrade's internal stop). A generic command error says nothing
-    about a stop.
-    ``stop_completed`` is positive evidence that a stop crossed the Runtime
-    handoff before a later manager action failed. Callers must never infer
-    either property from the human message or a blocker count.
-    """
-
-    def __init__(self, message: str, *, details=None, stop_refused: bool = False,
-                 stop_completed: bool = False) -> None:
+    def __init__(self, message: str, *, details=None) -> None:
         super().__init__(message)
         self.details = details
-        self.stop_refused = bool(stop_refused)
-        self.stop_completed = bool(stop_completed) and not self.stop_refused
+
+
+def is_lifecycle_refusal(exc: BaseException) -> bool:
+    """Recognize Runtime's explicit pre-destruction lifecycle report."""
+    return (isinstance(exc, RuntimeOperationError)
+            and isinstance(exc.details, dict) and exc.details.get("safe") is False)
 
 
 class BackupSpaceError(RuntimeError):
@@ -399,12 +393,7 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
-        transaction = None
-        candidate = None
-        backup_image = None
-        stopped = False
-        authority = ExitStack()
-        try:
+        with ExitStack() as authority:
             candidate = prepare()
             transaction = {
                 "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
@@ -428,59 +417,59 @@ class Installer:
             # Record intent before the fenced stop: recovery can distinguish a
             # pure staged image from a stop that may have completed on crash.
             self._save_update(transaction, "stopping")
-            try:
-                stop(old, self.data)
-            except (Exception, KeyboardInterrupt) as stop_failure:
-                if isinstance(stop_failure, RuntimeOperationError) and stop_failure.stop_refused:
-                    try:
-                        self._save_update(transaction, "complete", outcome="stop_refused")
-                    except (Exception, KeyboardInterrupt) as journal_failure:
-                        stop_failure.add_note(
-                            f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
-                elif isinstance(stop_failure, RuntimeOperationError) and stop_failure.stop_completed:
-                    stopped = True
-                raise
-            stopped = True
-            self._save_update(transaction, "stopped")
-            if backup is not None:
-                backup_image = backup(old, self.data, realm)
-                transaction["backup"] = backup_image
-                self._save_update(transaction, "backed_up", backup=backup_image)
-            if migrate is not None:
-                migrate(candidate, self.data, realm)
-                self._save_update(transaction, "migrated")
-            switch_candidate(candidate)
-            self._save_update(transaction, "switched")
-            activate(candidate, self.data, realm)
-            self._save_update(transaction, "verified")
-            self._last_update_backup = backup_image
-            if kind == "migration":
-                self.backend.finish(old, candidate, backup_image)
-            self._save_update(transaction, "complete")
-            return candidate
-        except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
-                raise
-            if stopped:
+
+            def rollback_after(failure):
                 try:
                     rollback_transaction(
                         self.root, self.data, self.backend, transaction,
-                        stop=stop,
-                        switch_old=switch_old, activate_old=activate_old,
+                        stop=stop, switch_old=switch_old, activate_old=activate_old,
                         restore_workspace=restore_workspace,
                         save=lambda step, **details: self._save_update(
                             transaction, step, **details),
                     )
                 except (Exception, KeyboardInterrupt) as recovery:
-                    if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
-                        raise recovery
+                    if is_lifecycle_refusal(recovery):
+                        raise
                     combined = RuntimeError(
                         f"Update failed ({failure}); recovery also failed ({recovery}).")
                     combined.step = getattr(failure, "step", None) or "update"
                     raise combined from failure
-            raise
-        finally:
-            authority.close()
+
+            try:
+                stop(old, self.data)
+            except (Exception, KeyboardInterrupt) as failure:
+                if is_lifecycle_refusal(failure):
+                    try:
+                        self._save_update(transaction, "complete", outcome="stop_refused")
+                    except (Exception, KeyboardInterrupt) as journal_failure:
+                        failure.add_note(
+                            f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
+                else:
+                    rollback_after(failure)
+                raise
+
+            backup_image = None
+            try:
+                self._save_update(transaction, "stopped")
+                if backup is not None:
+                    backup_image = backup(old, self.data, realm)
+                    transaction["backup"] = backup_image
+                    self._save_update(transaction, "backed_up", backup=backup_image)
+                if migrate is not None:
+                    migrate(candidate, self.data, realm)
+                    self._save_update(transaction, "migrated")
+                switch_candidate(candidate)
+                self._save_update(transaction, "switched")
+                activate(candidate, self.data, realm)
+                self._save_update(transaction, "verified")
+                self._last_update_backup = backup_image
+                if kind == "migration":
+                    self.backend.finish(old, candidate, backup_image)
+                self._save_update(transaction, "complete")
+                return candidate
+            except (Exception, KeyboardInterrupt) as failure:
+                rollback_after(failure)
+                raise
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
@@ -664,13 +653,13 @@ class Installer:
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
             self.backend.finish(old, candidate, backup)
         except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
+            if is_lifecycle_refusal(failure):
                 raise
             if candidate is not None:
                 try:
                     self.backend.stop(candidate, self.data)
                 except (Exception, KeyboardInterrupt) as cleanup:
-                    if isinstance(cleanup, RuntimeOperationError) and cleanup.stop_refused:
+                    if is_lifecycle_refusal(cleanup):
                         raise cleanup
                     failure.add_note(f"Stopping the failed installation also failed: {cleanup!r}")
             raise

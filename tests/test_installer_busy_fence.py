@@ -105,7 +105,8 @@ def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkey
         else:
             mode = 'install' if operation == 'repair' else 'uninstall' if operation in ('uninstall', 'delete-data') else 'update'
             installer.run(mode, {}, delete_data=operation == 'delete-data')
-    assert raised.value.stop_refused is True
+    from astrid.installer.core import is_lifecycle_refusal
+    assert is_lifecycle_refusal(raised.value)
     assert raised.value.details is not None, (str(raised.value), repr(raised.value.__cause__))
     assert raised.value.details['task_count'] == 1
     assert str(raised.value).splitlines()[0] == 'Astrid is busy (1 tasks running). Try again when they finish.'
@@ -193,7 +194,7 @@ def test_unknown_owner_stop_failure_never_falls_back_to_manager(tmp_path, monkey
     before = snapshot([paths.discovery_path, paths.instance_lock_path])
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(old, data)
-    assert not raised.value.stop_completed
+    assert raised.value.details is None
     assert calls == ['prepare', 'runtime-stop']
     assert snapshot([paths.discovery_path, paths.instance_lock_path]) == before
 
@@ -215,7 +216,11 @@ def test_actual_subprocess_result_mapping_preserves_refusals(tmp_path, monkeypat
     error = output['error']
     assert str(raised.value) == (error['message'] if isinstance(error, dict) else error)
     assert raised.value.details == (error.get('details') if isinstance(error, dict) else None)
-    assert raised.value.stop_refused
+    from astrid.installer.core import is_lifecycle_refusal
+    assert is_lifecycle_refusal(raised.value) is (
+        isinstance(error, dict) and isinstance(error.get('details'), dict)
+        and error['details'].get('safe') is False
+    )
 
 
 def test_cli_busy_preflight_precedes_marker_and_selection_writes(tmp_path, monkeypatch, capsys):
@@ -322,8 +327,8 @@ def test_replacement_before_manager_loses_stop_authority(tmp_path, monkeypatch):
     boundary.stop_owner = stop_owner
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(old, data)
-    assert raised.value.stop_refused
-    assert not raised.value.stop_completed
+    from astrid.installer.core import is_lifecycle_refusal
+    assert not is_lifecycle_refusal(raised.value)
     assert calls == ['prepare', 'runtime-stop']
     assert json.loads(paths.discovery_path.read_text())['runtime_instance_id'] == 'replacement'
 

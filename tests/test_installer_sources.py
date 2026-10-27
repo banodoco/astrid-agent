@@ -321,7 +321,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     def stop(version, _data):
         calls["stop"].append(version.root)
         if outcome == "busy" and version.root == old_root:
-            raise RuntimeOperationError("Runtime is busy", stop_refused=True)
+            raise RuntimeOperationError("Runtime is busy", details={"safe": False})
 
     def verify(version, *_args, **_kwargs):
         calls["verify"].append(version.root)
