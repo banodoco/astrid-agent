@@ -127,6 +127,7 @@ astrid = [
 
     # The named OMP profile is a runtime resource, not a user-home seed.
     "agent_profiles/*.md",
+    "agent_profiles/*.identity.json",
     "omp_extensions/*.ts",
     # Native build pins for explicitly selected OMP fork sources.
     "installer/omp/*.json",

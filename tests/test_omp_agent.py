@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import signal
 import subprocess
 from pathlib import Path
@@ -209,6 +211,129 @@ def test_astrid_command_overrides_inherited_identity(monkeypatch) -> None:
     assert os.environ["OMP_AGENT_IDENTITY"] == "astrid"
     assert os.environ["ASTRID_AGENT_IDENTITY"] == "astrid"
     assert captured["argv"][:3] == ["/fake/agent", "run", "astrid"]
+
+
+def test_packaged_identity_asset_contract_and_package_data() -> None:
+    """The OMP mark reproduces Astrid's favicon with colored block pixels.
+
+    Provenance: ../app-main/public/astrid-favicon.svg in the sibling app
+    checkout, introduced as "Set favicon" (c388c3c1c); related favicon
+    history includes 4bb1280a3, 78d1f0773, and bc57b0ed3. The expected grid
+    records source pixels as O=orange, C=cream, #=ink, space=clear; each
+    non-space pixel becomes a solid block with a matching cell color override.
+    """
+    identity_path = omp_agent._AGENT_IDENTITY_FILE
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+
+    assert identity["id"] == "astrid"
+    assert identity["displayName"] == "Astrid"
+    favicon_pixels = [
+        "                ",
+        "        ####    ",
+        "      ##OOOO#   ",
+        "     #OOOOOOO###",
+        "   ##OOOO##OOO##",
+        "  #OOOOOO##OOOC#",
+        "  #O#OOOOOOCCC# ",
+        "  #OOOOOOCCCC#  ",
+        "   #OOOOCCCC#   ",
+        "   #OOOCCC##    ",
+        "  #OOOOCCC#     ",
+        "  #OOOCCCC#     ",
+        " ##OOOCCCC#     ",
+        "##OOOOCCCC#     ",
+        "OOOOOCCCC#      ",
+        "OOOOOCCCC#      ",
+    ]
+    colors = {"O": "#FF7A2E", "C": "#F7E6CF", "#": "#151311"}
+    assert identity["logo"] == [
+        "".join("█" if pixel != " " else " " for pixel in row) for row in favicon_pixels
+    ]
+    assert identity["cellOverrides"] == [
+        {"row": row, "col": col, "color": colors[pixel], "char": "█"}
+        for row, pixels in enumerate(favicon_pixels)
+        for col, pixel in enumerate(pixels)
+        if pixel != " "
+    ]
+    assert len({len(line) for line in identity["logo"]}) == 1
+    assert identity["themeColors"] == {
+        "accent": "#FF7A2E",
+        "borderAccent": "#F7E6CF",
+        "background": "#151311",
+    }
+    gradient = identity["gradient"]
+    assert len(gradient["stops"]) >= 2
+    assert all(
+        isinstance(color, list)
+        and len(color) == 3
+        and all(isinstance(channel, int) and 0 <= channel <= 255 for channel in color)
+        for color in gradient["stops"]
+    )
+    assert gradient["ramp256"] and all(
+        isinstance(color, int) and 0 <= color <= 255 for color in gradient["ramp256"]
+    )
+    assert all(
+        isinstance(color, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", color)
+        for color in identity["themeColors"].values()
+    )
+
+    package_data = (identity_path.parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"agent_profiles/*.identity.json"' in package_data
+
+
+def test_default_agent_passes_packaged_identity_file_to_child(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("OMP_AGENT_IDENTITY_FILE", "/stale/inherited/identity.json")
+    monkeypatch.setattr(omp_agent, "_has_named_agent_profile", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(omp_agent, "_find_launcher", lambda: Path("/fake/agent"))
+    monkeypatch.setattr(omp_agent, "_select_omp_bin", lambda: None)
+    monkeypatch.setattr(
+        omp_agent,
+        "replace_process",
+        lambda argv: captured.update(argv=argv, env=os.environ.copy()),
+    )
+
+    assert omp_agent.main([]) == 1
+    child_env = captured["env"]
+    assert child_env["OMP_AGENT_IDENTITY"] == "astrid"
+    assert child_env["ASTRID_AGENT_IDENTITY"] == "astrid"
+    assert child_env["OMP_AGENT_IDENTITY_FILE"] == str(omp_agent._AGENT_IDENTITY_FILE.resolve())
+
+
+def test_alternate_agent_clears_inherited_astrid_identity_file(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("OMP_AGENT_IDENTITY_FILE", "/stale/astrid.identity.json")
+    monkeypatch.setattr(omp_agent, "_has_named_agent_profile", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(omp_agent, "_find_launcher", lambda: Path("/fake/agent"))
+    monkeypatch.setattr(omp_agent, "_select_omp_bin", lambda: None)
+    monkeypatch.setattr(
+        omp_agent,
+        "replace_process",
+        lambda argv: captured.update(argv=argv, env=os.environ.copy()),
+    )
+
+    assert omp_agent.main(["--agent", "scout"]) == 1
+    child_env = captured["env"]
+    assert child_env["OMP_AGENT_IDENTITY"] == "scout"
+    assert child_env["ASTRID_AGENT_IDENTITY"] == "scout"
+    assert "OMP_AGENT_IDENTITY_FILE" not in child_env
+
+
+def test_default_agent_unsets_identity_file_if_packaged_resource_is_unavailable(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("OMP_AGENT_IDENTITY_FILE", "/stale/inherited/identity.json")
+    monkeypatch.setattr(omp_agent, "_AGENT_IDENTITY_FILE", Path("/missing/astrid.identity.json"))
+    monkeypatch.setattr(omp_agent, "_has_named_agent_profile", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(omp_agent, "_find_launcher", lambda: Path("/fake/agent"))
+    monkeypatch.setattr(omp_agent, "_select_omp_bin", lambda: None)
+    monkeypatch.setattr(
+        omp_agent,
+        "replace_process",
+        lambda argv: captured.update(argv=argv, env=os.environ.copy()),
+    )
+
+    assert omp_agent.main([]) == 1
+    assert "OMP_AGENT_IDENTITY_FILE" not in captured["env"]
 
 
 def test_bare_agent_subcommand_is_an_explicit_interactive_agent_route(monkeypatch) -> None:

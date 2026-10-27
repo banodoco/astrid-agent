@@ -28,6 +28,7 @@ from .version import ASTRID_VERSION
 DEFAULT_AGENT = "astrid"
 ASTRID_OPENROUTER_DEFAULT_MODEL: str | None = "openrouter/deepseek/deepseek-v4.1-flash-1017"  # DeepSeek V4.1 Flash 1017 (OpenRouter, Oct 2026); applied only when no default is set
 _AGENT_PROFILE_FILE = Path(__file__).resolve().parent / "agent_profiles" / "astrid.md"
+_AGENT_IDENTITY_FILE = Path(__file__).resolve().parent / "agent_profiles" / "astrid.identity.json"
 
 # ``astrid`` is the single user-facing command. Product families are stable
 # core routes. Pack routes are discovered from installed manifests at dispatch
@@ -745,6 +746,16 @@ def main(argv: list[str] | None = None) -> int:
     # identity into a new Astrid process (including the onboarding surface).
     os.environ["OMP_AGENT_IDENTITY"] = agent
     os.environ["ASTRID_AGENT_IDENTITY"] = agent
+    # The branded fork can load a packaged identity directly. Keep it scoped
+    # to Astrid and avoid exporting a dangling path from a partial install.
+    if agent == DEFAULT_AGENT:
+        identity_file = _AGENT_IDENTITY_FILE.resolve()
+        if identity_file.is_file():
+            os.environ["OMP_AGENT_IDENTITY_FILE"] = str(identity_file)
+        else:
+            os.environ.pop("OMP_AGENT_IDENTITY_FILE", None)
+    else:
+        os.environ.pop("OMP_AGENT_IDENTITY_FILE", None)
     # Keep the OMP runtime's compatibility version separate from the version
     # shown in Astrid's interactive banner.  Assignment also prevents a
     # previously launched branded profile from leaking into this process.
