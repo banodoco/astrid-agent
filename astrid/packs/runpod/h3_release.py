@@ -40,6 +40,10 @@ class AllocationRejected(BuildError):
     pass
 
 
+class AttachmentPending(BuildError):
+    pass
+
+
 def release_inputs():
     recipe = json.loads((_DATA / "environment.linux-cu130.json").read_text())
     lock = json.loads((_DATA / "models.lock.json").read_text())
@@ -70,6 +74,11 @@ def check_attachment(pod, volume, image, pod_type):
     attached = pod.get("networkVolumeId") or network.get("id")
     machine = pod.get("machine") or {}
     dc = pod.get("dataCenterId") or machine.get("dataCenterId") or network.get("dataCenterId")
+    observed = {"volume_id": attached, "datacenter": dc,
+                "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
+    missing = [name for name, value in observed.items() if value is None or value == ""]
+    if missing:
+        raise AttachmentPending("provider attachment metadata pending: " + ", ".join(missing))
     if (attached != volume["id"] or dc != volume["datacenter"]
             or pod.get("volumeMountPath") != volume["mount"]
             or pod.get("imageName") != image):
@@ -77,7 +86,10 @@ def check_attachment(pod, volume, image, pod_type):
                     "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
         raise BuildError("provider did not verify exact volume, data center, mount and image: " + json.dumps(observed, sort_keys=True))
     expected = "CPU" if pod_type == "cpu" else "GPU"
-    if pod.get("computeType") != expected:
+    observed_compute = pod.get("computeType")
+    if observed_compute is None:
+        raise AttachmentPending("provider compute type metadata pending")
+    if observed_compute != expected:
         raise BuildError("provider returned a different compute type")
 
 
@@ -223,7 +235,13 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                     handle["provider_observation"] = {key: observed.get(key) for key in (
                         "id", "networkVolumeId", "networkVolume", "dataCenterId", "volumeMountPath", "imageName", "computeType", "gpuCount")}
                     remote.atomic_json(handle_path, handle)
-                    check_attachment(observed, volume, inputs["recipe"]["image"], pod_type)
+                    try:
+                        check_attachment(observed, volume, inputs["recipe"]["image"], pod_type)
+                    except AttachmentPending as exc:
+                        handle["readiness_wait"] = str(exc)
+                        remote.atomic_json(handle_path, handle)
+                        sleep(min(2, max(0, claim_deadline - now())))
+                        continue
                     price = observed.get("costPerHr")
                     if (isinstance(price, bool) or not isinstance(price, (float, int))
                             or not math.isfinite(price) or price <= 0 or price > max_hourly):

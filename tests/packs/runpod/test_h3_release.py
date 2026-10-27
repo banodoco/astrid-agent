@@ -29,6 +29,15 @@ def test_owner_provisioned_200gb_volume_is_reused_without_resize():
         build.normalize_volume({**value, "size": 99}, value["id"])
 
 
+def test_unpopulated_attachment_waits_but_wrong_identity_rejects():
+    volume = build.normalize_volume({"id":"v", "size":200,"dataCenterId":"EUR-NO-1"},"v")
+    with pytest.raises(build.AttachmentPending):
+        build.check_attachment({"id":"p"},volume,"image","cpu")
+    with pytest.raises(build.BuildError,match="exact volume"):
+        build.check_attachment({"networkVolumeId":"other","dataCenterId":"EUR-NO-1",
+                                "volumeMountPath":"/workspace","imageName":"image","computeType":"CPU"},volume,"image","cpu")
+
+
 class Clock:
     def __init__(self):
         self.value = time.time()
