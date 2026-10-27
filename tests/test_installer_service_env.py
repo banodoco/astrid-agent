@@ -183,6 +183,7 @@ def test_healthy_noop_repair_migrates_identity_without_service_registration(tmp_
     write_json(manager.service.selection, {
         "owner": LABEL, "program_root": str(root), "data_root": str(data),
         "unrelated": {"preserve": True},
+        "preferences": {"schema_version": 1, "autostart": False},
     })
     manager.workspace = lambda *_args: {"realm_id": "realm", "realm_root": str(data / "realm")}
     manager.verify = lambda *_args, **_kwargs: None
@@ -199,6 +200,11 @@ def test_healthy_noop_repair_migrates_identity_without_service_registration(tmp_
     selected = read_json(manager.service.selection)
     assert selected["identity"] == {"release": 19, "managed_by": None}
     assert selected["unrelated"] == {"preserve": True}
+    assert selected["preferences"] == {"schema_version": 1, "autostart": False}
+
+    # A second healthy repair consumes the stamp and does not repeat migration.
+    monkeypatch.setattr("astrid.installer.core.write_json", lambda *_args: pytest.fail("already migrated"))
+    Installer(root, data, manager, say=lambda _line: None).run("install", {"release": 19})
 
 
 @pytest.mark.parametrize("managed_by", [None, "pinokio"])
@@ -210,7 +216,12 @@ def test_backend_registration_keeps_selection_fields_and_records_selected_identi
     version = Version(version_root, tmp_path / "python", tmp_path / "profile", {}, 29, managed_by)
     backend = Backend(root, tmp_path / "log", tmp_path / "uv", managed_by=managed_by)
     write_json(backend.service.selection, {"owner": LABEL, "unrelated": "retained", "uninstalled": True})
-    backend.service.register = lambda *_args: None
+    def register(selected, _data):
+        # A sign-in manager may start immediately when registered.
+        assert read_json(backend.service.selection)["identity"] == selected.document()["identity"]
+        assert read_json(version_root / "version.json")["env"] == selected.env
+
+    backend.service.register = register
     backend.workspace = lambda *_args: {"realm_id": "realm", "realm_root": str(data / "realm")}
     backend._prior_chat_settings = lambda *_args: (None, {})
 

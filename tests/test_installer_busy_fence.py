@@ -105,7 +105,8 @@ def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkey
         else:
             mode = 'install' if operation == 'repair' else 'uninstall' if operation in ('uninstall', 'delete-data') else 'update'
             installer.run(mode, {}, delete_data=operation == 'delete-data')
-    assert raised.value.stop_refused is True
+    from astrid.installer.core import is_lifecycle_refusal
+    assert is_lifecycle_refusal(raised.value)
     assert raised.value.details is not None, (str(raised.value), repr(raised.value.__cause__))
     assert raised.value.details['task_count'] == 1
     assert str(raised.value).splitlines()[0] == 'Astrid is busy (1 tasks running). Try again when they finish.'
@@ -193,7 +194,7 @@ def test_unknown_owner_stop_failure_never_falls_back_to_manager(tmp_path, monkey
     before = snapshot([paths.discovery_path, paths.instance_lock_path])
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(old, data)
-    assert not raised.value.stop_completed
+    assert raised.value.details is None
     assert calls == ['prepare', 'runtime-stop']
     assert snapshot([paths.discovery_path, paths.instance_lock_path]) == before
 
@@ -215,12 +216,18 @@ def test_actual_subprocess_result_mapping_preserves_refusals(tmp_path, monkeypat
     error = output['error']
     assert str(raised.value) == (error['message'] if isinstance(error, dict) else error)
     assert raised.value.details == (error.get('details') if isinstance(error, dict) else None)
-    assert raised.value.stop_refused
+    from astrid.installer.core import is_lifecycle_refusal
+    assert is_lifecycle_refusal(raised.value) is (
+        isinstance(error, dict) and isinstance(error.get('details'), dict)
+        and error['details'].get('safe') is False
+    )
 
 
 def test_cli_busy_preflight_precedes_marker_and_selection_writes(tmp_path, monkeypatch, capsys):
     from astrid.installer import cli
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch)
+    preflight = Mock(wraps=backend.preflight_stop)
+    monkeypatch.setattr(backend, 'preflight_stop', preflight)
     monkeypatch.setattr(cli, 'Backend', lambda *_args, **_kwargs: backend)
     monkeypatch.setattr(cli, 'installer_lock_path', lambda *_: tmp_path / 'installer.lock')
     monkeypatch.setattr('runtime_protocol.platform.log_dir', lambda: tmp_path / 'logs')
@@ -228,7 +235,123 @@ def test_cli_busy_preflight_precedes_marker_and_selection_writes(tmp_path, monke
     assert cli.main(['--root', str(backend.root), '--update']) == 1
     assert 'Astrid is busy (1 tasks running). Try again when they finish.' in capsys.readouterr().out
     assert snapshot([Path(p) for p in before]) == before
+    preflight.assert_called_once_with(data)
     assert calls == []
+
+
+@pytest.mark.parametrize('claim_at', ['none', 'staging', 'final-fence'])
+def test_cli_preflights_once_and_actual_stop_fences_staged_work(tmp_path, monkeypatch, capsys, claim_at):
+    from astrid.installer import cli
+    from tests.test_installer_cli_recovery import _valid_cli_manifest
+
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    publish(paths, realm)
+    boundary = Boundary(paths, calls)
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    monkeypatch.setattr(cli, 'Backend', lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(cli, 'installer_lock_path', lambda *_: tmp_path / 'installer.lock')
+    monkeypatch.setattr('runtime_protocol.platform.log_dir', lambda: tmp_path / 'logs')
+    monkeypatch.setattr(backend, 'source_checkout_ownership', lambda *_: False)
+    monkeypatch.setattr(backend, 'has_workspace', lambda *_: True)
+    monkeypatch.setattr('astrid.installer.core.install_launcher', lambda *_: None)
+    marker_before = (backend.root / 'install.json').read_bytes()
+    pointer_before = (backend.root / 'current').read_bytes()
+    preflight = Mock(wraps=backend.preflight_stop)
+
+    def entry_preflight(selected_data):
+        assert calls == []
+        assert (backend.root / 'install.json').read_bytes() == marker_before
+        assert (backend.root / 'current').read_bytes() == pointer_before
+        preflight(selected_data)
+        calls.append('preflight')
+
+    monkeypatch.setattr(backend, 'preflight_stop', entry_preflight)
+    def claim():
+        with sqlite3.connect(realm / 'realm.sqlite3') as db:
+            db.execute("INSERT INTO tasks VALUES ('late-task','render','running',NULL)")
+
+    if claim_at == 'final-fence':
+        import runtime_protocol.lifecycle as lifecycle
+        original_assert_safe = lifecycle.assert_interruption_safe
+
+        def claim_after_last_read_only_check(selected_realm):
+            report = original_assert_safe(selected_realm)
+            claim()
+            return report
+
+        monkeypatch.setattr(lifecycle, 'assert_interruption_safe', claim_after_last_read_only_check)
+    candidate_root = backend.root / 'versions' / 'candidate'
+    candidate_root.mkdir()
+    candidate = Version(candidate_root, old.python, candidate_root / 'profile.json', {})
+
+    def stage(*_args):
+        assert calls == ['preflight']
+        calls.append('stage')
+        if claim_at == 'staging':
+            claim()
+        return candidate
+
+    monkeypatch.setattr(backend, 'stage', stage)
+    monkeypatch.setattr(backend, 'validate_candidate', lambda *_: calls.append('validate'))
+    # End the idle case after the real old-owner stop. The sentinel backup
+    # failure exercises rollback's additional C1 stop without another preflight.
+    def fail_backup(*_args):
+        calls.append('backup')
+        raise RuntimeError('backup sentinel')
+    monkeypatch.setattr(backend, 'backup', fail_backup)
+    monkeypatch.setattr(backend, 'start', lambda *_: calls.append('restart-old'))
+    monkeypatch.setattr(backend, 'register', lambda *_: None)
+    monkeypatch.setattr(backend, 'verify', lambda *_args, **_kwargs: None)
+    manifest = tmp_path / 'manifest.json'
+    write_json(manifest, _valid_cli_manifest(1))
+
+    assert cli.main(['--root', str(backend.root), '--update', '--manifest', str(manifest)]) == 1
+    preflight.assert_called_once_with(data)
+    assert calls[:3] == ['preflight', 'stage', 'validate']
+    assert (backend.root / 'current').read_bytes() == pointer_before
+    if claim_at != 'none':
+        assert calls == ['preflight', 'stage', 'validate'] + (['prepare'] if claim_at == 'final-fence' else [])
+        assert 'Astrid is busy (1 tasks running)' in capsys.readouterr().out
+        assert paths.discovery_path.exists()
+        assert paths.instance_lock_path.exists()
+    else:
+        assert calls.count('runtime-stop') == 1
+        assert calls.index('runtime-stop') < calls.index('disable') < calls.index('backup')
+        # Rollback must go through C1 again, even though entry was already safe.
+        assert calls.count('disable') == 2
+        assert calls.count('stop') == 2
+
+
+@pytest.mark.parametrize('operation', ['repair', 'uninstall'])
+def test_cli_repair_and_uninstall_preflight_once_before_stop_admission(tmp_path, monkeypatch, operation):
+    from astrid.installer import cli
+    from tests.test_installer_cli_recovery import _valid_cli_manifest
+
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    monkeypatch.setattr(cli, 'Backend', lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(cli, 'installer_lock_path', lambda *_: tmp_path / 'installer.lock')
+    monkeypatch.setattr('runtime_protocol.platform.log_dir', lambda: tmp_path / 'logs')
+    monkeypatch.setattr(backend, 'source_checkout_ownership', lambda *_: False)
+    monkeypatch.setattr('astrid.installer.core.install_launcher', lambda *_: None)
+    preflight = Mock(wraps=backend.preflight_stop)
+    monkeypatch.setattr(backend, 'preflight_stop', preflight)
+    admission = Mock(side_effect=lambda *_: calls.append('publish-admission'))
+    monkeypatch.setattr(backend, 'publish_launch_admission', admission)
+    # A real C1 stop occurs before this intentional end-of-operation failure.
+    monkeypatch.setattr(backend, 'register', Mock(side_effect=RuntimeError('after-stop sentinel')))
+    monkeypatch.setattr(backend, 'unregister', Mock(side_effect=RuntimeError('after-stop sentinel')))
+    args = ['--root', str(backend.root)]
+    if operation == 'uninstall':
+        args.append('--uninstall')
+    else:
+        manifest = tmp_path / 'manifest.json'
+        write_json(manifest, _valid_cli_manifest(0))
+        args.extend(['--manifest', str(manifest)])
+
+    assert cli.main(args) == 1
+    preflight.assert_called_once_with(data)
+    admission.assert_called_once_with(old, data)
+    assert calls == ['publish-admission', 'disable', 'stop']
 
 
 @pytest.mark.parametrize('system', ['linux', 'darwin', 'win32'])
@@ -322,8 +445,8 @@ def test_replacement_before_manager_loses_stop_authority(tmp_path, monkeypatch):
     boundary.stop_owner = stop_owner
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(old, data)
-    assert raised.value.stop_refused
-    assert not raised.value.stop_completed
+    from astrid.installer.core import is_lifecycle_refusal
+    assert not is_lifecycle_refusal(raised.value)
     assert calls == ['prepare', 'runtime-stop']
     assert json.loads(paths.discovery_path.read_text())['runtime_instance_id'] == 'replacement'
 

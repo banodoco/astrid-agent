@@ -24,6 +24,7 @@ from .core import (
     absolute,
     current,
     install_release,
+    is_lifecycle_refusal,
     read_json,
     recover_transaction,
     switch,
@@ -99,18 +100,11 @@ class LocalUpdateStepError(RuntimeError):
 
 
 def _tag_step(exc: Exception, step: str) -> Exception:
-    """Add a machine-readable step without erasing Runtime stop evidence."""
+    """Add a machine-readable step while retaining the original exception."""
     label = getattr(exc, "step", None) or step
     message = str(exc)
     if not message.startswith(f"{label}:"):
         message = f"{label}: {message}"
-    if isinstance(exc, RuntimeOperationError) and getattr(exc, "step", None) != label:
-        wrapped = RuntimeOperationError(
-            message, details=exc.details, stop_refused=exc.stop_refused,
-            stop_completed=exc.stop_completed,
-        )
-        wrapped.step = label
-        return wrapped
     try:
         exc.step = label
         if str(exc) != message:
@@ -277,7 +271,7 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
         try:
             _at_step("stop-runtime", backend.stop, version, workspace)
         except RuntimeOperationError as exc:
-            if exc.stop_refused:
+            if is_lifecycle_refusal(exc):
                 try:
                     hooks.call("start-editor", version, realm, rollback=True)
                     hooks.call("verify-editor", version, realm, rollback=True)
@@ -406,7 +400,7 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
         try:
             _at_step("stop-runtime", backend.stop, version, workspace)
         except RuntimeOperationError as exc:
-            if exc.stop_refused:
+            if is_lifecycle_refusal(exc):
                 try:
                     hooks.call("start-editor", version, realm, rollback=True)
                     hooks.call("verify-editor", version, realm, rollback=True)
@@ -480,13 +474,20 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
     except Exception as exc:
         if not getattr(exc, "step", None):
             exc = _tag_step(exc, "run-transaction")
-        if isinstance(exc, RuntimeOperationError) and exc.stop_refused and busy_handoff_restored:
-            # The shared writer has durably closed the staged journal by now;
-            # only then may App preparation resources be released.
+        if is_lifecycle_refusal(exc) and busy_handoff_restored:
+            # The shared writer must have durably closed the staged journal
+            # before App preparation resources can be released.
             try:
-                hooks.call("release-app", old, realm)
-            except Exception as cleanup_error:  # noqa: BLE001 - preserve the structured Runtime refusal
-                exc.add_note(f"Releasing the prepared App after the busy refusal also failed: {cleanup_error}")
+                journal = read_json(root / "update-transaction.json")
+            except Exception as journal_error:  # noqa: BLE001 - preserve the structured Runtime refusal
+                exc.add_note(f"Could not confirm the busy refusal journal was terminal: {journal_error}")
+            else:
+                if (isinstance(journal, dict) and journal.get("step") == "complete"
+                        and journal.get("outcome") == "stop_refused"):
+                    try:
+                        hooks.call("release-app", old, realm)
+                    except Exception as cleanup_error:  # noqa: BLE001 - preserve the structured Runtime refusal
+                        exc.add_note(f"Releasing the prepared App after the busy refusal also failed: {cleanup_error}")
         raise
     candidate = candidate_holder["value"]
     # Retire staged App resources only after the shared journal is terminal.
@@ -571,9 +572,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:  # noqa: BLE001 - protocol boundary returns every failure as JSON
         print(json.dumps({"error": str(exc), "step": getattr(exc, "step", None),
-                          "details": getattr(exc, "details", None),
-                          "stop_refused": getattr(exc, "stop_refused", False),
-                          "stop_completed": getattr(exc, "stop_completed", False)},
+                          "details": getattr(exc, "details", None)},
                          separators=(",", ":")), flush=True)
         return 1
 

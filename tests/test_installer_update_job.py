@@ -319,3 +319,37 @@ def test_rollback_is_not_reported_when_the_old_version_is_not_selected(tmp_path,
                                verify=lambda *_args, **_kwargs: None)
     cli._record_update_failure(root, data, backend, job, old, RuntimeError("start failed"))
     assert update_job.read_job(root)["state"] == "recovery-needed"
+
+
+@pytest.mark.parametrize("caller", ["job", "recovery"])
+@pytest.mark.parametrize("payload", [
+    {"runtime_instance_id": "instance", "identity": {"release": 7, "managed_by": None}},
+    {"runtime_instance_id": "different", "identity": {"release": 7, "managed_by": None}},
+    {"runtime_instance_id": "instance", "identity": {"release": True, "managed_by": None}},
+])
+def test_job_and_recovery_identity_probes_use_runtime_validator(tmp_path, monkeypatch, caller, payload):
+    from astrid_runtime import identity as runtime_identity
+
+    discovery = {"runtime_instance_id": "instance", "endpoint": "http://127.0.0.1:12345"}
+    path = tmp_path / "runtime" / "discovery.json"
+    write_json(path, discovery)
+    before = path.read_bytes()
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda *_args, **_kwargs: payload)
+    calls = []
+    validate = runtime_identity.validate_live_owner_identity
+
+    def observe(health, *, instance_id):
+        calls.append((health, instance_id))
+        return validate(health, instance_id=instance_id)
+
+    monkeypatch.setattr(runtime_identity, "validate_live_owner_identity", observe)
+    probe = (lambda: update_job._probe_identity(tmp_path)[1]) if caller == "job" else (
+        lambda: cli._canonical_identity(discovery, "instance"))
+    if payload["runtime_instance_id"] == "instance" and type(payload["identity"]["release"]) is int:
+        assert probe() == {"release": 7, "managed_by": None}
+    else:
+        with pytest.raises(runtime_identity.StartupIdentityError):
+            probe()
+    assert calls == [(payload, "instance")]
+    assert path.read_bytes() == before

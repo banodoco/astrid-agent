@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .launcher import install as install_launcher
+from .launcher import install_runtime
 from .support import HELP_MESSAGE
 
 
@@ -24,23 +25,17 @@ class VerificationError(RuntimeError):
 
 
 class RuntimeOperationError(RuntimeError):
-    """A Runtime command failed, retaining its machine-readable refusal.
+    """A Runtime command failed, retaining its machine-readable report."""
 
-    ``stop_refused`` is true when the enclosing stop operation supplies that
-    context, or when Runtime returns its explicit lifecycle refusal report
-    (including upgrade's internal stop). A generic command error says nothing
-    about a stop.
-    ``stop_completed`` is positive evidence that a stop crossed the Runtime
-    handoff before a later manager action failed. Callers must never infer
-    either property from the human message or a blocker count.
-    """
-
-    def __init__(self, message: str, *, details=None, stop_refused: bool = False,
-                 stop_completed: bool = False) -> None:
+    def __init__(self, message: str, *, details=None) -> None:
         super().__init__(message)
         self.details = details
-        self.stop_refused = bool(stop_refused)
-        self.stop_completed = bool(stop_completed) and not self.stop_refused
+
+
+def is_lifecycle_refusal(exc: BaseException) -> bool:
+    """Recognize Runtime's explicit pre-destruction lifecycle report."""
+    return (isinstance(exc, RuntimeOperationError)
+            and isinstance(exc.details, dict) and exc.details.get("safe") is False)
 
 
 class BackupSpaceError(RuntimeError):
@@ -123,34 +118,19 @@ class Version:
                 "identity": {"release": self.release, "managed_by": self.managed_by}}
 
     @classmethod
-    def load(cls, value: dict, *, managed_by: str | None = None) -> "Version":
+    def load(cls, value: dict) -> "Version":
         python = Path(value["python"])
         absolute(python.parent)  # POSIX venv interpreters themselves are links.
         root = absolute(value["root"])
-        identity = value.get("identity")
-        marker = read_json(root.parent.parent / "install.json")
-        context_managed_by = marker.get("managed_by")
-        if context_managed_by not in {None, "pinokio"}:
-            raise ValueError("Invalid installation manager in install record.")
-        if "identity" not in value:
-            # Older version records predate identity. Recover it from the
-            # immutable staged manifest and the existing install context.
-            manifest = read_json(root / "manifest.json")
-            release = install_release(manifest)
-            managed_by = context_managed_by if "managed_by" in marker else managed_by
-        else:
-            if not isinstance(identity, dict):
-                raise ValueError("Invalid installation identity in version record.")
-            release = identity.get("release")
-            managed_by = identity.get("managed_by")
-            if "managed_by" in marker:
-                managed_by = context_managed_by
+        # Legacy reconstruction is read-only. Persist only after recovery and
+        # successful stop admission (or a healthy repair requiring no stop).
+        identity = value["identity"] if "identity" in value else install_identity(root)
+        if not isinstance(identity, dict):
+            raise ValueError("Invalid installation identity in version record.")
+        release, managed_by = identity.get("release"), identity.get("managed_by")
         if type(release) is not int or release < 0 or managed_by not in {None, "pinokio"}:
             raise ValueError("Invalid installation identity in version record.")
-        env = dict(value["env"])
-        env["ASTRID_INSTALL_RELEASE"] = str(release)
-        env["ASTRID_INSTALL_MANAGED_BY"] = managed_by or ""
-        return cls(root, python, absolute(value["profile"]), env, release, managed_by)
+        return cls(root, python, absolute(value["profile"]), value["env"], release, managed_by)
 
 
 def install_release(manifest: dict) -> int:
@@ -159,6 +139,32 @@ def install_release(manifest: dict) -> int:
     if type(release) is not int or release < 0:
         raise ValueError("The install manifest release must be a nonnegative integer.")
     return release
+
+
+def install_identity(version_root: Path) -> dict:
+    """Derive a managed install's identity from its immutable manifest and marker."""
+    managed_by = read_json(version_root.parent.parent / "install.json").get("managed_by")
+    if managed_by not in {None, "pinokio"}:
+        raise ValueError("Invalid installation manager in install record.")
+    return {"release": install_release(read_json(version_root / "manifest.json")),
+            "managed_by": managed_by}
+
+
+def persist_install_identity(version: Version, program_root: Path, *,
+                             selection: Path | None = None, fields: dict | None = None) -> None:
+    """Stamp version metadata and merge the K2 identity at a caller's commit point."""
+    record = read_json(selection) if selection is not None else {}
+    if record and record.get("owner") != "haus.astrid.runtime":
+        raise ValueError("The service record belongs to another installer.")
+    if version.root.parent == program_root / "versions":
+        path = version.root / "version.json"
+        if read_json(path) != version.document():
+            write_json(path, version.document())
+    if selection is not None and (record or fields):
+        updated = {**record, **(fields or {}), "identity": version.document()["identity"]}
+        updated.pop("uninstalled", None)
+        if updated != record:
+            write_json(selection, updated)
 
 
 def inspect_schema(backend, version: Version, realm: dict, *, require_current: bool = True) -> dict:
@@ -192,7 +198,7 @@ def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str 
     return mode == "update" or release > old.release
 
 
-def current(root: Path, *, managed_by: str | None = None) -> Version | None:
+def current(root: Path) -> Version | None:
     pointer = root / "current"
     if not pointer.exists():
         return None
@@ -202,7 +208,7 @@ def current(root: Path, *, managed_by: str | None = None) -> Version | None:
     # The service's retained selection can still finish uninstalling this root.
     if not record.exists() and not linked(record):
         return None
-    version = Version.load(read_json(record), managed_by=managed_by)
+    version = Version.load(read_json(record))
     if version.root != root / "versions" / name:
         raise ValueError("The current version points outside the managed directory.")
     return version
@@ -307,7 +313,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         retained = absolute(backup["root"])
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
-    install_launcher(root)
+    install_runtime(root)
     publish = getattr(backend, "publish_launch_admission", None)
     if publish is not None:
         publish(current(root) or Version.load(transaction["old"]), data)
@@ -317,6 +323,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
         save=save,
     )
+    install_launcher(root)
 
 
 class Installer:
@@ -335,10 +342,7 @@ class Installer:
     def _publish_stop_admission(self, version: Version | None) -> None:
         publish = getattr(self.backend, "publish_launch_admission", None)
         if publish is not None and version is not None:
-            preflight = getattr(self.backend, "preflight_stop", None)
-            if preflight is not None:
-                preflight(self.data)
-            install_launcher(self.root)
+            install_runtime(self.root)
             publish(version, self.data)
 
     def _ready(self) -> None:
@@ -399,12 +403,7 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
-        transaction = None
-        candidate = None
-        backup_image = None
-        stopped = False
-        authority = ExitStack()
-        try:
+        with ExitStack() as authority:
             candidate = prepare()
             transaction = {
                 "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
@@ -421,66 +420,67 @@ class Installer:
                 transaction["transaction_context"] = transaction_context
             self._save_update(transaction, "staged")
             authority.enter_context(update_context(self.backend, transaction))
-            install_launcher(self.root)
+            install_runtime(self.root)
             publish = getattr(self.backend, "publish_launch_admission", None)
             if publish is not None:
                 publish(old, self.data)
             # Record intent before the fenced stop: recovery can distinguish a
             # pure staged image from a stop that may have completed on crash.
             self._save_update(transaction, "stopping")
-            try:
-                stop(old, self.data)
-            except (Exception, KeyboardInterrupt) as stop_failure:
-                if isinstance(stop_failure, RuntimeOperationError) and stop_failure.stop_refused:
-                    try:
-                        self._save_update(transaction, "complete", outcome="stop_refused")
-                    except (Exception, KeyboardInterrupt) as journal_failure:
-                        stop_failure.add_note(
-                            f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
-                elif isinstance(stop_failure, RuntimeOperationError) and stop_failure.stop_completed:
-                    stopped = True
-                raise
-            stopped = True
-            self._save_update(transaction, "stopped")
-            if backup is not None:
-                backup_image = backup(old, self.data, realm)
-                transaction["backup"] = backup_image
-                self._save_update(transaction, "backed_up", backup=backup_image)
-            if migrate is not None:
-                migrate(candidate, self.data, realm)
-                self._save_update(transaction, "migrated")
-            switch_candidate(candidate)
-            self._save_update(transaction, "switched")
-            activate(candidate, self.data, realm)
-            self._save_update(transaction, "verified")
-            self._last_update_backup = backup_image
-            if kind == "migration":
-                self.backend.finish(old, candidate, backup_image)
-            self._save_update(transaction, "complete")
-            return candidate
-        except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
-                raise
-            if stopped:
+
+            def rollback_after(failure):
                 try:
                     rollback_transaction(
                         self.root, self.data, self.backend, transaction,
-                        stop=stop,
-                        switch_old=switch_old, activate_old=activate_old,
+                        stop=stop, switch_old=switch_old, activate_old=activate_old,
                         restore_workspace=restore_workspace,
                         save=lambda step, **details: self._save_update(
                             transaction, step, **details),
                     )
                 except (Exception, KeyboardInterrupt) as recovery:
-                    if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
-                        raise recovery
+                    if is_lifecycle_refusal(recovery):
+                        raise
                     combined = RuntimeError(
                         f"Update failed ({failure}); recovery also failed ({recovery}).")
                     combined.step = getattr(failure, "step", None) or "update"
                     raise combined from failure
-            raise
-        finally:
-            authority.close()
+
+            try:
+                stop(old, self.data)
+            except (Exception, KeyboardInterrupt) as failure:
+                if is_lifecycle_refusal(failure):
+                    try:
+                        self._save_update(transaction, "complete", outcome="stop_refused")
+                    except (Exception, KeyboardInterrupt) as journal_failure:
+                        failure.add_note(
+                            f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
+                else:
+                    rollback_after(failure)
+                raise
+
+            backup_image = None
+            try:
+                self._save_update(transaction, "stopped")
+                if backup is not None:
+                    backup_image = backup(old, self.data, realm)
+                    transaction["backup"] = backup_image
+                    self._save_update(transaction, "backed_up", backup=backup_image)
+                if migrate is not None:
+                    migrate(candidate, self.data, realm)
+                    self._save_update(transaction, "migrated")
+                switch_candidate(candidate)
+                self._save_update(transaction, "switched")
+                activate(candidate, self.data, realm)
+                install_launcher(self.root)
+                self._save_update(transaction, "verified")
+                self._last_update_backup = backup_image
+                if kind == "migration":
+                    self.backend.finish(old, candidate, backup_image)
+                self._save_update(transaction, "complete")
+                return candidate
+            except (Exception, KeyboardInterrupt) as failure:
+                rollback_after(failure)
+                raise
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
@@ -537,15 +537,10 @@ class Installer:
 
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
-            # Repair may be a no-op when the service is already healthy. Still
-            # migrate the existing records in place without touching services.
-            persist = getattr(self.backend, "persist_identity", None)
             realm = self.backend.workspace(old, self.data)
             if self.managed_by == "pinokio":
-                install_launcher(self.root)
-                if persist is not None:
-                    persist(old)
                 self.backend.register(old, self.data)
+                install_launcher(self.root)
                 try:
                     self.backend.sync_skills(old)
                 except Exception:  # noqa: BLE001 - skill setup is best effort
@@ -560,19 +555,20 @@ class Installer:
                 pass
             else:
                 if not self.backend.restart_required():
-                    install_launcher(self.root)
+                    # The only repair path without registration still stamps
+                    # legacy records, after recovery and healthy verification.
+                    persist = getattr(self.backend, "persist_identity", None)
                     if persist is not None:
                         persist(old)
+                    install_launcher(self.root)
                     self.say("Open https://astrid.haus")
                     self.backend.open()
                     return
             self.say("Restarting Astrid with the installed version.")
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
-            install_launcher(self.root)
-            if persist is not None:
-                persist(old)
             self.backend.register(old, self.data)
+            install_launcher(self.root)
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
             self.say("Open https://astrid.haus")
@@ -601,7 +597,6 @@ class Installer:
 
             def select(candidate: Version) -> None:
                 switch(self.root, candidate)
-                install_launcher(self.root)
 
             def activate(candidate: Version, data: Path, selected_realm: dict) -> None:
                 self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
@@ -646,9 +641,9 @@ class Installer:
             else:
                 realm = self.backend.create(candidate, self.data)
             switch(self.root, candidate)
-            install_launcher(self.root)
             self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
             self.backend.register(candidate, self.data)
+            install_launcher(self.root)
             if self.managed_by != "pinokio":
                 self.backend.start(candidate, self.data)
             if self.managed_by != "pinokio":
@@ -664,13 +659,13 @@ class Installer:
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
             self.backend.finish(old, candidate, backup)
         except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
+            if is_lifecycle_refusal(failure):
                 raise
             if candidate is not None:
                 try:
                     self.backend.stop(candidate, self.data)
                 except (Exception, KeyboardInterrupt) as cleanup:
-                    if isinstance(cleanup, RuntimeOperationError) and cleanup.stop_refused:
+                    if is_lifecycle_refusal(cleanup):
                         raise cleanup
                     failure.add_note(f"Stopping the failed installation also failed: {cleanup!r}")
             raise

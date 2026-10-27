@@ -9,7 +9,7 @@ import pytest
 from runtime_protocol import platform
 from runtime_protocol.upgrade import inspect_canonical_schema
 
-from astrid.installer import app_update, cli
+from astrid.installer import app_update, cli, core
 from astrid.installer.backend import Backend
 from astrid.installer.core import Installer, Version, current, read_json, switch, write_json
 from astrid.installer.service import LABEL, installer_lock_path
@@ -144,7 +144,7 @@ def test_recovery_preserves_transaction_and_replacement_at_every_admission(
     if changed in {"realm", "root"} or moment in {"between_reads", "final"}:
         with pytest.raises(RuntimeOperationError) as raised:
             recover()
-        assert raised.value.stop_refused
+        assert not core.is_lifecycle_refusal(raised.value)
         assert boundary.stop_calls == 0
         for path in tracked:
             assert path.read_bytes() == before[path], path
@@ -213,7 +213,7 @@ def test_real_c1_refuses_untrusted_owner_before_manager_action(tmp_path, monkeyp
     }
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(None, data)
-    assert raised.value.stop_refused
+    assert not core.is_lifecycle_refusal(raised.value)
     assert boundary.stop_calls == 0
     assert manager_calls == []
     assert paths.catalog_path.read_bytes() == before["catalog"]
@@ -280,7 +280,7 @@ def test_recovery_refuses_unrelated_stale_publication_even_with_copied_operation
     pointer_before = (backend.root / "current").read_bytes()
     with pytest.raises(RuntimeOperationError) as raised:
         recover()
-    assert raised.value.stop_refused
+    assert not core.is_lifecycle_refusal(raised.value)
     assert boundary.stop_calls == 0
     assert journal.read_bytes() == journal_before
     assert (backend.root / "current").read_bytes() == pointer_before
@@ -345,7 +345,7 @@ def _foreground_stop_case(tmp_path, monkeypatch, mutation):
     if mutation != "matching":
         with pytest.raises(RuntimeOperationError) as raised:
             backend.stop(None, data)
-        assert raised.value.stop_refused
+        assert not core.is_lifecycle_refusal(raised.value)
         assert signals == []
         assert manager_calls == []
     else:
@@ -369,7 +369,7 @@ def test_recovery_refuses_stale_publication_when_process_absence_is_not_proven(t
     with pytest.raises(RuntimeOperationError) as raised:
         recover()
 
-    assert raised.value.stop_refused
+    assert not core.is_lifecycle_refusal(raised.value)
     assert journal.read_bytes() == before
     assert paths.discovery_path.exists()
     assert paths.instance_lock_path.exists()
@@ -403,7 +403,7 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     with pytest.raises(RuntimeOperationError) as raised:
         recover()
 
-    assert raised.value.stop_refused
+    assert not core.is_lifecycle_refusal(raised.value)
     assert journal.read_bytes() == before
     assert read_json(paths.discovery_path)["pid"] == 887
     backend.restore.assert_not_called()
@@ -589,7 +589,7 @@ def test_fresh_controller_recovery_refuses_without_restore_or_relaunch(tmp_path,
         monkeypatch.setattr(bootstrap, "_bootstrap_mutex", replacement_before_final_admission)
     with pytest.raises(RuntimeOperationError) as raised:
         Installer(root, data, fresh, say=lambda _: None)._recover_update()
-    assert raised.value.stop_refused
+    assert core.is_lifecycle_refusal(raised.value) is (refusal == "busy")
     if refusal == "busy":
         assert raised.value.details["blockers"][0]["task_id"] == "busy-1"
     else:
@@ -895,7 +895,9 @@ def test_backend_preflight_refuses_readable_restore_gap_before_writes(tmp_path, 
         # This public Backend entry independently derives disk context; there is
         # no transaction_stop_context installed around the call.
         backend.preflight_stop(data)
-    assert raised.value.stop_refused
+    # This preflight rejects the interrupted restore before the C1 lifecycle
+    # report; even a busy realm here is not stop-refusal authority.
+    assert not core.is_lifecycle_refusal(raised.value)
     _assert_restore_refusal_unchanged(
         backend, paths, realm, boundary, manager_calls, backup, journal,
         pointer_before, journal_before, backup_before, realm_before)
@@ -1013,7 +1015,7 @@ def test_active_restore_refuses_missing_or_linked_disk_journal_before_legacy_fal
 
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(None, data)
-    assert raised.value.stop_refused
+    assert not core.is_lifecycle_refusal(raised.value)
     assert boundary.stop_calls == 0
     assert manager_calls == []
     backend.service.disable.assert_not_called()

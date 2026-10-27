@@ -2,6 +2,8 @@
 
 import importlib
 import json
+import os
+import runpy
 import shutil
 import sqlite3
 import subprocess
@@ -17,6 +19,7 @@ from astrid.installer.core import (
     VerificationError,
     Version,
     current,
+    is_lifecycle_refusal,
     read_json,
     switch,
     write_json,
@@ -353,7 +356,7 @@ def test_switched_journal_publication_failure_rolls_back_selected_candidate(tmp_
 
 
 @pytest.mark.parametrize("category", ["busy", "timeout", "identity"])
-def test_runtime_stop_refusal_preserves_structured_details_without_rollback(tmp_path, category):
+def test_runtime_stop_report_preserves_details_and_only_lifecycle_refusal_skips_rollback(tmp_path, category):
     root, data = tmp_path / "program", tmp_path / "data"
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
@@ -366,13 +369,16 @@ def test_runtime_stop_refusal_preserves_structured_details_without_rollback(tmp_
     backend.old = old
     details = {"kind": category, "blockers": [{"task_id": "task-1", "state": "running"}]}
 
+    if category == "busy":
+        details["safe"] = False
+
     def refuse(*_):
         transaction = read_json(root / "update-transaction.json")
         assert transaction["step"] == "stopping"
         assert transaction["candidate"]["root"] == str(root / "versions" / "candidate")
         backend.calls.append(("stop", old, data))
         raise RuntimeOperationError("Astrid is busy (1 tasks running). Try again when they finish.",
-                                    details=details, stop_refused=True)
+                                    details=details)
 
     backend.stop = refuse
     installer = Installer(root, data, backend, say=lambda _line: None)
@@ -392,9 +398,15 @@ def test_runtime_stop_refusal_preserves_structured_details_without_rollback(tmp_
         return original_refuse(*args)
 
     backend.stop = assert_staged_then_refuse
-    with pytest.raises(RuntimeOperationError) as raised:
+    with pytest.raises(RuntimeError) as raised:
         installer.run("update", {})
 
+    if category != "busy":
+        assert raised.value.__cause__.details == details
+        assert current(root) == old
+        assert [call[0] for call in backend.calls] == ["stage", "validate_candidate", "stop", "stop"]
+        assert read_json(root / "update-transaction.json")["step"] == "stopping"
+        return
     assert raised.value.details == details
     assert current(root) == old
     assert [call[0] for call in backend.calls] == ["stage", "validate_candidate", "stop"]
@@ -403,7 +415,97 @@ def test_runtime_stop_refusal_preserves_structured_details_without_rollback(tmp_
     assert transaction["outcome"] == "stop_refused"
 
 
-def test_explicit_partial_stop_evidence_allows_update_recovery(tmp_path):
+@pytest.mark.parametrize("operation", ["update", "restart-repair", "recovery"])
+def test_legacy_terminal_survives_public_install_final_stop_refusal(tmp_path, monkeypatch, operation):
+    from astrid.installer import launcher
+
+    root, data = tmp_path / "program", tmp_path / "data"
+    folder = root / "versions" / "old"
+    legacy = {"root": str(folder), "python": sys.executable,
+              "profile": str(folder / "profile.json"), "env": {}}
+    write_json(folder / "version.json", legacy)
+    write_json(folder / "manifest.json", {"release": 0})
+    marker = {"owner": LABEL, "data_root": str(data), "preferences": {"open": False}}
+    write_json(root / "install.json", marker)
+    (root / "current").write_text("old\n", encoding="utf-8")
+    # Generate the retained pre-X6 command, rather than pre-stamping the legacy
+    # record to make the new runner accept it. Production has no such fallback.
+    with monkeypatch.context() as retained:
+        retained.setattr(launcher, "_RUNNER", (
+            Path(__file__).parent / "fixtures" / "installer_legacy_runner.py"
+        ).read_text(encoding="utf-8"))
+        terminal, runner = launcher.install(root)
+    retained_command = {path: path.read_bytes() for path in (terminal, runner)}
+    (root / "run_runtime.py").write_text("# stale Runtime gate\n", encoding="utf-8")
+    backend = LifecycleBackend(root, data)
+    backend.restart_required_value = True
+    release = 1 if operation == "update" else 0
+    pending = {"format": "astrid-install-update/v1", "operation_id": "a" * 32,
+               "transaction_kind": "migration", "data_root": str(data),
+               "old": legacy, "candidate": None, "backup": None,
+               "realm": backend.workspace(), "step": "stopping"}
+    if operation == "recovery":
+        write_json(root / "update-transaction.json", pending)
+    admission = []
+    stops = []
+
+    def publish(version, workspace):
+        admission.append((version, workspace))
+        assert "launch_admission" in (root / "run_runtime.py").read_text(encoding="utf-8")
+
+    def refuse(version, workspace):
+        stops.append((version, workspace))
+        assert admission == [(version, workspace)]
+        assert read_json(folder / "version.json") == legacy
+        assert read_json(root / "install.json") == marker
+        if operation in {"update", "recovery"}:
+            assert read_json(root / "update-transaction.json")["step"] == "stopping"
+        raise RuntimeOperationError("Astrid is busy",
+                                    details={"safe": False, "kind": "busy"})
+
+    backend.publish_launch_admission = publish
+    backend.stop = refuse
+    handoffs = []
+
+    class SelectedCLI(Exception):
+        pass
+
+    def execvpe(python, argv, env):
+        handoffs.append((python, argv, env))
+        raise SelectedCLI
+
+    monkeypatch.setattr(os, "execvpe", execvpe)
+    monkeypatch.setattr(sys, "argv", [str(runner), "projects", "list"])
+
+    def invoke_terminal():
+        with pytest.raises(SelectedCLI):
+            runpy.run_path(str(runner), run_name="__main__")
+        assert handoffs[-1][0] == sys.executable
+        assert handoffs[-1][1] == [sys.executable, "-X", "utf8", "-I", "-m",
+                                   "astrid.omp_agent", "projects", "list"]
+        assert handoffs[-1][2]["ASTRID_INSTALL_PROGRAM_ROOT"] == str(root)
+
+    invoke_terminal()
+    with pytest.raises(RuntimeOperationError, match="Astrid is busy") as raised:
+        Installer(root, data, backend, say=lambda _line: None).run("install", {"release": release})
+
+    assert is_lifecycle_refusal(raised.value)
+    assert len(stops) == 1
+    assert (root / "current").read_text(encoding="utf-8") == "old\n"
+    assert read_json(folder / "version.json") == legacy
+    assert read_json(root / "install.json") == marker
+    if release:
+        transaction = read_json(root / "update-transaction.json")
+        assert transaction["step"] == "complete"
+        assert transaction["outcome"] == "stop_refused"
+    elif operation == "recovery":
+        assert read_json(root / "update-transaction.json") == pending
+    invoke_terminal()
+    assert len(handoffs) == 2
+    assert all(path.read_bytes() == content for path, content in retained_command.items())
+
+
+def test_post_stop_failure_runs_update_recovery(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
@@ -419,7 +521,7 @@ def test_explicit_partial_stop_evidence_allows_update_recovery(tmp_path):
         backend.calls.append(("stop", old, data))
         if len([call for call in backend.calls if call[0] == "stop"]) == 1:
             raise RuntimeOperationError("service manager failed after Runtime stopped",
-                                        stop_refused=False, stop_completed=True)
+                                        details={"cause_details": {"safe": False}})
 
     backend.stop = partial_stop
     with pytest.raises(RuntimeOperationError):
@@ -579,7 +681,7 @@ def test_newer_release_keeps_shared_transaction_safety(tmp_path, failure):
     elif failure == "busy":
         def refuse_stop(*_args):
             backend.calls.append(("stop",))
-            raise RuntimeOperationError("owner busy", details={"task_count": 1}, stop_refused=True)
+            raise RuntimeOperationError("owner busy", details={"safe": False, "task_count": 1})
 
         backend.stop = refuse_stop
         expected = RuntimeOperationError
@@ -645,7 +747,7 @@ def test_non_stop_runtime_error_still_runs_update_recovery(tmp_path):
     with pytest.raises(RuntimeOperationError, match="Runtime upgrade failed") as raised:
         Installer(root, data, backend, say=lambda _line: None).run("update", {})
 
-    assert raised.value.stop_refused is False
+    assert not is_lifecycle_refusal(raised.value)
     assert current(root) == old
     assert [call[0] for call in backend.calls].count("stop") == 2
     assert any(call[0] == "restore" for call in backend.calls)
@@ -655,7 +757,7 @@ def test_non_stop_runtime_error_still_runs_update_recovery(tmp_path):
 def test_fresh_install_runtime_refusal_does_not_retry_stop(tmp_path):
     root, data = tmp_path / "program", tmp_path / "data"
     backend = LifecycleBackend(root, data)
-    failure = RuntimeOperationError("Runtime refused", details={"safe": False}, stop_refused=True)
+    failure = RuntimeOperationError("Runtime refused", details={"safe": False})
 
     def create(*_args):
         backend.calls.append(("create",))
@@ -679,7 +781,7 @@ def test_repair_stop_refusal_does_not_persist_identity(tmp_path):
 
     def refuse(*_args):
         raise RuntimeOperationError("Astrid is busy (1 tasks running). Try again when they finish.",
-                                    details={"task_count": 1}, stop_refused=True)
+                                    details={"safe": False, "task_count": 1})
 
     backend.stop = refuse
     with pytest.raises(RuntimeOperationError, match="Astrid is busy"):
@@ -688,7 +790,7 @@ def test_repair_stop_refusal_does_not_persist_identity(tmp_path):
     assert persisted == []
 
 
-def test_candidate_stop_refusal_never_retries_or_rolls_back(tmp_path):
+def test_candidate_stop_refusal_retries_fenced_stop_before_any_restore(tmp_path):
     root, data, old, backend = _installed_lifecycle_backend(tmp_path)
     backend.backup = lambda *_args: {"root": str(root / "backups" / "kept")}
     backend.upgrade = lambda *_args: None
@@ -699,7 +801,7 @@ def test_candidate_stop_refusal_never_retries_or_rolls_back(tmp_path):
         stops.append(version)
         if version != old:
             raise RuntimeOperationError("Astrid is busy during candidate teardown",
-                                        details={"task_count": 1}, stop_refused=True)
+                                        details={"safe": False, "task_count": 1})
         original_stop(version, stopped_data)
 
     backend.stop = stop
@@ -710,8 +812,11 @@ def test_candidate_stop_refusal_never_retries_or_rolls_back(tmp_path):
     with pytest.raises(RuntimeOperationError, match="busy during candidate teardown"):
         Installer(root, data, backend, say=lambda _line: None).run("update", {})
 
-    assert len(stops) == 2
-    assert stops[0] == old and stops[1] != old
+    assert len(stops) == 3
+    assert stops[0] == old and stops[1] != old and stops[2] == stops[1]
+    transaction = read_json(root / "update-transaction.json")
+    assert transaction["step"] == "backed_up"
+    assert "outcome" not in transaction
     assert current(root) == old
 
 
@@ -723,7 +828,7 @@ def test_recovery_stop_refusal_is_rethrown_without_activation(tmp_path):
         stops.append(version)
         if len(stops) == 2:
             raise RuntimeOperationError("Astrid is busy during recovery",
-                                        details={"task_count": 2}, stop_refused=True)
+                                        details={"safe": False, "task_count": 2})
 
     backend.stop = stop
     backend.backup = lambda *_args: (_ for _ in ()).throw(RuntimeError("backup failed"))
@@ -733,7 +838,7 @@ def test_recovery_stop_refusal_is_rethrown_without_activation(tmp_path):
     with pytest.raises(RuntimeOperationError, match="busy during recovery") as raised:
         Installer(root, data, backend, say=lambda _line: None).run("update", {})
 
-    assert raised.value.details == {"task_count": 2}
+    assert raised.value.details == {"safe": False, "task_count": 2}
     assert stops == [old, old]
     assert current(root) == old
 
@@ -1584,7 +1689,7 @@ def test_backend_stop_preserves_runtime_busy_details_and_owner(tmp_path, monkeyp
 
     assert raised.value.details["headline"] == "Astrid is busy (1 tasks running). Try again when they finish."
     assert raised.value.details["blockers"][0]["task_id"] == "task-busy"
-    assert raised.value.stop_refused is True
+    assert is_lifecycle_refusal(raised.value)
     assert boundary.stop_calls == 0
     assert manager_calls == []
     assert paths.discovery_path.is_file()
@@ -1631,3 +1736,165 @@ def test_cli_rejects_removed_repair_flag():
         parser().parse_args(["--repair"])
 
     assert failure.value.code == 2
+
+
+@pytest.mark.parametrize("details", [None, {}, [], "unsafe", {"safe": None},
+                                     {"safe": 0}, {"safe": "false"}, {"safe": True},
+                                     {"task_count": 1}, {"cause_details": {"safe": False}}])
+def test_initial_stop_without_explicit_lifecycle_report_rolls_back(tmp_path, details):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    failure = RuntimeOperationError("stop failed", details=details)
+    stops = []
+
+    def stop(version, workspace):
+        stops.append((version, workspace))
+        if len(stops) == 1:
+            raise failure
+
+    backend.stop = stop
+    with pytest.raises(RuntimeOperationError) as raised:
+        Installer(root, data, backend, say=lambda _: None).run("update", {})
+
+    assert raised.value is failure
+    assert stops == [(old, data), (old, data)]
+    assert current(root) == old
+    assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+    assert [call[0] for call in backend.calls] == [
+        "stage", "validate_candidate", "register", "start", "verify"]
+
+
+@pytest.mark.parametrize("exception_type", [ValueError, KeyboardInterrupt])
+def test_initial_non_runtime_stop_exception_retries_before_rollback(tmp_path, exception_type):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    failure = exception_type("stop failed")
+    # An arbitrary exception carrying lookalike details is not a Runtime report.
+    failure.details = {"safe": False}
+    stops = []
+
+    def stop(version, workspace):
+        stops.append(version)
+        if len(stops) == 1:
+            raise failure
+
+    backend.stop = stop
+    with pytest.raises(exception_type) as raised:
+        Installer(root, data, backend, say=lambda _: None).run("update", {})
+
+    assert raised.value is failure
+    assert stops == [old, old]
+    assert current(root) == old
+    assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+
+
+def test_uncertain_stop_then_refused_rollback_leaves_journal_for_repeated_recovery(tmp_path):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    refused = RuntimeOperationError("busy on retry", details={"safe": False, "task_count": 1})
+    stops = []
+
+    def stop(version, workspace):
+        stops.append(version)
+        if len(stops) == 1:
+            raise RuntimeOperationError("stop result lost")
+        raise refused
+
+    backend.stop = stop
+    installer = Installer(root, data, backend, say=lambda _: None)
+    with pytest.raises(RuntimeOperationError) as raised:
+        installer.run("update", {})
+    assert raised.value is refused
+    journal = root / "update-transaction.json"
+    before = journal.read_bytes()
+    assert read_json(journal)["step"] == "stopping"
+    for _ in range(3):
+        with pytest.raises(RuntimeOperationError) as retry:
+            Installer(root, data, backend, say=lambda _: None)._recover_update()
+        assert retry.value is refused
+        assert journal.read_bytes() == before
+        assert current(root) == old
+    assert [call[0] for call in backend.calls] == ["stage", "validate_candidate"]
+    backend.stop = lambda *_: None
+    Installer(root, data, backend, say=lambda _: None)._recover_update()
+    assert read_json(journal)["step"] == "rolled_back"
+    assert current(root) == old
+    assert [call[0] for call in backend.calls][-3:] == ["register", "start", "verify"]
+
+
+@pytest.mark.parametrize("phase", ["backup", "upgrade", "verify"])
+def test_later_lifecycle_report_runs_rollback_without_terminal_refusal(tmp_path, phase):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    failure = RuntimeOperationError("later refusal", details={"safe": False})
+    calls = []
+    original = getattr(backend, phase)
+
+    def fail_once(*args, **kwargs):
+        calls.append(phase)
+        if len(calls) == 1:
+            raise failure
+        return original(*args, **kwargs)
+
+    setattr(backend, phase, fail_once)
+    backend.restore = lambda *_: backend.calls.append(("restore",))
+    with pytest.raises(RuntimeOperationError) as raised:
+        Installer(root, data, backend, say=lambda _: None).run("update", {})
+    assert raised.value is failure
+    journal = read_json(root / "update-transaction.json")
+    assert journal["step"] == "rolled_back"
+    assert "outcome" not in journal
+    assert current(root) == old
+    assert [call[0] for call in backend.calls].count("stop") >= 2
+
+
+def test_real_c1_post_stop_failure_retries_fence_before_old_activation(tmp_path, monkeypatch):
+    backend, data, paths, realm, boundary, manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    root = backend.root
+    folder = root / "versions" / "old"
+    folder.mkdir(parents=True)
+    old = Version(folder, Path(sys.executable), folder / "profile.json", {})
+    write_json(folder / "version.json", old.document())
+    switch(root, old)
+    candidate = Version(root / "versions" / "new", Path(sys.executable), folder / "profile.json", {})
+    record = {"owner": LABEL, "program_root": str(root), "data_root": str(data)}
+    write_json(backend.service.selection, record)
+    backend.service.validate_stop_target = lambda *_args, **_kwargs: None
+    backend.publish_launch_admission = lambda *_: None
+    _publish_owner(paths)
+    admissions = []
+    from contextlib import contextmanager
+    from runtime_protocol.lifecycle import interruption_fence
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+
+    @contextmanager
+    def fence(selected_realm):
+        admissions.append(selected_realm)
+        with interruption_fence(selected_realm) as report:
+            yield report
+
+    monkeypatch.setattr(bootstrap, "interruption_fence", fence)
+    failure = RuntimeOperationError("manager failed after stop", details={"safe": False, "task_count": 1})
+
+    def manager_stop():
+        manager_calls.append("stop")
+        if manager_calls.count("stop") == 1:
+            raise failure
+
+    backend.service.stop = manager_stop
+    activated = []
+    backend.stage = lambda *_: candidate
+    backend.validate_candidate = lambda *_: None
+    backend.has_workspace = lambda *_: True
+    backend.workspace = lambda *_: {"realm_id": "realm-1", "realm_root": str(realm)}
+    backend.backup = lambda *_: pytest.fail("failed stop cannot start backup")
+    backend.register = lambda previous, _: activated.append(("register", previous))
+    backend.start = lambda previous, _: activated.append(("start", previous))
+    backend.verify = lambda previous, *_: activated.append(("verify", previous))
+    backend.finish = lambda *_: pytest.fail("failed update cannot finish")
+    with pytest.raises(RuntimeOperationError) as raised:
+        Installer(root, data, backend, say=lambda _: None).run("update", {})
+
+    assert raised.value.details == {"cause_details": failure.details}
+    assert len(admissions) == 2
+    assert boundary.stop_calls == 2
+    assert manager_calls == ["disable", "stop", "disable", "stop"]
+    assert activated == [("register", old), ("start", old), ("verify", old)]
+    assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+    assert current(root) == old

@@ -721,7 +721,7 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             from astrid.installer.core import Installer, Version
 
             root, data = Path(sys.argv[1]), Path(sys.argv[2])
-            candidate = Version.load(json.loads(Path(sys.argv[3]).read_text()), managed_by="pinokio")
+            candidate = Version.load(json.loads(Path(sys.argv[3]).read_text()))
             marker = Path(sys.argv[4])
             interrupt_at = sys.argv[7]
             original_save = Installer._save_update

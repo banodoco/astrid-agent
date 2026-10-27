@@ -19,7 +19,7 @@ from xml.sax.saxutils import escape
 
 from runtime_protocol import platform
 
-from .core import Version, absolute, current, read_json, version_id, write_json
+from .core import Version, absolute, current, persist_install_identity, read_json, version_id, write_json
 
 LABEL = "haus.astrid.runtime"
 TASK = "Astrid Runtime"
@@ -663,12 +663,10 @@ class Service:
         else:
             xml_path = str(self.path).replace("'", "''")
             self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
-        record = self.recorded()
-        record.pop("uninstalled", None)
-        record = {**record, "owner": LABEL, "program_root": str(self.root),
-                  "data_root": str(data), "service_settings": settings,
-                  "identity": {"release": version.release, "managed_by": version.managed_by}}
-        write_json(self.selection, record)
+        persist_install_identity(version, self.root, selection=self.selection, fields={
+            "owner": LABEL, "program_root": str(self.root),
+            "data_root": str(data), "service_settings": settings,
+        })
 
     def settings(self) -> dict:
         settings = read_json(self.env_file)

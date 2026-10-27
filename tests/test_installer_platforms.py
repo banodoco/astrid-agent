@@ -286,8 +286,10 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
 @pytest.mark.parametrize('prior_port,requested_port,expected_port', [
     (None, None, '17340'), ('17391', None, '17391'), ('17391', '17393', '17393'),
 ])
-def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port):
-    backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv')
+@pytest.mark.parametrize('managed_by', [None, 'pinokio'])
+def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, managed_by):
+    backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv', managed_by=managed_by)
+    write_json(backend.root / 'install.json', {'owner': service.LABEL, 'managed_by': managed_by})
     backend.uv.touch()
     prior = Version(tmp_path / 'prior', tmp_path / 'python', tmp_path / 'profile',
                     {'ASTRID_RUNTIME_DOOR_PORT': prior_port}) if prior_port else None
@@ -322,6 +324,7 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
 
     monkeypatch.setattr(backend, 'run', run)
     manifest = {
+        'release': 23,
         'agent': {'sha': 'a' * 40}, 'runtime': {'sha': 'b' * 40},
         'tools': {'uv': {'version': '1.0.0'}, 'python': {'version': '3.11.9'}},
     }
@@ -329,6 +332,10 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     version = backend.stage(manifest, tmp_path / 'program', tmp_path / 'workspace')
 
     assert version.env['ASTRID_RUNTIME_DOOR_PORT'] == expected_port
+    assert version.release == 23 and version.managed_by == managed_by
+    assert version.env['ASTRID_INSTALL_RELEASE'] == '23'
+    assert version.env['ASTRID_INSTALL_MANAGED_BY'] == (managed_by or '')
+    assert Version.load(read_json(version.root / 'version.json')) == version
     profile = json.loads(version.profile.read_text(encoding='utf-8'))
     declaration = Path(profile['service_declaration'])
     assert declaration == version.root / 'services.json'

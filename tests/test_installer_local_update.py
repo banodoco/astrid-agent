@@ -75,8 +75,8 @@ def _installed(tmp_path, monkeypatch, *, busy=False, candidate_failure=False):
         events.append("runtime-stop:" + version.root.name)
         transaction_contexts.append(core.read_json(root / "update-transaction.json").get("transaction_context"))
         if busy:
-            raise RuntimeOperationError("busy", details={"blockers": [{"id": "task-1"}]},
-                                        stop_refused=True)
+            raise RuntimeOperationError("busy", details={"safe": False,
+                                                           "blockers": [{"id": "task-1"}]})
         owner.update(runtime=version.root.name, running=False)
 
     def start(version, _data):
@@ -280,8 +280,8 @@ def test_final_busy_refusal_restores_editor_and_does_not_move_checkout(tmp_path,
     with pytest.raises(RuntimeOperationError) as failure:
         local.run_update(env.root, env.backend, env.hooks.app["manifest"], env.hooks.app,
                          env.hooks, say=lambda _message: None)
-    assert failure.value.stop_refused
-    assert failure.value.details == {"blockers": [{"id": "task-1"}]}
+    assert core.is_lifecycle_refusal(failure.value)
+    assert failure.value.details == {"safe": False, "blockers": [{"id": "task-1"}]}
     assert failure.value.step == "stop-runtime"
     assert "stop-runtime: busy" in str(failure.value)
     assert current(env.root) == env.old
@@ -291,6 +291,28 @@ def test_final_busy_refusal_restores_editor_and_does_not_move_checkout(tmp_path,
     assert "hook:verify-editor:old" in env.events
     assert env.events[-1] == "hook:release-app:old"
     assert core.read_json(env.root / "update-transaction.json")["step"] == "complete"
+
+
+def test_busy_terminal_write_failure_preserves_refusal_and_skips_app_cleanup(
+        tmp_path, monkeypatch):
+    env = _installed(tmp_path, monkeypatch, busy=True)
+    save_update = core.Installer._save_update
+
+    def fail_stop_refusal_write(self, transaction, step, **details):
+        if step == "complete" and details.get("outcome") == "stop_refused":
+            raise OSError("journal is read-only")
+        return save_update(self, transaction, step, **details)
+
+    monkeypatch.setattr(core.Installer, "_save_update", fail_stop_refusal_write)
+    with pytest.raises(RuntimeOperationError) as failure:
+        local.run_update(env.root, env.backend, env.hooks.app["manifest"], env.hooks.app,
+                         env.hooks, say=lambda _message: None)
+
+    assert core.is_lifecycle_refusal(failure.value)
+    assert failure.value.details == {"safe": False, "blockers": [{"id": "task-1"}]}
+    assert "journal is read-only" in " ".join(getattr(failure.value, "__notes__", []))
+    assert "hook:release-app:old" not in env.events
+    assert core.read_json(env.root / "update-transaction.json")["step"] != "complete"
 
 
 def test_hook_protocol_requires_matching_id_and_ok(tmp_path):
@@ -424,10 +446,9 @@ def test_pinokio_activation_records_each_launch_before_session_handoff(tmp_path,
     assert "runtime-verify:old" in env.events
 
 
-def test_protocol_error_preserves_c1_blockers_and_stop_evidence(tmp_path, monkeypatch, capsys):
-    details = {"blockers": [{"task_id": "task-1", "kind": "render", "state": "running", "age_seconds": 17}]}
-    failure = RuntimeOperationError("Astrid is busy (1 tasks running). task-1", details=details,
-                                    stop_refused=True)
+def test_protocol_error_preserves_c1_report_without_stop_flags(tmp_path, monkeypatch, capsys):
+    details = {"safe": False, "blockers": [{"task_id": "task-1", "kind": "render", "state": "running", "age_seconds": 17}]}
+    failure = RuntimeOperationError("Astrid is busy (1 tasks running). task-1", details=details)
     failure.step = "stop-runtime"
 
     def refuse(*_args, **_kwargs):
@@ -439,5 +460,5 @@ def test_protocol_error_preserves_c1_blockers_and_stop_evidence(tmp_path, monkey
     result = json.loads(capsys.readouterr().out)
     assert result["details"] == details
     assert result["step"] == "stop-runtime"
-    assert result["stop_refused"] is True
-    assert result["stop_completed"] is False
+    assert "stop_refused" not in result
+    assert "stop_completed" not in result

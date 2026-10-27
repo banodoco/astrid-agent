@@ -57,7 +57,6 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int) -> None:
         "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH",
     }}
     env.update(version.env)
-    env["ASTRID_INSTALL_MANAGED_BY"] = "pinokio"
     # Use the console interpreter on Windows. pythonw is specific to the
     # hidden Scheduled Task; the same Runtime command/settings run here in
     # the console owner so Ctrl+Break and console-close reach its handlers.

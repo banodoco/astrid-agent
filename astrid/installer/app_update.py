@@ -153,11 +153,12 @@ class PinokioLifecycle:
         try:
             stop_controller()
         except (Exception, KeyboardInterrupt) as exc:
-            # Runtime has already completed its validated stop. Keep that
-            # evidence explicit so the caller may recover the old app without
-            # mistaking a controller-cleanup failure for a refusal.
-            raise RuntimeOperationError(str(exc), stop_refused=False,
-                                        stop_completed=True) from exc
+            # C1 has already completed. Preserve the controller failure as
+            # downstream context so its details cannot masquerade as a
+            # pre-destruction lifecycle refusal.
+            raise RuntimeOperationError(str(exc), details={
+                "cause_details": getattr(exc, "details", None),
+            }) from exc
 
     def start(self, version: Version, data: Path, realm_id: str) -> None:
         # The existing session selects current/version.json and passes its exact
@@ -211,8 +212,8 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
     selected, data, _identity = selection(root, backend, allow_transaction=True)
     if absolute(pending["data_root"]) != data:
         raise ValueError("The interrupted app update workspace does not match the selected installation.")
-    previous = Version.load(pending["old"], managed_by="pinokio")
-    candidate = Version.load(pending["candidate"], managed_by="pinokio") if pending.get("candidate") else None
+    previous = Version.load(pending["old"])
+    candidate = Version.load(pending["candidate"]) if pending.get("candidate") else None
     if selected not in (previous, candidate):
         raise ValueError("The interrupted app update does not match the selected app version.")
     lifecycle = lifecycle or PinokioLifecycle(root, backend)

@@ -430,11 +430,11 @@ def test_recovery_stop_refusal_keeps_durable_transaction_unchanged(tmp_path):
     journal_path = root / "update-transaction.json"
     original = journal_path.read_bytes()
     backend = _Backend(tmp_path, None)
-    details = {"blockers": [{"task_id": "task-busy", "state": "running"}]}
+    details = {"safe": False, "blockers": [{"task_id": "task-busy", "state": "running"}]}
 
     def refuse(*_args):
         raise core.RuntimeOperationError("Astrid is busy (1 tasks running). Try again when they finish.",
-                                         details=details, stop_refused=True)
+                                         details=details)
 
     backend.stop = refuse
     with pytest.raises(core.RuntimeOperationError) as raised:
