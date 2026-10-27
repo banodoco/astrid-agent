@@ -30,6 +30,12 @@ jobs:
         run: python -m pytest -q tests/test_installer_windows_tasks.py
       - name: Check Windows pack-host identity and service launcher binding
         run: python -m pytest -q tests/sdk/test_host_recovery.py tests/test_services.py -k windows
+      - name: Check incident recovery and native boot proof
+        run: >-
+          python -m pytest -q
+          tests/test_installer_forward_recovery.py
+          tests/sdk/test_host_boot_recovery.py
+          tests/core/execution/test_boot_identity.py
       - name: Check native Windows process and permission behavior
         run: >-
           python -m pytest -q
