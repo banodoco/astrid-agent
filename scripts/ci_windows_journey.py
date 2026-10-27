@@ -127,6 +127,42 @@ def version():
     return json.loads((root / "versions" / current / "version.json").read_text(encoding="utf-8"))
 
 
+def assert_installed_profile_binding():
+    """Check the installed profile and service both select this Python's product tree."""
+    installed = version()
+    profile = json.loads(Path(installed["profile"]).read_text(encoding="utf-8"))
+    source_root = str(profile.get("source_checkout") or "")
+    declaration = json.loads(Path(profile["service_declaration"]).read_text(encoding="utf-8"))
+    host = next((row for row in declaration.get("services", [])
+                 if isinstance(row, dict) and row.get("name") == "pack-host"), {})
+    argv = host.get("argv", [])
+    try:
+        source_index = argv.index("--source-checkout")
+        service_root = str(argv[source_index + 1])
+    except (ValueError, IndexError):
+        service_root = ""
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update(installed["env"])
+    probe = (
+        "import json,sys,sysconfig; from pathlib import Path; "
+        "root=Path(sys.argv[1]).resolve(); purelib=Path(sysconfig.get_path('purelib')).resolve(); "
+        "print(json.dumps({'source_root_matches_selected_purelib':root==purelib, "
+        "'host_module_present':(root/'astrid/core/execution/generic_host.py').is_file(), "
+        "'purelib_host_module_present':(purelib/'astrid/core/execution/generic_host.py').is_file()}))"
+    )
+    result = json.loads(run([installed["python"], "-I", "-c", probe, source_root],
+                            "installed-profile-binding.json", env=env))
+    service_root_matches = (ntpath.normcase(ntpath.normpath(service_root)) ==
+                            ntpath.normcase(ntpath.normpath(source_root)))
+    binding = {
+        **result,
+        "service_root_matches_profile": service_root_matches,
+    }
+    save("installed-profile-binding-summary.json", binding)
+    if not all(binding.values()):
+        raise RuntimeError("Installed profile does not bind the selected Python product root")
+
+
 def cli(module, argv, name, *, timeout=300):
     installed = version()
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
@@ -189,17 +225,27 @@ def host_ready():
 
 def task():
     project = "windows-journey"
+    # Exercise the installed SDK boundary against the profile written by the
+    # real installer. This local SFX action has no external model/GPU needs.
+    os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
+    assert_installed_profile_binding()
     created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
                              "project.json"))
     if created.get("ok") is not True:
         raise RuntimeError("Project creation failed")
-    spec = {"capability_id": "chiptune.sfx", "kind": "executor", "inputs": {
-        "kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}, "outputs": {}, "extra_pack_roots": []}
-    admitted = json.loads(cli("astrid", ["tasks", "create", "--project", project, "--capability", "chiptune.sfx",
-                              "--spec", json.dumps(spec), "--json"], "task-created.json"))
-    if admitted.get("ok") is not True:
-        raise RuntimeError("Task admission failed")
-    task_id = admitted["data"]["task_id"]
+    request = {
+        "capability_id": "chiptune.sfx",
+        "kind": "executor",
+        "project": project,
+        "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1},
+    }
+    invocation = json.loads(cli("astrid.omp_invoke", [json.dumps(request)], "sdk-invocation.json"))
+    task_refs = invocation.get("details", {}).get("astridTaskRefs", [])
+    if invocation.get("content", [{}])[0].get("type") != "text" or len(task_refs) != 1:
+        raise RuntimeError("Installed-profile SDK invocation did not return one admitted task")
+    task_id = task_refs[0].get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise RuntimeError("Installed-profile SDK invocation returned no task identity")
     try:
         cli("astrid", ["tasks", "follow", task_id, "--project", project, "--poll-seconds", "2",
                        "--timeout-seconds", "900", "--json"], "task-follow.jsonl", timeout=960)
