@@ -123,7 +123,7 @@ def _record_update_failure(root: Path, data: Path, backend: Backend, job: dict,
             raise ValueError("The previous Runtime identity is not ready.")
         update_job._write_job(root, job["operation_id"], state="failed",
                               message=f"Failed: {_safe_failure_line(failure)}")
-    except (Exception, KeyboardInterrupt):
+    except (Exception, KeyboardInterrupt):  # noqa: BLE001 - readiness failures are recorded as recovery-needed.
         update_job._write_job(root, job["operation_id"], state="recovery-needed",
                               message="Recovery needed. Astrid could not confirm the previous Runtime is ready.",
                               transaction_id=journal.get("operation_id") if journal else None)
@@ -332,7 +332,18 @@ def main(argv: list[str] | None = None) -> int:
 
                         with app_locked(root / ".app-update.lock"):
                             Installer(root, data, backend, managed_by=managed_by)._recover_update()
+                        if marker.get("owner") == LABEL:
+                            from . import update_job as update_jobs
+
+                            update_jobs.sweep_owned_jobs(root, locked=True)
                     return 0
+                if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
+                    # Sweep only jobs and artifacts named by Astrid's durable
+                    # ownership record. Active and unqueryable objects remain.
+                    from . import update_job as update_jobs
+
+                    update_jobs.sweep_owned_jobs(root, locked=True)
+                    marker = read_json(root / "install.json")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
                 installed = current(root)
@@ -343,6 +354,15 @@ def main(argv: list[str] | None = None) -> int:
                     from . import update_job as update_jobs
 
                     update_job_record = update_jobs._read_job(root, args.update_job)
+                    selection_record = read_json(backend.service.selection)
+                    preferences = selection_record.get("preferences")
+                    if isinstance(preferences, dict) and (
+                            preferences.get("autostart") is False
+                            or (isinstance(preferences.get("autostart"), str)
+                                and preferences["autostart"].casefold() == "off")):
+                        raise ValueError("This update cannot continue because saved autostart is off and the installer cannot preserve that choice yet.")
+                    if update_job_record.get("autostart_snapshot") is False:
+                        raise ValueError("This update cannot continue because saved autostart was off when it was accepted.")
                     accepted_old, selected_data = update_jobs._validate_worker_binding(root, update_job_record)
                     metadata = update_job_record.get("metadata", {})
                     if (update_job_record.get("state") != "active" or installed is None
@@ -408,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
                 if locked:
                     platform.unlock_file(lock.fileno())
         return 0
-    except (Exception, KeyboardInterrupt) as failure:
+    except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         with contextlib.suppress(OSError):
             with log.open("a", encoding="utf-8") as stream:
                 traceback.print_exc(file=stream)

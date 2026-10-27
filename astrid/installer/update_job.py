@@ -46,7 +46,7 @@ def write_json(path, value):
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024
 JOB_FORMAT = "astrid-update-job/v1"
-JOB_STATES = {"accepted", "active", "updated", "rolled_back", "failed", "recovery-needed"}
+JOB_STATES = {"accepted", "launching", "active", "updated", "rolled_back", "failed", "recovery-needed"}
 MAX_RESULT_LINE = 240
 
 
@@ -274,6 +274,8 @@ def _validate_request(request: dict, root: Path) -> dict:
     job_name = request.get("job_name")
     if not isinstance(job_name, str) or not job_name or len(job_name) > 160 or any(ord(c) < 32 for c in job_name):
         raise ValueError("The update job name is invalid.")
+    if job_name != f"astrid-update-{operation_id}":
+        raise ValueError("The update job name must be unique to its operation.")
     log_path = absolute(request.get("log_path") or root / "logs" / f"update-{operation_id}.log")
     if not log_path.is_relative_to(root):
         raise ValueError("The update log must remain inside the selected installation.")
@@ -300,13 +302,31 @@ def accept(request: dict) -> dict:
         pending = read_json(root / "update-transaction.json")
         if pending and pending.get("step") not in {"complete", "rolled_back"}:
             raise ValueError("The installer must recover its pending update first.")
-        if isinstance(prior, dict) and prior.get("state") in {"accepted", "active", "recovery-needed"}:
+        if isinstance(prior, dict) and prior.get("state") in {"accepted", "launching", "active", "recovery-needed"}:
             raise ValueError("An update operation is already active.")
         job = _validate_request(request, root)
+        preferences = read_json(_selection_path()).get("preferences")
+        autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
+        if autostart is False or (isinstance(autostart, str) and autostart.casefold() == "off"):
+            raise ValueError("This update cannot run because saved autostart is off and the installer cannot preserve that choice yet.")
+        job["autostart_snapshot"] = autostart
         log_path = Path(job["log_path"])
         platform.private_directory(log_path.parent)
         with log_path.open("a", encoding="utf-8") as log_stream:
             platform.owner_only(log_stream.fileno())
+        residues = marker.get("update_job_residue", [])
+        if not isinstance(residues, list):
+            residues = []
+        if isinstance(prior, dict) and prior.get("cleanup_status") not in {None, "clean", "not-needed"}:
+            descriptor = prior.get("platform")
+            if isinstance(descriptor, dict):
+                residues = [*residues, {"operation_id": prior.get("operation_id"),
+                                       "descriptor": descriptor,
+                                       "cleanup_status": prior.get("cleanup_status"),
+                                       "cleanup_error": prior.get("cleanup_error"),
+                                       "residue": prior.get("residue")}]
+        if residues:
+            marker["update_job_residue"] = residues
         marker["update_job"] = job
         write_json(marker_path, marker)
         return job
@@ -332,13 +352,16 @@ def read_job(root: Path) -> dict:
         "format", "operation_id", "state", "job_name", "log_path", "program_root",
         "data_root", "old_instance_id", "old_identity", "old_version", "target_release",
         "metadata", "transaction_id", "accepted_at", "finished_at", "message",
+        "platform", "launch_status", "launch_error", "cleanup_status", "cleanup_error",
+        "residue", "autostart_snapshot",
     ) if key in job}
 
 
 def _write_job(root: Path, operation_id: str, *, state: str, message: str,
-               transaction_id: str | None = None) -> dict:
+               transaction_id: str | None = None, fields: dict | None = None) -> dict:
     job = _read_job(root, operation_id)
-    if job.get("state") in {"updated", "rolled_back", "failed", "recovery-needed"}:
+    terminal = {"updated", "rolled_back", "failed", "recovery-needed"}
+    if job.get("state") in terminal and state != job.get("state"):
         return job
     if state not in JOB_STATES:
         raise ValueError("The update job result state is invalid.")
@@ -346,6 +369,8 @@ def _write_job(root: Path, operation_id: str, *, state: str, message: str,
     job["message"] = _one_line(message)
     if transaction_id:
         job["transaction_id"] = transaction_id
+    if fields:
+        job.update(fields)
     if state in {"updated", "rolled_back", "failed", "recovery-needed"}:
         job["finished_at"] = int(time.time())
     marker_path = root / "install.json"
@@ -400,10 +425,360 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     return old, absolute(job["data_root"])
 
 
+def _worker_command(old: Version, job: dict) -> list[str]:
+    """Run run_job with the selected old interpreter and its recorded sources."""
+    profile = read_json(old.profile)
+    source_paths = []
+    for key in ("runtime_checkout", "source_checkout"):
+        value = profile.get(key)
+        if isinstance(value, str) and value:
+            path = absolute(value)
+            if path.is_dir():
+                source_paths.append(str(path))
+    script = (
+        "import os,sys; "
+        f"_log=open({job['log_path']!r},'a',encoding='utf-8',buffering=1); sys.stdout=sys.stderr=_log; "
+        f"sys.path[:0]={source_paths!r}; "
+        f"os.environ.update({old.env!r}); "
+        "from astrid.installer.update_job import run_job; "
+        f"result=run_job({job['program_root']!r}, {job['operation_id']!r}); "
+        "print(__import__('json').dumps(result))"
+    )
+    if sys.platform == "win32":
+        # PowerShell 5.1's legacy native conversion can corrupt the quotes in
+        # Python -c source. Keep source and literal data in this private file;
+        # PowerShell forwards only its ordinary path argument to Python.
+        metadata = job.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("The accepted update job has no private worker directory.")
+        directory, _, _ = _validate_input_paths(metadata)
+        if (not directory.is_dir() or directory.is_symlink()
+                or not platform.is_owner_only(directory, directory=True)):
+            raise ValueError("The accepted update worker directory is not private.")
+        worker_script = directory / f"worker-{job['operation_id']}.py"
+        if worker_script.exists() or worker_script.is_symlink():
+            raise ValueError("The private update worker script already exists.")
+        try:
+            with worker_script.open("xb") as stream:
+                platform.owner_only(stream.fileno())
+                stream.write((script + "\n").encode("utf-8"))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            with contextlib.suppress(OSError):
+                worker_script.unlink(missing_ok=True)
+            raise
+        if worker_script.is_symlink() or not platform.is_owner_only(worker_script):
+            with contextlib.suppress(OSError):
+                worker_script.unlink(missing_ok=True)
+            raise ValueError("The private update worker script is not owner-only.")
+        return [str(old.python), "-B", "-X", "utf8", "-I", str(worker_script)]
+    return [str(old.python), "-B", "-X", "utf8", "-I", "-c", script]
+
+
+def _platform_api():
+    from . import update_job_platform
+    return update_job_platform
+
+
+def _owned_descriptor(descriptor: dict, operation_id: str) -> bool:
+    """Check the operation-specific identity before querying or deleting it."""
+    if (not isinstance(descriptor, dict)
+            or descriptor.get("format") != "astrid-update-platform/v1"
+            or descriptor.get("operation_id") != operation_id):
+        return False
+    system = descriptor.get("system")
+    expected = (f"astrid-update-{operation_id}.service" if system == "linux"
+                else f"astrid-update-{operation_id}" if system in {"darwin", "win32"} else None)
+    if not expected or descriptor.get("name") != expected:
+        return False
+    if system == "darwin":
+        path = Path(descriptor.get("plist_path", ""))
+        root = Path(descriptor.get("program_root", ""))
+        log = Path(descriptor.get("log_path", ""))
+        return (path.is_absolute() and root.is_absolute() and log.is_absolute()
+                and log.is_relative_to(root) and path == log.parent / f".{expected}.plist"
+                and descriptor.get("label") == expected)
+    if system == "win32":
+        root = Path(descriptor.get("program_root", ""))
+        log = Path(descriptor.get("log_path", ""))
+        return (descriptor.get("task_name") == expected and root.is_absolute()
+                and log.is_absolute() and log.is_relative_to(root))
+    return descriptor.get("unit") == expected
+
+
+def launch_job(root: Path, operation_id: str) -> dict:
+    """Register and start the already accepted job exactly once."""
+    root = absolute(root)
+    stream = _locked(root)
+    try:
+        job = _read_job(root, operation_id)
+        if job.get("state") in {"launching", "active", "updated", "rolled_back", "failed", "recovery-needed"}:
+            return job
+        if job.get("state") != "accepted":
+            raise ValueError("The update job is not accepted for launch.")
+        selection = read_json(_selection_path())
+        preferences = selection.get("preferences")
+        autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
+        if (autostart is False or (isinstance(autostart, str) and autostart.casefold() == "off")
+                or job.get("autostart_snapshot") is False
+                or (isinstance(job.get("autostart_snapshot"), str)
+                    and job["autostart_snapshot"].casefold() == "off")):
+            return _write_job(root, operation_id, state="failed",
+                              message="Failed: saved autostart is off and the installer cannot preserve that choice.",
+                              fields={"launch_status": "refused", "cleanup_status": "not-needed"})
+        from .core import Version
+        old = Version.load(job["old_version"])
+        try:
+            command = _worker_command(old, job)
+            api = _platform_api()
+            descriptor = api.describe(job, command)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+            return _write_job(root, operation_id, state="failed",
+                              message="Failed: the operating system update job could not be prepared.",
+                              fields={"launch_status": "failed", "launch_error": _one_line(failure),
+                                      "cleanup_status": "not-needed"})
+        # Ownership must be durable before system registration or launch. A
+        # crash after registration can then be recognized by a later sweep.
+        job = _write_job(root, operation_id, state="launching", message="Update job registration is pending.",
+                         fields={"platform": descriptor, "launch_status": "launching",
+                                 "cleanup_status": "pending"})
+    finally:
+        _unlock(stream)
+    try:
+        api.launch(descriptor, command, Path(job["log_path"]))
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+        stream = _locked(root)
+        try:
+            rejected = (type(failure).__name__ == "UpdateJobLaunchError"
+                        or isinstance(failure, subprocess.CalledProcessError))
+            current = _read_job(root, operation_id)
+            if current.get("state") != "launching":
+                failed = current
+            else:
+                try:
+                    still_active = api.is_active(descriptor)
+                    query_known = True
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+                    still_active, query_known = True, False
+            if current.get("state") == "launching" and rejected and query_known and not still_active:
+                failed = _write_job(root, operation_id, state="failed",
+                                    message="Failed: the operating system rejected update job launch.",
+                                    fields={"launch_status": "failed", "launch_error": _one_line(failure)})
+            elif current.get("state") == "launching":
+                failed = _write_job(root, operation_id, state="launching",
+                                    message="Update launch acknowledgement was lost; repair will inspect the owned job.",
+                                    fields={"launch_status": "unknown", "launch_error": _one_line(failure)})
+        finally:
+            _unlock(stream)
+        if failed.get("state") == "failed":
+            return _cleanup_terminal(root, operation_id)
+        return failed
+    stream = _locked(root)
+    try:
+        job = _read_job(root, operation_id)
+        if job.get("state") == "launching":
+            # Keep state launching until the worker claims it. If launch starts
+            # immediately, the worker must not mistake our ack for a claim.
+            return _write_job(root, operation_id, state="launching", message="Update job launched.",
+                              fields={"launch_status": "acknowledged"})
+        if job.get("state") == "active" and job.get("launch_status") == "launching":
+            return _write_job(root, operation_id, state="active", message=job.get("message"),
+                              fields={"launch_status": "acknowledged"})
+        return job
+    finally:
+        _unlock(stream)
+
+
+def _cleanup_terminal(root: Path, operation_id: str, *, locked: bool = False,
+                      finishing: bool = False) -> dict:
+    """Attempt only the current recorded job's cleanup, preserving residue."""
+    stream = None if locked else _locked(root)
+    try:
+        job = _read_job(root, operation_id)
+        if job.get("state") not in {"updated", "rolled_back", "failed", "recovery-needed"}:
+            return job
+        descriptor = job.get("platform")
+        if not isinstance(descriptor, dict):
+            return _write_job(root, operation_id, state=job["state"], message=job.get("message"),
+                              fields={"cleanup_status": "not-needed"})
+        if not _owned_descriptor(descriptor, operation_id):
+            return _write_job(root, operation_id, state=job["state"], message=job.get("message"),
+                              fields={"cleanup_status": "unknown",
+                                      "cleanup_error": "Recorded platform object did not match this operation."})
+        # Persist intent before cleanup: launchd bootout may stop this worker.
+        job = _write_job(root, operation_id, state=job["state"], message=job.get("message"),
+                         fields={"cleanup_status": "attempting", "residue": descriptor.get("name")})
+    finally:
+        if stream is not None:
+            _unlock(stream)
+    try:
+        api = _platform_api()
+        if finishing:
+            # launchd bootout can terminate this worker; remove only the exact
+            # private selection first, after terminal state is durable.
+            _cleanup_private_inputs(job, "clean")
+        api.cleanup(descriptor, finishing=finishing)
+        if finishing and descriptor.get("system") == "linux":
+            # systemd --collect removes this unit after its own process exits;
+            # querying during this call necessarily sees the worker as active.
+            active = api.is_active(descriptor)
+            status = "deferred" if active else "clean"
+            error = None
+        else:
+            active = api.is_active(descriptor)
+            status = "residue" if active else "clean"
+            error = "The owned update job is still active." if active else None
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+        status, error = "unknown", _one_line(failure)
+    stream = None if locked else _locked(root)
+    try:
+        job = _read_job(root, operation_id)
+        fields = {"cleanup_status": status, "cleanup_error": error,
+                  "residue": descriptor.get("name") if status != "clean" else None}
+        job = _write_job(root, operation_id, state=job["state"], message=job.get("message"), fields=fields)
+        if not finishing:
+            _cleanup_private_inputs(job, status)
+        return job
+    finally:
+        if stream is not None:
+            _unlock(stream)
+
+
+def _cleanup_private_inputs(job: dict, cleanup_status: str) -> None:
+    if cleanup_status != "clean":
+        return
+    metadata = job.get("metadata")
+    if not isinstance(metadata, dict):
+        return
+    directory, _, _ = _validate_input_paths(metadata)
+    # Delete only the private input files in the operation's fixed directory.
+    if (not directory.name.startswith("astrid-update-") or directory.is_symlink()
+            or not platform.is_owner_only(directory, directory=True)):
+        return
+    for name, digest in (("manifest", metadata.get("manifest_sha256")),
+                         ("bootstrap", metadata.get("bootstrap_sha256"))):
+        candidate = directory / name
+        try:
+            raw = _selected_bytes(candidate, MAX_MANIFEST_BYTES if name == "manifest" else MAX_BOOTSTRAP_BYTES)
+            if hashlib.sha256(raw).hexdigest() == digest:
+                candidate.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+    handoff = directory / f"bootstrap-{job['operation_id']}.ps1"
+    if handoff.is_file() and not handoff.is_symlink() and platform.is_owner_only(handoff):
+        handoff.unlink(missing_ok=True)
+    worker = directory / f"worker-{job['operation_id']}.py"
+    if worker.is_file() and not worker.is_symlink() and platform.is_owner_only(worker):
+        worker.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        if platform.is_owner_only(directory, directory=True):
+            directory.rmdir()
+
+
+def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
+    """Reconcile only recorded owned leftovers while the installer lock is held."""
+    root = absolute(root)
+    stream = None if locked else _locked(root)
+    try:
+        marker = read_json(root / "install.json")
+        job = marker.get("update_job")
+        results = []
+        if isinstance(job, dict) and job.get("format") == JOB_FORMAT:
+            descriptor = job.get("platform")
+            state = job.get("state")
+            if state in {"updated", "rolled_back", "failed", "recovery-needed"}:
+                if isinstance(descriptor, dict):
+                    if not _owned_descriptor(descriptor, job.get("operation_id", "")):
+                        results.append(job)
+                        descriptor = None
+                if isinstance(descriptor, dict):
+                    try:
+                        active = _platform_api().is_active(descriptor)
+                    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+                        active = True
+                    if active:
+                        results.append(job)
+                    else:
+                        results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
+            elif isinstance(descriptor, dict):
+                if not _owned_descriptor(descriptor, job.get("operation_id", "")):
+                    results.append(job)
+                    descriptor = None
+            if isinstance(descriptor, dict) and state not in {"updated", "rolled_back", "failed", "recovery-needed"}:
+                try:
+                    active = _platform_api().is_active(descriptor)
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+                    active = True
+                if active:
+                    results.append(job)
+                elif state in {"launching", "active"}:
+                    journal = read_json(root / "update-transaction.json")
+                    binding = journal.get("update_job") if isinstance(journal, dict) else None
+                    transaction_started = (isinstance(binding, dict)
+                                           and binding.get("operation_id") == job["operation_id"])
+                    pending = bool(journal and journal.get("step") not in {"complete", "rolled_back"})
+                    if transaction_started or pending:
+                        job = _write_job(root, job["operation_id"], state="recovery-needed",
+                                         message="Recovery needed. The update worker exited during the installer transaction; run the install line to recover.",
+                                         transaction_id=journal.get("operation_id") if journal else None,
+                                         fields={"launch_status": "unknown"})
+                    else:
+                        job = _write_job(root, job["operation_id"], state="failed",
+                                         message="Failed: the registered update job became inactive without a result.",
+                                         fields={"launch_status": "unknown"})
+                    results.append(_cleanup_terminal(root, job["operation_id"], locked=True))
+                else:
+                    results.append(job)
+            elif state == "accepted":
+                job = _write_job(root, job["operation_id"], state="failed",
+                                 message="Failed: accepted update was never launched; run Check for updates to try again.",
+                                 fields={"launch_status": "not-started", "cleanup_status": "not-needed"})
+                results.append(job)
+
+        residues = marker.get("update_job_residue", [])
+        if isinstance(residues, list) and residues:
+            residue_changed = False
+            for residue in residues:
+                if not isinstance(residue, dict) or not isinstance(residue.get("descriptor"), dict):
+                    results.append(residue)
+                    continue
+                if residue.get("cleanup_status") == "clean":
+                    continue
+                descriptor = residue["descriptor"]
+                if not _owned_descriptor(descriptor, residue.get("operation_id", "")):
+                    results.append(residue)
+                    continue
+                try:
+                    api = _platform_api()
+                    if api.is_active(descriptor):
+                        results.append(residue)
+                        continue
+                    api.cleanup(descriptor)
+                    residue["cleanup_status"] = "clean"
+                    residue["cleanup_error"] = None
+                    residue["residue"] = None
+                    residue_changed = True
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+                    residue["cleanup_status"] = "unknown"
+                    residue["cleanup_error"] = _one_line(failure)
+                    residue_changed = True
+                    results.append(residue)
+            if residue_changed:
+                latest_marker = read_json(root / "install.json")
+                latest_marker["update_job_residue"] = residues
+                write_json(root / "install.json", latest_marker)
+        return results
+    finally:
+        if stream is not None:
+            _unlock(stream)
+
+
 def run_job(root: Path, operation_id: str) -> dict:
     """Run the accepted selected public bootstrap in an independent worker."""
     root = absolute(root)
     windows_bootstrap = None
+    claimed = False
     # A competing installer may have started after acceptance. Wait for its
     # existing lock, then recover and recheck the selected owner and release.
     stream = _locked(root, blocking=True)
@@ -411,8 +786,13 @@ def run_job(root: Path, operation_id: str) -> dict:
         job = _read_job(root, operation_id)
         if job.get("state") in {"updated", "rolled_back", "failed", "recovery-needed", "active"}:
             return job
-        if job.get("state") != "accepted":
+        if job.get("state") not in {"accepted", "launching"}:
             raise ValueError("The update job is not accepted for execution.")
+        # This process owns the one-shot launch now. Persist the claim before
+        # validation so a second invocation cannot run and terminal errors can
+        # safely clean up from inside the OS job's own kill domain.
+        _write_job(root, operation_id, state="active", message="Update worker is validating the accepted operation.")
+        claimed = True
         journal = read_json(root / "update-transaction.json")
         if journal and journal.get("step") not in {"complete", "rolled_back"}:
             from .backend import Backend
@@ -472,21 +852,29 @@ def run_job(root: Path, operation_id: str) -> dict:
         completed = read_job(root)
         if completed.get("operation_id") != operation_id or completed.get("state") not in {
                 "updated", "rolled_back", "failed", "recovery-needed"}:
-            return fail(root, operation_id, f"Bootstrap exited with status {result.returncode} without a verified result.")
-        return completed
+            fail(root, operation_id, f"Bootstrap exited with status {result.returncode} without a verified result.")
+            return _cleanup_terminal(root, operation_id, finishing=claimed)
+        return _cleanup_terminal(root, operation_id, finishing=claimed)
     except (Exception, KeyboardInterrupt) as failure:
         if stream is not None:
+            failed = None
             with contextlib.suppress(Exception):
                 journal = read_json(root / "update-transaction.json")
                 state = ("recovery-needed" if journal and journal.get("step") not in {"complete", "rolled_back"}
                          else "failed")
                 message = ("Recovery needed. Run the install line to recover the interrupted update."
                            if state == "recovery-needed" else f"Failed: {_one_line(failure)}")
-                return _write_job(root, operation_id, state=state, message=message,
-                                  transaction_id=journal.get("operation_id") if journal else None)
+                failed = _write_job(root, operation_id, state=state, message=message,
+                                    transaction_id=journal.get("operation_id") if journal else None)
+            _unlock(stream)
+            stream = None
+            if failed is not None and failed.get("state") in {"failed", "recovery-needed"}:
+                return _cleanup_terminal(root, operation_id, finishing=claimed)
+            raise
         else:
             with contextlib.suppress(Exception):
-                return fail(root, operation_id, failure)
+                failed = fail(root, operation_id, failure)
+                return _cleanup_terminal(root, operation_id, finishing=claimed) if failed.get("state") in {"failed", "rolled_back", "recovery-needed"} else failed
         raise
     finally:
         if windows_bootstrap is not None:
@@ -512,6 +900,8 @@ def main():
         print(json.dumps(accept(value)))
     elif action == "fail":
         print(json.dumps(fail(Path(value["root"]), value["operation_id"], value.get("reason"))))
+    elif action == "launch":
+        print(json.dumps(launch_job(Path(value["root"]), value["operation_id"])))
     else:
         raise ValueError("Unknown update helper action.")
 
