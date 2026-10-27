@@ -74,4 +74,5 @@ The CI default lane uses the committed `tests/.test_durations` file to balance i
 
 ---
 
-_[License](LICENSE)_
+Licensed under the [Apache License, Version 2.0](LICENSE).
+See [NOTICE](NOTICE) for copyright information.

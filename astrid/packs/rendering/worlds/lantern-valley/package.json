@@ -1,6 +1,7 @@
 {
   "name": "lantern-valley-sample-world",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Lantern Valley, the built-in sample world for Astrid's Three.js Live Editor (World Explorer). See README.md.",
   "scripts": {
