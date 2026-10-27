@@ -82,9 +82,13 @@ with tempfile.TemporaryDirectory(prefix='astrid-engine-cli-') as directory:
                 stream.write(data)
     sys.path.insert(0, directory)
     from importlib.metadata import distribution
-    entries = [entry for entry in distribution('astrid').entry_points
+    dist = distribution('astrid')
+    from astrid.version import __version__
+    if dist.metadata.get('Name') != 'astrid' or dist.version != __version__:
+        fail()
+    entries = [entry for entry in dist.entry_points
                if entry.group == 'console_scripts' and entry.name == 'astrid']
-    if len(entries) != 1 or entries[0].value != 'astrid.omp_agent:main':
+    if len(entries) != 1 or entries[0].value != 'astrid.console:main':
         fail()
     sys.argv = ['astrid', *spec['argv']]
     raise SystemExit(entries[0].load()())

@@ -10,6 +10,7 @@ import importlib.metadata
 import io
 import json
 import re
+import tomllib
 import zipfile
 import lzma
 from dataclasses import dataclass
@@ -24,12 +25,8 @@ _ARCHIVE_LIMIT = 524288
 _SPEC_LIMIT = 16384
 _TOTAL_LIMIT = 98304
 _FILES = (
-    'astrid/__init__.py', 'astrid/version.py', 'astrid/omp_agent.py',
-    'astrid/agent_profiles/astrid.md', 'astrid/core/__init__.py',
-    'astrid/core/auth.py', 'astrid/core/engine_cli.py',
-    'astrid/core/foundation/__init__.py', 'astrid/core/foundation/hash.py',
-    'astrid/core/util/__init__.py', 'astrid/core/util/process.py',
-    'astrid/core/util/png_metadata.py', 'astrid/core/util/time.py',
+    'astrid/__init__.py', 'astrid/version.py', 'astrid/console.py',
+    'astrid/core/__init__.py', 'astrid/core/engine_cli.py',
     'astrid/core/generation/__init__.py', 'astrid/core/generation/engine_contracts.py',
     'astrid/core/generation/engine_recipe.py', 'astrid/core/generation/engine_runner.py',
     'astrid/core/generation/engine_runner_target.py', 'astrid/core/generation/model_downloader.py',
@@ -96,7 +93,10 @@ def build_cli_bootstrap(argv: tuple[str, ...]) -> CliBootstrap:
             if not path.is_file():
                 raise IntegrityError('missing bootstrap closure')
             data[name] = path.read_bytes()
-        dist = importlib.metadata.distribution('astrid')
+        candidates = list(importlib.metadata.distributions(name='astrid', path=[str(root)]))
+        if len(candidates) != 1:
+            raise IntegrityError('missing or ambiguous distribution metadata')
+        dist = candidates[0]
         if not isinstance(dist, importlib.metadata.PathDistribution):
             raise IntegrityError('unsupported distribution metadata')
         metadata_root = Path(dist._path)
@@ -116,12 +116,18 @@ def build_cli_bootstrap(argv: tuple[str, ...]) -> CliBootstrap:
                 raise IntegrityError('missing installed distribution metadata')
             metadata[target_name] = path.read_bytes()
         version = dist.version
-        if (dist.metadata.get('Name', '').lower() != 'astrid' or
+        if (dist.metadata.get('Name', '') != 'astrid' or
                 not isinstance(version, str) or
                 not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.!+_-]*', version)):
             raise IntegrityError('invalid installed distribution metadata')
+        from astrid.version import __version__
+        project_file = root / 'pyproject.toml'
+        expected_version = (__version__ if not project_file.is_file() else
+                            tomllib.loads(project_file.read_text(encoding='utf-8'))['project']['version'])
+        if version != expected_version:
+            raise IntegrityError('distribution version mismatch')
         entries = [e for e in dist.entry_points if e.group == 'console_scripts' and e.name == 'astrid']
-        if len(entries) != 1 or entries[0].value != 'astrid.omp_agent:main':
+        if len(entries) != 1 or entries[0].value != 'astrid.console:main':
             raise IntegrityError('installed console entry point mismatch')
         for name, content in metadata.items():
             data[f'astrid-{version}.dist-info/{name}'] = content

@@ -256,7 +256,7 @@ Keep these four surfaces separate:
 The shipped `astrid` profile is read from installed package resources. A final
 direct agent launch/reconnect claim must cite the exact agent artifact,
 command, installed origin and receipt; self-description is not route metadata.
-The installed console entry is `astrid = astrid.omp_agent:main`, and its
+The installed console entry is `astrid = astrid.console:main`, and its
 supported direct routes are:
 
 ```bash

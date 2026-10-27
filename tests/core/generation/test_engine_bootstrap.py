@@ -44,13 +44,13 @@ def unzip(bundle):
 
 def test_console_dry_run_and_help_are_isolated_and_exact():
     b = bootstrap.build_cli_bootstrap(ARGV)
-    loader = b.command[-1].replace("raise SystemExit(entries[0].load()())", "entry = entries[0].load()\n    print('ORIGIN=' + sys.modules['astrid.omp_agent'].__file__, file=sys.stderr)\n    raise SystemExit(entry())")
+    loader = b.command[-1].replace("raise SystemExit(entries[0].load()())", "entry = entries[0].load()\n    print('ORIGIN=' + sys.modules['astrid.console'].__file__, file=sys.stderr)\n    raise SystemExit(entry())")
     result = run(b, loader=loader)
     assert result.returncode == 0, result.stderr
     assert 'ORIGIN=' in result.stderr and 'astrid-engine-cli-' in result.stderr
     plan = json.loads(result.stdout)
     assert {step['kind'] for step in plan['plan']['steps']} == {'source', 'environment', 'model', 'start', 'health'}
-    local = subprocess.run([sys.executable, '-c', 'from astrid.omp_agent import main; raise SystemExit(main())', *ARGV],
+    local = subprocess.run([sys.executable, '-c', 'from astrid.console import main; raise SystemExit(main())', *ARGV],
                            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}, text=True, capture_output=True)
     assert local.returncode == 0 and result.stdout == local.stdout
     help_result = run(bootstrap.build_cli_bootstrap(('engines', '--help')))
@@ -67,7 +67,7 @@ def test_exact_bytes_determinism_and_identity():
             content = Path(name).read_bytes()
             assert z.read(name) == content
             assert a.files[name] == hashlib.sha256(content).hexdigest()
-        assert z.read('astrid-0.1.0.dist-info/entry_points.txt').find(b'astrid = astrid.omp_agent:main') >= 0
+        assert z.read('astrid-0.1.0.dist-info/entry_points.txt').find(b'astrid = astrid.console:main') >= 0
 
 
 def test_change_and_missing_source(monkeypatch, tmp_path):
@@ -80,6 +80,8 @@ def test_change_and_missing_source(monkeypatch, tmp_path):
     fake = tmp_path / 'astrid/core/generation/engine_bootstrap.py'
     fake.write_text('')
     (fake.parent / '_engine_bootstrap_loader.py').write_bytes(Path(bootstrap.__file__).with_name('_engine_bootstrap_loader.py').read_bytes())
+    import shutil
+    shutil.copytree(root / 'astrid.egg-info', tmp_path / 'astrid.egg-info')
     monkeypatch.setattr(bootstrap, '__file__', str(fake))
     initial = bootstrap.build_cli_bootstrap(ARGV)
     for name in ('astrid/core/engine_cli.py', 'astrid/packs/runpod/pins.json'):
@@ -187,7 +189,7 @@ def test_real_path_distribution_metadata_forms(monkeypatch, tmp_path, form):
     (root / ('PKG-INFO' if form == 'egg-info' else 'METADATA')).write_bytes(metadata)
     (root / 'entry_points.txt').write_bytes(entries)
     dist = importlib.metadata.PathDistribution(root)
-    monkeypatch.setattr(bootstrap.importlib.metadata, 'distribution', lambda name: dist)
+    monkeypatch.setattr(bootstrap.importlib.metadata, 'distributions', lambda **kwargs: [dist])
     bundle = bootstrap.build_cli_bootstrap(ARGV)
     with zipfile.ZipFile(io.BytesIO(unzip(bundle))) as archive:
         assert archive.read(f'astrid-{dist.version}.dist-info/METADATA') == metadata
@@ -203,17 +205,46 @@ def test_missing_or_unsupported_distribution_metadata(monkeypatch, tmp_path):
     for dirname in ('astrid.egg-info', 'astrid-0.1.0.dist-info', 'astrid.other'):
         root = tmp_path / dirname
         root.mkdir()
-        monkeypatch.setattr(bootstrap.importlib.metadata, 'distribution',
-                            lambda name: importlib.metadata.PathDistribution(root))
+        monkeypatch.setattr(bootstrap.importlib.metadata, 'distributions',
+                            lambda **kwargs: [importlib.metadata.PathDistribution(root)])
         with pytest.raises(IntegrityError):
             bootstrap.build_cli_bootstrap(ARGV)
     root = tmp_path / 'partial.egg-info'
     root.mkdir()
     (root / 'PKG-INFO').write_bytes(b'Metadata-Version: 2.1\nName: astrid\nVersion: 0.1.0\n')
-    monkeypatch.setattr(bootstrap.importlib.metadata, 'distribution',
-                        lambda name: importlib.metadata.PathDistribution(root))
+    monkeypatch.setattr(bootstrap.importlib.metadata, 'distributions',
+                        lambda **kwargs: [importlib.metadata.PathDistribution(root)])
     with pytest.raises(IntegrityError):
         bootstrap.build_cli_bootstrap(ARGV)
-    monkeypatch.setattr(bootstrap.importlib.metadata, 'distribution', lambda name: object())
+    monkeypatch.setattr(bootstrap.importlib.metadata, 'distributions', lambda **kwargs: [object()])
+    with pytest.raises(IntegrityError):
+        bootstrap.build_cli_bootstrap(ARGV)
+
+
+def test_stale_or_missing_local_metadata_refused(monkeypatch, tmp_path):
+    import importlib.metadata
+    import shutil
+
+    root = Path(bootstrap.__file__).resolve().parents[3]
+    for name in bootstrap._FILES:
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / name, target)
+    fake = tmp_path / 'astrid/core/generation/engine_bootstrap.py'
+    fake.write_text('')
+    shutil.copyfile(root / 'astrid/core/generation/_engine_bootstrap_loader.py',
+                    fake.parent / '_engine_bootstrap_loader.py')
+    shutil.copyfile(root / 'pyproject.toml', tmp_path / 'pyproject.toml')
+    monkeypatch.setattr(bootstrap, '__file__', str(fake))
+    with pytest.raises(IntegrityError):
+        bootstrap.build_cli_bootstrap(ARGV)
+    shutil.copytree(root / 'astrid.egg-info', tmp_path / 'astrid.egg-info')
+    entries = tmp_path / 'astrid.egg-info/entry_points.txt'
+    entries.write_text(entries.read_text().replace('astrid.console:main', 'astrid.omp_agent:main'))
+    with pytest.raises(IntegrityError):
+        bootstrap.build_cli_bootstrap(ARGV)
+    shutil.copyfile(root / 'astrid.egg-info/entry_points.txt', entries)
+    metadata = tmp_path / 'astrid.egg-info/PKG-INFO'
+    metadata.write_text(metadata.read_text().replace('Version: 0.1.0', 'Version: 9.9.9'))
     with pytest.raises(IntegrityError):
         bootstrap.build_cli_bootstrap(ARGV)

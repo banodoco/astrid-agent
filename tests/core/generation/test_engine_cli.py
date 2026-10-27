@@ -108,13 +108,13 @@ def test_declared_installed_entrypoint_and_module_dispatch(tmp_path):
     script = '''
 import importlib, importlib.metadata, json, sys
 entry = next(e for e in importlib.metadata.distribution("astrid").entry_points if e.group == "console_scripts" and e.name == "astrid")
-assert entry.value == "astrid.omp_agent:main"
+assert entry.value == "astrid.console:main"
 fn = entry.load()
-import astrid.omp_agent
-assert astrid.omp_agent.__file__.startswith(sys.argv[1])
+import astrid.console
+assert astrid.console.__file__.startswith(sys.argv[1])
 sys.argv = ["astrid", "engines", "install", "vibecomfy-h3", "--root", sys.argv[2], "--dry-run"]
 rc = fn()
-assert not any(name == "omp" or name.startswith("omp.") for name in sys.modules)
+assert not any(name == "omp" or name.startswith("omp.") or name in ("astrid.omp_agent", "astrid.core.auth") for name in sys.modules)
 raise SystemExit(rc)
 '''
     root = tmp_path / 'never-created'
