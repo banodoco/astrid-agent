@@ -293,7 +293,7 @@ class RunPodProvider:
         if response.status_code == 404 and method in {"GET", "DELETE"}:
             return None
         if not response.is_success:
-            if method == "POST" and response.status_code == 400 and any(
+            if method == "POST" and response.status_code in {400, 500, 503} and any(
                 marker in response.text.lower() for marker in
                 ("no available", "no longer any instances", "not enough capacity", "out of stock")
             ):
@@ -337,7 +337,8 @@ class RunPodProvider:
                    "env": {"PUBLIC_KEY": os.environ["RUNPOD_SSH_PUBLIC_KEY"]}}
         if pod_type == "cpu":
             payload.update({"computeType": "CPU", "vcpuCount": 2,
-                            "cpuFlavorIds": ["cpu3c", "cpu5c"], "cpuFlavorPriority": "custom"})
+                            "cpuFlavorIds": ["cpu3c", "cpu5c", "cpu3g", "cpu5g", "cpu3m", "cpu5m"],
+                            "cpuFlavorPriority": "custom"})
         else:
             payload.update({"computeType": "GPU", "gpuCount": 1, "gpuTypeIds": [pod_type],
                             "gpuTypePriority": "custom", "allowedCudaVersions": ["13.0"]})
