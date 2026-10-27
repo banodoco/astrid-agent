@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -34,11 +35,20 @@ def test_dynamic_references_emit_one_portable_sampling_graph(tmp_path: Path, cou
         path = tmp_path / f"image-{i}.png"
         Image.new("RGB", (32, 32), color=(i * 20, 0, 0)).save(path)
         paths[f"image-{i}"] = str(path)
-    req = request(count, overrides={"steps": 12, "seed": 7, "sampler": "euler", "guidance": 0.5})
+    prompt = " \tA café scene with <Picture 1>.  \n"
+    expected = prompt.encode("utf-8")
+    req = request(count, output={"duration": 9}, content={"prompt": prompt},
+                  overrides={"steps": 12, "seed": 7, "sampler": "euler", "guidance": 0.5})
+    assert req.value["content"]["prompt"].encode("utf-8") == expected
     prepared = prepare_request(req, asset_map=paths)
-    assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0, 15]]
+    assert prepared["request"]["content"]["prompt"].encode("utf-8") == expected
+    assert prepared["mask_schedule"]["video"]["generated_intervals"] == [[0, 9]]
     assert prepared["mask_schedule"]["audio"]["protected_intervals"] == []
     compiled = compile_preparation(prepared, out_dir=tmp_path / "compiled")
+    actual = compiled["workflow_inputs"]["prompt"].encode("utf-8")
+    assert (actual, len(actual), hashlib.sha256(actual).digest()) == (expected, len(expected), hashlib.sha256(expected).digest())
+    assert compiled["request_digest"] == prepared["request_digest"] == req.digest
+    assert compiled["capabilities"]["generation_timing"] == generation_timing(9)
     portable = tmp_path / "relocated"
     shutil.copytree(tmp_path / "compiled/workflow-bundle", portable)
     shutil.rmtree(tmp_path / "compiled")
@@ -50,8 +60,8 @@ def test_dynamic_references_emit_one_portable_sampling_graph(tmp_path: Path, cou
     for i in range(count):
         loader = api[refs[f"ref_images.ref_image_{i}"][0]]
         assert loader["inputs"]["image"] == compiled["workflow_inputs"][f"reference_{i}"]
-    assert target["inputs"]["prompt"] == req.value["content"]["prompt"]
-    assert target["inputs"]["length"] == 362
+    assert target["inputs"]["prompt"].encode("utf-8") == expected
+    assert target["inputs"]["length"] == 226
     by_class = {node["class_type"]: node["inputs"] for node in api.values()}
     assert by_class["BasicScheduler"]["steps"] == 12
     assert by_class["RandomNoise"]["noise_seed"] == 7
