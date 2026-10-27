@@ -176,19 +176,34 @@ def publish_runtime_runner(root: Path) -> Path:
     """Durably publish current admission before an update can stop or migrate."""
     from runtime_protocol import platform
 
-    from . import foreground
+    from . import foreground, service
 
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
-    # A retained version supplies the interpreter, core and service.command,
-    # but its foreground admission may predate this transaction kind. Carry
-    # this installer's authoritative foreground implementation across rollback
-    # just as run_astrid.py carries the process helper below. Relative imports
-    # still resolve against the selected package; there is one admission/argv
-    # owner, and the journal's exact operation/version binding stays intact.
+    # Retained packages supply the interpreter and core. Carry the current
+    # command builder and admission together so their older service cannot
+    # reintroduce an ordinary-launch bypass after rollback.
+    import inspect
+
+    admission_source = inspect.getsource(service.launch_admission)
+    service_source = (
+        'import inspect,json,os,re,sys\nfrom pathlib import Path\n'
+        'from astrid.installer.core import Version,absolute,current,read_json,version_id\n'
+        f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
+        + "\n".join(inspect.getsource(function) for function in (
+            service.default_program_root, service.installer_lock_path,
+            service.launch_admission, service.command,
+        ))
+    )
     foreground_source = Path(foreground.__file__).read_text(encoding="utf-8")
     source = (
-        'import sys\nfrom pathlib import Path\n'
+        'import sys, importlib, types\nfrom pathlib import Path\n'
+        '_retained_service = importlib.import_module("astrid.installer.service")\n'
+        '_service = types.ModuleType("astrid.installer.service")\n'
+        '_service.__dict__.update(_retained_service.__dict__)\n'
+        f'exec(compile({service_source!r}, "<Astrid service launcher>", "exec"), _service.__dict__)\n'
+        f'_service._ADMISSION_SOURCE = {admission_source!r}\n'
+        'sys.modules["astrid.installer.service"] = _service\n'
         '_foreground = {"__name__": "astrid.installer.foreground", '
         '"__package__": "astrid.installer"}\n'
         f'exec(compile({foreground_source!r}, "<Astrid foreground launcher>", "exec"), _foreground)\n'

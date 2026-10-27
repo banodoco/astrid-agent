@@ -1,4 +1,4 @@
-"""Unpublished owners require a realm fence and exact retained launch custody."""
+"""Unpublished owners require a realm fence and exact recorded process identity."""
 from __future__ import annotations
 
 import subprocess
@@ -18,6 +18,9 @@ def record_child(backend, data, realm, child, *, retained):
     record['foreground'] = {'pid': child.pid, 'birth_id': identity['birth_id'],
                             'realm_id': 'selected', 'realm_root': str(realm)}
     write_json(backend.service.selection, record)
+    # Exercise the supported callback rather than the manager matrix's seam.
+    from astrid.installer.service import Service
+    backend.service.stop_foreground = lambda **kwargs: Service.stop_foreground(backend.service, **kwargs)
     if retained:
         backend.service._foreground_process = child
 
@@ -38,7 +41,7 @@ def test_unpublished_stop_requires_and_uses_actual_retained_child(tmp_path, monk
         record_child(backend, data, realm, child, retained=True)
         backend.stop(old, data)
         assert child.wait(timeout=5) != 0
-        assert calls == ['disable', 'stop']
+        assert calls == []  # Foreground-only stop has no OS manager action.
         assert not paths.discovery_path.exists()
     finally:
         if child.poll() is None:
@@ -59,7 +62,11 @@ def test_external_child_without_custody_is_never_signaled(tmp_path, monkeypatch,
     child = subprocess.Popen([sys.executable, '-I', '-c', 'import time;time.sleep(60)'])
     try:
         record_child(backend, data, realm, child, retained=False)
-        with pytest.raises(RuntimeOperationError, match='retained child'):
+        # A persisted record with a different incarnation cannot signal this child.
+        record = backend.service.recorded()
+        record['foreground']['birth_id'] = 'different-incarnation'
+        write_json(backend.service.selection, record)
+        with pytest.raises(RuntimeOperationError, match='identity changed'):
             backend.stop(old, data)
         assert child.poll() is None
         assert calls == []
@@ -101,6 +108,10 @@ def test_uncertain_publication_never_authorizes_manager_or_fallback(tmp_path, mo
         paths.discovery_path.unlink()
         boundary = Boundary(paths, calls)
         monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    if publication == 'missing':
+        backend.stop(old, data)
+        assert calls == ['disable', 'stop']
+        return
     with pytest.raises(RuntimeOperationError):
         backend.stop(old, data)
     assert not any(call in calls for call in ('disable', 'stop', 'stop_foreground'))
@@ -330,8 +341,16 @@ def test_completed_stop_preserves_replaced_foreground_selection(tmp_path, monkey
     replacement = {**record, 'foreground': {**record['foreground'], 'pid': 456, 'birth_id': 'replacement'}}
     boundary = Boundary(paths, calls)
     monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
-    monkeypatch.setattr(backend.service, 'stop', lambda: write_json(backend.service.selection, replacement))
-    backend.stop(old, data)
+    original_stop = boundary.stop_owner
+
+    def replace_during_owner_stop(**kwargs):
+        result = original_stop(**kwargs)
+        write_json(backend.service.selection, replacement)
+        return result
+
+    monkeypatch.setattr(boundary, 'stop_owner', replace_during_owner_stop)
+    with pytest.raises(RuntimeOperationError, match='owner changed'):
+        backend.stop(old, data)
     assert backend.service.recorded() == replacement
 
 
@@ -363,9 +382,8 @@ def test_early_stop_refusal_cannot_revive_receipt_after_replacement_disappears(t
     paths.instance_lock_path.unlink(missing_ok=True)
     boundary.is_pid_alive = lambda _pid: False
     boundary.process_birth_identity = lambda _pid: None
-    with pytest.raises(RuntimeOperationError, match='no owner identity'):
-        backend.stop(old, data)
-    assert calls == []
+    backend.stop(old, data)
+    assert calls == ['disable', 'stop']
 
 
 @pytest.mark.parametrize('publication', ['discovery_path', 'instance_lock_path'])
@@ -380,12 +398,11 @@ def test_mutex_time_malformed_publication_revokes_completed_handoff_receipt(
     boundary = Boundary(paths, calls)
     monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
 
-    # Establish stop authority through the complete Backend -> Runtime handoff.
+    # Complete one Backend -> Runtime stop, then retry without any receipt.
     backend.stop(old, data)
     assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
 
-    # The former owner is now positively absent. A retained receipt may support
-    # teardown only while all publication observations remain trustworthy.
+    # The former owner is now positively absent; every new stop validates anew.
     boundary.is_pid_alive = lambda _pid: False
     boundary.process_birth_identity = lambda _pid: None
     calls.clear()
@@ -412,18 +429,11 @@ def test_mutex_time_malformed_publication_revokes_completed_handoff_receipt(
         with pytest.raises(RuntimeOperationError, match='malformed') as first:
             backend.stop(old, data)
     assert first.value.stop_refused
-    assert getattr(boundary, '_installer_stop_receipt_invalidated', False)
     assert calls == []
 
     advertisement.unlink()
-    with pytest.raises(RuntimeOperationError, match='no owner identity') as retry:
-        backend.stop(old, data)
-    assert retry.value.stop_refused
-    assert calls == []
-    assert not any(call in calls for call in
-                   ('runtime-stop', 'disable', 'stop', 'stop_foreground', 'unregister',
-                    'register', 'start', 'restore', 'remove', 'backup', 'stage',
-                    'upgrade', 'finish', 'open'))
+    backend.stop(old, data)
+    assert calls == ['disable', 'stop']
     assert snapshot(watched) == before
     assert sorted(str(path) for path in data.rglob('*')) == before_names
 
@@ -434,7 +444,7 @@ def test_mutex_time_malformed_publication_revokes_completed_handoff_receipt(
 ])
 def test_agent_pre_handoff_validation_revokes_completed_receipt(
         tmp_path, monkeypatch, lane, publication):
-    """A failed Agent observation after the early check must retire receipt authority."""
+    """Malformed metadata refuses, and a fresh no-publication retry is fenced."""
     import importlib
     from tests.test_installer_busy_fence import snapshot
 
@@ -446,9 +456,7 @@ def test_agent_pre_handoff_validation_revokes_completed_receipt(
     backend.stop(old, data)
     assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
 
-    # Retained receipt reuse is only relevant once the stopped incarnation is
-    # positively absent. The injected malformed file appears immediately after
-    # the real early invalidation check and before the next Agent read.
+    # A completed stop never excuses a later malformed publication.
     boundary.is_pid_alive = lambda _pid: False
     boundary.process_birth_identity = lambda _pid: None
     calls.clear()
@@ -460,35 +468,21 @@ def test_agent_pre_handoff_validation_revokes_completed_receipt(
     before = snapshot(watched)
     before_names = sorted(str(entry) for entry in data.rglob('*'))
 
-    bootstrap = importlib.import_module('astrid_runtime.bootstrap')
-    invalidate = bootstrap._invalidate_stale_stop_receipt
-
-    def malformed_after_real_early_check(runtime_paths, retained_boundary):
-        invalidate(runtime_paths, retained_boundary)
-        path.write_text('{unknown replacement')
-
-    with monkeypatch.context() as race:
-        race.setattr(bootstrap, '_invalidate_stale_stop_receipt', malformed_after_real_early_check)
-        with pytest.raises(RuntimeOperationError, match='malformed') as refusal:
-            if lane == 'stop':
-                backend.stop(old, data)
-            else:
-                backend.preflight_stop(data)
-
+    # Uncertain support metadata must refuse even in a fresh controller.
+    path.write_text('{unknown replacement')
+    with pytest.raises(RuntimeOperationError) as refusal:
+        if lane == 'stop':
+            backend.stop(old, data)
+        else:
+            backend.preflight_stop(data)
     assert refusal.value.stop_refused
-    assert getattr(boundary, '_installer_stop_receipt_invalidated', False)
     assert calls == []
 
-    # Remove the transient malformed publication and retry. The old receipt
-    # must stay revoked; a retry cannot turn the earlier uncertain observation
-    # into manager work, a signal, cleanup, rollback, or activation.
     if prior_bytes is None:
         path.unlink(missing_ok=True)
     else:
         path.write_bytes(prior_bytes)
-    with pytest.raises(RuntimeOperationError) as retry:
-        backend.stop(old, data)
-    assert retry.value.stop_refused
-    assert calls == []
+    backend.stop(old, data)
+    assert calls == ['disable', 'stop']
     assert snapshot(watched) == before
     assert sorted(str(entry) for entry in data.rglob('*')) == before_names
