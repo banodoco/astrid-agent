@@ -301,8 +301,17 @@ class RunPodProvider:
             detail = ""
             try:
                 body = response.json()
-                message = body.get("message", body.get("error", "")) if isinstance(body, dict) else ""
-                if isinstance(message, str):
+                def messages(value):
+                    if isinstance(value, str):
+                        return [value]
+                    if isinstance(value, list):
+                        return [text for item in value for text in messages(item)]
+                    if isinstance(value, dict):
+                        return [text for name in ("message", "error", "errors", "detail", "details", "issues")
+                                if name in value for text in messages(value[name])]
+                    return []
+                message = "; ".join(messages(body))
+                if message:
                     for name in ("RUNPOD_API_KEY", "RUNPOD_SSH_PUBLIC_KEY"):
                         secret = os.environ.get(name)
                         if secret:
@@ -328,10 +337,10 @@ class RunPodProvider:
                    "env": {"PUBLIC_KEY": os.environ["RUNPOD_SSH_PUBLIC_KEY"]}}
         if pod_type == "cpu":
             payload.update({"computeType": "CPU", "vcpuCount": 2,
-                            "cpuFlavorIds": ["cpu3c", "cpu5c"], "cpuFlavorPriority": "price"})
+                            "cpuFlavorIds": ["cpu3c", "cpu5c"], "cpuFlavorPriority": "custom"})
         else:
             payload.update({"computeType": "GPU", "gpuCount": 1, "gpuTypeIds": [pod_type],
-                            "gpuTypePriority": "price", "allowedCudaVersions": ["13.0"]})
+                            "gpuTypePriority": "custom", "allowedCudaVersions": ["13.0"]})
         return self.request("POST", "pods", json=payload)
 
     def get(self, pod_id):

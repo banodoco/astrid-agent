@@ -268,7 +268,7 @@ def test_rest_payload_cpu_gpu_and_strict_get(monkeypatch):
         provider.create(volume, "image", "cpu", "name")
         cpu = json.loads(calls[-1].content)
         assert cpu["computeType"] == "CPU"
-        assert cpu["cpuFlavorPriority"] == "price"
+        assert cpu["cpuFlavorPriority"] == "custom"
         assert cpu["networkVolumeId"] == "vol"
         assert cpu["dataCenterIds"] == ["TEST-1"]
         assert cpu["ports"] == ["22/tcp"]
