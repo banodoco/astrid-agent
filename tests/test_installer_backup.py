@@ -355,3 +355,32 @@ def test_windows_restore_does_not_restrict_retained_unsafe_directory(
         backend.restore(version, data, identity, backup)
 
     assert unsafe not in windows_permissions
+
+
+def test_restore_old_snapshot_does_not_resurrect_host_or_overwrite_live_cleanup_proof(tmp_path, monkeypatch):
+    backend, data, realm, version = workspace(tmp_path, "darwin")
+    monkeypatch.setattr("runtime_protocol.fsclone.clone_or_copy_file", shutil.copy2)
+    backup = backend.backup(version, data, {"realm_root": str(realm)})
+    snapshot = Path(backup['root']) / 'support/runtime'
+    stale = b'{"pid":123,"process_birth_id":"old"}'
+    (snapshot / 'generic-host.json').write_bytes(stale)
+    (snapshot / 'generic-host.ready.json').write_bytes(stale)
+    (snapshot / 'pack-host-job-cleanup.json').write_bytes(b'old proof')
+    (data / 'runtime/pack-host-job-cleanup.json').write_bytes(b'current proof')
+    backend.restore(version, data, {"realm_root": str(realm)}, backup)
+    assert not (data / 'runtime/generic-host.json').exists()
+    assert not (data / 'runtime/generic-host.ready.json').exists()
+    assert (data / 'runtime/pack-host-job-cleanup.json').read_bytes() == b'current proof'
+    assert (snapshot / 'generic-host.json').read_bytes() == stale
+    assert (snapshot / 'pack-host-job-cleanup.json').read_bytes() == b'old proof'
+
+
+def test_backup_keeps_operational_markers_as_evidence_outside_restorable_support(tmp_path, monkeypatch):
+    backend, data, realm, version = workspace(tmp_path, "darwin")
+    monkeypatch.setattr("runtime_protocol.fsclone.clone_or_copy_file", shutil.copy2)
+    (data / 'runtime/generic-host.json').write_bytes(b'current registration')
+    backup = backend.backup(version, data, {"realm_root": str(realm)})
+    retained = Path(backup['root'])
+    assert not (retained / 'support/runtime/generic-host.json').exists()
+    assert (retained / 'process-evidence/generic-host.json').read_bytes() == b'current registration'
+    assert (data / 'runtime/generic-host.json').read_bytes() == b'current registration'

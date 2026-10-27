@@ -245,3 +245,71 @@ server; leave ComfyUI on port 7860 untouched.
   service settings returns without restarting.
 - Default Windows service log path:
   `docs/testing/TESTING.md`.
+
+## Recover a retained candidate when the previous release cannot start
+
+A failed rollback now records `recovery_required` with separate data-restoration,
+data-validation and service-health status. Ordinary installs and updates stop at
+that state. They do not repeatedly restore the backup and restart the broken
+previous release. A healthy rollback continues to work on every supported OS.
+The reboot-assisted legacy-host transition below currently targets Windows x64;
+`--recover status` also explains interrupted transactions on other platforms.
+
+Run these commands with the **current recovery-capable bootstrap**, after its
+Agent pin has been released. The installed command from an older release cannot
+understand the new option. Downloading the bootstrap also avoids running the
+broken selected release's host:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://astrid.haus/install.ps1 -OutFile .\astrid-install.ps1
+& .\astrid-install.ps1 --recover status
+& .\astrid-install.ps1 --recover prepare
+# Save other work and use Windows Restart. Do not run the ordinary installer.
+& .\astrid-install.ps1 --recover resume
+```
+
+For a custom program directory, pass the same absolute `--root` to all three
+commands. The bootstrap forwards these arguments unchanged to its own newly
+installed `astrid install` package. No local manifest is required: recovery uses
+and validates the retained candidate's `manifest.json`, version record, source
+profile, installed product digest and Runtime code. It does not stage arbitrary
+code or launch the previous release. This flow requires an interrupted update
+that retained both a candidate and a backup, and a live workspace whose current
+schema is admitted identically by both releases. A missing/incomplete candidate,
+unknown schema or changed realm requires diagnosis rather than a guessed repair.
+
+`prepare` validates actual Task Scheduler action and user ownership, fences new
+task admission, stops only the selected Astrid Runtime, and disables its task.
+It saves a private checkpoint under `<program>\recovery\<operation-id>` that binds
+the transaction, source artifacts, live logical SQLite contents, support metadata,
+retained backup, task selection, exact host-marker bytes and native boot evidence.
+It does not restore the backup. SQLite WAL checkpoints may change physical pages;
+logical database contents must remain unchanged. Keep the checkpoint and backup.
+If preparation was interrupted before it committed, rerun `--recover prepare` in
+the same boot; `--recover status` reports the durable `preparing` phase.
+
+`resume` requires a different qualified native Windows boot identity and unchanged
+checkpoint-bound state. Under the lifecycle locks, it quarantines only the exact
+preboot host-marker pair. A new/changed registration, foreign ownership, same-boot
+retry, unavailable boot proof, modified checkpoint or changed workspace is refused.
+PID absence never substitutes for Job-drain proof, and recovery does not fabricate
+cleanup receipts. Normal same-boot host retirement continues to require custody.
+The boot-source ABI and the full Restart journey require native Windows release
+qualification; platform-neutral tests alone do not establish that boundary.
+
+Forward recovery runs the candidate's real Runtime `upgrade` to reconcile source
+profiles and catalog/support metadata even when no schema DDL is needed. It stops
+any temporary Runtime, selects/registers/starts the candidate, and completes only
+after Runtime/browser health and pack-host readiness pass. It retains the live
+workspace, backup and quarantine. New backups keep process markers as separate
+evidence; restoring an older backup does not resurrect its host registration or
+overwrite the live cleanup proof.
+
+Durable recovery stages can be retried with `--recover resume`. An interruption
+inside Runtime's own upgrade may leave an incomplete `upgrade-journal.json`.
+Recovery preserves that journal and stops with an explicit reconciliation error;
+it never deletes it or invents a completion record. The incident candidate Runtime
+`6d53a190` lacks `upgrade --reconcile`, so that case needs a compatible Runtime
+with a supported reconciliation API. A complete Runtime upgrade interrupted before
+the installer's next phase can be stopped and safely replayed. This limitation is
+separate from the retained legacy-host marker repair.

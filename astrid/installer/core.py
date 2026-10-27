@@ -26,6 +26,14 @@ class BackupSpaceError(RuntimeError):
     """The update cannot fit its workspace backup on the program disk."""
 
 
+class RecoveryRequiredError(RuntimeError):
+    """Rollback failed; a retry must not restore data or launch old code again."""
+
+    safe_message = ("Astrid could not restart the previous version. Automatic rollback is stopped. "
+                    "Use the current installer with --recover status, then --recover prepare. "
+                    "See docs/guides/windows-host-acp-recovery.md for the Windows recovery path.")
+
+
 def linked(path: Path) -> bool:
     if path.is_symlink():
         return True
@@ -159,6 +167,11 @@ class Installer:
                 or not re.fullmatch(r"[0-9a-f]{32}", str(transaction.get("operation_id", "")))
                 or absolute(transaction["data_root"]) != absolute(self.data)):
             raise ValueError("The interrupted update identity does not match this installation.")
+        if transaction.get("step") == "recovery_required" or transaction.get("recovery"):
+            raise ValueError(
+                "Astrid needs explicit forward recovery; automatic rollback is stopped. "
+                "Run astrid install --recover status, then --recover prepare."
+            )
         old = Version.load(transaction["old"])
         candidate = Version.load(transaction["candidate"]) if transaction.get("candidate") else None
         realm = transaction["realm"]
@@ -172,18 +185,31 @@ class Installer:
         self._save_update(transaction, "recovering")
         # These actions can themselves be interrupted. Keep the transaction and
         # image until the old owner has passed verification; restore is replayable.
-        self.backend.stop(candidate or old, self.data)
-        if backup is not None:
-            self.backend.restore(old, self.data, realm, backup)
-        if old.root.parent == self.root / "versions":
-            switch(self.root, old)
-        else:
-            (self.root / "current").unlink(missing_ok=True)
-        self._activate(old, realm["realm_id"])
-        self._save_update(transaction, "rolled_back")
+        try:
+            self.backend.stop(candidate or old, self.data)
+            if backup is not None:
+                self.backend.restore(old, self.data, realm, backup)
+                self._save_update(transaction, "recovering", data_restored=True, service_healthy=False)
+            if old.root.parent == self.root / "versions":
+                switch(self.root, old)
+            else:
+                (self.root / "current").unlink(missing_ok=True)
+            self._activate(old, realm["realm_id"])
+            self._save_update(transaction, "rolled_back", service_healthy=True)
+        except (Exception, KeyboardInterrupt) as recovery:
+            self._save_update(transaction, "recovery_required", recovery_error=str(recovery), service_healthy=False)
+            raise RecoveryRequiredError(
+                f"Interrupted update recovery failed ({recovery}); explicit forward recovery is required. "
+                "Run astrid install --recover status, then --recover prepare."
+            ) from recovery
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
+        if mode.startswith("recover-"):
+            from .recovery import ForwardRecovery
+
+            getattr(ForwardRecovery(self), mode.removeprefix("recover-"))()
+            return
         if mode not in {"doctor", "uninstall"}:
             self._recover_update()
         old = current(self.root)
@@ -273,6 +299,8 @@ class Installer:
             if old:
                 assert transaction is not None
                 self._save_update(transaction, "staged", candidate=candidate.document())
+                if hasattr(self.backend, "preflight_host_update"):
+                    self.backend.preflight_host_update(self.data)
                 self.say("Updating the workspace with Astrid Runtime.")
                 self.backend.upgrade(candidate, self.data)
                 self._save_update(transaction, "upgraded")
@@ -312,11 +340,23 @@ class Installer:
             if transaction is not None:
                 self._save_update(transaction, "complete")
         except (Exception, KeyboardInterrupt) as failure:
+            if (transaction is not None and candidate is not None and backup is not None
+                    and getattr(failure, "code", None) == "legacy_windows_recovery_required"):
+                self._save_update(transaction, "recovery_required", recovery_error=str(failure),
+                                  data_restored=False, service_healthy=False)
+                raise ValueError(
+                    "The legacy Windows host needs reboot-assisted recovery. Astrid is stopped; "
+                    "the candidate, live workspace and backup are retained. "
+                    "Run the current installer with --recover prepare, use Windows Restart, "
+                    "then --recover resume."
+                ) from failure
             if old and stopped:
                 try:
                     self.backend.stop(candidate or old, self.data)
                     if backup is not None:
                         self.backend.restore(old, self.data, realm, backup)
+                        if transaction is not None:
+                            self._save_update(transaction, "recovering", data_restored=True, service_healthy=False)
                     pointer_changed = switched or current(self.root) not in (None, old)
                     if pointer_changed and old.root.parent == self.root / "versions":
                         switch(self.root, old)
@@ -324,9 +364,13 @@ class Installer:
                         (self.root / "current").unlink(missing_ok=True)
                     self._activate(old, realm["realm_id"])
                     if transaction is not None:
-                        self._save_update(transaction, "rolled_back")
+                        self._save_update(transaction, "rolled_back", service_healthy=True)
                 except (Exception, KeyboardInterrupt) as recovery:
-                    raise RuntimeError(f"Update failed ({failure}); recovery also failed ({recovery}).") from failure
+                    if transaction is not None:
+                        self._save_update(transaction, "recovery_required", update_error=str(failure),
+                                          recovery_error=str(recovery), service_healthy=False)
+                    raise RecoveryRequiredError(f"Update failed ({failure}); recovery also failed ({recovery}). "
+                                       "Run astrid install --recover status, then --recover prepare.") from failure
             elif candidate is not None:
                 try:
                     self.backend.stop(candidate, self.data)
