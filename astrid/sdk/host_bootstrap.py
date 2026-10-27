@@ -764,10 +764,12 @@ def _windows_process_argv(pid: int) -> list[str]:
         if isinstance(encoded, str):
             encoded = encoded.encode("ascii")
         record = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
-        if (not isinstance(record, dict) or int(record.get("ProcessId")) != int(pid)
-                or not isinstance(record.get("CommandLine"), str) or not record["CommandLine"]):
+        process_id = record.get("ProcessId") if isinstance(record, dict) else None
+        command_line_value = record.get("CommandLine") if isinstance(record, dict) else None
+        if (not isinstance(process_id, int) or process_id != int(pid)
+                or not isinstance(command_line_value, str) or not command_line_value):
             raise ValueError("malformed process command")
-        command_line = record["CommandLine"]
+        command_line = command_line_value
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise OSError("Windows process command observation was malformed") from exc
     return _split_windows_command_line(command_line)
@@ -778,16 +780,19 @@ def _split_windows_command_line(command: str) -> list[str]:
     import ctypes
     from ctypes import wintypes
 
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    win_dll = getattr(ctypes, "WinDLL")
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    shell32 = win_dll("shell32", use_last_error=True)
     shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
     shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = win_dll("kernel32", use_last_error=True)
     kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
     kernel32.LocalFree.restype = wintypes.HLOCAL
     count = ctypes.c_int()
     values = shell32.CommandLineToArgvW(command, ctypes.byref(count))
     if not values:
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise win_error(get_last_error())
     try:
         return [values[index] for index in range(count.value)]
     finally:
@@ -1235,7 +1240,7 @@ class _ParkedPackHostPreparer:
             raise
         finally:
             child.close()
-        process._astrid_host_launch_argv = tuple(argv)
+        setattr(process, "_astrid_host_launch_argv", tuple(argv))
         state = {
             "launch_argv_sha256": launch_digest,
             "pid": process.pid, "process_birth_id": _host_birth_identity(process.pid),

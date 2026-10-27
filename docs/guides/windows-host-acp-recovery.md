@@ -163,13 +163,22 @@ own three-second timeout. Even the two required operations total roughly 11.4 s,
 exceeding the bridge's old 10-second budget. No JSON is printed until they finish.
 This explains why the service's model discovery is killed despite successful
 individual operations. Missing OMP in a separate interactive shell environment
-does not explain the service timeout. Verify the increased discovery budget
-against this installation before claiming the live model picker is repaired.
+does not explain the service timeout. A later run of the fully installed model
+catalog command completed in 17,006 ms, exited 0, and emitted valid JSON with
+96 providers and 8 models. This confirms the increased 30-second discovery
+budget covers the installed catalog path; check the live picker separately
+through the bridge endpoint before treating the user's app state as verified.
 
-Native Windows custody checks passed for commits `0286720d` and `8dd6c650`;
-the latter's full Scheduled Task host journey also passed under both
-`powershell.exe` and `pwsh.exe`. These results cover the custody fixes, not the
-subsequent model-discovery deadline change or the operator's existing state.
+On commit `080382cca96e4936196ad51d14d553ae3f30f32d`, the [Windows chat job]
+passed its native child-launch, slow-model-over-HTTP, and PowerShell diagnostic
+checks. The [native host custody job] passed, and the [Scheduled Task host
+journey] passed under both `powershell.exe` and `pwsh.exe`. These are CI results
+for the checked-out commit and do not by themselves establish the state of the
+operator's existing installation.
+
+[Windows chat job]: https://github.com/banodoco/astrid-agent/actions/runs/40543065613
+[native host custody job]: https://github.com/banodoco/astrid-agent/actions/runs/40543065666
+[Scheduled Task host journey]: https://github.com/banodoco/astrid-agent/actions/runs/40543065600
 
 To capture current, bounded evidence without printing the bridge credential or
 environment, run the repository diagnostic from PowerShell:
