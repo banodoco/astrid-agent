@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 import zipfile
 
+import runtime_protocol
+
 from astrid import __version__
 
 _SOURCES = (
@@ -28,23 +30,37 @@ _SOURCES = (
     "packs/runpod/h3_release_remote.py",
 )
 
+# Complete import/call closure of platform.lock_file(fd, blocking=False) on the
+# Linux cold target: package initializer -> errors, platform -> cancellation,
+# then stdlib fcntl. The fd is already open: file_lock(path)'s dirfd and the
+# unrelated process, handoff and Windows backends are not invoked or packaged.
+# Bind the controller's deadline primitive as well, so both native boundaries
+# are covered by the release source identity. It imports only stdlib and is
+# not invoked by the cold provisioner. Keep exact module bodies throughout.
+_RUNTIME_SOURCES = ("__init__.py", "errors.py", "platform.py", "cancellation.py", "deadline.py")
+
 
 def source_archive() -> bytes:
     """Return deterministic bytes from either a checkout or installed package."""
     package = Path(__file__).resolve().parents[2]
     files = {"astrid/" + name: (package / name).read_bytes() for name in _SOURCES}
+    runtime = Path(runtime_protocol.__file__).resolve().parent
+    files.update({"runtime_protocol/" + name: (runtime / name).read_bytes()
+                  for name in _RUNTIME_SOURCES})
     # astrid.version uses distribution metadata. Supply it without depending on
     # a checkout's pyproject.toml or unrelated installed target distributions.
     files[f"astrid-{__version__}.dist-info/METADATA"] = (
         "Metadata-Version: 2.1\nName: astrid\nVersion: " + __version__ + "\n"
     ).encode()
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(output, "w") as archive:
         for name, data in sorted(files.items()):
             entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             entry.create_system = 3
             entry.external_attr = 0o100644 << 16
-            archive.writestr(entry, data)
+            # Exact Runtime module bodies enlarge the closure. Compress it so
+            # the isolated wrapper still fits a single native argv element.
+            archive.writestr(entry, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     return output.getvalue()
 
 

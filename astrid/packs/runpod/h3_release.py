@@ -14,7 +14,6 @@ import math
 import os
 import re
 import shlex
-import signal
 import sys
 import time
 import uuid
@@ -22,6 +21,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from filelock import FileLock
+from runtime_protocol.deadline import bounded_operation
 
 from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
 from astrid.packs.runpod import h3_release_bootstrap as bootstrap
@@ -140,36 +140,15 @@ def _cleanup(provider, handle, path, *, now=time.time, sleep=time.sleep):
 
 @contextlib.contextmanager
 def bounded(seconds):
-    """Bound even an unexpectedly stalled adapter; SIGTERM follows the same finally."""
-    def timeout(_signum, _frame):
-        raise TimeoutError("H3 build time limit exceeded")
-
-    def interrupted(_signum, _frame):
-        raise KeyboardInterrupt("H3 build interrupted")
-
-    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGALRM, signal.SIGTERM)}
-    signal.signal(signal.SIGALRM, timeout)
-    signal.signal(signal.SIGTERM, interrupted)
-    signal.setitimer(signal.ITIMER_REAL, max(0.001, seconds))
-    try:
+    """Unwind stalled adapters through the Runtime's native deadline boundary."""
+    with bounded_operation(seconds):
         yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
 
 
 def cleanup(provider, handle, path, *, now=time.time, sleep=time.sleep):
     # Cleanup has its own hard limit within the 120 seconds reserved by the build.
-    with bounded(110):
-        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
-        for sig in previous:
-            signal.signal(sig, signal.SIG_IGN)
-        try:
-            _cleanup(provider, handle, path, now=now, sleep=sleep)
-        finally:
-            for sig, handler in previous.items():
-                signal.signal(sig, handler)
+    with bounded_operation(110, stop="ignore"):
+        _cleanup(provider, handle, path, now=now, sleep=sleep)
 
 
 def build_release(provider, transport_factory, *, volume_id, handle_path, pod_type="cpu",

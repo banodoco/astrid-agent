@@ -7,16 +7,18 @@ allows one writer. CPU import/metadata checks deliberately grant no GPU admissio
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 import tomllib
 import urllib.request
 from pathlib import Path
+
+from runtime_protocol import platform
 
 from astrid.core.generation.engine_contracts import ModelSpec
 from astrid.core.generation.model_downloader import _download_model
@@ -293,6 +295,8 @@ exec "$RUNTIME/venv/bin/python" main.py --listen 0.0.0.0 --port 8188 --extra-mod
 
 
 def provision(request):
+    if sys.platform != "linux":
+        raise RuntimeError("H3 provisioner requires Linux")
     root = Path(request["root"])
     mount = Path(request["volume"]["mount"])
     if not root.is_relative_to(mount) or root == mount or ".." in root.parts:
@@ -303,7 +307,7 @@ def provision(request):
     if root.resolve() != root:
         raise RuntimeError("release root traverses a symlink")
     with (root / ".build.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        platform.lock_file(lock.fileno(), blocking=False)
         # Stale READY cannot survive a failed revalidation/repair.
         (root / "READY").unlink(missing_ok=True)
         return Provisioner(request).build()

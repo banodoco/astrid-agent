@@ -24,6 +24,10 @@ from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod import worker_staging as staging
 
+# H3 exercises Runtime-owned interval timers. Retain the 60-second outer test
+# watchdog on a thread so it does not occupy the product's required alarm.
+pytestmark = pytest.mark.timeout(method="thread")
+
 
 def test_owner_provisioned_200gb_volume_is_reused_without_resize():
     value = {"id": "2z2dlu1v8g", "name": "storage", "size": 200, "dataCenterId": "EUR-NO-1"}
@@ -561,6 +565,85 @@ def test_actual_deadline_releases_build_pod(tmp_path, monkeypatch):
     assert not provider.pods
 
 
+def test_actual_cleanup_deadline_retains_exact_recovery_handle(tmp_path, monkeypatch):
+    boundary = build.bounded_operation
+    monkeypatch.setattr(build, "bounded_operation",
+                        lambda seconds, **kwargs: boundary(min(0.05, seconds), **kwargs))
+
+    class StalledCleanup(Provider):
+        def delete(self, pod_id):
+            self.deleted.append(pod_id)
+            time.sleep(10)
+            pytest.fail("cleanup deadline did not interrupt delete")
+
+    provider = StalledCleanup()
+    with pytest.raises(TimeoutError):
+        invoke(tmp_path, provider)
+    handle = json.loads((tmp_path / "handle.json").read_text())
+    receipt = json.loads((tmp_path / "handle.receipt.json").read_text())
+    assert handle["pod_id"] == receipt["pod_id"] == "pod-1"
+    assert handle["cleanup"] == {"status": "pending", "pod_id": "pod-1"}
+    assert provider.deleted == ["pod-1"]
+    assert provider.created == 1
+    assert set(provider.pods) == {"pod-1"}  # unresolved; no false absent receipt
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_actual_volume_lock_contention_and_release(tmp_path, monkeypatch, fail):
+    request = {"recipe": {}, "root": str(tmp_path / "release"), "volume": {"mount": str(tmp_path)},
+               "deadline": time.time() - 100}
+    root = Path(request["root"])
+    root.mkdir()
+    ready = root / "READY"
+    ready.write_text("previous committed ready")
+    lock = root / ".build.lock"
+    monkeypatch.setattr(remote.os.path, "ismount", lambda _path: True)
+    built = []
+
+    def build_locked(self):
+        assert not ready.exists()
+        # The provisioner must retain its lock for the entire build.
+        with lock.open("a") as contender:
+            with pytest.raises(BlockingIOError):
+                remote.platform.lock_file(contender.fileno(), blocking=False)
+        built.append(self.request)
+        if fail:
+            raise ValueError("failed under lock")
+        return "built"
+
+    monkeypatch.setattr(remote.Provisioner, "build", build_locked)
+    owner_source = '''import sys
+from runtime_protocol import platform
+with open(sys.argv[1], 'a') as stream:
+    platform.lock_file(stream.fileno(), blocking=False)
+    print('held', flush=True)
+    sys.stdin.readline()
+'''
+    owner = subprocess.Popen([sys.executable, "-c", owner_source, str(lock)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    try:
+        assert owner.stdout.readline() == "held\n"
+        identity = lock.stat().st_ino
+        # An expired request cannot authorize takeover of a live owner's lock.
+        with pytest.raises(BlockingIOError):
+            remote.provision(request)
+        assert ready.read_text() == "previous committed ready"
+        assert not built
+    finally:
+        _stdout, stderr = owner.communicate("release\n", timeout=5)
+        assert owner.returncode == 0, stderr
+    if fail:
+        with pytest.raises(ValueError, match="failed under lock"):
+            remote.provision(request)
+    else:
+        assert remote.provision(request) == "built"
+    assert built == [request]
+    assert lock.stat().st_ino == identity  # release never unlinks/replaces the lock
+    with lock.open("a") as successor:
+        remote.platform.lock_file(successor.fileno(), blocking=False)
+
+
 def test_legacy_tiny_redirect_part_is_quarantined_before_resume(tmp_path):
     payload = (32).to_bytes(8, "little") + b"{" + b"x" * (1024 * 1024)
     row = model_row(payload)
@@ -598,19 +681,25 @@ def test_bootstrap_packages_exact_product_sources_deterministically():
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         assert set(archive.namelist()) == {
             *("astrid/" + name for name in bootstrap._SOURCES), f"astrid-{bootstrap.__version__}.dist-info/METADATA",
+            *("runtime_protocol/" + name for name in bootstrap._RUNTIME_SOURCES),
         }
         for name in bootstrap._SOURCES:
             assert archive.read("astrid/" + name) == (package / name).read_bytes()
+        runtime = Path(bootstrap.runtime_protocol.__file__).resolve().parent
+        for name in bootstrap._RUNTIME_SOURCES:
+            assert archive.read("runtime_protocol/" + name) == (runtime / name).read_bytes()
         assert all("tests" not in name and "fixture" not in name for name in archive.namelist())
 
 
 @pytest.mark.parametrize("source", [
     "core/generation/engine_contracts.py", "core/generation/model_downloader.py",
     "packs/runpod/h3_release_remote.py", "packs/runpod/h3_release_bootstrap.py",
+    *("runtime_protocol/" + name for name in bootstrap._RUNTIME_SOURCES),
 ])
 def test_release_identity_binds_dependencies_and_refuses_stale_wire_source(monkeypatch, source):
     previous = build.release_inputs()
-    path = Path(build.__file__).parents[2] / source
+    path = (Path(bootstrap.runtime_protocol.__file__).resolve().parent / source.removeprefix("runtime_protocol/")
+            if source.startswith("runtime_protocol/") else Path(build.__file__).parents[2] / source)
     original = Path.read_bytes
     monkeypatch.setattr(Path, "read_bytes", lambda self: original(self) + b"\n" if self == path else original(self))
     updated = build.release_inputs()
@@ -683,9 +772,14 @@ def test_actual_transport_bootstrap_downloads_and_skips_on_stdlib_only_cold_targ
     env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
     env["TMPDIR"] = str(temporary)
     source_hashes = {
-        name: hashlib.sha256((Path(build.__file__).parents[2] / name).read_bytes()).hexdigest()
+        "astrid/" + name: hashlib.sha256((Path(build.__file__).parents[2] / name).read_bytes()).hexdigest()
         for name in ("core/generation/engine_contracts.py", "core/generation/model_downloader.py")
     }
+    source_hashes.update({
+        "runtime_protocol/" + name: hashlib.sha256(
+            (Path(bootstrap.runtime_protocol.__file__).resolve().parent / name).read_bytes()).hexdigest()
+        for name in bootstrap._RUNTIME_SOURCES
+    })
     # Instrument function entry without altering a byte of the generated wire
     # wrapper or shared modules. The real provision/build/download/receipt path
     # runs; source checkout, pip/uv and runtime commands are local fakes.
@@ -697,6 +791,7 @@ assert sys.flags.no_site and sys.flags.isolated
 assert 'PYTHONPATH' not in os.environ
 assert importlib.util.find_spec('astrid') is None
 assert importlib.util.find_spec('filelock') is None
+assert importlib.util.find_spec('runtime_protocol') is None
 def enter(frame,event,arg):
     if event != 'call' or frame.f_code.co_name != 'provision':
         return
@@ -707,8 +802,13 @@ def enter(frame,event,arg):
     from astrid.packs.runpod import h3_release_remote as remote
     assert remote.ModelSpec is contracts.ModelSpec
     assert remote._download_model is downloader._download_model
+    from runtime_protocol import platform
+    assert remote.platform is platform
+    assert set(name for name in sys.modules if name == 'runtime_protocol' or name.startswith('runtime_protocol.')) == {{
+        'runtime_protocol', 'runtime_protocol.errors', 'runtime_protocol.platform', 'runtime_protocol.cancellation',
+    }}
     for name,sha in {source_hashes!r}.items():
-        path=Path(remote.__file__).parents[2]/name
+        path=Path(remote.__file__).parents[3]/name
         assert hashlib.sha256(path.read_bytes()).hexdigest() == sha
         assert path.is_relative_to(Path({str(temporary)!r}))
     remote.os.path.ismount=lambda _p: True
@@ -733,6 +833,8 @@ assert sys.getprofile() is None
     calls = []
 
     class ColdTransport:
+        contended = False
+
         def execute_command(self, command, timeout):
             calls.append(timeout)
             argv = shlex.split(command)
@@ -741,7 +843,10 @@ assert sys.getprofile() is None
             wrapper.write_text(argv[4])
             result = subprocess.run([sys.executable, *argv[1:4], harness, str(wrapper)],
                                     cwd=cold, env=env, text=True, capture_output=True, timeout=timeout)
-            assert result.returncode == 0, result.stderr
+            if self.contended:
+                assert result.returncode != 0 and "BlockingIOError" in result.stderr
+            else:
+                assert result.returncode == 0, result.stderr
             return result.returncode, result.stdout, result.stderr
 
     transport = object.__new__(build.LifecycleTransport)
@@ -749,13 +854,24 @@ assert sys.getprofile() is None
     try:
         result = transport.provision(request, timeout=10)
         assert requests == [f"bytes=0-{len(payload) - 1}"]
+        ready = Path(request["root"]) / "READY"
+        committed = ready.read_bytes()
+        lock = Path(request["root"]) / ".build.lock"
+        with lock.open("a") as owner:
+            remote.platform.lock_file(owner.fileno(), blocking=False)
+            transport.ssh.contended = True
+            with pytest.raises(build.BuildError, match="remote H3 build failed"):
+                transport.provision(request, timeout=10)
+            assert ready.read_bytes() == committed
+            assert requests == [f"bytes=0-{len(payload) - 1}"]
+        transport.ssh.contended = False
         assert transport.provision(request, timeout=10) == result
         assert requests == [f"bytes=0-{len(payload) - 1}"]
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-    assert calls == [10, 10]
+    assert calls == [10, 10, 10]
     assert list(temporary.iterdir()) == []
     root = Path(request["root"])
     assert (root / "models" / request["lock"]["models"][0]["path"]).read_bytes() == payload
