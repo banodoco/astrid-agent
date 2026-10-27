@@ -208,7 +208,16 @@ class Installer:
         if mode.startswith("recover-"):
             from .recovery import ForwardRecovery
 
-            getattr(ForwardRecovery(self), mode.removeprefix("recover-"))()
+            recovery = ForwardRecovery(self)
+            try:
+                getattr(recovery, mode.removeprefix("recover-"))()
+            except (Exception, KeyboardInterrupt) as failure:
+                from ..core.execution.boot_identity import BootIdentityUnavailable
+
+                message = recovery.record_failure(failure)
+                if isinstance(failure, BootIdentityUnavailable):
+                    raise ValueError(message) from failure
+                raise
             return
         if mode not in {"doctor", "uninstall"}:
             self._recover_update()

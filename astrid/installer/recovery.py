@@ -78,6 +78,7 @@ class ForwardRecovery:
         self.installer = installer
         self.root, self.data, self.backend = installer.root, installer.data, installer.backend
         self.path = absolute(self.root / 'update-transaction.json')
+        self.transaction = None
 
     def _load(self):
         tx = read_json(self.path)
@@ -117,6 +118,7 @@ class ForwardRecovery:
         if (catalog.get('selected_realm_id') != realm['realm_id'] or len(rows) != 1
                 or absolute(rows[0]['data_root']) != absolute(realm['realm_root'])):
             raise ValueError('The live workspace catalog differs from the update transaction.')
+        self.transaction = tx
         return tx, old, candidate
 
     def _versions(self, old, candidate):
@@ -193,6 +195,26 @@ class ForwardRecovery:
     def _save(self, tx, phase, **details):
         recovery = {**tx.get('recovery', {}), 'phase': phase, **details}
         self.installer._save_update(tx, 'recovery_required', recovery=recovery, service_healthy=False)
+
+    def record_failure(self, failure) -> str:
+        """Persist a diagnostic only after this instance validated its ownership."""
+        from ..core.execution.boot_identity import BootIdentityUnavailable
+
+        message = str(failure)
+        if isinstance(failure, BootIdentityUnavailable):
+            cause: BaseException = failure
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            message = ('Trusted operating-system boot proof is unavailable: ' + str(cause) +
+                       '. Recovery remains stopped. Check the supported Windows x64 build and native boot-counter access.')
+        tx = self.transaction
+        if tx is not None:
+            if tx.get('recovery'):
+                if tx['recovery'].get('error') != message:
+                    self._save(tx, tx['recovery']['phase'], error=message)
+            elif tx.get('recovery_error') != message:
+                self.installer._save_update(tx, 'recovery_required', recovery_error=message, service_healthy=False)
+        return message
 
     def status(self):
         tx = read_json(self.path)

@@ -292,3 +292,22 @@ def test_preparation_intent_blocks_automatic_old_start_and_retries_same_boot(rec
     monkeypatch.setattr(backend, 'stop_for_recovery', stop)
     installer.run('recover-prepare', {})
     assert read_json(installer.root / 'update-transaction.json')['recovery']['phase'] == 'prepared'
+
+
+def test_missing_native_boot_proof_is_actionable_in_status_without_stopping(recovery_fixture, monkeypatch):
+    from astrid.core.execution import boot_identity
+    installer, backend, _state = recovery_fixture
+    def unavailable():
+        raise boot_identity.BootIdentityUnavailable('native boot-counter access denied')
+    monkeypatch.setattr(boot_identity, 'capture_boot_identity', unavailable)
+    before = list(backend.calls)
+    with pytest.raises(ValueError, match='Trusted operating-system boot proof is unavailable'):
+        installer.run('recover-prepare', {})
+    assert backend.calls == before
+    tx = read_json(installer.root / 'update-transaction.json')
+    assert 'access denied' in tx['recovery_error']
+    messages = []
+    installer.say = messages.append
+    installer.run('recover-status', {})
+    assert 'access denied' in messages[0]
+    assert (installer.data / 'runtime/generic-host.json').exists()
