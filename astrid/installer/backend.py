@@ -253,6 +253,47 @@ class Backend:
         write_json(services_path, declaration)
         return services_path
 
+    def _installed_product_root(self, python: Path, env: dict[str, str]) -> Path:
+        """Return the selected venv's installed Astrid product tree.
+
+        The pinned source checkout is retained for provenance and non-wheel
+        assets. Execution identity must instead bind to the noneditable files
+        imported by the candidate interpreter.
+        """
+        probe = """import importlib.util,json,sys,sysconfig
+modules={'host':'astrid.core.execution.generic_host','child':'astrid.core.execution.generic_host_worker','action':'astrid.packs.rendering.actions.render.run','client':'astrid_runtime_client','sdk':'astrid.sdk.invocation'}
+print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'origins':{key:importlib.util.find_spec(module).origin for key,module in modules.items()}}))
+"""
+        try:
+            value = json.loads(self.run(
+                [python, "-X", "utf8", "-I", "-B", "-c", probe], extra_env=env,
+            ))
+            prefix_raw = Path(value["prefix"])
+            product_raw = Path(value["purelib"])
+            if not prefix_raw.is_absolute() or not product_raw.is_absolute():
+                raise ValueError("selected interpreter paths must be absolute")
+            prefix = prefix_raw.resolve(strict=True)
+            product_root = product_raw.resolve(strict=True)
+            selected_venv = python.parent.parent.resolve(strict=True)
+            origins = value["origins"]
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError,
+                subprocess.CalledProcessError) as exc:
+            raise RuntimeError("The selected Python did not report an installed Astrid product tree.") from exc
+        if (prefix != selected_venv or not product_root.is_relative_to(prefix)
+                or not isinstance(origins, dict) or set(origins) != {
+            "host", "child", "action", "client", "sdk",
+        }):
+            raise RuntimeError("The selected Python's product tree is outside its selected virtual environment.")
+        for origin in origins.values():
+            if not isinstance(origin, str):
+                raise RuntimeError("The selected Python did not resolve every installed Astrid module.")
+            path = Path(origin)
+            if (not path.is_absolute() or not path.is_file()
+                    or not path.resolve(strict=True).is_relative_to(product_root)
+                    or any(part.is_symlink() for part in (path, *path.parents))):
+                raise RuntimeError("The selected Python resolves Astrid code outside its installed product tree.")
+        return product_root
+
     def workspace(self, version: Version | None, data: Path) -> dict:
         interpreter = version if version is not None and version.python.is_file() else None
         value = self.runtime(interpreter, data, "workspace", "inspect")
@@ -495,15 +536,30 @@ class Backend:
         if npm_installed:
             schema_python = agent / "remotion" / "node_modules" / "@banodoco" / "timeline-schema" / "python"
             self.run([self.uv, "pip", "install", "--python", python, "--no-deps", schema_python])
+        product_root = self._installed_product_root(python, env)
+        # Python files execute from the selected venv's noneditable install.
+        # Keep source-only resources explicit because they are not wheel data.
+        env["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
+        env["ASTRID_SOURCE_PROVENANCE_ROOT"] = str(agent)
+        remotion_project = agent / "remotion"
+        if (remotion_project / "package.json").is_file() and (remotion_project / "node_modules").is_dir():
+            env["ASTRID_REMOTION_PROJECT_DIR"] = str(remotion_project.resolve())
+        schema_root = remotion_project / "node_modules" / "@banodoco" / "timeline-schema" / "python"
+        if (schema_root / "banodoco_timeline_schema" / "__init__.py").is_file():
+            env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema_root.resolve())
+        capability_matrix = agent / "config" / "astrid-beta-capabilities.json"
+        if capability_matrix.is_file():
+            env["ASTRID_CAPABILITY_MATRIX_PATH"] = str(capability_matrix.resolve())
         services_path = self._declare_services(
-            folder=folder, agent=agent, data=data, python=python,
+            folder=folder, agent=product_root, data=data, python=python,
             bun=env["ASTRID_BUN_EXECUTABLE"], env=env, old=prior,
         )
         profile = folder / "profile.json"
         # Compute the admitted source identity in the installed environment.
-        digest = self.run([python, "-X", "utf8", "-I", "-c", "from astrid.core.execution.generic_host import source_checkout_digest; import pathlib,sys; print(source_checkout_digest(pathlib.Path(sys.argv[1])))", agent], extra_env=env)
+        digest = self.run([python, "-X", "utf8", "-I", "-c", "from astrid.core.execution.generic_host import source_checkout_digest; import pathlib,sys; print(source_checkout_digest(pathlib.Path(sys.argv[1])))", product_root], extra_env=env)
         write_json(profile, {"profile": "astrid", "runtime_checkout": str(runtime),
-                             "source_checkout": str(agent), "runtime_environment": str(environment),
+                             "source_checkout": str(product_root),
+                             "runtime_environment": str(environment),
                              "source_digest": digest, "service_declaration": str(services_path)})
         version = Version(folder, python, profile, env)
         write_json(folder / "version.json", version.document())

@@ -2,6 +2,7 @@ import { isAbsolutePath } from './paths.ts';
 import {
   AcpProcessHost,
   AcpProcessHostError,
+  commandForPlatform,
   type AcpProcessHostCallbacks,
   type AcpProcessSpawner,
 } from './acpProcessHost.ts';
@@ -46,9 +47,11 @@ type HostChildProcess = {
       readonly stdio: readonly ['ignore', 'pipe', 'pipe'];
       readonly timeout: number;
       readonly killSignal: 'SIGKILL';
+      readonly windowsVerbatimArguments?: boolean;
     },
   ) => {
     readonly status: number | null;
+    readonly signal?: NodeJS.Signals | null;
     readonly stdout?: string | Uint8Array;
     readonly stderr?: string | Uint8Array;
     readonly error?: Error;
@@ -68,22 +71,28 @@ export function resolveAstridAcpSystemPromptFile(
       { code: 'acp_unavailable' },
     );
   }
-  const result = childProcess.spawnSync(command, [ASTRID_ACP_PROFILE_FILE_ARG], {
+  const invocation = commandForPlatform(command, [ASTRID_ACP_PROFILE_FILE_ARG], process.platform);
+  const result = childProcess.spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8',
     env: { ...(runtime?.env ?? {}), ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 5_000,
     killSignal: 'SIGKILL',
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
   const path = typeof result.stdout === 'string'
     ? result.stdout.trim()
     : result.stdout ? new TextDecoder().decode(result.stdout).trim() : '';
   if (result.error || result.status !== 0 || !path) {
-    const detail = typeof result.stderr === 'string'
-      ? result.stderr.trim()
-      : result.stderr ? new TextDecoder().decode(result.stderr).trim() : '';
+    const errorCode = result.error && 'code' in result.error ? Reflect.get(result.error, 'code') : undefined;
+    const diagnostic = [
+      result.status !== null ? `exit=${result.status}` : undefined,
+      result.signal ? `signal=${result.signal}` : undefined,
+      typeof errorCode === 'string' || typeof errorCode === 'number' ? `error=${errorCode}` : undefined,
+      result.error && Reflect.get(result.error, 'killed') === true ? 'killed=true' : undefined,
+    ].filter(Boolean).join(', ');
     throw new AcpProcessHostError(
-      `Astrid ACP packaged profile lookup failed${detail ? `: ${detail}` : ''}.`,
+      `Astrid ACP packaged profile lookup failed${diagnostic ? ` (${diagnostic})` : ''}.`,
       { code: 'acp_unavailable', cause: result.error },
     );
   }
@@ -110,8 +119,10 @@ export function resolveAstridAgentContext(
       const chunks: Buffer[] = [];
       let size = 0;
       let settled = false;
-      const child = childProcess.spawn(command, [ASTRID_ACP_AGENT_CONTEXT_ARG], {
+      const invocation = commandForPlatform(command, [ASTRID_ACP_AGENT_CONTEXT_ARG], process.platform);
+      const child = childProcess.spawn(invocation.command, invocation.args, {
         env: { ...(runtime?.env ?? {}), ...env } as NodeJS.ProcessEnv,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ['ignore', 'pipe', 'ignore'],
       });
       const finish = (value: string): void => {

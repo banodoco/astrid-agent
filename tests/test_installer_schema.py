@@ -19,6 +19,7 @@ def test_optional_remotion_failure_does_not_block_staging(tmp_path, monkeypatch,
     calls = []
     backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv", say=messages.append)
     monkeypatch.setattr(backend, "existing", lambda _data: None)
+    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
 
     def source(_name, _sha, destination, **_kwargs):
         destination.mkdir(parents=True)
@@ -98,6 +99,7 @@ def test_staging_installs_the_npm_locked_schema_before_declaring_services(tmp_pa
     calls = []
     backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv")
     monkeypatch.setattr(backend, "existing", lambda _data: None)
+    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
 
     def source(_name, _sha, destination, **_kwargs):
         destination.mkdir(parents=True)
@@ -136,8 +138,12 @@ def test_staging_installs_the_npm_locked_schema_before_declaring_services(tmp_pa
     declarations = []
 
     def declare(*, folder, agent, **_kwargs):
-        schema = agent / "remotion" / "node_modules" / "@banodoco" / "timeline-schema" / "python"
+        schema = (
+            next((tmp_path / "program" / "versions").iterdir())
+            / "a" / "remotion" / "node_modules" / "@banodoco" / "timeline-schema" / "python"
+        )
         assert (schema / "pyproject.toml").is_file()
+        assert agent == folder / "py" / "bin" / "Lib" / "site-packages"
         calls.append(["declare-services"])
         declarations.append(schema)
         destination = folder / "services.json"

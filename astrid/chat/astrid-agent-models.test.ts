@@ -1,4 +1,4 @@
-import { test } from 'bun:test';
+import { spyOn, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -68,16 +68,48 @@ function readCalls(path: string): unknown[] {
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-test('model discovery allows both OMP metadata startups to finish', async () => {
+function writeModelCommand(directory: string, script: string): string {
+  if (process.platform === 'win32') {
+    const scriptPath = join(directory, 'astrid-model-cli.js');
+    const command = join(directory, 'astrid.cmd');
+    writeFileSync(scriptPath, script, 'utf8');
+    writeFileSync(command, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`, 'utf8');
+    return command;
+  }
+  const command = join(directory, 'astrid');
+  writeFileSync(command, `#!${process.execPath}\n${script}\n`, { mode: 0o755 });
+  chmodSync(command, 0o755);
+  return command;
+}
+
+test('model discovery allows sequential OMP startup to exceed the old ten-second cutoff', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-slow-models-'));
+  const token = 'slow-models-test';
+  const { bridge, server } = createAstridAcpHttpServer({
+    config: { token, port: 0, cwd: directory, command: writeModelCommand(directory,
+      `setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(catalog))}), 11_000);`) },
+    chatRegistry: {} as never,
+  });
   try {
-    const command = join(directory, 'astrid');
-    writeFileSync(command, `#!${process.execPath}\nsetTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(catalog))}), 5_100);\n`, { mode: 0o755 });
-    const result = await getAstridAgentModelCatalog({ command, cwd: directory });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const response = await fetch(`http://127.0.0.1:${address.port}/models`, {
+      headers: { authorization: `Bearer ${token}`, 'x-astrid-bridge-version': 'v1' },
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json() as typeof catalog;
     assert.equal(result.currentModel, catalog.currentModel);
     assert.equal(result.providers.length, catalog.providers.length);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
-}, 12_000);
+  } finally {
+    server.close();
+    await bridge.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 16_000);
 
 test('agent model catalog maps the CLI response to the safe ACP projection and preserves CLI state', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-agent-models-'));
@@ -128,6 +160,7 @@ test('agent catalog discovery never invokes the global default mutation', async 
 
 test('agent model adapter rejects unsupported schemas and malformed JSON, and redacts CLI diagnostics', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-agent-invalid-'));
+  const warning = spyOn(console, 'warn').mockImplementation(() => {});
   try {
     const fake = fakeAstrid(directory);
     writeFileSync(fake.models, JSON.stringify({ ...catalog, schemaVersion: 2 }));
@@ -143,9 +176,27 @@ test('agent model adapter rejects unsupported schemas and malformed JSON, and re
       assert.equal((error as Error).message.includes('credential-secret-private'), false);
       return true;
     });
+    const diagnostics = warning.mock.calls.map(call => call.join(' ')).join('\n');
+    assert.match(diagnostics, /exit=9/);
+    assert.doesNotMatch(diagnostics, /credential-secret-private/);
   } finally {
+    warning.mockRestore();
     delete process.env.ASTRID_FAKE_FAIL;
     delete process.env.ASTRID_FAKE_BAD_JSON;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('agent model launch logs ENOENT without exposing child output', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-agent-missing-'));
+  const warning = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await assert.rejects(getAstridAgentModelCatalog({ command: join(directory, 'missing-astrid'), cwd: directory }));
+    const diagnostics = warning.mock.calls.map(call => call.join(' ')).join('\n');
+    assert.match(diagnostics, /error=ENOENT/);
+    assert.doesNotMatch(diagnostics, /credential|secret|stdout|stderr/i);
+  } finally {
+    warning.mockRestore();
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -153,6 +204,7 @@ test('agent model adapter rejects unsupported schemas and malformed JSON, and re
 test('agent catalog discovery kills a hanging CLI and rejects its partial output', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-agent-hanging-'));
   const pidFile = join(directory, 'child.pid');
+  const warning = spyOn(console, 'warn').mockImplementation(() => {});
   try {
     const command = join(directory, 'astrid');
     writeFileSync(command, `#!${process.execPath}
@@ -167,16 +219,21 @@ setInterval(() => {}, 1000);
       assert.equal((error as Error).message, 'Astrid model operation failed. Try again.');
       return true;
     });
-    assert.ok(Date.now() - started < 12_000, 'a hanging catalog must finish before the browser deadline');
+    const diagnostics = warning.mock.calls.map(call => call.join(' ')).join('\n');
+    assert.match(diagnostics, /signal=SIGKILL/);
+    assert.match(diagnostics, /timeout=true/);
+    assert.doesNotMatch(diagnostics, /credential-secret-private/);
+    assert.ok(Date.now() - started < 35_000, 'a hanging catalog must finish before the bounded probe deadline');
     const pid = Number(readFileSync(pidFile, 'utf8'));
     assert.equal(processHasExited(pid), true, `process ${pid} must have exited`);
   } finally {
+    warning.mockRestore();
     if (existsSync(pidFile)) {
       try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* Already reaped. */ }
     }
     rmSync(directory, { recursive: true, force: true });
   }
-}, 12_000);
+}, 40_000);
 
 test('the Python Astrid model wrapper and its nested OMP CLI exit on discovery timeout', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-python-probe-tree-'));
@@ -223,7 +280,7 @@ setInterval(() => {}, 1000);
     }
     rmSync(directory, { recursive: true, force: true });
   }
-}, 12_000);
+}, 40_000);
 
 for (const phase of ['profile', 'initialize', 'session/new', 'session/close']) {
   test(`agents endpoint survives a hanging catalog and ${phase} bootstrap, and reaps discovery children`, async () => {

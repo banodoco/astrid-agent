@@ -13,6 +13,26 @@ from scripts import ci_windows_journey as journey
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "windows-journey.yml"
 
 
+@pytest.fixture
+def stub_installed_profile_binding(monkeypatch):
+    monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
+
+
+def sdk_invocation(argv, task_id="task-1"):
+    request = json.loads(argv[0])
+    assert journey.os.environ["ASTRID_HOST_EXECUTION_PROFILE"] == "installed"
+    assert request == {
+        "capability_id": "chiptune.sfx",
+        "kind": "executor",
+        "project": "windows-journey",
+        "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1},
+    }
+    return json.dumps({
+        "content": [{"type": "text", "text": "{}"}],
+        "details": {"astridTaskRefs": [{"task_id": task_id}]},
+    })
+
+
 def test_journey_runs_for_main_windows_branches_and_main_pull_requests():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert 'branches: [main, "windows/**"]' in workflow
@@ -30,6 +50,7 @@ def test_journey_resolves_companion_refs_from_durable_defaults():
     assert "runtime_ref:" not in workflow
     assert "ref: ${{ inputs.app_ref || 'main' }}" in workflow
     assert "default: windows/task-host" not in workflow
+    assert "Run an installed-profile SDK invocation through settlement" in workflow
 
 
 def test_manifest_replaces_released_sources_and_keeps_app_tools(tmp_path, monkeypatch):
@@ -97,8 +118,10 @@ def test_ready_file_must_belong_to_running_service(tmp_path, monkeypatch, state,
     ("succeeded", [{"name": name, "digest": "sha256:" + "a" * 64, "size": 100}
                    for name in ("sfx", "sfx_meta")], True),
 ])
-def test_admission_is_not_task_settlement(monkeypatch, state, outputs, expected):
+def test_admission_is_not_task_settlement(monkeypatch, stub_installed_profile_binding, state, outputs, expected):
     def cli(module, argv, name, **kwargs):
+        if module == "astrid.omp_invoke":
+            return sdk_invocation(argv)
         if argv[:2] == ["tasks", "show"]:
             return json.dumps({"ok": True, "data": {"state": state, "result": {"outputs": outputs}}})
         return json.dumps({"ok": True, "data": {"task_id": "task-1"}})
@@ -111,7 +134,8 @@ def test_admission_is_not_task_settlement(monkeypatch, state, outputs, expected)
             journey.task()
 
 
-def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, monkeypatch):
+def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, monkeypatch,
+                                                                    stub_installed_profile_binding):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     calls = []
     state = "running"
@@ -119,6 +143,8 @@ def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, mo
 
     def cli(module, argv, name, **kwargs):
         nonlocal state, follow_count
+        if module == "astrid.omp_invoke":
+            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if argv[:2] == ["projects", "create"]:
             return json.dumps({"ok": True})
@@ -155,7 +181,8 @@ def test_failed_follow_cancels_and_settles_before_returning_failure(tmp_path, mo
     assert calls[-2:] == [("tasks", "show"), ("tasks", "events")]
 
 
-def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_path, monkeypatch):
+def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_path, monkeypatch,
+                                                                           stub_installed_profile_binding):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     logs = tmp_path / "logs"
@@ -181,6 +208,8 @@ def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_p
 
     def cli(module, argv, name, **kwargs):
         nonlocal state
+        if module == "astrid.omp_invoke":
+            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if argv[:2] == ["projects", "create"]:
             return json.dumps({"ok": True})
@@ -229,7 +258,8 @@ def test_timeout_stream_tails_are_captured_before_cancellation_and_bounded(tmp_p
     assert json.loads((tmp_path / "task-timeout-task-output-capture.json").read_text()) == metadata
 
 
-def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_path, monkeypatch):
+def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_path, monkeypatch,
+                                                                        stub_installed_profile_binding):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     (tmp_path / "logs").mkdir()
@@ -238,11 +268,11 @@ def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_pat
 
     def cli(module, argv, name, **kwargs):
         nonlocal state
+        if module == "astrid.omp_invoke":
+            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if tuple(argv[:2]) in (("projects", "create"), ("tasks", "events")):
             return json.dumps({"ok": True, "data": []})
-        if argv[:2] == ["tasks", "create"]:
-            return json.dumps({"ok": True, "data": {"task_id": "task-1"}})
         if argv[:2] == ["tasks", "follow"]:
             raise RuntimeError("follow timed out")
         if argv[:2] == ["tasks", "show"]:
@@ -265,7 +295,8 @@ def test_snapshot_failure_does_not_prevent_cancel_or_hide_follow_failure(tmp_pat
     assert (tmp_path / "processes-after-task-follow-error.json").is_file()
 
 
-def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_path, monkeypatch):
+def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_path, monkeypatch,
+                                                                          stub_installed_profile_binding):
     monkeypatch.setattr(journey, "EVIDENCE", tmp_path)
     monkeypatch.setattr(journey, "data_root", lambda: tmp_path)
     (tmp_path / "logs").mkdir()
@@ -277,6 +308,8 @@ def test_malformed_task_metadata_is_reported_without_blocking_cancellation(tmp_p
 
     def cli(module, argv, name, **kwargs):
         nonlocal state
+        if module == "astrid.omp_invoke":
+            return sdk_invocation(argv)
         calls.append(tuple(argv[:2]))
         if argv[:2] == ["projects", "create"]:
             return json.dumps({"ok": True})

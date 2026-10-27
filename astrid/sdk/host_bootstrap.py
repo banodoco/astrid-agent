@@ -7,6 +7,7 @@ keeps a small support-directory marker so an Astrid relaunch reuses one host.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -305,6 +306,35 @@ def _host_birth_identity(pid: Any) -> str:
     return str(info.birth) if info is not None else ""
 
 
+def _host_process_executable(pid: int) -> str | None:
+    """Capture the kernel image path, bracketed by the process birth token."""
+    if sys.platform != "win32":
+        return None
+    try:
+        before = platform.process_identity(pid)
+        if before is None:
+            raise OSError("host process is absent")
+        executable = platform.process_executable(pid)
+        after = platform.process_identity(pid)
+    except OSError as exc:
+        raise PackHostBootstrapError("host native executable identity unavailable") from exc
+    if after is None or before.get("birth_id") != after.get("birth_id"):
+        raise PackHostBootstrapError("host process changed during executable identity capture")
+    return str(executable)
+
+
+def _runtime_service_launch_id(*, foreground: bool) -> str | None:
+    """The Runtime supervisor's per-attempt binding for its foreground service."""
+    if not foreground or os.environ.get("ASTRID_RUNTIME_SERVICE_NAME") != "pack-host":
+        return None
+    launch_id = os.environ.get("ASTRID_RUNTIME_SERVICE_LAUNCH_ID", "")
+    if not launch_id:
+        return None  # Older Runtime can still use the exact PID/birth receipt.
+    if not re.fullmatch(r"[0-9a-f]{32}", launch_id):
+        raise PackHostBootstrapError("Runtime pack-host service launch identity is malformed")
+    return launch_id
+
+
 def _host_identity_matches(state: Mapping[str, Any]) -> bool:
     """The registered pid, start time, group and command are this support root's host."""
     return _registered_host_status(state) == "ours"
@@ -577,6 +607,69 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
     birth = str(state.get("process_birth_id") or "")
     if pid <= 1 or not birth:
         return "reused"
+    if sys.platform == "win32":
+        # Windows has no POSIX process-group census. Runtime binds identity to
+        # a kernel process handle (including the creation FILETIME), so use
+        # that directly instead of treating the unsupported census as failure.
+        # The registration itself is published in the support directory after
+        # this host starts; requiring its exact creation token prevents a reused
+        # PID from inheriting that registration.
+        try:
+            identity = platform.process_identity(pid)
+        except OSError as exc:
+            raise PackHostBootstrapError(
+                "host native process identity unavailable; field=registered_host"
+            ) from exc
+        if identity is None:
+            return "gone"
+        if str(identity.get("birth_id") or "") != birth:
+            return "reused"
+        support_root = str(state.get("support_root") or "")
+        expected_executable = str(state.get("python_executable") or "")
+        if not support_root or not expected_executable:
+            return "foreign"
+        try:
+            executable = platform.process_executable(pid)
+            argv = _windows_process_argv(pid)
+            after = platform.process_identity(pid)
+        except OSError as exc:
+            raise PackHostBootstrapError(
+                "host native process metadata unavailable; field=registered_host"
+            ) from exc
+        if after is None:
+            return "gone"
+        if str(after.get("birth_id") or "") != birth:
+            return "reused"
+        expected_image = str(state.get("process_image") or "")
+        if expected_image:
+            if not _same_windows_path(executable, expected_image):
+                return "foreign"
+            allowed_argv_images = (expected_executable, expected_image)
+        else:
+            # Python 3.11's Windows venv redirector starts the base interpreter
+            # with the base executable as argv[0]. The selected venv path is
+            # still persisted in the registration, so for legacy markers that
+            # lack process_image, bind the observed kernel image to either the
+            # selected executable itself or the exact base executable recorded
+            # by its adjacent pyvenv.cfg.
+            base_executable = _windows_venv_base_executable(expected_executable)
+            allowed_process_images = (expected_executable, base_executable)
+            if not any(_same_windows_path(executable, value) for value in allowed_process_images if value):
+                return "foreign"
+            allowed_argv_images = (expected_executable, executable)
+        if not argv or not any(_same_windows_path(argv[0], value) for value in allowed_argv_images if value):
+            return "foreign"
+        module_indexes = [index for index, value in enumerate(argv[:-1]) if value == "-m"]
+        root_indexes = [index for index, value in enumerate(argv[:-1]) if value == "--support-root"]
+        valid_python_prefix = (len(argv) > 3 and argv[1:3] == ["-X", "utf8"]
+                               and (argv[3] == "-m" or (len(argv) > 4 and argv[3] == "-I" and argv[4] == "-m")))
+        if (not valid_python_prefix or len(module_indexes) != 1
+                or module_indexes[0] not in {3, 4}
+                or argv[module_indexes[0] + 1] != _HOST_MODULE
+                or len(root_indexes) != 1
+                or not _same_windows_path(argv[root_indexes[0] + 1], support_root)):
+            return "foreign"
+        return "ours"
     try:
         info = _process_snapshot().get(pid)
     except CleanupUncertainError as exc:
@@ -592,6 +685,118 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
         return "foreign"
     command = _ps_command(pid)
     return "ours" if f" -m {_HOST_MODULE} " in f"{command} " and support_root in command else "foreign"
+
+
+def _same_windows_path(left: str, right: str) -> bool:
+    """Compare observed Windows executable paths using Windows path rules."""
+    import ntpath
+
+    try:
+        if ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(ntpath.normpath(right)):
+            return True
+        return os.path.samefile(left, right)
+    except (OSError, ValueError):
+        return False
+
+
+def _windows_venv_base_executable(selected_executable: str) -> str:
+    """Read the base interpreter path for a Windows venv executable."""
+    selected = Path(selected_executable)
+    config = selected.parent.parent / "pyvenv.cfg"
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return ""
+    home = ""
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator and key.strip().casefold() == "home":
+            home = value.strip()
+            break
+    if not home:
+        return ""
+    # Windows venvs normally use python.exe, even when a caller reaches the
+    # same environment through python3.exe or pythonw.exe.
+    for name in (selected.name, "python.exe"):
+        candidate = Path(home) / name
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
+def _windows_process_argv(pid: int) -> list[str]:
+    """Read and parse a Windows process command using the native CIM interface.
+
+    Win32_Process.CommandLine is read-only. The integer PID is validated by
+    the caller and interpolated into a fixed WQL filter; JSON carries the
+    returned command line without PowerShell quoting ambiguity.
+    """
+    query = (
+        "$ErrorActionPreference='Stop'; "
+        "$utf8=New-Object System.Text.UTF8Encoding $false; "
+        "[Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; "
+        f"$p=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {int(pid)}'; "
+        "if ($null -eq $p -or $null -eq $p.CommandLine) { exit 3 }; "
+        "$json=ConvertTo-Json -Compress -InputObject @{ProcessId=[int]$p.ProcessId; CommandLine=[string]$p.CommandLine}; "
+        "[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))"
+    )
+    powershell = Path(os.environ.get("SystemRoot") or r"C:\Windows") / (
+        "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
+    try:
+        result = subprocess.run(
+            [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", query],
+            stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        raise OSError("Windows process command observation failed") from exc
+    if result.returncode != 0:
+        raise OSError("Windows process command observation failed")
+    try:
+        # PowerShell 5.1 may write redirected stdout with the machine's OEM
+        # code page even when Console.OutputEncoding is set. The JSON payload
+        # is transported as ASCII Base64, then decoded as UTF-8 here so Unicode
+        # command-line paths survive without depending on console settings.
+        encoded = result.stdout.strip()
+        if isinstance(encoded, str):
+            encoded = encoded.encode("ascii")
+        record = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+        process_id = record.get("ProcessId") if isinstance(record, dict) else None
+        command_line_value = record.get("CommandLine") if isinstance(record, dict) else None
+        if (not isinstance(process_id, int) or process_id != int(pid)
+                or not isinstance(command_line_value, str) or not command_line_value):
+            raise ValueError("malformed process command")
+        command_line = command_line_value
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise OSError("Windows process command observation was malformed") from exc
+    return _split_windows_command_line(command_line)
+
+
+def _split_windows_command_line(command: str) -> list[str]:
+    """Parse a Windows process command line using CommandLineToArgvW."""
+    import ctypes
+    from ctypes import wintypes
+
+    win_dll = getattr(ctypes, "WinDLL")
+    win_error = getattr(ctypes, "WinError")
+    get_last_error = getattr(ctypes, "get_last_error")
+    shell32 = win_dll("shell32", use_last_error=True)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32 = win_dll("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+    count = ctypes.c_int()
+    values = shell32.CommandLineToArgvW(command, ctypes.byref(count))
+    if not values:
+        raise win_error(get_last_error())
+    try:
+        return [values[index] for index in range(count.value)]
+    finally:
+        kernel32.LocalFree(values)
 
 
 def _ps_command(pid: int) -> str:
@@ -660,23 +865,156 @@ def _stop_group(pgid: int, *, grace: float | None = None, leader_birth: str | No
     return forced
 
 
-def _terminate_old_host(state: Mapping[str, Any]) -> bool:
+def _runtime_cleanup_receipt_matches(state: Mapping[str, Any], *, foreground: bool) -> bool:
+    """Prove Runtime drained the prior supervised pack-host Job before retry."""
+    if (sys.platform != "win32" or not foreground
+            or os.environ.get("ASTRID_RUNTIME_SERVICE_NAME") != "pack-host"):
+        return False
+    pid = state.get("pid")
+    birth = str(state.get("process_birth_id") or "")
+    support_root = str(state.get("support_root") or "")
+    if not isinstance(pid, int) or pid <= 1 or not birth or not support_root:
+        return False
+    path = Path(support_root) / "pack-host-job-cleanup.json"
+    lock_path = path.with_name(".pack-host-job-cleanup.lock")
+    if (path.is_symlink() or lock_path.is_symlink() or not path.is_file()
+            or not platform.is_owner_only(path)):
+        return False
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "a+") as lock:
+            platform.owner_only(lock.fileno())
+            platform.lock_file(lock.fileno())
+            record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        return False
+    if (not isinstance(record, dict) or record.get("version") != 1
+            or record.get("service_name") != "pack-host"
+            or not _same_windows_path(str(record.get("support_root") or ""), support_root)):
+        return False
+    receipts = record.get("receipts")
+    if not isinstance(receipts, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and _runtime_receipt_matches_state(item, state, support_root)
+        and item.get("job_drained") is True
+        and item.get("service_name", "pack-host") == "pack-host"
+        for item in receipts
+    )
+
+
+def _runtime_receipt_matches_state(item: Mapping[str, Any], state: Mapping[str, Any], support_root: str) -> bool:
+    if ("runtime_service_launch_id" in state
+            and state.get("runtime_service_launch_id") is not None):
+        launch_id = str(state.get("runtime_service_launch_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", launch_id):
+            return False
+        identity_match = item.get("runtime_service_launch_id") == launch_id
+        receipt_pid, receipt_birth = item.get("pid"), item.get("process_birth_id")
+        receipt_identity_valid = (
+            (receipt_pid is None and receipt_birth is None)
+            or (isinstance(receipt_pid, int) and receipt_pid > 1
+                and isinstance(receipt_birth, str) and bool(receipt_birth))
+        )
+    else:
+        identity_match = (item.get("pid") == state.get("pid")
+                          and item.get("process_birth_id") == state.get("process_birth_id"))
+        receipt_identity_valid = (
+            isinstance(item.get("pid"), int) and item["pid"] > 1
+            and isinstance(item.get("process_birth_id"), str) and bool(item["process_birth_id"])
+        )
+    return (
+        identity_match
+        and receipt_identity_valid
+        and _same_windows_path(str(item.get("support_root", support_root)), support_root)
+    )
+
+
+def _consume_runtime_cleanup_receipt(state: Mapping[str, Any]) -> None:
+    """Remove the exact receipt after its matching stale markers are retired."""
+    support_root = str(state.get("support_root") or "")
+    path = Path(support_root) / "pack-host-job-cleanup.json"
+    lock_path = path.with_name(".pack-host-job-cleanup.lock")
+    if (path.is_symlink() or lock_path.is_symlink() or not path.is_file()
+            or not platform.is_owner_only(path)):
+        return
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "a+") as lock:
+            platform.owner_only(lock.fileno())
+            platform.lock_file(lock.fileno())
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if (not isinstance(record, dict) or record.get("version") != 1
+                    or record.get("service_name") != "pack-host"
+                    or not _same_windows_path(str(record.get("support_root") or ""), support_root)
+                    or not isinstance(record.get("receipts"), list)):
+                return
+            remaining = [item for item in record["receipts"] if not (
+                isinstance(item, dict) and _runtime_receipt_matches_state(item, state, support_root)
+                and item.get("job_drained") is True
+                and item.get("service_name", "pack-host") == "pack-host"
+            )]
+            if len(remaining) != len(record["receipts"]):
+                _write_object(path, {**record, "receipts": remaining})
+    except (OSError, ValueError, ImportError):
+        return
+
+
+def _terminate_old_host(state: Mapping[str, Any], *, foreground: bool = False,
+                        status: str | None = None) -> bool:
     """Stop the registered host group and return whether shutdown sent SIGKILL."""
-    status = _registered_host_status(state)
+    status = _registered_host_status(state) if status is None else status
     if status == "foreign":
         raise PackHostBootstrapError("registered pid is not this Astrid pack host; not signalled")
+    if sys.platform == "win32":
+        # Windows tree termination is authorized by a retained Job handle, not
+        # the numeric process ID. Only the process that launched the host can
+        # hold that capability; a later process cannot reconstruct it from the
+        # registration or PID, even when the root has exited.
+        retained = _RETAINED_HOSTS.get((int(state["pid"]), str(state.get("process_birth_id") or "")))
+        if retained is not None:
+            try:
+                terminate_group(retained)
+            except CleanupUncertainError as exc:
+                raise PackHostBootstrapError(
+                    "registered Windows host Job cleanup is unproved; retirement blocked"
+                ) from exc
+            return False
+        if status in {"gone", "reused"} and _runtime_cleanup_receipt_matches(state, foreground=foreground):
+            return False
+        if status in {"gone", "reused"} and foreground:
+            raise PackHostBootstrapError(
+                "legacy Windows host registration lacks a matching Runtime Job-drain receipt; "
+                "automatic retirement is blocked"
+            )
+        raise PackHostBootstrapError(
+            "registered Windows host has no retained Job custody; retirement blocked"
+        )
     if status != "reused":
         return _stop_group(int(state["pid"]), leader_birth=str(state.get("process_birth_id") or "") or None)
     return False
 
 
-def _retire_host_locked(state: Mapping[str, Any]) -> None:
+def _retire_host_locked(state: Mapping[str, Any], *, foreground: bool = False) -> None:
     """Caller holds the host lock. Stop the registered host, drop its markers."""
     support = Path(str(state.get("support_root") or ""))
-    if _registered_host_status(state) != "foreign":
-        _terminate_old_host(state)
+    status = _registered_host_status(state)
+    used_receipt = (
+        sys.platform == "win32" and status in {"gone", "reused"}
+        and _runtime_cleanup_receipt_matches(state, foreground=foreground)
+    )
+    if sys.platform == "win32" and status == "foreign":
+        raise PackHostBootstrapError("registered Windows host identity is foreign; retirement blocked")
+    if status != "foreign":
+        if foreground:
+            _terminate_old_host(state, foreground=True, status=status)
+        else:
+            _terminate_old_host(state)
     for name in ("generic-host.ready.json", "generic-host.json"):
         (support / name).unlink(missing_ok=True)
+    if used_receipt:
+        _consume_runtime_cleanup_receipt(state)
 
 
 def _stop_registered_host(state: Mapping[str, Any]) -> None:
@@ -719,6 +1057,44 @@ def _execution_profile() -> str:
     if profile not in {"source", "installed"}:
         raise PackHostBootstrapError("host execution profile must be source or installed")
     return profile
+
+
+def _capability_matrix_path(source_path: Path) -> Path:
+    """Select the installed matrix without accepting a symlinked override."""
+    from astrid.core.env_vars import ASTRID_CAPABILITY_MATRIX_PATH, ASTRID_SOURCE_PROVENANCE_ROOT
+
+    raw = os.environ.get(ASTRID_CAPABILITY_MATRIX_PATH, "").strip()
+    if not raw:
+        return source_path / "config" / "astrid-beta-capabilities.json"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise PackHostBootstrapError("installed capability matrix path must be absolute")
+    path = Path(path.absolute())
+    current = path
+    while True:
+        if current.is_symlink():
+            raise PackHostBootstrapError("installed capability matrix path must not contain symlinks")
+        if current == current.parent:
+            break
+        current = current.parent
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise PackHostBootstrapError("installed capability matrix path is unavailable") from exc
+    provenance = os.environ.get(ASTRID_SOURCE_PROVENANCE_ROOT, "").strip()
+    if provenance:
+        root = Path(provenance).expanduser()
+        if not root.is_absolute():
+            raise PackHostBootstrapError("installed capability matrix is outside its source provenance root")
+        try:
+            provenance_root = root.resolve(strict=True)
+        except OSError as exc:
+            raise PackHostBootstrapError("installed source provenance root is unavailable") from exc
+        if not resolved.is_relative_to(provenance_root):
+            raise PackHostBootstrapError("installed capability matrix is outside its source provenance root")
+    if not resolved.is_file():
+        raise PackHostBootstrapError("installed capability matrix is not a regular file")
+    return resolved
 
 
 def _installed_execution_origins(source_path: Path, python_executable: str) -> dict[str, str]:
@@ -902,7 +1278,7 @@ class _ParkedPackHostPreparer:
             raise
         finally:
             child.close()
-        process._astrid_host_launch_argv = tuple(argv)
+        setattr(process, "_astrid_host_launch_argv", tuple(argv))
         state = {
             "launch_argv_sha256": launch_digest,
             "pid": process.pid, "process_birth_id": _host_birth_identity(process.pid),
@@ -1537,7 +1913,10 @@ def ensure_pack_host(
                     "generic Astrid pack host is busy with active child processes; "
                     "reconfiguration is deferred until its work finishes"
                 )
-            _retire_host_locked(current)
+            if _foreground:
+                _retire_host_locked(current, foreground=True)
+            else:
+                _retire_host_locked(current)
         ready_path.unlink(missing_ok=True)
         log_path = runtime_support / "generic-host.log"
         try:
@@ -1545,7 +1924,7 @@ def ensure_pack_host(
             rotate_if_needed(log_path)
         except OSError:
             pass
-        matrix = source_path / "config" / "astrid-beta-capabilities.json"
+        matrix = _capability_matrix_path(source_path)
         argv = [
             host_python,
             "-X", "utf8",
@@ -1581,8 +1960,15 @@ def ensure_pack_host(
                 "pid": os.getpid(),
                 "process_birth_id": _host_birth_identity(os.getpid()),
             }
+            if service_launch_id := _runtime_service_launch_id(foreground=True):
+                process_state["runtime_service_launch_id"] = service_launch_id
             if not process_state["process_birth_id"]:
                 raise PackHostBootstrapError("foreground pack host identity could not be captured")
+            if sys.platform == "win32":
+                image = _host_process_executable(os.getpid())
+                if not image:
+                    raise PackHostBootstrapError("foreground pack host executable identity is unavailable")
+                process_state["process_image"] = image
             _write_object(state_path, process_state)
             # Unwind the bootstrap lock before entering the worker loop. The
             # Runtime owns this process, including its eventual exit/restart.
@@ -1615,8 +2001,28 @@ def ensure_pack_host(
             "process_birth_id": _host_birth_identity(process.pid),
         }
         if not process_state["process_birth_id"]:
+            if sys.platform == "win32":
+                try:
+                    terminate_group(process)
+                except BaseException as cleanup:
+                    raise PackHostBootstrapError(
+                        f"generic Astrid pack host identity unavailable; cleanup is unproved; {reconfigure_action}"
+                    ) from cleanup
             process.poll()
             raise PackHostBootstrapError(f"generic Astrid pack host identity could not be captured; {reconfigure_action}")
+        if sys.platform == "win32":
+            try:
+                image = _host_process_executable(process.pid)
+                if not image:
+                    raise PackHostBootstrapError("host executable identity is unavailable")
+            except BaseException as primary:
+                try:
+                    terminate_group(process)
+                except BaseException as cleanup:
+                    raise primary from cleanup
+                raise
+            process_state["process_image"] = image
+            _RETAINED_HOSTS[(process.pid, process_state["process_birth_id"])] = process
         # Register at once: if this CLI dies before the host is ready, the next
         # Astrid process finds the registration and retires the orphan.
         _write_object(state_path, process_state)

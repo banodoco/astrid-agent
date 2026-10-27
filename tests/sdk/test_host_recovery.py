@@ -491,6 +491,436 @@ def test_stop_group_reports_sigkill_escalation_without_live_processes(monkeypatc
     assert calls == [(4321, host_bootstrap.platform.TERM), (4321, host_bootstrap.platform.KILL)]
 
 
+def test_registered_windows_host_uses_kernel_identity_without_posix_census(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    state = {
+        "pid": 4321, "process_birth_id": "windows-creation:1234",
+        "support_root": r"C:\Astrid\support\runtime",
+        "python_executable": r"C:\Astrid\venv\Scripts\python.exe",
+    }
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234", "uid": "sid",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"c:\astrid\VENV\Scripts\Python.EXE")
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
+        r"C:\Astrid\venv\Scripts\python.exe", "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+        "--support-root", state["support_root"],
+    ])
+    monkeypatch.setattr(host_bootstrap, "_process_snapshot", lambda: pytest.fail("Windows used POSIX census"))
+    monkeypatch.setattr(host_bootstrap, "_ps_command", lambda _pid: pytest.fail("Windows ran ps"))
+
+    assert host_bootstrap._registered_host_status(state) == "ours"
+
+
+@pytest.mark.parametrize("observed,expected", [
+    (None, "gone"),
+    ({"birth_id": "windows-creation:9999"}, "reused"),
+])
+def test_registered_windows_host_distinguishes_gone_and_reused(monkeypatch, observed, expected):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda _pid: observed)
+    monkeypatch.setattr(host_bootstrap, "_process_snapshot", lambda: pytest.fail("Windows used POSIX census"))
+
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234"}
+    assert host_bootstrap._registered_host_status(state) == expected
+
+
+def test_registered_windows_host_fails_closed_when_identity_is_denied(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    def denied(_pid):
+        raise PermissionError("access denied")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", denied)
+    monkeypatch.setattr(host_bootstrap, "_process_snapshot", lambda: pytest.fail("Windows used POSIX census"))
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="native process identity unavailable"):
+        host_bootstrap._registered_host_status({"pid": 4321, "process_birth_id": "windows-creation:1234"})
+
+
+def test_registered_windows_host_rechecks_identity_after_executable_observation(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    identities = iter((
+        {"pid": 4321, "birth_id": "windows-creation:1234"},
+        {"pid": 4321, "birth_id": "windows-creation:9999"},
+    ))
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda _pid: next(identities))
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"C:\Astrid\venv\Scripts\python.exe")
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
+        r"C:\Astrid\venv\Scripts\python.exe", "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+        "--support-root", r"C:\Astrid\support",
+    ])
+
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234",
+             "support_root": r"C:\Astrid\support", "python_executable": r"C:\Astrid\venv\Scripts\python.exe"}
+    assert host_bootstrap._registered_host_status(state) == "reused"
+
+
+def test_windows_registered_host_command_must_bind_module_and_support_root(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"C:\Astrid\venv\Scripts\python.exe")
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
+        r"C:\Astrid\venv\Scripts\python.exe", "-X", "utf8", "-m", "unrelated.module", "run",
+        "--support-root", r"C:\Astrid\other-support",
+    ])
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234",
+             "support_root": r"C:\Astrid\support", "python_executable": r"C:\Astrid\venv\Scripts\python.exe"}
+
+    assert host_bootstrap._registered_host_status(state) == "foreign"
+
+
+def test_windows_registered_host_binds_launcher_path_and_captured_kernel_image_separately(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"C:\Python311\python.exe")
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
+        r"C:\Python311\python.exe", "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+        "--support-root", r"C:\Astrid\support",
+    ])
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234",
+             "support_root": r"C:\Astrid\support", "python_executable": r"C:\Astrid\venv\Scripts\python.exe",
+             "process_image": r"C:\Python311\python.exe"}
+
+    assert host_bootstrap._registered_host_status(state) == "ours"
+    assert host_bootstrap._registered_host_status({**state, "process_image": r"C:\Other\python.exe"}) == "foreign"
+
+
+@pytest.mark.windows_native
+def test_legacy_windows_venv_registration_accepts_base_interpreter_image(tmp_path, monkeypatch):
+    venv = tmp_path / "venv"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents=True)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "python.exe").write_bytes(b"test executable placeholder")
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
+    selected = scripts / "python.exe"
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: str(base / "python.exe"))
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
+        str(base / "python.exe"), "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+        "--support-root", r"C:\Astrid\support",
+    ])
+
+    state = {
+        "pid": 4321,
+        "process_birth_id": "windows-creation:1234",
+        "support_root": r"C:\Astrid\support",
+        "python_executable": str(selected),
+    }
+    assert host_bootstrap._windows_venv_base_executable(str(selected)) == str(base / "python.exe")
+    assert host_bootstrap._registered_host_status(state) == "ours"
+
+
+def test_registered_windows_host_fails_closed_when_command_observation_is_denied(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"C:\Astrid\venv\Scripts\python.exe")
+    def denied(_pid):
+        raise OSError("access denied")
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", denied)
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234",
+             "support_root": r"C:\Astrid\support", "python_executable": r"C:\Astrid\venv\Scripts\python.exe"}
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="native process metadata unavailable"):
+        host_bootstrap._registered_host_status(state)
+
+
+def test_windows_live_host_retirement_requires_retained_job(monkeypatch):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="no retained Job custody"):
+        host_bootstrap._terminate_old_host({"pid": 4321, "process_birth_id": "windows-creation:1234"})
+
+
+def test_windows_gone_host_without_retained_job_keeps_registration_markers(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(tmp_path)}
+    markers = [tmp_path / "generic-host.json", tmp_path / "generic-host.ready.json"]
+    for marker in markers:
+        marker.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="no retained Job custody"):
+        host_bootstrap._retire_host_locked(state)
+    assert all(marker.exists() for marker in markers)
+
+
+def test_windows_supervisor_receipt_proves_only_the_bound_drained_service_job(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "is_owner_only", lambda _path: True)
+    monkeypatch.setattr(host_bootstrap.platform, "owner_only", lambda _path: None)
+    monkeypatch.setattr(host_bootstrap.platform, "lock_file", lambda _fd: None)
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    support_root = str(tmp_path)
+    record = {
+        "version": 1, "service_name": "pack-host", "support_root": support_root,
+        "receipts": [{"pid": 4321, "process_birth_id": "windows-creation:1234", "job_drained": True}],
+    }
+    (tmp_path / "pack-host-job-cleanup.json").write_text(json.dumps(record), encoding="utf-8")
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": support_root}
+
+    assert host_bootstrap._runtime_cleanup_receipt_matches(state, foreground=True)
+    assert not host_bootstrap._runtime_cleanup_receipt_matches(state, foreground=False)
+    assert not host_bootstrap._runtime_cleanup_receipt_matches({**state, "pid": 4322}, foreground=True)
+    assert not host_bootstrap._runtime_cleanup_receipt_matches(
+        {**state, "process_birth_id": "windows-creation:other"}, foreground=True
+    )
+    record["receipts"][0]["job_drained"] = False
+    (tmp_path / "pack-host-job-cleanup.json").write_text(json.dumps(record), encoding="utf-8")
+    assert not host_bootstrap._runtime_cleanup_receipt_matches(state, foreground=True)
+
+
+def test_windows_supervisor_launch_id_bridges_venv_redirector_pid(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "is_owner_only", lambda _path: True)
+    monkeypatch.setattr(host_bootstrap.platform, "owner_only", lambda _path: None)
+    monkeypatch.setattr(host_bootstrap.platform, "lock_file", lambda _fd: None)
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    support_root = str(tmp_path)
+    launch_id = "a" * 32
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": support_root,
+             "runtime_service_launch_id": launch_id}
+    (tmp_path / "pack-host-job-cleanup.json").write_text(json.dumps({
+        "version": 1, "service_name": "pack-host", "support_root": support_root,
+        "receipts": [{"pid": None, "process_birth_id": None,
+                      "runtime_service_launch_id": launch_id, "job_drained": True}],
+    }), encoding="utf-8")
+
+    assert host_bootstrap._runtime_cleanup_receipt_matches(state, foreground=True)
+    assert not host_bootstrap._runtime_cleanup_receipt_matches(
+        {**state, "runtime_service_launch_id": "b" * 32}, foreground=True
+    )
+
+
+def test_runtime_service_launch_id_is_scoped_to_foreground_pack_host(monkeypatch):
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_LAUNCH_ID", "c" * 32)
+    assert host_bootstrap._runtime_service_launch_id(foreground=True) == "c" * 32
+    assert host_bootstrap._runtime_service_launch_id(foreground=False) is None
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_LAUNCH_ID", "malformed")
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="launch identity is malformed"):
+        host_bootstrap._runtime_service_launch_id(foreground=True)
+
+
+def test_windows_foreground_retry_uses_matching_receipt_without_signaling_pid(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "is_owner_only", lambda _path: True)
+    monkeypatch.setattr(host_bootstrap.platform, "owner_only", lambda _path: None)
+    monkeypatch.setattr(host_bootstrap.platform, "lock_file", lambda _fd: None)
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "reused")
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(tmp_path)}
+    (tmp_path / "pack-host-job-cleanup.json").write_text(json.dumps({
+        "version": 1, "service_name": "pack-host", "support_root": str(tmp_path),
+        "receipts": [{"pid": 4321, "process_birth_id": "windows-creation:1234", "job_drained": True}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(host_bootstrap, "_stop_group", lambda *_args, **_kwargs: pytest.fail("signalled Windows PID"))
+
+    assert host_bootstrap._terminate_old_host(state, foreground=True) is False
+
+
+def test_windows_retirement_consumes_only_matching_supervisor_receipt(monkeypatch, tmp_path):
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "is_owner_only", lambda _path: True)
+    monkeypatch.setattr(host_bootstrap.platform, "owner_only", lambda _path: None)
+    monkeypatch.setattr(host_bootstrap.platform, "lock_file", lambda _fd: None)
+    monkeypatch.setenv("ASTRID_RUNTIME_SERVICE_NAME", "pack-host")
+    monkeypatch.setattr(host_bootstrap, "_registered_host_status", lambda _state: "gone")
+    support_root = str(tmp_path)
+    state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": support_root}
+    cleanup_path = tmp_path / "pack-host-job-cleanup.json"
+    cleanup_path.write_text(json.dumps({
+        "version": 1, "service_name": "pack-host", "support_root": support_root,
+        "receipts": [
+            {"pid": 4321, "process_birth_id": "windows-creation:1234", "job_drained": True},
+            {"pid": 4444, "process_birth_id": "windows-creation:other", "job_drained": True},
+        ],
+    }), encoding="utf-8")
+    ready = tmp_path / "generic-host.ready.json"
+    registration = tmp_path / "generic-host.json"
+    ready.write_text("{}", encoding="utf-8")
+    registration.write_text("{}", encoding="utf-8")
+
+    host_bootstrap._retire_host_locked(state, foreground=True)
+
+    assert not ready.exists() and not registration.exists()
+    assert json.loads(cleanup_path.read_text(encoding="utf-8"))["receipts"] == [
+        {"pid": 4444, "process_birth_id": "windows-creation:other", "job_drained": True},
+    ]
+
+
+def test_windows_command_observation_uses_read_only_cim_and_validates_pid(monkeypatch):
+    calls = []
+    payload = json.dumps({
+        "ProcessId": 4321,
+        "CommandLine": 'python.exe -m astrid.core.execution.generic_host run --support-root "C:\\Astrid é Data\\runtime"',
+    }, ensure_ascii=False).encode("utf-8")
+    monkeypatch.setattr(host_bootstrap.subprocess, "run", lambda argv, **kwargs: (
+        calls.append((argv, kwargs)) or SimpleNamespace(
+            returncode=0,
+            stdout=host_bootstrap.base64.b64encode(payload),
+        )
+    ))
+    monkeypatch.setattr(host_bootstrap, "_split_windows_command_line", lambda value: ["parsed", value])
+
+    argv = host_bootstrap._windows_process_argv(4321)
+
+    assert argv[0] == "parsed"
+    assert "Astrid é Data" in argv[1]
+    assert "Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = 4321'" in calls[0][0][-1]
+    assert "[Console]::OutputEncoding=$utf8" in calls[0][0][-1]
+    assert "[Convert]::ToBase64String" in calls[0][0][-1]
+    assert calls[0][1]["capture_output"] is True
+    assert "encoding" not in calls[0][1]
+    assert calls[0][1]["timeout"] == 5.0
+    assert calls[0][1]["check"] is False
+
+
+def test_windows_command_observation_fails_closed_on_output_decode_error(monkeypatch):
+    def invalid_output(*_args, **_kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+    monkeypatch.setattr(host_bootstrap.subprocess, "run", invalid_output)
+
+    with pytest.raises(OSError, match="process command observation failed"):
+        host_bootstrap._windows_process_argv(4321)
+
+
+@pytest.mark.windows_native
+def test_windows_native_command_line_parser_preserves_spaces_and_quotes():
+    command = 'python.exe -m astrid.core.execution.generic_host run --support-root "C:\\Astrid Data\\runtime" --note "hello world"'
+    assert host_bootstrap._split_windows_command_line(command) == [
+        "python.exe", "-m", "astrid.core.execution.generic_host", "run",
+        "--support-root", "C:\\Astrid Data\\runtime", "--note", "hello world",
+    ]
+
+
+@pytest.mark.windows_native
+def test_windows_current_venv_image_matches_selected_pack_host_interpreter():
+    observed = host_bootstrap.platform.process_executable(os.getpid())
+    selected = host_bootstrap._pack_host_python_executable()
+    assert host_bootstrap._same_windows_path(observed, selected)
+
+
+@pytest.mark.windows_native
+def test_windows_venv_python_image_is_captured_separately_from_venv_launcher(tmp_path):
+    venv = tmp_path / "venv with spaces"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                   check=True, capture_output=True, text=True, timeout=60)
+    selected = venv / "Scripts" / "python.exe"
+    proc = subprocess.Popen(
+        [str(selected), "-c",
+         "import json,sys,time; print(json.dumps({'executable':sys.executable,'base':sys._base_executable}),flush=True); time.sleep(60)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        row = json.loads(proc.stdout.readline())
+        image = host_bootstrap.platform.process_executable(proc.pid)
+        assert host_bootstrap._same_windows_path(row["executable"], str(selected))
+        assert (host_bootstrap._same_windows_path(image, row["executable"])
+                or host_bootstrap._same_windows_path(image, row["base"]))
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+@pytest.mark.windows_native
+def test_windows_cim_command_observation_returns_current_python_argv():
+    argv = host_bootstrap._windows_process_argv(os.getpid())
+    observed = host_bootstrap.platform.process_executable(os.getpid())
+    assert argv
+    assert host_bootstrap._same_windows_path(argv[0], observed)
+
+
+@pytest.mark.windows_native
+def test_windows_registered_host_binds_real_venv_command_and_support_path(tmp_path):
+    venv = tmp_path / "venv with spaces"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                   check=True, capture_output=True, text=True, timeout=60)
+    python = venv / "Scripts" / "python.exe"
+    package = tmp_path / "stub package"
+    module = package / "astrid" / "core" / "execution"
+    module.mkdir(parents=True)
+    for init in (package / "astrid" / "__init__.py", package / "astrid" / "core" / "__init__.py",
+                 module / "__init__.py"):
+        init.write_text("", encoding="utf-8")
+    (module / "generic_host.py").write_text(
+        "import json,os,sys,time\n"
+        "from pathlib import Path\n"
+        "path=Path(sys.argv[sys.argv.index('--metadata-file')+1])\n"
+        "path.write_text(json.dumps({'pid':os.getpid(),'executable':sys.executable,'base':sys._base_executable}))\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    support = tmp_path / "Astrid é data" / "runtime"
+    support.mkdir(parents=True)
+    metadata = tmp_path / "host metadata.json"
+    child_output = tmp_path / "host stdout stderr.log"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(package)
+    # `python -m` prepends its current directory to sys.path. Run from the
+    # temporary stub package so it wins over the checkout's real Astrid
+    # package; otherwise this fixture imports the real host and fails on its
+    # unrelated service dependencies before it can publish test metadata.
+    with child_output.open("wb") as output_file:
+        process = subprocess.Popen(
+            [str(python), "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+             "--support-root", str(support), "--metadata-file", str(metadata)],
+            cwd=package, env=env, stdin=subprocess.DEVNULL,
+            stdout=output_file, stderr=subprocess.STDOUT,
+        )
+    host_pid = None
+    host_identity = None
+    try:
+        deadline = time.monotonic() + 10
+        while not metadata.exists() and time.monotonic() < deadline and process.poll() is None:
+            time.sleep(0.02)
+        if not metadata.exists():
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            output_tail = child_output.read_bytes()[-4096:].decode("utf-8", errors="replace")
+            pytest.fail(
+                "temporary Windows venv host did not publish its PID; "
+                f"returncode={process.returncode}, output_tail={output_tail!r}"
+            )
+        row = json.loads(metadata.read_text(encoding="utf-8"))
+        host_pid = row["pid"]
+        host_identity = host_bootstrap.platform.process_identity(host_pid)
+        assert host_identity is not None
+        state = {
+            "pid": host_pid,
+            "process_birth_id": host_identity["birth_id"],
+            "process_image": host_bootstrap.platform.process_executable(host_pid),
+            "python_executable": str(python),
+            "support_root": str(support),
+        }
+        observed_argv = host_bootstrap._windows_process_argv(host_pid)
+        status = host_bootstrap._registered_host_status(state)
+        assert status == "ours", (
+            f"registered host classified {status!r}; argv={observed_argv!r}; "
+            f"expected_executable={str(python)!r}; process_image={state['process_image']!r}; "
+            f"support_root={str(support)!r}"
+        )
+        assert host_bootstrap._registered_host_status({**state, "support_root": str(tmp_path / "other")}) == "foreign"
+    finally:
+        if host_pid is not None and host_identity is not None:
+            try:
+                host_bootstrap.platform.signal_process(host_identity, host_bootstrap.platform.KILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=10)
+
+
 def test_process_census_catches_declared_failure_without_hiding_programming_errors(monkeypatch):
     def unavailable():
         raise host_bootstrap.CleanupUncertainError("census unavailable")

@@ -73,7 +73,7 @@ jobs:
       - name: Wait for pack-host running and its ready file
         run: python -u scripts/ci_windows_journey.py host
 
-      - name: Run a local pack task through the CLI to settlement
+      - name: Run an installed-profile SDK invocation through settlement
         run: python -u scripts/ci_windows_journey.py task
 
       - name: Disable Scheduled Task restarts and run Runtime down

@@ -8,9 +8,16 @@ description: Route requests to make, inspect, edit, render, or publish creative 
 Use this skill after [Astrid core orientation](../SKILL.md) when the user wants
 an actual creative result. Choose the narrowest existing pack route, read that
 pack's `SKILL.md`, then follow its capability and `STAGE.md` instructions.
-When a pack names a capability without linking its contract, the usual source
-path is `astrid/packs/<pack>/executors/<slug>/STAGE.md` (or
-`orchestrators/<slug>/STAGE.md`), relative to the checkout root.
+When a pack names a capability without linking its contract, resolve the
+component in that pack's `pack.yaml` and follow its declared documentation
+resource path relative to the pack directory. In current schema-v3 packs, action
+guides are under `astrid/packs/<pack>/actions/<slug>/STAGE.md`; for example,
+generation's image guide is
+`astrid/packs/generation/actions/generate_image/STAGE.md`. Older folder-based
+packs may instead use `executors/<slug>/STAGE.md` or
+`orchestrators/<slug>/STAGE.md`. If a guessed path is missing, check the
+manifest and the selected source or installed pack tree before recommending a
+reinstall.
 Packs own execution guidance; this skill does not duplicate their procedures or
 create a new runtime pack.
 
