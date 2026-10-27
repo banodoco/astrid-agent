@@ -137,13 +137,14 @@ def test_admission_is_durable_before_staged_and_stop(installed, monkeypatch, mod
 
     env = installed
     replaced = []
+    publication_states = []
     replace = platform.durable_replace
 
     def publish(source, target):
         if target != env.root / "run_runtime.py":
             return replace(source, target)
-        assert env.journal_steps == []
         assert env.owner["running"]
+        publication_states.append(tuple(env.journal_steps))
         replace(source, target)
         replaced.append(target)
 
@@ -151,7 +152,9 @@ def test_admission_is_durable_before_staged_and_stop(installed, monkeypatch, mod
     real_stop = env.lifecycle.stop
 
     def stop(*args):
-        assert replaced == [env.root / "run_runtime.py"]
+        assert replaced
+        assert ("staged",) in publication_states
+        assert env.journal_steps[-1] == "stopping"
         compile(replaced[0].read_text(), str(replaced[0]), "exec")
         real_stop(*args)
 
@@ -254,7 +257,9 @@ def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, 
     refusals = []
 
     def ordinary_start(boundary):
-        with pytest.raises(ValueError, match="Another Astrid operation"):
+        message = ("Another Astrid operation" if boundary == "published" else
+                   "An Astrid update was interrupted; Choose Pinokio's Update button")
+        with pytest.raises(ValueError, match=message):
             runpy.run_path(str(runner))
         refusals.append(boundary)
 
@@ -633,8 +638,8 @@ def test_pinokio_update_refuses_nested_app_update_while_shared_lock_is_held(inst
 
 
 def test_busy_details_survive_failure_to_terminalize_journal(installed, monkeypatch):
-    details = {"kind": "busy", "blockers": [{"task_id": "task-7", "state": "running"}]}
-    failure = RuntimeOperationError("Astrid is busy", details=details, stop_refused=True)
+    details = {"safe": False, "kind": "busy", "blockers": [{"task_id": "task-7", "state": "running"}]}
+    failure = RuntimeOperationError("Astrid is busy", details=details)
     installed.lifecycle.stop = Mock(side_effect=failure)
     real_write_json = installer_core.write_json
 
@@ -648,8 +653,10 @@ def test_busy_details_survive_failure_to_terminalize_journal(installed, monkeypa
         run(installed)
 
     assert raised.value is failure
+    assert installed.lifecycle.stop.call_count == 1
     assert raised.value.details == details
-    assert raised.value.stop_refused is True
+    from astrid.installer.core import is_lifecycle_refusal
+    assert is_lifecycle_refusal(raised.value)
     assert any("Could not durably cancel" in note for note in getattr(raised.value, "__notes__", []))
     assert current(installed.root) == installed.old
     assert installed.owner == {"version": "old", "running": True}
@@ -746,31 +753,51 @@ def test_generic_runtime_start_error_is_not_a_stop_refusal(installed):
     with pytest.raises(RuntimeOperationError, match="candidate Runtime failed") as raised:
         run(installed)
 
-    assert raised.value.stop_refused is False
+    from astrid.installer.core import is_lifecycle_refusal
+    assert not is_lifecycle_refusal(raised.value)
     assert current(installed.root) == installed.old
     assert installed.calls == ["stage", "stop:old", "start:new", "stop:new", "start:old"]
 
 
 @pytest.mark.parametrize("category", ["busy", "timeout", "identity"])
-def test_stop_refusal_never_probes_status_switches_or_starts_candidate(installed, category):
-    details = {"kind": category, "blockers": [{"task_id": "task-1"}]}
+def test_initial_stop_failure_uses_only_authentic_lifecycle_refusal(installed, category):
+    if category == "busy":
+        details = {"safe": False, "kind": "busy", "blockers": [{"task_id": "task-1"}]}
+        failure = RuntimeOperationError(
+            "Astrid is busy (1 tasks running). Try again when they finish.", details=details,
+        )
+    elif category == "timeout":
+        details = {"kind": "transport", "reason": "timed out"}
+        failure = RuntimeOperationError("Runtime stop timed out", details=details)
+    else:
+        details = {"kind": "identity", "expected": {"instance_id": "old"}}
+        failure = RuntimeOperationError("Runtime owner identity changed", details=details)
 
-    def stop(*_):
-        raise RuntimeOperationError("Astrid is busy (1 tasks running). Try again when they finish.",
-                                    details=details, stop_refused=True)
-
-    installed.lifecycle.stop = stop
+    installed.lifecycle.stop = Mock(side_effect=failure)
     installed.lifecycle.running = Mock(side_effect=AssertionError("must not probe after refusal"))
-    with pytest.raises(RuntimeOperationError) as raised:
-        run(installed)
-    assert raised.value.details == details
     installed.lifecycle.running.assert_not_called()
     assert current(installed.root) == installed.old
-    assert installed.calls == ["stage"]
     assert installed.record["identity"] == installed.old.document()["identity"]
     assert installed.owner == {"version": "old", "running": True}
-    assert installed.journal_steps[-1] == "complete"
-    assert read_json(installed.root / "update-transaction.json")["outcome"] == "stop_refused"
+    if category == "busy":
+        with pytest.raises(RuntimeOperationError) as raised:
+            run(installed)
+        assert raised.value is failure
+        assert raised.value.details == details
+        assert installed.lifecycle.stop.call_count == 1
+        assert installed.calls == ["stage"]
+        assert installed.journal_steps[-1] == "complete"
+        assert read_json(installed.root / "update-transaction.json")["outcome"] == "stop_refused"
+    else:
+        with pytest.raises(RuntimeError, match="recovery also failed") as raised:
+            run(installed)
+        assert raised.value.__cause__ is failure
+        assert str(failure) in str(raised.value)
+        assert installed.lifecycle.stop.call_count == 2
+        assert installed.calls == ["stage"]
+        journal = read_json(installed.root / "update-transaction.json")
+        assert journal["step"] == "stopping"
+        assert "outcome" not in journal
 
 
 def test_controller_cleanup_failure_after_down_restarts_old(installed):
@@ -780,7 +807,7 @@ def test_controller_cleanup_failure_after_down_restarts_old(installed):
         stop_calls.append(version)
         if len(stop_calls) == 1:
             installed.owner.update(version=version.root.name, running=False)
-            raise RuntimeOperationError("controller cleanup", stop_refused=False, stop_completed=True)
+            raise RuntimeOperationError("controller cleanup")
         installed.owner.update(version=version.root.name, running=False)
         installed.calls.append("stop:" + version.root.name)
 
@@ -800,8 +827,8 @@ def test_candidate_stop_refusal_does_not_switch_or_relaunch(installed):
     def stop(version, *_args):
         installed.calls.append("stop:" + version.root.name)
         if version == installed.candidate:
-            raise RuntimeOperationError("Astrid is busy during rollback", details={"task_count": 1},
-                                        stop_refused=True)
+            raise RuntimeOperationError("Astrid is busy during rollback",
+                                        details={"safe": False, "task_count": 1})
 
     installed.lifecycle.start = start
     installed.lifecycle.stop = stop
@@ -809,7 +836,7 @@ def test_candidate_stop_refusal_does_not_switch_or_relaunch(installed):
     with pytest.raises(RuntimeOperationError, match="busy during rollback") as raised:
         run(installed)
 
-    assert raised.value.details == {"task_count": 1}
+    assert raised.value.details == {"safe": False, "task_count": 1}
     assert current(installed.root) == installed.candidate
     assert installed.calls == ["stage", "stop:old", "start:new", "stop:new"]
 
@@ -915,11 +942,6 @@ def test_canonical_supervisor_is_detached_and_readiness_checked(installed, monke
     runner.write_text("# prepared admission\n")
     spawned = []
     verified = []
-    intents = []
-    operation_id = "d" * 32
-    env.backend.transaction_operation_id = lambda required=False: operation_id
-    env.backend._transaction_stop_context = ({"operation_id": operation_id}, None, False)
-    env.backend._transaction_launch_intent = lambda purpose, **details: intents.append((purpose, details))
     env.backend.verify = lambda *args, **kwargs: verified.append((args, kwargs))
     def spawn(*args, **kwargs):
         spawned.append((args, kwargs))
@@ -936,11 +958,10 @@ def test_canonical_supervisor_is_detached_and_readiness_checked(installed, monke
     args, kwargs = spawned[0]
     assert args[0][:3] == [str(lifecycle.node(env.candidate)), "--input-type=module", "-e"]
     assert "runSession({action:'serve'" in args[0][3]
-    assert "ASTRID_INSTALLER_OPERATION_ID" in args[0][3]
+    assert "ASTRID_INSTALLER_OPERATION_ID" not in args[0][3]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdin"] == update.subprocess.DEVNULL
-    assert kwargs["env"]["ASTRID_INSTALLER_OPERATION_ID"] == operation_id
-    assert intents == [("pinokio_start", {"version": env.candidate})]
+    assert "ASTRID_INSTALLER_OPERATION_ID" not in kwargs["env"]
     assert verified == [((env.candidate, env.data, "realm"), {"timeout": 180})]
 
 
@@ -980,8 +1001,6 @@ def test_local_verification_uses_ready_pack_host_and_exact_transaction_binding(
 
     env = installed
     backend = Backend(env.root, env.tmp_path / "install.log", env.tmp_path / "uv", managed_by="pinokio")
-    operation_id = "e" * 32
-    backend._transaction_stop_context = ({"operation_id": operation_id}, None, False)
     version = Version(
         env.old.root, env.old.python, env.old.profile,
         {**env.old.env, "ASTRID_RUNTIME_DOOR_PORT": "19991"},
@@ -990,19 +1009,26 @@ def test_local_verification_uses_ready_pack_host_and_exact_transaction_binding(
     status = {
         "health": {
             "status": "ok", "runtime_instance_id": "instance-local",
+            "identity": {"release": version.release, "managed_by": version.managed_by},
             "services": [{"name": "pack-host", "state": "running"}],
         },
         "discovery": {"runtime_instance_id": "instance-local"},
         "support": {"pid_alive": True},
     }
+    raw_health = dict(status["health"])
+    status["health"] = {key: value for key, value in status["health"].items() if key != "identity"}
     backend.runtime = lambda *_args, **_kwargs: status
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda _self, **_kwargs: raw_health)
     runtime = env.data / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     write_json(runtime / "discovery.json", {
         "active_realm": "realm", "runtime_instance_id": "instance-local",
-        "installer_operation_id": operation_id,
+        "identity": {"release": version.release, "managed_by": version.managed_by},
     })
-    write_json(runtime / "instance.lock", {"installer_operation_id": operation_id})
+    write_json(runtime / "instance.lock", {
+        "runtime_instance_id": "instance-local", "realm_id": "realm",
+    })
     (runtime / "generic-host.ready.json").write_text("{}", encoding="utf-8")
     opener = SimpleNamespace(open=lambda *_args, **_kwargs: pytest.fail(
         "Local verification must not contact the hosted browser door"))
@@ -1011,12 +1037,97 @@ def test_local_verification_uses_ready_pack_host_and_exact_transaction_binding(
     backend.verify(version, env.data, "realm", timeout=1, hosted=False)
 
 
+@pytest.mark.parametrize("source", ["health", "discovery"])
+@pytest.mark.parametrize("field", ["release", "managed_by"])
+def test_local_verification_rejects_mismatched_managed_version_identity(
+        installed, monkeypatch, source, field):
+    from astrid.installer.backend import Backend
+
+    env = installed
+    backend = Backend(env.root, env.tmp_path / "install.log", env.tmp_path / "uv", managed_by="pinokio")
+    version = env.old
+    identity = {"release": version.release, "managed_by": version.managed_by}
+    wrong_identity = dict(identity)
+    wrong_identity[field] = (identity[field] + 1 if field == "release"
+                             else ("pinokio" if identity[field] is None else None))
+    health_identity = wrong_identity if source == "health" else identity
+    discovery_identity = wrong_identity if source == "discovery" else identity
+    status = {
+        "health": {
+            "status": "ok", "runtime_instance_id": "instance-local",
+            "identity": health_identity,
+            "services": [{"name": "pack-host", "state": "running"}],
+        },
+        "discovery": {"runtime_instance_id": "instance-local"},
+        "support": {"pid_alive": True},
+    }
+    raw_health = dict(status["health"])
+    status["health"] = {key: value for key, value in status["health"].items() if key != "identity"}
+    backend.runtime = lambda *_args, **_kwargs: status
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda _self, **_kwargs: raw_health)
+    runtime = env.data / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    write_json(runtime / "discovery.json", {
+        "active_realm": "realm", "runtime_instance_id": "instance-local",
+        "identity": discovery_identity,
+    })
+    write_json(runtime / "instance.lock", {
+        "runtime_instance_id": "instance-local", "realm_id": "realm",
+    })
+    (runtime / "generic-host.ready.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_args: SimpleNamespace(
+        open=lambda *_a, **_k: pytest.fail("Local verification must not contact the hosted browser door")))
+
+    with pytest.raises(VerificationError, match="different Runtime, release|identity"):
+        backend.verify(version, env.data, "realm", timeout=0.02, hosted=False)
+
+
+@pytest.mark.parametrize("owner_health", [
+    None,
+    {"status": "ok", "runtime_instance_id": "instance-local",
+     "services": [{"name": "pack-host", "state": "running"}]},
+    {"status": "ok", "runtime_instance_id": "foreign-instance",
+     "identity": {"release": 1, "managed_by": "pinokio"},
+     "services": [{"name": "pack-host", "state": "running"}]},
+])
+def test_local_verification_rejects_missing_raw_managed_identity(installed, monkeypatch, owner_health):
+    from astrid.installer.backend import Backend
+
+    env = installed
+    backend = Backend(env.root, env.tmp_path / "install.log", env.tmp_path / "uv", managed_by="pinokio")
+    version = env.old
+    status = {
+        "health": {"status": "ok", "runtime_instance_id": "instance-local",
+                   "services": [{"name": "pack-host", "state": "running"}]},
+        "discovery": {"runtime_instance_id": "instance-local"},
+        "support": {"pid_alive": True},
+    }
+    backend.runtime = lambda *_args, **_kwargs: status
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda _self, **_kwargs: owner_health)
+    runtime = env.data / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    write_json(runtime / "discovery.json", {
+        "active_realm": "realm", "runtime_instance_id": "instance-local",
+        "identity": {"release": version.release, "managed_by": version.managed_by},
+    })
+    write_json(runtime / "instance.lock", {
+        "runtime_instance_id": "instance-local", "realm_id": "realm",
+    })
+    (runtime / "generic-host.ready.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_args: SimpleNamespace(
+        open=lambda *_a, **_k: pytest.fail("Local verification must not contact the hosted browser door")))
+
+    with pytest.raises(VerificationError, match="different Runtime|identity|owner health"):
+        backend.verify(version, env.data, "realm", timeout=0.02, hosted=False)
+
+
 def test_local_verification_rejects_mismatched_transaction_binding(installed, monkeypatch):
     from astrid.installer.backend import Backend
 
     env = installed
     backend = Backend(env.root, env.tmp_path / "install.log", env.tmp_path / "uv", managed_by="pinokio")
-    backend._transaction_stop_context = ({"operation_id": "f" * 32}, None, False)
     version = env.old
     status = {
         "health": {
@@ -1026,19 +1137,24 @@ def test_local_verification_rejects_mismatched_transaction_binding(installed, mo
         "discovery": {"runtime_instance_id": "instance-local"},
         "support": {"pid_alive": True},
     }
+    raw_health = dict(status["health"])
+    status["health"] = {key: value for key, value in status["health"].items() if key != "identity"}
     backend.runtime = lambda *_args, **_kwargs: status
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda _self, **_kwargs: raw_health)
     runtime = env.data / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     write_json(runtime / "discovery.json", {
-        "active_realm": "realm", "runtime_instance_id": "instance-local",
-        "installer_operation_id": "a" * 32,
+        "active_realm": "realm", "runtime_instance_id": "different-instance",
     })
-    write_json(runtime / "instance.lock", {"installer_operation_id": "a" * 32})
+    write_json(runtime / "instance.lock", {
+        "runtime_instance_id": "different-instance", "realm_id": "realm",
+    })
     (runtime / "generic-host.ready.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr("urllib.request.build_opener", lambda *_args: SimpleNamespace(
         open=lambda *_a, **_k: pytest.fail("Local verification must not contact the hosted browser door")))
 
-    with pytest.raises(VerificationError, match="operation binding"):
+    with pytest.raises(VerificationError, match="different Runtime|identity"):
         backend.verify(version, env.data, "realm", timeout=0.02, hosted=False)
 
 
@@ -1062,14 +1178,20 @@ def test_runtime_handoff_precedes_controller_cleanup(installed, failure):
         assert version == installed.old
         assert data == installed.data
         if failure:
-            raise RuntimeOperationError("Runtime stop refused", details={"kind": failure}, stop_refused=True)
+            details = ({"safe": False, "kind": "busy"} if failure == "busy"
+                       else {"kind": failure, "reason": failure})
+            raise RuntimeOperationError(f"Runtime stop {failure}", details=details)
 
     lifecycle.backend = SimpleNamespace(
         stop=runtime_handoff,
         run=lambda *args, **kwargs: calls.append("controller"))
     if failure:
-        with pytest.raises(RuntimeOperationError, match="Runtime stop refused"):
+        with pytest.raises(RuntimeOperationError, match=f"Runtime stop {failure}") as raised:
             lifecycle.stop(installed.old, installed.data)
+        from astrid.installer.core import is_lifecycle_refusal
+        assert is_lifecycle_refusal(raised.value) is (failure == "busy")
+        if failure != "busy":
+            assert raised.value.details == {"kind": failure, "reason": failure}
         assert calls == ["fence"]
     else:
         lifecycle.stop(installed.old, installed.data)
@@ -1084,14 +1206,18 @@ def test_pinokio_controller_failure_reports_completed_runtime_stop(installed):
 
     lifecycle.backend = SimpleNamespace(
         stop=lambda _version, _data: None,
-        run=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("controller cleanup failed")),
+        run=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeOperationError(
+            "controller cleanup failed", details={"safe": False, "blockers": ["late"]})),
     )
 
     with pytest.raises(RuntimeOperationError, match="controller cleanup failed") as raised:
         lifecycle.stop(installed.old, installed.data)
 
-    assert raised.value.stop_completed is True
-    assert raised.value.stop_refused is False
+    from astrid.installer.core import is_lifecycle_refusal
+    assert not is_lifecycle_refusal(raised.value)
+    assert raised.value.details == {
+        "cause_details": {"safe": False, "blockers": ["late"]},
+    }
 
 
 @pytest.mark.parametrize("controller", ["exited", "remaining", "replacement"])
@@ -1123,8 +1249,9 @@ def test_controller_exit_during_authenticated_stop_preserves_other_owners(instal
     else:
         with pytest.raises(RuntimeOperationError) as raised:
             lifecycle.stop(installed.old, installed.data)
-        assert raised.value.stop_completed is True
-        assert raised.value.stop_refused is False
+        from astrid.installer.core import is_lifecycle_refusal
+        assert not is_lifecycle_refusal(raised.value)
+        assert raised.value.details == {"cause_details": None}
         assert read_json(record) == (
             original if controller == "remaining" else {"pid": 456, "token": "replacement"})
     assert calls == ["fence", "controller"]

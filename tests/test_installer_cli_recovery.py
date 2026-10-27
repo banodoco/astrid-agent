@@ -1,6 +1,7 @@
 """The public installer recovers durable updates before consulting fresh inputs."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from astrid.installer.core import (
     switch,
     write_json,
 )
-from astrid.installer.service import LABEL, Service, command
+from astrid.installer.service import LABEL, SERVICE_SETTINGS, Service, command
 
 
 def _cli_backend(tmp_path, root, data, *, managed_by=None):
@@ -622,6 +623,7 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
     backend = Backend(root, tmp_path / "install.log", tmp_path / "missing-uv")
     backend.managed_by = None
     backend.stop = lambda *_args, **_kwargs: None
+    backend.publish_launch_admission = lambda *_args: None
     backend.register = lambda *_args, **_kwargs: None
     backend.workspace = lambda *_args, **_kwargs: {"realm_id": "original-realm"}
     backend.service = SimpleNamespace(
@@ -643,6 +645,64 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
     assert (realm_root / "workspace.txt").read_text(encoding="utf-8") == "original bytes"
     assert read_json(data / "runtime" / "catalog.json")["selected_realm_id"] == "original-realm"
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+
+
+
+# Frozen historical wrapper for retained-task compatibility; never used by production.
+def _pre_x1b_command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
+            env_file: Path | None = None, extra_args: list[str] | None = None,
+            lock_fd: int | None = None, installer_operation_id: str | None = None) -> list[str]:
+    python = version.python.with_name("pythonw.exe") if windows else version.python
+    arguments = ["run", "--profile", "astrid", "--data-root", str(data),
+                 "--source-manifest", str(version.profile), *(extra_args or [])]
+    if (env_file is None and not windows and lock_fd is None and not installer_operation_id
+            and "ASTRID_INSTALLER_OPERATION_ID" not in os.environ
+            and "ASTRID_INSTALLER_OPERATION_ID" not in version.env):
+        return [str(python), "-X", "utf8", "-I", "-m", "astrid_runtime", *arguments]
+    # Task Scheduler cannot set an environment and Hidden does not hide a
+    # console. pythonw executes the foreground Runtime in this same process.
+    script = "import json,os,sys\nfrom pathlib import Path\n"
+    script += f"os.environ.update({version.env!r})\n"
+    if installer_operation_id:
+        transaction_path = version.root.parent.parent / "update-transaction.json"
+        script += f"_astrid_operation_id={installer_operation_id!r}\n"
+        script += f"_astrid_version={version.document()!r}\n"
+        script += f"_astrid_transaction_path=Path({str(transaction_path)!r})\n"
+        script += (
+            "try:\n"
+            "    _astrid_tx=json.loads(_astrid_transaction_path.read_text(encoding='utf-8'))\n"
+            "    _astrid_intent=_astrid_tx.get('launch_intent') or {}\n"
+            "    _astrid_authorized=(_astrid_tx.get('step') not in {'complete','rolled_back'} "
+            "and _astrid_tx.get('operation_id') == _astrid_operation_id "
+            "and _astrid_intent.get('operation_id') == _astrid_operation_id "
+            "and _astrid_intent.get('purpose') in {'backup','migration','service_start','pinokio_start'} "
+            "and _astrid_intent.get('version') == _astrid_version "
+            "and _astrid_version in (_astrid_tx.get('old'),_astrid_tx.get('candidate')))\n"
+            "except (OSError,ValueError,TypeError,AttributeError):\n"
+            "    _astrid_authorized=False\n"
+            "if _astrid_authorized: os.environ['ASTRID_INSTALLER_OPERATION_ID']=_astrid_operation_id\n"
+            "else: os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n"
+        )
+    else:
+        script += "os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n"
+    if lock_fd is not None:
+        # The foreground owner inherited this locked descriptor across exec.
+        # Keep it open here, but never pass it to a subsequently exec'd child.
+        script += f"os.set_inheritable({lock_fd},False)\n"
+    if windows:
+        if log is None:
+            raise ValueError("A log path is required for the Windows Runtime service.")
+        log = log.with_name("runtime-service.log")
+        script += f"sys.stdout=sys.stderr=open({str(log)!r},'a',encoding='utf-8',buffering=1)\n"
+    if env_file is not None:
+        script += (f"path=Path({str(env_file)!r})\n"
+                   "settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\n"
+                   f"if (not isinstance(settings,dict) or set(settings)-set({sorted(SERVICE_SETTINGS)!r}) "
+                   "or any(not isinstance(value,str) for value in settings.values())):\n"
+                   "    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\n"
+                   "os.environ.update(settings)\n")
+    script += f"from astrid_runtime.cli import main\nsys.exit(main({arguments!r}))"
+    return [str(python), "-X", "utf8", "-I", "-c", script]
 
 
 def _interrupted_bound_task_restore(tmp_path, monkeypatch):
@@ -681,7 +741,6 @@ def _interrupted_bound_task_restore(tmp_path, monkeypatch):
     installer = Installer(backend.root, data, backend, say=lambda _line: None)
 
     def fail_candidate_activation(version, _data, _realm):
-        backend._transaction_launch_intent("service_start", version)
         raise VerificationError("candidate activation failed")
 
     try:
@@ -704,11 +763,12 @@ def _interrupted_bound_task_restore(tmp_path, monkeypatch):
     transaction = read_json(journal_path)
     assert stop_versions == [old, candidate]  # rollback retained the candidate launch context
     assert transaction["step"] == "recovering"
-    assert transaction["launch_intent"] == {
+    transaction["launch_intent"] = {
         "operation_id": transaction["operation_id"],
         "purpose": "service_start",
         "version": candidate.document(),
     }
+    write_json(journal_path, transaction)  # Retained pre-X1b extra; grants no stop authority.
     assert not paths.catalog_path.exists()
     # Model a subsequent selected pointer to the old version. Recovery must
     # still validate the retained candidate action using launch_intent.
@@ -732,7 +792,7 @@ def test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutati
         Service.validate_stop_target, backend.service)
     action_operation_id = "b" * 32 if mutation == "operation_id" else operation_id
     launch_version = Version.load(read_json(journal_path)["launch_intent"]["version"])
-    argv = command(launch_version, data, windows=True, log=backend.log,
+    argv = _pre_x1b_command(launch_version, data, windows=True, log=backend.log,
                    env_file=backend.service.env_file,
                    installer_operation_id=action_operation_id)
     action = [{"Execute": argv[0],
@@ -740,17 +800,24 @@ def test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutati
     changed_action = [{**action[0], "Arguments": action[0]["Arguments"] + " --changed"}]
     query_count = 0
 
-    def query_task(_script):
-        nonlocal query_count
+    canonical_argv = command(old, data, windows=True, log=backend.log, env_file=backend.service.env_file)
+    canonical = [{"Execute": canonical_argv[0], "Arguments": subprocess.list2cmdline(canonical_argv[1:])}]
+    stored_action = action
+
+    def query_task(script):
+        nonlocal query_count, stored_action
+        if "Set-ScheduledTask" in script:
+            stored_action = canonical
+            return ""
         query_count += 1
         if mutation == "early":
             result = changed_action
         elif mutation == "operation_id":
             result = action
-        elif mutation == "callback" and query_count == 2:
-            result = changed_action
+        elif mutation == "callback" and query_count == 3:
+            result = [{**canonical[0], "Arguments": canonical[0]["Arguments"] + " --changed"}]
         else:
-            result = action
+            result = stored_action
         return json.dumps(result)
 
     backend.service.powershell = query_task
@@ -786,7 +853,7 @@ def test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutati
                        "--manifest", str(tmp_path / "unused-manifest")])
 
     assert result == 1
-    assert query_count == (2 if mutation == "callback" else 1)
+    assert query_count == (3 if mutation == "callback" else 1)
     assert journal_path.read_bytes() == journal_before
     assert fixture._backup_bytes(backup_root) == backup_before
     assert not paths.catalog_path.exists()
@@ -814,13 +881,25 @@ def test_public_cli_recovers_bound_windows_task_after_candidate_activation_failu
     backend.service.validate_stop_target = types.MethodType(
         Service.validate_stop_target, backend.service)
     launch_version = Version.load(read_json(journal_path)["launch_intent"]["version"])
-    argv = command(launch_version, data, windows=True, log=backend.log,
+    argv = _pre_x1b_command(launch_version, data, windows=True, log=backend.log,
                    env_file=backend.service.env_file,
                    installer_operation_id=operation_id)
     action = [{"Execute": argv[0],
                "Arguments": subprocess.list2cmdline(argv[1:])}]
     task_queries = []
-    backend.service.powershell = lambda script: task_queries.append(script) or json.dumps(action)
+    stored_action = action
+    canonical_argv = command(old, data, windows=True, log=backend.log, env_file=backend.service.env_file)
+    canonical = [{"Execute": canonical_argv[0], "Arguments": subprocess.list2cmdline(canonical_argv[1:])}]
+
+    def query_task(script):
+        nonlocal stored_action
+        task_queries.append(script)
+        if "Set-ScheduledTask" in script:
+            stored_action = canonical
+            return ""
+        return json.dumps(stored_action)
+
+    backend.service.powershell = query_task
     restore_calls = []
     real_restore = backend.restore
     backup_before = fixture._backup_bytes(backup_root)
@@ -845,7 +924,7 @@ def test_public_cli_recovers_bound_windows_task_after_candidate_activation_failu
     assert cli.main(["--update", "--root", str(backend.root),
                      "--uv", str(tmp_path / "unused-uv"),
                      "--manifest", str(tmp_path / "unused-manifest")]) == 0
-    assert len(task_queries) == 2  # early preflight and callback revalidation
+    assert len(task_queries) == 4  # legacy read, action migration, early and fenced revalidation
     assert boundary.stop_calls == 0  # no owner publication; C1 admits the idle readable realm
     assert manager_calls == []
     backend.service.disable.assert_called_once()

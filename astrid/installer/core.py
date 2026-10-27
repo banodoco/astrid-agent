@@ -24,23 +24,17 @@ class VerificationError(RuntimeError):
 
 
 class RuntimeOperationError(RuntimeError):
-    """A Runtime command failed, retaining its machine-readable refusal.
+    """A Runtime command failed, retaining its machine-readable report."""
 
-    ``stop_refused`` is true when the enclosing stop operation supplies that
-    context, or when Runtime returns its explicit lifecycle refusal report
-    (including upgrade's internal stop). A generic command error says nothing
-    about a stop.
-    ``stop_completed`` is positive evidence that a stop crossed the Runtime
-    handoff before a later manager action failed. Callers must never infer
-    either property from the human message or a blocker count.
-    """
-
-    def __init__(self, message: str, *, details=None, stop_refused: bool = False,
-                 stop_completed: bool = False) -> None:
+    def __init__(self, message: str, *, details=None) -> None:
         super().__init__(message)
         self.details = details
-        self.stop_refused = bool(stop_refused)
-        self.stop_completed = bool(stop_completed) and not self.stop_refused
+
+
+def is_lifecycle_refusal(exc: BaseException) -> bool:
+    """Recognize Runtime's explicit pre-destruction lifecycle report."""
+    return (isinstance(exc, RuntimeOperationError)
+            and isinstance(exc.details, dict) and exc.details.get("safe") is False)
 
 
 class BackupSpaceError(RuntimeError):
@@ -223,49 +217,14 @@ def switch(root: Path, version: Version) -> None:
 
 
 @contextmanager
-def transaction_stop_context(backend, transaction: dict, save, *, recovering: bool = False):
-    """Keep Runtime's stop handoff in the existing transaction journal.
-
-    Runtime supplies and revalidates the authority; the installer only retains
-    it with the same durable writer as the rest of the transaction.
-    """
-    previous = getattr(backend, "_transaction_stop_context", None)
-    previous_intent = getattr(backend, "_transaction_launch_intent", None)
-
-    def record(authority: dict) -> None:
-        save(transaction["step"], stop_authority=authority)
-
-    def launch_intent(purpose: str, version: Version | None = None) -> None:
-        save(transaction["step"], launch_intent={
-            "operation_id": transaction["operation_id"], "purpose": purpose,
-            "version": version.document() if version is not None else None,
-        })
-
-    backend._transaction_stop_context = (transaction, record, recovering)
-    backend._transaction_launch_intent = launch_intent
+def update_context(backend, transaction: dict, *, recovering: bool = False):
+    """Expose the existing transaction solely for restore selection validation."""
+    previous = getattr(backend, "_update_transaction", None)
+    backend._update_transaction = (transaction, recovering)
     try:
         yield
     finally:
-        backend._transaction_stop_context = previous
-        backend._transaction_launch_intent = previous_intent
-
-
-def transaction_launch_version(transaction: dict) -> Version | None:
-    """Return only launch context durably authorized by this transaction."""
-    intent = transaction.get("launch_intent")
-    if (not isinstance(intent, dict)
-            or intent.get("operation_id") != transaction.get("operation_id")
-            or intent.get("purpose") not in {"backup", "migration", "service_start", "pinokio_start"}
-            or not isinstance(intent.get("version"), dict)):
-        return None
-    authorized = [Version.load(transaction["old"])]
-    if transaction.get("candidate"):
-        authorized.append(Version.load(transaction["candidate"]))
-    try:
-        intended = Version.load(intent["version"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return intended if any(intended.document() == value.document() for value in authorized) else None
+        backend._update_transaction = previous
 
 
 def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
@@ -277,13 +236,10 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
     realm = transaction["realm"]
     backup = transaction.get("backup")
     kind = transaction.get("transaction_kind", "migration")
-    with transaction_stop_context(backend, transaction, save, recovering=True):
+    with update_context(backend, transaction, recovering=True):
         # Before migration the old version owns manager cleanup. A later
         # migration can run the candidate before publishing its pointer.
-        intended_launch = transaction_launch_version(transaction)
-        if intended_launch is not None:
-            stop_version = intended_launch
-        elif kind == "app" or transaction.get("step") in {"recovering", "rollback_selected"}:
+        if kind == "app" or transaction.get("step") in {"recovering", "rollback_selected"}:
             stop_version = current(root) or old
         elif transaction.get("step") in {"stopping", "stopped"}:
             stop_version = old
@@ -319,8 +275,6 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         raise ValueError("The interrupted update identity does not match this installation.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
-    if transaction.get("launch_intent") is not None and transaction_launch_version(transaction) is None:
-        raise ValueError("The interrupted update launch intent is not authorized by its journal.")
     if save is None:
         installer = Installer(root, data, backend)
 
@@ -347,6 +301,10 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         retained = absolute(backup["root"])
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
+    install_launcher(root)
+    publish = getattr(backend, "publish_launch_admission", None)
+    if publish is not None:
+        publish(current(root) or Version.load(transaction["old"]), data)
     say("Recovering the interrupted Astrid update.")
     rollback_transaction(
         root, data, backend, transaction, stop=stop, switch_old=switch_old,
@@ -367,6 +325,12 @@ class Installer:
             self.backend.verify(version, self.data, realm_id)
         elif self.backend.workspace(version, self.data)["realm_id"] != realm_id:
             raise VerificationError("The installed workspace identity changed.")
+
+    def _publish_stop_admission(self, version: Version | None) -> None:
+        publish = getattr(self.backend, "publish_launch_admission", None)
+        if publish is not None and version is not None:
+            install_launcher(self.root)
+            publish(version, self.data)
 
     def _ready(self) -> None:
         if self.managed_by == "pinokio":
@@ -426,12 +390,7 @@ class Installer:
         The caller owns app-specific lock handoffs inside the switch callbacks;
         all other transaction ordering and recovery state stays here.
         """
-        transaction = None
-        candidate = None
-        backup_image = None
-        stopped = False
-        authority = ExitStack()
-        try:
+        with ExitStack() as authority:
             candidate = prepare()
             transaction = {
                 "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
@@ -447,66 +406,67 @@ class Installer:
                 # and is durable before any owner stop or checkout movement.
                 transaction["transaction_context"] = transaction_context
             self._save_update(transaction, "staged")
-            authority.enter_context(transaction_stop_context(
-                self.backend, transaction,
-                lambda step, **details: self._save_update(transaction, step, **details),
-            ))
+            authority.enter_context(update_context(self.backend, transaction))
+            install_launcher(self.root)
+            publish = getattr(self.backend, "publish_launch_admission", None)
+            if publish is not None:
+                publish(old, self.data)
             # Record intent before the fenced stop: recovery can distinguish a
             # pure staged image from a stop that may have completed on crash.
             self._save_update(transaction, "stopping")
-            try:
-                stop(old, self.data)
-            except (Exception, KeyboardInterrupt) as stop_failure:
-                if isinstance(stop_failure, RuntimeOperationError) and stop_failure.stop_refused:
-                    try:
-                        self._save_update(transaction, "complete", outcome="stop_refused")
-                    except (Exception, KeyboardInterrupt) as journal_failure:
-                        stop_failure.add_note(
-                            f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
-                elif isinstance(stop_failure, RuntimeOperationError) and stop_failure.stop_completed:
-                    stopped = True
-                raise
-            stopped = True
-            self._save_update(transaction, "stopped")
-            if backup is not None:
-                backup_image = backup(old, self.data, realm)
-                transaction["backup"] = backup_image
-                self._save_update(transaction, "backed_up", backup=backup_image)
-            if migrate is not None:
-                migrate(candidate, self.data, realm)
-                self._save_update(transaction, "migrated")
-            switch_candidate(candidate)
-            self._save_update(transaction, "switched")
-            activate(candidate, self.data, realm)
-            self._save_update(transaction, "verified")
-            self._last_update_backup = backup_image
-            if kind == "migration":
-                self.backend.finish(old, candidate, backup_image)
-            self._save_update(transaction, "complete")
-            return candidate
-        except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
-                raise
-            if stopped:
+
+            def rollback_after(failure):
                 try:
                     rollback_transaction(
                         self.root, self.data, self.backend, transaction,
-                        stop=stop,
-                        switch_old=switch_old, activate_old=activate_old,
+                        stop=stop, switch_old=switch_old, activate_old=activate_old,
                         restore_workspace=restore_workspace,
                         save=lambda step, **details: self._save_update(
                             transaction, step, **details),
                     )
                 except (Exception, KeyboardInterrupt) as recovery:
-                    if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
-                        raise recovery
+                    if is_lifecycle_refusal(recovery):
+                        raise
                     combined = RuntimeError(
                         f"Update failed ({failure}); recovery also failed ({recovery}).")
                     combined.step = getattr(failure, "step", None) or "update"
                     raise combined from failure
-            raise
-        finally:
-            authority.close()
+
+            try:
+                stop(old, self.data)
+            except (Exception, KeyboardInterrupt) as failure:
+                if is_lifecycle_refusal(failure):
+                    try:
+                        self._save_update(transaction, "complete", outcome="stop_refused")
+                    except (Exception, KeyboardInterrupt) as journal_failure:
+                        failure.add_note(
+                            f"Could not durably cancel the staged update after the stop refusal: {journal_failure!r}")
+                else:
+                    rollback_after(failure)
+                raise
+
+            backup_image = None
+            try:
+                self._save_update(transaction, "stopped")
+                if backup is not None:
+                    backup_image = backup(old, self.data, realm)
+                    transaction["backup"] = backup_image
+                    self._save_update(transaction, "backed_up", backup=backup_image)
+                if migrate is not None:
+                    migrate(candidate, self.data, realm)
+                    self._save_update(transaction, "migrated")
+                switch_candidate(candidate)
+                self._save_update(transaction, "switched")
+                activate(candidate, self.data, realm)
+                self._save_update(transaction, "verified")
+                self._last_update_backup = backup_image
+                if kind == "migration":
+                    self.backend.finish(old, candidate, backup_image)
+                self._save_update(transaction, "complete")
+                return candidate
+            except (Exception, KeyboardInterrupt) as failure:
+                rollback_after(failure)
+                raise
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
@@ -550,6 +510,7 @@ class Installer:
             return
         if mode == "uninstall":
             self.backend.preflight_remove(self.root, self.data, delete_data=delete_data)
+            self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             self.backend.unregister()
             residue = self.backend.remove(self.root, self.data, delete_data=delete_data)
@@ -592,6 +553,7 @@ class Installer:
                     self.backend.open()
                     return
             self.say("Restarting Astrid with the installed version.")
+            self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             install_launcher(self.root)
             if persist is not None:
@@ -688,13 +650,13 @@ class Installer:
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
             self.backend.finish(old, candidate, backup)
         except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
+            if is_lifecycle_refusal(failure):
                 raise
             if candidate is not None:
                 try:
                     self.backend.stop(candidate, self.data)
                 except (Exception, KeyboardInterrupt) as cleanup:
-                    if isinstance(cleanup, RuntimeOperationError) and cleanup.stop_refused:
+                    if is_lifecycle_refusal(cleanup):
                         raise cleanup
                     failure.add_note(f"Stopping the failed installation also failed: {cleanup!r}")
             raise

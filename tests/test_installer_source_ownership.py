@@ -46,8 +46,8 @@ def test_stopped_legacy_source_profile_refuses_clean_and_dirty_checkouts(tmp_pat
 
 
 def test_live_b1_source_identity_refuses_after_process_and_instance_validation(tmp_path, monkeypatch):
-    from runtime_protocol import platform
     from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
 
     data = tmp_path / "data"
     paths = RuntimePaths.current(data_root=data)
@@ -117,8 +117,8 @@ def test_source_profile_with_non_git_paths_fails_closed(tmp_path):
 
 
 def test_live_non_source_identity_conflicting_with_source_profile_fails_closed(tmp_path, monkeypatch):
-    from runtime_protocol import platform
     from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
 
     data = tmp_path / "data"
     runtime, agent = _git_checkout(tmp_path / "runtime"), _git_checkout(tmp_path / "agent")
@@ -135,8 +135,8 @@ def test_live_non_source_identity_conflicting_with_source_profile_fails_closed(t
 
 
 def test_live_identity_must_match_discovery_instance(tmp_path, monkeypatch):
-    from runtime_protocol import platform
     from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
 
     data = tmp_path / "data"
     path = RuntimePaths.current(data_root=data).discovery_path
@@ -151,8 +151,8 @@ def test_live_identity_must_match_discovery_instance(tmp_path, monkeypatch):
 
 
 def test_live_source_identity_conflicts_with_selected_managed_version(tmp_path, monkeypatch):
-    from runtime_protocol import platform
     from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
 
     data = tmp_path / "data"
     path = RuntimePaths.current(data_root=data).discovery_path
@@ -168,3 +168,97 @@ def test_live_source_identity_conflicts_with_selected_managed_version(tmp_path, 
                         tmp_path / "profile", {}, 1, None)
     with pytest.raises(RuntimeError, match="conflicts with the selected managed version"):
         _backend(tmp_path).source_checkout_ownership(data, installed)
+
+
+@pytest.mark.parametrize("payload", [None, [], {}, {"release": True, "managed_by": None},
+                                  {"release": 0, "managed_by": None, "extra": True}])
+def test_live_identity_validation_is_owned_by_runtime(tmp_path, monkeypatch, payload):
+    from astrid_runtime import identity as runtime_identity
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+
+    data = tmp_path / "data"
+    write_json(RuntimePaths.current(data_root=data).discovery_path, {
+        "pid": 4242, "process_birth_id": "birth", "runtime_instance_id": "instance",
+        "endpoint": "http://127.0.0.1:12345",
+    })
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": "birth"})
+    health = {"runtime_instance_id": "instance", "identity": payload}
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda *_args, **_kwargs: health)
+    calls = []
+    validate = runtime_identity.validate_live_owner_identity
+
+    def observe(value, *, instance_id):
+        calls.append((value, instance_id))
+        return validate(value, instance_id=instance_id)
+
+    monkeypatch.setattr(runtime_identity, "validate_live_owner_identity", observe)
+    with pytest.raises(RuntimeError, match="Live Runtime startup identity cannot be verified"):
+        _backend(tmp_path).source_checkout_ownership(data)
+    assert calls == [(health, "instance")]
+
+
+def test_retained_root_validation_uses_runtime_and_ignores_git_redirects(tmp_path, monkeypatch):
+    from runtime_protocol import source_identity
+
+    runtime, agent = _git_checkout(tmp_path / "runtime"), _git_checkout(tmp_path / "agent")
+    data = tmp_path / "data"
+    _profile(data, runtime, agent)
+    monkeypatch.setenv("GIT_DIR", str(agent / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(agent))
+    calls = []
+    validate = source_identity.validate_checkout_root
+
+    def observe(root):
+        calls.append(root)
+        return validate(root)
+
+    monkeypatch.setattr(source_identity, "validate_checkout_root", observe)
+    assert _backend(tmp_path).source_checkout_ownership(data)
+    assert calls == [runtime, agent]
+    nested = runtime / "nested"
+    nested.mkdir()
+    _profile(data, nested, agent)
+    with pytest.raises(ValueError, match="not the root"):
+        _backend(tmp_path).source_checkout_ownership(data)
+
+
+@pytest.mark.parametrize("payload", [None, [], 123])
+def test_non_object_discovery_is_not_a_stopped_owner(tmp_path, payload):
+    from astrid_runtime.paths import RuntimePaths
+
+    data = tmp_path / "data"
+    write_json(RuntimePaths.current(data_root=data).discovery_path, payload)
+    with pytest.raises(RuntimeError, match="discovery owner identity is incomplete"):
+        _backend(tmp_path).source_checkout_ownership(data)
+
+
+@pytest.mark.parametrize("change_during", ["process", "health"])
+def test_discovery_change_during_owner_observation_refuses(tmp_path, monkeypatch, change_during):
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+
+    data = tmp_path / "data"
+    path = RuntimePaths.current(data_root=data).discovery_path
+    discovery = {"pid": 4242, "process_birth_id": "birth", "runtime_instance_id": "instance",
+                 "endpoint": "http://127.0.0.1:12345"}
+    write_json(path, discovery)
+
+    def replace():
+        write_json(path, {**discovery, "runtime_instance_id": "replacement"})
+
+    def process(pid):
+        if change_during == "process":
+            replace()
+        return {"pid": pid, "birth_id": "birth"}
+
+    def health(*_args, **_kwargs):
+        if change_during == "health":
+            replace()
+        return {"runtime_instance_id": "instance", "identity": {"release": 1, "managed_by": None}}
+
+    monkeypatch.setattr(platform, "process_identity", process)
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity", health)
+    with pytest.raises(RuntimeError, match="Live Runtime startup identity cannot be verified"):
+        _backend(tmp_path).source_checkout_ownership(data)

@@ -196,8 +196,8 @@ def _probe_identity(data_root: Path) -> tuple[str, dict]:
         raise ValueError("The live Runtime owner identity is unavailable.")
     from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
     health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
-    identity = __import__("astrid.installer.backend", fromlist=["Backend"]).Backend._validated_startup_identity(
-        health, instance_id)
+    from astrid_runtime.identity import validate_live_owner_identity
+    identity = validate_live_owner_identity(health, instance_id=instance_id)
     return instance_id, identity
 
 

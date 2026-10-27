@@ -153,27 +153,18 @@ class PinokioLifecycle:
         try:
             stop_controller()
         except (Exception, KeyboardInterrupt) as exc:
-            # Runtime has already completed its validated stop. Keep that
-            # evidence explicit so the caller may recover the old app without
-            # mistaking a controller-cleanup failure for a refusal.
-            raise RuntimeOperationError(str(exc), stop_refused=False,
-                                        stop_completed=True) from exc
+            # C1 has already completed. Preserve the controller failure as
+            # downstream context so its details cannot masquerade as a
+            # pre-destruction lifecycle refusal.
+            raise RuntimeOperationError(str(exc), details={
+                "cause_details": getattr(exc, "details", None),
+            }) from exc
 
     def start(self, version: Version, data: Path, realm_id: str) -> None:
         # The existing session selects current/version.json and passes its exact
         # source profile to the foreground Runtime. It owns its whole process tree.
         env = {key: value for key, value in os.environ.items()
-               if key not in {"NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME",
-                              "ASTRID_INSTALLER_OPERATION_ID"}}
-        get_operation_id = getattr(self.backend, "transaction_operation_id", None)
-        operation_context = getattr(self.backend, "_transaction_stop_context", None)
-        operation_id = get_operation_id() if get_operation_id is not None else None
-        if operation_context is not None:
-            operation_id = get_operation_id(required=True)
-            intent = getattr(self.backend, "_transaction_launch_intent", None)
-            if intent is not None:
-                intent("pinokio_start", version=version)
-            env["ASTRID_INSTALLER_OPERATION_ID"] = operation_id
+               if key not in {"NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME"}}
         mode = self.mode()
         log = self.root / "app-update-session.log"
         session_script = (
@@ -182,8 +173,6 @@ class PinokioLifecycle:
             f"const editor={json.dumps(str(self.root.parent / 'editor'))};\n"
             "const installed=installation(root);\n"
         )
-        if operation_id is not None:
-            session_script += f"installed.env.ASTRID_INSTALLER_OPERATION_ID={json.dumps(operation_id)};\n"
         session_script += (
             f"runSession({{action:'serve',root,editor,mode:{json.dumps(mode)},installed,"
             f"prepareEditor:{str(mode == 'local').lower()}}})"

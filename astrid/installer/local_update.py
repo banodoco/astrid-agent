@@ -24,12 +24,13 @@ from .core import (
     absolute,
     current,
     install_release,
+    is_lifecycle_refusal,
     read_json,
     recover_transaction,
     switch,
     update_required,
 )
-from .service import LABEL, bootstrap_root
+from .service import LABEL, bootstrap_root, installer_lock_path
 from .tools import validate_manifest
 
 _HOOKS = {
@@ -50,7 +51,7 @@ class HookClient:
         self.next_id = 1
 
     def call(self, name: str, version: Version | None, realm: dict,
-             *, operation_id: str | None = None, rollback: bool | None = None) -> None:
+             *, rollback: bool | None = None) -> None:
         if name not in _HOOKS:
             raise ValueError("Unsupported local-update hook.")
         request_id = self.next_id
@@ -60,8 +61,6 @@ class HookClient:
             "version": version.document() if version is not None else None,
             "realm": realm,
         }
-        if operation_id is not None:
-            request["operationId"] = operation_id
         if rollback is not None:
             request["rollback"] = rollback
         self.stdout.write(json.dumps(request, separators=(",", ":")) + "\n")
@@ -101,18 +100,11 @@ class LocalUpdateStepError(RuntimeError):
 
 
 def _tag_step(exc: Exception, step: str) -> Exception:
-    """Add a machine-readable step without erasing Runtime stop evidence."""
+    """Add a machine-readable step while retaining the original exception."""
     label = getattr(exc, "step", None) or step
     message = str(exc)
     if not message.startswith(f"{label}:"):
         message = f"{label}: {message}"
-    if isinstance(exc, RuntimeOperationError) and getattr(exc, "step", None) != label:
-        wrapped = RuntimeOperationError(
-            message, details=exc.details, stop_refused=exc.stop_refused,
-            stop_completed=exc.stop_completed,
-        )
-        wrapped.step = label
-        return wrapped
     try:
         exc.step = label
         if str(exc) != message:
@@ -279,7 +271,7 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
         try:
             _at_step("stop-runtime", backend.stop, version, workspace)
         except RuntimeOperationError as exc:
-            if exc.stop_refused:
+            if is_lifecycle_refusal(exc):
                 try:
                     hooks.call("start-editor", version, realm, rollback=True)
                     hooks.call("verify-editor", version, realm, rollback=True)
@@ -361,11 +353,7 @@ def _activate_backend(backend: Backend, version: Version, data: Path, realm: dic
                       hooks: HookClient, expected_manifest: dict | None = None) -> None:
     _at_step("register-runtime", backend.register, version, data)
     if backend.managed_by == "pinokio":
-        operation_id = _at_step("pinokio-start", backend.transaction_operation_id, required=True)
-        intent = getattr(backend, "_transaction_launch_intent", None)
-        if intent is not None:
-            intent("pinokio_start", version=version)
-        hooks.call("pinokio-start", version, realm, operation_id=operation_id)
+        hooks.call("pinokio-start", version, realm)
         _at_step("verify-backend", backend.verify, version, data, realm["realm_id"], hosted=False)
     else:
         _at_step("start-runtime", backend.start, version, data)
@@ -379,8 +367,6 @@ def _publish_selection(backend: Backend, operation) -> None:
     if backend.managed_by != "pinokio":
         return operation()
     from .app_update import locked
-    from .service import installer_lock_path
-
     lock = installer_lock_path(backend.service.home, backend.service.system)
     with locked(lock, timeout=10):
         return operation()
@@ -414,7 +400,7 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
         try:
             _at_step("stop-runtime", backend.stop, version, workspace)
         except RuntimeOperationError as exc:
-            if exc.stop_refused:
+            if is_lifecycle_refusal(exc):
                 try:
                     hooks.call("start-editor", version, realm, rollback=True)
                     hooks.call("verify-editor", version, realm, rollback=True)
@@ -488,13 +474,20 @@ def run_update(root: Path, backend: Backend, manifest: dict, app: dict,
     except Exception as exc:
         if not getattr(exc, "step", None):
             exc = _tag_step(exc, "run-transaction")
-        if isinstance(exc, RuntimeOperationError) and exc.stop_refused and busy_handoff_restored:
-            # The shared writer has durably closed the staged journal by now;
-            # only then may App preparation resources be released.
+        if is_lifecycle_refusal(exc) and busy_handoff_restored:
+            # The shared writer must have durably closed the staged journal
+            # before App preparation resources can be released.
             try:
-                hooks.call("release-app", old, realm)
-            except Exception as cleanup_error:  # noqa: BLE001 - preserve the structured Runtime refusal
-                exc.add_note(f"Releasing the prepared App after the busy refusal also failed: {cleanup_error}")
+                journal = read_json(root / "update-transaction.json")
+            except Exception as journal_error:  # noqa: BLE001 - preserve the structured Runtime refusal
+                exc.add_note(f"Could not confirm the busy refusal journal was terminal: {journal_error}")
+            else:
+                if (isinstance(journal, dict) and journal.get("step") == "complete"
+                        and journal.get("outcome") == "stop_refused"):
+                    try:
+                        hooks.call("release-app", old, realm)
+                    except Exception as cleanup_error:  # noqa: BLE001 - preserve the structured Runtime refusal
+                        exc.add_note(f"Releasing the prepared App after the busy refusal also failed: {cleanup_error}")
         raise
     candidate = candidate_holder["value"]
     # Retire staged App resources only after the shared journal is terminal.
@@ -515,8 +508,6 @@ def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=prin
                 "recover-journal", "Use the owning installer to recover the interrupted update first.")
     backend = _backend(root)
     from .app_update import locked
-    from .service import installer_lock_path
-
     # Match existing C2 serialization. Installer-managed updates hold the
     # same per-user lock for the full operation; a Pinokio session already
     # owns it and takes it narrowly around pointer publication.
@@ -581,9 +572,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:  # noqa: BLE001 - protocol boundary returns every failure as JSON
         print(json.dumps({"error": str(exc), "step": getattr(exc, "step", None),
-                          "details": getattr(exc, "details", None),
-                          "stop_refused": getattr(exc, "stop_refused", False),
-                          "stop_completed": getattr(exc, "stop_completed", False)},
+                          "details": getattr(exc, "details", None)},
                          separators=(",", ":")), flush=True)
         return 1
 

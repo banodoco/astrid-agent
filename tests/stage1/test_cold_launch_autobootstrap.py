@@ -767,7 +767,8 @@ def test_connect_protocol_rejection_is_not_masked_by_bootstrap(monkeypatch, tmp_
     assert [command[1] for command in seen] == ["connect"]
 
 
-def test_identity_mismatch_refuses_connect_first_without_fallback_or_metadata_writes(monkeypatch, tmp_path):
+@pytest.mark.parametrize("refusal", ["Runtime checkout identity differs.", "New wording: discovery is stale."])
+def test_identity_mismatch_refuses_connect_first_without_fallback_or_metadata_writes(monkeypatch, tmp_path, refusal):
     data_root = tmp_path / "support"
     runtime_support = data_root / "runtime"
     source_profiles = runtime_support / "source-profiles"
@@ -784,12 +785,12 @@ def test_identity_mismatch_refuses_connect_first_without_fallback_or_metadata_wr
         path.write_bytes(content)
     before = {path: path.read_bytes() for path in files}
     seen = []
-    refusal = "An older Astrid is still running. Run `astrid-runtime restart`; it waits for running tasks."
 
     def fake_run(command, **kwargs):
         seen.append(command)
         return subprocess.CompletedProcess(
-            command, 1, json.dumps({"ok": False, "error": refusal}), "",
+            command, 1, json.dumps({"ok": False, "error": {
+                "message": refusal, "details": {"code": "identity_mismatch"}}}), "",
         )
 
     monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
@@ -801,6 +802,7 @@ def test_identity_mismatch_refuses_connect_first_without_fallback_or_metadata_wr
 
     assert str(caught.value) == refusal
     assert caught.value.code == "runtime_identity_mismatch"
+    assert caught.value.details["code"] == "identity_mismatch"
     assert caught.value.next_action == "astrid-runtime restart"
     assert len(seen) == 1
     assert seen[0][1] == "connect"
@@ -870,9 +872,14 @@ def test_loopback_old_owner_refuses_agent_callers_until_explicit_dirty_restart(m
     for name in tuple(sys.modules):
         if any(name == prefix or name.startswith(prefix + ".") for prefix in runtime_module_names):
             del sys.modules[name]
-    from astrid_runtime import BootstrapConfig, LocalRuntimeBoundary, RuntimePaths, SourceProfile
+    from astrid_runtime import (
+        BootstrapConfig,
+        LocalRuntimeBoundary,
+        RuntimePaths,
+        SourceProfile,
+        configure_workspace,
+    )
     from astrid_runtime import bootstrap as runtime_bootstrap
-    from astrid_runtime import configure_workspace
     from astrid_runtime.bootstrap import restart as runtime_restart
 
     profile = SourceProfile(
@@ -914,7 +921,8 @@ def test_loopback_old_owner_refuses_agent_callers_until_explicit_dirty_restart(m
         )
         with pytest.raises(autobootstrap.AutoBootstrapError) as caught:
             autobootstrap.ensure_runtime(start_pack_host=False, data_root=paths.app_support)
-        refusal = "An older Astrid is still running. Run `astrid-runtime restart`; it waits for running tasks."
+        from astrid_runtime.identity import IDENTITY_REFUSAL_MESSAGE
+        refusal = IDENTITY_REFUSAL_MESSAGE
         assert str(caught.value) == refusal
         assert caught.value.code == "runtime_identity_mismatch"
         assert authority_before == read_authority()
@@ -1008,3 +1016,21 @@ def test_real_cold_launch_projects_installed_startup_policy_only(monkeypatch, tm
         monkeypatch.setattr = original_setattr
     assert len(seen) == 1
     assert "startup_idle_seconds" not in seen[0]
+
+
+def test_identity_refusal_text_alone_does_not_classify_as_identity_mismatch(monkeypatch, tmp_path):
+    refusal = "An older Astrid is still running. Run `astrid-runtime restart`; it waits for running tasks."
+    seen = []
+
+    def fake_run(command, **kwargs):
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 1, json.dumps({"ok": False, "error": {
+            "message": refusal, "details": {"code": "other_refusal"}}}), "")
+
+    monkeypatch.setenv("ASTRID_RUNTIME_LAUNCHER", "/usr/bin/astrid-runtime")
+    monkeypatch.setattr(autobootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(autobootstrap, "_discovery_present", lambda _root: True)
+    with pytest.raises(autobootstrap.AutoBootstrapError) as caught:
+        autobootstrap.ensure_runtime(start_pack_host=False, data_root=tmp_path)
+    assert caught.value.code == "runtime_connection_rejected"
+    assert len(seen) == 1
