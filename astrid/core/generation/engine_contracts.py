@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, Mapping, TypeAlias
+from typing import Any, ClassVar, ContextManager, Literal, Mapping, Protocol, TypeAlias
 
 EngineId: TypeAlias = str
 PlatformKey: TypeAlias = Literal["linux-x86_64-cu124", "linux-x86_64-cu128", "linux-x86_64-cu130", "windows-x86_64-cu128", "windows-x86_64-cu130"]
@@ -237,6 +237,69 @@ class DownloadResult:
     sha256: Digest
     verified: Literal[True]
     resumed_from_bytes: int
+
+
+@dataclass(frozen=True)
+class CommandRequest:
+    argv: tuple[str, ...]
+    cwd: TargetPath
+    env: Mapping[str, str | None]
+    deadline: Deadline
+    max_output_bytes: int = 262144
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool
+    duration_seconds: float
+    job_id: str | None
+    stdout_truncated: bool
+    stderr_truncated: bool
+
+
+@dataclass(frozen=True)
+class FileFact:
+    exists: bool
+    regular: bool
+    symlink: bool
+    bytes: int | None
+    sha256: Digest | None
+
+
+class ExecutionContext(Protocol):
+    placement: Placement
+    platform: PlatformKey
+
+    def run(self, request: CommandRequest) -> CommandResult: ...
+    def ensure_dir(self, path: TargetPath, *, deadline: Deadline) -> None: ...
+    def read_json(self, path: TargetPath, *, deadline: Deadline) -> Mapping: ...
+    def write_json_atomic(self, path: TargetPath, value: Mapping,
+                          *, deadline: Deadline) -> None: ...
+    def file_fact(self, path: TargetPath, *, hash_bytes: bool,
+                  deadline: Deadline) -> FileFact: ...
+    def download_model(self, model: ModelSpec, *, models_root: TargetPath,
+                       deadline: Deadline) -> DownloadResult: ...
+    def acquire_install_lock(self, root: TargetPath, *,
+                             deadline: Deadline) -> ContextManager[None]: ...
+
+
+class PlatformAdapter(Protocol):
+    key: PlatformKey
+
+    def local_install_lock(self, root: TargetPath, *,
+                           deadline: Deadline) -> ContextManager[None]: ...
+    def join(self, root: TargetPath, *relative: str) -> TargetPath: ...
+    def validate_root(self, root: TargetPath) -> TargetPath: ...
+    def venv_python(self, venv_root: TargetPath) -> TargetPath: ...
+    def uv_executable(self, runtime_root: TargetPath) -> TargetPath: ...
+    def environment(self, recipe: EngineRecipe, root: TargetPath) -> Mapping[str, str]: ...
+    def environment_commands(self, recipe: EngineRecipe, environment: EnvironmentSpec,
+                             root: TargetPath) -> tuple[tuple[str, ...], ...]: ...
+    def start_request(self, recipe: EngineRecipe, root: TargetPath,
+                      *, deadline: Deadline) -> CommandRequest: ...
 
 
 StepKind: TypeAlias = Literal["source", "environment", "model", "start", "health"]
