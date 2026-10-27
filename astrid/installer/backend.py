@@ -761,6 +761,10 @@ class Backend:
 
     def stage(self, manifest: dict, root: Path, data: Path) -> Version:
         release = install_release(manifest)
+        # Repair needs only the installed Runtime. Require bootstrap inputs
+        # only when dispatch actually prepares a fresh candidate.
+        if not self.uv.is_absolute() or not self.uv.is_file():
+            raise ValueError("Run the install line to provide the pinned user-local uv.")
         # Older release manifests omit this source. Record the effective pin
         # alongside the other sources without changing the caller's document.
         manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}

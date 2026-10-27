@@ -51,6 +51,10 @@ class LifecycleBackend:
         self.candidate = None
         self.staged_manifest = None
         self.sync_failure = False
+        self.restart_required_value = False
+
+    def source_checkout_ownership(self, _data, _version):
+        return False
 
     def existing(self, _data):
         return self.old
@@ -67,7 +71,8 @@ class LifecycleBackend:
         self.staged_manifest = manifest
         folder = root / "versions" / "candidate"
         folder.mkdir(parents=True)
-        self.candidate = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
+        self.candidate = Version(folder, folder / "py/bin/python", folder / "profile.json", {},
+                                release=manifest.get("release", 0))
         self.candidate.python.parent.mkdir(parents=True)
         self.candidate.python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         write_json(folder / "version.json", self.candidate.document())
@@ -100,8 +105,12 @@ class LifecycleBackend:
     def start(self, version, data):
         self.calls.append(("start", version, data))
 
-    def verify(self, version, data, realm_id):
+    def verify(self, version, data, realm_id, *, timeout=90):
         self.calls.append(("verify", version, data, realm_id))
+
+    def restart_required(self):
+        self.calls.append(("restart_required",))
+        return self.restart_required_value
 
     def sync_skills(self, version):
         self.calls.append(("sync_skills", version))
@@ -359,11 +368,11 @@ def test_explicit_partial_stop_evidence_allows_update_recovery(tmp_path):
     assert current(root) == old
 
 
-def _installed_lifecycle_backend(tmp_path):
+def _installed_lifecycle_backend(tmp_path, *, release=0):
     root, data = tmp_path / "program", tmp_path / "data"
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
-    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {})
+    old = Version(folder, folder / "py/bin/python", folder / "profile.json", {}, release=release)
     old.python.parent.mkdir(parents=True)
     old.python.write_text("python")
     write_json(folder / "version.json", old.document())
@@ -371,6 +380,180 @@ def _installed_lifecycle_backend(tmp_path):
     backend = LifecycleBackend(root, data)
     backend.old = old
     return root, data, old, backend
+
+
+@pytest.mark.parametrize(
+    ("installed", "candidate", "agent_sha", "runtime_sha", "updates"),
+    [
+        (0, None, "a", "b", False),       # absent candidate release means zero
+        (0, 0, "c", "d", False),          # equal release, SHAs differ from installed pins
+        (9, 10, "a", "b", True),           # numeric 9 -> 10, same SHAs as installed
+        (10, 9, "b", "c", False),          # older candidates retain repair behavior
+        (10, 10, "c", "d", False),         # same release never switches by SHA
+    ],
+)
+def test_install_dispatches_by_numeric_release(installed, candidate, agent_sha, runtime_sha, updates,
+                                               tmp_path):
+    root, data, _old, backend = _installed_lifecycle_backend(tmp_path, release=installed)
+    write_json(root / "versions/old/manifest.json", {
+        "release": installed, "agent": {"sha": "a"}, "runtime": {"sha": "b"},
+    })
+    backend.workspace = lambda *_args: {"realm_id": "kept-realm", "realm_root": str(data / "realm")}
+    manifest = {"agent": {"sha": agent_sha}, "runtime": {"sha": runtime_sha}}
+    if candidate is not None:
+        manifest["release"] = candidate
+
+    Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
+
+    names = [call[0] for call in backend.calls]
+    assert ("stage" in names) is updates
+    if updates:
+        assert names.index("stage") < names.index("validate_candidate") < names.index("stop")
+        assert current(root).release == candidate
+    else:
+        assert "verify" in names and "restart_required" in names
+        assert not {"stage", "stop", "backup", "upgrade", "register", "start"}.intersection(names)
+        assert current(root).release == installed
+
+
+@pytest.mark.parametrize("installed", [None, 0, 9, 10])
+@pytest.mark.parametrize("candidate", [None, 0, 9, 10])
+def test_legacy_version_record_release_dispatch_matrix(tmp_path, installed, candidate):
+    effective_installed = installed or 0
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=effective_installed)
+    legacy_record = old.document()
+    legacy_record.pop("identity")
+    write_json(old.root / "version.json", legacy_record)
+    write_json(old.root / "manifest.json", {} if installed is None else {"release": installed})
+    manifest = {} if candidate is None else {"release": candidate}
+
+    Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
+
+    effective_candidate = candidate or 0
+    assert ("stage" in [call[0] for call in backend.calls]) is (effective_candidate > effective_installed)
+    assert current(root).release == max(effective_candidate, effective_installed)
+
+
+@pytest.mark.parametrize("health", ["healthy", "unhealthy", "restart-required"])
+def test_same_release_repair_keeps_installed_version_and_never_stages(tmp_path, health):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=10)
+    backend.restart_required_value = health == "restart-required"
+    backend.workspace = lambda *_args: {"realm_id": "kept-realm", "realm_root": str(data / "realm")}
+    if health == "unhealthy":
+        verification_attempts = []
+
+        def unhealthy(version, workspace, realm_id, **_kwargs):
+            backend.calls.append(("verify", version, workspace, realm_id))
+            verification_attempts.append(True)
+            if len(verification_attempts) == 1:
+                raise VerificationError("restart required")
+
+        backend.verify = unhealthy
+
+    Installer(root, data, backend, say=lambda _line: None).run("install", {"release": 10})
+
+    names = [call[0] for call in backend.calls]
+    assert current(root) == old
+    assert not {"stage", "backup", "upgrade", "finish"}.intersection(names)
+    if health != "healthy":
+        assert names.count("stop") == 1 and names.count("start") == 1
+        assert names.count("register") == 1 and names.count("verify") == 2
+    else:
+        assert "verify" in names and "restart_required" in names
+        assert not {"stop", "start", "register"}.intersection(names)
+
+
+def test_explicit_update_rejects_malformed_candidate_release_before_staging(tmp_path):
+    root, data, _old, backend = _installed_lifecycle_backend(tmp_path, release=10)
+
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        Installer(root, data, backend, say=lambda _line: None).run("update", {"release": True})
+
+    assert backend.calls == []
+
+
+@pytest.mark.parametrize("candidate", [9, 10])
+def test_explicit_update_forces_same_or_older_release_restage(tmp_path, candidate):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=10)
+    manifest = {"release": candidate, "agent": {"sha": "a"}, "runtime": {"sha": "b"}}
+
+    Installer(root, data, backend, say=lambda _line: None).run("update", manifest)
+
+    assert any(call[0] == "stage" for call in backend.calls)
+    assert any(call[0] == "stop" for call in backend.calls)
+    assert current(root).release == candidate
+
+
+@pytest.mark.parametrize("failure", ["preparation", "busy", "rollback"])
+def test_newer_release_keeps_shared_transaction_safety(tmp_path, failure):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=1)
+    manifest = {"release": 2}
+    backend.backup = lambda *_args: {"root": str(root / "backups" / "kept")}
+    backend.upgrade = lambda *_args: None
+
+    if failure == "preparation":
+        def reject_candidate(*_args):
+            backend.calls.append(("validate_candidate",))
+            raise ValueError("invalid candidate")
+
+        backend.validate_candidate = reject_candidate
+        expected = ValueError
+        message = "invalid candidate"
+    elif failure == "busy":
+        def refuse_stop(*_args):
+            backend.calls.append(("stop",))
+            raise RuntimeOperationError("owner busy", details={"task_count": 1}, stop_refused=True)
+
+        backend.stop = refuse_stop
+        expected = RuntimeOperationError
+        message = "owner busy"
+    else:
+        verification_attempts = []
+
+        def fail_candidate_once(_version, _data, _realm_id):
+            verification_attempts.append(True)
+            if len(verification_attempts) == 1:
+                raise VerificationError("candidate did not become ready")
+
+        backend.verify = fail_candidate_once
+        backend.restore = lambda *_args: backend.calls.append(("restore",))
+        expected = VerificationError
+        message = "candidate did not become ready"
+
+    with pytest.raises(expected, match=message):
+        Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
+
+    assert current(root) == old
+    if failure == "preparation":
+        assert [call[0] for call in backend.calls] == ["stage", "validate_candidate"]
+    elif failure == "busy":
+        assert [call[0] for call in backend.calls] == ["stage", "validate_candidate", "stop"]
+    else:
+        assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+        assert "restore" in [call[0] for call in backend.calls]
+
+
+def test_release_comparison_reads_version_after_journal_recovery(tmp_path, monkeypatch):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path, release=3)
+    recovery_calls = []
+
+    def recover_first():
+        recovery_calls.append("recovered")
+        # Model recovery selecting and restoring the old owner's version record.
+        restored = Version(old.root, old.python, old.profile, old.env, release=9)
+        write_json(old.root / "version.json", restored.document())
+
+    monkeypatch.setattr(Installer, "_recover_update", lambda self: recover_first())
+    backend.backup = lambda *_args: {"root": str(root / "backups" / "kept")}
+    backend.upgrade = lambda *_args: None
+    manifest = {"release": 10}
+
+    Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
+
+    assert recovery_calls == ["recovered"]
+    stopped = next(call[1] for call in backend.calls if call[0] == "stop")
+    assert stopped.release == 9
+    assert current(root).release == 10
 
 
 def test_non_stop_runtime_error_still_runs_update_recovery(tmp_path):

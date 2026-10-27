@@ -18,6 +18,7 @@ def test_optional_remotion_failure_does_not_block_staging(tmp_path, monkeypatch,
     messages = []
     calls = []
     backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv", say=messages.append)
+    backend.uv.touch()
     monkeypatch.setattr(backend, "existing", lambda _data: None)
 
     def source(_name, _sha, destination, **_kwargs):
@@ -97,6 +98,7 @@ def test_staging_installs_the_npm_locked_schema_before_declaring_services(tmp_pa
 
     calls = []
     backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv")
+    backend.uv.touch()
     monkeypatch.setattr(backend, "existing", lambda _data: None)
 
     def source(_name, _sha, destination, **_kwargs):

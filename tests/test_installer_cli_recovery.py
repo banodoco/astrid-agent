@@ -123,6 +123,228 @@ def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
     assert recovery == ["called"]
 
 
+@pytest.mark.parametrize("source", ["explicit", "hosted"])
+def test_installed_cli_validates_candidate_without_requiring_staging_uv(
+        tmp_path, monkeypatch, source):
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    backend = _cli_backend(tmp_path, root, data)
+    _prepare_cli(monkeypatch, tmp_path, root, data, backend)
+    old_root = root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    profile = old_root / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    old = Version(old_root, Path(sys.executable), profile, {}, release=5)
+    write_json(old_root / "version.json", old.document())
+    switch(root, old)
+    backend.source_checkout_ownership = lambda *_: False
+    backend.preflight_stop = lambda *_: None
+
+    candidate = {"release": 6, "candidate": source}
+    manifest_path = tmp_path / "candidate.json"
+    if source == "explicit":
+        write_json(manifest_path, candidate)
+    else:
+        def download(_url, destination):
+            write_json(destination, candidate)
+
+        monkeypatch.setattr(cli, "download", download)
+
+    validated = []
+    monkeypatch.setattr(cli, "validate_manifest", lambda value: validated.append(value) or value)
+    dispatched = []
+
+    class CapturingInstaller:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, mode, manifest, **_kwargs):
+            dispatched.append((mode, manifest))
+
+    monkeypatch.setattr(cli, "Installer", CapturingInstaller)
+    args = ["--root", str(root), "--uv", str(tmp_path / "missing-uv")]
+    if source == "explicit":
+        args.extend(["--manifest", str(manifest_path)])
+
+    assert cli.main(args) == 0
+    assert validated == [candidate]
+    assert dispatched == [("install", candidate)]
+
+
+def test_update_flag_is_hidden_but_remains_mutually_exclusive():
+    help_text = cli.parser().format_help()
+    assert "--update]" not in help_text
+    assert "--update " not in help_text
+    with pytest.raises(SystemExit):
+        cli.parser().parse_args(["--update", "--uninstall"])
+
+
+def _valid_cli_manifest(release):
+    return {
+        "schema_version": 1,
+        "release": release,
+        "agent": {"sha": "a" * 40},
+        "runtime": {"sha": "b" * 40},
+        "tools": {
+            "uv": {"version": "0.11.32"},
+            "python": {"version": "3.11.13"},
+            "bun": {"version": "1.3.14"},
+            "node": {"version": "20.19.4"},
+            "ffmpeg": {"version": "7.0.2"},
+            "omp": {"source": "@oh-my-pi/pi-coding-agent@18.12.6"},
+        },
+    }
+
+
+def _prepare_gateway_lifecycle(tmp_path, monkeypatch, *, installed=9):
+    from tests.test_installer_lifecycle import LifecycleBackend
+
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    root.mkdir()
+    data.mkdir()
+    old_root = root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    profile = old_root / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    old = Version(old_root, Path(sys.executable), profile, {}, release=installed)
+    write_json(old_root / "version.json", old.document())
+    switch(root, old)
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    record = {"owner": LABEL, "program_root": str(root), "data_root": str(data)}
+    backend = LifecycleBackend(root, data)
+    backend.old = old
+    backend.service = SimpleNamespace(recorded=lambda: record.copy())
+    backend.managed_by = None
+    backend.source_checkout_ownership = lambda *_args: False
+    backend.restart_required = lambda: False
+    backend.verify = lambda *_args, **_kwargs: backend.calls.append(("verify",))
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
+        parents=True, exist_ok=True))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setattr("astrid.installer.core.install_launcher", lambda *_args: None)
+    return root, data, old, backend
+
+
+@pytest.mark.parametrize(
+    ("candidate", "forced", "unhealthy", "expected_stage"),
+    [
+        (10, False, False, True),
+        (9, False, False, False),
+        (8, False, False, False),
+        (9, True, False, True),
+        (9, False, True, False),
+    ],
+    ids=["newer", "same", "older", "forced", "unhealthy-same"],
+)
+@pytest.mark.parametrize("manifest_source", ["explicit", "hosted"])
+def test_gateway_dispatches_installed_release_through_real_installer(
+        tmp_path, monkeypatch, candidate, forced, unhealthy, expected_stage, manifest_source):
+    from astrid.core.gateway import main as gateway_main
+
+    root, data, old, backend = _prepare_gateway_lifecycle(tmp_path, monkeypatch)
+    if unhealthy:
+        attempts = []
+
+        def verify(*_args, **_kwargs):
+            attempts.append(True)
+            backend.calls.append(("verify",))
+            if len(attempts) == 1:
+                raise cli.VerificationError("not healthy")
+
+        backend.verify = verify
+
+    manifest = _valid_cli_manifest(candidate)
+    manifest_path = tmp_path / "manifest.json"
+    if manifest_source == "explicit":
+        write_json(manifest_path, manifest)
+    else:
+        monkeypatch.setattr(cli, "download", lambda _url, path: write_json(path, manifest))
+    args = ["install", "--root", str(root), "--uv", str(tmp_path / "absent-uv")]
+    if manifest_source == "explicit":
+        args.extend(["--manifest", str(manifest_path)])
+    if forced:
+        args.append("--update")
+
+    assert gateway_main(args) == 0
+    names = [call[0] for call in backend.calls]
+    assert ("stage" in names) is expected_stage
+    if expected_stage:
+        assert names.index("stage") < names.index("stop")
+        assert current(root).release == candidate
+    else:
+        assert current(root) == old
+        assert not {"stage", "backup", "upgrade"}.intersection(names)
+        assert ("stop" in names) is unhealthy
+    if unhealthy:
+        assert names.count("verify") == 2
+        assert "start" in names
+
+
+@pytest.mark.parametrize("failure", ["fetch", "parse", "release"])
+def test_gateway_candidate_failures_preserve_installed_pointer_and_workspace(
+        tmp_path, monkeypatch, failure):
+    from astrid.core.gateway import main as gateway_main
+
+    root, data, old, backend = _prepare_gateway_lifecycle(tmp_path, monkeypatch)
+    sentinel = data / "workspace-data.txt"
+    sentinel.write_text("retain", encoding="utf-8")
+    pointer = (root / "current").read_bytes()
+    args = ["install", "--root", str(root), "--uv", str(tmp_path / "absent-uv")]
+    if failure == "fetch":
+        monkeypatch.setattr(cli, "download", lambda *_args: (_ for _ in ()).throw(OSError("offline")))
+    else:
+        manifest_path = tmp_path / "manifest.json"
+        if failure == "parse":
+            manifest_path.write_text("{", encoding="utf-8")
+        else:
+            manifest = _valid_cli_manifest("bad")
+            write_json(manifest_path, manifest)
+        args.extend(["--manifest", str(manifest_path)])
+
+    assert gateway_main(args) == 1
+    assert (root / "current").read_bytes() == pointer
+    assert current(root) == old
+    assert sentinel.read_text(encoding="utf-8") == "retain"
+    assert not {"stage", "stop", "backup", "upgrade"}.intersection(call[0] for call in backend.calls)
+
+
+def test_recovery_only_return_then_next_gateway_call_compares_restored_release(
+        tmp_path, monkeypatch):
+    from astrid.core.gateway import main as gateway_main
+
+    root, data, _old, backend = _prepare_gateway_lifecycle(tmp_path, monkeypatch, installed=99)
+    restored_root = root / "versions" / "restored"
+    restored_root.mkdir(parents=True)
+    profile = restored_root / "profile.json"
+    profile.write_text("{}", encoding="utf-8")
+    restored = Version(restored_root, Path(sys.executable), profile, {}, release=7)
+    write_json(restored_root / "version.json", restored.document())
+    write_json(root / "update-transaction.json", {
+        "transaction_kind": "migration", "step": "stopping", "data_root": str(data),
+    })
+    recovery = []
+
+    def recover(installer):
+        recovery.append(True)
+        switch(root, restored)
+        write_json(root / "update-transaction.json", {"step": "rolled_back"})
+
+    monkeypatch.setattr(Installer, "_recover_update", recover)
+    assert gateway_main(["install", "--root", str(root), "--manifest", str(tmp_path / "missing"),
+                         "--uv", str(tmp_path / "missing-uv")]) == 0
+    assert recovery == [True]
+    assert not backend.calls
+
+    manifest_path = tmp_path / "next-manifest.json"
+    write_json(manifest_path, _valid_cli_manifest(8))
+    assert gateway_main(["install", "--root", str(root), "--manifest", str(manifest_path),
+                         "--uv", str(tmp_path / "missing-uv")]) == 0
+    assert any(call[0] == "stage" for call in backend.calls)
+    assert current(root).release == 8
+
+
 def test_update_app_cli_recovers_before_checking_manifest_or_uv(tmp_path, monkeypatch):
     root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     backend = _cli_backend(tmp_path, root, data, managed_by="pinokio")
