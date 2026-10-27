@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import zipfile
 import json
 import sys
 import threading
@@ -85,11 +87,24 @@ def provision(request):
     root.mkdir()
     manifest = root / "release-manifest.json"
     manifest.write_text('{"test":true}')
-    monkeypatch.setattr(builder.remote, "__file__", str(program))
+    # The cold wrapper now binds an exact source archive, not remote.__file__.
+    # Replace only the physical provisioner in this transport fixture while
+    # retaining the real archive loader, identity check and receipt wrapper.
+    source = builder.bootstrap.source_archive()
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(source)) as original, zipfile.ZipFile(output, "w") as archive:
+        for entry in original.infolist():
+            body = program.read_bytes() if entry.filename == "astrid/packs/runpod/h3_release_remote.py" else original.read(entry)
+            archive.writestr(entry, body)
+    payload = output.getvalue()
+    monkeypatch.setattr(builder.bootstrap, "source_archive", lambda: payload)
+    request = {"root": str(root), "recipe": {}, "lock": {}}
+    identity = builder.bootstrap.release_digest(request["recipe"], request["lock"], payload)
+    request.update(recipe_sha256=identity, release_id="h3-cu130-" + identity)
     transport = builder.LifecycleTransport.__new__(builder.LifecycleTransport)
     transport.ssh = http_pod.https_transport()
     try:
-        result = transport.provision({"root": str(root)}, timeout=10)
+        result = transport.provision(request, timeout=10)
         assert __import__('base64').b64decode(result['manifest_base64']) == manifest.read_bytes()
     finally:
         transport.close()

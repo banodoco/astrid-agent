@@ -413,7 +413,7 @@ class LifecycleTransport:
             from runpod_lifecycle.https import HttpsPodTransport, PodTransportError
             self.ssh = HttpsPodTransport(pod["id"], token or "", request_timeout=max(1, connect_timeout))
             try:
-                self.ssh.connect()
+                self.ssh.wait_ready(timeout=max(1, connect_timeout))
             except PodTransportError as exc:
                 self.ssh.disconnect()
                 if "HTTP 401" in str(exc) or "HTTP 403" in str(exc):

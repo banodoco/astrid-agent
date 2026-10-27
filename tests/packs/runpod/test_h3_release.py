@@ -897,3 +897,40 @@ def test_legacy_downloader_forwards_to_real_contract_types_and_monotonic_deadlin
     assert type(model) is ModelSpec
     assert model.destination == relative
     assert options == {"models_root": str(tmp_path), "deadline": 60.0, "opener": opener, "range_bytes": 64}
+
+
+@pytest.mark.parametrize("statuses", [(200, 404, 200, 200, 200), (200, 401)])
+def test_https_release_transport_requires_settled_health(monkeypatch, statuses):
+    from runpod_lifecycle import https
+
+    calls = []
+    original = https.HttpsPodTransport
+    clients = []
+
+    def response(request):
+        assert request.url.path == "/health"
+        status = statuses[len(calls)]
+        calls.append(status)
+        if status == 200:
+            return httpx.Response(status, json={"ok": True, "protocol": 1})
+        return httpx.Response(status, content=b"")
+
+    def transport(pod_id, token, **kwargs):
+        client = original(pod_id, token, poll_interval=0.001, **kwargs)
+        client.http.close()
+        client.http = httpx.Client(
+            base_url=https.pod_url(pod_id, https.PORT),
+            transport=httpx.MockTransport(response),
+        )
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(https, "HttpsPodTransport", transport)
+    if statuses[-1] == 401:
+        with pytest.raises(build.BuildError, match="authentication rejected"):
+            build.LifecycleTransport({"id": "pod1"}, 5, transport="https", token="test-token-" + "a" * 40)
+        assert clients[0].http.is_closed
+    else:
+        handle = build.LifecycleTransport({"id": "pod1"}, 5, transport="https", token="test-token-" + "a" * 40)
+        handle.ssh.disconnect()
+    assert calls == list(statuses)
