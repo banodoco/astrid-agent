@@ -10,7 +10,17 @@ import sys
 import time
 from pathlib import Path
 
-from .core import RuntimeOperationError, Version, absolute, current, read_json, switch
+from .core import (
+    Installer,
+    RuntimeOperationError,
+    Version,
+    absolute,
+    current,
+    inspect_schema,
+    read_json,
+    recover_transaction,
+    switch,
+)
 from .service import LABEL, installer_lock_path
 
 
@@ -35,7 +45,7 @@ def locked(path: Path, *, timeout: float = 0):
             platform.unlock_file(stream.fileno())
 
 
-def selection(root: Path, backend) -> tuple[Version, Path, dict]:
+def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[Version, Path, dict]:
     marker, recorded = read_json(root / "install.json"), backend.service.recorded()
     if (marker.get("owner") != LABEL or marker.get("managed_by") != "pinokio"
             or recorded.get("owner") != LABEL or recorded.get("managed_by") != "pinokio"
@@ -43,7 +53,8 @@ def selection(root: Path, backend) -> tuple[Version, Path, dict]:
             or marker.get("data_root") != recorded.get("data_root")):
         raise ValueError("App updates require the selected, existing Pinokio installation.")
     transaction = read_json(root / "update-transaction.json")
-    if transaction and transaction.get("step") not in {"complete", "rolled_back"}:
+    if (transaction and transaction.get("step") not in {"complete", "rolled_back"}
+            and not allow_transaction):
         raise ValueError("Finish recovering the interrupted migration update before updating the app.")
     old = current(root)
     if old is None or not old.python.is_file():
@@ -55,23 +66,6 @@ def selection(root: Path, backend) -> tuple[Version, Path, dict]:
     identity = {key: recorded.get(key) for key in (
         "owner", "managed_by", "program_root", "data_root", "realm_id", "realm_root", "identity")}
     return old, data, identity
-
-
-def inspect_schema(backend, version: Version, realm: dict) -> dict:
-    """The selected package validates actual storage layout, using read-only SQLite."""
-    script = (
-        "import json,sys; from pathlib import Path; "
-        "from runtime_protocol.upgrade import inspect_canonical_schema, USER_APP_STATE_TARGET_SCHEMA_VERSION; "
-        "value=inspect_canonical_schema(Path(sys.argv[1]), expected_realm_id=sys.argv[2]); "
-        "print(json.dumps({'identity':value,'target':USER_APP_STATE_TARGET_SCHEMA_VERSION}))"
-    )
-    value = json.loads(backend.run(
-        [version.python, "-I", "-c", script, realm["realm_root"], realm["realm_id"]],
-        extra_env=version.env, timeout=120,
-    ))
-    if value["identity"]["version"] != value["target"]:
-        raise ValueError("This release needs a workspace migration. Use the regular Pinokio update.")
-    return value
 
 
 class PinokioLifecycle:
@@ -142,13 +136,34 @@ class PinokioLifecycle:
         # The existing session selects current/version.json and passes its exact
         # source profile to the foreground Runtime. It owns its whole process tree.
         env = {key: value for key, value in os.environ.items()
-               if key not in {"NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME"}}
+               if key not in {"NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME",
+                              "ASTRID_INSTALLER_OPERATION_ID"}}
+        get_operation_id = getattr(self.backend, "transaction_operation_id", None)
+        operation_context = getattr(self.backend, "_transaction_stop_context", None)
+        operation_id = get_operation_id() if get_operation_id is not None else None
+        if operation_context is not None:
+            operation_id = get_operation_id(required=True)
+            intent = getattr(self.backend, "_transaction_launch_intent", None)
+            if intent is not None:
+                intent("pinokio_start", version=version)
+            env["ASTRID_INSTALLER_OPERATION_ID"] = operation_id
         log = self.root / "app-update-session.log"
+        session_script = (
+            f"import {{installation,runSession}} from {json.dumps(self.session.as_uri())};\n"
+            f"const root={json.dumps(str(self.root))};\n"
+            f"const editor={json.dumps(str(self.root.parent / 'editor'))};\n"
+            "const installed=installation(root);\n"
+        )
+        if operation_id is not None:
+            session_script += f"installed.env.ASTRID_INSTALLER_OPERATION_ID={json.dumps(operation_id)};\n"
+        session_script += (
+            "runSession({action:'serve',root,editor,mode:'backend',installed})"
+            ".catch(error=>{console.error(`Astrid: ${error.message}`);process.exitCode=1;});\n"
+        )
         with log.open("ab") as stream:
             offset = stream.tell()
             process = subprocess.Popen(
-                [str(self.node(version)), str(self.session), "serve", str(self.root),
-                 str(self.root.parent / "editor"), "backend"],
+                [str(self.node(version)), "--input-type=module", "-e", session_script],
                 cwd=self.repo, env=env, stdin=subprocess.DEVNULL,
                 stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
             )
@@ -164,67 +179,109 @@ class PinokioLifecycle:
             raise ValueError(f"The Pinokio supervisor exited; see {log}.")
 
 
+def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bool:
+    """Recover a pending app-only transaction while its app-update lock is held."""
+    pending = read_json(root / "update-transaction.json")
+    if not pending or pending.get("step") in {"complete", "rolled_back"}:
+        return False
+    if pending.get("transaction_kind") != "app":
+        raise ValueError("Finish recovering the interrupted migration update through the regular installer.")
+    lock = installer_lock_path(backend.service.home, backend.service.system)
+    selected, data, _identity = selection(root, backend, allow_transaction=True)
+    if absolute(pending["data_root"]) != data:
+        raise ValueError("The interrupted app update workspace does not match the selected installation.")
+    previous = Version.load(pending["old"], managed_by="pinokio")
+    candidate = Version.load(pending["candidate"], managed_by="pinokio") if pending.get("candidate") else None
+    if selected not in (previous, candidate):
+        raise ValueError("The interrupted app update does not match the selected app version.")
+    lifecycle = lifecycle or PinokioLifecycle(root, backend)
+    lifecycle.validate(previous)  # Recovery must be able to relaunch the retained app.
+    installer = Installer(root, data, backend, say=say, managed_by="pinokio")
+
+    def recover_selection(previous: Version, candidate: Version | None) -> None:
+        with locked(lock, timeout=10):
+            selected = current(root)
+            if selected == candidate:
+                switch(root, previous)
+            elif selected != previous:
+                raise ValueError("Another operation selected a different app; refusing recovery.")
+            # A prior recovery may have published the old pointer and
+            # crashed before updating its selection identity.
+            backend.persist_identity(previous)
+
+    recover_transaction(
+        root, data, backend,
+        stop=lifecycle.stop, switch_old=recover_selection,
+        activate_old=lambda previous, workspace, realm: lifecycle.start(
+            previous, workspace, realm["realm_id"]),
+        restore_workspace=False, say=say,
+        save=lambda step, **details: installer._save_update(
+            pending, step, **details),
+    )
+    return True
+
+
+def recover_app(root: Path, backend, *, lifecycle=None, say=print) -> bool:
+    """Recover app-only journal without requiring a manifest or uv executable."""
+    with locked(root / ".app-update.lock"):
+        return _recover_app_locked(root, backend, lifecycle=lifecycle, say=say)
+
+
 def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print) -> None:
     """Stage online; switch programs only when both versions admit this exact realm."""
     lock = installer_lock_path(backend.service.home, backend.service.system)
     with locked(root / ".app-update.lock"):
+        _recover_app_locked(root, backend, lifecycle=lifecycle, say=say)
         old, data, identity = selection(root, backend)
         lifecycle = lifecycle or PinokioLifecycle(root, backend)
-        lifecycle.validate(old)  # Rollback must be launchable before anything stops.
+        lifecycle.validate(old)  # The rollback version must remain launchable.
         realm = backend.workspace(old, data)
         prior_schema = inspect_schema(backend, old, realm)
         say("Preparing the new app while Astrid keeps running.")
-        candidate = backend.stage(manifest, root, data)
-        lifecycle.validate(candidate)
-        if inspect_schema(backend, candidate, realm) != prior_schema:
-            raise ValueError("The storage layout changed; use the regular Pinokio update.")
-        if selection(root, backend) != (old, data, identity):
-            raise ValueError("The selected installation changed while preparing the update.")
-        selected_realm = backend.workspace(old, data)
-        if any(selected_realm[key] != realm[key] for key in ("realm_id", "realm_root")):
-            raise ValueError("The selected workspace changed while preparing the update.")
-        say("Restarting Astrid with the prepared app.")
-        stopped = False
-        try:
-            try:
-                lifecycle.stop(old, data)
-            except (Exception, KeyboardInterrupt) as stop_failure:
-                # RuntimeOperationError carries explicit handoff evidence.
-                # A refusal must not trigger status probing, relaunch, or rollback.
-                stopped = (isinstance(stop_failure, RuntimeOperationError)
-                           and stop_failure.stop_completed)
-                raise
-            stopped = True
+
+        def prepare() -> Version:
+            candidate = backend.stage(manifest, root, data)
+            backend.validate_candidate(candidate, data, realm)
+            lifecycle.validate(candidate)
+            if inspect_schema(backend, candidate, realm) != prior_schema:
+                raise ValueError("The storage layout changed; use the regular Pinokio update.")
+            if selection(root, backend) != (old, data, identity):
+                raise ValueError("The selected installation changed while preparing the update.")
+            selected_realm = backend.workspace(old, data)
+            if any(selected_realm[key] != realm[key] for key in ("realm_id", "realm_root")):
+                raise ValueError("The selected workspace changed while preparing the update.")
+            say("Restarting Astrid with the prepared app.")
+            return candidate
+
+        def select(candidate: Version) -> None:
             with locked(lock, timeout=10):
-                if selection(root, backend) != (old, data, identity):
+                if selection(root, backend, allow_transaction=True) != (old, data, identity):
                     raise ValueError("The selected installation changed before activation.")
-                # Upgrade a legacy selected record under the installer lock,
-                # then publish the candidate's identity with its pointer.
                 backend.persist_identity(old)
                 switch(root, candidate)
                 backend.persist_identity(candidate)
-            # The foreground launcher needs the lifetime lock itself.
-            lifecycle.start(candidate, data, realm["realm_id"])
-        except (Exception, KeyboardInterrupt) as failure:
-            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
-                raise
-            if stopped:
-                try:
-                    selected = current(root)
-                    if selected not in (old, candidate):
-                        raise ValueError("Another operation selected a different app; refusing to replace it.")
-                    if selected == candidate:
-                        lifecycle.stop(candidate, data)
-                        with locked(lock, timeout=10):
-                            if current(root) != candidate:
-                                raise ValueError("The app selection changed during rollback.")
-                            switch(root, old)
-                            backend.persist_identity(old)
-                    lifecycle.start(old, data, realm["realm_id"])
-                    say("The new app could not start; the previous app is running again.")
-                except (Exception, KeyboardInterrupt) as recovery:
-                    if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
-                        raise recovery
-                    raise ValueError(f"App update failed ({failure}); restarting the previous app also failed ({recovery}).") from recovery
-            raise
+
+        def select_old(previous: Version, candidate: Version | None) -> None:
+            selected = current(root)
+            if selected not in (old, candidate):
+                raise ValueError("Another operation selected a different app; refusing to replace it.")
+            if selected == candidate:
+                with locked(lock, timeout=10):
+                    if current(root) != candidate:
+                        raise ValueError("The app selection changed during rollback.")
+                    switch(root, previous)
+                    backend.persist_identity(previous)
+
+        def activate(candidate: Version, workspace: Path, selected_realm: dict) -> None:
+            lifecycle.start(candidate, workspace, selected_realm["realm_id"])
+
+        installer = Installer(root, data, backend, say=say, managed_by="pinokio")
+        installer._run_update_transaction(
+            old, realm, prepare=prepare, stop=lifecycle.stop,
+            switch_candidate=select, switch_old=select_old,
+            activate=activate,
+            activate_old=lambda previous, workspace, selected_realm: lifecycle.start(
+                previous, workspace, selected_realm["realm_id"]),
+            restore_workspace=False, kind="app",
+        )
         say("Astrid is updated and running.")

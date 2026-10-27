@@ -25,7 +25,15 @@ from runtime_protocol.upgrade import inspect_canonical_schema
 
 from astrid.installer import core
 from astrid.installer.backend import Backend
-from astrid.installer.core import Installer, Version, current, read_json, switch, write_json
+from astrid.installer.core import (
+    Installer,
+    Version,
+    current,
+    read_json,
+    recover_transaction,
+    switch,
+    write_json,
+)
 
 
 def _event(base, name):
@@ -114,6 +122,8 @@ class _Backend(Backend):
         _event(self.base, "stop")
         for name in ("discovery.json", "instance.lock"):
             (data / "runtime" / name).unlink(missing_ok=True)
+        if _version.root.name == "old":
+            _kill("stop-return", self.kill_at)
 
     def backup(self, _version, data, realm):
         # A new snapshot must never capture the interrupted Runtime journal.
@@ -145,6 +155,9 @@ class _Backend(Backend):
         _kill("stage-return", self.kill_at)
         return candidate
 
+    def validate_candidate(self, _candidate, _data, _realm):
+        pass
+
     def upgrade(self, _version, _data):
         result = subprocess.run([sys.executable, __file__, "runtime", str(self.base), self.kill_at],
                                 capture_output=True, text=True, timeout=30)
@@ -167,6 +180,8 @@ class _Backend(Backend):
 
     def start(self, _version, _data):
         _event(self.base, "start")
+        if _version.root.name.startswith("new-"):
+            _kill("start-return", self.kill_at)
 
     def verify(self, _version, data, realm_id, **_kwargs):
         realm = self.workspace(_version, data)
@@ -214,19 +229,47 @@ def _assert_retry(base, *, restore_expected):
 
 
 @pytest.mark.parametrize("step", [
-    "prepared", "stopped", "backup-return", "backed_up", "stage-return", "staged",
-    "upgraded", "pointer-publish", "switched", "registered", "started", "verified", "complete",
+    "stage-return", "staged", "stopping", "stop-return", "stopped", "backup-return",
+    "backed_up", "runtime:planned", "runtime:stopped", "runtime:migration-committed",
+    "runtime:activated", "runtime:restarted", "migrated", "pointer-publish", "switched",
+    "start-return", "verified", "complete",
 ])
 def test_sigkill_each_installer_durable_step_then_three_successful_updates(tmp_path, step):
     _setup(tmp_path)
     result = _run(tmp_path, step)
     assert result.returncode == -signal.SIGKILL, result.stderr
-    _assert_retry(tmp_path, restore_expected=step not in {"prepared", "stopped", "backup-return", "complete"})
+    restore_expected = step in {
+        "backed_up", "runtime:planned", "runtime:stopped", "runtime:migration-committed",
+        "runtime:activated", "runtime:restarted", "migrated", "pointer-publish", "switched",
+        "start-return", "verified",
+    }
+    _assert_retry(tmp_path, restore_expected=restore_expected)
+
+
+def test_candidate_validation_failure_keeps_owner_pointer_and_workspace(tmp_path):
+    _setup(tmp_path)
+    root, data = tmp_path / "program", tmp_path / "data"
+    old = current(root)
+    before_workspace = (data / "retained.txt").read_bytes()
+    backend = _Backend(tmp_path, None)
+    before_record = read_json(tmp_path / "install-selection.json")
+
+    def reject(_candidate, _data, _realm):
+        raise ValueError("candidate hash mismatch")
+
+    backend.validate_candidate = reject
+    with pytest.raises(ValueError, match="candidate hash mismatch"):
+        Installer(root, data, backend, say=lambda _line: None).run("update", {})
+
+    assert not (tmp_path / "events").exists()
+    assert current(root) == old
+    assert read_json(tmp_path / "install-selection.json") == before_record
+    assert (data / "retained.txt").read_bytes() == before_workspace
 
 
 def test_recovery_stop_refusal_keeps_durable_transaction_unchanged(tmp_path):
     _setup(tmp_path)
-    result = _run(tmp_path, "prepared")
+    result = _run(tmp_path, "stopping")
     assert result.returncode == -signal.SIGKILL, result.stderr
     root, data = tmp_path / "program", tmp_path / "data"
     journal_path = root / "update-transaction.json"
@@ -294,6 +337,27 @@ def test_repair_also_recovers_before_workspace_inspection(tmp_path):
     assert not (tmp_path / "data/runtime/upgrade-journal.json").exists()
 
 
+@pytest.mark.parametrize("point", [
+    "staged", "stopping", "stop-return", "stopped", "backed_up",
+    "runtime:planned", "migrated", "pointer-publish", "switched", "start-return", "verified",
+])
+def test_repair_recovers_each_installer_boundary_to_old_identity_and_data(tmp_path, point):
+    _setup(tmp_path)
+    result = _run(tmp_path, point)
+    assert result.returncode == -signal.SIGKILL, result.stderr
+
+    result = _run(tmp_path, mode="install")
+    assert result.returncode == 0, result.stderr
+    root = tmp_path / "program"
+    selected = current(root)
+    assert selected.root.name == "old"
+    assert selected.document()["identity"] == {"release": 17, "managed_by": None}
+    assert read_json(tmp_path / "install-selection.json")["identity"] == selected.document()["identity"]
+    assert read_json(tmp_path / "install-selection.json")["unrelated"] == "preserved"
+    assert (tmp_path / "data/retained.txt").read_text() == "original user data"
+    assert read_json(root / "update-transaction.json")["step"] in {"complete", "rolled_back"}
+
+
 @pytest.mark.parametrize("point", ["restore-realm-removed", "restore-key-removed", "restore-return"])
 def test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed(tmp_path, point):
     _setup(tmp_path, previous_schema=False)
@@ -305,6 +369,105 @@ def test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed(tmp_
     if point == "restore-key-removed":
         assert not (tmp_path / "data/runtime/backup-auth.key").exists()
     _assert_retry(tmp_path, restore_expected=True)
+
+
+@pytest.mark.parametrize("step", ["staged", "started"])
+def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
+    """App-only recovery preserves the old owner without restoring workspace data."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    old = _version(root, "old", release=17)
+    candidate = _version(root, "candidate", release=18)
+    workspace = data / "workspace.json"
+    workspace.parent.mkdir(parents=True)
+    workspace.write_text('{"realm":"kept","payload":"original"}', encoding="utf-8")
+    original_workspace = workspace.read_bytes()
+    switch(root, candidate if step == "started" else old)
+    write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
+    realm = {"realm_id": "realm-1", "realm_root": str(data)}
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
+        "transaction_kind": "app", "step": step, "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": realm, "backup": None,
+    })
+    events = []
+
+    class NoMigrationBackend:
+        def restore(self, *_args):
+            raise AssertionError("app-only recovery must never restore workspace data")
+
+    running = {"version": "old" if step == "staged" else "candidate"}
+
+    def stop(version, _data):
+        events.append("stop:" + version.root.name)
+        running["version"] = None
+
+    def switch_old(version, _candidate):
+        events.append("switch-old")
+        switch(root, version)
+
+    def activate_old(version, _data, _realm):
+        events.append("start-old")
+        running["version"] = version.root.name
+
+    recover_transaction(root, data, NoMigrationBackend(), stop=stop,
+                        switch_old=switch_old, activate_old=activate_old,
+                        restore_workspace=False, say=lambda _line: None)
+
+    assert workspace.read_bytes() == original_workspace
+    assert running["version"] == "old"
+    if step == "staged":
+        assert current(root) == old
+        assert events == []
+        assert read_json(root / "update-transaction.json")["step"] == "complete"
+    else:
+        assert current(root) == old
+        assert events == ["stop:candidate", "switch-old", "start-old"]
+        assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+
+
+def test_legacy_staged_migration_journal_with_backup_restores_workspace(tmp_path):
+    """Old v1 staged records were published after stop and backup."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    old = _version(root, "old", release=17)
+    candidate = _version(root, "candidate", release=18)
+    switch(root, candidate)
+    write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
+    backup_root = root / "backups" / "legacy-operation"
+    backup_root.mkdir(parents=True)
+    current_workspace = data / "workspace.json"
+    current_workspace.parent.mkdir(parents=True)
+    current_workspace.write_text("migrated", encoding="utf-8")
+    realm = {"realm_id": "realm-1", "realm_root": str(data)}
+    backup = {"root": str(backup_root), "kind": "clone"}
+    # `transaction_kind` did not exist in the old v1 layout, and staged was
+    # only written after the old installer had already stopped and backed up.
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
+        "step": "staged", "data_root": str(data), "old": old.document(),
+        "candidate": candidate.document(), "realm": realm, "backup": backup,
+    })
+    events = []
+
+    class LegacyBackend:
+        def restore(self, previous, _data, _realm, image):
+            assert previous == old
+            assert image == backup
+            events.append("restore")
+            current_workspace.write_text("original", encoding="utf-8")
+
+    recover_transaction(
+        root, data, LegacyBackend(),
+        stop=lambda version, _data: events.append("stop:" + version.root.name),
+        switch_old=lambda version, _candidate: switch(root, version),
+        activate_old=lambda version, _data, _realm: events.append("start:" + version.root.name),
+        say=lambda _line: None,
+    )
+
+    assert events == ["stop:candidate", "restore", "start:old"]
+    assert current(root) == old
+    assert current_workspace.read_text(encoding="utf-8") == "original"
+    assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
 
 
 def _runtime(base, kill_at):

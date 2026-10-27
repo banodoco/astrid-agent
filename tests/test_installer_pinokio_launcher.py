@@ -56,6 +56,7 @@ def _clean_environment(version: Version) -> dict[str, str]:
         "ASTRID_RUNTIME_SOURCE_MANIFEST",
         "ASTRID_RUNTIME_DATA_ROOT",
         "ASTRID_PACKS_PATH",
+        "ASTRID_INSTALLER_OPERATION_ID",
     }
     env = {key: value for key, value in os.environ.items() if key not in excluded}
     env.update(version.env)
@@ -185,6 +186,7 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         "ASTRID_RUNTIME_SOURCE_MANIFEST",
         "ASTRID_RUNTIME_DATA_ROOT",
         "ASTRID_PACKS_PATH",
+        "ASTRID_INSTALLER_OPERATION_ID",
     ):
         assert key not in seen["env"]  # type: ignore[operator]
     # The settings file is consumed by the embedded service command itself.
@@ -192,6 +194,14 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     assert str(root / "service-env.json") in script
     assert "ASTRID_WARM_IDLE_SECONDS" in script
     assert _runtime_args(expected)[-len(extra_args):] == extra_args
+
+
+def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path, monkeypatch):
+    root, _data, _version = _installation(tmp_path)
+    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "f" * 32)
+
+    with pytest.raises(ValueError, match="does not match the pending app update"):
+        foreground._run(root, [], "linux", 123)
 
 
 def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

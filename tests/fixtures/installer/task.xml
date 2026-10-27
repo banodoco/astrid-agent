@@ -15,6 +15,7 @@
   <Actions Context="Owner"><Exec><Command>C:\Astrid\versions\v1\py\Scripts\pythonw.exe</Command><Arguments>-X utf8 -I -c "import json,os,sys
 from pathlib import Path
 os.environ.update({'PATH': 'C:\\Astrid\\tools;C:\\Windows\\System32', 'PYTHONUTF8': '1', 'ASTRID_INSTALL_RELEASE': '0', 'ASTRID_INSTALL_MANAGED_BY': ''})
+os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)
 sys.stdout=sys.stderr=open('C:\\Astrid\\logs\\runtime-service.log','a',encoding='utf-8',buffering=1)
 from astrid_runtime.cli import main
 sys.exit(main(['run', '--profile', 'astrid', '--data-root', 'C:\\Astrid Data', '--source-manifest', 'C:\\Astrid\\versions\\v1\\profile.json']))"</Arguments><WorkingDirectory>C:\Astrid\versions\v1</WorkingDirectory></Exec></Actions>

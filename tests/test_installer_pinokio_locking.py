@@ -16,7 +16,12 @@ import pytest
 
 from astrid.installer import cli, foreground
 from astrid.installer.core import Version, read_json, switch, write_json
-from astrid.installer.service import LABEL, default_program_root, install_selection, installer_lock_path
+from astrid.installer.service import (
+    LABEL,
+    default_program_root,
+    install_selection,
+    installer_lock_path,
+)
 
 
 def _set_home(tmp_path, monkeypatch):
@@ -130,14 +135,15 @@ def test_doctor_remains_read_only_while_foreground_holds_lock(tmp_path, monkeypa
         platform.unlock_file(held.fileno())
 
 
-def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
+def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recovered_owner(
     tmp_path, monkeypatch, capsys,
 ):
-    """A stopped-step retry must run Runtime's fenced stop before touching support."""
-    from astrid.installer.backend import Backend
+    """A stopped-step recovery restores the old owner without fresh update inputs."""
     from astrid_runtime.bootstrap import BootstrapConfig
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol.store import RealmStore
+
+    from astrid.installer.backend import Backend
 
     home = _set_home(tmp_path, monkeypatch)
     root, data = tmp_path / "program", tmp_path / "workspace"
@@ -176,10 +182,6 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
         "step": "stopped", "data_root": str(data), "old": old.document(),
         "candidate": None, "realm": realm, "backup": None,
     })
-    manifest = tmp_path / "manifest.json"
-    write_json(manifest, {})
-    uv = tmp_path / "uv"
-    uv.write_text("placeholder", encoding="utf-8")
     events = []
     from runtime_protocol import platform
 
@@ -219,6 +221,30 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
             self.stopped = True
             events.append("down")
             return {"status": "stopped"}
+
+    # Reproduce the durable callback-before-signal crash gap. Recovery must
+    # retain C1's exact identity, rather than adopting whichever owner happens
+    # to be published when this new CLI controller starts.
+    from astrid_runtime.bootstrap import installer_stop
+
+    class BeforeSignal(BaseException):
+        pass
+
+    initial_boundary = RecoveryBoundary()
+
+    def die_before_signal(**_kwargs):
+        raise BeforeSignal()
+
+    initial_boundary.stop_owner = die_before_signal
+
+    def retain_authority(authority):
+        transaction = read_json(root / "update-transaction.json")
+        transaction["stop_authority"] = authority
+        write_json(root / "update-transaction.json", transaction)
+
+    with pytest.raises(BeforeSignal):
+        installer_stop(paths, initial_boundary, stop_manager=lambda: pytest.fail("manager before stop"),
+                       record_stop_authority=retain_authority)
 
     monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary", RecoveryBoundary)
     monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
@@ -278,29 +304,30 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
     monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
     assert cli.main([
         "--root", str(root), "--managed-by", "pinokio", "--update",
-        "--manifest", str(manifest), "--uv", str(uv),
+        "--manifest", str(tmp_path / "unavailable-manifest"),
+        "--uv", str(tmp_path / "unavailable-uv"),
     ]) == 0
     capsys.readouterr()
     assert events[0] == "down"
-    assert events.index("down") < events.index("workspace") < events.index("backup")
-    assert events.index("backup") < events.index("stage") < events.index("upgrade") < events.index("sync_skills")
-    assert "sync_skills" in events
+    assert events.count("workspace") == 2
+    assert not any(event in events for event in ("backup", "stage", "upgrade", "sync_skills"))
     assert "start" not in events
     assert "verify" not in events
     assert boundary_calls == ["stop"]
-    assert read_json(root / "update-transaction.json")["step"] == "complete"
-    assert (root / "current").read_text().strip() == "recovered"
+    assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+    assert (root / "current").read_text().strip() == "old"
 
 
 def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     tmp_path, monkeypatch, capsys,
 ):
     """A blocker discovered by Runtime prevents recovery mutations in this caller lane."""
-    from astrid.installer.backend import Backend
     from astrid_runtime.bootstrap import BootstrapConfig
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol import platform
     from runtime_protocol.store import RealmStore
+
+    from astrid.installer.backend import Backend
 
     home = _set_home(tmp_path, monkeypatch)
     root, data = tmp_path / "program", tmp_path / "workspace"

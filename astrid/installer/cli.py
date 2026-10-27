@@ -13,8 +13,8 @@ from .backend import Backend
 from .core import (
     BackupSpaceError,
     Installer,
-    VerificationError,
     RuntimeOperationError,
+    VerificationError,
     absolute,
     current,
     read_json,
@@ -79,7 +79,18 @@ def main(argv: list[str] | None = None) -> int:
             from .app_update import selection, update_app
 
             backend.managed_by = "pinokio"
-            selection(root, backend)  # Validate existing ownership before downloading anything.
+            pending = read_json(root / "update-transaction.json")
+            # Only the shared app transaction may pass this initial ownership
+            # read; update_app will recover it under the app-update lock.
+            selection(root, backend, allow_transaction=(
+                bool(pending) and pending.get("transaction_kind") == "app"))
+            if pending and pending.get("step") not in {"complete", "rolled_back"}:
+                if pending.get("transaction_kind") != "app":
+                    raise ValueError("Finish recovering the interrupted migration update through the regular installer.")
+                from .app_update import recover_app
+
+                recover_app(root, backend)
+                return 0
             if not uv.is_absolute() or not uv.is_file():
                 raise ValueError("Run the install line to provide the pinned user-local uv.")
             manifest_path = args.manifest or root / "install-manifest.json"
@@ -181,6 +192,25 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
+                pending = read_json(root / "update-transaction.json")
+                if (mode in {"install", "update"} and pending
+                        and pending.get("step") not in {"complete", "rolled_back"}):
+                    if pending.get("transaction_kind") == "app":
+                        # Pinokio recovery starts the retained foreground app.
+                        # Drop the broad installer lock first; recover_app
+                        # revalidates immutable selection under its own lock
+                        # and takes the installer lock only for pointer writes.
+                        platform.unlock_file(lock.fileno())
+                        locked = False
+                        from .app_update import recover_app
+
+                        recover_app(root, backend)
+                    else:
+                        from .app_update import locked as app_locked
+
+                        with app_locked(root / ".app-update.lock"):
+                            Installer(root, data, backend, managed_by=managed_by)._recover_update()
+                    return 0
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
                 installed = current(root)

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -242,8 +243,20 @@ def windows_permissions(monkeypatch):
         unlink(path, *args, **kwargs)
         protected.discard(path)
 
+    def private_temporary(directory, prefix):
+        descriptor, name = tempfile.mkstemp(dir=directory, prefix=prefix)
+        protected.add(Path(name))
+        return descriptor, name
+
+    def replace(source, destination):
+        os.replace(source, destination)
+        if Path(source) in protected:
+            protected.discard(Path(source))
+            protected.add(Path(destination))
+
     monkeypatch.setattr(platform, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(platform, "_move_file_write_through", os.replace)
+    monkeypatch.setattr(platform, "_move_file_write_through", replace)
+    monkeypatch.setattr(platform, "private_temporary", private_temporary)
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
     monkeypatch.setattr(windows_security, "restrict", lambda path: protected.add(Path(path)))
     monkeypatch.setattr(windows_security, "read_private", read_private)
@@ -253,7 +266,7 @@ def windows_permissions(monkeypatch):
 
 
 def test_windows_failed_update_restores_private_support_and_can_retry(
-    tmp_path, windows_permissions,
+    tmp_path, windows_permissions, monkeypatch,
 ):
     from astrid_runtime.paths import RuntimePaths
     from runtime_protocol import platform
@@ -283,6 +296,11 @@ def test_windows_failed_update_restores_private_support_and_can_retry(
     windows_permissions.update({tmp_path, *tmp_path.rglob("*")})
     backend.workspace = Mock(return_value=identity)
     backend.stage = Mock(side_effect=[failed, retry])
+    # These candidate interpreters are placeholders. Admission and file-lock
+    # semantics have their own tests; retain real backup/restore and DACL checks.
+    backend.validate_candidate = Mock()
+    monkeypatch.setattr(platform, "lock_file", Mock())
+    monkeypatch.setattr(platform, "unlock_file", Mock())
     backend.register = Mock()
     backend.finish = Mock()
     backend.open = Mock()
@@ -355,3 +373,29 @@ def test_windows_restore_does_not_restrict_retained_unsafe_directory(
         backend.restore(version, data, identity, backup)
 
     assert unsafe not in windows_permissions
+
+
+def test_interrupted_support_file_copy_never_publishes_partial_catalog(tmp_path, monkeypatch):
+    backend, data, realm, version = workspace(tmp_path, "darwin")
+    monkeypatch.setattr("runtime_protocol.fsclone.clone_or_copy_file", shutil.copy2)
+    identity = {"realm_root": str(realm)}
+    backup = backend.backup(version, data, identity)
+    catalog = data / "runtime/catalog.json"
+    snapshot_catalog = Path(backup["root"]) / "support/runtime/catalog.json"
+    expected = snapshot_catalog.read_bytes()
+    copy = shutil.copy2
+
+    def interrupted_copy(source, target, **kwargs):
+        if Path(source) == snapshot_catalog:
+            Path(target).write_bytes(b'{"selected":')
+            raise KeyboardInterrupt("support copy interrupted")
+        return copy(source, target, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", interrupted_copy)
+    with pytest.raises(KeyboardInterrupt, match="support copy interrupted"):
+        backend.restore(version, data, identity, backup)
+
+    assert not catalog.exists()  # Runtime can admit the journal-bound restore gap.
+    monkeypatch.setattr(shutil, "copy2", copy)
+    backend.restore(version, data, identity, backup)
+    assert catalog.read_bytes() == expected

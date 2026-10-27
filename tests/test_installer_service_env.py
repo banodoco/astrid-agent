@@ -2,6 +2,7 @@
 
 import json
 import sys
+import xml.etree.ElementTree as ET
 from types import ModuleType
 from unittest.mock import Mock
 
@@ -9,7 +10,7 @@ import pytest
 
 from astrid.installer.backend import Backend
 from astrid.installer.core import Version, read_json, write_json
-from astrid.installer.service import LABEL, Service, command, default_program_root
+from astrid.installer.service import LABEL, Service, command, default_program_root, render
 
 
 def test_installer_runtime_command_sets_utf8_before_isolation(tmp_path, monkeypatch):
@@ -23,6 +24,210 @@ def test_installer_runtime_command_sets_utf8_before_isolation(tmp_path, monkeypa
     assert run.call_args.args[0][:6] == [
         version.python, "-X", "utf8", "-I", "-m", "astrid_runtime",
     ]
+
+
+def test_transaction_runtime_launch_binds_operation_and_saves_authorized_intent(tmp_path):
+    from astrid.installer import core
+
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    version = Version(tmp_path / "version", tmp_path / "python", tmp_path / "profile", {})
+    operation_id = "a" * 32
+    transaction = {"operation_id": operation_id, "step": "backed_up"}
+    calls = []
+
+    def run(argv, *, extra_env=None, **_kwargs):
+        calls.append((argv, extra_env))
+        return '{"ok":true}'
+
+    backend.run = run
+    with core.transaction_stop_context(
+        backend, transaction,
+        lambda step, **details: transaction.update(step=step, **details),
+    ):
+        backend.runtime(version, tmp_path / "data", "up", profile=True)
+
+    assert calls[0][1]["ASTRID_INSTALLER_OPERATION_ID"] == operation_id
+    assert transaction["launch_intent"] == {
+        "operation_id": operation_id, "purpose": "backup", "version": version.document(),
+    }
+    assert "ASTRID_INSTALLER_OPERATION_ID" not in version.env
+
+
+def test_transaction_binding_is_present_in_rendered_service_and_wrapper(tmp_path, monkeypatch):
+    from astrid.installer.core import write_json
+
+    operation_id = "b" * 32
+    version = Version(tmp_path / "program" / "versions" / "v1", tmp_path / "python", tmp_path / "profile", {})
+    settings = tmp_path / "service-env.json"
+    write_json(settings, {"ASTRID_WARM_IDLE_SECONDS": "17"})
+    rendered = render("linux", version, tmp_path / "data", tmp_path / "log",
+                      env_file=settings, installer_operation_id=operation_id)
+    assert f'Environment="ASTRID_INSTALLER_OPERATION_ID={operation_id}"' in rendered
+    assert "ASTRID_INSTALLER_OPERATION_ID" not in read_json(settings)
+    write_json(tmp_path / "program" / "update-transaction.json", {
+        "step": "switched", "operation_id": operation_id,
+        "old": version.document(), "candidate": version.document(),
+        "launch_intent": {"operation_id": operation_id, "purpose": "service_start",
+                          "version": version.document()},
+    })
+
+    observed = []
+    module = ModuleType("astrid_runtime.cli")
+    def main(argv):
+        import os
+        observed.append((argv, os.environ.get("ASTRID_INSTALLER_OPERATION_ID")))
+        return 0
+    module.main = main
+    monkeypatch.setitem(sys.modules, "astrid_runtime.cli", module)
+    argv = command(version, tmp_path / "data", env_file=settings,
+                   installer_operation_id=operation_id)
+    with pytest.raises(SystemExit) as result:
+        exec(argv[-1], {})
+    assert result.value.code == 0
+    assert observed[0][1] == operation_id
+
+
+def test_ordinary_service_wrapper_clears_inherited_transaction_binding(tmp_path, monkeypatch):
+    version = Version(tmp_path / "version", tmp_path / "python", tmp_path / "profile", {})
+    observed = []
+    module = ModuleType("astrid_runtime.cli")
+    def main(_argv):
+        import os
+        observed.append(os.environ.get("ASTRID_INSTALLER_OPERATION_ID"))
+        return 0
+    module.main = main
+    monkeypatch.setitem(sys.modules, "astrid_runtime.cli", module)
+    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "c" * 32)
+    argv = command(version, tmp_path / "data", env_file=tmp_path / "missing.json")
+    with pytest.raises(SystemExit):
+        exec(argv[-1], {})
+    assert observed == [None]
+
+
+def test_stale_rendered_binding_is_cleared_after_transaction_terminal(tmp_path, monkeypatch):
+    from astrid.installer.core import write_json
+
+    operation_id = "e" * 32
+    version = Version(tmp_path / "program" / "versions" / "v1", tmp_path / "python",
+                      tmp_path / "profile", {})
+    write_json(tmp_path / "program" / "update-transaction.json", {
+        "step": "complete", "operation_id": operation_id,
+        "old": version.document(), "candidate": version.document(),
+        "launch_intent": {"operation_id": operation_id, "purpose": "service_start",
+                          "version": version.document()},
+    })
+    observed = []
+    module = ModuleType("astrid_runtime.cli")
+    def main(_argv):
+        import os
+        observed.append(os.environ.get("ASTRID_INSTALLER_OPERATION_ID"))
+        return 0
+    module.main = main
+    monkeypatch.setitem(sys.modules, "astrid_runtime.cli", module)
+    argv = command(version, tmp_path / "data", installer_operation_id=operation_id)
+    with pytest.raises(SystemExit):
+        exec(argv[-1], {})
+    assert observed == [None]
+
+
+def test_windows_clear_updates_registered_task_action_without_starting_it(tmp_path, monkeypatch):
+    from astrid.installer.core import write_json
+
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
+    version = Version(root / "versions" / "v1", tmp_path / "pythonw.exe", tmp_path / "profile", {})
+    manager.path.parent.mkdir(parents=True, exist_ok=True)
+    operation_id = "9" * 32
+    write_json(manager.env_file, {})
+    manager.path.write_text(render("win32", version, tmp_path / "data", tmp_path / "log",
+                                   installer_operation_id=operation_id), encoding="utf-8")
+    commands = []
+    monkeypatch.setattr(manager, "powershell", lambda script: commands.append(script) or "")
+
+    manager.clear_launch_operation_id(version, tmp_path / "data")
+
+    assert operation_id not in manager.path.read_text(encoding="utf-8")
+    assert any("Register-ScheduledTask" in command for command in commands)
+    assert any(str(manager.path) in command for command in commands)
+
+
+@pytest.mark.parametrize("bound", [True, False], ids=["operation-bound", "binding-cleared"])
+def test_windows_stop_validation_accepts_exact_transaction_launch_actions(tmp_path, monkeypatch, bound):
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
+    version = Version(root / "versions" / "candidate", tmp_path / "python.exe",
+                      tmp_path / "profile.json", {})
+    version.root.mkdir(parents=True)
+    write_json(version.root / "version.json", version.document())
+    operation_id = "f" * 32
+    monkeypatch.setattr(manager, "powershell", lambda _script: "")
+    manager.register(version, tmp_path / "data", installer_operation_id=operation_id,
+                     refresh_only=True)
+    if not bound:
+        manager.clear_launch_operation_id(version, tmp_path / "data")
+    xml_root = ET.fromstring(manager.path.read_text(encoding="utf-8"))
+    namespace = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    actions = [{
+        "Execute": xml_root.findtext(".//task:Actions/task:Exec/task:Command", namespaces=namespace),
+        "Arguments": xml_root.findtext(".//task:Actions/task:Exec/task:Arguments", namespaces=namespace),
+    }]
+    monkeypatch.setattr(manager, "powershell", lambda _script: json.dumps(actions))
+
+    manager.validate_stop_target(
+        version, tmp_path / "data", owner_pid=None,
+        installer_operation_id=operation_id, installer_launch_version=version,
+    )
+
+
+@pytest.mark.parametrize("mutation", ["binding", "version", "path", "argument"])
+def test_windows_stop_validation_rejects_mutated_transaction_launch_action(tmp_path, monkeypatch, mutation):
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="win32")
+    version = Version(root / "versions" / "candidate", tmp_path / "python.exe",
+                      tmp_path / "profile.json", {})
+    version.root.mkdir(parents=True)
+    write_json(version.root / "version.json", version.document())
+    operation_id = "a" * 32
+    monkeypatch.setattr(manager, "powershell", lambda _script: "")
+    manager.register(version, tmp_path / "data", installer_operation_id=operation_id,
+                     refresh_only=True)
+    transaction_path = root / "update-transaction.json"
+    write_json(transaction_path, {
+        "step": "switched", "operation_id": operation_id,
+        "old": version.document(), "candidate": version.document(),
+        "launch_intent": {"operation_id": operation_id, "purpose": "service_start",
+                          "version": version.document()},
+    })
+    xml_root = ET.fromstring(manager.path.read_text(encoding="utf-8"))
+    namespace = {"task": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    action = {
+        "Execute": xml_root.findtext(".//task:Actions/task:Exec/task:Command", namespaces=namespace),
+        "Arguments": xml_root.findtext(".//task:Actions/task:Exec/task:Arguments", namespaces=namespace),
+    }
+    if mutation == "binding":
+        action["Arguments"] = action["Arguments"].replace(operation_id, "b" * 32)
+    elif mutation == "version":
+        action["Execute"] = str(tmp_path / "other-python.exe")
+    elif mutation == "path":
+        action["Arguments"] = action["Arguments"].replace(str(version.profile), str(tmp_path / "other-profile.json"))
+    else:
+        action["Arguments"] += " --unexpected"
+    monkeypatch.setattr(manager, "powershell", lambda _script: json.dumps([action]))
+    before = {
+        "task": manager.path.read_bytes(),
+        "selection": manager.selection.read_bytes(),
+        "journal": transaction_path.read_bytes(),
+    }
+
+    with pytest.raises(ValueError, match="scheduled task does not match"):
+        manager.validate_stop_target(
+            version, tmp_path / "data", owner_pid=None,
+            installer_operation_id=operation_id, installer_launch_version=version,
+        )
+
+    assert manager.path.read_bytes() == before["task"]
+    assert manager.selection.read_bytes() == before["selection"]
+    assert transaction_path.read_bytes() == before["journal"]
 
 
 @pytest.mark.parametrize("release,managed_by", [(0, None), (37, "pinokio")])

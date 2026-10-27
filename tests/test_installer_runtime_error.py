@@ -100,9 +100,9 @@ def test_upgrade_cli_lifecycle_refusal_ends_installer_transaction(tmp_path, monk
     assert str(raised.value) == headline
     assert raised.value.stop_refused
     assert not raised.value.stop_completed
-    assert [call[0] for call in backend.calls] == ['stop', 'backup', 'stage']
+    assert [call[0] for call in backend.calls] == ['stage', 'validate_candidate', 'stop', 'backup']
     assert current(root) == old
-    assert read_json(root / 'update-transaction.json')['step'] == 'staged'
+    assert read_json(root / 'update-transaction.json')['step'] == 'backed_up'
 
 
 def test_upgrade_migration_error_does_not_claim_a_lifecycle_refusal():

@@ -280,6 +280,14 @@ def test_completed_stop_retires_only_matching_foreground_record_before_candidate
 def test_manager_failure_after_owner_removes_advertisements_allows_installer_recovery(tmp_path, monkeypatch):
     from astrid.installer.core import Installer, read_json
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    # C2 admits the isolated candidate before the fenced stop. This test
+    # exercises a later manager failure rather than candidate preparation.
+    monkeypatch.setattr(backend, 'stage', lambda *_args: old)
+    monkeypatch.setattr(backend, 'validate_candidate', lambda *_args: None)
+    # The busy-fence fixture has only interruption tables. Schema admission is
+    # covered with canonical realms in the cross-controller recovery tests.
+    monkeypatch.setattr('runtime_protocol.upgrade.inspect_canonical_schema',
+                        lambda *_args, **_kwargs: {'realm_id': 'selected'})
     publish(paths, realm)
     boundary = Boundary(paths, calls)
 

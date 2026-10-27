@@ -22,8 +22,8 @@ from runtime_protocol.door import DEFAULT_DOOR_PORT
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from .core import (
     BackupSpaceError,
-    VerificationError,
     RuntimeOperationError,
+    VerificationError,
     Version,
     absolute,
     current,
@@ -31,6 +31,7 @@ from .core import (
     linked,
     new_version_id,
     read_json,
+    transaction_launch_version,
     write_json,
 )
 from .launcher import install_shim, owned_shim, remove_shim
@@ -113,7 +114,7 @@ class Backend:
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
-            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH"}
+            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH", "ASTRID_INSTALLER_OPERATION_ID"}
                and not (clean_bun_env and (k.startswith("BUN_") or k == "NODE_OPTIONS"))}
         env.update({"PYTHONIOENCODING": "utf-8"})
         env.update(extra_env or {})
@@ -161,13 +162,32 @@ class Backend:
             return "timed out"
         return str(exc)
 
+    def transaction_operation_id(self, *, required: bool = False) -> str | None:
+        context = getattr(self, "_transaction_stop_context", None)
+        value = context[0].get("operation_id") if context is not None else None
+        if value is not None and (not isinstance(value, str)
+                                  or not re.fullmatch(r"[0-9a-f]{32}", value)):
+            raise ValueError("The installer transaction operation id is invalid.")
+        if required and value is None:
+            raise ValueError("A transaction operation id is required before starting Runtime.")
+        return value
+
     def runtime(self, version: Version | None, data: Path, *args, profile=False, timeout=1800) -> dict:
         python = version.python if version else Path(sys.executable)
         argv = [python, "-X", "utf8", "-I", "-m", "astrid_runtime", *args, "--data-root", str(data), "--json"]
         if profile and version:
             argv += ["--source-manifest", str(version.profile)]
+        launch_env = dict(version.env) if version else {}
+        launch_env.pop("ASTRID_INSTALLER_OPERATION_ID", None)
+        transaction_context = getattr(self, "_transaction_stop_context", None)
+        if transaction_context is not None and args and args[0] in {"up", "upgrade"}:
+            operation_id = self.transaction_operation_id(required=True)
+            launch_env["ASTRID_INSTALLER_OPERATION_ID"] = operation_id
+            intent = getattr(self, "_transaction_launch_intent", None)
+            if intent is not None:
+                intent("backup" if args[0] == "up" else "migration", version=version)
         try:
-            output = self.run(argv, extra_env=version.env if version else None, timeout=timeout)
+            output = self.run(argv, extra_env=launch_env or None, timeout=timeout)
         except subprocess.CalledProcessError as exc:
             # Runtime deliberately returns nonzero for a structured refusal.
             # Retain that result instead of losing it in subprocess's summary.
@@ -440,8 +460,11 @@ class Backend:
     def preflight_stop(self, data: Path) -> None:
         """Read-only early refusal, before installer claims or preparations."""
         try:
-            from astrid_runtime.bootstrap import (_invalidate_stale_stop_receipt,
-                                                  _stop_receipt_validation, preflight_stop)
+            from astrid_runtime.bootstrap import (
+                _invalidate_stale_stop_receipt,
+                _stop_receipt_validation,
+                preflight_stop,
+            )
             from astrid_runtime.paths import RuntimePaths
 
             boundary = getattr(self, "_stop_boundary", None)
@@ -462,10 +485,14 @@ class Backend:
         birth/custody-checked owner stop. It must never invoke another down.
         """
         try:
-            from astrid_runtime.bootstrap import (BootstrapConfig, _read_catalog,
-                                                  _read_support_json, installer_stop,
-                                                  _invalidate_stale_stop_receipt,
-                                                  _stop_receipt_validation)
+            from astrid_runtime.bootstrap import (
+                BootstrapConfig,
+                _invalidate_stale_stop_receipt,
+                _read_catalog,
+                _read_support_json,
+                _stop_receipt_validation,
+                installer_stop,
+            )
             from astrid_runtime.paths import RuntimePaths
             from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
             from runtime_protocol import process_control
@@ -494,13 +521,41 @@ class Backend:
                 if boundary is None:
                     boundary = self._stop_boundary = LocalRuntimeBoundary()
                 discovery = _read_support_json(paths.discovery_path) or {}
+                transaction_context = getattr(self, "_transaction_stop_context", None)
+                stop_options = {}
+                recovery_authority = None
+                recovering = False
+                recovery_launch = None
+                if transaction_context is not None:
+                    transaction, record_authority, recovering = transaction_context
+                    stop_options["record_stop_authority"] = record_authority
+                    restoring = recovering and transaction.get("step") == "recovering"
+                    if recovering:
+                        recovery_authority = transaction.get("stop_authority")
+                        recovery_launch = transaction_launch_version(transaction)
+                        stop_options.update(
+                            recovery_owner=recovery_authority,
+                            recovery_realm=transaction["realm"],
+                            recovery_operation_id=transaction.get("operation_id"),
+                            allow_restore_in_progress=restoring,
+                        )
+                        if recovery_launch is not None:
+                            stop_options["recovery_launch_identity"] = {
+                                "release": recovery_launch.release,
+                                "managed_by": recovery_launch.managed_by,
+                            }
                 if self.managed_by != "pinokio":
                     # This observation can refuse an unrelated manager, but never
                     # authorizes stopping Runtime without its final owner fence.
-                    self.preflight_stop(data)
-                    self.service.validate_stop_target(
-                        version, data, owner_pid=int(discovery["pid"]) if discovery.get("pid") else None,
-                    )
+                    if not recovering:
+                        self.preflight_stop(data)
+                    stop_target_options = {
+                        "owner_pid": int(discovery["pid"]) if discovery.get("pid") else None,
+                    }
+                    if recovering and recovery_launch is not None:
+                        stop_target_options["installer_operation_id"] = transaction["operation_id"]
+                        stop_target_options["installer_launch_version"] = recovery_launch
+                    self.service.validate_stop_target(version, data, **stop_target_options)
                 if discovery.get("pid"):
                     catalog = _read_catalog(paths)
                     realm_id = str(catalog.get("selected_realm_id") or "")
@@ -529,7 +584,7 @@ class Backend:
                     stop_manager()
 
             installer_stop(paths, boundary, stop_manager=stop_selected_manager,
-                           recorded_foreground=foreground)
+                           recorded_foreground=foreground, **stop_options)
             try:
                 # Runtime has completed its validated stop. Retire only the
                 # exact foreground record supplied to that handoff, preserving
@@ -648,12 +703,12 @@ class Backend:
         # renames. In that state the original is already absent and restoring
         # the retained backup is the required idempotent continuation.
         if realm_root.exists():
-            os.replace(realm_root, failed)
+            platform.replace_path(realm_root, failed)
         try:
-            os.replace(restored, realm_root)
+            platform.replace_path(restored, realm_root)
         except BaseException:
             if failed.exists() and not realm_root.exists():
-                os.replace(failed, realm_root)
+                platform.replace_path(failed, realm_root)
             raise
         for failed_copy in sorted(path for path in realm_root.parent.glob(realm_root.name + ".failed-*")
                                   if path.is_dir() and not path.is_symlink()):
@@ -667,9 +722,21 @@ class Backend:
                     copy_support(entry, target / entry.name)
                 shutil.copystat(source, target)
             else:
-                shutil.copy2(source, target)
-                if platform.sys.platform == "win32":
-                    platform.owner_only(target)
+                # A killed support restore must leave each file absent or
+                # complete. A truncated catalog would block Runtime admission
+                # before the retained realm could be restored on the next run.
+                descriptor, temporary_name = platform.private_temporary(target.parent, ".restore-")
+                os.close(descriptor)
+                temporary = Path(temporary_name)
+                try:
+                    shutil.copy2(source, temporary)
+                    if platform.sys.platform == "win32":
+                        platform.owner_only(temporary)
+                    with temporary.open("rb") as stream:
+                        os.fsync(stream.fileno())
+                    platform.durable_replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
 
         snapshot = destination / "support"
         for item in snapshot.iterdir():
@@ -747,6 +814,63 @@ class Backend:
         write_json(folder / "manifest.json", manifest)
         return version
 
+    def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
+        """Admit the staged package against the live workspace without changing it."""
+        from .core import inspect_schema
+
+        folder = absolute(version.root)
+        if folder.parent != absolute(self.root / "versions"):
+            raise ValueError("The candidate is outside the managed versions directory.")
+        # Venv interpreters may themselves be links on POSIX; their directory
+        # and the source manifest must remain inside the candidate.
+        if (not absolute(version.python.parent).is_relative_to(folder)
+                or not version.python.is_file()
+                or not absolute(version.profile).is_relative_to(folder)
+                or not version.profile.is_file()):
+            raise ValueError("The staged candidate is incomplete or outside its version directory.")
+        profile = read_json(version.profile)
+        for key in ("runtime_checkout", "source_checkout", "runtime_environment", "service_declaration"):
+            if not profile.get(key) or not absolute(profile[key]).is_relative_to(folder):
+                raise ValueError("The staged source profile is incomplete or outside its version directory.")
+        # Admission must use the same Runtime owners that will load this profile
+        # during upgrade and startup. Path containment alone admits syntactically
+        # invalid profiles and service declarations, allowing the old owner to be
+        # stopped before those errors are discovered.
+        required_directories = ("runtime_checkout", "source_checkout", "runtime_environment")
+        for key in required_directories:
+            if not absolute(profile[key]).is_dir():
+                raise ValueError(f"The staged source profile {key} is missing or is not a directory.")
+        declaration = absolute(profile["service_declaration"])
+        if not declaration.is_file():
+            raise ValueError("The staged service declaration is missing or is not a file.")
+        validate_script = "\n".join((
+            "import sys",
+            "from pathlib import Path",
+            "from astrid_runtime.bootstrap import SourceProfile, _validate_source_profile",
+            "from astrid_runtime.runtime_boundary import LocalRuntimeBoundary",
+            "from runtime_protocol.services import load_service_configuration",
+            "profile = SourceProfile.load(Path(sys.argv[1]), expected_profile='astrid')",
+            "_validate_source_profile(profile, expected_profile='astrid')",
+            "LocalRuntimeBoundary._validate_source(profile)",
+            "services = load_service_configuration(profile.service_declaration, "
+            "python=sys.executable, source_checkout=profile.source_checkout)",
+            "if services is None or not any(item.name == 'pack-host' for item in services.services):",
+            "    raise ValueError('Service declaration must include pack-host')",
+        ))
+        try:
+            self.run([version.python, "-X", "utf8", "-I", "-c", validate_script,
+                      str(version.profile)], extra_env=version.env, timeout=120)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            raise ValueError(f"The candidate Runtime rejected its source profile or services: {exc}") from exc
+        selected = self.workspace(version, data)
+        if (selected["realm_id"] != realm["realm_id"]
+                or absolute(selected["realm_root"]) != absolute(realm["realm_root"])):
+            raise ValueError("The selected workspace changed while preparing the update.")
+        # Use the candidate's installed Runtime to classify the exact schema
+        # read-only. Supported older layouts are allowed here: migration runs
+        # only after the journal and the lifecycle fence.
+        inspect_schema(self, version, realm, require_current=False)
+
     def create(self, version: Version, data: Path) -> dict:
         realm_id = str(uuid.uuid4())
         return self.runtime(version, data, "workspace", "create", "--realm-root",
@@ -806,7 +930,17 @@ class Backend:
                 "data_root": str(data), "managed_by": "pinokio",
             })
         else:
-            self.service.register(version, data)
+            operation_context = getattr(self, "_transaction_stop_context", None)
+            operation_id = self.transaction_operation_id(required=True) if operation_context is not None else None
+            intent = getattr(self, "_transaction_launch_intent", None)
+            if operation_id is not None:
+                if intent is not None:
+                    intent("service_start", version=version)
+            if operation_id is None:
+                self.service.register(version, data)
+            else:
+                self.service.register(version, data,
+                                      installer_operation_id=operation_id)
         realm = self.workspace(version, data)
         record = self.service.recorded()
         settings = {"ASTRID_ACP_CWD": str(chat_cwd), **chat_options} if chat_cwd else {}
@@ -829,8 +963,19 @@ class Backend:
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
             raise RuntimeError("Start Astrid in Pinokio.")
+        operation_context = getattr(self, "_transaction_stop_context", None)
+        operation_id = self.transaction_operation_id(required=True) if operation_context is not None else None
+        if operation_id is not None:
+            intent = getattr(self, "_transaction_launch_intent", None)
+            if intent is not None:
+                intent("service_start", version=version)
         if not self.service.start():
-            self.service.start_foreground(version, data)
+            if operation_id is None:
+                self.service.start_foreground(version, data)
+            else:
+                self.service.start_foreground(
+                    version, data, installer_operation_id=operation_id,
+                )
 
     def restart_required(self) -> bool:
         return self.service.restart_required()
@@ -863,6 +1008,12 @@ class Backend:
                         or (status.get("discovery") or {}).get("runtime_instance_id") != discovery.get("runtime_instance_id")
                         or status.get("support", {}).get("pid_alive") is not True):
                     raise ValueError("The browser door belongs to a different Runtime or workspace.")
+                operation_id = self.transaction_operation_id()
+                if operation_id is not None:
+                    owner_lock = read_json(data / "runtime" / "instance.lock")
+                    if (discovery.get("installer_operation_id") != operation_id
+                            or owner_lock.get("installer_operation_id") != operation_id):
+                        raise ValueError("The Runtime owner did not publish the pending installer operation binding.")
                 identity_ok = True
                 break
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -884,6 +1035,8 @@ class Backend:
         ready_file = data / "runtime" / "generic-host.ready.json"
         state, pack_host, failed = _classify_services(services, ready_file)
         if state == "ready":
+            if operation_id is not None and self.managed_by != "pinokio":
+                self.service.clear_launch_operation_id(version, data)
             return
 
         def service_failure(*, crashed: bool) -> VerificationError:
