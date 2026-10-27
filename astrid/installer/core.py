@@ -378,6 +378,17 @@ class Installer:
     def _save_update(self, transaction: dict, step: str, **details) -> None:
         transaction.update(step=step, **details)
         write_json(absolute(self.root / "update-transaction.json"), transaction)
+        binding = transaction.get("update_job")
+        if step == "staged" and isinstance(binding, dict):
+            marker_path = absolute(self.root / "install.json")
+            marker = read_json(marker_path)
+            job = marker.get("update_job")
+            if (not isinstance(job, dict) or job.get("operation_id") != binding.get("operation_id")
+                    or job.get("state") != "active"):
+                raise ValueError("The accepted update job no longer matches the C2 transaction.")
+            job["transaction_id"] = transaction["operation_id"]
+            marker["update_job"] = job
+            write_json(marker_path, marker)
 
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
@@ -428,6 +439,9 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            update_job_operation_id = getattr(self.backend, "_update_job_operation_id", None)
+            if update_job_operation_id:
+                transaction["update_job"] = {"operation_id": update_job_operation_id}
             if transaction_context is not None:
                 # Adapter-owned recovery context lives in the shared journal,
                 # and is durable before any owner stop or checkout movement.
