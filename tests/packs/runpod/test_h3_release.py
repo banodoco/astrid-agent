@@ -254,8 +254,6 @@ def test_rest_payload_cpu_gpu_and_strict_get(monkeypatch):
 
     def response(request):
         calls.append(request)
-        if request.url.host == "api.runpod.io":
-            return httpx.Response(200, json={"data": {"podFindAndDeployOnDemand": {"id": "pod"}}})
         if request.method == "POST":
             return httpx.Response(201, json={"id": "pod"})
         if request.url.path.endswith("missing"):
@@ -280,7 +278,7 @@ def test_rest_payload_cpu_gpu_and_strict_get(monkeypatch):
         assert gpu["allowedCudaVersions"] == ["13.0"]
         provider.min_cuda_version = "13.0"
         provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
-        minimum = json.loads(calls[-1].content)["variables"]["input"]
+        minimum = json.loads(calls[-1].content)
         assert minimum["minCudaVersion"] == "13.0"
         assert "allowedCudaVersions" not in minimum
         assert gpu["computeType"] == "GPU"
