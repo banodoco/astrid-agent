@@ -140,7 +140,8 @@ def _canonical_identity(discovery: dict, instance_id: str) -> dict:
         raise ValueError("The Runtime startup identity is unavailable.")
     from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
     health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
-    return Backend._validated_startup_identity(health, instance_id)
+    from astrid_runtime.identity import validate_live_owner_identity
+    return validate_live_owner_identity(health, instance_id=instance_id)
 
 
 def parser() -> argparse.ArgumentParser:
