@@ -343,6 +343,81 @@ class HealthEvidence:
 
 
 @dataclass(frozen=True)
+class EndpointAuth:
+    kind: Literal["none", "bearer-file"]
+    token: SecretRef | None
+
+
+@dataclass(frozen=True)
+class LifecycleOwner:
+    kind: Literal["attached", "astrid-local", "astrid-runpod"]
+    owner_id: str
+    handle_path: str | None
+    job_id: str | None
+    pod_id: str | None
+    release_on_finish: bool
+
+
+@dataclass(frozen=True)
+class LocalAttestation:
+    kind: Literal["local-engine.v1"]
+    install_receipt_path: str
+    install_receipt_sha256: Digest
+    health: HealthEvidence
+    object_info_sha256: Digest
+
+
+@dataclass(frozen=True)
+class RunPodAttestation:
+    kind: Literal["runpod-engine.v1"]
+    provider_account_ref: str
+    pod_id: str
+    claim_handle_path: str
+    claim_handle_sha256: Digest
+    install_receipt_path: str
+    install_receipt_sha256: Digest
+    health: HealthEvidence
+    object_info_sha256: Digest
+
+
+EndpointState: TypeAlias = Literal["planned", "acquiring", "starting", "ready", "failed",
+                                  "stopping", "releasing", "released", "cleanup_pending"]
+
+
+@dataclass(frozen=True)
+class EngineEndpoint:
+    schema: Literal["astrid.engine-endpoint.v1"]
+    endpoint_id: str
+    engine: EngineId
+    platform: PlatformKey
+    placement: Placement
+    url: str
+    auth: EndpointAuth
+    state: EndpointState
+    health: HealthEvidence | None
+    lifecycle_owner: LifecycleOwner
+    attestation: LocalAttestation | RunPodAttestation | None
+
+
+@dataclass(frozen=True)
+class EndpointOptions:
+    platform: PlatformKey
+    root: TargetPath
+    handle_path: str | None
+    attach: bool = False
+    release_on_finish: bool = True
+
+
+@dataclass(frozen=True)
+class EndpointProfileEvidence:
+    schema: Literal["astrid.runpod.endpoint-evidence.v1"]
+    engine: EngineId
+    platform: PlatformKey
+    claim_operation_id: str
+    claim_attestation: RunPodAttestation
+
+
+@dataclass(frozen=True)
 class InstallReceipt:
     schema: Literal["astrid.engine-install.v1"]
     receipt_id: str
