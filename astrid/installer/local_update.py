@@ -29,7 +29,7 @@ from .core import (
     switch,
     update_required,
 )
-from .service import LABEL, bootstrap_root
+from .service import LABEL, bootstrap_root, installer_lock_path
 from .tools import validate_manifest
 
 _HOOKS = {
@@ -50,7 +50,7 @@ class HookClient:
         self.next_id = 1
 
     def call(self, name: str, version: Version | None, realm: dict,
-             *, operation_id: str | None = None, rollback: bool | None = None) -> None:
+             *, rollback: bool | None = None) -> None:
         if name not in _HOOKS:
             raise ValueError("Unsupported local-update hook.")
         request_id = self.next_id
@@ -60,8 +60,6 @@ class HookClient:
             "version": version.document() if version is not None else None,
             "realm": realm,
         }
-        if operation_id is not None:
-            request["operationId"] = operation_id
         if rollback is not None:
             request["rollback"] = rollback
         self.stdout.write(json.dumps(request, separators=(",", ":")) + "\n")
@@ -361,11 +359,7 @@ def _activate_backend(backend: Backend, version: Version, data: Path, realm: dic
                       hooks: HookClient, expected_manifest: dict | None = None) -> None:
     _at_step("register-runtime", backend.register, version, data)
     if backend.managed_by == "pinokio":
-        operation_id = _at_step("pinokio-start", backend.transaction_operation_id, required=True)
-        intent = getattr(backend, "_transaction_launch_intent", None)
-        if intent is not None:
-            intent("pinokio_start", version=version)
-        hooks.call("pinokio-start", version, realm, operation_id=operation_id)
+        hooks.call("pinokio-start", version, realm)
         _at_step("verify-backend", backend.verify, version, data, realm["realm_id"], hosted=False)
     else:
         _at_step("start-runtime", backend.start, version, data)
@@ -379,8 +373,6 @@ def _publish_selection(backend: Backend, operation) -> None:
     if backend.managed_by != "pinokio":
         return operation()
     from .app_update import locked
-    from .service import installer_lock_path
-
     lock = installer_lock_path(backend.service.home, backend.service.system)
     with locked(lock, timeout=10):
         return operation()
@@ -515,8 +507,6 @@ def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=prin
                 "recover-journal", "Use the owning installer to recover the interrupted update first.")
     backend = _backend(root)
     from .app_update import locked
-    from .service import installer_lock_path
-
     # Match existing C2 serialization. Installer-managed updates hold the
     # same per-user lock for the full operation; a Pinokio session already
     # owns it and takes it narrowly around pointer publication.

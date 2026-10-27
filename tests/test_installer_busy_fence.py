@@ -1,4 +1,4 @@
-"""The installer delegates stop authority to Runtime before touching a manager."""
+"""The installer uses Runtime's C1 fence before touching a manager."""
 from __future__ import annotations
 
 import importlib
@@ -50,6 +50,7 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
     oldroot.mkdir(parents=True)
     profile = oldroot / 'profile.json'
     write_json(profile, {'profile': 'astrid', 'runtime_checkout': str(tmp_path), 'source_checkout': str(tmp_path)})
+    write_json(paths.source_profiles_dir / 'astrid.json', json.loads(profile.read_text(encoding='utf-8')))
     old = Version(oldroot, Path(sys.executable), profile, {})
     write_json(oldroot / 'version.json', old.document())
     switch(root, old)
@@ -60,6 +61,7 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
     calls = []
     for name in ('disable', 'stop', 'stop_foreground', 'unregister'):
         monkeypatch.setattr(value.service, name, lambda n=name: calls.append(n))
+    monkeypatch.setattr(value.service, 'publish_launch_admission', lambda *_args: None)
     monkeypatch.setattr(value.service, 'login_service_exists', lambda: True)
     monkeypatch.setattr(value.service, 'validate_stop_target', lambda *_args, **_kwargs: None)
     for name in ('register', 'start', 'restore', 'remove', 'backup', 'stage', 'upgrade', 'finish', 'open'):
@@ -81,7 +83,7 @@ def snapshot(paths):
 @pytest.mark.parametrize('blocker', ['running', 'cancel', 'attempt', 'claimed', 'stale', 'reservation'])
 def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkeypatch, system, operation, blocker):
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, system=system, blocker=blocker)
-    watched = [*data.rglob('*'), backend.root / 'current', backend.root / 'install.json', backend.root / 'run',
+    watched = [*data.rglob('*'), backend.root / 'current', backend.root / 'install.json',
                backend.service.selection, backend.service.path]
     before = snapshot(watched)
     before_names = sorted(str(p) for p in data.rglob('*'))
@@ -104,9 +106,13 @@ def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkey
             mode = 'install' if operation == 'repair' else 'uninstall' if operation in ('uninstall', 'delete-data') else 'update'
             installer.run(mode, {}, delete_data=operation == 'delete-data')
     assert raised.value.stop_refused is True
+    assert raised.value.details is not None, (str(raised.value), repr(raised.value.__cause__))
     assert raised.value.details['task_count'] == 1
     assert str(raised.value).splitlines()[0] == 'Astrid is busy (1 tasks running). Try again when they finish.'
     assert raised.value.details['blockers'][0]['task_id'] == 'task-1'
+    # The transaction may publish the shared launcher before C1 admission;
+    # selected version, install identity, service definition, and workspace
+    # stay unchanged on a busy refusal.
     assert snapshot(watched) == before
     assert sorted(str(p) for p in data.rglob('*')) == before_names
     assert calls == []
@@ -318,9 +324,30 @@ def test_replacement_before_manager_loses_stop_authority(tmp_path, monkeypatch):
         backend.stop(old, data)
     assert raised.value.stop_refused
     assert not raised.value.stop_completed
-    assert raised.value.details == {'stop_authority_lost': True}
     assert calls == ['prepare', 'runtime-stop']
     assert json.loads(paths.discovery_path.read_text())['runtime_instance_id'] == 'replacement'
+
+
+def test_fresh_backend_no_publication_runs_c1_before_manager_callback(tmp_path, monkeypatch):
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    boundary = Boundary(paths, calls)
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+
+    # A newly constructed controller has no process-local stop receipt or
+    # knowledge of a prior owner. C1 still fences the selected readable realm.
+    fresh = Backend(backend.root, backend.log, backend.uv)
+    fresh.service.selection = backend.service.selection
+    fresh.service.system = 'linux'
+    fresh.service.disable = lambda: calls.append('disable')
+    fresh.service.stop = lambda: calls.append('stop')
+    fresh.service.login_service_exists = lambda: True
+    fresh.service.validate_stop_target = lambda *_args, **_kwargs: None
+    fresh.stop(old, data)
+
+    assert calls == ['disable', 'stop']
+    assert 'runtime-stop' not in calls
+    assert not paths.discovery_path.exists()
+    assert not paths.instance_lock_path.exists()
 
 
 @pytest.mark.parametrize('key,value', [('owner','other'), ('program_root','/elsewhere'), ('data_root','/elsewhere')])
@@ -333,16 +360,3 @@ def test_service_record_must_belong_to_selected_install(tmp_path, monkeypatch, k
         backend.stop(old, data)
     assert calls == []
     assert paths.discovery_path.exists()
-
-
-def test_same_backend_keeps_runtime_stop_evidence_for_teardown_retry(tmp_path, monkeypatch):
-    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
-    publish(paths, realm)
-    boundary = Boundary(paths, calls)
-    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
-    backend.stop(old, data)
-    assert not paths.discovery_path.exists()
-    boundary.process_birth_identity = lambda _pid: None
-    backend.stop(old, data)
-    assert calls.count('runtime-stop') == 1
-    assert calls == ['prepare', 'runtime-stop', 'disable', 'stop', 'disable', 'stop']

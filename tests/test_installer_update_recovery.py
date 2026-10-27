@@ -10,11 +10,14 @@ import hashlib
 import os
 import re
 import signal
+import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import time
 import uuid
+import venv
 from pathlib import Path
 
 import pytest
@@ -136,9 +139,9 @@ class _Backend(Backend):
         return {"realm_id": realm["realm_id"], "realm_root": realm["data_root"]}
 
     def stop(self, _version, data):
-        context = getattr(self, "_transaction_stop_context", None)
+        context = getattr(self, "_update_transaction", None)
         if (getattr(self, "real_c1_recovery", False) and context is not None
-                and context[0].get("step") == "recovering"):
+                and context[1] is True and context[0].get("step") == "recovering"):
             # Retries take the production Backend.stop -> Runtime C1 path. The
             # initial crash setup below still uses this fixture's deterministic
             # service boundary.
@@ -208,19 +211,19 @@ class _Backend(Backend):
     def start(self, _version, _data):
         _event(self.base, "start")
         if getattr(self, "real_runtime_proof", False) and _version.root.name == "old":
-            context = getattr(self, "_transaction_stop_context", None)
-            self._transaction_stop_context = None
+            context = getattr(self, "_update_transaction", None)
+            self._update_transaction = None
             try:
                 return Backend.start(self, _version, _data)
             finally:
-                self._transaction_stop_context = context
+                self._update_transaction = context
         if _version.root.name.startswith("new-"):
             _kill("start-return", self.kill_at)
 
     def verify(self, _version, data, realm_id, **_kwargs):
         if getattr(self, "real_runtime_proof", False) and _version.root.name == "old":
-            context = getattr(self, "_transaction_stop_context", None)
-            self._transaction_stop_context = None
+            context = getattr(self, "_update_transaction", None)
+            self._update_transaction = None
             try:
                 deadline = time.monotonic() + 10
                 status = {}
@@ -240,10 +243,14 @@ class _Backend(Backend):
                 else:
                     raise AssertionError(f"Old Runtime did not verify as healthy: {status}")
             finally:
+                active_exception = sys.exc_info()[0]
                 try:
                     Backend.stop(self, _version, data)
+                except Exception:
+                    if active_exception is None:
+                        raise
                 finally:
-                    self._transaction_stop_context = context
+                    self._update_transaction = context
         realm = self.workspace(_version, data)
         assert realm["realm_id"] == realm_id == "realm-1"
         assert inspect_canonical_schema(realm["realm_root"])["realm_id"] == realm_id
@@ -478,12 +485,46 @@ def test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real
     root, data = tmp_path / "program", tmp_path / "data"
     backend = _Backend(tmp_path, None)
     old = current(root)
+    # This integration case launches the retained old service through its real
+    # isolated command. Give the synthetic version a private environment with
+    # the checked out Agent package installed, as a prepared release would have.
+    environment = old.root / "test-venv"
+    venv.EnvBuilder(system_site_packages=True, with_pip=False).create(environment)
+    site_packages = environment / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "astrid", site_packages / "astrid")
+    (site_packages / "pyproject.toml").write_bytes(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes())
+    host_site_packages = Path(sys.prefix) / "lib" / \
+        f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    (site_packages / "prepared-agent-environment.pth").write_text(
+        str(host_site_packages) + "\n", encoding="utf-8")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        door_port = listener.getsockname()[1]
+    old = Version(old.root, environment / "bin" / "python", old.profile,
+                  {**old.env, "ASTRID_RUNTIME_DOOR_PORT": str(door_port)},
+                  old.release, old.managed_by)
+    write_json(old.root / "version.json", old.document())
+    switch(root, old)
     import astrid_runtime
     checkout = str(Path(astrid_runtime.__file__).resolve().parents[1])
     write_json(old.profile, SourceProfile(profile="astrid", runtime_checkout=checkout,
                                          source_checkout=checkout).as_dict())
     (root / "legacy-runtime-proof").touch()
     candidate = _version(root, "candidate", release=18)
+    candidate_environment = candidate.root / "test-venv"
+    venv.EnvBuilder(system_site_packages=True, with_pip=False).create(candidate_environment)
+    candidate_site_packages = candidate_environment / "lib" / \
+        f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "astrid",
+                    candidate_site_packages / "astrid")
+    (candidate_site_packages / "pyproject.toml").write_bytes(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes())
+    (candidate_site_packages / "prepared-agent-environment.pth").write_text(
+        str(host_site_packages) + "\n", encoding="utf-8")
+    candidate = Version(candidate.root, candidate_environment / "bin" / "python",
+                        candidate.profile, candidate.env, candidate.release, candidate.managed_by)
+    write_json(candidate.root / "version.json", candidate.document())
     paths = RuntimePaths.current(data_root=data)
     realm = paths.realms_dir / "realm-1"
 
@@ -871,7 +912,12 @@ def _installer(base, kill_at, mode):
         if result:
             raise RuntimeError(f"public installer Update exited with status {result}")
     else:
-        Installer(root, data, backend, say=print).run(mode, {})
+        transaction = read_json(root / "update-transaction.json")
+        old_identity = transaction.get("old", {}).get("identity") if isinstance(transaction, dict) else None
+        old_release = old_identity.get("release") if isinstance(old_identity, dict) else None
+        manifest = ({"release": old_release if isinstance(old_release, int) else current(root).release}
+                    if mode == "install" else {})
+        Installer(root, data, backend, say=print).run(mode, manifest)
 
 
 if __name__ == "__main__":

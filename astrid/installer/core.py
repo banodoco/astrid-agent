@@ -223,49 +223,14 @@ def switch(root: Path, version: Version) -> None:
 
 
 @contextmanager
-def transaction_stop_context(backend, transaction: dict, save, *, recovering: bool = False):
-    """Keep Runtime's stop handoff in the existing transaction journal.
-
-    Runtime supplies and revalidates the authority; the installer only retains
-    it with the same durable writer as the rest of the transaction.
-    """
-    previous = getattr(backend, "_transaction_stop_context", None)
-    previous_intent = getattr(backend, "_transaction_launch_intent", None)
-
-    def record(authority: dict) -> None:
-        save(transaction["step"], stop_authority=authority)
-
-    def launch_intent(purpose: str, version: Version | None = None) -> None:
-        save(transaction["step"], launch_intent={
-            "operation_id": transaction["operation_id"], "purpose": purpose,
-            "version": version.document() if version is not None else None,
-        })
-
-    backend._transaction_stop_context = (transaction, record, recovering)
-    backend._transaction_launch_intent = launch_intent
+def update_context(backend, transaction: dict, *, recovering: bool = False):
+    """Expose the existing transaction solely for restore selection validation."""
+    previous = getattr(backend, "_update_transaction", None)
+    backend._update_transaction = (transaction, recovering)
     try:
         yield
     finally:
-        backend._transaction_stop_context = previous
-        backend._transaction_launch_intent = previous_intent
-
-
-def transaction_launch_version(transaction: dict) -> Version | None:
-    """Return only launch context durably authorized by this transaction."""
-    intent = transaction.get("launch_intent")
-    if (not isinstance(intent, dict)
-            or intent.get("operation_id") != transaction.get("operation_id")
-            or intent.get("purpose") not in {"backup", "migration", "service_start", "pinokio_start"}
-            or not isinstance(intent.get("version"), dict)):
-        return None
-    authorized = [Version.load(transaction["old"])]
-    if transaction.get("candidate"):
-        authorized.append(Version.load(transaction["candidate"]))
-    try:
-        intended = Version.load(intent["version"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return intended if any(intended.document() == value.document() for value in authorized) else None
+        backend._update_transaction = previous
 
 
 def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
@@ -277,13 +242,10 @@ def rollback_transaction(root: Path, data: Path, backend, transaction: dict, *,
     realm = transaction["realm"]
     backup = transaction.get("backup")
     kind = transaction.get("transaction_kind", "migration")
-    with transaction_stop_context(backend, transaction, save, recovering=True):
+    with update_context(backend, transaction, recovering=True):
         # Before migration the old version owns manager cleanup. A later
         # migration can run the candidate before publishing its pointer.
-        intended_launch = transaction_launch_version(transaction)
-        if intended_launch is not None:
-            stop_version = intended_launch
-        elif kind == "app" or transaction.get("step") in {"recovering", "rollback_selected"}:
+        if kind == "app" or transaction.get("step") in {"recovering", "rollback_selected"}:
             stop_version = current(root) or old
         elif transaction.get("step") in {"stopping", "stopped"}:
             stop_version = old
@@ -319,8 +281,6 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         raise ValueError("The interrupted update identity does not match this installation.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
-    if transaction.get("launch_intent") is not None and transaction_launch_version(transaction) is None:
-        raise ValueError("The interrupted update launch intent is not authorized by its journal.")
     if save is None:
         installer = Installer(root, data, backend)
 
@@ -347,6 +307,10 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         retained = absolute(backup["root"])
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
+    install_launcher(root)
+    publish = getattr(backend, "publish_launch_admission", None)
+    if publish is not None:
+        publish(current(root) or Version.load(transaction["old"]), data)
     say("Recovering the interrupted Astrid update.")
     rollback_transaction(
         root, data, backend, transaction, stop=stop, switch_old=switch_old,
@@ -367,6 +331,15 @@ class Installer:
             self.backend.verify(version, self.data, realm_id)
         elif self.backend.workspace(version, self.data)["realm_id"] != realm_id:
             raise VerificationError("The installed workspace identity changed.")
+
+    def _publish_stop_admission(self, version: Version | None) -> None:
+        publish = getattr(self.backend, "publish_launch_admission", None)
+        if publish is not None and version is not None:
+            preflight = getattr(self.backend, "preflight_stop", None)
+            if preflight is not None:
+                preflight(self.data)
+            install_launcher(self.root)
+            publish(version, self.data)
 
     def _ready(self) -> None:
         if self.managed_by == "pinokio":
@@ -447,10 +420,11 @@ class Installer:
                 # and is durable before any owner stop or checkout movement.
                 transaction["transaction_context"] = transaction_context
             self._save_update(transaction, "staged")
-            authority.enter_context(transaction_stop_context(
-                self.backend, transaction,
-                lambda step, **details: self._save_update(transaction, step, **details),
-            ))
+            authority.enter_context(update_context(self.backend, transaction))
+            install_launcher(self.root)
+            publish = getattr(self.backend, "publish_launch_admission", None)
+            if publish is not None:
+                publish(old, self.data)
             # Record intent before the fenced stop: recovery can distinguish a
             # pure staged image from a stop that may have completed on crash.
             self._save_update(transaction, "stopping")
@@ -550,6 +524,7 @@ class Installer:
             return
         if mode == "uninstall":
             self.backend.preflight_remove(self.root, self.data, delete_data=delete_data)
+            self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             self.backend.unregister()
             residue = self.backend.remove(self.root, self.data, delete_data=delete_data)
@@ -592,6 +567,7 @@ class Installer:
                     self.backend.open()
                     return
             self.say("Restarting Astrid with the installed version.")
+            self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
             install_launcher(self.root)
             if persist is not None:

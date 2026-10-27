@@ -262,6 +262,69 @@ def test_staged_journal_publication_failure_keeps_old_owner_running(tmp_path):
     assert read_json(root / "update-transaction.json") == {}
 
 
+def test_service_admission_publication_precedes_first_transaction_stop(tmp_path):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    backend.publish_launch_admission = lambda version, _data: backend.calls.append(
+        ("publish_launch_admission", version)
+    )
+
+    Installer(root, data, backend, say=lambda _line: None).run("update", {})
+
+    names = [call[0] for call in backend.calls]
+    assert names.index("publish_launch_admission") < names.index("stop")
+    assert backend.calls[names.index("publish_launch_admission")][1] == old
+
+
+def test_service_admission_publication_failure_aborts_before_first_stop(tmp_path):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    calls = []
+
+    def fail_publication(version, _data):
+        calls.append(("publish_launch_admission", version))
+        raise OSError("service admission publication failed")
+
+    backend.publish_launch_admission = fail_publication
+    with pytest.raises(OSError, match="service admission publication failed"):
+        Installer(root, data, backend, say=lambda _line: None).run("update", {})
+
+    transaction = read_json(root / "update-transaction.json")
+    assert transaction["step"] == "staged"
+    assert transaction["old"] == old.document()
+    assert current(root) == old
+    assert calls == [("publish_launch_admission", old)]
+    assert [call[0] for call in backend.calls] == ["stage", "validate_candidate"]
+
+
+def test_recovery_admission_publication_failure_leaves_pending_journal_and_backup(tmp_path):
+    root, data, old, backend = _installed_lifecycle_backend(tmp_path)
+    candidate = backend.stage({}, root, data)
+    realm = backend.workspace(old, data)
+    backup = {"root": str(root / "backups" / "retained")}
+    journal = {
+        "format": "astrid-install-update/v1", "operation_id": "1" * 32,
+        "transaction_kind": "migration", "step": "backed_up", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(), "realm": realm,
+        "backup": backup,
+    }
+    write_json(root / "update-transaction.json", journal)
+    before = (root / "update-transaction.json").read_bytes()
+    calls = []
+
+    def fail_publication(version, _data):
+        calls.append(("publish_launch_admission", version))
+        raise OSError("service admission publication failed")
+
+    backend.publish_launch_admission = fail_publication
+    with pytest.raises(OSError, match="service admission publication failed"):
+        Installer(root, data, backend, say=lambda _line: None)._recover_update()
+
+    assert (root / "update-transaction.json").read_bytes() == before
+    assert read_json(root / "update-transaction.json")["backup"] == backup
+    assert current(root) == old
+    assert calls == [("publish_launch_admission", old)]
+    assert not any(call[0] in {"stop", "restore", "register", "start"} for call in backend.calls)
+
+
 def test_switched_journal_publication_failure_rolls_back_selected_candidate(tmp_path):
     root, data, old, backend = _installed_lifecycle_backend(tmp_path)
     backend.backup = lambda *_args: backend.calls.append(("backup",)) or {
@@ -1035,6 +1098,13 @@ def _installer_runtime(tmp_path, monkeypatch, *, foreground=None):
     paths.ensure_support_dirs()
     realm_root = paths.realms_dir / "realm-1"
     RealmStore.initialize(realm_root, realm_id="realm-1").close()
+    import astrid_runtime
+    from astrid_runtime.bootstrap import SourceProfile
+    write_json(paths.source_profiles_dir / "astrid.json", SourceProfile(
+        profile="astrid",
+        runtime_checkout=str(Path(astrid_runtime.__file__).resolve().parents[1]),
+        source_checkout=str(Path(__file__).resolve().parents[1]),
+    ).as_dict())
     paths.catalog_path.write_text(json.dumps({
         "version": 1,
         "selected_realm_id": "realm-1",
@@ -1107,35 +1177,17 @@ def test_backend_stop_uses_runtime_fence_before_service_manager(tmp_path, monkey
 
 @pytest.mark.parametrize("transaction_kind", ["migration", "app"])
 def test_backend_stop_authority_survives_new_controller_and_real_c1_replay(tmp_path, monkeypatch, transaction_kind):
-    from astrid.installer import core
+    """The historical authority premise is removed; C1 must still admit a fresh retry."""
     from astrid.installer.backend import Backend
 
     backend, data, paths, realm, boundary, manager_calls = _installer_runtime(tmp_path, monkeypatch)
     _publish_owner(paths)
-    transaction = {
-        "transaction_kind": transaction_kind, "step": "stopping", "data_root": str(data),
-        "realm": {"realm_id": "realm-1", "realm_root": str(realm)},
-    }
-    journal = data / "runtime" / "upgrade-journal.json"
-
-    def save(step, **details):
-        transaction.update(step=step, **details)
-        write_json(journal, transaction)
-
-    with core.transaction_stop_context(backend, transaction, save):
-        backend.stop(None, data)
-
-    saved = read_json(journal)
-    authority = saved["stop_authority"]
-    assert authority["pid"] == 777
-    assert authority["process_birth_id"] == "birth-1"
-    assert authority["realm_id"] == "realm-1"
-    assert authority["realm_root"] == str(realm.resolve())
+    backend.stop(None, data)
     assert boundary.stop_calls == 1
     assert manager_calls == ["disable", "stop"]
 
-    # A newly constructed Backend and Runtime boundary have no in-memory stop
-    # receipt. C1 accepts only the journal's exact identity plus OS absence.
+    # A newly constructed Backend has no receipt. With no Runtime publication,
+    # C1 still admits the selected readable realm and manager teardown retry.
     new_backend = Backend(backend.root, backend.log, backend.uv)
     new_backend.service.systemd = lambda: False
     new_backend.service.recorded = lambda: {"owner": LABEL, "program_root": str(backend.root),
@@ -1147,9 +1199,7 @@ def test_backend_stop_authority_survives_new_controller_and_real_c1_replay(tmp_p
     fresh_boundary.live = False
     from astrid_runtime import runtime_boundary
     monkeypatch.setattr(runtime_boundary, "LocalRuntimeBoundary", lambda: fresh_boundary)
-    transaction.update(step="stopped")
-    with core.transaction_stop_context(new_backend, transaction, save, recovering=True):
-        new_backend.stop(None, data)
+    new_backend.stop(None, data)
 
     assert fresh_boundary.stop_calls == 0
     assert manager_calls[-2:] == ["disable-recovery", "stop-recovery"]
@@ -1163,8 +1213,6 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
     from astrid_runtime.identity import requested_startup_identity
     from runtime_protocol.store import SCHEMA_VERSION
     from runtime_protocol.upgrade import inspect_canonical_schema
-
-    from astrid.installer import core
 
     # Match a staged install's identity inputs. Reading the manager's working
     # checkout while other tests edit files is neither an installed identity
@@ -1184,20 +1232,8 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
         connection.execute("DROP TABLE user_app_state")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
 
-    transaction = {
-        "transaction_kind": "migration", "step": "stopping", "data_root": str(data),
-        "realm": {"realm_id": "realm-1", "realm_root": str(realm)},
-    }
-    journal = data / "runtime" / "upgrade-journal.json"
-
-    def save(step, **details):
-        transaction.update(step=step, **details)
-        write_json(journal, transaction)
-
     _publish_owner(paths)
-    with core.transaction_stop_context(backend, transaction, save):
-        backend.stop(None, data)
-    assert read_json(journal)["stop_authority"]["pid"] == 777
+    backend.stop(None, data)
 
     # Exercise the actual Runtime migration and bootstrap implementation. Only
     # the daemon boundary is modeled; `_bootstrap_locked` remains real.
@@ -1248,7 +1284,7 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
 @pytest.mark.integration
 @pytest.mark.linux_native
 def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_path, monkeypatch):
-    """Run real migration and fresh-controller rollback activation through Runtime."""
+    """Run real migration and rollback activation using selected version identity."""
     import importlib
     import socket
     import time
@@ -1269,35 +1305,36 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         monkeypatch.setenv(variable, str(folder))
         folder.mkdir(parents=True, exist_ok=True)
 
-    # This temporary venv reuses the prepared site packages. A .pth entry
-    # selects the matching Agent and Runtime checkouts under the actual -I CLI.
-    environment = tmp_path / "runtime-env"
-    subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", str(environment)], check=True)
-    python = environment / "bin" / "python"
-    site = python.parent.parent / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-    (site / "astrid-f2-sources.pth").write_text(
-        "import sys; sys.path[:0]="
-        f"[{str(runtime_root)!r},{str(runtime_root / 'packages/python')!r},{str(agent_root)!r}]\n",
-        encoding="utf-8",
-    )
-
     root, data = tmp_path / "program", tmp_path / "data"
     root.mkdir()
     (root / "versions").mkdir()
     source = SourceProfile(profile="astrid", runtime_checkout=str(runtime_root),
                            source_checkout=str(agent_root))
-    profile = tmp_path / "source-profile.json"
-    profile.write_text(json.dumps(source.as_dict()), encoding="utf-8")
+    def installed_version(name, release):
+        folder = root / "versions" / name
+        folder.mkdir()
+        environment = folder / "runtime-env"
+        subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", str(environment)], check=True)
+        python = environment / "bin" / "python"
+        site = python.parent.parent / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+        (site / "astrid-f2-sources.pth").write_text(
+            "import sys; sys.path[:0]="
+            f"[{str(runtime_root)!r},{str(runtime_root / 'packages/python')!r},{str(agent_root)!r}]\n",
+            encoding="utf-8",
+        )
+        profile = folder / "profile.json"
+        profile.write_text(json.dumps(source.as_dict()), encoding="utf-8")
+        return Version(folder, python, profile,
+                       {**common_env, "ASTRID_INSTALL_RELEASE": str(release)}, release=release)
+
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     door_port = probe.getsockname()[1]
     probe.close()
     common_env = {"ASTRID_RUNTIME_DATA_ROOT": str(data), "ASTRID_INSTALL_MANAGED_BY": "",
                  "ASTRID_RUNTIME_DOOR_PORT": str(door_port)}
-    old = Version(root / "versions" / "old", python, profile,
-                  {**common_env, "ASTRID_INSTALL_RELEASE": "17"}, release=17)
-    candidate = Version(root / "versions" / "candidate", python, profile,
-                        {**common_env, "ASTRID_INSTALL_RELEASE": "18"}, release=18)
+    old = installed_version("old", 17)
+    candidate = installed_version("candidate", 18)
     write_json(old.root / "version.json", old.document())
     write_json(candidate.root / "version.json", candidate.document())
     backend = Backend(root, tmp_path / "install.log", tmp_path / "uv")
@@ -1309,9 +1346,8 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         connection.execute("DROP TABLE user_app_state")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
 
-    operation_id = "8" * 32
     transaction = {
-        "format": "astrid-install-update/v1", "operation_id": operation_id,
+        "format": "astrid-install-update/v1", "operation_id": "8" * 32,
         "transaction_kind": "migration", "step": "backed_up", "data_root": str(data),
         "old": old.document(), "candidate": candidate.document(),
         "realm": {"realm_id": "realm-bound", "realm_root": str(data / "realm")},
@@ -1322,67 +1358,64 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         transaction.update(step=step, **details)
         write_json(journal, transaction)
 
-    class ControllerDied(BaseException):
-        pass
-
     try:
-        with core.transaction_stop_context(backend, transaction, save):
-            backend.upgrade(candidate, data)
+        backend.upgrade(candidate, data)
         paths = RuntimePaths.current(data_root=data)
         first = read_json(paths.discovery_path)
         first_lock = read_json(paths.instance_lock_path)
-        assert first["installer_operation_id"] == first_lock["installer_operation_id"] == operation_id
-        assert transaction["launch_intent"]["version"] == candidate.document()
+        from astrid_runtime.identity import validate_live_owner_identity
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
 
-        # Retain a real C1 stop receipt in the journal, then start a second
-        # Runtime incarnation with the same pending transaction binding.
-        with core.transaction_stop_context(backend, transaction, save):
-            backend.stop(candidate, data)
-        assert transaction["stop_authority"]["runtime_instance_id"] == first["runtime_instance_id"]
-        with core.transaction_stop_context(backend, transaction, save):
-            backend.register(candidate, data)
-            backend.start(candidate, data)
+        boundary = LocalRuntimeBoundary()
+        first_health = boundary.owner_startup_identity(
+            endpoint=first["endpoint"], instance_id=first["runtime_instance_id"],
+        )
+        assert validate_live_owner_identity(first_health, instance_id=first["runtime_instance_id"]) == {
+            "release": 18, "managed_by": None,
+        }
+        assert first_lock["runtime_instance_id"] == first["runtime_instance_id"]
+        assert first_lock["realm_id"] == "realm-bound"
 
-        def assert_bound_live_owner(expected):
+        # Stop the temporary migration daemon through C1, then activate only
+        # the exact candidate selected by the journal phase and pointer.
+        backend.stop(candidate, data)
+        core.switch(root, candidate)
+        save("switched")
+        backend.register(candidate, data)
+        backend.start(candidate, data)
+
+        def assert_selected_live_owner(expected):
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 discovery = read_json(paths.discovery_path)
-                if discovery.get("installer_operation_id") == operation_id:
+                lock = read_json(paths.instance_lock_path)
+                if (discovery.get("active_realm") == "realm-bound"
+                        and discovery.get("runtime_instance_id") == lock.get("runtime_instance_id")
+                        and lock.get("realm_id") == "realm-bound"):
                     break
                 time.sleep(0.1)
             else:
-                raise AssertionError(f"{expected.release}-version Runtime did not publish the transaction binding")
-            from astrid_runtime.identity import validate_live_owner_identity
-            from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
-
-            boundary = LocalRuntimeBoundary()
-            metadata = boundary.endpoint_metadata(
-                endpoint=discovery["endpoint"],
-                credential_file=paths.runtime_support / "credentials" / "owner.token",
-            )
-            assert metadata["runtime_instance_id"] == discovery["runtime_instance_id"]
-            assert metadata["installer_operation_id"] == operation_id
-            health = boundary.owner_startup_identity(
+                raise AssertionError(f"{expected.release}-version Runtime did not publish the selected realm")
+            health = LocalRuntimeBoundary().owner_startup_identity(
                 endpoint=discovery["endpoint"], instance_id=discovery["runtime_instance_id"],
             )
-            assert validate_live_owner_identity(
-                health, instance_id=discovery["runtime_instance_id"],
-            ) == {"release": expected.release, "managed_by": None}
-            assert read_json(paths.instance_lock_path)["installer_operation_id"] == operation_id
+            assert validate_live_owner_identity(health, instance_id=discovery["runtime_instance_id"]) == {
+                "release": expected.release, "managed_by": None,
+            }
+            assert lock["runtime_instance_id"] == discovery["runtime_instance_id"]
             return discovery
 
-        assert_bound_live_owner(candidate)
+        assert_selected_live_owner(candidate)
         second = read_json(paths.discovery_path)
         second_lock = read_json(paths.instance_lock_path)
         assert second["runtime_instance_id"] != first["runtime_instance_id"]
-        assert second["installer_operation_id"] == second_lock["installer_operation_id"] == operation_id
+        assert second_lock["runtime_instance_id"] == second["runtime_instance_id"]
+        assert second["active_realm"] == second_lock["realm_id"] == "realm-bound"
         foreground = backend.service.recorded()["foreground"]
         assert foreground["pid"] == second["pid"]
 
-        # Model the crash after the transaction has selected and actually
-        # foreground-published its candidate, before terminal transaction save.
-        core.switch(root, candidate)
-        save("switched")
+        # Model a crash after the switched candidate became ready but before
+        # the transaction reached a terminal phase.
 
         fresh = Backend(root, tmp_path / "install.log", tmp_path / "uv")
         fresh.service.systemd = lambda: False
@@ -1395,7 +1428,7 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
             assert previous == old
             assert workspace == data
             assert realm_id == "realm-bound"
-            discovery = assert_bound_live_owner(old)
+            discovery = assert_selected_live_owner(old)
             record = fresh.service.recorded()
             assert record["foreground"]["pid"] == discovery["pid"]
 
@@ -1419,12 +1452,12 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         assert current(root) == old
         published_old = read_json(paths.discovery_path)
         assert published_old["runtime_instance_id"]
-        assert published_old["installer_operation_id"] == operation_id
+        assert published_old["active_realm"] == "realm-bound"
         foreground = fresh.service.recorded()["foreground"]
         assert foreground["pid"] == published_old["pid"]
 
-        # A separate Backend has no in-memory receipt. It must admit and stop
-        # the actually published old Runtime, then repeat rollback activation.
+        # A separate Backend admits and stops the published old Runtime using
+        # its canonical selected realm identity, then repeats rollback.
         repeated = Backend(root, tmp_path / "install.log", tmp_path / "uv")
         repeated.service.systemd = lambda: False
         repeated.verify = verify_old
@@ -1443,11 +1476,7 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
         try:
             cleanup = locals().get("repeated", locals().get("fresh", backend))
             selected = current(root) or candidate
-            recovering = bool(transaction.get("stop_authority")) and transaction.get("step") not in {
-                "complete", "rolled_back",
-            }
-            with core.transaction_stop_context(cleanup, transaction, save, recovering=recovering):
-                cleanup.stop(selected, data)
+            cleanup.stop(selected, data)
         except (RuntimeOperationError, OSError, ValueError):
             pass
 
@@ -1459,20 +1488,8 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
 
     backend, data, paths, realm, boundary, manager_calls = _installer_runtime(tmp_path, monkeypatch)
     _publish_owner(paths)
-    transaction = {
-        "transaction_kind": "migration", "step": "stopping", "data_root": str(data),
-        "realm": {"realm_id": "realm-1", "realm_root": str(realm)},
-    }
+    backend.stop(None, data)
     journal = backend.root / "update-transaction.json"
-
-    def save(step, **details):
-        transaction.update(step=step, **details)
-        write_json(journal, transaction)
-
-    from astrid.installer import core
-    with core.transaction_stop_context(backend, transaction, save):
-        backend.stop(None, data)
-    authority = read_json(journal)["stop_authority"]
 
     old_root = backend.root / "versions" / "old"
     candidate_root = backend.root / "versions" / "candidate"
@@ -1529,12 +1546,8 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
         "transaction_kind": "migration", "step": "recovering", "data_root": str(data),
         "old": old.document(), "candidate": candidate.document(),
         "realm": {"realm_id": "realm-1", "realm_root": str(realm)},
-        "backup": backup, "stop_authority": authority,
+        "backup": backup,
     }
-    if restore_gap == "support_catalog_removed":
-        # A readable realm without its catalog uses the retained metadata and
-        # current C1 fence, independent of historical stop evidence.
-        pending.pop("stop_authority")
     write_json(journal, pending)
     write_json(backend.root / "install.json", {"owner": LABEL, "data_root": str(data)})
     monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: fresh_backend)

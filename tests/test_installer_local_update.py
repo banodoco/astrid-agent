@@ -303,6 +303,7 @@ def test_hook_protocol_requires_matching_id_and_ok(tmp_path):
     assert request["id"] == 1
     assert request["app"] == app
     assert request["version"] is None
+    assert "operationId" not in request
 
     bad = local.HookClient(app, __import__("io").StringIO('{"id":2,"ok":true}\n'), __import__("io").StringIO())
     with pytest.raises(ValueError, match="did not match"):
@@ -366,7 +367,7 @@ def test_recovery_routing_refuses_local_journal_in_ordinary_paths(tmp_path):
 
 @pytest.mark.parametrize("managed_by", [None, "pinokio"])
 def test_execute_uses_existing_lock_order_for_both_install_managers(tmp_path, monkeypatch, managed_by):
-    from astrid.installer import app_update, service
+    from astrid.installer import app_update
 
     backend = SimpleNamespace(managed_by=managed_by,
                               service=SimpleNamespace(home=tmp_path, system="linux"))
@@ -380,7 +381,7 @@ def test_execute_uses_existing_lock_order_for_both_install_managers(tmp_path, mo
 
     monkeypatch.setattr(local, "_backend", lambda _root: backend)
     monkeypatch.setattr(app_update, "locked", observe_lock)
-    monkeypatch.setattr(service, "installer_lock_path", lambda *_args: tmp_path / "installer.lock")
+    monkeypatch.setattr(local, "installer_lock_path", lambda *_args: tmp_path / "installer.lock")
     monkeypatch.setattr(local, "_execute_locked", lambda *_args, **_kwargs: {"status": "no-recovery"})
 
     assert local.execute({"action": "recover"}, tmp_path, stdin=__import__("io").StringIO(),
@@ -394,7 +395,6 @@ def test_pinokio_activation_records_each_launch_before_session_handoff(tmp_path,
     env = _installed(tmp_path, monkeypatch)
     env.backend.managed_by = "pinokio"
     operation_id = "e" * 32
-    env.backend.transaction_operation_id = lambda **_kwargs: operation_id
     transaction = {
         "operation_id": operation_id, "step": "switched",
         "old": env.old.document(), "candidate": env.candidate.document(),
@@ -409,16 +409,16 @@ def test_pinokio_activation_records_each_launch_before_session_handoff(tmp_path,
 
     def handoff(name, version, _realm, **details):
         assert name == "pinokio-start"
-        assert details["operation_id"] == operation_id
+        assert not details
         durable = core.read_json(journal)
-        assert core.transaction_launch_version(durable) == version
+        assert durable["operation_id"] == operation_id
         seen.append(version.root.name)
 
     monkeypatch.setattr(local, "_verify_selected_identity", lambda *_args: None)
     hooks = SimpleNamespace(call=handoff)
-    with core.transaction_stop_context(env.backend, transaction, save):
-        local._activate_backend(env.backend, env.candidate, env.data, env.realm, hooks)
-        local._activate_backend(env.backend, env.old, env.data, env.realm, hooks)
+    save("switched")
+    local._activate_backend(env.backend, env.candidate, env.data, env.realm, hooks)
+    local._activate_backend(env.backend, env.old, env.data, env.realm, hooks)
     assert seen == ["candidate", "old"]
     assert "runtime-verify:candidate" in env.events
     assert "runtime-verify:old" in env.events

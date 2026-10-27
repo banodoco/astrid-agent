@@ -12,7 +12,7 @@ from types import ModuleType
 import pytest
 
 from astrid.installer import foreground, launcher, service
-from astrid.installer.core import Version, current, write_json
+from astrid.installer.core import Version, current, switch, write_json
 
 
 @pytest.fixture(autouse=True)
@@ -197,89 +197,86 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     assert _runtime_args(expected)[-len(extra_args):] == extra_args
 
 
-def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path, monkeypatch):
-    root, _data, _version = _installation(tmp_path)
-    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "f" * 32)
+def _second_version(root: Path, name: str = "candidate") -> Version:
+    folder = root / "versions" / name
+    python = folder / "py" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    profile = folder / "profile.json"
+    profile.write_text("{}\n", encoding="utf-8")
+    result = Version(folder, python, profile, {"ASTRID_VERSION_MARKER": name},
+                    release=53, managed_by="pinokio")
+    write_json(folder / "version.json", result.document())
+    return result
 
-    with pytest.raises(ValueError, match="does not match the pending app update"):
-        foreground._run(root, [], "linux", 123)
 
-
-@pytest.mark.parametrize("binding", ["matching", "wrong-operation"])
-def test_foreground_binds_migration_journal_to_exact_retained_session(
-        tmp_path, monkeypatch, binding):
-    root, data, version = _installation(tmp_path)
-    operation_id = "1" * 32
-    transaction = {
-        "format": "astrid-install-update/v1", "operation_id": operation_id,
-        "transaction_kind": "migration", "step": "migrated", "data_root": str(data),
-        "old": version.document(), "candidate": version.document(),
-        "launch_intent": {
-            "operation_id": operation_id, "purpose": "pinokio_start", "version": version.document(),
-        },
-    }
-    write_json(root / "update-transaction.json", transaction)
-    monkeypatch.setenv(
-        "ASTRID_INSTALLER_OPERATION_ID", operation_id if binding == "matching" else "2" * 32,
-    )
+def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, monkeypatch):
+    root, data, old = _installation(tmp_path)
+    candidate = _second_version(root)
+    switch(root, candidate)
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "1" * 32,
+        "transaction_kind": "migration", "step": "switched", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": {"realm_id": "test-realm", "realm_root": str(data / "realm")},
+    })
 
     class ExecCalled(Exception):
         pass
 
+    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "not-used")
     monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: (_ for _ in ()).throw(ExecCalled()))
     with (tmp_path / "installer.lock").open("a+b") as lock:
-        if binding == "wrong-operation":
-            with pytest.raises(ValueError, match="does not match the pending app update"):
-                foreground._run(root, [], "linux", lock.fileno())
-        else:
-            with pytest.raises(ExecCalled):
-                foreground._run(root, [], "linux", lock.fileno())
+        with pytest.raises(ExecCalled):
+            foreground._run(root, [], "linux", lock.fileno())
 
 
-@pytest.mark.parametrize("kind", ["app", "migration"])
-@pytest.mark.parametrize("binding", [
-    "matching", "wrong-operation", "invalid-operation", "wrong-intent-operation",
-    "wrong-data", "wrong-purpose", "wrong-version", "complete", "unbound",
+def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path, monkeypatch):
+    root, data, old = _installation(tmp_path)
+    candidate = _second_version(root)
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "1" * 32,
+        "transaction_kind": "migration", "step": "migrated", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+    })
+
+    with pytest.raises(ValueError, match="interrupted|Update"):
+        foreground._run(root, [], "linux", 123)
+
+
+@pytest.mark.parametrize(("step", "selected", "allowed", "data_matches"), [
+    ("switched", "candidate", True, True),
+    ("switched", "old", False, True),
+    ("rollback_selected", "old", True, True),
+    ("rollback_selected", "candidate", False, True),
+    ("migrated", "old", False, True),
+    ("future-step", "old", False, True),
+    ("switched", "candidate", False, False),
+    ("complete", "old", True, True),
+    ("rolled_back", "old", True, True),
+    (None, "old", True, True),
 ])
 def test_generated_foreground_retains_exact_admission_across_rollback(
-        tmp_path, monkeypatch, kind, binding):
-    root, data, version = _installation(tmp_path)
-    operation_id = "a" * 32
-    transaction = {
-        "operation_id": operation_id, "transaction_kind": kind,
-        "step": "rollback_selected", "data_root": str(data),
-        "old": version.document(), "candidate": version.document(),
-        "launch_intent": {
-            "operation_id": operation_id, "purpose": "pinokio_start",
-            "version": version.document(),
-        },
-    }
-    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", operation_id)
-    if binding == "wrong-operation":
-        monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "b" * 32)
-    elif binding == "invalid-operation":
-        monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "invalid")
-    elif binding == "wrong-intent-operation":
-        transaction["launch_intent"]["operation_id"] = "b" * 32
-    elif binding == "wrong-data":
-        transaction["data_root"] = str(data / "other")
-    elif binding == "wrong-purpose":
-        transaction["launch_intent"]["purpose"] = "service_start"
-    elif binding == "wrong-version":
-        transaction["launch_intent"]["version"]["identity"]["release"] += 1
-    elif binding == "complete":
-        transaction["step"] = "complete"
-    elif binding == "unbound":
-        monkeypatch.delenv("ASTRID_INSTALLER_OPERATION_ID")
-    write_json(root / "update-transaction.json", transaction)
+        tmp_path, monkeypatch, step, selected, allowed, data_matches):
+    root, data, old = _installation(tmp_path)
+    candidate = _second_version(root)
+    chosen = candidate if selected == "candidate" else old
+    if selected == "candidate":
+        switch(root, candidate)
+    if step is not None:
+        write_json(root / "update-transaction.json", {
+            "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+            "transaction_kind": "migration", "step": step,
+            "data_root": str(data if data_matches else data / "other"),
+            "old": old.document(), "candidate": candidate.document(),
+            "realm": {"realm_id": "test-realm", "realm_root": str(data / "realm")},
+        })
     launcher.install(root)
 
-    # The selected package's launch entry may predate the transaction kind.
-    # The generated entry must retain admission without importing that entry.
-    def obsolete_launch(*_args, **_kwargs):
-        raise AssertionError("selected package foreground entry was imported")
-
-    monkeypatch.setattr(foreground, "launch", obsolete_launch)
+    # The generated entry carries the admission prelude even when the selected
+    # retained package predates the current service builder.
+    monkeypatch.setattr(foreground, "launch", lambda *_args, **_kwargs: pytest.fail("old foreground imported"))
     monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py"), "--hosted-origin", "off"])
     observed = []
 
@@ -291,20 +288,32 @@ def test_generated_foreground_retains_exact_admission_across_rollback(
         raise ExecCalled
 
     monkeypatch.setattr(os, "execvpe", capture)
-    if binding == "matching":
+    if allowed:
         with pytest.raises(ExecCalled):
             runpy.run_path(str(root / "run_runtime.py"))
         arguments, environment = observed[0]
-        assert arguments[0] == str(version.python)
+        assert arguments[0] == str(chosen.python)
         assert _runtime_args(arguments) == [
             "run", "--profile", "astrid", "--data-root", str(data),
-            "--source-manifest", str(version.profile), "--hosted-origin", "off",
+            "--source-manifest", str(chosen.profile), "--hosted-origin", "off",
         ]
-        assert environment["ASTRID_INSTALLER_OPERATION_ID"] == operation_id
+        assert "ASTRID_INSTALLER_OPERATION_ID" not in environment
     else:
-        with pytest.raises(ValueError, match="binding|Recover the interrupted update"):
+        with pytest.raises(ValueError, match="interrupted|Update"):
             runpy.run_path(str(root / "run_runtime.py"))
         assert observed == []
+
+
+def test_generated_foreground_refuses_malformed_pending_journal(tmp_path, monkeypatch):
+    root, _data, _old = _installation(tmp_path)
+    candidate = _second_version(root)
+    (root / "current").write_text(candidate.root.name + "\n", encoding="utf-8")
+    (root / "update-transaction.json").write_text("{broken", encoding="utf-8")
+    launcher.install(root)
+    monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py")])
+    monkeypatch.setattr(os, "execvpe", lambda *_args: pytest.fail("malformed journal launched Runtime"))
+    with pytest.raises(ValueError, match="interrupted|Update"):
+        runpy.run_path(str(root / "run_runtime.py"))
 
 
 def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
