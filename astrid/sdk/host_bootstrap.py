@@ -7,6 +7,7 @@ keeps a small support-directory marker so an Astrid relaunch reuses one host.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -640,9 +641,23 @@ def _registered_host_status(state: Mapping[str, Any]) -> str:
         if str(after.get("birth_id") or "") != birth:
             return "reused"
         expected_image = str(state.get("process_image") or "")
-        if expected_image and not _same_windows_path(executable, expected_image):
-            return "foreign"
-        if not argv or not _same_windows_path(argv[0], expected_executable):
+        if expected_image:
+            if not _same_windows_path(executable, expected_image):
+                return "foreign"
+            allowed_argv_images = (expected_executable, expected_image)
+        else:
+            # Python 3.11's Windows venv redirector starts the base interpreter
+            # with the base executable as argv[0]. The selected venv path is
+            # still persisted in the registration, so for legacy markers that
+            # lack process_image, bind the observed kernel image to either the
+            # selected executable itself or the exact base executable recorded
+            # by its adjacent pyvenv.cfg.
+            base_executable = _windows_venv_base_executable(expected_executable)
+            allowed_process_images = (expected_executable, base_executable)
+            if not any(_same_windows_path(executable, value) for value in allowed_process_images if value):
+                return "foreign"
+            allowed_argv_images = (expected_executable, executable)
+        if not argv or not any(_same_windows_path(argv[0], value) for value in allowed_argv_images if value):
             return "foreign"
         module_indexes = [index for index, value in enumerate(argv[:-1]) if value == "-m"]
         root_indexes = [index for index, value in enumerate(argv[:-1]) if value == "--support-root"]
@@ -684,6 +699,34 @@ def _same_windows_path(left: str, right: str) -> bool:
         return False
 
 
+def _windows_venv_base_executable(selected_executable: str) -> str:
+    """Read the base interpreter path for a Windows venv executable."""
+    selected = Path(selected_executable)
+    config = selected.parent.parent / "pyvenv.cfg"
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return ""
+    home = ""
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator and key.strip().casefold() == "home":
+            home = value.strip()
+            break
+    if not home:
+        return ""
+    # Windows venvs normally use python.exe, even when a caller reaches the
+    # same environment through python3.exe or pythonw.exe.
+    for name in (selected.name, "python.exe"):
+        candidate = Path(home) / name
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
 def _windows_process_argv(pid: int) -> list[str]:
     """Read and parse a Windows process command using the native CIM interface.
 
@@ -697,7 +740,8 @@ def _windows_process_argv(pid: int) -> list[str]:
         "[Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; "
         f"$p=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {int(pid)}'; "
         "if ($null -eq $p -or $null -eq $p.CommandLine) { exit 3 }; "
-        "ConvertTo-Json -Compress -InputObject @{ProcessId=[int]$p.ProcessId; CommandLine=[string]$p.CommandLine}"
+        "$json=ConvertTo-Json -Compress -InputObject @{ProcessId=[int]$p.ProcessId; CommandLine=[string]$p.CommandLine}; "
+        "[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))"
     )
     powershell = Path(os.environ.get("SystemRoot") or r"C:\Windows") / (
         "System32/WindowsPowerShell/v1.0/powershell.exe"
@@ -705,15 +749,21 @@ def _windows_process_argv(pid: int) -> list[str]:
     try:
         result = subprocess.run(
             [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", query],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
-            check=False, timeout=5.0,
+            stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=5.0,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise OSError("Windows process command observation failed") from exc
     if result.returncode != 0:
         raise OSError("Windows process command observation failed")
     try:
-        record = json.loads(result.stdout)
+        # PowerShell 5.1 may write redirected stdout with the machine's OEM
+        # code page even when Console.OutputEncoding is set. The JSON payload
+        # is transported as ASCII Base64, then decoded as UTF-8 here so Unicode
+        # command-line paths survive without depending on console settings.
+        encoded = result.stdout.strip()
+        if isinstance(encoded, str):
+            encoded = encoded.encode("ascii")
+        record = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
         if (not isinstance(record, dict) or int(record.get("ProcessId")) != int(pid)
                 or not isinstance(record.get("CommandLine"), str) or not record["CommandLine"]):
             raise ValueError("malformed process command")

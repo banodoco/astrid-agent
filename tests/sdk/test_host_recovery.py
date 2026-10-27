@@ -577,7 +577,7 @@ def test_windows_registered_host_binds_launcher_path_and_captured_kernel_image_s
     })
     monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: r"C:\Python311\python.exe")
     monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
-        r"C:\Astrid\venv\Scripts\python.exe", "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+        r"C:\Python311\python.exe", "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
         "--support-root", r"C:\Astrid\support",
     ])
     state = {"pid": 4321, "process_birth_id": "windows-creation:1234",
@@ -586,6 +586,36 @@ def test_windows_registered_host_binds_launcher_path_and_captured_kernel_image_s
 
     assert host_bootstrap._registered_host_status(state) == "ours"
     assert host_bootstrap._registered_host_status({**state, "process_image": r"C:\Other\python.exe"}) == "foreign"
+
+
+@pytest.mark.windows_native
+def test_legacy_windows_venv_registration_accepts_base_interpreter_image(tmp_path, monkeypatch):
+    venv = tmp_path / "venv"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents=True)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "python.exe").write_bytes(b"test executable placeholder")
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
+    selected = scripts / "python.exe"
+    monkeypatch.setattr(host_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr(host_bootstrap.platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "windows-creation:1234",
+    })
+    monkeypatch.setattr(host_bootstrap.platform, "process_executable", lambda _pid: str(base / "python.exe"))
+    monkeypatch.setattr(host_bootstrap, "_windows_process_argv", lambda _pid: [
+        str(base / "python.exe"), "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+        "--support-root", r"C:\Astrid\support",
+    ])
+
+    state = {
+        "pid": 4321,
+        "process_birth_id": "windows-creation:1234",
+        "support_root": r"C:\Astrid\support",
+        "python_executable": str(selected),
+    }
+    assert host_bootstrap._windows_venv_base_executable(str(selected)) == str(base / "python.exe")
+    assert host_bootstrap._registered_host_status(state) == "ours"
 
 
 def test_registered_windows_host_fails_closed_when_command_observation_is_denied(monkeypatch):
@@ -731,10 +761,14 @@ def test_windows_retirement_consumes_only_matching_supervisor_receipt(monkeypatc
 
 def test_windows_command_observation_uses_read_only_cim_and_validates_pid(monkeypatch):
     calls = []
+    payload = json.dumps({
+        "ProcessId": 4321,
+        "CommandLine": 'python.exe -m astrid.core.execution.generic_host run --support-root "C:\\Astrid é Data\\runtime"',
+    }, ensure_ascii=False).encode("utf-8")
     monkeypatch.setattr(host_bootstrap.subprocess, "run", lambda argv, **kwargs: (
         calls.append((argv, kwargs)) or SimpleNamespace(
             returncode=0,
-            stdout='{"ProcessId":4321,"CommandLine":"python.exe -m astrid.core.execution.generic_host run --support-root \\\"C:\\\\Astrid Data\\\\runtime\\\""}',
+            stdout=host_bootstrap.base64.b64encode(payload),
         )
     ))
     monkeypatch.setattr(host_bootstrap, "_split_windows_command_line", lambda value: ["parsed", value])
@@ -742,9 +776,12 @@ def test_windows_command_observation_uses_read_only_cim_and_validates_pid(monkey
     argv = host_bootstrap._windows_process_argv(4321)
 
     assert argv[0] == "parsed"
+    assert "Astrid é Data" in argv[1]
     assert "Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = 4321'" in calls[0][0][-1]
     assert "[Console]::OutputEncoding=$utf8" in calls[0][0][-1]
-    assert calls[0][1]["encoding"] == "utf-8"
+    assert "[Convert]::ToBase64String" in calls[0][0][-1]
+    assert calls[0][1]["capture_output"] is True
+    assert "encoding" not in calls[0][1]
     assert calls[0][1]["timeout"] == 5.0
     assert calls[0][1]["check"] is False
 
@@ -865,7 +902,13 @@ def test_windows_registered_host_binds_real_venv_command_and_support_path(tmp_pa
             "python_executable": str(python),
             "support_root": str(support),
         }
-        assert host_bootstrap._registered_host_status(state) == "ours"
+        observed_argv = host_bootstrap._windows_process_argv(host_pid)
+        status = host_bootstrap._registered_host_status(state)
+        assert status == "ours", (
+            f"registered host classified {status!r}; argv={observed_argv!r}; "
+            f"expected_executable={str(python)!r}; process_image={state['process_image']!r}; "
+            f"support_root={str(support)!r}"
+        )
         assert host_bootstrap._registered_host_status({**state, "support_root": str(tmp_path / "other")}) == "foreign"
     finally:
         if host_pid is not None and host_identity is not None:
