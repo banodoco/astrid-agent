@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             pending = read_json(root / "update-transaction.json")
             # The session holds the lifetime installer lock. The shared update
             # adapter serializes the journal separately and takes that lock
-            # only for pointer writes, then hands it to its bound foreground.
+            # only for pointer writes, then hands it to the journal-admitted foreground.
             selection(root, backend, allow_transaction=bool(pending))
             if pending and pending.get("step") not in {"complete", "rolled_back"}:
                 recover_app(root, backend)

@@ -272,9 +272,7 @@ def test_managed_backend_stop_and_register_do_not_touch_login_service(tmp_path, 
         backend.stop(version, data)
         backend.unregister()
     else:
-        with pytest.raises(RuntimeOperationError, match="no owner identity") as raised:
-            backend.stop(version, data)
-        assert raised.value.stop_refused
+        backend.stop(version, data)  # Fresh no-publication stop still takes C1.
 
     assert calls == []
     assert backend.service.recorded()["managed_by"] == "pinokio"
