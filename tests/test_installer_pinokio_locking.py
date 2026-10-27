@@ -121,7 +121,7 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
             assert (root / "current").read_text().strip() == "old"
             assert not (root / "update-transaction.json").exists()
         else:
-            assert "Astrid is still running. Stop it in Pinokio, then try again." in output
+            assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in output
             assert current_calls == []
         assert (marker_path.read_bytes() if marker_path.exists() else None) == marker_before
         assert (selection_path.read_bytes() if selection_path.exists() else None) == selection_before

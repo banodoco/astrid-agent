@@ -327,7 +327,7 @@ def test_ordinary_cli_refuses_active_pinokio_pointer(tmp_path, monkeypatch, caps
     })
 
     assert cli.main(mode) == 1
-    assert "Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it." in capsys.readouterr().out
+    assert "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button." in capsys.readouterr().out
 
 
 def test_second_pinokio_root_is_refused_while_first_install_record_exists(tmp_path, monkeypatch, capsys):

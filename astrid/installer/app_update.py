@@ -278,7 +278,8 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
         realm = backend.workspace(old, data)
         prior_schema = inspect_schema(backend, old, realm) if no_migration else None
         # C2b treats equal/older input as repair until manifest trust lands.
-        repair = not update_required("update" if force else "install", manifest, old)
+        repair = not update_required("update" if force else "install", manifest, old,
+                                     managed_by="pinokio")
         say("Preparing the new app while Astrid keeps running.")
 
         def prepare() -> Version:
@@ -286,7 +287,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             backend.validate_candidate(candidate, data, realm)
             lifecycle.validate(candidate)
             if no_migration and inspect_schema(backend, candidate, realm) != prior_schema:
-                raise ValueError("The storage layout changed; use the regular Pinokio update.")
+                raise ValueError("The storage layout changed. Choose Pinokio's Update button to migrate it.")
             if selection(root, backend) != (old, data, identity):
                 raise ValueError("The selected installation changed while preparing the update.")
             selected_realm = backend.workspace(old, data)

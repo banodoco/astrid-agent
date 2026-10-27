@@ -174,13 +174,21 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
         extra_env=version.env, timeout=120,
     ))
     if require_current and value["identity"]["version"] != value["target"]:
-        raise ValueError("This release needs a workspace migration. Use the regular Pinokio update.")
+        raise ValueError("This release needs a workspace migration. Choose Pinokio's Update button.")
     return value
 
 
-def update_required(mode: str, manifest: dict, old: Version) -> bool:
+def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str | None = None) -> bool:
     """C2b numeric dispatch, shared by service and foreground adapters."""
     release = install_release(manifest)
+    if release < old.release and mode != "update":
+        if managed_by == "pinokio":
+            raise ValueError(
+                "This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button when a newer release is available."
+            )
+        raise ValueError(
+            "This Astrid is newer than astrid.haus offers. Try again when astrid.haus has a newer release."
+        )
     return mode == "update" or release > old.release
 
 
@@ -362,7 +370,7 @@ class Installer:
 
     def _ready(self) -> None:
         if self.managed_by == "pinokio":
-            self.say("Astrid is installed. Choose Start in Pinokio.")
+            self.say("Astrid is installed. Choose Pinokio's Start button.")
         else:
             self.say("Open https://astrid.haus")
             self.backend.open()
@@ -376,7 +384,7 @@ class Installer:
         pending = read_json(absolute(self.root / "update-transaction.json"))
         if pending and pending.get("step") not in {"complete", "rolled_back"} \
                 and pending.get("transaction_kind") == "app":
-            raise ValueError("Recover the interrupted Pinokio app update through the app updater.")
+            raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
 
         def switch_old(old: Version, _candidate: Version | None) -> None:
             if old.root.parent == self.root / "versions":
@@ -505,7 +513,7 @@ class Installer:
         # only after journal recovery and after resolving the active owner;
         # explicit ``update`` remains the forced restage operation.
         if old is not None and mode not in {"doctor", "uninstall"}:
-            if update_required(mode, manifest, old):
+            if update_required(mode, manifest, old, managed_by=self.managed_by):
                 mode = "update"
         if mode == "doctor":
             if old is None:

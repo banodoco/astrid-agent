@@ -25,6 +25,11 @@ from .service import LABEL, bootstrap_root, default_program_root, installer_lock
 from .support import FAILURE_MESSAGE, default_doctor_bundle
 from .tools import download, validate_manifest
 
+PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
+    "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button."
+)
+PINOKIO_STOP_REFUSAL = "Astrid is still running. Choose Pinokio's Stop button, then try again."
+
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
     if recorded.get("managed_by") != "pinokio":
@@ -37,7 +42,7 @@ def _pinokio_claim_is_live(recorded: dict) -> bool:
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog="astrid install", description="Install or restart Astrid for astrid.haus.")
+    result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--update", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--update-app", action="store_true", help="update and relaunch Pinokio's app when no workspace migration is needed")
@@ -117,13 +122,13 @@ def main(argv: list[str] | None = None) -> int:
                     pinokio_live = _pinokio_claim_is_live(recorded)
                     if not args.root and (pinokio_live
                                           or prior.get("managed_by") == "pinokio"):
-                        raise ValueError("Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.") from None
+                        raise ValueError(PINOKIO_UPDATE_UNINSTALL_REFUSAL) from None
                     if (args.managed_by == "pinokio" or prior.get("managed_by") == "pinokio"
                             or (args.root and pinokio_live
                                 and recorded.get("program_root") == str(root))):
-                        raise ValueError("Astrid is still running. Stop it in Pinokio, then try again.") from None
+                        raise ValueError(PINOKIO_STOP_REFUSAL) from None
                     if pinokio_live:
-                        raise ValueError("Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.") from None
+                        raise ValueError(PINOKIO_UPDATE_UNINSTALL_REFUSAL) from None
                     raise
                 locked = True
             try:
@@ -153,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Unknown Astrid installation manager.")
                 if recorded.get("managed_by") == "pinokio":
                     if managed_by != "pinokio" or (not args.root and mode != "doctor"):
-                        raise ValueError("Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.")
+                        raise ValueError(PINOKIO_UPDATE_UNINSTALL_REFUSAL)
                     if absolute(recorded["program_root"]) != root:
                         raise ValueError(f"Astrid is already installed in Pinokio at {recorded['program_root']}.")
                 elif managed_by == "pinokio":
@@ -169,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                     if login_root:
                         raise ValueError(f"Astrid is already installed on this computer ({login_root}). Uninstall that copy first, then install Astrid in Pinokio.")
                 if prior.get("managed_by") == "pinokio" and managed_by != "pinokio":
-                    raise ValueError("Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.")
+                    raise ValueError(PINOKIO_UPDATE_UNINSTALL_REFUSAL)
                 if (recorded.get("program_root") and managed_by != "pinokio"
                         and (not recorded.get("uninstalled") or mode == "uninstall")):
                     recorded_root = absolute(recorded["program_root"])

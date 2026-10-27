@@ -44,7 +44,7 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int) -> None:
         raise ValueError("This copy of Astrid wasn't installed with Pinokio.")
     version = current(root)
     if version is None:
-        raise ValueError("Astrid isn't fully installed. Choose Reset in Pinokio, then install again.")
+        raise ValueError("Astrid isn't fully installed. Choose Pinokio's Reset button, then install again.")
     data = absolute(record["data_root"])
     operation_id = os.environ.get("ASTRID_INSTALLER_OPERATION_ID")
     if operation_id is not None:
@@ -62,7 +62,7 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int) -> None:
     else:
         transaction = read_json(root / "update-transaction.json")
         if transaction and transaction.get("step") not in {"complete", "rolled_back"}:
-            raise ValueError("Recover the interrupted update in Pinokio before choosing Start.")
+            raise ValueError("Choose Pinokio's Update button to recover the interrupted update before choosing Start.")
     env = {key: value for key, value in os.environ.items() if key not in {
         "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
         "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",

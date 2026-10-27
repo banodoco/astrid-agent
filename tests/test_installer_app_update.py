@@ -390,19 +390,23 @@ def test_unified_pinokio_migration_readiness_failure_restores_workspace_and_old_
     assert "complete" not in installed.journal_steps
 
 
-def test_pinokio_update_release_dispatch_repairs_without_staging_old_candidate(installed):
+def test_pinokio_update_refuses_older_served_release_with_pinokio_action(installed):
     installed.backend.register = lambda *_args: None
     installed.backend.sync_skills = lambda *_args: None
-    update.update_pinokio(
-        installed.root, installed.backend, {"release": 10}, lifecycle=installed.lifecycle,
-        say=lambda _message: None,
-    )
+    with pytest.raises(ValueError) as caught:
+        update.update_pinokio(
+            installed.root, installed.backend, {"release": 10}, lifecycle=installed.lifecycle,
+            say=lambda _message: None,
+        )
 
-    assert installed.calls == ["stop:old", "start:old"]
-    assert installed.journal_steps[-1] == "complete"
-    assert read_json(installed.root / "update-transaction.json")["transaction_kind"] == "app"
+    assert str(caught.value) == (
+        "This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button "
+        "when a newer release is available."
+    )
+    assert installed.calls == []
+    assert installed.journal_steps == []
     assert current(installed.root) == installed.old
-    assert installed.candidate_admissions == ["old"]
+    assert installed.candidate_admissions == []
 
 
 def test_pinokio_update_routes_existing_install_through_unified_policy(installed, monkeypatch):
