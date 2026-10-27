@@ -457,9 +457,123 @@ class Backend:
         return RuntimeOperationError(str(exc), details=details,
                                      stop_refused=not completed, stop_completed=completed)
 
+    def _pending_restore_selection(self, data: Path):
+        """Return Runtime's metadata-only context for an exact restore replay."""
+        journal_path = self.root / "update-transaction.json"
+        active_context = getattr(self, "_transaction_stop_context", None)
+        active_transaction = None
+        if (isinstance(active_context, tuple) and len(active_context) == 3
+                and active_context[2] is True
+                and isinstance(active_context[0], dict)
+                and active_context[0].get("step") == "recovering"):
+            active_transaction = active_context[0]
+        if not os.path.lexists(journal_path):
+            if active_transaction is not None:
+                raise ValueError("The pending restore journal disappeared before stop admission.")
+            return None
+        if linked(journal_path) or not journal_path.is_file():
+            raise ValueError("The pending restore journal must be a regular, unlinked file.")
+        try:
+            transaction = read_json(journal_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError("The pending restore journal is unreadable or malformed.") from exc
+        if active_transaction is not None and transaction != active_transaction:
+            raise ValueError("The on-disk restore journal changed before stop admission.")
+        if (not isinstance(transaction, dict)
+                or transaction.get("format") != "astrid-install-update/v1"
+                or transaction.get("step") != "recovering"
+                or transaction.get("transaction_kind") not in (None, "migration")):
+            return None
+        # A recovering migration with a malformed or mismatched identity must
+        # fail closed here; it must never fall through to legacy stop authority.
+        if absolute(transaction.get("data_root", "")) != absolute(data):
+            raise ValueError("The pending restore journal does not match this data root.")
+        realm = transaction.get("realm")
+        if not isinstance(realm, dict):
+            raise ValueError("The pending restore journal has no realm identity.")
+        realm_root = absolute(realm.get("realm_root", ""))
+        # Keep the pre-amendment absent-realm recovery branch unchanged. A
+        # genuinely missing path has no readable SQLite realm to fence; linked,
+        # malformed, and replacement paths do not qualify for this fallback.
+        if not os.path.lexists(realm_root):
+            return None
+        if (not isinstance(transaction.get("backup"), dict)
+                or not transaction["backup"].get("root")):
+            raise ValueError("The pending restore journal has no retained backup.")
+        from astrid_runtime.bootstrap import RestoreSelection
+
+        return RestoreSelection(journal_path=journal_path, selection_path=self.service.selection)
+
+    def _stop_restore_recovery(self, version: Version | None, data: Path, *, stop_manager=None,
+                               restore_selection=None) -> None:
+        """Run the missing-catalog replay through Runtime's shared C1 gate."""
+        from astrid_runtime.bootstrap import down, preflight_stop
+        from astrid_runtime.paths import RuntimePaths
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+        from runtime_protocol import process_control
+
+        record = self.service.recorded()
+        if record and (record.get("owner") != LABEL
+                       or record.get("program_root") != str(self.root)
+                       or record.get("data_root") != str(data)):
+            raise ValueError("The service record does not match the selected installation.")
+        # Restore recovery is reached only after an earlier successful stop.
+        # A retained foreground PID is historical evidence and grants no signal
+        # authority through this metadata-only branch.
+        if (record or {}).get("foreground") is not None:
+            raise ValueError("Restore recovery refuses a retained foreground process record.")
+        paths = RuntimePaths.current(data_root=data)
+        prior_control = process_control.read_setting(paths.runtime_support)
+        platform.configure_process_control(self.process_control or prior_control)
+        boundary = getattr(self, "_stop_boundary", None)
+        if boundary is None:
+            boundary = self._stop_boundary = LocalRuntimeBoundary()
+        preflight_stop(paths, restore_selection=restore_selection)
+        transaction_context = getattr(self, "_transaction_stop_context", None)
+        stop_target_options = {"owner_pid": None}
+        if transaction_context is not None:
+            transaction, _, recovering = transaction_context
+            recovery_launch = transaction_launch_version(transaction) if recovering else None
+            if recovery_launch is not None:
+                stop_target_options["installer_operation_id"] = transaction["operation_id"]
+                stop_target_options["installer_launch_version"] = recovery_launch
+        if self.managed_by != "pinokio":
+            self.service.validate_stop_target(version, data, **stop_target_options)
+
+        def stop_selected_manager():
+            if self.managed_by != "pinokio":
+                current_record = self.service.recorded()
+                if (current_record or {}).get("foreground") is not None:
+                    raise ValueError("Restore recovery refuses a retained foreground process record.")
+                if not current_record:
+                    if self.service.login_service_exists():
+                        raise ValueError("No selected service record authorizes this stop.")
+                    return
+                self.service.validate_stop_target(version, data, **stop_target_options)
+                self.service.disable()
+                self.service.stop()
+            if stop_manager is not None:
+                stop_manager()
+
+        down(paths, boundary, stop_manager=stop_selected_manager,
+             restore_selection=restore_selection)
+        if self.process_control:
+            self._write_process_control(data)
+
     def preflight_stop(self, data: Path) -> None:
         """Read-only early refusal, before installer claims or preparations."""
         try:
+            restore_selection = self._pending_restore_selection(data)
+            if restore_selection is not None:
+                from astrid_runtime.bootstrap import preflight_stop
+                from astrid_runtime.paths import RuntimePaths
+
+                record = self.service.recorded()
+                if (record or {}).get("foreground") is not None:
+                    raise ValueError("Restore recovery refuses a retained foreground process record.")
+                preflight_stop(RuntimePaths.current(data_root=data),
+                              restore_selection=restore_selection)
+                return
             from astrid_runtime.bootstrap import (
                 _invalidate_stale_stop_receipt,
                 _stop_receipt_validation,
@@ -487,6 +601,11 @@ class Backend:
         another down.
         """
         try:
+            restore_selection = self._pending_restore_selection(data)
+            if restore_selection is not None:
+                self._stop_restore_recovery(version, data, stop_manager=stop_manager,
+                                            restore_selection=restore_selection)
+                return
             from astrid_runtime.bootstrap import (
                 BootstrapConfig,
                 _invalidate_stale_stop_receipt,
@@ -727,6 +846,24 @@ class Backend:
                 # A killed support restore must leave each file absent or
                 # complete. A truncated catalog would block Runtime admission
                 # before the retained realm could be restored on the next run.
+                if source.name == "catalog.json" and target.parent.name == "runtime":
+                    from astrid_runtime.bootstrap import _read_catalog
+                    from astrid_runtime.io import atomic_write_json
+                    from astrid_runtime.paths import RuntimePaths
+
+                    support_root = source.parent.parent
+                    retained_paths = RuntimePaths.current(data_root=support_root)
+                    catalog = _read_catalog(replace(retained_paths, catalog_path=source))
+                    realm_id = str(catalog.get("selected_realm_id") or "")
+                    selected = next((row for row in catalog.get("realms", [])
+                                     if str(row.get("realm_id")) == realm_id), None)
+                    expected_realm = str(realm.get("realm_id") or "")
+                    expected_root = absolute(realm.get("realm_root", ""))
+                    if (selected is None or realm_id != expected_realm
+                            or absolute(selected.get("data_root", "")) != expected_root):
+                        raise ValueError("The retained Runtime catalog does not match the restore realm.")
+                    atomic_write_json(target, catalog)
+                    return
                 descriptor, temporary_name = platform.private_temporary(target.parent, ".restore-")
                 os.close(descriptor)
                 temporary = Path(temporary_name)
@@ -748,7 +885,10 @@ class Backend:
             if item.name == "runtime":
                 platform.private_directory(target)
                 for entry in target.iterdir():
-                    if entry.name != "realms":
+                    # Keep a readable selected catalog until the retained
+                    # snapshot replaces it atomically below. A process kill
+                    # during restore must not recreate the legacy gap.
+                    if entry.name not in {"realms", "catalog.json"}:
                         if entry.is_dir():
                             shutil.rmtree(entry)
                         else:

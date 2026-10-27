@@ -1,6 +1,10 @@
 """The public installer recovers durable updates before consulting fresh inputs."""
 
 import sys
+import json
+import shutil
+import subprocess
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,8 +13,10 @@ from runtime_protocol import platform
 
 from astrid.installer import app_update, cli
 from astrid.installer.backend import Backend
-from astrid.installer.core import Installer, Version, current, read_json, switch, write_json
-from astrid.installer.service import LABEL
+from astrid.installer.core import (
+    Installer, VerificationError, Version, current, read_json, switch, write_json,
+)
+from astrid.installer.service import LABEL, Service, command
 
 
 def _cli_backend(tmp_path, root, data, *, managed_by=None):
@@ -478,7 +484,13 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
     (backup / "realm").mkdir(parents=True)
     (backup / "support" / "runtime" / "realms" / "original-realm").mkdir(parents=True)
     (backup / "realm" / "workspace.txt").write_text("original bytes", encoding="utf-8")
-    write_json(backup / "support" / "runtime" / "catalog.json", {"selected_realm_id": "original-realm"})
+    write_json(backup / "support" / "runtime" / "catalog.json", {
+        "version": 1,
+        "selected_realm_id": "original-realm",
+        "realms": [{"realm_id": "original-realm", "display_name": "Original workspace",
+                    "data_root": str(realm_root)}],
+        "source_profiles": {},
+    })
     write_json(backup / "support" / "runtime" / "realms" / "original-realm" / "realm.json",
                {"realm_id": "original-realm"})
 
@@ -521,3 +533,218 @@ def test_public_cli_restores_removed_realm_before_mutable_checks_or_update_input
     assert (realm_root / "workspace.txt").read_text(encoding="utf-8") == "original bytes"
     assert read_json(data / "runtime" / "catalog.json")["selected_realm_id"] == "original-realm"
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+
+
+def _interrupted_bound_task_restore(tmp_path, monkeypatch):
+    """Drive the real rollback transaction into the legacy catalog-gap shape."""
+    import importlib.util
+
+    fixture_path = Path(__file__).with_name("test_installer_transaction_authority.py")
+    spec = importlib.util.spec_from_file_location("bound_task_restore_fixture", fixture_path)
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    (backend, data, paths, realm, boundary, manager_calls, old, candidate,
+     backup_root, journal_path) = fixture._readable_restore_gap(tmp_path, monkeypatch)
+
+    (realm / "workspace-state.txt").write_text("candidate realm", encoding="utf-8")
+    shutil.copytree(realm, backup_root / "realm")
+    (backup_root / "realm" / "workspace-state.txt").write_text(
+        "old realm", encoding="utf-8")
+
+    # Run the real transaction driver through candidate activation failure.
+    # The simulated pre-amendment restore then replaces the realm, deletes its
+    # catalog, and is interrupted; the public retry uses today's real restore.
+    shutil.copy2(backup_root / "support" / "runtime" / "catalog.json", paths.catalog_path)
+    switch(backend.root, old)
+    stop_versions = []
+    backend.stop = lambda version, _data: stop_versions.append(version)
+
+    class RestoreInterrupted(BaseException):
+        pass
+
+    def interrupted_restore(_old, _data, _realm, _backup):
+        (realm / "workspace-state.txt").write_text("old realm", encoding="utf-8")
+        paths.catalog_path.unlink()
+        raise RestoreInterrupted()
+
+    backend.restore = interrupted_restore
+    installer = Installer(backend.root, data, backend, say=lambda _line: None)
+
+    def fail_candidate_activation(version, _data, _realm):
+        backend._transaction_launch_intent("service_start", version)
+        raise VerificationError("candidate activation failed")
+
+    try:
+        installer._run_update_transaction(
+            old, read_json(journal_path)["realm"],
+            prepare=lambda: candidate,
+            stop=backend.stop,
+            switch_candidate=lambda version: switch(backend.root, version),
+            switch_old=lambda version, _candidate: switch(backend.root, version),
+            activate=fail_candidate_activation,
+            activate_old=lambda *_args: None,
+            backup=lambda *_args: {"root": str(backup_root), "kind": "clone"},
+            migrate=lambda *_args: None,
+        )
+    except RestoreInterrupted:
+        pass
+    else:
+        pytest.fail("the simulated restore interruption did not occur")
+
+    transaction = read_json(journal_path)
+    assert stop_versions == [old, candidate]  # rollback retained the candidate launch context
+    assert transaction["step"] == "recovering"
+    assert transaction["launch_intent"] == {
+        "operation_id": transaction["operation_id"],
+        "purpose": "service_start",
+        "version": candidate.document(),
+    }
+    assert not paths.catalog_path.exists()
+    # Model a subsequent selected pointer to the old version. Recovery must
+    # still validate the retained candidate action using launch_intent.
+    switch(backend.root, old)
+    backend.stop = types.MethodType(Backend.stop, backend)
+    backend.restore = types.MethodType(Backend.restore, backend)
+    return (fixture, backend, data, paths, realm, boundary, manager_calls, old,
+            candidate, backup_root, journal_path, transaction["operation_id"])
+
+
+@pytest.mark.parametrize("mutation", ["early", "callback", "operation_id"])
+def test_public_cli_recovers_bound_windows_task_after_catalog_gap_refuses_mutation(
+        tmp_path, monkeypatch, mutation):
+    """A bound action stays valid through both real recovery validations only."""
+    (fixture, backend, data, paths, realm, boundary, manager_calls, old,
+     candidate, backup_root, journal_path, operation_id) = _interrupted_bound_task_restore(
+        tmp_path, monkeypatch)
+
+    backend.service.system = "win32"
+    backend.service.validate_stop_target = types.MethodType(
+        Service.validate_stop_target, backend.service)
+    action_operation_id = "b" * 32 if mutation == "operation_id" else operation_id
+    launch_version = Version.load(read_json(journal_path)["launch_intent"]["version"])
+    argv = command(launch_version, data, windows=True, log=backend.log,
+                   env_file=backend.service.env_file,
+                   installer_operation_id=action_operation_id)
+    action = [{"Execute": argv[0],
+               "Arguments": subprocess.list2cmdline(argv[1:])}]
+    changed_action = [{**action[0], "Arguments": action[0]["Arguments"] + " --changed"}]
+    query_count = 0
+
+    def query_task(_script):
+        nonlocal query_count
+        query_count += 1
+        if mutation == "early":
+            result = changed_action
+        elif mutation == "operation_id":
+            result = action
+        elif mutation == "callback" and query_count == 2:
+            result = changed_action
+        else:
+            result = action
+        return json.dumps(result)
+
+    backend.service.powershell = query_task
+    restore_calls = []
+    real_restore = backend.restore
+
+    def restore(*args):
+        restore_calls.append(args)
+        return real_restore(*args)
+
+    backend.restore = restore
+    backend.register = lambda *_args, **_kwargs: None
+    backend.start = lambda *_args, **_kwargs: None
+    backend.verify = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
+        parents=True, exist_ok=True))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    journal_before = journal_path.read_bytes()
+    backup_before = fixture._backup_bytes(backup_root)
+    pointer_before = (backend.root / "current").read_bytes()
+    selection_before = backend.service.selection.read_bytes()
+    import sqlite3
+
+    with sqlite3.connect(f"file:{realm / 'realm.sqlite3'}?mode=ro", uri=True) as connection:
+        realm_db_before = tuple(connection.iterdump())
+    result = cli.main(["--update", "--root", str(backend.root),
+                       "--uv", str(tmp_path / "unused-uv"),
+                       "--manifest", str(tmp_path / "unused-manifest")])
+
+    assert result == 1
+    assert query_count == (2 if mutation == "callback" else 1)
+    assert journal_path.read_bytes() == journal_before
+    assert fixture._backup_bytes(backup_root) == backup_before
+    assert not paths.catalog_path.exists()
+    assert backend._restore_catalog_writes == []
+    assert restore_calls == []
+    assert boundary.stop_calls == 0
+    assert manager_calls == []
+    assert (realm / "workspace-state.txt").read_text(encoding="utf-8") == "old realm"
+    assert (backend.root / "current").read_bytes() == pointer_before
+    assert backend.service.selection.read_bytes() == selection_before
+    with sqlite3.connect(f"file:{realm / 'realm.sqlite3'}?mode=ro", uri=True) as connection:
+        assert tuple(connection.iterdump()) == realm_db_before
+    backend.service.disable.assert_not_called()
+    backend.service.stop.assert_not_called()
+
+
+def test_public_cli_recovers_bound_windows_task_after_candidate_activation_failure(
+        tmp_path, monkeypatch):
+    """The retained exact production action reaches C1, catalog repair, and replay."""
+    (fixture, backend, data, paths, realm, boundary, manager_calls, old,
+     candidate, backup_root, journal_path, operation_id) = _interrupted_bound_task_restore(
+        tmp_path, monkeypatch)
+
+    backend.service.system = "win32"
+    backend.service.validate_stop_target = types.MethodType(
+        Service.validate_stop_target, backend.service)
+    launch_version = Version.load(read_json(journal_path)["launch_intent"]["version"])
+    argv = command(launch_version, data, windows=True, log=backend.log,
+                   env_file=backend.service.env_file,
+                   installer_operation_id=operation_id)
+    action = [{"Execute": argv[0],
+               "Arguments": subprocess.list2cmdline(argv[1:])}]
+    task_queries = []
+    backend.service.powershell = lambda script: task_queries.append(script) or json.dumps(action)
+    restore_calls = []
+    real_restore = backend.restore
+    backup_before = fixture._backup_bytes(backup_root)
+
+    def restore(*args):
+        assert paths.catalog_path.is_file()  # C1's atomic catalog repair completed first
+        restore_calls.append(args)
+        return real_restore(*args)
+
+    backend.restore = restore
+    backend.register = lambda *_args, **_kwargs: None
+    backend.start = lambda *_args, **_kwargs: None
+    backend.verify = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
+        parents=True, exist_ok=True))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    assert cli.main(["--update", "--root", str(backend.root),
+                     "--uv", str(tmp_path / "unused-uv"),
+                     "--manifest", str(tmp_path / "unused-manifest")]) == 0
+    assert len(task_queries) == 2  # early preflight and callback revalidation
+    assert boundary.stop_calls == 0  # no owner publication; C1 admits the idle readable realm
+    assert manager_calls == []
+    backend.service.disable.assert_called_once()
+    backend.service.stop.assert_called_once()
+    assert len(backend._restore_catalog_writes) == 2  # C1 repair, then atomic restore replacement
+    assert paths.catalog_path.is_file()
+    assert read_json(paths.catalog_path)["selected_realm_id"] == "realm-1"
+    assert len(restore_calls) == 1
+    assert (realm / "workspace-state.txt").read_text(encoding="utf-8") == "old realm"
+    assert fixture._backup_bytes(backup_root) == backup_before
+    assert current(backend.root) == old
+    assert read_json(journal_path)["step"] == "rolled_back"

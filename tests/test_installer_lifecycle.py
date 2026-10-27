@@ -1508,8 +1508,11 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
     # The new process has no C1 receipt and cannot retain the original child.
     fresh_backend = Backend(backend.root, backend.log, backend.uv)
     fresh_backend.service.systemd = lambda: False
-    fresh_backend.service.recorded = lambda: {"owner": LABEL, "program_root": str(backend.root),
-                                               "data_root": str(data)}
+    write_json(fresh_backend.service.selection, {
+        "owner": LABEL, "program_root": str(backend.root), "data_root": str(data),
+        "realm_id": "realm-1", "realm_root": str(realm),
+    })
+    fresh_backend.service.recorded = lambda: read_json(fresh_backend.service.selection)
     fresh_backend.service.login_service_exists = lambda: False
     fresh_backend.service.validate_stop_target = lambda *_args, **_kwargs: None
     fresh_backend.service.disable = lambda: manager_calls.append("recovery-disable")
@@ -1528,6 +1531,10 @@ def test_installer_cli_recovers_realm_restore_gap_through_real_c1(tmp_path, monk
         "realm": {"realm_id": "realm-1", "realm_root": str(realm)},
         "backup": backup, "stop_authority": authority,
     }
+    if restore_gap == "support_catalog_removed":
+        # A readable realm without its catalog uses the retained metadata and
+        # current C1 fence, independent of historical stop evidence.
+        pending.pop("stop_authority")
     write_json(journal, pending)
     write_json(backend.root / "install.json", {"owner": LABEL, "data_root": str(data)})
     monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: fresh_backend)
