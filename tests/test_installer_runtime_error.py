@@ -23,6 +23,17 @@ def test_no_logged_error_means_no_cause(tmp_path):
     assert _last_logged_error(tmp_path / "missing.log") is None
 
 
+def test_source_ownership_evidence_error_is_preserved(tmp_path):
+    from astrid.installer.backend import Backend
+
+    backend = Backend(tmp_path / "program", tmp_path / "install.log", tmp_path / "uv")
+    discovery = tmp_path / "data" / "runtime" / "discovery.json"
+    discovery.parent.mkdir(parents=True)
+    discovery.write_text("{", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Runtime discovery owner identity cannot be read"):
+        backend.source_checkout_ownership(tmp_path / "data")
+
+
 @pytest.mark.parametrize('failure', [
     subprocess.TimeoutExpired(['runtime'], 1), OSError('owner unavailable'),
 ])

@@ -84,6 +84,8 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
     platform.lock_file(lock.fileno(), blocking=False)
     current_calls = []
     monkeypatch.setattr(cli, "current", lambda _root: current_calls.append(_root))
+    monkeypatch.setattr("astrid.installer.backend.Backend.source_checkout_ownership",
+                        lambda *_args, **_kwargs: pytest.fail("source guard ran before Pinokio lock refusal"))
 
     try:
         if mode == "install":

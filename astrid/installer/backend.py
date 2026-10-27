@@ -321,6 +321,114 @@ class Backend:
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
+    def source_checkout_ownership(self, data: Path, installed: Version | None = None) -> bool:
+        """Resolve whether the selected workspace belongs to source checkouts.
+
+        A live owner's captured identity is authoritative. When stopped, the
+        retained Runtime source profile is admitted through Runtime's normal
+        validator and its two paths must be Git checkout roots; unpacked source
+        archives in a managed version cannot pass that check.
+        """
+        from astrid_runtime.bootstrap import SourceProfile
+        from astrid_runtime.paths import RuntimePaths
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+
+        paths = RuntimePaths.current(data_root=data)
+        try:
+            discovery_before = paths.discovery_path.read_bytes()
+        except FileNotFoundError:
+            discovery_before = None
+        except OSError as exc:
+            raise RuntimeError("Runtime discovery owner identity cannot be read; refusing to change it.") from exc
+        state = self._discovery_owner_state(paths.discovery_path)
+        live_identity = None
+        if state == "live":
+            try:
+                discovery_after = paths.discovery_path.read_bytes()
+                if discovery_before is None or discovery_after != discovery_before:
+                    raise ValueError("Runtime discovery owner identity changed; refusing to change it.")
+                discovery = json.loads(discovery_after.decode("utf-8"))
+                instance_id = discovery.get("runtime_instance_id")
+                endpoint = discovery.get("endpoint")
+                if not isinstance(instance_id, str) or not instance_id or not isinstance(endpoint, str) or not endpoint:
+                    raise ValueError("Runtime discovery owner identity is incomplete; refusing to change it.")
+                boundary = LocalRuntimeBoundary()
+                read_identity = getattr(boundary, "owner_startup_identity", None)
+                health = (read_identity(endpoint=endpoint, instance_id=instance_id) if callable(read_identity)
+                          else boundary._http_health_payload(endpoint))
+                live_identity = self._validated_startup_identity(health, instance_id)
+            except Exception as exc:
+                raise RuntimeError("Live Runtime startup identity cannot be verified; refusing to change it.") from exc
+            if live_identity.get("managed_by") == "source":
+                if installed is not None:
+                    raise RuntimeError("Live Runtime source identity conflicts with the selected managed version; refusing to change it.")
+                return True
+
+        # A selected managed version is explicit evidence that this workspace
+        # is an installed release. Its manifest/profile intentionally names
+        # unpacked source archives and must not be treated as a checkout owner.
+        if installed is not None:
+            return False
+
+        profile_path = paths.source_profiles_dir / "astrid.json"
+        if not os.path.lexists(profile_path):
+            if state == "stale" and installed is None:
+                raise RuntimeError("Stale Runtime discovery has no retained configuration to verify; refusing to change it.")
+            return False
+        try:
+            profile = SourceProfile.load(profile_path, expected_profile="astrid")
+            identity = self._retained_checkout_identity(profile)
+        except Exception as exc:
+            raise ValueError(f"Retained Runtime source configuration cannot be verified: {exc}") from exc
+        source_owned = identity.get("managed_by") == "source"
+        if source_owned and live_identity is not None:
+            raise RuntimeError("Live Runtime identity conflicts with retained source checkout configuration; refusing to change it.")
+        return source_owned
+
+    @staticmethod
+    def _validated_startup_identity(health, instance_id: str) -> dict:
+        if not isinstance(health, dict) or health.get("runtime_instance_id") != instance_id:
+            raise ValueError("Live Runtime startup identity is not bound to its owner instance.")
+        value = health.get("identity")
+        if not isinstance(value, dict):
+            raise ValueError("Live Runtime startup identity is missing or malformed.")
+        if value.get("managed_by") == "source":
+            if (set(value) != {"release", "managed_by", "runtime_head", "agent_head", "dirty", "dirty_hash"}
+                    or type(value.get("release")) is not int or value["release"] != 0
+                    or type(value.get("dirty")) is not bool
+                    or any(not isinstance(value.get(key), str) or len(value[key]) not in (40, 64)
+                           or any(char not in "0123456789abcdef" for char in value[key])
+                           for key in ("runtime_head", "agent_head"))
+                    or not isinstance(value.get("dirty_hash"), str) or len(value["dirty_hash"]) != 64
+                    or any(char not in "0123456789abcdef" for char in value["dirty_hash"])):
+                raise ValueError("Live Runtime source startup identity is malformed.")
+            return value
+        if (set(value) != {"release", "managed_by"} or type(value.get("release")) is not int
+                or value["release"] < 0 or value.get("managed_by") not in (None, "pinokio")):
+            raise ValueError("Live Runtime installed startup identity is malformed.")
+        return value
+
+    @staticmethod
+    def _retained_checkout_identity(profile) -> dict:
+        """Require both retained paths to be actual Git checkouts, not archives."""
+        checkouts = []
+        for raw in (profile.runtime_checkout, profile.source_checkout):
+            configured = Path(raw).expanduser()
+            if not configured.is_absolute():
+                raise ValueError(f"Retained source checkout path must be absolute: {configured}")
+            path = absolute(configured).resolve(strict=True)
+            if not path.is_dir():
+                raise ValueError(f"Retained source checkout is not a directory: {path}")
+            result = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, text=True)
+            if result.returncode:
+                raise ValueError(f"Retained source checkout is not a readable Git worktree: {path}")
+            top = Path(result.stdout.strip()).resolve(strict=True)
+            if top != path:
+                raise ValueError(f"Retained source checkout path is not its Git worktree root: {path}")
+            checkouts.append(path)
+        return {"managed_by": "source", "checkouts": tuple(checkouts)}
+
     @staticmethod
     def _stop_failure(exc: Exception) -> RuntimeOperationError:
         details = getattr(exc, "details", None)

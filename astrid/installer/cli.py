@@ -183,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory contains files Astrid does not own.")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
+                installed = current(root)
+                if installed is not None and not installed.python.is_file():
+                    installed = None
                 if mode != "doctor":
+                    if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
+                        raise ValueError("This Astrid runs from source checkouts; update those instead.")
                     # A read-only busy refusal must precede install/selection
                     # claims. The real stop repeats this under Runtime's fence.
                     backend.preflight_stop(data)
@@ -200,9 +205,6 @@ def main(argv: list[str] | None = None) -> int:
                                    "program_root": str(root), "data_root": str(data), "managed_by": "pinokio"})
                 print(f"Using your workspace at {data}.")
                 manifest = {}
-                installed = current(root)
-                if installed is not None and not installed.python.is_file():
-                    installed = None
                 installed = installed or backend.existing(data)
                 if mode not in {"uninstall", "doctor"} and (mode == "update" or installed is None):
                     if not args.manifest:
