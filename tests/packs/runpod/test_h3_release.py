@@ -276,6 +276,11 @@ def test_rest_payload_cpu_gpu_and_strict_get(monkeypatch):
         provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
         gpu = json.loads(calls[-1].content)
         assert gpu["allowedCudaVersions"] == ["13.0"]
+        provider.min_cuda_version = "13.0"
+        provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
+        minimum = json.loads(calls[-1].content)
+        assert minimum["minCudaVersion"] == "13.0"
+        assert "allowedCudaVersions" not in minimum
         assert gpu["computeType"] == "GPU"
         assert provider.get("missing") is None
         with pytest.raises(build.BuildError):

@@ -283,8 +283,9 @@ class RunPodProvider:
     normalizer also drops volume identity and can conflate lookup errors with
     absence, so use the raw REST representation for these custody checks.
     """
-    def __init__(self, key):
+    def __init__(self, key, *, min_cuda_version=None):
         import httpx
+        self.min_cuda_version = min_cuda_version
         self.http = httpx.Client(base_url="https://rest.runpod.io/v1/", timeout=20,
                                  headers={"Authorization": "Bearer " + key})
 
@@ -342,6 +343,9 @@ class RunPodProvider:
         else:
             payload.update({"computeType": "GPU", "gpuCount": 1, "gpuTypeIds": [pod_type],
                             "gpuTypePriority": "custom", "allowedCudaVersions": ["13.0"]})
+            if self.min_cuda_version:
+                payload.pop("allowedCudaVersions")
+                payload["minCudaVersion"] = self.min_cuda_version
         return self.request("POST", "pods", json=payload)
 
     def get(self, pod_id):
@@ -399,6 +403,7 @@ def main(argv=None):
     parser.add_argument("--max-seconds", type=int, default=10800)
     parser.add_argument("--claim-seconds", type=int, default=1800)
     parser.add_argument("--max-hourly", type=float, default=0.30)
+    parser.add_argument("--min-cuda-version", help="Minimum compatible GPU host CUDA capability instead of an exact version filter")
     parser.add_argument("--handle", type=Path, help="Durable local allocation/recovery handle")
     parser.add_argument("--cleanup-only", action="store_true")
     parser.add_argument("--plan", action="store_true", help="Print pinned inputs without provider calls")
@@ -414,7 +419,7 @@ def main(argv=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.volume):
         parser.error("invalid volume ID")
     handle = args.handle or Path.cwd() / ("h3-build-" + args.volume + ".json")
-    provider = RunPodProvider(os.environ["RUNPOD_API_KEY"])
+    provider = RunPodProvider(os.environ["RUNPOD_API_KEY"], min_cuda_version=args.min_cuda_version)
     try:
         result = build_release(provider, LifecycleTransport, volume_id=args.volume,
                                handle_path=handle, pod_type=args.pod_type,
