@@ -105,6 +105,21 @@ healthy; pack-host had retried 73 times. Compare supervised/no-console child
 startup with standalone Bun next, capturing bounded process error codes rather
 than inferring an authentication problem.
 
+For that comparison, run the profile-only subprocess diagnostic:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\diagnostics\windows_acp_launch_probe.ps1
+```
+
+It reconstructs the configured version and service environment, then compares
+four bounded profile lookups: console versus no-console launches, each with
+stdin ignored or piped to EOF. It reports exit/error codes and file existence,
+without printing the environment or raw child output. It creates no ACP session,
+queries no models, and changes no installation settings. This reconstruction
+cannot read the already-running process's environment; differences between it
+and the live bridge remain possible.
+
 To capture current, bounded evidence without printing the bridge credential or
 environment, run the repository diagnostic from PowerShell:
 
