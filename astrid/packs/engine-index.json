@@ -14,7 +14,7 @@
       "platform": "linux-x86_64-cu130",
       "recipe": {
         "path": "packs/runpod/recipe.linux-cu130.json",
-        "sha256": "02e25512f50bd5e45adb610739313cc651a81cf0556f4c73b4cf0c810b96dc60"
+        "sha256": "b89597c7fc859b7b96febf876895eac17f34101d034802d08f78046abbe78a61"
       }
     },
     {

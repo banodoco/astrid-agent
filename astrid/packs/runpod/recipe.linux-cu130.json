@@ -88,7 +88,25 @@
         "path": "custom_nodes.lock",
         "sha256": "7741945b99176bedf97fd14009539156ccccde41c3cbe4f03b9f26df0ccead42"
       },
-      "source_installs": []
+      "source_installs": [
+        {
+          "source": "vibecomfy",
+          "argv": [
+            "{install_root}/runtime/bootstrap/bin/uv",
+            "--no-config",
+            "pip",
+            "install",
+            "--python",
+            "{python}",
+            "--no-deps",
+            "--no-build-isolation",
+            "."
+          ],
+          "check_modules": [
+            "vibecomfy"
+          ]
+        }
+      ]
     }
   ],
   "primary_environment": "comfy",
