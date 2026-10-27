@@ -569,3 +569,14 @@ def test_legacy_tiny_redirect_part_is_quarantined_before_resume(tmp_path):
     assert starts == [0]
     assert destination.read_bytes() == payload
     assert part.with_name(part.name + ".quarantine").read_bytes() == b"redirecting to xet"
+
+
+def test_rest_observation_enriches_datacenter_from_existing_sdk(monkeypatch):
+    from runpod_lifecycle import api
+    provider = build.RunPodProvider("test-key")
+    monkeypatch.setattr(provider,"request",lambda *a: {"id":"p","gpuCount":1,"networkVolumeId":"v"})
+    monkeypatch.setattr(api,"_get_runpod",lambda: SimpleNamespace(get_pod=lambda *a,**kw: {"machine":{"dataCenterId":"EUR-NO-1"}}))
+    result=provider.get("p")
+    assert result["machine"]["dataCenterId"] == "EUR-NO-1"
+    assert result["computeType"] == "GPU"
+    assert result["networkVolumeId"] == "v"

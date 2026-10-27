@@ -377,7 +377,18 @@ class RunPodProvider:
             raise error(str(exc)) from None
 
     def get(self, pod_id):
-        return self.request("GET", "pods/" + quote(pod_id, safe=""))
+        pod = self.request("GET", "pods/" + quote(pod_id, safe=""))
+        if pod is None:
+            return None
+        if not pod.get("dataCenterId") and not (pod.get("machine") or {}).get("dataCenterId"):
+            from runpod_lifecycle import api
+            sdk = api._get_runpod()
+            observed = sdk.get_pod(pod_id, api_key=self._api_key)
+            if isinstance(observed, dict):
+                pod["machine"] = observed.get("machine") or pod.get("machine") or {}
+        if pod.get("computeType") is None and type(pod.get("gpuCount")) is int:
+            pod["computeType"] = "GPU" if pod["gpuCount"] > 0 else "CPU"
+        return pod
 
     def delete(self, pod_id):
         self.request("DELETE", "pods/" + quote(pod_id, safe=""))
