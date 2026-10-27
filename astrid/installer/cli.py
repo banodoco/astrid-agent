@@ -41,6 +41,108 @@ def _pinokio_claim_is_live(recorded: dict) -> bool:
     return marker.get("owner") == LABEL and marker.get("managed_by") == "pinokio"
 
 
+def _record_update_success(root: Path, data: Path, backend: Backend, job: dict) -> None:
+    from . import update_job
+
+    saved_job = update_job._read_job(root, job["operation_id"])
+    journal = read_json(root / "update-transaction.json")
+    binding = journal.get("update_job") if isinstance(journal, dict) else None
+    if (journal.get("step") != "complete" or not isinstance(binding, dict)
+            or binding.get("operation_id") != job["operation_id"]
+            or saved_job.get("transaction_id") != journal.get("operation_id")):
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. The completed C2 transaction was not bound to this update job.")
+        raise ValueError("The completed installer transaction was not bound to this update job.")
+    installed = current(root)
+    if installed is None or installed.release != job.get("target_release"):
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. The target release is not selected.")
+        raise ValueError("The selected target release did not become current.")
+    realm = backend.workspace(installed, data)["realm_id"]
+    backend.verify(installed, data, realm)
+    discovery = read_json(data / "runtime" / "discovery.json")
+    instance_id = discovery.get("runtime_instance_id")
+    if not isinstance(instance_id, str) or not instance_id or instance_id == job.get("old_instance_id"):
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. The updated Runtime instance was not confirmed.")
+        raise ValueError("The updated Runtime instance was not confirmed.")
+    identity = _canonical_identity(discovery, instance_id)
+    if identity != {"release": job.get("target_release"), "managed_by": None}:
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. The updated Runtime identity did not match the target.")
+        raise ValueError("The updated Runtime identity did not match the target release.")
+    update_job._write_job(root, job["operation_id"], state="updated",
+                          message=f"Updated to release {installed.release}.")
+
+
+def _record_update_failure(root: Path, data: Path, backend: Backend, job: dict,
+                           accepted_old, failure: BaseException) -> None:
+    from . import update_job
+
+    journal = read_json(root / "update-transaction.json")
+    saved_job = update_job._read_job(root, job["operation_id"])
+    binding = journal.get("update_job") if isinstance(journal, dict) else None
+    linked = (isinstance(binding, dict) and binding.get("operation_id") == job["operation_id"]
+              and saved_job.get("transaction_id") == journal.get("operation_id"))
+    step = journal.get("step") if linked else None
+    if journal and journal.get("step") not in {"complete", "rolled_back"}:
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. Run the install line to recover the interrupted update.",
+                              transaction_id=journal.get("operation_id") if linked else None)
+        return
+    selected = current(root)
+    if selected is None:
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. No current Astrid version is selected.")
+        return
+    try:
+        if step == "rolled_back" and linked:
+            if selected.document() != accepted_old.document():
+                raise ValueError("The old version was not restored.")
+            realm = backend.workspace(selected, data)["realm_id"]
+            backend.verify(selected, data, realm)
+            restored_id = read_json(data / "runtime" / "discovery.json").get("runtime_instance_id")
+            if not isinstance(restored_id, str) or not restored_id or restored_id == job.get("old_instance_id"):
+                raise ValueError("The restored Runtime instance was not confirmed.")
+            discovery = read_json(data / "runtime" / "discovery.json")
+            if _canonical_identity(discovery, restored_id) != job.get("old_identity"):
+                raise ValueError("The restored Runtime identity did not match the prior release.")
+            message = f"Rolled back: {_safe_failure_line(failure)}"
+            update_job._write_job(root, job["operation_id"], state="rolled_back", message=message,
+                                  transaction_id=journal.get("operation_id"))
+            return
+        # A pre-stop or staged failure may leave C2 complete/absent. Report
+        # failed only when the old selected owner still passes canonical ready.
+        if selected.document() != accepted_old.document():
+            raise ValueError("The accepted old version is no longer selected.")
+        realm = backend.workspace(selected, data)["realm_id"]
+        backend.verify(selected, data, realm)
+        discovery = read_json(data / "runtime" / "discovery.json")
+        instance_id = discovery.get("runtime_instance_id")
+        if _canonical_identity(discovery, instance_id) != job.get("old_identity"):
+            raise ValueError("The previous Runtime identity is not ready.")
+        update_job._write_job(root, job["operation_id"], state="failed",
+                              message=f"Failed: {_safe_failure_line(failure)}")
+    except (Exception, KeyboardInterrupt):
+        update_job._write_job(root, job["operation_id"], state="recovery-needed",
+                              message="Recovery needed. Astrid could not confirm the previous Runtime is ready.",
+                              transaction_id=journal.get("operation_id") if journal else None)
+
+
+def _safe_failure_line(failure: BaseException) -> str:
+    value = " ".join(str(failure).replace("\x00", " ").splitlines()).strip()
+    return (value or "Update failed.")[:180]
+
+
+def _canonical_identity(discovery: dict, instance_id: str) -> dict:
+    endpoint = discovery.get("endpoint") or discovery.get("door_endpoint")
+    if not isinstance(endpoint, str) or not endpoint or not isinstance(instance_id, str):
+        raise ValueError("The Runtime startup identity is unavailable.")
+    from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+    health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
+    return Backend._validated_startup_identity(health, instance_id)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or update Astrid.")
     mode = result.add_mutually_exclusive_group()
@@ -54,6 +156,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--managed-by", choices=["pinokio"], help="install without a login service; Pinokio owns the process")
     result.add_argument("--data-root", type=Path, help="absolute workspace support directory")
     result.add_argument("--manifest", type=Path, help="local copy of the pinned hosted install manifest")
+    result.add_argument("--update-job", help=argparse.SUPPRESS)
     result.add_argument("--uv", type=Path, help="absolute pinned uv executable supplied by the bootstrap")
     result.add_argument("--sandbox", action="store_true",
                         help="run inside a seccomp sandbox such as OpenShell: Runtime's sandbox process control "
@@ -73,6 +176,14 @@ def main(argv: list[str] | None = None) -> int:
         parser().error("--update-app requires --managed-by pinokio and keeps the existing workspace and process settings.")
     if args.sandbox and mode not in ("install", "update"):
         parser().error("--sandbox is only valid for install or update.")
+    if args.update_job and (not args.root or not args.root.is_absolute() or not args.data_root
+                            or not args.data_root.is_absolute() or not args.manifest
+                            or args.update_app or args.uninstall or args.doctor is not None
+                            or args.managed_by or args.sandbox or args.delete_data or args.update):
+        parser().error("--update-job requires the selected absolute roots and manifest.")
+    if args.update_job and (len(args.update_job) != 32
+                            or any(char not in "0123456789abcdef" for char in args.update_job)):
+        parser().error("--update-job is invalid.")
     from runtime_protocol import platform
     log = platform.log_dir() / "install.log"
     try:
@@ -82,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log, uv, process_control=process_control)
         marker = read_json(root / "install.json")
+        if args.update_job and marker.get("managed_by") is not None:
+            raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
         if (args.update_app or (mode in {"install", "update"} and args.root
                 and marker.get("managed_by") == "pinokio")):
             from .app_update import recover_app, selection, update_app, update_pinokio
@@ -90,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             pending = read_json(root / "update-transaction.json")
             # The session holds the lifetime installer lock. The shared update
             # adapter serializes the journal separately and takes that lock
-            # only for pointer writes, then hands it to its bound foreground.
+            # only for pointer writes, then hands it to the journal-admitted foreground.
             selection(root, backend, allow_transaction=bool(pending))
             if pending and pending.get("step") not in {"complete", "rolled_back"}:
                 recover_app(root, backend)
@@ -225,6 +338,31 @@ def main(argv: list[str] | None = None) -> int:
                 installed = current(root)
                 if installed is not None and not installed.python.is_file():
                     installed = None
+                update_job_record = None
+                if args.update_job:
+                    from . import update_job as update_jobs
+
+                    update_job_record = update_jobs._read_job(root, args.update_job)
+                    accepted_old, selected_data = update_jobs._validate_worker_binding(root, update_job_record)
+                    metadata = update_job_record.get("metadata", {})
+                    if (update_job_record.get("state") != "active" or installed is None
+                            or installed.document() != update_job_record.get("old_version")
+                            or accepted_old.document() != installed.document()
+                            or data != selected_data or root != absolute(update_job_record.get("program_root", ""))
+                            or args.manifest != Path(metadata.get("manifest_path", ""))):
+                        raise ValueError("The accepted update job no longer matches this installation.")
+                    update_jobs.validate_update_inputs(
+                        update_jobs._validate_input_paths(metadata)[0],
+                        {"manifest_sha256": metadata["manifest_sha256"],
+                         "bootstrap_sha256": metadata["bootstrap_sha256"],
+                         "release": metadata["release"]}, installed.release)
+                    if validate_manifest(read_json(args.manifest)).get("release", 0) != update_job_record.get("target_release"):
+                        raise ValueError("The selected update manifest release changed.")
+                    if (Path(update_job_record["log_path"]).is_symlink()
+                            or not Path(update_job_record["log_path"]).is_relative_to(root)):
+                        raise ValueError("The accepted update log path is invalid.")
+                    backend.log = Path(update_job_record["log_path"])
+                    log = backend.log
                 if mode != "doctor":
                     if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
                         raise ValueError("This Astrid runs from source checkouts; update those instead.")
@@ -253,7 +391,19 @@ def main(argv: list[str] | None = None) -> int:
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)
                 options = {"managed_by": managed_by} if managed_by else {}
-                Installer(root, data, backend, **options).run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
+                installer = Installer(root, data, backend, **options)
+                if args.update_job:
+                    backend._update_job_operation_id = args.update_job
+                    try:
+                        installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
+                    except (Exception, KeyboardInterrupt) as update_failure:
+                        _record_update_failure(root, data, backend, update_job_record,
+                                               accepted_old, update_failure)
+                        raise
+                    else:
+                        _record_update_success(root, data, backend, update_job_record)
+                else:
+                    installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
             finally:
                 if locked:
                     platform.unlock_file(lock.fileno())

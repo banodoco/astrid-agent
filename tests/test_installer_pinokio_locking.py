@@ -57,12 +57,26 @@ def test_foreground_run_is_refused_while_an_installer_holds_the_lock(tmp_path, m
     from runtime_protocol import platform
 
     home = _set_home(tmp_path, monkeypatch)
+    root = default_program_root(home, sys.platform)
+    data = tmp_path / "workspace"
+    folder = root / "versions" / "old"
+    folder.mkdir(parents=True)
+    python, profile = folder / "bin" / "python", folder / "profile.json"
+    python.parent.mkdir(parents=True)
+    python.write_text("placeholder", encoding="utf-8")
+    profile.write_text("{}\n", encoding="utf-8")
+    version = Version(folder, python, profile, {"PATH": os.defpath}, managed_by="pinokio")
+    write_json(folder / "version.json", version.document())
+    switch(root, version)
+    write_json(root / "install.json", {
+        "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
+    })
     path = installer_lock_path(home, sys.platform)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as held:
         platform.lock_file(held.fileno(), blocking=False)
         with pytest.raises(ValueError, match="already running or being installed"):
-            foreground.launch(tmp_path / "not-an-install", [], system=sys.platform)
+            foreground.launch(root, [], system=sys.platform)
         platform.unlock_file(held.fileno())
 
 
@@ -189,6 +203,15 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     old = Version(folder, python, profile, {"PATH": os.defpath})
     write_json(folder / "version.json", old.document())
     switch(root, old)
+    candidate_folder = root / "versions" / "candidate"
+    candidate_python = candidate_folder / "py" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("placeholder", encoding="utf-8")
+    candidate_profile = candidate_folder / "profile.json"
+    candidate_profile.write_text("{}\n", encoding="utf-8")
+    candidate = Version(candidate_folder, candidate_python, candidate_profile,
+                        {"PATH": os.defpath}, release=old.release + 1, managed_by="pinokio")
+    write_json(candidate_folder / "version.json", candidate.document())
     write_json(root / "install.json", {
         "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
     })
@@ -202,8 +225,8 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     publish(paths, realm_root)
     write_json(root / "update-transaction.json", {
         "format": "astrid-install-update/v1", "operation_id": "a" * 32,
-        "step": "stopped", "data_root": str(data), "old": old.document(),
-        "candidate": None, "realm": realm, "backup": None,
+        "transaction_kind": "migration", "step": "stopped", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(), "realm": realm, "backup": None,
     })
     events = []
     from runtime_protocol import platform
@@ -245,30 +268,8 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
             events.append("down")
             return {"status": "stopped"}
 
-    # Reproduce the durable callback-before-signal crash gap. Recovery must
-    # retain C1's exact identity, rather than adopting whichever owner happens
-    # to be published when this new CLI controller starts.
-    from astrid_runtime.bootstrap import installer_stop
-
-    class BeforeSignal(BaseException):
-        pass
-
-    initial_boundary = RecoveryBoundary()
-
-    def die_before_signal(**_kwargs):
-        raise BeforeSignal()
-
-    initial_boundary.stop_owner = die_before_signal
-
-    def retain_authority(authority):
-        transaction = read_json(root / "update-transaction.json")
-        transaction["stop_authority"] = authority
-        write_json(root / "update-transaction.json", transaction)
-
-    with pytest.raises(BeforeSignal):
-        installer_stop(paths, initial_boundary, stop_manager=lambda: pytest.fail("manager before stop"),
-                       record_stop_authority=retain_authority)
-
+    # Recovery uses the same fenced C1 stop as an ordinary down, with no
+    # serialized stop receipt or launch tag in the durable journal.
     monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary", RecoveryBoundary)
     monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
 
@@ -346,6 +347,7 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     assert "verify" not in events
     assert boundary_calls == ["stop"]
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+    assert "stop_authority" not in read_json(root / "update-transaction.json")
     assert (root / "current").read_text().strip() == "old"
 
 
@@ -390,6 +392,15 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     old = Version(folder, python, profile, {"PATH": os.defpath})
     write_json(folder / "version.json", old.document())
     switch(root, old)
+    candidate_folder = root / "versions" / "candidate"
+    candidate_python = candidate_folder / "py" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("placeholder", encoding="utf-8")
+    candidate_profile = candidate_folder / "profile.json"
+    candidate_profile.write_text("{}\n", encoding="utf-8")
+    candidate = Version(candidate_folder, candidate_python, candidate_profile,
+                        {"PATH": os.defpath}, release=old.release + 1, managed_by="pinokio")
+    write_json(candidate_folder / "version.json", candidate.document())
     write_json(root / "install.json", {
         "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
     })
@@ -401,8 +412,9 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     publish(paths, realm_root)
     write_json(root / "update-transaction.json", {
         "format": "astrid-install-update/v1", "operation_id": "b" * 32,
-        "step": "stopped", "data_root": str(data), "old": old.document(),
-        "candidate": None, "realm": {"realm_id": "selected", "realm_root": str(realm_root)},
+        "transaction_kind": "migration", "step": "stopped", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": {"realm_id": "selected", "realm_root": str(realm_root)},
         "backup": None,
     })
     manifest = tmp_path / "manifest.json"
