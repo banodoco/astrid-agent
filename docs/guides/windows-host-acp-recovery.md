@@ -333,7 +333,7 @@ the Windows agent executes the procedure:
 | Input | Prerelease qualification selection |
 | --- | --- |
 | Bootstrap `public/install.ps1` and base manifest/tool pins | App `d174f667aa04a7c43e6b0f767abb168b6022a6ab` |
-| Bootstrap Agent package | Agent `cf4db6a1956451fe5233326f17445fdf08ca7151` (or a later explicitly reviewed descendant with the same recovery changes) |
+| Bootstrap Agent package | Agent `44d965542f80d8b1c7a2b4680eb0c2d419bad665` (the reviewed canonical code pinned by this private package) |
 | Bootstrap Runtime and Python client packages | Runtime `9fed6cfc02a1a130011f97af701f5edf9eb374b0` |
 | Retained candidate | The candidate already named by the installation's interrupted transaction, including incident `3204bb00-6d53a190-bffecb79` |
 
@@ -346,19 +346,23 @@ replace the retained candidate selected for forward recovery. Do not substitute
 the selected old environment's Python or the withdrawn helper ZIP. Confirm the
 Agent native recovery CI at the exact tested ref before starting this journey.
 
-From that supplied directory, the commands are:
+The runnable private ZIP already includes its checksum-pinned manifest and
+bootstrap. Follow its `READ-ME-FIRST.txt`: `0-Inspect.cmd`, `1-Prepare.cmd`, manual
+Windows Restart, then `2-Resume.cmd` and `0-Inspect.cmd`. The packaged wrapper
+forwards only explicit recovery to the new isolated installer. For an agent
+performing the qualification sequence explicitly, use:
 
 ```powershell
-& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover status
-& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover prepare
-# Negative case: same-boot resume must refuse without quarantining markers.
-& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover resume
+.\Invoke-AstridRecovery.ps1 -Action status
+.\Invoke-AstridRecovery.ps1 -Action prepare
+# Qualification negative case: same-boot resume must refuse without quarantine.
+.\Invoke-AstridRecovery.ps1 -Action resume
 # Save other work, use Windows Restart, sign in, and return to this directory.
-& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover resume
-& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover status
+.\Invoke-AstridRecovery.ps1 -Action resume
+.\Invoke-AstridRecovery.ps1 -Action status
 ```
 
-Append the same absolute `--root` on every line for a custom installation.
+Append the same absolute `-ProgramRoot` on every line for a custom installation.
 Before Restart, retain the nonzero same-boot refusal and `prepared` status,
 checkpoint path/hash, operation/realm/candidate identities, disabled/nonrunning
 Astrid task, and unchanged live logical data/backup digests. An unavailable,
