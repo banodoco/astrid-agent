@@ -80,7 +80,7 @@ def recovery_fixture(tmp_path, monkeypatch):
     tx = read_json(installer.root / 'update-transaction.json')
     candidate, old = Version.load(tx['candidate']), backend.old
     realm = Path(tx['realm']['realm_root'])
-    realm.mkdir(parents=True)
+    # Runtime publishes its staged canonical directory at an absent name.
     RealmStore.initialize(realm, realm_id=tx['realm']['realm_id']).close()
     (realm / 'new-user-data').write_text('newer than retained backup')
     support = installer.data / 'runtime'
