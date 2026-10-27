@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from astrid.installer import app_update as update
-from astrid.installer.core import Version, current, read_json, switch, write_json
+from astrid.installer.core import RuntimeOperationError, Version, current, read_json, switch, write_json
 from astrid.installer.service import LABEL
 
 
@@ -160,13 +160,35 @@ def test_start_failure_restores_only_app_pointer_and_relaunches_old(installed):
     assert installed.record["unrelated"] == {"keep": True}
 
 
-def test_stop_refusal_never_switches_or_starts_candidate(installed):
+def test_generic_runtime_start_error_is_not_a_stop_refusal(installed):
+    def start(version, *_):
+        installed.calls.append("start:" + version.root.name)
+        if version == installed.candidate:
+            raise RuntimeOperationError("candidate Runtime failed", details={"kind": "startup"})
+
+    installed.lifecycle.start = start
+    with pytest.raises(RuntimeOperationError, match="candidate Runtime failed") as raised:
+        run(installed)
+
+    assert raised.value.stop_refused is False
+    assert current(installed.root) == installed.old
+    assert installed.calls == ["stage", "stop:old", "start:new", "stop:new", "start:old"]
+
+
+@pytest.mark.parametrize("category", ["busy", "timeout", "identity"])
+def test_stop_refusal_never_probes_status_switches_or_starts_candidate(installed, category):
+    details = {"kind": category, "blockers": [{"task_id": "task-1"}]}
+
     def stop(*_):
-        raise RuntimeError("active work")
+        raise RuntimeOperationError("Astrid is busy (1 tasks running). Try again when they finish.",
+                                    details=details, stop_refused=True)
 
     installed.lifecycle.stop = stop
-    with pytest.raises(RuntimeError, match="active work"):
+    installed.lifecycle.running = Mock(side_effect=AssertionError("must not probe after refusal"))
+    with pytest.raises(RuntimeOperationError) as raised:
         run(installed)
+    assert raised.value.details == details
+    installed.lifecycle.running.assert_not_called()
     assert current(installed.root) == installed.old
     assert installed.calls == ["stage"]
     assert installed.record["identity"] == installed.old.document()["identity"]
@@ -174,14 +196,36 @@ def test_stop_refusal_never_switches_or_starts_candidate(installed):
 
 def test_controller_cleanup_failure_after_down_restarts_old(installed):
     def stop(*_):
-        raise RuntimeError("controller cleanup")
+        raise RuntimeOperationError("controller cleanup", stop_refused=False, stop_completed=True)
 
     installed.lifecycle.stop = stop
-    installed.lifecycle.running = lambda *_: False
-    with pytest.raises(RuntimeError, match="controller cleanup"):
+    with pytest.raises(RuntimeOperationError, match="controller cleanup"):
         run(installed)
     assert current(installed.root) == installed.old
     assert installed.calls == ["stage", "start:old"]
+
+
+def test_candidate_stop_refusal_does_not_switch_or_relaunch(installed):
+    def start(version, *_):
+        installed.calls.append("start:" + version.root.name)
+        if version == installed.candidate:
+            raise RuntimeError("candidate failed readiness")
+
+    def stop(version, *_args):
+        installed.calls.append("stop:" + version.root.name)
+        if version == installed.candidate:
+            raise RuntimeOperationError("Astrid is busy during rollback", details={"task_count": 1},
+                                        stop_refused=True)
+
+    installed.lifecycle.start = start
+    installed.lifecycle.stop = stop
+
+    with pytest.raises(RuntimeOperationError, match="busy during rollback") as raised:
+        run(installed)
+
+    assert raised.value.details == {"task_count": 1}
+    assert current(installed.root) == installed.candidate
+    assert installed.calls == ["stage", "stop:old", "start:new", "stop:new"]
 
 
 def test_rollback_launcher_incompatible_fails_before_stage(installed):
@@ -296,28 +340,46 @@ def test_cli_requires_explicit_pinokio_mode():
         main(["--update-app"])
 
 
-@pytest.mark.parametrize("busy", [False, True])
-def test_runtime_idle_fence_precedes_any_supervisor_change(installed, busy):
+@pytest.mark.parametrize("failure", [None, "busy", "timeout", "identity"])
+def test_runtime_handoff_precedes_controller_cleanup(installed, failure):
     calls = []
     lifecycle = object.__new__(update.PinokioLifecycle)
     lifecycle.root = installed.root
     lifecycle.lifecycle = installed.root / "lifecycle.mjs"
     lifecycle.node = lambda _: Path("/node")
-    lifecycle.running = lambda *_: True
 
-    def runtime(*args, **kwargs):
-        calls.append("down")
-        assert args == (installed.old, installed.data, "down")
-        assert kwargs["profile"] is True
-        if busy:
-            raise RuntimeError("active work")
+    def runtime_handoff(version, data):
+        calls.append("fence")
+        assert version == installed.old
+        assert data == installed.data
+        if failure:
+            raise RuntimeOperationError("Runtime stop refused", details={"kind": failure}, stop_refused=True)
 
     lifecycle.backend = SimpleNamespace(
-        runtime=runtime, run=lambda *args, **kwargs: calls.append("controller"))
-    if busy:
-        with pytest.raises(RuntimeError, match="active work"):
+        stop=runtime_handoff,
+        run=lambda *args, **kwargs: calls.append("controller"))
+    if failure:
+        with pytest.raises(RuntimeOperationError, match="Runtime stop refused"):
             lifecycle.stop(installed.old, installed.data)
-        assert calls == ["down"]
+        assert calls == ["fence"]
     else:
         lifecycle.stop(installed.old, installed.data)
-        assert calls == ["down", "controller"]
+        assert calls == ["fence", "controller"]
+
+
+def test_pinokio_controller_failure_reports_completed_runtime_stop(installed):
+    lifecycle = object.__new__(update.PinokioLifecycle)
+    lifecycle.root = installed.root
+    lifecycle.lifecycle = installed.root / "lifecycle.mjs"
+    lifecycle.node = lambda _: Path("/node")
+
+    lifecycle.backend = SimpleNamespace(
+        stop=lambda _version, _data: None,
+        run=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("controller cleanup failed")),
+    )
+
+    with pytest.raises(RuntimeOperationError, match="controller cleanup failed") as raised:
+        lifecycle.stop(installed.old, installed.data)
+
+    assert raised.value.stop_completed is True
+    assert raised.value.stop_refused is False

@@ -22,6 +22,26 @@ class VerificationError(RuntimeError):
         self.safe_message = safe_message
 
 
+class RuntimeOperationError(RuntimeError):
+    """A Runtime command failed, retaining its machine-readable refusal.
+
+    ``stop_refused`` is true when the enclosing stop operation supplies that
+    context, or when Runtime returns its explicit lifecycle refusal report
+    (including upgrade's internal stop). A generic command error says nothing
+    about a stop.
+    ``stop_completed`` is positive evidence that a stop crossed the Runtime
+    handoff before a later manager action failed. Callers must never infer
+    either property from the human message or a blocker count.
+    """
+
+    def __init__(self, message: str, *, details=None, stop_refused: bool = False,
+                 stop_completed: bool = False) -> None:
+        super().__init__(message)
+        self.details = details
+        self.stop_refused = bool(stop_refused)
+        self.stop_completed = bool(stop_completed) and not self.stop_refused
+
+
 class BackupSpaceError(RuntimeError):
     """The update cannot fit its workspace backup on the program disk."""
 
@@ -213,10 +233,10 @@ class Installer:
             if retained.parent != absolute(self.root / "backups"):
                 raise ValueError("The interrupted update backup is outside this installation.")
         self.say("Recovering the interrupted Astrid update.")
-        self._save_update(transaction, "recovering")
         # These actions can themselves be interrupted. Keep the transaction and
         # image until the old owner has passed verification; restore is replayable.
         self.backend.stop(candidate or old, self.data)
+        self._save_update(transaction, "recovering")
         if backup is not None:
             self.backend.restore(old, self.data, realm, backup)
         if old.root.parent == self.root / "versions":
@@ -231,8 +251,6 @@ class Installer:
         if mode not in {"doctor", "uninstall"}:
             self._recover_update()
         old = current(self.root)
-        if old is not None and mode not in {"doctor", "uninstall"}:
-            install_launcher(self.root)
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)
@@ -260,10 +278,11 @@ class Installer:
             # Repair may be a no-op when the service is already healthy. Still
             # migrate the existing records in place without touching services.
             persist = getattr(self.backend, "persist_identity", None)
-            if persist is not None:
-                persist(old)
             realm = self.backend.workspace(old, self.data)
             if self.managed_by == "pinokio":
+                install_launcher(self.root)
+                if persist is not None:
+                    persist(old)
                 self.backend.register(old, self.data)
                 try:
                     self.backend.sync_skills(old)
@@ -279,11 +298,17 @@ class Installer:
                 pass
             else:
                 if not self.backend.restart_required():
+                    install_launcher(self.root)
+                    if persist is not None:
+                        persist(old)
                     self.say("Open https://astrid.haus")
                     self.backend.open()
                     return
             self.say("Restarting Astrid with the installed version.")
             self.backend.stop(old, self.data)
+            install_launcher(self.root)
+            if persist is not None:
+                persist(old)
             self.backend.register(old, self.data)
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
@@ -310,9 +335,15 @@ class Installer:
                 }
                 self._save_update(transaction, "prepared")
                 self.say("Stopping Astrid before the update.")
-                # A stop can fail after stopping the manager: recovery must run.
+                # Only a successful handoff, or explicit Runtime evidence that
+                # the owner stopped before a later action failed, permits rollback.
+                try:
+                    self.backend.stop(old, self.data)
+                except (Exception, KeyboardInterrupt) as stop_failure:
+                    stopped = (isinstance(stop_failure, RuntimeOperationError)
+                               and stop_failure.stop_completed)
+                    raise
                 stopped = True
-                self.backend.stop(old, self.data)
                 self._save_update(transaction, "stopped")
                 self.say("Backing up your workspace.")
                 backup = self.backend.backup(old, self.data, realm)
@@ -361,6 +392,11 @@ class Installer:
             if transaction is not None:
                 self._save_update(transaction, "complete")
         except (Exception, KeyboardInterrupt) as failure:
+            # A stop refusal, including upgrade's internal lifecycle check,
+            # keeps its structured Runtime result intact.
+            # Do not run any rollback or cleanup path after that refusal.
+            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
+                raise
             if old and stopped:
                 try:
                     self.backend.stop(candidate or old, self.data)
@@ -375,11 +411,15 @@ class Installer:
                     if transaction is not None:
                         self._save_update(transaction, "rolled_back")
                 except (Exception, KeyboardInterrupt) as recovery:
+                    if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
+                        raise recovery
                     raise RuntimeError(f"Update failed ({failure}); recovery also failed ({recovery}).") from failure
             elif candidate is not None:
                 try:
                     self.backend.stop(candidate, self.data)
                 except (Exception, KeyboardInterrupt) as cleanup:
+                    if isinstance(cleanup, RuntimeOperationError) and cleanup.stop_refused:
+                        raise cleanup
                     failure.add_note(f"Stopping the failed installation also failed: {cleanup!r}")
             raise
         if backup:

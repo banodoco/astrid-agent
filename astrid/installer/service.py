@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import platform as system_platform
 import plistlib
 import subprocess
@@ -155,6 +156,9 @@ class Service:
         self.home, self.system, self.say = home or Path.home(), system or sys.platform, say
         self.selection = install_selection(self.home, self.system)
         self.env_file = root / "service-env.json"
+        # Only this launch controller retains custody of an unpublished child.
+        # A persisted PID/birth receipt alone never authorizes its termination.
+        self._foreground_process = None
         if self.system == "darwin":
             self.path = self.home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
         elif self.system == "linux":
@@ -187,6 +191,69 @@ class Service:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None) -> None:
+        """Read-only confirmation that the named OS job belongs to this owner.
+
+        The install selection alone cannot authorize stopping a label that was
+        replaced outside the installer. Runtime still owns the actual stop.
+        """
+        self._validated_systemd_stop = False
+        if self.system == "linux":
+            if not self.systemd():
+                foreground = self.recorded().get("foreground")
+                if self.path.exists() and (
+                    not isinstance(foreground, dict)
+                    or not foreground.get("birth_id")
+                    or (owner_pid is not None and foreground.get("pid") != owner_pid)
+                ):
+                    raise ValueError("Cannot validate the registered systemd manager; refusing to stop it.")
+                return  # The retained foreground child is Runtime's to validate.
+            value = self.run(["systemctl", "--user", "show", "astrid.service",
+                              "--property=MainPID,FragmentPath,LoadState"])
+            fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
+            pid = int(fields["MainPID"])
+            if fields.get("LoadState") == "not-found" and pid == 0:
+                return
+            if (fields.get("FragmentPath") != str(self.path)
+                    or pid not in {0, owner_pid}):
+                raise ValueError("The systemd service does not match the selected Runtime owner.")
+            self._validated_systemd_stop = True
+            return
+        if self.system == "darwin":
+            target = f"gui/{platform.current_user()}/{LABEL}"
+            try:
+                value = self.run(["launchctl", "print", target])
+            except subprocess.CalledProcessError as exc:
+                if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
+                    return
+                raise
+            import re
+
+            match = re.search(r"^\s*pid = (\d+)\s*$", value, re.MULTILINE)
+            if match is None or int(match[1]) != owner_pid:
+                raise ValueError("The launchd service does not match the selected Runtime owner.")
+            return
+        # Task Scheduler exposes the registered action, rather than a reliable
+        # owner PID. Compare it with the command for an owned retained version.
+        value = self.powershell(TASK_QUERY + "if ($t) { ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments) }")
+        if not value.strip():
+            return
+        actions = json.loads(value)
+        candidates = [version] if version is not None else []
+        for folder in (self.root / "versions").glob("*"):
+            if folder.is_dir() and not folder.is_symlink() and (folder / "version.json").is_file():
+                candidate = Version.load(read_json(folder / "version.json"))
+                if candidate.root != folder:
+                    raise ValueError("The retained service version is outside this installation.")
+                candidates.append(candidate)
+        allowed = []
+        for candidate in candidates:
+            for env_file in (None, self.env_file):
+                argv = command(candidate, data, windows=True, log=self.log, env_file=env_file)
+                allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
+        if actions not in allowed:
+            raise ValueError("The scheduled task does not match the selected installation.")
+
     def disable(self) -> None:
         if self.system == "darwin":
             if self.path.exists():
@@ -200,34 +267,25 @@ class Service:
                     return  # A missing/unloaded login item is already stopped.
                 self.run(["launchctl", "bootout", target])
         elif self.system == "linux":
-            if self.systemd() and self.path.exists():
+            available = self.systemd()
+            if getattr(self, "_validated_systemd_stop", False) and not available:
+                raise RuntimeError("The validated systemd manager is no longer available.")
+            if available and self.path.exists():
                 self.run(["systemctl", "--user", "disable", "astrid.service"])
         else:
             self.powershell(TASK_QUERY + "if ($t) { $t | Disable-ScheduledTask | Out-Null }")
 
     def stop_foreground(self) -> None:
-        """Stop a recorded fallback owner that has not published discovery yet."""
-        foreground = self.recorded().get("foreground")
-        if foreground is None:
-            return
-        if (not isinstance(foreground, dict) or type(foreground.get("pid")) is not int
-                or foreground["pid"] <= 0 or not isinstance(foreground.get("birth_id"), str)
-                or not foreground["birth_id"].strip()):
-            raise ValueError("The foreground Astrid Runtime identity is incomplete.")
-        pid = foreground["pid"]
-        identity = platform.process_identity(pid)
-        if identity is None or identity.get("birth_id") != foreground["birth_id"]:
-            return  # The recorded incarnation is already gone.
-        if identity.get("pid") != pid or identity.get("uid") != platform.current_user():
-            raise RuntimeError("The foreground Astrid Runtime identity changed; refusing to signal it.")
-        try:
-            platform.signal_process(identity, platform.TERM)
-        except ProcessLookupError:
-            pass  # It exited after observation; never reopen or signal a PID.
+        """Legacy entry point: Runtime owns unpublished-child stop authority."""
+        raise RuntimeError("Use Runtime's validated installer stop handoff for foreground cleanup.")
 
     def stop(self) -> None:
-        if self.system == "linux" and self.systemd() and self.path.exists():
-            self.run(["systemctl", "--user", "stop", "astrid.service"])
+        if self.system == "linux":
+            available = self.systemd()
+            if getattr(self, "_validated_systemd_stop", False) and not available:
+                raise RuntimeError("The validated systemd manager is no longer available.")
+            if available and self.path.exists():
+                self.run(["systemctl", "--user", "stop", "astrid.service"])
         elif self.system == "win32":
             # Runtime's birth-checked down has already drained its children.
             self.powershell(TASK_QUERY + "if ($t -and $t.State -eq 'Running') { $t | Stop-ScheduledTask }")
@@ -307,12 +365,19 @@ class Service:
             process = platform.spawn_tree(command(version, data, env_file=self.env_file), detached=True,
                                           cwd=version.root, env=env, stdin=subprocess.DEVNULL,
                                           stdout=stream, stderr=subprocess.STDOUT)
+        self._foreground_process = process
         identity = platform.process_identity(process.pid)
         if identity is None:
             raise RuntimeError("The foreground Astrid Runtime exited before startup.")
         record = self.recorded()
-        write_json(self.selection, {**record, "foreground": {
-            "pid": process.pid, "birth_id": identity["birth_id"]}})
+        catalog = read_json(data / "runtime" / "catalog.json")
+        realm_id = catalog.get("selected_realm_id")
+        realm = next((row for row in catalog.get("realms", [])
+                      if row.get("realm_id") == realm_id), {})
+        foreground = {"pid": process.pid, "birth_id": identity["birth_id"]}
+        if realm_id and realm.get("data_root"):
+            foreground.update(realm_id=realm_id, realm_root=realm["data_root"])
+        write_json(self.selection, {**record, "foreground": foreground})
 
     def unregister(self) -> None:
         if self.system == "win32":
