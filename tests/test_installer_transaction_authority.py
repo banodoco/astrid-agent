@@ -833,3 +833,339 @@ def test_new_interpreter_recovers_real_completed_c1_stop(tmp_path, monkeypatch, 
     finally:
         if retained.poll() is None:
             platform.stop_tree(retained, grace=0.2)
+
+
+def _readable_restore_gap(tmp_path, monkeypatch, *, managed_by=None):
+    """Build the approved absent-catalog, readable-realm recovery shape."""
+    import importlib
+
+    backend, data, paths, realm, boundary, manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+    runtime_io = importlib.import_module("astrid_runtime.io")
+    atomic_write_json = bootstrap.atomic_write_json
+    io_atomic_write_json = runtime_io.atomic_write_json
+    backend._restore_catalog_writes = []
+
+    def track_catalog_write(path, value):
+        if Path(path) == paths.catalog_path:
+            backend._restore_catalog_writes.append(Path(path))
+        return atomic_write_json(path, value)
+
+    def track_io_catalog_write(path, value):
+        if Path(path) == paths.catalog_path:
+            backend._restore_catalog_writes.append(Path(path))
+        return io_atomic_write_json(path, value)
+
+    monkeypatch.setattr(bootstrap, "atomic_write_json", track_catalog_write)
+    monkeypatch.setattr(runtime_io, "atomic_write_json", track_io_catalog_write)
+    root = backend.root
+    backend.managed_by = managed_by
+    old_root = root / "versions" / "old"
+    candidate_root = root / "versions" / "candidate"
+    old_root.mkdir(parents=True)
+    candidate_root.mkdir(parents=True)
+    old_profile, candidate_profile = old_root / "profile.json", candidate_root / "profile.json"
+    write_json(old_profile, {})
+    write_json(candidate_profile, {})
+    old = Version(old_root, Path(sys.executable), old_profile, {}, 16, managed_by)
+    candidate = Version(candidate_root, Path(sys.executable), candidate_profile, {}, 17, managed_by)
+    write_json(old_root / "version.json", old.document())
+    write_json(candidate_root / "version.json", candidate.document())
+    switch(root, candidate)
+
+    selection = {
+        "owner": LABEL, "program_root": str(root), "data_root": str(data),
+        "realm_id": "realm-1", "realm_root": str(realm),
+    }
+    marker = {"owner": LABEL, "data_root": str(data)}
+    if managed_by:
+        selection["managed_by"] = marker["managed_by"] = managed_by
+    write_json(root / "install.json", marker)
+    write_json(backend.service.selection, selection)
+    backend.service.recorded = lambda: read_json(backend.service.selection)
+    backend.service.validate_stop_target = Mock()
+    backend.service.disable = Mock()
+    backend.service.stop = Mock()
+
+    backup_root = root / "backups" / "restore-1"
+    (backup_root / "support" / "runtime").mkdir(parents=True)
+    retained_catalog = read_json(paths.catalog_path)
+    retained_catalog_path = backup_root / "support" / "runtime" / "catalog.json"
+    write_json(retained_catalog_path, retained_catalog)
+    paths.catalog_path.unlink()
+
+    transaction = {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+        "transaction_kind": "migration", "step": "recovering", "data_root": str(data),
+        "realm": {"realm_id": "realm-1", "realm_root": str(realm)},
+        "old": old.document(), "candidate": candidate.document(),
+        "backup": {"root": str(backup_root), "kind": "clone"},
+    }
+    journal_path = root / "update-transaction.json"
+    write_json(journal_path, transaction)
+    return backend, data, paths, realm, boundary, manager_calls, old, candidate, backup_root, journal_path
+
+
+def _backup_bytes(root):
+    result = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if path.is_symlink():
+            result[relative] = ("symlink", path.readlink())
+        elif path.is_file():
+            result[relative] = ("file", path.read_bytes())
+        elif path.is_dir():
+            result[relative] = ("directory", None)
+    return result
+
+
+def _assert_restore_refusal_unchanged(backend, paths, realm, boundary, manager_calls,
+                                      backup_root, journal_path, pointer_bytes,
+                                      journal_bytes, backup_before, realm_bytes):
+    assert journal_path.read_bytes() == journal_bytes
+    assert _backup_bytes(backup_root) == backup_before
+    assert not paths.catalog_path.exists()
+    assert (backend.root / "current").read_bytes() == pointer_bytes
+    assert boundary.stop_calls == 0
+    assert backend._restore_catalog_writes == []
+    assert (realm / "realm.sqlite3").read_bytes() == realm_bytes
+    assert manager_calls == []
+    backend.service.disable.assert_not_called()
+    backend.service.stop.assert_not_called()
+    backend.service.validate_stop_target.assert_not_called()
+    assert (realm / "realm.sqlite3").is_file()
+
+
+@pytest.mark.parametrize("case", ["busy", "foreign_realm", "wrong_root", "wrong_data_root",
+                                  "malformed_selection", "linked_backup_catalog", "publication",
+                                  "unknown_owner", "pid_reused"])
+def test_backend_preflight_refuses_readable_restore_gap_before_writes(tmp_path, monkeypatch, case):
+    import sqlite3
+    from astrid.installer.core import RuntimeOperationError
+
+    backend, data, paths, realm, boundary, manager_calls, _old, _candidate, backup, journal = (
+        _readable_restore_gap(tmp_path, monkeypatch))
+    if case == "busy":
+        with sqlite3.connect(realm / "realm.sqlite3") as connection:
+            connection.execute(
+                "INSERT INTO tasks (id, run_id, capability, status, created_at, updated_at) "
+                "VALUES ('restore-busy', 'run-1', 'render', 'running', '2026-10-27', '2026-10-27')"
+            )
+    elif case == "foreign_realm":
+        selected = read_json(backend.service.selection)
+        selected["realm_id"] = "foreign-realm"
+        write_json(backend.service.selection, selected)
+    elif case == "wrong_root":
+        selected = read_json(backend.service.selection)
+        selected["realm_root"] = str(tmp_path / "different-readable-realm")
+        write_json(backend.service.selection, selected)
+    elif case == "wrong_data_root":
+        selected = read_json(backend.service.selection)
+        selected["data_root"] = str(tmp_path / "different-data")
+        write_json(backend.service.selection, selected)
+    elif case == "malformed_selection":
+        backend.service.selection.write_text("{broken", encoding="utf-8")
+    elif case == "linked_backup_catalog":
+        catalog = backup / "support" / "runtime" / "catalog.json"
+        payload = catalog.read_bytes()
+        catalog.unlink()
+        outside = tmp_path / "outside-catalog.json"
+        outside.write_bytes(payload)
+        catalog.symlink_to(outside)
+    elif case in {"publication", "unknown_owner", "pid_reused"}:
+        identity = _publish_owner(paths, pid=999999, birth="unknown-birth")
+        if case == "pid_reused":
+            identity["process_birth_id"] = "reused-pid-old-birth"
+        write_json(paths.discovery_path, identity)
+        write_json(paths.instance_lock_path, {**identity, "realm_id": "realm-1"})
+
+    pointer_before = (backend.root / "current").read_bytes()
+    journal_before = journal.read_bytes()
+    backup_before = _backup_bytes(backup)
+    realm_before = (realm / "realm.sqlite3").read_bytes()
+    with pytest.raises(RuntimeOperationError) as raised:
+        # This public Backend entry independently derives disk context; there is
+        # no transaction_stop_context installed around the call.
+        backend.preflight_stop(data)
+    assert raised.value.stop_refused
+    _assert_restore_refusal_unchanged(
+        backend, paths, realm, boundary, manager_calls, backup, journal,
+        pointer_before, journal_before, backup_before, realm_before)
+
+
+def _run_public_restore_refusal(tmp_path, monkeypatch, *, managed_by, case):
+    import sqlite3
+
+    backend, data, paths, realm, boundary, manager_calls, old, candidate, backup, journal = (
+        _readable_restore_gap(tmp_path, monkeypatch, managed_by=managed_by))
+    if case == "busy":
+        with sqlite3.connect(realm / "realm.sqlite3") as connection:
+            connection.execute(
+                "INSERT INTO tasks (id, run_id, capability, status, created_at, updated_at) "
+                "VALUES ('restore-busy', 'run-1', 'render', 'running', '2026-10-27', '2026-10-27')"
+            )
+    elif case == "foreign_realm":
+        selected = read_json(backend.service.selection)
+        selected["realm_id"] = "foreign-realm"
+        write_json(backend.service.selection, selected)
+    elif case == "wrong_root":
+        selected = read_json(backend.service.selection)
+        selected["realm_root"] = str(tmp_path / "different-readable-realm")
+        write_json(backend.service.selection, selected)
+    elif case == "malformed_selection":
+        backend.service.selection.write_text("{broken", encoding="utf-8")
+    elif case in {"publication", "unknown_owner", "pid_reused"}:
+        identity = _publish_owner(paths, pid=999999, birth="unknown-birth")
+        if case == "pid_reused":
+            identity["process_birth_id"] = "reused-pid-old-birth"
+        write_json(paths.discovery_path, identity)
+        write_json(paths.instance_lock_path, {**identity, "realm_id": "realm-1"})
+
+    from runtime_protocol import platform
+
+    backend.source_checkout_ownership = Mock(return_value=False)
+    backend.restore = Mock(side_effect=AssertionError("workspace restore before C1"))
+    backend.register = Mock(side_effect=AssertionError("register before C1"))
+    backend.start = Mock(side_effect=AssertionError("start before C1"))
+    backend.verify = Mock(side_effect=AssertionError("verify before C1"))
+    boundary.stop_calls = 0
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    lifecycle_calls = {"validate": 0, "stop": 0, "start": 0}
+    if managed_by == "pinokio":
+        def lifecycle(_root, _backend):
+            return SimpleNamespace(
+                validate=lambda *_: lifecycle_calls.__setitem__("validate", lifecycle_calls["validate"] + 1),
+                stop=lambda version, workspace: (lifecycle_calls.__setitem__("stop", lifecycle_calls["stop"] + 1),
+                                                  backend.stop(version, workspace)),
+                start=lambda *_: lifecycle_calls.__setitem__("start", lifecycle_calls["start"] + 1),
+            )
+        monkeypatch.setattr(app_update, "PinokioLifecycle", lifecycle)
+        args = ["--update", "--managed-by", "pinokio", "--root", str(backend.root)]
+    else:
+        args = ["--update", "--root", str(backend.root)]
+
+    pointer_before = (backend.root / "current").read_bytes()
+    journal_before = journal.read_bytes()
+    backup_before = _backup_bytes(backup)
+    realm_before = (realm / "realm.sqlite3").read_bytes()
+    selection_before = backend.service.selection.read_bytes()
+    assert cli.main([
+        *args, "--uv", str(tmp_path / "not-needed-uv"),
+        "--manifest", str(tmp_path / "not-needed-manifest"),
+    ]) == 1
+    _assert_restore_refusal_unchanged(
+        backend, paths, realm, boundary, manager_calls, backup, journal,
+        pointer_before, journal_before, backup_before, realm_before)
+    assert backend.service.selection.read_bytes() == selection_before
+    backend.restore.assert_not_called()
+    backend.register.assert_not_called()
+    backend.start.assert_not_called()
+    backend.verify.assert_not_called()
+    assert lifecycle_calls["start"] == 0
+    if managed_by == "pinokio":
+        # The real public Pinokio recovery must reach Backend.stop/C1; the
+        # C1 manager callback and lifecycle start remain forbidden on refusal.
+        assert lifecycle_calls["stop"] == (0 if case == "malformed_selection" else 1)
+
+
+@pytest.mark.parametrize("case", ["busy", "foreign_realm", "wrong_root", "malformed_selection",
+                                  "publication", "unknown_owner", "pid_reused"])
+def test_public_installer_update_refuses_readable_restore_gap_without_mutations(
+        tmp_path, monkeypatch, case):
+    _run_public_restore_refusal(tmp_path, monkeypatch, managed_by=None, case=case)
+
+
+@pytest.mark.parametrize("case", ["busy", "foreign_realm", "wrong_root", "malformed_selection",
+                                  "publication", "unknown_owner", "pid_reused"])
+def test_pinokio_public_update_refuses_readable_restore_gap_without_mutations(
+        tmp_path, monkeypatch, case):
+    _run_public_restore_refusal(tmp_path, monkeypatch, managed_by="pinokio", case=case)
+
+
+@pytest.mark.parametrize("journal_state", ["missing", "linked"])
+def test_active_restore_refuses_missing_or_linked_disk_journal_before_legacy_fallback(
+        tmp_path, monkeypatch, journal_state):
+    from astrid.installer.core import RuntimeOperationError
+
+    backend, data, paths, realm, boundary, manager_calls, _old, _candidate, backup, journal = (
+        _readable_restore_gap(tmp_path, monkeypatch))
+    active_transaction = read_json(journal)
+    journal_bytes = journal.read_bytes()
+    pointer_bytes = (backend.root / "current").read_bytes()
+    backup_before = _backup_bytes(backup)
+    backend._transaction_stop_context = (active_transaction, lambda *_args, **_kwargs: None, True)
+    if journal_state == "missing":
+        journal.unlink()
+    else:
+        target = tmp_path / "linked-update-transaction.json"
+        target.write_bytes(journal_bytes)
+        journal.unlink()
+        journal.symlink_to(target)
+
+    with pytest.raises(RuntimeOperationError) as raised:
+        backend.stop(None, data)
+    assert raised.value.stop_refused
+    assert boundary.stop_calls == 0
+    assert manager_calls == []
+    backend.service.disable.assert_not_called()
+    backend.service.stop.assert_not_called()
+    assert (backend.root / "current").read_bytes() == pointer_bytes
+    assert _backup_bytes(backup) == backup_before
+    assert not paths.catalog_path.exists()
+    assert (realm / "realm.sqlite3").is_file()
+    if journal_state == "missing":
+        assert not journal.exists()
+    else:
+        assert journal.is_symlink()
+        assert journal.readlink() == target
+
+
+def test_pinokio_public_update_recovers_idle_missing_catalog_with_real_backend_c1_and_restore(
+        tmp_path, monkeypatch):
+    import shutil
+
+    backend, data, paths, realm, boundary, manager_calls, old, _candidate, backup, journal = (
+        _readable_restore_gap(tmp_path, monkeypatch, managed_by="pinokio"))
+    (realm / "restore-sentinel.txt").write_text("old workspace", encoding="utf-8")
+    shutil.copytree(realm, backup / "realm")
+    (realm / "restore-sentinel.txt").write_text("candidate workspace", encoding="utf-8")
+    lifecycle_calls = {"validate": 0, "stop": 0, "start": 0}
+
+    def lifecycle(_root, _backend):
+        def start(version, workspace, realm_id):
+            lifecycle_calls["start"] += 1
+            assert version.release == old.release
+            assert workspace == data and realm_id == "realm-1"
+            assert (realm / "restore-sentinel.txt").read_text(encoding="utf-8") == "old workspace"
+            catalog = read_json(paths.catalog_path)
+            assert catalog["selected_realm_id"] == "realm-1"
+
+        return SimpleNamespace(
+            validate=lambda *_: lifecycle_calls.__setitem__("validate", lifecycle_calls["validate"] + 1),
+            stop=lambda version, workspace: (lifecycle_calls.__setitem__("stop", lifecycle_calls["stop"] + 1),
+                                              backend.stop(version, workspace)),
+            start=start,
+        )
+
+    from runtime_protocol import platform
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(app_update, "PinokioLifecycle", lifecycle)
+    assert cli.main([
+        "--update", "--managed-by", "pinokio", "--root", str(backend.root),
+        "--uv", str(tmp_path / "not-needed-uv"),
+        "--manifest", str(tmp_path / "not-needed-manifest"),
+    ]) == 0
+
+    assert lifecycle_calls == {"validate": 1, "stop": 1, "start": 1}
+    assert boundary.stop_calls == 0  # No published Runtime owner needed a signal.
+    assert manager_calls == []
+    assert read_json(paths.catalog_path)["selected_realm_id"] == "realm-1"
+    assert backend._restore_catalog_writes == [paths.catalog_path, paths.catalog_path]
+    assert (realm / "restore-sentinel.txt").read_text(encoding="utf-8") == "old workspace"
+    assert current(backend.root) == old
+    final_journal = read_json(journal)
+    assert final_journal["step"] == "rolled_back"
+    assert "stop_authority" not in final_journal
+    assert backup.is_dir() and (backup / "realm" / "restore-sentinel.txt").read_text(encoding="utf-8") == "old workspace"

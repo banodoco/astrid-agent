@@ -382,6 +382,10 @@ class Installer:
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
         pending = read_json(absolute(self.root / "update-transaction.json"))
+        if (pending and pending.get("step") not in {"complete", "rolled_back"}
+                and isinstance(pending.get("transaction_context"), dict)
+                and pending["transaction_context"].get("owner") == "local-update"):
+            raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
         if pending and pending.get("step") not in {"complete", "rolled_back"} \
                 and pending.get("transaction_kind") == "app":
             raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
@@ -403,7 +407,8 @@ class Installer:
     def _run_update_transaction(self, old: Version, realm: dict, *, prepare, stop,
                                  switch_candidate, switch_old, activate, activate_old,
                                  backup=None, migrate=None, restore_workspace: bool = True,
-                                 kind: str = "migration") -> Version:
+                                 kind: str = "migration",
+                                 transaction_context: dict | None = None) -> Version:
         """Run the one durable stop/switch/ready/rollback policy for updates.
 
         ``prepare`` stages and validates while the old owner is still running.
@@ -423,6 +428,10 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            if transaction_context is not None:
+                # Adapter-owned recovery context lives in the shared journal,
+                # and is durable before any owner stop or checkout movement.
+                transaction["transaction_context"] = transaction_context
             self._save_update(transaction, "staged")
             authority.enter_context(transaction_stop_context(
                 self.backend, transaction,
@@ -477,7 +486,10 @@ class Installer:
                 except (Exception, KeyboardInterrupt) as recovery:
                     if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
                         raise recovery
-                    raise RuntimeError(f"Update failed ({failure}); recovery also failed ({recovery}).") from failure
+                    combined = RuntimeError(
+                        f"Update failed ({failure}); recovery also failed ({recovery}).")
+                    combined.step = getattr(failure, "step", None) or "update"
+                    raise combined from failure
             raise
         finally:
             authority.close()
