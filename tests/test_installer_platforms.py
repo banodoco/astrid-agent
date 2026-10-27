@@ -307,6 +307,9 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
         if name == 'agent':
             (destination / 'remotion/node_modules').mkdir(parents=True)
             (destination / 'remotion/package-lock.json').write_text('{}\n')
+            (destination / 'remotion/package.json').write_text('{}\n')
+            (destination / 'config').mkdir()
+            (destination / 'config/astrid-beta-capabilities.json').write_text('{"capabilities":[]}\n')
         return destination
     monkeypatch.setattr('astrid.installer.backend.source', source)
     monkeypatch.setattr('astrid.installer.backend.install_tools', lambda *_args: {
@@ -316,6 +319,15 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     })
     monkeypatch.setattr('astrid.installer.backend.binary', lambda *_args: tmp_path / 'npm-cli.js')
     calls = []
+    product_root = tmp_path / 'program' / 'versions'
+
+    def installed_root(python, _env):
+        root = next(product_root.iterdir()) / 'py' / 'Lib' / 'site-packages'
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    monkeypatch.setattr(backend, '_installed_product_root', installed_root)
+    digest_roots = []
 
     def run(argv, **_kwargs):
         calls.append(argv)
@@ -324,6 +336,7 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
         if len(argv) > 5 and argv[3:5] == ['-I', '-c'] and 'service_declaration' in argv[5]:
             Path(argv[-1]).write_text('{"version":1,"services":[]}', encoding='utf-8')
         if len(argv) > 5 and argv[3:5] == ['-I', '-c'] and 'source_checkout_digest' in argv[5]:
+            digest_roots.append(Path(argv[-1]))
             return 'digest-value'
         return ''
 
@@ -337,11 +350,68 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
 
     assert version.env['ASTRID_RUNTIME_DOOR_PORT'] == expected_port
     profile = json.loads(version.profile.read_text(encoding='utf-8'))
+    assert Path(profile['source_checkout']) == installed_root(version.python, version.env)
+    assert digest_roots == [Path(profile['source_checkout'])]
+    assert version.env['ASTRID_HOST_EXECUTION_PROFILE'] == 'installed'
+    assert version.env['ASTRID_SOURCE_PROVENANCE_ROOT'] == str(version.root / 'a')
+    assert version.env['ASTRID_REMOTION_PROJECT_DIR'] == str((version.root / 'a/remotion').resolve())
+    assert version.env['ASTRID_CAPABILITY_MATRIX_PATH'] == str((version.root / 'a/config/astrid-beta-capabilities.json').resolve())
     declaration = Path(profile['service_declaration'])
     assert declaration == version.root / 'services.json'
     assert json.loads(declaration.read_text(encoding='utf-8')) == {'version': 1, 'services': []}
+    service_call = next(argv for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'] and 'service_declaration' in argv[5])
+    assert Path(service_call[6]) == Path(profile['source_checkout'])
     assert any('service_declaration' in argv[5] for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'])
     assert any('source_checkout_digest' in argv[5] for argv in calls if len(argv) > 5 and argv[3:5] == ['-I', '-c'])
+
+
+def test_installed_product_root_uses_selected_interpreter_origins_and_rejects_checkout_imports(tmp_path):
+    import json
+
+    backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv')
+    prefix = tmp_path / 'candidate' / 'py'
+    product = prefix / 'Lib' / 'site-packages'
+    checkout = tmp_path / 'candidate' / 'a'
+    product.mkdir(parents=True)
+    checkout.mkdir()
+    module_names = ('host', 'child', 'action', 'client', 'sdk')
+    origins = {}
+    for name in module_names:
+        path = product / 'astrid' / f'{name}.py'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# selected install\n')
+        origins[name] = str(path)
+    result = json.dumps({'prefix': str(prefix), 'purelib': str(product), 'origins': origins})
+    calls = []
+    backend.run = lambda argv, **kwargs: (calls.append((argv, kwargs)) or result)
+
+    assert backend._installed_product_root(prefix / 'Scripts' / 'python.exe', {}) == product.resolve()
+    argv, _kwargs = calls[0]
+    assert argv[0] == prefix / 'Scripts' / 'python.exe'
+    assert argv[1:5] == ['-X', 'utf8', '-I', '-B']
+    assert 'sysconfig.get_path' in argv[6]
+
+    origins['action'] = str(checkout / 'astrid/packs/rendering/actions/render/run.py')
+    (checkout / 'astrid/packs/rendering/actions/render').mkdir(parents=True)
+    (checkout / 'astrid/packs/rendering/actions/render/run.py').write_text('# source checkout\n')
+    backend.run = lambda *_args, **_kwargs: json.dumps(
+        {'prefix': str(prefix), 'purelib': str(product), 'origins': origins})
+    with pytest.raises(RuntimeError, match='outside its installed product tree'):
+        backend._installed_product_root(prefix / 'Scripts' / 'python.exe', {})
+
+    global_prefix = tmp_path / 'global-python'
+    global_product = global_prefix / 'site-packages'
+    global_product.mkdir(parents=True)
+    global_origins = {}
+    for name in module_names:
+        path = global_product / 'astrid' / f'{name}.py'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# global install\n')
+        global_origins[name] = str(path)
+    backend.run = lambda *_args, **_kwargs: json.dumps(
+        {'prefix': str(global_prefix), 'purelib': str(global_product), 'origins': global_origins})
+    with pytest.raises(RuntimeError, match='outside its selected virtual environment'):
+        backend._installed_product_root(prefix / 'Scripts' / 'python.exe', {})
 
 
 def test_linux_backup_temporarily_starts_only_neutral_daemon_and_snapshots_stopped_support(tmp_path, monkeypatch):

@@ -96,6 +96,30 @@ Keep the healthy owner running until its process identity can be reconciled.
 The same report separately observed the pack host failing on its unsupported
 Windows POSIX census; that is a distinct failure from the Runtime duplicate.
 
+The follow-up installed-origin probe isolated a separate pack-host startup
+failure. For selected version `670baed9-11443b0b-0f6d0184`, all five installed
+module origins were absolute existing files with no reparse-point ancestors,
+but none was beneath the profile's `source_checkout`. The installer had staged
+the pinned checkout at `<version>\a` while installing the candidate noneditable
+into `<version>\py\Lib\site-packages`; the host's installed-origin check
+correctly rejected that mismatch. The selected `python.exe`, a second probe
+with Windows system paths restored, and the scheduled-task `pythonw.exe` probe
+all returned valid origin JSON, so this was not explained by interpreter
+startup or the task's minimal environment. The probe approximated the caller's
+environment and cannot establish the exact Action 5 process environment.
+
+Candidate staging now verifies the selected venv by comparing its reported
+`sys.prefix` with the venv containing the chosen interpreter, then checks that
+all five module origins are inside that venv's `site-packages`. The candidate
+profile, host service declaration, and installed source digest bind to that
+product root. `/a` remains an explicit provenance/resource root for Remotion,
+the timeline schema, and the capability matrix; the matrix override must be an
+absolute regular file without symlinked path components under that root. This
+fix applies when a candidate is staged by install/update. It does not rewrite
+the already-installed version or prove that the live Windows host has adopted
+the candidate; confirm the selected version and pack-host readiness after the
+normal update path. ComfyUI on port 7860 is external and remains untouched.
+
 For ACP, the report's standalone Bun profile lookup succeeded twice using the
 configured service working directory and PATH. An absolute `astrid.exe` path was
 then written into the chat service declaration. The follow-up diagnostic

@@ -38,8 +38,22 @@ def service_declaration(
         "ASTRID_WORKSPACE_DISCOVERY": str(discovery),
         "ASTRID_SERVICE_PYTHON": python,
     }
+    host_env = dict(env)
+    # These paths bind the installed Python product to source-only resources
+    # that are intentionally provisioned beside the candidate checkout.
+    for key in (
+        "ASTRID_HOST_EXECUTION_PROFILE",
+        "ASTRID_SOURCE_PROVENANCE_ROOT",
+        "ASTRID_REMOTION_PROJECT_DIR",
+        "ASTRID_TIMELINE_SCHEMA_PYTHONPATH",
+        "ASTRID_CAPABILITY_MATRIX_PATH",
+    ):
+        value = os.environ.get(key, "").strip()
+        if value:
+            host_env[key] = value
     if program_root := os.environ.get("ASTRID_INSTALL_PROGRAM_ROOT"):
         env["ASTRID_INSTALL_PROGRAM_ROOT"] = program_root
+        host_env["ASTRID_INSTALL_PROGRAM_ROOT"] = program_root
     # The Windows console entry point belongs to this selected environment.
     # Resolve it at declaration time so the supervised bridge cannot select an
     # older launcher through the Scheduled Task's inherited PATH.
@@ -47,7 +61,7 @@ def service_declaration(
     return {"version": 1, "services": [
         {"name": "pack-host", "argv": [python, "-X", "utf8", "-m", "astrid.core.execution.generic_host", "--service",
             "--source-checkout", str(source_checkout), "--support-root", str(discovery.parent)],
-            "env": {**env, "ASTRID_PACK_HOST_PYTHON": python}, "restart": "always",
+            "env": {**host_env, "ASTRID_PACK_HOST_PYTHON": python}, "restart": "always",
             "ready": {"file": "generic-host.ready.json", "timeout_seconds": 300}},
         {"name": "chat", "argv": [bun, str(Path(__file__).parent / "chat" / "service.mjs")],
             "env": {**env, **chat_options, "ASTRID_ACP_CWD": str(chat_cwd),

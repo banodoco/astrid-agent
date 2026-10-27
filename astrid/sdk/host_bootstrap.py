@@ -1059,6 +1059,44 @@ def _execution_profile() -> str:
     return profile
 
 
+def _capability_matrix_path(source_path: Path) -> Path:
+    """Select the installed matrix without accepting a symlinked override."""
+    from astrid.core.env_vars import ASTRID_CAPABILITY_MATRIX_PATH, ASTRID_SOURCE_PROVENANCE_ROOT
+
+    raw = os.environ.get(ASTRID_CAPABILITY_MATRIX_PATH, "").strip()
+    if not raw:
+        return source_path / "config" / "astrid-beta-capabilities.json"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise PackHostBootstrapError("installed capability matrix path must be absolute")
+    path = Path(path.absolute())
+    current = path
+    while True:
+        if current.is_symlink():
+            raise PackHostBootstrapError("installed capability matrix path must not contain symlinks")
+        if current == current.parent:
+            break
+        current = current.parent
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise PackHostBootstrapError("installed capability matrix path is unavailable") from exc
+    provenance = os.environ.get(ASTRID_SOURCE_PROVENANCE_ROOT, "").strip()
+    if provenance:
+        root = Path(provenance).expanduser()
+        if not root.is_absolute():
+            raise PackHostBootstrapError("installed capability matrix is outside its source provenance root")
+        try:
+            provenance_root = root.resolve(strict=True)
+        except OSError as exc:
+            raise PackHostBootstrapError("installed source provenance root is unavailable") from exc
+        if not resolved.is_relative_to(provenance_root):
+            raise PackHostBootstrapError("installed capability matrix is outside its source provenance root")
+    if not resolved.is_file():
+        raise PackHostBootstrapError("installed capability matrix is not a regular file")
+    return resolved
+
+
 def _installed_execution_origins(source_path: Path, python_executable: str) -> dict[str, str]:
     """Probe the selected interpreter in isolation, without a checkout path.
 
@@ -1886,7 +1924,7 @@ def ensure_pack_host(
             rotate_if_needed(log_path)
         except OSError:
             pass
-        matrix = source_path / "config" / "astrid-beta-capabilities.json"
+        matrix = _capability_matrix_path(source_path)
         argv = [
             host_python,
             "-X", "utf8",

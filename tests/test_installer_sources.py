@@ -214,6 +214,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
     monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: "uv 1.2.3")
     monkeypatch.setattr(backend, "existing", lambda _data: None)
+    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
 
     version = backend.stage(value, tmp_path / "program", tmp_path / "data")

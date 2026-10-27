@@ -136,6 +136,32 @@ def test_parked_grant_uses_owner_only_acl_on_windows_modes(monkeypatch, tmp_path
         assert not sent
 
 
+def test_installed_capability_matrix_uses_only_a_regular_pinned_resource(tmp_path, monkeypatch):
+    source = tmp_path / "py" / "Lib" / "site-packages"
+    source.mkdir(parents=True)
+    provenance = tmp_path / "a"
+    config = provenance / "config"
+    config.mkdir(parents=True)
+    matrix = config / "astrid-beta-capabilities.json"
+    matrix.write_text('{"schema_version":1,"capabilities":[]}\n', encoding="utf-8")
+    monkeypatch.setenv("ASTRID_CAPABILITY_MATRIX_PATH", str(matrix))
+    monkeypatch.setenv("ASTRID_SOURCE_PROVENANCE_ROOT", str(provenance))
+
+    assert host_bootstrap._capability_matrix_path(source) == matrix.resolve()
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("ASTRID_CAPABILITY_MATRIX_PATH", str(elsewhere))
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="outside its source provenance root"):
+        host_bootstrap._capability_matrix_path(source)
+
+
+def test_capability_matrix_default_stays_relative_to_source_profile(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTRID_CAPABILITY_MATRIX_PATH", raising=False)
+    monkeypatch.delenv("ASTRID_SOURCE_PROVENANCE_ROOT", raising=False)
+    source = tmp_path / "checkout"
+    assert host_bootstrap._capability_matrix_path(source) == source / "config" / "astrid-beta-capabilities.json"
+
+
 def test_selected_python_matches_its_live_process_executable(tmp_path) -> None:
     """Framework Python re-execs Python.app; the selected launcher stays valid."""
     import shlex

@@ -63,6 +63,26 @@ def test_declaration_retains_the_existing_chat_store_and_profile(tmp_path, monke
     assert "ASTRID_ACP_BRIDGE_TOKEN" not in chat
 
 
+def test_declaration_binds_installed_product_to_pinned_nonwheel_resources(tmp_path, monkeypatch):
+    values = {
+        "ASTRID_HOST_EXECUTION_PROFILE": "installed",
+        "ASTRID_SOURCE_PROVENANCE_ROOT": str(tmp_path / "a"),
+        "ASTRID_REMOTION_PROJECT_DIR": str(tmp_path / "a/remotion"),
+        "ASTRID_TIMELINE_SCHEMA_PYTHONPATH": str(tmp_path / "a/remotion/node_modules/schema/python"),
+        "ASTRID_CAPABILITY_MATRIX_PATH": str(tmp_path / "a/config/astrid-beta-capabilities.json"),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    declaration = service_declaration(
+        source_checkout=tmp_path / "py/Lib/site-packages", data_root=tmp_path / "data",
+        python=str(tmp_path / "py/Scripts/python.exe"), bun=str(tmp_path / "bun.exe"),
+    )
+    host, chat = declaration["services"]
+    assert host["argv"][host["argv"].index("--source-checkout") + 1] == str(tmp_path / "py/Lib/site-packages")
+    assert all(host["env"][key] == value for key, value in values.items())
+    assert not any(key in chat["env"] for key in values)
+
+
 def test_windows_chat_binds_to_selected_launcher_and_preserves_override(tmp_path, monkeypatch):
     monkeypatch.setattr("astrid.services.sys.platform", "win32")
     monkeypatch.delenv("ASTRID_ACP_COMMAND", raising=False)
