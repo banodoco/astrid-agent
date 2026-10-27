@@ -18,10 +18,12 @@ import secrets
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
@@ -482,6 +484,246 @@ def _write_object(path: Path, value: Mapping[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+_RECOVERY_MARKERS = ("generic-host.json", "generic-host.ready.json")
+
+
+def _recovery_path(value: Path) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        raise PackHostBootstrapError("host recovery requires absolute paths")
+    path = Path(os.path.abspath(path))
+    for entry in (path, *path.parents):
+        try:
+            metadata = entry.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+            raise PackHostBootstrapError("host recovery path contains a link or reparse point")
+    return path
+
+
+def _private_recovery_bytes(path: Path) -> bytes | None:
+    """Read only a private regular file; ambiguity is never treated as absence."""
+    _recovery_path(path)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or not platform.is_owner_only(descriptor)
+                or not platform.is_owner_only(path)):
+            raise PackHostBootstrapError("host recovery file is not private and regular; recovery blocked")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            content = handle.read(1024 * 1024 + 1)
+        after = os.fstat(descriptor)
+        if len(content) > 1024 * 1024 or (before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_ino, after.st_size, after.st_mtime_ns):
+            raise PackHostBootstrapError("host recovery file changed during capture; recovery blocked")
+        return content
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _host_recovery_lock(support_root: Path):
+    """Installer owns its outer install/bootstrap locks before taking this lock."""
+    support = _recovery_path(support_root)
+    if not support.is_dir() or not platform.is_owner_only(support, directory=True):
+        raise PackHostBootstrapError("host recovery support directory is unavailable")
+    path = support / "generic-host.lock"
+    if path.is_symlink() or (path.exists() and (not path.is_file() or not platform.is_owner_only(path))):
+        raise PackHostBootstrapError("host recovery lifecycle lock is not private and regular")
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise PackHostBootstrapError("host recovery lifecycle lock is not regular")
+        platform.owner_only(descriptor)
+        platform.lock_file(descriptor)
+        try:
+            yield support
+        finally:
+            platform.unlock_file(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _decode_recovery_proof(support: Path, proof: Mapping[str, Any]) -> dict[str, bytes | None]:
+    from astrid.core.execution.boot_identity import validate_boot_identity
+    if (not isinstance(proof, Mapping) or set(proof) != {"version", "support_root", "boot_identity", "markers"}
+            or type(proof.get("version")) is not int or proof["version"] != 1
+            or not _same_windows_path(str(proof.get("support_root") or ""), str(support))
+            or not isinstance(proof.get("markers"), Mapping) or set(proof["markers"]) != set(_RECOVERY_MARKERS)):
+        raise PackHostBootstrapError("host recovery checkpoint binding is invalid")
+    validate_boot_identity(proof["boot_identity"])
+    result = {}
+    for name in _RECOVERY_MARKERS:
+        item = proof["markers"][name]
+        if item is None:
+            result[name] = None
+            continue
+        try:
+            if not isinstance(item, Mapping) or set(item) != {"sha256", "content_base64"}:
+                raise ValueError("invalid marker proof")
+            content = base64.b64decode(item["content_base64"], validate=True)
+            if len(content) > 1024 * 1024 or item["sha256"] != "sha256:" + hashlib.sha256(content).hexdigest():
+                raise ValueError("invalid marker digest")
+            result[name] = content
+        except (TypeError, ValueError) as exc:
+            raise PackHostBootstrapError("host recovery checkpoint marker digest is invalid") from exc
+    try:
+        state = json.loads(result["generic-host.json"])
+        if (not isinstance(state, dict) or type(state.get("pid")) is not int or state["pid"] <= 1
+                or not isinstance(state.get("process_birth_id"), str) or not state["process_birth_id"]
+                or not _same_windows_path(str(state.get("support_root") or ""), str(support))):
+            raise ValueError("invalid state")
+        if state.get("boot_identity") is not None and state["boot_identity"] != proof["boot_identity"]:
+            raise ValueError("state boot differs from preparation")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise PackHostBootstrapError("host recovery checkpoint registration is invalid") from exc
+    return result
+
+
+def capture_legacy_host_recovery(support_root: Path) -> dict[str, Any] | None:
+    """Capture exact preboot markers after installer-owned shutdown, without signaling.
+
+    The installer must persist this result in its private immutable checkpoint,
+    under its install/bootstrap locks, before instructing the user to restart.
+    PID absence alone never authorizes retirement.
+    """
+    from astrid.core.execution.boot_identity import capture_boot_identity
+    if sys.platform != "win32":
+        raise PackHostBootstrapError("legacy host reboot recovery is Windows-only")
+    with _host_recovery_lock(support_root) as support:
+        boot = capture_boot_identity()
+        contents = {name: _private_recovery_bytes(support / name) for name in _RECOVERY_MARKERS}
+        if contents["generic-host.json"] is None:
+            if contents["generic-host.ready.json"] is not None:
+                raise PackHostBootstrapError("orphan host readiness marker; recovery blocked")
+            return None
+        proof = {"version": 1, "support_root": str(support), "boot_identity": boot, "markers": {
+            name: None if content is None else {"sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+                                               "content_base64": base64.b64encode(content).decode("ascii")}
+            for name, content in contents.items()}}
+        _decode_recovery_proof(support, proof)
+        state = json.loads(contents["generic-host.json"])
+        if _registered_host_status(state) != "gone":
+            raise PackHostBootstrapError("legacy host is live, reused, or foreign; recovery preparation blocked")
+        if capture_boot_identity() != boot:
+            raise PackHostBootstrapError("boot identity changed during recovery preparation")
+        return proof
+
+
+def preflight_legacy_host_recovery(support_root: Path) -> None:
+    """Refuse staging over a Windows legacy marker without an existing drain proof."""
+    if sys.platform != "win32":
+        return
+    with _host_recovery_lock(support_root) as support:
+        content = _private_recovery_bytes(support / "generic-host.json")
+        if content is None:
+            return
+        try:
+            state = json.loads(content)
+        except (ValueError, UnicodeError) as exc:
+            raise PackHostBootstrapError("host registration is malformed; recovery blocked") from exc
+        if (not isinstance(state, dict) or type(state.get("pid")) is not int or state["pid"] <= 1
+                or not isinstance(state.get("process_birth_id"), str) or not state["process_birth_id"]
+                or not _same_windows_path(str(state.get("support_root") or ""), str(support))):
+            raise PackHostBootstrapError("host registration support binding is invalid; recovery blocked")
+        # New registrations participate in the current Runtime cleanup contract.
+        # A boot field is descriptive here; it does not grant retirement power.
+        if state.get("boot_identity") is not None:
+            from astrid.core.execution.boot_identity import validate_boot_identity
+            validate_boot_identity(state["boot_identity"])
+            return
+        status = _registered_host_status(state)
+        retained = _RETAINED_HOSTS.get((state.get("pid"), str(state.get("process_birth_id") or "")))
+        if status == "ours" and retained is not None:
+            return
+        if status == "gone" and _runtime_cleanup_receipt_available(state):
+            return
+        raise PackHostBootstrapError(
+            "legacy Windows host has no Job-drain proof; prepare legacy recovery and restart Windows before staging",
+            code="legacy_windows_recovery_required",
+        )
+
+
+def _record_optional_host_boot_identity(state: dict[str, Any]) -> None:
+    """Boot metadata is useful evidence, never a new prerequisite for host startup."""
+    if sys.platform == "win32":
+        from astrid.core.execution.boot_identity import (
+            BootIdentityUnavailable,
+            capture_boot_identity,
+        )
+        try:
+            identity = capture_boot_identity()
+        except BootIdentityUnavailable:
+            return
+        if identity["source"] == "windows-kernel-boot-id-v1":
+            state["boot_identity"] = identity
+
+
+def retire_preboot_host(support_root: Path, proof: Mapping[str, Any], *, prepared_boot: Mapping[str, Any],
+                        current_boot: Mapping[str, Any], quarantine: Path) -> dict[str, Any]:
+    """Quarantine only immutable-checkpoint-bound markers across a proved reboot.
+
+    A reboot disposes the old process and its Job, including descendants. A new
+    process reusing its numeric PID is irrelevant: this path never opens or
+    signals it. Changed/new markers fail the exact-byte check. Ordinary same-boot
+    cleanup still requires its retained Job or exact Runtime drain receipt.
+    """
+    from astrid.core.execution.boot_identity import boot_identities_differ, capture_boot_identity
+    if sys.platform != "win32":
+        raise PackHostBootstrapError("legacy host reboot recovery is Windows-only")
+    with _host_recovery_lock(support_root) as support:
+        expected = _decode_recovery_proof(support, proof)
+        if (prepared_boot != proof["boot_identity"] or capture_boot_identity() != current_boot
+                or not boot_identities_differ(prepared_boot, current_boot)):
+            raise PackHostBootstrapError("different current OS boot is unproved; recovery blocked")
+        archive = _recovery_path(quarantine)
+        if archive == support or archive in support.parents or support in archive.parents:
+            raise PackHostBootstrapError("host quarantine must be separate from live support")
+        if not archive.exists():
+            platform.private_directory(archive)
+        if not archive.is_dir() or not platform.is_owner_only(archive):
+            raise PackHostBootstrapError("host quarantine is not private; recovery blocked")
+        canonical = json.dumps(dict(proof), sort_keys=True).encode("utf-8")
+        existing_proof = _private_recovery_bytes(archive / "proof.json")
+        if existing_proof is not None and existing_proof != canonical:
+            raise PackHostBootstrapError("host quarantine belongs to another checkpoint")
+        current = {name: _private_recovery_bytes(support / name) for name in _RECOVERY_MARKERS}
+        for name, content in expected.items():
+            archived = _private_recovery_bytes(archive / name)
+            if archived is not None and archived != content:
+                raise PackHostBootstrapError("host quarantine marker differs from checkpoint")
+            if current[name] != content and not (current[name] is None and content is not None
+                    and existing_proof == canonical and archived == content):
+                raise PackHostBootstrapError("host marker changed after recovery preparation; recovery blocked")
+        # Make an exact private durable copy before unlinking either marker. A
+        # partial interruption can replay only against these same archived bytes.
+        for name, content in {**expected, "proof.json": canonical}.items():
+            if content is None or _private_recovery_bytes(archive / name) is not None:
+                continue
+            descriptor, temporary_name = tempfile.mkstemp(prefix=".host-recovery-", dir=archive)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    platform.owner_only(handle.fileno())
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                platform.durable_replace(temporary, archive / name)
+            finally:
+                temporary.unlink(missing_ok=True)
+        for name, content in current.items():
+            if _private_recovery_bytes(support / name) != content:
+                raise PackHostBootstrapError("host marker changed during recovery; recovery blocked")
+        removed = [name for name, content in current.items() if content is not None]
+        for name in removed:
+            (support / name).unlink()
+        return {"status": "retired" if removed else "already_retired", "markers": removed}
+
+
 def _dependency_pythonpath() -> tuple[str, ...]:
     """Keep only approved dependency roots across the host boundary."""
     try:
@@ -870,6 +1112,11 @@ def _runtime_cleanup_receipt_matches(state: Mapping[str, Any], *, foreground: bo
     if (sys.platform != "win32" or not foreground
             or os.environ.get("ASTRID_RUNTIME_SERVICE_NAME") != "pack-host"):
         return False
+    return _runtime_cleanup_receipt_available(state)
+
+
+def _runtime_cleanup_receipt_available(state: Mapping[str, Any]) -> bool:
+    """Read exact drain proof without granting a caller foreground retirement authority."""
     pid = state.get("pid")
     birth = str(state.get("process_birth_id") or "")
     support_root = str(state.get("support_root") or "")
@@ -1969,6 +2216,7 @@ def ensure_pack_host(
                 if not image:
                     raise PackHostBootstrapError("foreground pack host executable identity is unavailable")
                 process_state["process_image"] = image
+            _record_optional_host_boot_identity(process_state)
             _write_object(state_path, process_state)
             # Unwind the bootstrap lock before entering the worker loop. The
             # Runtime owns this process, including its eventual exit/restart.
@@ -2025,6 +2273,7 @@ def ensure_pack_host(
             _RETAINED_HOSTS[(process.pid, process_state["process_birth_id"])] = process
         # Register at once: if this CLI dies before the host is ready, the next
         # Astrid process finds the registration and retires the orphan.
+        _record_optional_host_boot_identity(process_state)
         _write_object(state_path, process_state)
 
         def _abandon() -> None:
