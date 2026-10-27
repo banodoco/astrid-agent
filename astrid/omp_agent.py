@@ -680,6 +680,11 @@ def _exec_omp_with_packaged_profile(
 def main(argv: list[str] | None = None) -> int:
     rest = list(sys.argv[1:] if argv is None else argv)
 
+    if rest and rest[0] == "engines":
+        from .core.engine_cli import main as engines_main
+
+        return engines_main(rest[1:])
+
     if rest and rest[0] == "install":
         return _dispatch_toolkit(rest)
 
