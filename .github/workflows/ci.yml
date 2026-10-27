@@ -34,6 +34,7 @@ jobs:
         run: >-
           python -m pytest -v
           tests/test_installer_forward_recovery.py
+          tests/test_installer_recovery_package.py
           tests/sdk/test_host_boot_recovery.py
           tests/core/execution/test_boot_identity.py
       - name: Check native Windows process and permission behavior
