@@ -75,7 +75,7 @@ def check_attachment(pod, volume, image, pod_type):
             or pod.get("imageName") != image):
         observed = {"volume_id": attached, "datacenter": dc,
                     "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
-        raise BuildError("provider attachment mismatch: " + json.dumps(observed, sort_keys=True))
+        raise BuildError("provider did not verify exact volume, data center, mount and image: " + json.dumps(observed, sort_keys=True))
     expected = "CPU" if pod_type == "cpu" else "GPU"
     if pod.get("computeType") != expected:
         raise BuildError("provider returned a different compute type")
@@ -201,7 +201,12 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                         pod = provider.create(volume, inputs["recipe"]["image"], pod_type,
                                               handle["request_name"])
                         break
-                    except CapacityUnavailable:
+                    except CapacityUnavailable as exc:
+                        detail = str(exc)
+                        if handle.get("last_capacity_error") != detail:
+                            print("Provider capacity response: " + detail, file=sys.stderr, flush=True)
+                        handle["last_capacity_error"] = detail
+                        remote.atomic_json(handle_path, handle)
                         if now() >= claim_deadline:
                             handle["state"] = "capacity_unavailable"
                             raise TimeoutError("build capacity wait exceeded")
@@ -255,6 +260,8 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
             elif handle["state"] != "capacity_unavailable":
                 handle["state"] = "failed" if handle.get("pod_id") else "allocating"
             handle["error_type"] = type(exc).__name__
+            if isinstance(exc, BuildError):
+                handle["error"] = str(exc)
             # Do not persist provider exception text: it may contain credentials.
             remote.atomic_json(handle_path, handle)
             raise
@@ -282,15 +289,10 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
 
 
 class RunPodProvider:
-    """Strict REST adapter: missing resources are only explicit 404s.
-
-    lifecycle's GPU-only create helper cannot request CPU compute. Its status
-    normalizer also drops volume identity and can conflate lookup errors with
-    absence, so use the raw REST representation for these custody checks.
-    """
-    def __init__(self, key, *, min_cuda_version=None):
+    """Lifecycle owns creation; exact REST GET/DELETE preserve strict custody."""
+    def __init__(self, key):
         import httpx
-        self.min_cuda_version = min_cuda_version
+        self._api_key = key
         self.http = httpx.Client(base_url="https://rest.runpod.io/v1/", timeout=20,
                                  headers={"Authorization": "Bearer " + key})
 
@@ -299,11 +301,6 @@ class RunPodProvider:
         if response.status_code == 404 and method in {"GET", "DELETE"}:
             return None
         if not response.is_success:
-            if method == "POST" and response.status_code in {400, 500, 503} and any(
-                marker in response.text.lower() for marker in
-                ("no available", "no longer any instances", "not enough capacity", "out of stock")
-            ):
-                raise CapacityUnavailable("no compatible build capacity")
             detail = ""
             try:
                 body = response.json()
@@ -336,22 +333,24 @@ class RunPodProvider:
         return result
 
     def create(self, volume, image, pod_type, name):
-        payload = {"name": name, "imageName": image, "cloudType": "SECURE",
-                   "networkVolumeId": volume["id"], "volumeMountPath": volume["mount"],
-                   "dataCenterIds": [volume["datacenter"]], "containerDiskInGb": 20,
-                   "ports": ["22/tcp"], "supportPublicIp": True,
-                   "env": {"PUBLIC_KEY": os.environ["RUNPOD_SSH_PUBLIC_KEY"]}}
-        if pod_type == "cpu":
-            payload.update({"computeType": "CPU", "vcpuCount": 2,
-                            "cpuFlavorIds": ["cpu3c", "cpu5c", "cpu3g", "cpu5g", "cpu3m", "cpu5m"],
-                            "cpuFlavorPriority": "custom"})
-        else:
-            payload.update({"computeType": "GPU", "gpuCount": 1, "gpuTypeIds": [pod_type],
-                            "gpuTypePriority": "custom", "allowedCudaVersions": ["13.0"]})
-            if self.min_cuda_version:
-                payload.pop("allowedCudaVersions")
-                payload["minCudaVersion"] = self.min_cuda_version
-        return self.request("POST", "pods", json=payload)
+        from runpod_lifecycle import api
+        from runpod_lifecycle.errors import ProviderCapacityUnavailable, ProviderRequestRejected
+        cpu = pod_type == "cpu"
+        try:
+            return api.create_pod(
+                self._api_key, None if cpu else pod_type, image, name=name,
+                network_volume_id=volume["id"], volume_mount_path=volume["mount"],
+                container_disk_in_gb=20, disk_in_gb=0,
+                public_key_string=os.environ["RUNPOD_SSH_PUBLIC_KEY"], ports="22/tcp",
+                compute_type="CPU" if cpu else "GPU", cpu_flavor_ids=("cpu3c", "cpu5c"),
+                cpu_flavor_priority="custom", vcpu_count=2, data_center_id=volume["datacenter"],
+                allowed_cuda_versions=None if cpu else ("13.0",),
+            )
+        except ProviderCapacityUnavailable as exc:
+            raise CapacityUnavailable(str(exc)) from None
+        except ProviderRequestRejected as exc:
+            error = AllocationRejected if exc.status_code in {400, 401, 403, 422} else BuildError
+            raise error(str(exc)) from None
 
     def get(self, pod_id):
         return self.request("GET", "pods/" + quote(pod_id, safe=""))
@@ -408,7 +407,6 @@ def main(argv=None):
     parser.add_argument("--max-seconds", type=int, default=10800)
     parser.add_argument("--claim-seconds", type=int, default=1800)
     parser.add_argument("--max-hourly", type=float, default=0.30)
-    parser.add_argument("--min-cuda-version", help="Minimum compatible GPU host CUDA capability instead of an exact version filter")
     parser.add_argument("--handle", type=Path, help="Durable local allocation/recovery handle")
     parser.add_argument("--cleanup-only", action="store_true")
     parser.add_argument("--plan", action="store_true", help="Print pinned inputs without provider calls")
@@ -424,7 +422,7 @@ def main(argv=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.volume):
         parser.error("invalid volume ID")
     handle = args.handle or Path.cwd() / ("h3-build-" + args.volume + ".json")
-    provider = RunPodProvider(os.environ["RUNPOD_API_KEY"], min_cuda_version=args.min_cuda_version)
+    provider = RunPodProvider(os.environ["RUNPOD_API_KEY"])
     try:
         result = build_release(provider, LifecycleTransport, volume_id=args.volume,
                                handle_path=handle, pod_type=args.pod_type,

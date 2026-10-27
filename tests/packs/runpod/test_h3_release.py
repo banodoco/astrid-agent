@@ -248,40 +248,31 @@ def test_ssh_wait_timeout_releases(tmp_path):
     assert not provider.pods
 
 
-def test_rest_payload_cpu_gpu_and_strict_get(monkeypatch):
+def test_lifecycle_payload_cpu_gpu_and_strict_get(monkeypatch):
+    from runpod_lifecycle import api
     monkeypatch.setenv("RUNPOD_SSH_PUBLIC_KEY", "ssh-ed25519 PUBLIC-TEST")
     calls = []
-
+    def create(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"id": "pod"}
+    monkeypatch.setattr(api, "create_pod", create)
     def response(request):
-        calls.append(request)
-        if request.method == "POST":
-            return httpx.Response(201, json={"id": "pod"})
-        if request.url.path.endswith("missing"):
-            return httpx.Response(404)
-        return httpx.Response(503)
-
+        return httpx.Response(404 if request.url.path.endswith("missing") else 503)
     provider = build.RunPodProvider("TEST-KEY")
     provider.http.close()
     provider.http = httpx.Client(base_url="https://test/v1/", transport=httpx.MockTransport(response))
     try:
         volume = build.normalize_volume(Provider().volume("vol"), "vol")
         provider.create(volume, "image", "cpu", "name")
-        cpu = json.loads(calls[-1].content)
-        assert cpu["computeType"] == "CPU"
-        assert cpu["cpuFlavorPriority"] == "custom"
-        assert cpu["networkVolumeId"] == "vol"
-        assert cpu["dataCenterIds"] == ["TEST-1"]
-        assert cpu["ports"] == ["22/tcp"]
-        assert "allowedCudaVersions" not in cpu
+        cpu = calls[-1][1]
+        assert cpu["compute_type"] == "CPU"
+        assert cpu["cpu_flavor_priority"] == "custom"
+        assert cpu["cpu_flavor_ids"] == ("cpu3c", "cpu5c")
+        assert cpu["network_volume_id"] == "vol"
+        assert cpu["data_center_id"] == "TEST-1"
+        assert cpu["public_key_string"] == "ssh-ed25519 PUBLIC-TEST"
         provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
-        gpu = json.loads(calls[-1].content)
-        assert gpu["allowedCudaVersions"] == ["13.0"]
-        provider.min_cuda_version = "13.0"
-        provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
-        minimum = json.loads(calls[-1].content)
-        assert minimum["minCudaVersion"] == "13.0"
-        assert "allowedCudaVersions" not in minimum
-        assert gpu["computeType"] == "GPU"
+        assert calls[-1][1]["allowed_cuda_versions"] == ("13.0",)
         assert provider.get("missing") is None
         with pytest.raises(build.BuildError):
             provider.get("unavailable")
