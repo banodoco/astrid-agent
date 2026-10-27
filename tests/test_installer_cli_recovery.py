@@ -103,8 +103,19 @@ def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
     root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     backend = _cli_backend(tmp_path, root, data, managed_by="pinokio")
     _prepare_cli(monkeypatch, tmp_path, root, data, backend)
+    old_root = root / "versions" / "old"
+    old_root.mkdir(parents=True)
+    python, profile = old_root / "python", old_root / "profile.json"
+    python.write_text("placeholder", encoding="utf-8")
+    profile.write_text("{}", encoding="utf-8")
+    old = Version(old_root, python, profile, {}, release=4, managed_by="pinokio")
+    write_json(old_root / "version.json", old.document())
+    switch(root, old)
     write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "a" * 32,
         "transaction_kind": "app", "step": "stopped", "data_root": str(data),
+        "old": old.document(), "candidate": old.document(),
+        "realm": {"realm_id": "realm", "realm_root": str(data / "realm")}, "backup": None,
     })
     recovery = []
 
@@ -121,6 +132,85 @@ def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
     assert cli.main(["--root", str(root), "--update", "--uv", str(tmp_path / "absent-uv"),
                      "--manifest", str(tmp_path / "absent-manifest")]) == 0
     assert recovery == ["called"]
+
+
+@pytest.mark.parametrize("step", ["staged", "stopping", "stopped", "migrated", "switched", "verified"])
+def test_pinokio_cli_recovers_migration_boundary_before_retrying_new_inputs(
+        tmp_path, monkeypatch, step):
+    root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
+    backend = _cli_backend(tmp_path, root, data, managed_by="pinokio")
+    _prepare_cli(monkeypatch, tmp_path, root, data, backend)
+    old_root, candidate_root = root / "versions" / "old", root / "versions" / "candidate"
+
+    def version(folder, release):
+        folder.mkdir(parents=True)
+        python, profile = folder / "python", folder / "profile.json"
+        python.write_text("placeholder", encoding="utf-8")
+        profile.write_text("{}", encoding="utf-8")
+        value = Version(folder, python, profile, {}, release=release, managed_by="pinokio")
+        write_json(folder / "version.json", value.document())
+        return value
+
+    old, candidate = version(old_root, 4), version(candidate_root, 5)
+    selected = candidate if step in {"switched", "verified"} else old
+    switch(root, selected)
+    original_workspace = data / "workspace.json"
+    original_workspace.write_text("old workspace", encoding="utf-8")
+    backup_root = root / "backups" / "retained"
+    backup_root.mkdir(parents=True)
+    backup = {"root": str(backup_root)} if step in {"migrated", "switched", "verified"} else None
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "9" * 32,
+        "transaction_kind": "migration", "step": step, "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": {"realm_id": "realm", "realm_root": str(data / "realm")},
+        "backup": backup,
+    })
+    events = []
+
+    def stop(version, _data):
+        events.append(("stop", version.root.name))
+
+    def start(version, _data, realm_id):
+        events.append(("ready", version.root.name, realm_id))
+
+    def restore(_old, _data, _realm, _backup):
+        events.append(("restore",))
+        original_workspace.write_text("old workspace", encoding="utf-8")
+
+    backend.restore = restore
+    backend.persist_identity = lambda version: events.append(("identity", version.root.name))
+    manifest = tmp_path / "manifest.json"
+    uv = tmp_path / "uv"
+    write_json(manifest, {"release": 6})
+    uv.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(cli, "validate_manifest", lambda value: value)
+    monkeypatch.setattr(cli, "download", lambda *_args: pytest.fail(
+        "recovery must return before fetching new update inputs"))
+    monkeypatch.setattr(app_update, "PinokioLifecycle", lambda _root, _backend: SimpleNamespace(
+        validate=lambda _version: None, stop=stop, start=start))
+
+    first = ["--root", str(root), "--update", "--manifest", str(manifest), "--uv", str(uv)]
+    assert cli.main(first) == 0
+    journal = read_json(root / "update-transaction.json")
+    assert journal["step"] == ("complete" if step == "staged" else "rolled_back")
+    assert current(root) == old
+    assert ("restore",) in events if backup else ("restore",) not in events
+    if step == "staged":
+        assert events == []
+    else:
+        assert ("ready", "old", "realm") in events
+        assert events[0][0] == "stop"
+        assert not original_workspace.read_text(encoding="utf-8") == "candidate workspace"
+
+    # Retry is a separate invocation: only now may new manifest and staging
+    # proceed. This keeps recovery ahead of C2b release dispatch on every retry.
+    routed = []
+    backend.preflight_stop = lambda _data: routed.append("preflight")
+    monkeypatch.setattr(app_update, "update_pinokio", lambda *args, **kwargs: routed.append(
+        (args[0], kwargs.get("force"))))
+    assert cli.main(first) == 0
+    assert routed == ["preflight", (root, True)]
 
 
 @pytest.mark.parametrize("source", ["explicit", "hosted"])

@@ -137,6 +137,31 @@ def test_release_must_be_nonnegative_integer():
             install_release({"release": value})
 
 
+@pytest.mark.parametrize(
+    ("managed_by", "expected"),
+    [
+        (None, "This Astrid is newer than astrid.haus offers. Try again when astrid.haus has a newer release."),
+        ("pinokio", "This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button when a newer release is available."),
+    ],
+)
+def test_older_served_release_refusal_uses_install_type_action(tmp_path, managed_by, expected):
+    from astrid.installer.core import Version, update_required
+
+    old = Version(tmp_path / "version", tmp_path / "python", tmp_path / "profile", {}, 9, managed_by)
+    with pytest.raises(ValueError) as caught:
+        update_required("install", {"release": 8}, old, managed_by=managed_by)
+
+    assert str(caught.value) == expected
+
+
+def test_same_and_newer_served_releases_keep_repair_and_update_dispatch(tmp_path):
+    from astrid.installer.core import Version, update_required
+
+    old = Version(tmp_path / "version", tmp_path / "python", tmp_path / "profile", {}, 9)
+    assert not update_required("install", {"release": 9}, old)
+    assert update_required("install", {"release": 10}, old)
+
+
 def test_explicit_null_version_identity_is_malformed(tmp_path):
     root = tmp_path / "versions/v1"
     root.mkdir(parents=True)

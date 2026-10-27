@@ -174,8 +174,22 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
         extra_env=version.env, timeout=120,
     ))
     if require_current and value["identity"]["version"] != value["target"]:
-        raise ValueError("This release needs a workspace migration. Use the regular Pinokio update.")
+        raise ValueError("This release needs a workspace migration. Choose Pinokio's Update button.")
     return value
+
+
+def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str | None = None) -> bool:
+    """C2b numeric dispatch, shared by service and foreground adapters."""
+    release = install_release(manifest)
+    if release < old.release and mode != "update":
+        if managed_by == "pinokio":
+            raise ValueError(
+                "This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button when a newer release is available."
+            )
+        raise ValueError(
+            "This Astrid is newer than astrid.haus offers. Try again when astrid.haus has a newer release."
+        )
+    return mode == "update" or release > old.release
 
 
 def current(root: Path, *, managed_by: str | None = None) -> Version | None:
@@ -356,7 +370,7 @@ class Installer:
 
     def _ready(self) -> None:
         if self.managed_by == "pinokio":
-            self.say("Astrid is installed. Choose Start in Pinokio.")
+            self.say("Astrid is installed. Choose Pinokio's Start button.")
         else:
             self.say("Open https://astrid.haus")
             self.backend.open()
@@ -370,7 +384,7 @@ class Installer:
         pending = read_json(absolute(self.root / "update-transaction.json"))
         if pending and pending.get("step") not in {"complete", "rolled_back"} \
                 and pending.get("transaction_kind") == "app":
-            raise ValueError("Recover the interrupted Pinokio app update through the app updater.")
+            raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
 
         def switch_old(old: Version, _candidate: Version | None) -> None:
             if old.root.parent == self.root / "versions":
@@ -470,6 +484,12 @@ class Installer:
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
+        if (self.managed_by == "pinokio" and mode in {"install", "update"}
+                and current(self.root) is not None):
+            from .app_update import update_pinokio
+
+            return update_pinokio(self.root, self.backend, manifest, say=self.say,
+                                  force=mode == "update")
         # App updates use the same durable journal but have a separate entry
         # point. Serialize operations that recover or write that journal. Doctor
         # and uninstall do not run journal recovery; a first install has no
@@ -493,8 +513,7 @@ class Installer:
         # only after journal recovery and after resolving the active owner;
         # explicit ``update`` remains the forced restage operation.
         if old is not None and mode not in {"doctor", "uninstall"}:
-            candidate_release = install_release(manifest)
-            if mode != "update" and candidate_release > old.release:
+            if update_required(mode, manifest, old, managed_by=self.managed_by):
                 mode = "update"
         if mode == "doctor":
             if old is None:

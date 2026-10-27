@@ -15,6 +15,14 @@ from .service import LABEL, command, installer_lock_path
 
 def launch(root: Path, argv: list[str], *, system: str | None = None) -> None:
     system = system or sys.platform
+    if (os.environ.get("ASTRID_INSTALLER_OPERATION_ID") is None
+            and (absolute(root) / "install.json").is_file()):
+        from .app_update import locked
+
+        # Updates release the lifetime lock to their bound session. Ordinary
+        # Start must not race that handoff or an online candidate preparation.
+        with locked(absolute(root) / ".app-update.lock"):
+            pass
     lock_path = installer_lock_path(Path.home(), system)
     platform.private_directory(lock_path.parent)
     with lock_path.open("a+b") as lock:
@@ -36,7 +44,7 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int) -> None:
         raise ValueError("This copy of Astrid wasn't installed with Pinokio.")
     version = current(root)
     if version is None:
-        raise ValueError("Astrid isn't fully installed. Choose Reset in Pinokio, then install again.")
+        raise ValueError("Astrid isn't fully installed. Choose Pinokio's Reset button, then install again.")
     data = absolute(record["data_root"])
     operation_id = os.environ.get("ASTRID_INSTALLER_OPERATION_ID")
     if operation_id is not None:
@@ -45,12 +53,16 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int) -> None:
         transaction = read_json(root / "update-transaction.json")
         intended = transaction_launch_version(transaction) if transaction else None
         if (not transaction or transaction.get("step") in {"complete", "rolled_back"}
-                or transaction.get("transaction_kind") != "app"
+                or transaction.get("transaction_kind") not in {"app", "migration"}
                 or transaction.get("operation_id") != operation_id
                 or absolute(transaction.get("data_root", "")) != data
                 or (transaction.get("launch_intent") or {}).get("purpose") != "pinokio_start"
                 or intended is None or intended.document() != version.document()):
             raise ValueError("The Pinokio transaction launch binding does not match the pending app update.")
+    else:
+        transaction = read_json(root / "update-transaction.json")
+        if transaction and transaction.get("step") not in {"complete", "rolled_back"}:
+            raise ValueError("Choose Pinokio's Update button to recover the interrupted update before choosing Start.")
     env = {key: value for key, value in os.environ.items() if key not in {
         "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
         "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",

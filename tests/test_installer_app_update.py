@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from astrid.installer import core as installer_core
 from astrid.installer.core import (
     Installer,
     RuntimeOperationError,
+    VerificationError,
     Version,
     current,
     read_json,
@@ -127,6 +129,298 @@ def installed(tmp_path, monkeypatch):
 
 def run(env):
     update.update_app(env.root, env.backend, {}, lifecycle=env.lifecycle, say=lambda _: None)
+
+
+@pytest.mark.parametrize("mode", ["migration", "app", "repair"])
+def test_admission_is_durable_before_staged_and_stop(installed, monkeypatch, mode):
+    from runtime_protocol import platform
+
+    env = installed
+    replaced = []
+    replace = platform.durable_replace
+
+    def publish(source, target):
+        if target != env.root / "run_runtime.py":
+            return replace(source, target)
+        assert env.journal_steps == []
+        assert env.owner["running"]
+        replace(source, target)
+        replaced.append(target)
+
+    monkeypatch.setattr(platform, "durable_replace", publish)
+    real_stop = env.lifecycle.stop
+
+    def stop(*args):
+        assert replaced == [env.root / "run_runtime.py"]
+        compile(replaced[0].read_text(), str(replaced[0]), "exec")
+        real_stop(*args)
+
+    env.lifecycle.stop = stop
+    env.backend.backup = lambda *_args: {"root": str(env.root / "backups" / "test")}
+    env.backend.upgrade = lambda *_args: None
+    env.backend.register = lambda *_args: None
+    env.backend.sync_skills = lambda *_args: None
+    if mode == "app":
+        run(env)
+    else:
+        update.update_pinokio(env.root, env.backend, {"release": 12 if mode == "migration" else 11},
+                              lifecycle=env.lifecycle, say=lambda _: None)
+    assert read_json(env.root / "update-transaction.json")["step"] == "complete"
+
+
+@pytest.mark.parametrize("failure", ["write", "replace", "flush"])
+def test_runner_publication_failure_aborts_before_destructive_work(installed, monkeypatch, failure):
+    from runtime_protocol import platform
+
+    env = installed
+    runner = env.root / "run_runtime.py"
+    runner.write_text("# retained runner\n")
+    before = env.workspace.read_bytes()
+
+    def fail(*_args):
+        raise OSError("publication failed")
+
+    if failure == "write":
+        monkeypatch.setattr("astrid.installer.launcher.os.fsync", fail)
+    elif failure == "flush":
+        monkeypatch.setattr(platform, "flush_replace", fail)
+    else:
+        monkeypatch.setattr(platform, "durable_replace", fail)
+    with pytest.raises(OSError, match="publication failed"):
+        run(env)
+    assert env.calls == ["stage"]
+    assert env.journal_steps == []
+    assert current(env.root) == env.old
+    assert env.owner == {"version": "old", "running": True}
+    assert env.record["identity"] == env.old.document()["identity"]
+    assert env.workspace.read_bytes() == before
+    assert list(env.root.glob(".run_runtime.py.*")) == []
+    if failure == "flush":
+        compile(runner.read_text(), str(runner), "exec")
+        assert "<Astrid foreground launcher>" in runner.read_text()
+    else:
+        assert runner.read_text() == "# retained runner\n"
+    # A fresh attempt must publish successfully even after a post-rename error.
+    monkeypatch.undo()
+    run(env)
+    assert read_json(env.root / "update-transaction.json")["step"] == "complete"
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_recovery_publishes_admission_before_first_stop(installed, monkeypatch, failure):
+    env = installed
+    write_json(env.root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "d" * 32,
+        "transaction_kind": "app", "step": "stopping", "data_root": str(env.data),
+        "old": env.old.document(), "candidate": env.candidate.document(),
+        "realm": env.realm, "backup": None,
+    })
+    events = []
+    publish = update.publish_runtime_runner
+
+    def prepare(root):
+        assert env.calls == []
+        if failure:
+            raise OSError("publication failed")
+        publish(root)
+        events.append("published")
+
+    monkeypatch.setattr(update, "publish_runtime_runner", prepare)
+    stop = env.lifecycle.stop
+
+    def stopped(*args):
+        assert events == ["published"]
+        stop(*args)
+
+    env.lifecycle.stop = stopped
+    if failure:
+        with pytest.raises(OSError, match="publication failed"):
+            update.recover_app(env.root, env.backend, lifecycle=env.lifecycle, say=lambda _: None)
+        assert env.calls == []
+        assert env.owner == {"version": "old", "running": True}
+        assert current(env.root) == env.old
+        assert read_json(env.root / "update-transaction.json")["step"] == "stopping"
+        return
+    update.recover_app(env.root, env.backend, lifecycle=env.lifecycle, say=lambda _: None)
+    assert env.calls == ["stop:old", "start:old"]
+    assert read_json(env.root / "update-transaction.json")["step"] == "rolled_back"
+
+
+def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, monkeypatch):
+    env = installed
+    monkeypatch.delenv("ASTRID_INSTALLER_OPERATION_ID", raising=False)
+    runner = env.root / "run_runtime.py"
+    monkeypatch.setattr(sys, "argv", [str(runner)])
+    refusals = []
+
+    def ordinary_start(boundary):
+        with pytest.raises(ValueError, match="Another Astrid operation"):
+            runpy.run_path(str(runner))
+        refusals.append(boundary)
+
+    publish, stop = update.publish_runtime_runner, env.lifecycle.stop
+
+    def prepare(root):
+        publish(root)
+        assert not env.journal_steps
+        ordinary_start("published")
+
+    def stopping(*args):
+        assert read_json(env.root / "update-transaction.json")["step"] == "stopping"
+        ordinary_start("stopping")
+        stop(*args)
+
+    monkeypatch.setattr(update, "publish_runtime_runner", prepare)
+    env.lifecycle.stop = stopping
+    run(env)
+    assert refusals == ["published", "stopping"]
+    # Terminal transactions release ordinary Start to the selected command.
+    class ExecCalled(Exception):
+        pass
+
+    def execute(_file, arguments, _environment):
+        assert arguments[0] == str(env.candidate.python)
+        raise ExecCalled
+
+    monkeypatch.setattr("os.execvpe", execute)
+    with pytest.raises(ExecCalled):
+        runpy.run_path(str(runner))
+
+
+def test_unified_pinokio_migration_uses_shared_transaction_and_readiness_gate(installed):
+    """Migration updates use C2's journal and retain the old workspace until ready."""
+    data_bytes = installed.workspace.read_bytes()
+    events = []
+
+    def backup(_old, _data, _realm):
+        events.append("backup")
+        return {"root": str(installed.root / "backups" / "test")}
+
+    def upgrade(candidate, _data):
+        events.append("migrate")
+        installed.workspace.write_text('{"keep":"migrated"}', encoding="utf-8")
+
+    def restore(_old, _data, _realm, _backup):
+        events.append("restore")
+        installed.workspace.write_bytes(data_bytes)
+
+    def register(candidate, _data):
+        events.append("register:" + candidate.root.name)
+
+    def sync(candidate):
+        events.append("sync:" + candidate.root.name)
+
+    installed.backend.backup = backup
+    installed.backend.upgrade = upgrade
+    installed.backend.restore = restore
+    installed.backend.register = register
+    installed.backend.sync_skills = sync
+    installed.backend.finish = lambda *_args: events.append("finish")
+    original_start = installed.lifecycle.start
+
+    def start(candidate, *args):
+        if candidate == installed.candidate:
+            journal = read_json(installed.root / "update-transaction.json")
+            assert journal["transaction_kind"] == "migration"
+            assert journal["step"] == "switched"
+            assert current(installed.root) == candidate
+            assert installed.workspace.read_text(encoding="utf-8") == '{"keep":"migrated"}'
+        events.append("ready:" + candidate.root.name)
+        return original_start(candidate, *args)
+
+    installed.lifecycle.start = start
+    update.update_pinokio(
+        installed.root, installed.backend, {"release": 12}, lifecycle=installed.lifecycle,
+        say=lambda _message: None, force=True,
+    )
+
+    journal = read_json(installed.root / "update-transaction.json")
+    assert journal["transaction_kind"] == "migration"
+    assert journal["step"] == "complete"
+    assert installed.journal_steps[:3] == ["staged", "stopping", "stopped"]
+    assert "backed_up" in installed.journal_steps
+    assert "migrated" in installed.journal_steps
+    assert installed.journal_steps.index("verified") < installed.journal_steps.index("complete")
+    assert events == ["backup", "migrate", "register:new", "ready:new", "sync:new", "finish"]
+    assert current(installed.root) == installed.candidate
+    assert installed.workspace.read_text(encoding="utf-8") == '{"keep":"migrated"}'
+
+
+def test_unified_pinokio_migration_readiness_failure_restores_workspace_and_old_owner(installed):
+    data_bytes = installed.workspace.read_bytes()
+    events = []
+
+    installed.backend.backup = lambda *_args: {"root": str(installed.root / "backups" / "test")}
+
+    def upgrade(_candidate, _data):
+        installed.workspace.write_text('{"keep":"migrated"}', encoding="utf-8")
+
+    def restore(_old, _data, _realm, _backup):
+        events.append("restore")
+        installed.workspace.write_bytes(data_bytes)
+
+    installed.backend.upgrade = upgrade
+    installed.backend.restore = restore
+    installed.backend.register = lambda *_args: events.append("register")
+    installed.backend.sync_skills = lambda *_args: events.append("sync")
+    installed.backend.finish = lambda *_args: events.append("finish")
+    real_start = installed.lifecycle.start
+
+    def fail_candidate(candidate, *args):
+        if candidate == installed.candidate:
+            events.append("candidate-not-ready")
+            raise ValueError("candidate readiness failed")
+        events.append("old-ready")
+        return real_start(candidate, *args)
+
+    installed.lifecycle.start = fail_candidate
+    with pytest.raises(ValueError, match="candidate readiness failed"):
+        update.update_pinokio(
+            installed.root, installed.backend, {"release": 12}, lifecycle=installed.lifecycle,
+            say=lambda _message: None, force=True,
+        )
+
+    journal = read_json(installed.root / "update-transaction.json")
+    assert journal["step"] == "rolled_back"
+    assert journal["transaction_kind"] == "migration"
+    assert current(installed.root) == installed.old
+    assert installed.record["identity"] == installed.old.document()["identity"]
+    assert installed.workspace.read_bytes() == data_bytes
+    assert events == ["register", "candidate-not-ready", "restore", "old-ready"]
+    assert "complete" not in installed.journal_steps
+
+
+def test_pinokio_update_refuses_older_served_release_with_pinokio_action(installed):
+    installed.backend.register = lambda *_args: None
+    installed.backend.sync_skills = lambda *_args: None
+    with pytest.raises(ValueError) as caught:
+        update.update_pinokio(
+            installed.root, installed.backend, {"release": 10}, lifecycle=installed.lifecycle,
+            say=lambda _message: None,
+        )
+
+    assert str(caught.value) == (
+        "This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button "
+        "when a newer release is available."
+    )
+    assert installed.calls == []
+    assert installed.journal_steps == []
+    assert current(installed.root) == installed.old
+    assert installed.candidate_admissions == []
+
+
+def test_pinokio_update_routes_existing_install_through_unified_policy(installed, monkeypatch):
+    calls = []
+    monkeypatch.setattr(update, "update_pinokio", lambda *args, **kwargs: calls.append((args, kwargs)))
+    installer = Installer(installed.root, installed.data, installed.backend,
+                          managed_by="pinokio", say=lambda _message: None)
+
+    installer.run("update", {"release": 12})
+
+    assert len(calls) == 1
+    assert calls[0][0] == (installed.root, installed.backend, {"release": 12})
+    assert calls[0][1]["force"] is True
+    assert calls[0][1]["say"] is not None
 
 
 def test_selection_check_is_read_only(installed):
@@ -308,7 +602,8 @@ def test_normal_installer_refuses_while_app_update_owns_shared_lock(installed):
     assert read_json(journal) == previous
 
 
-def test_app_update_refuses_while_normal_update_is_in_stage(installed):
+def test_pinokio_update_refuses_nested_app_update_while_shared_lock_is_held(installed, monkeypatch):
+    monkeypatch.setattr(update, "PinokioLifecycle", lambda *_args: installed.lifecycle)
     journal = installed.root / "update-transaction.json"
     previous = {"step": "complete", "sentinel": "keep"}
     write_json(journal, previous)
@@ -571,11 +866,19 @@ def test_start_runs_after_lifetime_lock_released(installed, monkeypatch):
     run(installed)
 
 
-def test_nonterminal_migration_rejected_before_staging(installed):
-    write_json(installed.root / "update-transaction.json", {"step": "migrating"})
-    with pytest.raises(ValueError, match="interrupted migration"):
-        run(installed)
-    assert installed.calls == []
+def test_pinokio_app_update_recovers_staged_migration_journal_before_staging(installed):
+    write_json(installed.root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "d" * 32,
+        "transaction_kind": "migration", "step": "staged", "data_root": str(installed.data),
+        "old": installed.old.document(), "candidate": installed.candidate.document(),
+        "realm": installed.realm, "backup": None,
+    })
+
+    run(installed)
+
+    assert installed.journal_steps[0] == "complete"  # staged is pre-stop and safe to close.
+    assert installed.journal_steps.index("complete") < installed.journal_steps.index("staged")
+    assert installed.calls == ["stage", "stop:old", "start:new"]
 
 
 def test_second_operator_is_rejected(installed):
@@ -608,6 +911,8 @@ def test_canonical_supervisor_is_detached_and_readiness_checked(installed, monke
     (scripts / "session.mjs").touch()
     (scripts / "lifecycle.mjs").touch()
     (env.root / "run").touch()
+    runner = env.root / "run_runtime.py"
+    runner.write_text("# prepared admission\n")
     spawned = []
     verified = []
     intents = []
@@ -625,6 +930,9 @@ def test_canonical_supervisor_is_detached_and_readiness_checked(installed, monke
     monkeypatch.setattr(update.subprocess, "Popen", spawn)
     lifecycle = update.PinokioLifecycle(env.root, env.backend)
     lifecycle.start(env.candidate, env.data, "realm")
+    assert runner.read_text() == "# prepared admission\n"
+    assert (env.root / "run").read_bytes() == b""
+    assert not (env.root / "run.cmd").exists()
     args, kwargs = spawned[0]
     assert args[0][:3] == [str(lifecycle.node(env.candidate)), "--input-type=module", "-e"]
     assert "runSession({action:'serve'" in args[0][3]
@@ -634,6 +942,104 @@ def test_canonical_supervisor_is_detached_and_readiness_checked(installed, monke
     assert kwargs["env"]["ASTRID_INSTALLER_OPERATION_ID"] == operation_id
     assert intents == [("pinokio_start", {"version": env.candidate})]
     assert verified == [((env.candidate, env.data, "realm"), {"timeout": 180})]
+
+
+def test_local_choice_starts_session_with_editor_preparation_and_local_readiness(installed, monkeypatch):
+    env = installed
+    scripts = env.root.parent.parent / "pinokio"
+    scripts.mkdir()
+    (scripts / "session.mjs").touch()
+    (scripts / "lifecycle.mjs").touch()
+    (env.root / "run").touch()
+    local_script = env.root.parent / "editor" / "scripts" / "dev-local-workspace.mjs"
+    local_script.parent.mkdir(parents=True)
+    local_script.touch()
+    write_json(env.root.parent / "install-mode.json", {"schema_version": 1, "mode": "local"})
+    spawned, verified = [], []
+    env.backend.verify = lambda *args, **kwargs: verified.append((args, kwargs))
+
+    def spawn(*args, **kwargs):
+        spawned.append((args, kwargs))
+        kwargs["stdout"].write(b"ASTRID_PINOKIO_READY\n")
+        kwargs["stdout"].flush()
+        return SimpleNamespace(poll=lambda: None)
+
+    monkeypatch.setattr(update.subprocess, "Popen", spawn)
+    lifecycle = update.PinokioLifecycle(env.root, env.backend)
+    lifecycle.start(env.candidate, env.data, "realm")
+
+    session_script = spawned[0][0][0][3]
+    assert "mode:\"local\"" in session_script
+    assert "prepareEditor:true" in session_script
+    assert verified == [((env.candidate, env.data, "realm"), {"timeout": 180, "hosted": False})]
+
+
+def test_local_verification_uses_ready_pack_host_and_exact_transaction_binding(
+        installed, monkeypatch):
+    from astrid.installer.backend import Backend
+
+    env = installed
+    backend = Backend(env.root, env.tmp_path / "install.log", env.tmp_path / "uv", managed_by="pinokio")
+    operation_id = "e" * 32
+    backend._transaction_stop_context = ({"operation_id": operation_id}, None, False)
+    version = Version(
+        env.old.root, env.old.python, env.old.profile,
+        {**env.old.env, "ASTRID_RUNTIME_DOOR_PORT": "19991"},
+        env.old.release, "pinokio",
+    )
+    status = {
+        "health": {
+            "status": "ok", "runtime_instance_id": "instance-local",
+            "services": [{"name": "pack-host", "state": "running"}],
+        },
+        "discovery": {"runtime_instance_id": "instance-local"},
+        "support": {"pid_alive": True},
+    }
+    backend.runtime = lambda *_args, **_kwargs: status
+    runtime = env.data / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    write_json(runtime / "discovery.json", {
+        "active_realm": "realm", "runtime_instance_id": "instance-local",
+        "installer_operation_id": operation_id,
+    })
+    write_json(runtime / "instance.lock", {"installer_operation_id": operation_id})
+    (runtime / "generic-host.ready.json").write_text("{}", encoding="utf-8")
+    opener = SimpleNamespace(open=lambda *_args, **_kwargs: pytest.fail(
+        "Local verification must not contact the hosted browser door"))
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_args: opener)
+
+    backend.verify(version, env.data, "realm", timeout=1, hosted=False)
+
+
+def test_local_verification_rejects_mismatched_transaction_binding(installed, monkeypatch):
+    from astrid.installer.backend import Backend
+
+    env = installed
+    backend = Backend(env.root, env.tmp_path / "install.log", env.tmp_path / "uv", managed_by="pinokio")
+    backend._transaction_stop_context = ({"operation_id": "f" * 32}, None, False)
+    version = env.old
+    status = {
+        "health": {
+            "status": "ok", "runtime_instance_id": "instance-local",
+            "services": [{"name": "pack-host", "state": "running"}],
+        },
+        "discovery": {"runtime_instance_id": "instance-local"},
+        "support": {"pid_alive": True},
+    }
+    backend.runtime = lambda *_args, **_kwargs: status
+    runtime = env.data / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    write_json(runtime / "discovery.json", {
+        "active_realm": "realm", "runtime_instance_id": "instance-local",
+        "installer_operation_id": "a" * 32,
+    })
+    write_json(runtime / "instance.lock", {"installer_operation_id": "a" * 32})
+    (runtime / "generic-host.ready.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_args: SimpleNamespace(
+        open=lambda *_a, **_k: pytest.fail("Local verification must not contact the hosted browser door")))
+
+    with pytest.raises(VerificationError, match="operation binding"):
+        backend.verify(version, env.data, "realm", timeout=0.02, hosted=False)
 
 
 def test_cli_requires_explicit_pinokio_mode():
@@ -686,3 +1092,39 @@ def test_pinokio_controller_failure_reports_completed_runtime_stop(installed):
 
     assert raised.value.stop_completed is True
     assert raised.value.stop_refused is False
+
+
+@pytest.mark.parametrize("controller", ["exited", "remaining", "replacement"])
+def test_controller_exit_during_authenticated_stop_preserves_other_owners(installed, controller):
+    lifecycle = object.__new__(update.PinokioLifecycle)
+    lifecycle.root = installed.root
+    lifecycle.lifecycle = installed.root / "lifecycle.mjs"
+    lifecycle.node = lambda _: Path("/node")
+    record = installed.root / "pinokio-control.json"
+    original = {"pid": 123, "token": "old"}
+    write_json(record, original)
+    calls = []
+
+    def request_stop(*_args, **_kwargs):
+        assert calls == ["fence"]
+        calls.append("controller")
+        if controller == "exited":
+            record.unlink()
+        elif controller == "replacement":
+            write_json(record, {"pid": 456, "token": "replacement"})
+        raise update.subprocess.CalledProcessError(1, ["/node"], stderr="fetch failed")
+
+    lifecycle.backend = SimpleNamespace(
+        stop=lambda *_args: calls.append("fence"), run=request_stop,
+    )
+    if controller == "exited":
+        lifecycle.stop(installed.old, installed.data)
+        assert not record.exists()
+    else:
+        with pytest.raises(RuntimeOperationError) as raised:
+            lifecycle.stop(installed.old, installed.data)
+        assert raised.value.stop_completed is True
+        assert raised.value.stop_refused is False
+        assert read_json(record) == (
+            original if controller == "remaining" else {"pid": 456, "token": "replacement"})
+    assert calls == ["fence", "controller"]

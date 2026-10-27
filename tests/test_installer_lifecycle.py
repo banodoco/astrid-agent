@@ -388,7 +388,7 @@ def _installed_lifecycle_backend(tmp_path, *, release=0):
         (0, None, "a", "b", False),       # absent candidate release means zero
         (0, 0, "c", "d", False),          # equal release, SHAs differ from installed pins
         (9, 10, "a", "b", True),           # numeric 9 -> 10, same SHAs as installed
-        (10, 9, "b", "c", False),          # older candidates retain repair behavior
+        (10, 9, "b", "c", False),          # refuse a served release older than this installation
         (10, 10, "c", "d", False),         # same release never switches by SHA
     ],
 )
@@ -402,6 +402,13 @@ def test_install_dispatches_by_numeric_release(installed, candidate, agent_sha, 
     manifest = {"agent": {"sha": agent_sha}, "runtime": {"sha": runtime_sha}}
     if candidate is not None:
         manifest["release"] = candidate
+
+    if candidate is not None and candidate < installed:
+        with pytest.raises(ValueError, match="This Astrid is newer than astrid.haus offers"):
+            Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
+        assert backend.calls == []
+        assert current(root).release == installed
+        return
 
     Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
 
@@ -427,9 +434,16 @@ def test_legacy_version_record_release_dispatch_matrix(tmp_path, installed, cand
     write_json(old.root / "manifest.json", {} if installed is None else {"release": installed})
     manifest = {} if candidate is None else {"release": candidate}
 
+    effective_candidate = candidate or 0
+    if effective_candidate < effective_installed:
+        with pytest.raises(ValueError, match="This Astrid is newer than astrid.haus offers"):
+            Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
+        assert backend.calls == []
+        assert current(root).release == effective_installed
+        return
+
     Installer(root, data, backend, say=lambda _line: None).run("install", manifest)
 
-    effective_candidate = candidate or 0
     assert ("stage" in [call[0] for call in backend.calls]) is (effective_candidate > effective_installed)
     assert current(root).release == max(effective_candidate, effective_installed)
 

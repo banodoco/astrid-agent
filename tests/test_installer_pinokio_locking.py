@@ -81,6 +81,22 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
             "owner": LABEL, "managed_by": "pinokio", "program_root": str(root),
             "data_root": str(data),
         })
+    if mode == "update":
+        folder = root / "versions" / "old"
+        folder.mkdir(parents=True)
+        python, profile = folder / "bin" / "python", folder / "profile.json"
+        python.parent.mkdir()
+        python.write_text("placeholder", encoding="utf-8")
+        profile.write_text("{}\n", encoding="utf-8")
+        old = Version(folder, python, profile, {}, release=1, managed_by="pinokio")
+        write_json(folder / "version.json", old.document())
+        switch(root, old)
+        from astrid.installer.backend import Backend
+
+        def fenced_preflight(_backend, _data):
+            raise ValueError("Astrid is busy; the C1 preflight refused this update.")
+
+        monkeypatch.setattr(Backend, "preflight_stop", fenced_preflight)
     marker_before = marker_path.read_bytes() if marker_path.exists() else None
     selection_before = selection_path.read_bytes() if selection_path.exists() else None
     lock_path = installer_lock_path(home, sys.platform)
@@ -88,7 +104,8 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
     lock = lock_path.open("a+b")
     platform.lock_file(lock.fileno(), blocking=False)
     current_calls = []
-    monkeypatch.setattr(cli, "current", lambda _root: current_calls.append(_root))
+    if mode != "update":
+        monkeypatch.setattr(cli, "current", lambda _root: current_calls.append(_root))
     monkeypatch.setattr("astrid.installer.backend.Backend.source_checkout_ownership",
                         lambda *_args, **_kwargs: pytest.fail("source guard ran before Pinokio lock refusal"))
 
@@ -98,8 +115,14 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
         else:
             argv = ["--root", str(root), "--update" if mode == "update" else "--uninstall"]
         assert cli.main(argv) == 1
-        assert "Astrid is still running. Stop it in Pinokio, then try again." in capsys.readouterr().out
-        assert current_calls == []
+        output = capsys.readouterr().out
+        if mode == "update":
+            assert "Astrid is busy; the C1 preflight refused this update." in output
+            assert (root / "current").read_text().strip() == "old"
+            assert not (root / "update-transaction.json").exists()
+        else:
+            assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in output
+            assert current_calls == []
         assert (marker_path.read_bytes() if marker_path.exists() else None) == marker_before
         assert (selection_path.read_bytes() if selection_path.exists() else None) == selection_before
     finally:
@@ -146,7 +169,7 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     from astrid.installer.backend import Backend
 
     home = _set_home(tmp_path, monkeypatch)
-    root, data = tmp_path / "program", tmp_path / "workspace"
+    root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     data.mkdir()
     paths = RuntimePaths.current(data_root=data)
     realm_root = data / "realm"
@@ -209,10 +232,10 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
             return {"runtime_instance_id": "instance", "realm_id": "selected"}
 
         def stop_owner(self, **_kwargs):
-            # This is the actual destructive stop seam. The installer lock must
-            # still be held here, before workspace inspection or backup.
+            # This is the actual destructive stop seam. The shared transaction
+            # lock must remain held while recovery stops and inspects Runtime.
             boundary_calls.append("stop")
-            lock_path = installer_lock_path(home, sys.platform)
+            lock_path = root / ".app-update.lock"
             with lock_path.open("a+b") as contender:
                 with pytest.raises(BlockingIOError):
                     platform.lock_file(contender.fileno(), blocking=False)
@@ -300,6 +323,14 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
         def restore(self, *_args):
             events.append("restore")
 
+    from astrid.installer import app_update
+
+    monkeypatch.setattr(app_update, "PinokioLifecycle", lambda _root, backend: SimpleNamespace(
+        validate=lambda _version: None,
+        stop=backend.stop,
+        start=lambda version, _data, _realm: events.append("session_ready:" + version.root.name),
+    ))
+
     monkeypatch.setattr(cli, "Backend", RecoveryBackend)
     monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
     assert cli.main([
@@ -309,9 +340,9 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     ]) == 0
     capsys.readouterr()
     assert events[0] == "down"
-    assert events.count("workspace") == 2
+    assert "workspace" not in events  # Recovery uses the journal's retained realm identity.
     assert not any(event in events for event in ("backup", "stage", "upgrade", "sync_skills"))
-    assert "start" not in events
+    assert "session_ready:old" in events
     assert "verify" not in events
     assert boundary_calls == ["stop"]
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
@@ -330,7 +361,7 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     from astrid.installer.backend import Backend
 
     home = _set_home(tmp_path, monkeypatch)
-    root, data = tmp_path / "program", tmp_path / "workspace"
+    root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     data.mkdir()
     paths = RuntimePaths.current(data_root=data)
     realm_root = data / "realm"
@@ -405,6 +436,14 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
         def start(self, *_args):
             pytest.fail("Busy recovery started Runtime after stop refusal")
 
+    from astrid.installer import app_update
+
+    monkeypatch.setattr(app_update, "PinokioLifecycle", lambda _root, backend: SimpleNamespace(
+        validate=lambda _version: None,
+        stop=backend.stop,
+        start=lambda *_args: pytest.fail("Busy recovery activated a session after refusal"),
+    ))
+
     monkeypatch.setattr(cli, "Backend", RefusalBackend)
     monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
     monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
@@ -418,6 +457,7 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     ]) == 1
     output = capsys.readouterr().out
     assert "Astrid is busy (1 tasks running). Try again when they finish." in output
+    assert "task-busy" in output
     assert events == []
     assert read_json(root / "update-transaction.json")["step"] == "stopped"
     assert (root / "current").read_text().strip() == "old"
@@ -490,7 +530,7 @@ def _foreground_fixture(tmp_path, monkeypatch):
     import runtime_protocol
 
     home = _set_home(tmp_path, monkeypatch)
-    app_root = tmp_path / "app"
+    app_root = tmp_path / "app" / "astrid"
     version_root = app_root / "versions" / "fixture"
     environment = version_root / "py"
     venv.EnvBuilder(with_pip=False).create(environment)
@@ -509,6 +549,10 @@ def _foreground_fixture(tmp_path, monkeypatch):
         "owner": LABEL, "managed_by": "pinokio", "data_root": str(tmp_path / "workspace"),
     })
     switch(app_root, version)
+    write_json(install_selection(home, sys.platform), {
+        "owner": LABEL, "managed_by": "pinokio", "program_root": str(app_root),
+        "data_root": str(tmp_path / "workspace"), "identity": version.document()["identity"],
+    })
     from astrid.installer.launcher import install as install_launcher
 
     install_launcher(app_root)
@@ -597,8 +641,14 @@ def test_posix_run_lock_is_not_inherited_by_child_and_crash_releases_it(tmp_path
         assert record["lock_fd_inheritable"] is False
         assert record["lock_held"] is True
         assert child_record == {"lock_fd_inherited": False}
+        from astrid.installer.backend import Backend
+
+        def refuse_unpublished_test_owner(_backend, _data):
+            raise ValueError("C1 preflight refused: test owner has no Runtime custody report.")
+
+        monkeypatch.setattr(Backend, "preflight_stop", refuse_unpublished_test_owner)
         assert cli.main(["--update", "--root", str(app_root)]) == 1
-        assert "Astrid is still running. Stop it in Pinokio" in capsys.readouterr().out
+        assert "C1 preflight refused: test owner has no Runtime custody report." in capsys.readouterr().out
         assert not (app_root / "update-transaction.json").exists()
 
         process.send_signal(signal.SIGKILL)
