@@ -3573,6 +3573,9 @@ class ProcessCustody:
                 raise
             later_terminal_observation = None
             later_terminal_census = None
+            # A disappearing task-name port can also report KERN_INVALID_ARGUMENT
+            # with the full audit-token buffer. Reacquire once under the same
+            # precise LIVE/ancestry fences; the error itself grants no authority.
             if (fresh_census is not None and retry_admissions is not None
                     and getattr(error, 'registration_stage', None) == 'token-capture'
                     and type(cause) is NativeTokenCaptureError
@@ -3582,7 +3585,10 @@ class ProcessCustody:
                     and observations['pre'].get('outcome') == observations['post'].get('outcome') == 'LIVE'
                     and type(capture.get('kern_return')) is int
                     and ((capture.get('substage') == 'task_info_first'
-                          and capture['kern_return'] == 0x10000003
+                          and (capture['kern_return'] == 0x10000003
+                               or (capture['kern_return'] == 4
+                                   and type(capture.get('count')) is int
+                                   and capture['count'] == TASK_AUDIT_TOKEN_COUNT))
                           and capture.get('port_acquired') is True
                           and capture.get('port_release_succeeded') is True)
                          or (capture.get('substage') == 'task_name_for_pid'
