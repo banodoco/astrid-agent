@@ -280,6 +280,11 @@ unknown schema or changed realm requires diagnosis rather than a guessed repair.
 
 `prepare` validates actual Task Scheduler action and user ownership, fences new
 task admission, stops only the selected Astrid Runtime, and disables its task.
+It admits the private checkpoint destination before stopping Astrid. Existing
+unprotected or unbound directories and partial artifacts are preserved and refused;
+recovery does not repair their ACLs or adopt an old helper's directory. Checkpoint
+files are private from birth and published atomically. Only an owned, same-boot
+`preparing` intent can replay its private directory or matching checkpoint.
 It saves a private checkpoint under `<program>\recovery\<operation-id>` that binds
 the transaction, source artifacts, live logical SQLite contents, support metadata,
 retained backup, task selection, exact host-marker bytes and native boot evidence.

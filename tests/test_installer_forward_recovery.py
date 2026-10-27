@@ -171,6 +171,11 @@ def test_forward_recovery_keeps_new_live_data_and_retains_stale_snapshot_evidenc
     assert 'restore' not in [call[0] for call in calls]
     assert [call[0] for call in calls].index('candidate-upgrade') < [call[0] for call in calls].index('start')
     assert all(call[1] == backend.candidate for call in calls if call[0] in {'start', 'candidate-verified'})
+    import json
+    messages = []
+    installer.say = messages.append
+    installer.run('recover-status', {})
+    assert json.loads(messages[0])['error'] is None
 
 
 @pytest.mark.parametrize('phase', ['prepared', 'retiring', 'reconciled', 'upgrading', 'upgraded',
@@ -318,4 +323,105 @@ def test_missing_native_boot_proof_is_actionable_in_status_without_stopping(reco
     installer.say = messages.append
     installer.run('recover-status', {})
     assert 'access denied' in messages[0]
+    assert (installer.data / 'runtime/generic-host.json').exists()
+
+
+@pytest.mark.parametrize('condition', ['unprotected-directory', 'unprotected-container', 'unbound-empty-directory',
+    'partial-artifacts', 'unprotected-checkpoint', 'mismatched-checkpoint'])
+def test_checkpoint_destination_is_admitted_before_stopping(recovery_fixture, monkeypatch, condition):
+    from runtime_protocol import platform
+
+    from astrid.installer import recovery
+
+    installer, backend, state = recovery_fixture
+    tx = read_json(installer.root / 'update-transaction.json')
+    folder = installer.root / 'recovery' / tx['operation_id']
+    platform.private_directory(folder)
+    if condition not in {'unprotected-directory', 'unprotected-container', 'unbound-empty-directory'}:
+        tx['recovery'] = {'phase': 'preparing', 'boot': state['boot']}
+        write_json(installer.root / 'update-transaction.json', tx)
+    if condition in {'unprotected-directory', 'unprotected-container'}:
+        original = platform.is_owner_only
+        refused = folder if condition == 'unprotected-directory' else folder.parent
+        monkeypatch.setattr(platform, 'is_owner_only', lambda path, **kwargs:
+            False if path == refused else original(path, **kwargs))
+    elif condition == 'partial-artifacts':
+        (folder / 'install.json').write_text('retained partial helper artifact')
+    elif condition in {'unprotected-checkpoint', 'mismatched-checkpoint'}:
+        path = folder / 'checkpoint.json'
+        write_json(path, {'format': recovery.FORMAT, 'root': str(installer.root), 'data_root': str(installer.data),
+                         'boot': state['boot'], 'evidence': {'transaction': recovery._transaction_identity(tx)}})
+        if condition == 'unprotected-checkpoint':
+            original = platform.is_owner_only
+            monkeypatch.setattr(platform, 'is_owner_only', lambda target, **kwargs:
+                False if target == path else original(target, **kwargs))
+        else:
+            value = read_json(path)
+            value['root'] = str(installer.root / 'foreign')
+            write_json(path, value)
+            platform.owner_only(path)
+    files = {path.name: path.read_bytes() for path in folder.iterdir() if path.is_file()}
+    before = list(backend.calls)
+    with pytest.raises(ValueError, match='Astrid was not stopped'):
+        installer.run('recover-prepare', {})
+    assert backend.calls == before
+    assert not state['disabled']
+    assert {path.name: path.read_bytes() for path in folder.iterdir() if path.is_file()} == files
+    assert (installer.data / 'runtime/generic-host.json').exists()
+    tx = read_json(installer.root / 'update-transaction.json')
+    error = (tx.get('recovery') or {}).get('error') or tx.get('recovery_error')
+    assert 'Astrid was not stopped' in error
+
+
+def test_checkpoint_publication_is_private_and_replays_after_replace(recovery_fixture, monkeypatch):
+    from runtime_protocol import platform
+
+    installer, _backend, state = recovery_fixture
+    tx = read_json(installer.root / 'update-transaction.json')
+    checkpoint = installer.root / 'recovery' / tx['operation_id'] / 'checkpoint.json'
+    replace = platform.durable_replace
+    class Crash(BaseException):
+        pass
+    def crash_after_private_publish(source, target):
+        if target == checkpoint:
+            assert platform.is_owner_only(source)
+            replace(source, target)
+            assert platform.is_owner_only(target)
+            raise Crash()
+        return replace(source, target)
+    monkeypatch.setattr(platform, 'durable_replace', crash_after_private_publish)
+    with pytest.raises(Crash):
+        installer.run('recover-prepare', {})
+    assert checkpoint.is_file() and platform.is_owner_only(checkpoint)
+    assert read_json(installer.root / 'update-transaction.json')['recovery']['phase'] == 'preparing'
+    monkeypatch.setattr(platform, 'durable_replace', replace)
+    installer.run('recover-prepare', {})
+    assert read_json(installer.root / 'update-transaction.json')['recovery']['phase'] == 'prepared'
+    reboot(state)
+    installer.run('recover-resume', {})
+    assert read_json(installer.root / 'update-transaction.json')['step'] == 'complete'
+
+
+@pytest.mark.windows_native
+@pytest.mark.parametrize('location', ['container', 'operation'])
+def test_native_unprotected_checkpoint_directory_is_refused_before_stop(recovery_fixture, location):
+    from runtime_protocol import platform
+
+    installer, backend, state = recovery_fixture
+    tx = read_json(installer.root / 'update-transaction.json')
+    folder = installer.root / 'recovery' / tx['operation_id']
+    if location == 'container':
+        unsafe = folder.parent
+        unsafe.mkdir()
+    else:
+        platform.private_directory(folder.parent)
+        unsafe = folder
+        unsafe.mkdir()  # Intentional inherited, unprotected DACL: never repair it.
+    assert not platform.is_owner_only(unsafe, directory=True)
+    before = list(backend.calls)
+    with pytest.raises(ValueError, match='is not private'):
+        installer.run('recover-prepare', {})
+    assert backend.calls == before and not state['disabled']
+    assert not platform.is_owner_only(unsafe, directory=True)
+    assert not list(unsafe.iterdir())
     assert (installer.data / 'runtime/generic-host.json').exists()

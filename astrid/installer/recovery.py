@@ -9,11 +9,12 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
 from .app_update import inspect_schema, locked
-from .core import Version, absolute, current, linked, read_json, switch, write_json
+from .core import Version, absolute, current, linked, read_json, switch
 from .service import LABEL
 from .tools import validate_manifest
 
@@ -219,9 +220,10 @@ class ForwardRecovery:
     def status(self):
         tx = read_json(self.path)
         recovery = tx.get('recovery', {})
+        error = None if tx.get('step') in {'complete', 'rolled_back'} else recovery.get('error') or tx.get('recovery_error')
         self.installer.say(json.dumps({
             'operation_id': tx.get('operation_id'), 'step': tx.get('step'),
-            'phase': recovery.get('phase'), 'error': recovery.get('error') or tx.get('recovery_error'),
+            'phase': recovery.get('phase'), 'error': error,
             'data_restored': tx.get('data_restored', False), 'data_validated': tx.get('data_validated', False),
             'service_healthy': tx.get('service_healthy', False),
             'candidate': (tx.get('candidate') or {}).get('root'),
@@ -229,9 +231,68 @@ class ForwardRecovery:
             'checkpoint': recovery.get('checkpoint'),
         }, indent=2, sort_keys=True))
 
-    def prepare(self):
+    def _prepare_directory(self, tx, prior, boot):
+        """Admit the private destination before any service is interrupted."""
         from runtime_protocol import platform
 
+        folder = absolute(self.root / 'recovery' / tx['operation_id'])
+        checkpoint = folder / 'checkpoint.json'
+        existed = folder.exists()
+        for directory, label in ((self.root, 'program directory'), (folder.parent, 'container'),
+                                 (folder, 'checkpoint directory')):
+            if directory.exists() and (not directory.is_dir()
+                    or not platform.is_owner_only(directory, directory=True)):
+                raise ValueError(f'The existing recovery {label} is not private; '
+                                 'preserve it for diagnosis. Astrid was not stopped.')
+        if existed:
+            if not prior:
+                raise ValueError('An existing recovery checkpoint directory has no owned preparation intent; '
+                                 'preserve it for diagnosis. Astrid was not stopped.')
+            if any(entry.name != 'checkpoint.json' for entry in folder.iterdir()):
+                raise ValueError('The recovery directory contains uncommitted or unknown artifacts; '
+                                 'preserve them for diagnosis. Astrid was not stopped.')
+            if linked(checkpoint) or (checkpoint.exists() and not checkpoint.is_file()):
+                raise ValueError('The existing checkpoint is not a regular private file; preserve it. Astrid was not stopped.')
+            if checkpoint.exists():
+                if not platform.is_owner_only(checkpoint):
+                    raise ValueError('The existing checkpoint is not private; preserve it. Astrid was not stopped.')
+                value = read_json(checkpoint)
+                if (value.get('format') != FORMAT or value.get('root') != str(self.root)
+                        or value.get('data_root') != str(self.data) or value.get('boot') != boot
+                        or value.get('evidence', {}).get('transaction') != _transaction_identity(tx)):
+                    raise ValueError('The existing checkpoint differs from this preparation; '
+                                     'preserve it. Astrid was not stopped.')
+        # Record intent before creating a fresh directory, so an interruption
+        # after creation can replay only as this operation, in this same boot.
+        self._save(tx, 'preparing', boot=boot)
+        if not existed:
+            try:
+                if not folder.parent.exists():
+                    platform.private_directory(folder.parent)
+                platform.private_directory(folder)
+            except OSError as failure:
+                raise ValueError('A private recovery checkpoint directory could not be created; '
+                                 'Astrid was not stopped.') from failure
+        return checkpoint
+
+    @staticmethod
+    def _publish_checkpoint(checkpoint, value):
+        """Publish a checkpoint whose native permissions were private from birth."""
+        from runtime_protocol import platform
+
+        descriptor, name = platform.private_temporary(checkpoint.parent, '.checkpoint-')
+        temporary = Path(name)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='\n') as stream:
+                json.dump(value, stream, indent=2, sort_keys=True)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            platform.durable_replace(temporary, checkpoint)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def prepare(self):
         from ..core.execution.boot_identity import capture_boot_identity
         from ..sdk.host_bootstrap import capture_legacy_host_recovery
 
@@ -248,11 +309,8 @@ class ForwardRecovery:
         boot = capture_boot_identity()
         if prior and prior.get('boot') != boot:
             raise ValueError('Preparation was interrupted across Restart before its checkpoint committed; preserve the evidence for support.')
-        self._save(tx, 'preparing', boot=boot)
+        checkpoint = self._prepare_directory(tx, prior, boot)
         self.backend.stop_for_recovery(current(self.root), self.data, tx['realm'])
-        folder = absolute(self.root / 'recovery' / tx['operation_id'])
-        platform.private_directory(folder)
-        checkpoint = folder / 'checkpoint.json'
         with self._quiescent(tx['realm']):
             state = self._evidence(tx, old, candidate)
             self.backend.assert_recovery_stopped(self.data)
@@ -267,8 +325,7 @@ class ForwardRecovery:
                 if read_json(checkpoint) != value:
                     raise ValueError('An interrupted preparation checkpoint differs from live state; preserve it for diagnosis.')
             else:
-                write_json(checkpoint, value)
-                platform.owner_only(checkpoint)
+                self._publish_checkpoint(checkpoint, value)
             tx['data_validated'] = True
             self._save(tx, 'prepared', checkpoint=str(checkpoint), checkpoint_sha256=digest(checkpoint))
         self.installer.say('Recovery prepared. Astrid is stopped and disabled; your live workspace and backup are retained. '
