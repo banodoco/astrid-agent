@@ -121,6 +121,46 @@ def test_real_source_guard_preserves_retained_ownership_bytes(tmp_path, monkeypa
     assert not (home / "data" / "astrid-install.json").exists()
 
 
+@pytest.mark.parametrize("health", [
+    {"runtime_instance_id": "instance", "identity": None},
+    {"runtime_instance_id": "instance", "identity": {"release": True, "managed_by": None}},
+    {"runtime_instance_id": "other-owner", "identity": {"release": 1, "managed_by": None}},
+])
+def test_real_cli_invalid_live_identity_refuses_before_writes_and_stop(tmp_path, monkeypatch, capsys, health):
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+
+    from astrid.installer.backend import Backend
+
+    home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / "data"))
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {"pid": pid, "birth_id": "birth"})
+    root.mkdir()
+    paths = RuntimePaths.current(data_root=data)
+    paths.discovery_path.parent.mkdir(parents=True)
+    paths.discovery_path.write_text(json.dumps({
+        "pid": 4242, "process_birth_id": "birth", "runtime_instance_id": "instance",
+        "endpoint": "http://127.0.0.1:12345",
+    }))
+    before = paths.discovery_path.read_bytes()
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary.owner_startup_identity",
+                        lambda *_args, **_kwargs: health)
+    writes, stops = [], []
+    monkeypatch.setattr(cli, "write_json", lambda *args: writes.append(args))
+    monkeypatch.setattr(Backend, "preflight_stop", lambda *_args: stops.append("preflight"))
+    monkeypatch.setattr(Backend, "stop", lambda *_args: stops.append("stop"))
+    assert cli.main(["--root", str(root), "--data-root", str(data)]) == 1
+    assert "Your work is kept" in capsys.readouterr().out
+    assert "Live Runtime startup identity cannot be verified" in (tmp_path / "logs" / "install.log").read_text()
+    assert writes == stops == []
+    assert paths.discovery_path.read_bytes() == before
+    assert not (root / "install.json").exists()
+    assert not (home / "data" / "astrid-install.json").exists()
+
+
 def _fake_uv(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("""#!/usr/bin/env python3
