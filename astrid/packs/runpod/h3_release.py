@@ -331,6 +331,32 @@ class RunPodProvider:
         return result
 
     def create(self, volume, image, pod_type, name):
+        if pod_type != "cpu" and self.min_cuda_version:
+            inputs = {"name": name, "imageName": image, "gpuTypeId": pod_type,
+                      "cloudType": "SECURE", "supportPublicIp": True, "startSsh": True,
+                      "dataCenterId": volume["datacenter"], "gpuCount": 1, "volumeInGb": 0,
+                      "containerDiskInGb": 20, "minVcpuCount": 2, "minMemoryInGb": 4,
+                      "ports": "22/tcp", "volumeMountPath": volume["mount"],
+                      "networkVolumeId": volume["id"], "minCudaVersion": self.min_cuda_version,
+                      "env": [{"key": "PUBLIC_KEY", "value": os.environ["RUNPOD_SSH_PUBLIC_KEY"]}]}
+            response = self.http.post("https://api.runpod.io/graphql", json={
+                "query": "mutation($input: PodFindAndDeployOnDemandInput) { podFindAndDeployOnDemand(input: $input) { id name } }",
+                "variables": {"input": inputs},
+            })
+            response.raise_for_status()
+            result = response.json()
+            if result.get("errors"):
+                message = "; ".join(str(row.get("message", "provider error")) for row in result["errors"])
+                for key in ("RUNPOD_API_KEY", "RUNPOD_SSH_PUBLIC_KEY"):
+                    if os.environ.get(key):
+                        message = message.replace(os.environ[key], "[redacted]")
+                if "no longer any instances" in message.lower() or "no available" in message.lower():
+                    raise CapacityUnavailable("no compatible build capacity")
+                raise AllocationRejected("GPU minimum-CUDA placement rejected: " + message[:800])
+            pod = result.get("data", {}).get("podFindAndDeployOnDemand")
+            if not isinstance(pod, dict) or not pod.get("id"):
+                raise BuildError("GPU placement returned no pod identity")
+            return pod
         payload = {"name": name, "imageName": image, "cloudType": "SECURE",
                    "networkVolumeId": volume["id"], "volumeMountPath": volume["mount"],
                    "dataCenterIds": [volume["datacenter"]], "containerDiskInGb": 20,
@@ -343,9 +369,6 @@ class RunPodProvider:
         else:
             payload.update({"computeType": "GPU", "gpuCount": 1, "gpuTypeIds": [pod_type],
                             "gpuTypePriority": "custom", "allowedCudaVersions": ["13.0"]})
-            if self.min_cuda_version:
-                payload.pop("allowedCudaVersions")
-                payload["minCudaVersion"] = self.min_cuda_version
         return self.request("POST", "pods", json=payload)
 
     def get(self, pod_id):
