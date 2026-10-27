@@ -313,3 +313,70 @@ it never deletes it or invents a completion record. The incident candidate Runti
 with a supported reconciliation API. A complete Runtime upgrade interrupted before
 the installer's next phase can be stopped and safely replayed. This limitation is
 separate from the retained legacy-host marker repair.
+
+### Prerelease operator acceptance handoff
+
+This is a release qualification procedure, not a published repair artifact.
+Use a disposable Windows x64 machine that can perform a real Restart, first on
+Windows 10 and then on Windows 11. Keep the retained backup and a copy of the
+broken-old/legacy-marker installation. Run this journey against the live clone;
+copying a backup over the realm during recovery would invalidate the test.
+
+The release owner must supply and record hashes for these exact inputs before
+the Windows agent executes the procedure:
+
+| Input | Prerelease qualification selection |
+| --- | --- |
+| Bootstrap `public/install.ps1` and base manifest/tool pins | App `d174f667aa04a7c43e6b0f767abb168b6022a6ab` |
+| Bootstrap Agent package | Agent `cf4db6a1956451fe5233326f17445fdf08ca7151` (or a later explicitly reviewed descendant with the same recovery changes) |
+| Bootstrap Runtime and Python client packages | Runtime `9fed6cfc02a1a130011f97af701f5edf9eb374b0` |
+| Retained candidate | The candidate already named by the installation's interrupted transaction, including incident `3204bb00-6d53a190-bffecb79` |
+
+Prepare a local manifest from the App base manifest, changing only `agent.sha`
+and `runtime.sha` to those bootstrap package commits. Keep all tool pins and
+asset hashes. Save it beside the checked, pinned bootstrap as
+`recovery-acceptance-manifest.json`. The bootstrap's existing `--manifest` option
+installs those packages into its separate temporary environment; it does not
+replace the retained candidate selected for forward recovery. Do not substitute
+the selected old environment's Python or the withdrawn helper ZIP. Confirm the
+Agent native recovery CI at the exact tested ref before starting this journey.
+
+From that supplied directory, the commands are:
+
+```powershell
+& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover status
+& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover prepare
+# Negative case: same-boot resume must refuse without quarantining markers.
+& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover resume
+# Save other work, use Windows Restart, sign in, and return to this directory.
+& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover resume
+& .\install.ps1 --manifest .\recovery-acceptance-manifest.json --recover status
+```
+
+Append the same absolute `--root` on every line for a custom installation.
+Before Restart, retain the nonzero same-boot refusal and `prepared` status,
+checkpoint path/hash, operation/realm/candidate identities, disabled/nonrunning
+Astrid task, and unchanged live logical data/backup digests. An unavailable,
+denied, mismatched or unsupported native boot source must also refuse with an
+explanatory status error. It must not stop a different owner, remove markers,
+write drain receipts, or advise bypassing the check.
+
+After the real Restart, require `step: complete`, recovery `phase: complete` and
+`service_healthy: true`; the selected candidate and realm must match the original
+transaction. Retain the old marker quarantine and unchanged backup. Check the
+actual enabled Task Scheduler action uses the candidate, the task is running,
+and authenticated Runtime status, discovery and browser health report the same
+Runtime instance. Check new service-log output for competing startup attempts;
+Windows venv launcher/child PIDs alone do not establish duplicate Runtime owners.
+Require pack-host readiness from this candidate after the quarantine.
+
+Finally, use Astrid's installed host to dispatch one existing, small creative
+workflow to the user's existing ComfyUI on port **7860**, and retain the durable
+Runtime task ID, completed settlement and produced artifact. A health response or
+chat response alone does not satisfy this gate. Preserve the existing ComfyUI
+checkout, configuration, models and artifacts; do not provision another ComfyUI
+or download replacement models for this check. Windows Restart ends existing
+processes, so reopen that same ComfyUI installation if needed before dispatch.
+Record source/package/schema hashes and Windows build with the evidence. Native
+CI without this actual Restart and installed creative-task settlement leaves
+this operator acceptance gate open.
