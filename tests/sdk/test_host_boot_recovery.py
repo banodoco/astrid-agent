@@ -124,6 +124,38 @@ def test_missing_preboot_marker_without_quarantine_is_not_replay(recovery):
         retire(recovery)
 
 
+def test_existing_unprotected_quarantine_is_refused_without_repair_or_marker_changes(recovery, monkeypatch):
+    support, _state, _proof, quarantine = recovery
+    quarantine.mkdir()
+    quarantine.chmod(0o755)  # POSIX umask-independent; does not protect a Windows DACL.
+    assert not host.platform.is_owner_only(quarantine, directory=True)
+    before = {name: (support / name).read_bytes() for name in host._RECOVERY_MARKERS}
+    def no_directory_repair(_path):
+        pytest.fail("existing unprotected quarantine must not be repaired or adopted")
+    monkeypatch.setattr(host.platform, "private_directory", no_directory_repair)
+    with pytest.raises(host.PackHostBootstrapError, match="quarantine is not private"):
+        retire(recovery)
+    assert {name: (support / name).read_bytes() for name in host._RECOVERY_MARKERS} == before
+    assert list(quarantine.iterdir()) == []
+    assert not host.platform.is_owner_only(quarantine, directory=True)
+
+
+def test_partial_old_quarantine_without_proof_manifest_cannot_authorize_replay(recovery):
+    support, _state, _proof, quarantine = recovery
+    host.platform.private_directory(quarantine)
+    archived = support / "generic-host.json"
+    content = archived.read_bytes()
+    (quarantine / archived.name).write_bytes(content)
+    host.platform.owner_only(quarantine / archived.name)
+    archived.unlink()
+    before = (support / "generic-host.ready.json").read_bytes()
+    with pytest.raises(host.PackHostBootstrapError, match="changed after recovery preparation"):
+        retire(recovery)
+    assert (support / "generic-host.ready.json").read_bytes() == before
+    assert (quarantine / "generic-host.json").read_bytes() == content
+    assert not (quarantine / "proof.json").exists()
+
+
 def test_digest_tampering_and_foreign_support_are_rejected(recovery):
     _support, _state, proof, _quarantine = recovery
     proof["markers"]["generic-host.json"]["sha256"] = "sha256:" + "0" * 64

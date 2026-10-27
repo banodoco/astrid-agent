@@ -704,11 +704,10 @@ def retire_preboot_host(support_root: Path, proof: Mapping[str, Any], *, prepare
         for name, content in {**expected, "proof.json": canonical}.items():
             if content is None or _private_recovery_bytes(archive / name) is not None:
                 continue
-            descriptor, temporary_name = tempfile.mkstemp(prefix=".host-recovery-", dir=archive)
+            descriptor, temporary_name = platform.private_temporary(archive, ".host-recovery-")
             temporary = Path(temporary_name)
             try:
                 with os.fdopen(descriptor, "wb") as handle:
-                    platform.owner_only(handle.fileno())
                     handle.write(content)
                     handle.flush()
                     os.fsync(handle.fileno())
