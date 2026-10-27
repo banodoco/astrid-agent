@@ -693,6 +693,8 @@ def _windows_process_argv(pid: int) -> list[str]:
     """
     query = (
         "$ErrorActionPreference='Stop'; "
+        "$utf8=New-Object System.Text.UTF8Encoding $false; "
+        "[Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; "
         f"$p=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {int(pid)}'; "
         "if ($null -eq $p -or $null -eq $p.CommandLine) { exit 3 }; "
         "ConvertTo-Json -Compress -InputObject @{ProcessId=[int]$p.ProcessId; CommandLine=[string]$p.CommandLine}"
@@ -703,9 +705,10 @@ def _windows_process_argv(pid: int) -> list[str]:
     try:
         result = subprocess.run(
             [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", query],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=5.0,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+            check=False, timeout=5.0,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         raise OSError("Windows process command observation failed") from exc
     if result.returncode != 0:
         raise OSError("Windows process command observation failed")

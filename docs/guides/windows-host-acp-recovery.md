@@ -32,8 +32,8 @@ New Windows service declarations bind chat to the selected environment's
 profile lookup, and preference lookup use the same Windows command-shim handling
 as ACP startup. Failures report bounded process status rather than private child
 output. These fixes do not establish the cause of the report's live `.exe`
-failure: standalone profile lookup worked, and the live bridge still needs a
-post-configuration `/models` and `/connect` check.
+failure: standalone profile lookup worked, but a later live diagnostic still
+returned `/models` 500 and `/connect` 502 after the absolute command change.
 
 Native Windows checks are included in CI. Local macOS checks cannot establish
 that the Windows chat panel answers or a task completes on the user's existing
@@ -95,10 +95,15 @@ Windows POSIX census; that is a distinct failure from the Runtime duplicate.
 
 For ACP, the report's standalone Bun profile lookup succeeded twice using the
 configured service working directory and PATH. An absolute `astrid.exe` path was
-then written into the chat service declaration, but no successful `/models` or
-`/connect` request was recorded after that change. Treat ACP discovery and
-connection as unresolved until those endpoints are checked against the live
-bridge.
+then written into the chat service declaration. The follow-up diagnostic
+confirmed this file was saved at 14:47:05 UTC, Runtime started at 14:47:37 UTC,
+and the Bun bridge started at 14:47:38 UTC. The selected command was an absolute
+executable in the selected installation, yet `/models` returned 500 and
+`/connect` returned 502 with `Astrid ACP packaged profile lookup failed.`
+The absolute-path change did not resolve the live failure. Runtime remained
+healthy; pack-host had retried 73 times. Compare supervised/no-console child
+startup with standalone Bun next, capturing bounded process error codes rather
+than inferring an authentication problem.
 
 To capture current, bounded evidence without printing the bridge credential or
 environment, run the repository diagnostic from PowerShell:

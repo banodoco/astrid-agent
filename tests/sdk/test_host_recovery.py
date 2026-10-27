@@ -743,8 +743,19 @@ def test_windows_command_observation_uses_read_only_cim_and_validates_pid(monkey
 
     assert argv[0] == "parsed"
     assert "Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = 4321'" in calls[0][0][-1]
+    assert "[Console]::OutputEncoding=$utf8" in calls[0][0][-1]
+    assert calls[0][1]["encoding"] == "utf-8"
     assert calls[0][1]["timeout"] == 5.0
     assert calls[0][1]["check"] is False
+
+
+def test_windows_command_observation_fails_closed_on_output_decode_error(monkeypatch):
+    def invalid_output(*_args, **_kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+    monkeypatch.setattr(host_bootstrap.subprocess, "run", invalid_output)
+
+    with pytest.raises(OSError, match="process command observation failed"):
+        host_bootstrap._windows_process_argv(4321)
 
 
 @pytest.mark.windows_native
@@ -811,23 +822,38 @@ def test_windows_registered_host_binds_real_venv_command_and_support_path(tmp_pa
         "path=Path(sys.argv[sys.argv.index('--metadata-file')+1])\n"
         "path.write_text(json.dumps({'pid':os.getpid(),'executable':sys.executable,'base':sys._base_executable}))\n"
         "time.sleep(60)\n", encoding="utf-8")
-    support = tmp_path / "Astrid support" / "runtime"
+    support = tmp_path / "Astrid é data" / "runtime"
     support.mkdir(parents=True)
     metadata = tmp_path / "host metadata.json"
+    child_output = tmp_path / "host stdout stderr.log"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(package)
-    process = subprocess.Popen(
-        [str(python), "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
-         "--support-root", str(support), "--metadata-file", str(metadata)],
-        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    # `python -m` prepends its current directory to sys.path. Run from the
+    # temporary stub package so it wins over the checkout's real Astrid
+    # package; otherwise this fixture imports the real host and fails on its
+    # unrelated service dependencies before it can publish test metadata.
+    with child_output.open("wb") as output_file:
+        process = subprocess.Popen(
+            [str(python), "-X", "utf8", "-m", host_bootstrap._HOST_MODULE, "run",
+             "--support-root", str(support), "--metadata-file", str(metadata)],
+            cwd=package, env=env, stdin=subprocess.DEVNULL,
+            stdout=output_file, stderr=subprocess.STDOUT,
+        )
     host_pid = None
     host_identity = None
     try:
         deadline = time.monotonic() + 10
         while not metadata.exists() and time.monotonic() < deadline and process.poll() is None:
             time.sleep(0.02)
-        assert metadata.exists(), "temporary Windows venv host did not publish its PID"
+        if not metadata.exists():
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            output_tail = child_output.read_bytes()[-4096:].decode("utf-8", errors="replace")
+            pytest.fail(
+                "temporary Windows venv host did not publish its PID; "
+                f"returncode={process.returncode}, output_tail={output_tail!r}"
+            )
         row = json.loads(metadata.read_text(encoding="utf-8"))
         host_pid = row["pid"]
         host_identity = host_bootstrap.platform.process_identity(host_pid)
