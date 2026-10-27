@@ -192,8 +192,9 @@ def test_training_config_requires_storage_name_when_runpod_storage_required(tmp_
         compute={"storage_required": True},
     )
 
-    with pytest.raises(TrainingRunConfigError, match="ensure-storage"):
+    with pytest.raises(TrainingRunConfigError) as raised:
         load_training_run_config(config_path)
+    assert "runpod-lifecycle volumes create <storage-name> <GB> --datacenter <id>" in str(raised.value)
 
     configured_path = _training_config(
         tmp_path / "storage-configured.json",
