@@ -13,7 +13,11 @@ function Assert-PackageFile([string]$Path, [string]$ExpectedHash) {
   if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { throw ('Package file missing: ' + $Path) }
   $item = Get-Item -LiteralPath $Path -Force
   if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ('Package file must not be a link: ' + $Path) }
-  $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  # PS5.1 may inherit a PS7 module path. Hash exact bytes without module autoload.
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    $actual = [BitConverter]::ToString($algorithm.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant()
+  } finally { $algorithm.Dispose() }
   if ($actual -cne $ExpectedHash) { throw ('Package checksum mismatch: ' + $item.Name + '. Nothing was launched.') }
 }
 

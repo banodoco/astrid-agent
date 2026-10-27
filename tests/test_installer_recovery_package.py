@@ -73,6 +73,28 @@ def run_package(fixture, action='status', *, extra_env=None, root=None):
 
 
 @pytest.mark.windows_native
+def test_native_ps51_has_wrapper_and_bootstrap_command_surface(native_package):
+    # Preserve the inherited environment: PS7's module path previously hid the
+    # Get-FileHash function from PS5.1. The remaining entrypoint surface uses
+    # compiled cmdlets, including the real pinned bootstrap's preparation path.
+    commands = ['Test-Path', 'Get-Item', 'Get-Content', 'ConvertFrom-Json', 'ConvertTo-Json',
+                'Write-Host', 'Write-Output', 'New-Object', 'Join-Path', 'Split-Path', 'Get-Acl', 'Add-Type',
+                'Get-ExecutionPolicy', 'Where-Object', 'Invoke-WebRequest',
+                'Remove-Item', 'Out-Null', 'Out-String', 'Start-Sleep']
+    names = ','.join("'" + name + "'" for name in commands)
+    script = ("$ErrorActionPreference='Stop'; "
+              "if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { throw 'PS5.1 required' }; "
+              f"foreach ($name in @({names})) {{ "
+              "$command = Get-Command -Name $name -CommandType Cmdlet -ErrorAction Stop; "
+              "[Console]::WriteLine($command.Name) }")
+    result = subprocess.run([str(native_package[0]), '-NoProfile', '-NonInteractive', '-Command', script],
+                            env=dict(os.environ), stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, encoding='utf-8', errors='replace', timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == commands
+
+
+@pytest.mark.windows_native
 @pytest.mark.parametrize('action', ['status', 'prepare', 'resume'])
 def test_native_package_forwards_only_explicit_recovery_to_new_bootstrap(native_package, action):
     result = run_package(native_package, action)
@@ -87,6 +109,13 @@ def test_native_package_forwards_only_explicit_recovery_to_new_bootstrap(native_
 @pytest.mark.parametrize('tamper', ['bootstrap', 'manifest', 'pins', 'action', 'relative-root'])
 def test_native_package_refuses_bad_inputs_before_launch(native_package, tamper):
     _powershell, package, wrapper, _root, _old = native_package
+    expected = {
+        'bootstrap': 'Package checksum mismatch: install.ps1. Nothing was launched.',
+        'manifest': 'Package checksum mismatch: recovery-manifest.json. Nothing was launched.',
+        'pins': 'Package source pins differ from this reviewed recovery build. Nothing was launched.',
+        'action': 'Cannot validate argument on parameter',
+        'relative-root': 'ProgramRoot must be an absolute local Windows path.',
+    }[tamper]
     if tamper == 'bootstrap':
         (package / 'bootstrap/install.ps1').write_text('throw "unreviewed bootstrap must never execute"')
     elif tamper == 'manifest':
@@ -103,6 +132,7 @@ def test_native_package_refuses_bad_inputs_before_launch(native_package, tamper)
                          root='relative-root' if tamper == 'relative-root' else None)
     assert result.returncode != 0
     assert 'FORWARDED:' not in result.stdout
+    assert expected in re.sub(r'\s+', ' ', result.stdout + result.stderr)
 
 
 @pytest.mark.windows_native
