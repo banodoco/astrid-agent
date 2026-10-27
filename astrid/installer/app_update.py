@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from .core import Version, absolute, current, read_json, switch
+from .core import RuntimeOperationError, Version, absolute, current, read_json, switch
 from .service import LABEL, installer_lock_path
 
 
@@ -107,32 +107,36 @@ class PinokioLifecycle:
                           self.session.as_uri(), self.root, version.root.name], timeout=30,
                          clean_bun_env=True)
 
-    def running(self, version: Version, data: Path) -> bool:
-        # Unknown status must fail closed; do not start a duplicate owner.
-        status = self.backend.runtime(version, data, "status", timeout=10)
-        alive = status.get("support", {}).get("pid_alive")
-        if not isinstance(alive, bool):
-            raise ValueError("Cannot establish whether the previous Runtime is still running.")
-        return alive
-
     def stop(self, version: Version, data: Path) -> None:
-        # Runtime's atomic idle fence must run before asking the supervisor to
-        # shut down: a busy-work refusal leaves that live supervisor untouched.
-        if self.running(version, data):
-            self.backend.runtime(version, data, "down", profile=True, timeout=30)
-        self.backend.run([self.node(version), self.lifecycle, "stop", self.root],
-                         timeout=50, clean_bun_env=True)
-        deadline = time.monotonic() + 10
-        while (self.root / "pinokio-control.json").exists():
-            pid = read_json(self.root / "pinokio-control.json").get("pid")
-            if isinstance(pid, int) and pid > 0:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break  # The canonical launcher removes a dead controller record.
-            if time.monotonic() >= deadline:
-                raise ValueError("The Pinokio supervisor has not finished stopping.")
-            time.sleep(0.1)
+        # Stop the selected Runtime under its durable fence first. Pinokio's
+        # authenticated controller shutdown runs only after that handoff has
+        # completed and the Runtime fence/mutex have been released; its session
+        # must never issue a nested `down` while the fence is held.
+        self.backend.stop(version, data)
+
+        def stop_controller() -> None:
+            self.backend.run([self.node(version), self.lifecycle, "stop", self.root],
+                             timeout=50, clean_bun_env=True)
+            deadline = time.monotonic() + 10
+            while (self.root / "pinokio-control.json").exists():
+                pid = read_json(self.root / "pinokio-control.json").get("pid")
+                if isinstance(pid, int) and pid > 0:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break  # The canonical launcher removes a dead controller record.
+                if time.monotonic() >= deadline:
+                    raise ValueError("The Pinokio supervisor has not finished stopping.")
+                time.sleep(0.1)
+
+        try:
+            stop_controller()
+        except (Exception, KeyboardInterrupt) as exc:
+            # Runtime has already completed its validated stop. Keep that
+            # evidence explicit so the caller may recover the old app without
+            # mistaking a controller-cleanup failure for a refusal.
+            raise RuntimeOperationError(str(exc), stop_refused=False,
+                                        stop_completed=True) from exc
 
     def start(self, version: Version, data: Path, realm_id: str) -> None:
         # The existing session selects current/version.json and passes its exact
@@ -184,9 +188,11 @@ def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print
         try:
             try:
                 lifecycle.stop(old, data)
-            except (Exception, KeyboardInterrupt):
-                # Graceful down can succeed before controller cleanup fails.
-                stopped = not lifecycle.running(old, data)
+            except (Exception, KeyboardInterrupt) as stop_failure:
+                # RuntimeOperationError carries explicit handoff evidence.
+                # A refusal must not trigger status probing, relaunch, or rollback.
+                stopped = (isinstance(stop_failure, RuntimeOperationError)
+                           and stop_failure.stop_completed)
                 raise
             stopped = True
             with locked(lock, timeout=10):
@@ -200,6 +206,8 @@ def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print
             # The foreground launcher needs the lifetime lock itself.
             lifecycle.start(candidate, data, realm["realm_id"])
         except (Exception, KeyboardInterrupt) as failure:
+            if isinstance(failure, RuntimeOperationError) and failure.stop_refused:
+                raise
             if stopped:
                 try:
                     selected = current(root)
@@ -215,6 +223,8 @@ def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print
                     lifecycle.start(old, data, realm["realm_id"])
                     say("The new app could not start; the previous app is running again.")
                 except (Exception, KeyboardInterrupt) as recovery:
+                    if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
+                        raise recovery
                     raise ValueError(f"App update failed ({failure}); restarting the previous app also failed ({recovery}).") from recovery
             raise
         say("Astrid is updated and running.")

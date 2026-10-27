@@ -14,6 +14,7 @@ from .core import (
     BackupSpaceError,
     Installer,
     VerificationError,
+    RuntimeOperationError,
     absolute,
     current,
     read_json,
@@ -114,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                 # The single per-user selection is also the Pinokio pointer.
                 # Inspect it under the installer lock before claiming any root.
                 recorded = backend.service.recorded()
+                release_stale_selection = False
                 if recorded.get("managed_by") == "pinokio" and not _pinokio_claim_is_live(recorded):
                     # Reset or deleting the Pinokio app can remove its program
                     # files without letting the installer clear its per-user
@@ -122,8 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                     recorded = {**recorded, "uninstalled": True}
                     recorded.pop("managed_by", None)
                     recorded.pop("program_root", None)
-                    if mode != "doctor":
-                        write_json(backend.service.selection, recorded)
+                    release_stale_selection = mode != "doctor"
                 if mode == "doctor" and not args.root and recorded.get("managed_by") == "pinokio":
                     root = absolute(recorded["program_root"])
                     backend = Backend(root, log, uv, process_control=process_control)
@@ -182,6 +183,12 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory contains files Astrid does not own.")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
+                if mode != "doctor":
+                    # A read-only busy refusal must precede install/selection
+                    # claims. The real stop repeats this under Runtime's fence.
+                    backend.preflight_stop(data)
+                if release_stale_selection:
+                    write_json(backend.service.selection, recorded)
                 if mode not in {"uninstall", "doctor"}:
                     platform.private_directory(root)
                     marker = {**marker, "owner": LABEL, "data_root": str(data)}
@@ -218,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             with log.open("a", encoding="utf-8") as stream:
                 traceback.print_exc(file=stream)
         print(FAILURE_MESSAGE)
-        if isinstance(failure, (BackupSpaceError, ValueError)):
+        if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):
             print(str(failure))
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)

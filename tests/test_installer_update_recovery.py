@@ -224,6 +224,28 @@ def test_sigkill_each_installer_durable_step_then_three_successful_updates(tmp_p
     _assert_retry(tmp_path, restore_expected=step not in {"prepared", "stopped", "backup-return", "complete"})
 
 
+def test_recovery_stop_refusal_keeps_durable_transaction_unchanged(tmp_path):
+    _setup(tmp_path)
+    result = _run(tmp_path, "prepared")
+    assert result.returncode == -signal.SIGKILL, result.stderr
+    root, data = tmp_path / "program", tmp_path / "data"
+    journal_path = root / "update-transaction.json"
+    original = journal_path.read_bytes()
+    backend = _Backend(tmp_path, None)
+    details = {"blockers": [{"task_id": "task-busy", "state": "running"}]}
+
+    def refuse(*_args):
+        raise core.RuntimeOperationError("Astrid is busy (1 tasks running). Try again when they finish.",
+                                         details=details, stop_refused=True)
+
+    backend.stop = refuse
+    with pytest.raises(core.RuntimeOperationError) as raised:
+        Installer(root, data, backend, say=lambda _line: None)._recover_update()
+
+    assert raised.value.details == details
+    assert journal_path.read_bytes() == original
+
+
 @pytest.mark.parametrize("state", [
     "planned", "stopping", "stopped", "migration-committed", "activated", "restarted", "complete",
 ])

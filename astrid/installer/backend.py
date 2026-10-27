@@ -23,6 +23,7 @@ from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from .core import (
     BackupSpaceError,
     VerificationError,
+    RuntimeOperationError,
     Version,
     absolute,
     current,
@@ -33,7 +34,7 @@ from .core import (
     write_json,
 )
 from .launcher import install_shim, owned_shim, remove_shim
-from .service import Service, bootstrap_root, platform_target, venv_python
+from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, install_tools, source
 
@@ -165,10 +166,41 @@ class Backend:
         argv = [python, "-X", "utf8", "-I", "-m", "astrid_runtime", *args, "--data-root", str(data), "--json"]
         if profile and version:
             argv += ["--source-manifest", str(version.profile)]
-        result = _runtime_json(self.run(argv, extra_env=version.env if version else None, timeout=timeout))
-        if result.get("ok") is False:
-            raise RuntimeError(str(result.get("error") or result))
+        try:
+            output = self.run(argv, extra_env=version.env if version else None, timeout=timeout)
+        except subprocess.CalledProcessError as exc:
+            # Runtime deliberately returns nonzero for a structured refusal.
+            # Retain that result instead of losing it in subprocess's summary.
+            try:
+                result = _runtime_json(exc.output or "")
+            except (TypeError, ValueError):
+                raise RuntimeOperationError("Runtime command failed without a valid result.") from exc
+            self._raise_runtime_error(result, stop_refused=args == ("down",))
+            raise RuntimeOperationError("Runtime command exited unsuccessfully.") from exc
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeOperationError(f"Runtime command failed: {self._command_failure(exc)}") from exc
+        try:
+            result = _runtime_json(output)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeOperationError("Runtime command returned an invalid result.") from exc
+        self._raise_runtime_error(result, stop_refused=args == ("down",))
         return result
+
+    @staticmethod
+    def _raise_runtime_error(result: dict, *, stop_refused: bool = False) -> None:
+        if not isinstance(result, dict):
+            raise RuntimeOperationError("Runtime command returned an invalid result.")
+        if result.get("ok") is False:
+            error = result.get("error")
+            if isinstance(error, dict):
+                details = error.get("details")
+                # The Runtime lifecycle report is an explicit refusal even
+                # when it came from upgrade's internal stop. Never infer stop
+                # permission from its count or human-readable message.
+                lifecycle_refused = isinstance(details, dict) and details.get("safe") is False
+                raise RuntimeOperationError(str(error.get("message") or "Runtime command failed."),
+                                            details=details, stop_refused=stop_refused or lifecycle_refused)
+            raise RuntimeOperationError(str(error or "Runtime command failed."), stop_refused=stop_refused)
 
     def existing(self, data: Path) -> Version | None:
         record = self.service.recorded()
@@ -289,35 +321,126 @@ class Backend:
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
-    def stop(self, version: Version | None, data: Path) -> None:
-        if self.managed_by != "pinokio":
-            self.service.disable()
-        if version is not None and not version.python.is_file():
-            version = None
-        if self.process_control == "sandbox":
-            # An install from before sandbox mode cannot signal inside the
-            # sandbox, so it cannot stop itself. Record the mode now and stop
-            # with this installer's own Runtime, which reads it.
-            self._write_process_control(data)
-            version = None
-        discovery = data / "runtime" / "discovery.json"
-        owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
-        if owner_state == "live":
-            self.runtime(version, data, "down", profile=True)
-        elif owner_state in {"stopped", "stale"} and self.managed_by != "pinokio":
-            # A candidate can fail before its foreground owner publishes fresh
-            # discovery. Old absent-owner records remain Runtime's to reconcile.
-            self.service.stop_foreground()
-        if self.managed_by != "pinokio":
-            self.service.stop()
-        if discovery.exists():
-            # A manager may still be draining after its stop operation.
-            owner_state = self._discovery_owner_state(discovery)
-            if owner_state == "live" and version:
-                self.runtime(version, data, "down", profile=True)
-                owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
-            if owner_state == "live":
-                raise RuntimeError("Astrid did not release its recorded Runtime owner.")
+    @staticmethod
+    def _stop_failure(exc: Exception) -> RuntimeOperationError:
+        details = getattr(exc, "details", None)
+        completed = (isinstance(details, dict) and details.get("stop_completed") is True
+                     and details.get("stop_authority_lost") is not True)
+        return RuntimeOperationError(str(exc), details=details,
+                                     stop_refused=not completed, stop_completed=completed)
+
+    def preflight_stop(self, data: Path) -> None:
+        """Read-only early refusal, before installer claims or preparations."""
+        try:
+            from astrid_runtime.bootstrap import (_invalidate_stale_stop_receipt,
+                                                  _stop_receipt_validation, preflight_stop)
+            from astrid_runtime.paths import RuntimePaths
+
+            boundary = getattr(self, "_stop_boundary", None)
+            with _stop_receipt_validation(boundary):
+                paths = RuntimePaths.current(data_root=data)
+                if boundary is not None:
+                    _invalidate_stale_stop_receipt(paths, boundary)
+                if not paths.runtime_support.exists():
+                    return
+                preflight_stop(paths)
+        except Exception as exc:
+            raise self._stop_failure(exc) from exc
+
+    def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> None:
+        """Let Runtime authorize the owner and every manager action once.
+
+        The callback runs within Runtime's existing writer fence, after its
+        birth/custody-checked owner stop. It must never invoke another down.
+        """
+        try:
+            from astrid_runtime.bootstrap import (BootstrapConfig, _read_catalog,
+                                                  _read_support_json, installer_stop,
+                                                  _invalidate_stale_stop_receipt,
+                                                  _stop_receipt_validation)
+            from astrid_runtime.paths import RuntimePaths
+            from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+            from runtime_protocol import process_control
+
+            boundary = getattr(self, "_stop_boundary", None)
+            # Agent admission can fail before Runtime's own validation guard.
+            # Revoke old receipts on every such exit, but end this phase before
+            # the handoff: completed stops must survive manager callback errors.
+            with _stop_receipt_validation(boundary):
+                record = self.service.recorded()
+                if record and (record.get("owner") != LABEL
+                               or record.get("program_root") != str(self.root)
+                               or record.get("data_root") != str(data)):
+                    raise ValueError("The service record does not match the selected installation.")
+                paths = RuntimePaths.current(data_root=data)
+                if boundary is not None:
+                    # Revoking old authority must precede even an early read-only
+                    # refusal: a later disappearance cannot revive a receipt after
+                    # a replacement or unreadable publication was observed.
+                    _invalidate_stale_stop_receipt(paths, boundary)
+                # Validate the prior setting even when an explicit install choice
+                # overrides it. This process's policy is immutable; reading old
+                # support metadata must not attempt to change that chosen policy.
+                prior_control = process_control.read_setting(paths.runtime_support)
+                platform.configure_process_control(self.process_control or prior_control)
+                if boundary is None:
+                    boundary = self._stop_boundary = LocalRuntimeBoundary()
+                discovery = _read_support_json(paths.discovery_path) or {}
+                if self.managed_by != "pinokio":
+                    # This observation can refuse an unrelated manager, but never
+                    # authorizes stopping Runtime without its final owner fence.
+                    self.preflight_stop(data)
+                    self.service.validate_stop_target(
+                        version, data, owner_pid=int(discovery["pid"]) if discovery.get("pid") else None,
+                    )
+                if discovery.get("pid"):
+                    catalog = _read_catalog(paths)
+                    realm_id = str(catalog.get("selected_realm_id") or "")
+                    realm = next((row for row in catalog.get("realms", [])
+                                  if str(row.get("realm_id")) == realm_id), None)
+                    if realm is None:
+                        raise ValueError("No selected workspace is available to stop.")
+                    source = BootstrapConfig(source_manifest=version.profile if version else None).resolve_source_profile(paths)
+                    boundary.prepare_restart(source_profile=source, realm_id=realm_id,
+                                             realm_root=Path(realm["data_root"]),
+                                             support_root=paths.runtime_support, pid=int(discovery["pid"]))
+                foreground = record.get("foreground")
+                if isinstance(foreground, dict):
+                    foreground = {**foreground, "process": self.service._foreground_process}
+
+            def stop_selected_manager():
+                if self.managed_by != "pinokio":
+                    # An absent selection cannot authorize an unrelated OS job.
+                    if not record:
+                        if self.service.login_service_exists():
+                            raise ValueError("No selected service record authorizes this stop.")
+                        return
+                    self.service.disable()
+                    self.service.stop()
+                if stop_manager is not None:
+                    stop_manager()
+
+            installer_stop(paths, boundary, stop_manager=stop_selected_manager,
+                           recorded_foreground=foreground)
+            try:
+                # Runtime has completed its validated stop. Retire only the
+                # exact foreground record supplied to that handoff, preserving
+                # a concurrently changed selection and all other preferences.
+                if isinstance(foreground, dict):
+                    selected = self.service.recorded()
+                    if selected.get("foreground") == record.get("foreground"):
+                        selected.pop("foreground")
+                        write_json(self.service.selection, selected)
+                        self.service._foreground_process = None
+                if self.process_control:
+                    self._write_process_control(data)
+            except Exception as exc:
+                raise RuntimeOperationError(str(exc), details={"stop_completed": True},
+                                            stop_completed=True) from exc
+        except RuntimeOperationError:
+            raise
+        except Exception as exc:
+            raise self._stop_failure(exc) from exc
 
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:
