@@ -92,11 +92,12 @@ def _write_terminal_cleanup(handle_path: Path, handle: dict[str, Any]) -> Path:
     return receipt_path
 
 
-def test_defaults_match_the_canonical_twelve_hour_claim() -> None:
+def test_defaults_bound_unattended_claim_to_one_hour() -> None:
     args = claim._parser().parse_args([])
 
     assert args.handle_path == str(claim.DEFAULT_HANDLE_PATH)
-    assert args.max_wait_seconds == 43200
+    assert args.max_wait_seconds == 3600
+    assert args.on_failure is None
     assert args.poll_seconds == 120
     assert args.lifecycle_policy == "leave_running"
     assert args.storage_name == "backup"
@@ -510,7 +511,7 @@ def test_known_pod_launch_failure_is_preserved_and_never_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle_path = tmp_path / "claim-handle.json"
-    args = _args(handle_path, "--max-wait-seconds", "10")
+    args = _args(handle_path, "--max-wait-seconds", "10", "--on-failure", "leave_running")
     _offline_volume(monkeypatch)
     launches: list[str] = []
 
@@ -578,7 +579,8 @@ def test_success_atomically_replaces_marker_with_claim_handle_and_leaves_pod_run
         assert marker["request_name"] == name
         assert config.attach_only is True
         assert config.disk_size_gb == 0
-        assert kwargs == {"max_wait_sec": 3600, "retry_interval_sec": 120}
+        assert 1 <= kwargs["max_wait_sec"] <= 3600
+        assert kwargs["retry_interval_sec"] == 120
         pod.name = name
         return pod
 
@@ -631,7 +633,7 @@ def test_allocated_failure_is_recorded_and_leave_running_does_not_retry_or_termi
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle_path = tmp_path / "claim-handle.json"
-    args = _args(handle_path)
+    args = _args(handle_path, "--on-failure", "leave_running")
     _offline_volume(monkeypatch)
     launches = 0
 
@@ -896,3 +898,94 @@ def test_active_claim_handle_refuses_before_any_provider_boundary(
 
     with pytest.raises(RuntimeError, match="already identifies pod pod-active"):
         asyncio.run(claim._claim(_args(handle_path)))
+
+
+def test_wait_forever_is_explicit_and_storage_help_names_override():
+    parser = claim._parser()
+    assert parser.parse_args(['--wait-forever']).max_wait_seconds == 0
+    assert parser.parse_args(['--storage-name', 'storage']).storage_name == 'storage'
+    help_text = parser.format_help()
+    assert '--storage-name' in help_text
+    assert 'existing network volume name or ID' in help_text
+
+
+@pytest.mark.parametrize('phase', ['readiness', 'ssh', 'preflight', 'post_create'])
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_new_allocation_failure_releases_exact_unactivated_pod(
+    tmp_path, monkeypatch, phase, cleanup_fails,
+):
+    import runpod_lifecycle.api as api
+
+    handle_path = tmp_path / 'claim.json'
+    _offline_volume(monkeypatch)
+    launches, deletes, inventory = [], [], []
+    class Pod:
+        id = 'pod-failed'
+        name = ''
+        async def wait_ready(self, **kwargs):
+            if phase == 'readiness':
+                raise RuntimeError('fixture failure')
+        async def _ensure_ssh_details(self):
+            if phase == 'ssh':
+                raise RuntimeError('fixture failure')
+            return {'ip': '127.0.0.1', 'port': 22}
+    async def launch(config, *, name, **kwargs):
+        launches.append(name)
+        if phase == 'post_create':
+            raise PostCreateHookFailure('pod-failed', RuntimeError('fixture failure'))
+        pod = Pod()
+        pod.name = name
+        return pod
+    async def preflight(*args):
+        raise RuntimeError('fixture failure')
+    async def release_inventory(config, contract):
+        assert contract.pod_id == 'pod-failed'
+        assert contract.expected_pod_name == launches[0]
+        assert contract.network_volume_id == _VOLUME['id']
+        inventory.append(contract.pod_id)
+        observation = worker_preparation.RunPodTargetObservation(
+            pod_id=contract.pod_id, pod_name=contract.expected_pod_name,
+            desired_status='RUNNING', actual_status='RUNNING',
+            gpu_type=contract.gpu_type, worker_image=contract.worker_image,
+            network_volume_id=contract.network_volume_id,
+            network_volume_name=contract.network_volume_name,
+            network_volume_size_gb=contract.network_volume_size_gb,
+            datacenter_id=None, observed_at='fixture-time',
+        )
+        return (None if deletes else observation), dict(_VOLUME)
+    def terminate(pod_id, api_key):
+        assert api_key == _TEST_API_KEY
+        assert json.loads(handle_path.read_text())['release_quiescence']['schema'] == (
+            'astrid.runpod.unactivated-quiescence.v1'
+        )
+        deletes.append(pod_id)
+        if cleanup_fails:
+            raise RuntimeError('fixture cleanup failure')
+    monkeypatch.setattr(runpod_lifecycle, 'launch_when_available', launch)
+    monkeypatch.setattr(claim, '_preflight_release', preflight)
+    monkeypatch.setattr(worker_preparation, '_release_inventory', release_inventory)
+    monkeypatch.setattr(api, 'terminate_pod', terminate)
+    with pytest.raises((RuntimeError, PostCreateHookFailure)):
+        asyncio.run(claim._claim(_args(handle_path)))
+    record = json.loads(handle_path.read_text())
+    assert len(launches) == 1
+    assert deletes == ['pod-failed']
+    if cleanup_fails:
+        assert len(inventory) == 1
+        assert record['state'] == 'cleanup_pending'
+        assert record['reconciliation_required'] is True
+    else:
+        assert len(inventory) == 2
+        assert record['state'] == 'cleanup_complete'
+        assert record['cleanup']['backup_volume_id'] == _VOLUME['id']
+        assert record['cleanup']['backup_volume_preserved'] is True
+    assert _TEST_API_KEY not in handle_path.read_text()
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--max-wait-seconds', '0'], ['--max-wait-seconds', '-1'],
+    ['--max-wait-seconds', '1', '--wait-forever'],
+])
+def test_unbounded_wait_requires_explicit_flag(arguments):
+    with pytest.raises(SystemExit, match='2'):
+        claim._parser().parse_args(arguments)

@@ -100,6 +100,18 @@ the direct release-venv CUDA preflight passes.
 
 ### Build an H3 release on an existing network volume
 
+Before creating a volume on a fresh account, use the optional lifecycle
+availability helper to check the GPU and data center without allocating anything:
+`runpod-lifecycle availability --gpu "RTX 5090" --min-cuda-version 13.0`.
+This requires a lifecycle checkout with the `availability` command. Python callers
+can use `await astrid.core.integrations.runpod.storage.storage_availability(
+"RTX 5090", min_cuda_version="13.0")`; it uses Astrid's credential resolver and
+returns the same JSON-shaped evidence. Require `status: "available"` on the
+chosen data-center row and record its exact ID for both the volume and later pod.
+An `unknown` result does not establish capacity. The minimum CUDA filter permits
+newer compatible host capability; `--allowed-cuda-versions` is an exact allow-list.
+This snapshot does not qualify the eventual host or reserve stock.
+
 Install Astrid with this checkout's patch and the pinned `runpod-lifecycle`
 dependency. Select the volume's data center before creating that volume; this
 command accepts an existing **100–150 GB** volume and never creates storage.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Callable, Iterator
 
 from astrid.core.contracts.errors import (
@@ -38,6 +39,33 @@ def canonical_runtime_entrypoint(capability_id: str) -> Iterator[None]:
         _CANONICAL_RUNTIME_CAPABILITY.reset(token)
 
 
+def _public_invocation_example(capability_id: str) -> str:
+    """Read input names only; never import an action to produce recovery advice."""
+    from astrid.core.pack.manifest import ManifestParseError, load_manifest_mapping
+
+    inputs = {}
+    pack_id, _, action_id = capability_id.partition(".")
+    if pack_id.isidentifier() and action_id:
+        try:
+            manifest = load_manifest_mapping(
+                Path(__file__).resolve().parents[2] / "packs" / pack_id / "pack.yaml"
+            )
+            action = manifest.get("actions", {}).get(action_id, {})
+            inputs = {
+                item["name"]: f"<{item['name']}>"
+                for item in action.get("inputs", [])
+                if item.get("required") is True
+            }
+        except (ManifestParseError, AttributeError, KeyError, TypeError):
+            # Missing/quarantined metadata must not hide the public action ID
+            # or prevent the guard from refusing direct execution.
+            inputs = {}
+    return (
+        f"sdk.invoke({capability_id!r}, kind='executor', project='PROJECT', "
+        f"inputs={inputs!r}, dry_run=True)"
+    )
+
+
 def guard_canonical_entrypoint(pack_id: str) -> None:
     """Refuse direct invocation. Call from each pack's ``__main__`` block."""
     import os
@@ -49,10 +77,11 @@ def guard_canonical_entrypoint(pack_id: str) -> None:
         return
     print(
         f"error: this pack ({pack_id}) is not meant to be invoked directly; "
-        f"run `astrid --help`, `astrid doctor`, or use the SDK "
-        f"(astrid.sdk.invoke) instead.\n"
-        f"(direct `python -m astrid.packs.<...>.run` invocation is reserved\n"
-        f"for internal use by the astrid runner.)",
+        f"use the public action {pack_id!r} through the SDK.\n"
+        "Replace PROJECT and the input placeholders, then preview with:\n"
+        "import astrid.sdk as sdk\n"
+        f"{_public_invocation_example(pack_id)}\n"
+        "Direct module invocation is reserved for the Astrid runner.",
         file=sys.stderr,
     )
     sys.exit(2)

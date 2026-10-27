@@ -9,6 +9,9 @@ itself, you can also run everything on your computer using the fully local
 path below. Both paths keep projects, media, models and your agent on your
 computer through Astrid Runtime.
 
+Generation setup depends on the route. See [where generation runs](reference/where-things-run.md)
+for managed setup, bring-your-own ComfyUI, and RunPod worker requirements.
+
 Open Terminal on macOS or Linux, or PowerShell on Windows. Read the installer
 before running it. It keeps your existing workspace and credentials.
 
@@ -32,7 +35,9 @@ timelines, tasks, and run records.
 
 ## Run everything on your computer
 
-After the official install above, ask your agent to follow the
+The official install above is the default setup; it does not require cloning
+`astrid-app`. To run the local editor on this computer as an optional
+app-development setup, ask your agent to follow the
 [fully local setup instructions](setup/SKILL.md#run-everything-on-this-computer),
 or install Git and Node.js 20.19 or newer in the Node 20 release line and run:
 

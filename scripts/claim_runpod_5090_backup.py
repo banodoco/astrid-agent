@@ -16,7 +16,11 @@ Before launch the script exclusively creates a secret-free allocation-attempt
 marker.  On success it atomically replaces that marker with the claimed pod
 handle and exits under the ``leave_running`` policy.  The handle can be handed
 to ``runpod-lifecycle terminate <pod-id> --yes`` when an authorized owner later
-chooses to terminate the pod.
+chooses to terminate the pod. Capacity waiting defaults to one hour; use
+``--wait-forever`` for an unbounded wait. Failures release pods allocated by
+this claim before worker activation, preserving the existing volume; use
+``--on-failure leave_running`` to retain them. Attached pods default to being
+left running.
 """
 
 from __future__ import annotations
@@ -40,10 +44,12 @@ from runpod_lifecycle import (
 from astrid.core.util.time import utc_now_iso
 from astrid.packs.runpod.worker_preparation import (
     AcquiredRunPodTarget,
+    _release_exact_target_after_quiescence,
     acquire_target,
     reconcile_target,
     replace_target_record,
     resolve_existing_volume,
+    unactivated_target_quiescence,
 )
 from astrid.packs.runpod.worker_preparation import (
     create_target_record_exclusive as _create_json_exclusive,
@@ -57,7 +63,7 @@ DEFAULT_STORAGE = "backup"
 DEFAULT_CONTAINER_DISK_GB = 200
 DEFAULT_POLL_SECONDS = 120
 DEFAULT_CAPACITY_WINDOW_SECONDS = 3600
-DEFAULT_MAX_WAIT_SECONDS = 43200
+DEFAULT_MAX_WAIT_SECONDS = 3600
 DEFAULT_READY_TIMEOUT_SECONDS = 900
 DEFAULT_WORKER_IMAGE = "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
 DEFAULT_ALLOWED_CUDA_VERSIONS = ("13.0",)
@@ -257,6 +263,7 @@ def _start_allocation_attempt(
         "api_key_ref": "RUNPOD_API_KEY",
         "provider_account_ref": args.provider_account_ref,
         "acquisition_mode": "allocate" if pod_id is None else "attach",
+        "worker_activation": "not_started" if pod_id is None else "unknown",
         "release_authorized": (
             True if pod_id is None else bool(getattr(args, "allow_pod_release", False))
         ),
@@ -510,7 +517,7 @@ async def _finish_claim(
         _replace_allocation_attempt(handle_path, failed, operation_id=operation_id)
         _log(
             f"pod {pod_id} failed during {failure_phase}: {type(exc).__name__}; "
-            "leave_running keeps the exact pod running"
+            "recorded allocation custody for failure cleanup"
         )
         raise
 
@@ -577,42 +584,73 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         f"poll_seconds={args.poll_seconds} max_wait_seconds={args.max_wait_seconds} "
         f"lifecycle={args.lifecycle_policy!r} handle_path={str(handle_path)!r}"
     )
-    if resuming and attempt.get("state") not in {
-        "capacity_retry_ready",
-        "capacity_exhausted",
-    }:
-        acquired = await reconcile_target(
-            config,
-            handle_path=handle_path,
-            attempt=attempt,
-            volume=volume,
-            ready_timeout_seconds=args.ready_timeout_seconds,
-        )
-    else:
-        acquired = await acquire_target(
-            config,
-            handle_path=handle_path,
-            attempt=attempt,
-            volume=volume,
-            pod_id=getattr(args, "pod_id", None),
-            max_wait_seconds=args.max_wait_seconds,
-            capacity_window_seconds=args.capacity_window_seconds,
-            retry_interval_seconds=args.poll_seconds,
-            ready_timeout_seconds=args.ready_timeout_seconds,
-            allow_capacity_retry=resuming,
-        )
-    return await _finish_claim(
-        args=args,
-        handle_path=handle_path,
-        config=config,
-        acquired=acquired,
+    allocating_here = (
+        attempt.get("acquisition_mode") == "allocate"
+        and (not resuming or attempt.get("state") in {"capacity_retry_ready", "capacity_exhausted"})
     )
+    try:
+        if resuming and attempt.get("state") not in {
+            "capacity_retry_ready",
+            "capacity_exhausted",
+        }:
+            acquired = await reconcile_target(
+                config,
+                handle_path=handle_path,
+                attempt=attempt,
+                volume=volume,
+                ready_timeout_seconds=args.ready_timeout_seconds,
+            )
+        else:
+            acquired = await acquire_target(
+                config,
+                handle_path=handle_path,
+                attempt=attempt,
+                volume=volume,
+                pod_id=getattr(args, "pod_id", None),
+                max_wait_seconds=args.max_wait_seconds,
+                capacity_window_seconds=args.capacity_window_seconds,
+                retry_interval_seconds=args.poll_seconds,
+                ready_timeout_seconds=args.ready_timeout_seconds,
+                allow_capacity_retry=resuming,
+            )
+        return await _finish_claim(
+            args=args,
+            handle_path=handle_path,
+            config=config,
+            acquired=acquired,
+        )
+    except BaseException:
+        # Re-read durable custody: allocation/readiness may fail before acquire
+        # returns a pod, and release may itself have an interrupted journal.
+        try:
+            failed = json.loads(handle_path.read_text(encoding="utf-8"))
+            if failed.get("operation_id") != operation_id:
+                raise RuntimeError("claim custody changed before failure cleanup")
+            policy = getattr(args, "on_failure", None) or (
+                "release" if allocating_here else "leave_running"
+            )
+            if policy == "release" and failed.get("pod_id"):
+                async def quiesce(record):
+                    return unactivated_target_quiescence(record)
+                await _release_exact_target_after_quiescence(
+                    config, handle_path=handle_path, attempt=failed,
+                    quiesce_worker=quiesce,
+                )
+                _log(f"released failed allocation {failed['pod_id']}; persistent volume preserved")
+        except BaseException as cleanup_error:
+            # Preserve the original failure and the exact resumable cleanup
+            # record. Never turn uncertain cleanup into another allocation.
+            _log(f"failure cleanup unresolved: {type(cleanup_error).__name__}; inspect {handle_path}")
+        raise
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpu-type", default=DEFAULT_GPU)
-    parser.add_argument("--storage-name", default=DEFAULT_STORAGE)
+    parser.add_argument(
+        "--storage-name", default=DEFAULT_STORAGE,
+        help="Attach this existing network volume name or ID (default: backup); e.g. --storage-name storage.",
+    )
     parser.add_argument(
         "--provider-account-ref",
         default=os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF"),
@@ -654,11 +692,25 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_CAPACITY_WINDOW_SECONDS,
         help="Bound each launch_when_available call; the outer waiter starts another window.",
     )
+
+    def positive_wait(value: str) -> int:
+        seconds = int(value)
+        if seconds <= 0:
+            raise argparse.ArgumentTypeError("must be positive; use --wait-forever for an unlimited wait")
+        return seconds
+
+    wait = parser.add_mutually_exclusive_group()
+    wait.add_argument(
+        "--max-wait-seconds", type=positive_wait, default=DEFAULT_MAX_WAIT_SECONDS,
+        help="Overall capacity-wait limit (default: 3600 / 1 hour).",
+    )
+    wait.add_argument(
+        "--wait-forever", dest="max_wait_seconds", action="store_const", const=0,
+        help="Explicitly wait without a capacity deadline.",
+    )
     parser.add_argument(
-        "--max-wait-seconds",
-        type=int,
-        default=DEFAULT_MAX_WAIT_SECONDS,
-        help="Overall capacity-wait limit (default: 43200 / 12 hours); 0 waits indefinitely.",
+        "--on-failure", choices=("release", "leave_running"), default=None,
+        help="Failure policy: defaults to release for a new allocation, leave_running for attached/resumed pods. Release requires unactivated allocation custody.",
     )
     parser.add_argument("--ready-timeout-seconds", type=int, default=DEFAULT_READY_TIMEOUT_SECONDS)
     parser.add_argument("--name-prefix", default="astrid-claim-5090-backup")
@@ -671,7 +723,7 @@ def _parser() -> argparse.ArgumentParser:
         "--lifecycle-policy",
         choices=(DEFAULT_LIFECYCLE_POLICY,),
         default=DEFAULT_LIFECYCLE_POLICY,
-        help="Claim postcondition; leave_running never terminates an allocated pod.",
+        help="Successful claim postcondition; failure cleanup is controlled by --on-failure.",
     )
     return parser
 

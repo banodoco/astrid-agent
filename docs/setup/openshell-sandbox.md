@@ -169,7 +169,9 @@ named local repository into the sandbox as a bare repository and rewrites
   `buildpack-deps:noble-scm`, pinned by digest. Override it with
   `ASTRID_SANDBOX_IMAGE`.
 - **No systemd in the sandbox.** The installer falls back to a detached
-  Runtime. Re-running the install line would re-fetch its sources, which the
+  Runtime with no crash restart or reboot startup. For continuous operation,
+  use an external supervisor as described in
+  [Linux without systemd](local-source-install.md#linux-without-systemd). Re-running the install line would re-fetch its sources, which the
   run-time policy blocks, so `start` launches Runtime the way that fallback
   does.
 - **Restarting Runtime.** Use `astrid-openshell.sh restart`; it calls Runtime's

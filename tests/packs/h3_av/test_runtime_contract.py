@@ -623,11 +623,14 @@ def test_missing_dependency_stops_transform_before_any_import_or_submission(tmp_
     request_path.write_text(json.dumps(_request().value))
     asset_map = tmp_path / "asset-map.json"
     asset_map.write_text("{}")
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {"kind": "runpod", "pod_id": "pod-test"}}))
     client = Mock()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
     with pytest.raises(ValueError, match="needs a file in asset_map"):
         transform.run_transform(transform.build_parser().parse_args([
             "--request", str(request_path), "--asset-map", str(asset_map), "--out", str(tmp_path / "out"),
+            "--execution-request", str(execution_request),
         ]))
     client.invoke_result.assert_not_called()
     client.media.import_file.assert_not_called()
@@ -1240,9 +1243,12 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
 
     client = Client()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {"kind": "runpod", "pod_id": "pod-cpu-test"}}))
     result = transform.run_transform(transform.build_parser().parse_args([
         "--request", str(caller / "request.json"), "--asset-map", str(caller / "asset-map.json"),
         "--out", str(tmp_path / "parent"), "--project", "cpu-test",
+        "--execution-request", str(execution_request),
     ]))
     assert result["status"] == "candidate_verified"
     assert Path(result["candidate"]).is_file()

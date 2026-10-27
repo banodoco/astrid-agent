@@ -608,6 +608,40 @@ def test_dry_run_includes_the_final_publication_stage(tmp_path: Path) -> None:
     assert result["stages"][-1] == "h3_av.publication_finalizer"
 
 
+@pytest.mark.parametrize("target", [None, {}, {"kind": "runpod"}, {"kind": "runpod", "pod_id": " "}])
+def test_transform_without_runpod_selection_fails_with_execution_location(tmp_path: Path, monkeypatch, target) -> None:
+    import json
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform.run import build_parser, run_transform
+    from astrid.packs.h3_av.actions.transform import run as transform
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected before target check"))
+    args = build_parser().parse_args([
+        "--request", str(tmp_path / "raw-request.json"), "--asset-map", str(tmp_path / "assets.json"),
+        "--out", str(tmp_path / "operation"),
+    ])
+    if target is not None:
+        args.execution_request = tmp_path / "execution-request.json"
+        args.execution_request.write_text(json.dumps({"target": target}), encoding="utf-8")
+    with pytest.raises(AstridError, match=r"H3 currently runs only on RunPod workers \(see docs/reference/where-things-run\.md\)"):
+        run_transform(args)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_transform_rejects_local_target_with_execution_location(tmp_path: Path, dry_run) -> None:
+    import json
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform.run import build_parser, run_transform
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {"kind": "local"}}), encoding="utf-8")
+    args = build_parser().parse_args([
+        "--request", str(tmp_path / "raw-request.json"), "--asset-map", str(tmp_path / "assets.json"),
+        "--out", str(tmp_path / "operation"), "--execution-request", str(execution_request),
+        "--prepared-worker", str(tmp_path / "must-not-be-read.json"),
+    ] + (["--dry-run"] if dry_run else []))
+    with pytest.raises(AstridError, match=r"H3 currently runs only on RunPod workers \(see docs/reference/where-things-run\.md\)"):
+        run_transform(args)
+
+
 def test_prepared_worker_selection_is_exclusive_and_declared(tmp_path: Path) -> None:
     from astrid.packs.h3_av.actions.transform.run import build_parser
     base = ["--request", str(tmp_path / "raw.json"), "--asset-map", str(tmp_path / "assets.json"), "--out", str(tmp_path / "operation")]

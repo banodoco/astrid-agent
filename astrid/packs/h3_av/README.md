@@ -44,11 +44,28 @@ publication and local candidate verification remain separate from final managed
 publication; a passing compile or helper test does not establish that final
 publication was accepted.
 
-`operation: generate` accepts no source and one to nine ordered still-image
-references, a prompt, output duration, and the normal settings overrides.
-`shared/generation.py` builds one sampling graph from the existing H3 reference
-node family. Images are simultaneous conditioning inputs, not successive
-segments or implicit keyframes. `edit` and `continue` still require a source.
+The request.v2 schema has no `operation` field. It requires `version: 2`, a
+non-empty `prompt`, a `media` list, and `settings`; optional fields include
+`duration` and `continuation`. For example, a source-free request with one
+image reference is:
+
+```json
+{
+  "version": 2,
+  "prompt": "A paper kite drifting over a quiet field.",
+  "duration": 5,
+  "media": [
+    {"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}
+  ],
+  "settings": {}
+}
+```
+
+Each asset-map key must exactly equal the corresponding reference's `asset`
+value, including its spelling and path. `shared/generation.py` builds one
+sampling graph from the existing H3 reference node family. Images are
+simultaneous conditioning inputs, not successive segments or implicit
+keyframes. `edit` and `continue` still require a source.
 
 The compiler targets the packaged native Seitanism MiniMax H3 AV continuation
 graph and LanPaint source-backed edit graph, plus the opt-in native-v2 Character

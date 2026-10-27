@@ -38,6 +38,9 @@ from astrid.sdk import AstridClient, observe_task_invocation
 from astrid.sdk.results import InvocationResult
 
 
+RUNPOD_ONLY_MESSAGE = "H3 currently runs only on RunPod workers (see docs/reference/where-things-run.md)"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a bounded H3 audiovisual transform.")
     parser.add_argument("--request", type=Path, required=True)
@@ -1273,6 +1276,19 @@ def _finalizer_generation_intent(
 def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
+    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    requested_target = execution_request.get("target") if execution_request else None
+    if isinstance(requested_target, Mapping) and requested_target.get("kind") not in (None, "runpod"):
+        raise AstridError(RUNPOD_ONLY_MESSAGE)
+    has_runpod_worker = (
+        isinstance(requested_target, Mapping)
+        and requested_target.get("kind") == "runpod"
+        and isinstance(requested_target.get("pod_id"), str)
+        and bool(requested_target["pod_id"].strip())
+    )
+    if (not args.dry_run and not has_runpod_worker
+            and args.worker_qualification is None and args.prepared_worker is None):
+        raise AstridError(RUNPOD_ONLY_MESSAGE)
     if args.dry_run:
         return {
             "status": "planned",
@@ -1280,7 +1296,6 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             "asset_map": str(args.asset_map.resolve()),
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
-    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
     prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
@@ -1290,7 +1305,9 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
                 qualification, execution_request
             )
         except WorkerQualificationError as exc:
-            raise AstridError(f"worker qualification failed before admission: {exc}") from exc
+            raise AstridError(
+                f"{RUNPOD_ONLY_MESSAGE}; worker qualification failed before admission: {exc}"
+            ) from exc
         root.mkdir(parents=True, exist_ok=True)
         (root / "00-worker-qualification.json").write_text(
             json.dumps(

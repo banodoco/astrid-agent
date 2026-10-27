@@ -111,6 +111,19 @@ def _description(pack: str) -> tuple[Path, dict[str, Any]]:
     return directory, description
 
 
+def _unmanaged_guidance(pack: str, platform: str) -> str:
+    platform_name = {"win32": "Windows", "linux": "Linux", "darwin": "macOS"}.get(platform, platform)
+    if pack == "vibecomfy":
+        return (
+            f"Astrid doesn't install ComfyUI on {platform_name} yet. Run your own ComfyUI, "
+            "then pass `comfy_url` (find it with `python3 -m astrid.packs.vibecomfy.local scan`)."
+        )
+    return (
+        f"Astrid doesn't provision Wan2GP environments on {platform_name} yet. "
+        "Use an admitted Wan2GP checkout and interpreter."
+    )
+
+
 def environment_plan(
     pack: str, checkout: Path, *, destination: Path | None = None,
     vibecomfy_checkout: Path | None = None, platform: str | None = None,
@@ -120,7 +133,7 @@ def environment_plan(
     platform = sys.platform if platform is None else platform
     if platform != "win32":
         return {"pack": pack, "platform": platform, "managed": False, "commands": [],
-                "reason": "Use the existing admitted checkout and interpreter on this OS."}
+                "reason": _unmanaged_guidance(pack, platform)}
     directory, description = _description(pack)
     env = os.environ if environ is None else environ
     identity = hashlib.sha256(
@@ -221,7 +234,9 @@ def _verify_sources(plan: Mapping[str, Any]) -> None:
 def provision_environment(plan: Mapping[str, Any]) -> dict[str, Any]:
     """Create a user-local venv; return paths for the existing session owner."""
     if not plan.get("managed") or sys.platform != "win32":
-        raise GPUEnvironmentError("Managed GPU provisioning is currently for native Windows only")
+        pack = str(plan.get("pack", "vibecomfy"))
+        platform = sys.platform if sys.platform != "win32" else str(plan.get("platform", sys.platform))
+        raise GPUEnvironmentError(_unmanaged_guidance(pack, platform))
     _verify_sources(plan)
     device = detect_nvidia()
     if not device["available"]:

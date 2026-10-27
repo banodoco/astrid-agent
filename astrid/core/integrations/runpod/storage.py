@@ -8,8 +8,10 @@ from typing import Any
 from astrid.core.util.credentials_scope import CredentialsScope
 
 ENSURE_STORAGE_HINT = (
-    "Run `python3 -m astrid runpod ensure-storage <storage-name> --size <GB> "
-    "--datacenter <id>` first, then pass `--storage-name <storage-name>`."
+    "Run `runpod-lifecycle volumes create <storage-name> <GB> "
+    "--datacenter <id>` first, then pass `--storage-name <storage-name>`. "
+    "Python callers can use `ensure_storage` from "
+    "`astrid.core.integrations.runpod.storage`."
 )
 
 
@@ -116,3 +118,32 @@ async def list_volumes(api_key: str | None = None) -> list[dict[str, Any]]:
     resolved_key = api_key or CredentialsScope.get_local("runpod")
 
     return await asyncio.to_thread(api.get_network_volumes, resolved_key)
+
+
+async def storage_availability(
+    gpu: str,
+    *,
+    datacenter_ids: list[str] | None = None,
+    allowed_cuda_versions: list[str] | None = None,
+    min_cuda_version: str | None = None,
+    container_disk_gb: int = 100,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Read-only Secure Cloud GPU/DC evidence before choosing a network volume.
+
+    Requires a lifecycle version exposing ``gpu_availability``. No region is
+    chosen and no resource is created; callers must check the typed status.
+    """
+    from runpod_lifecycle import gpu_availability
+
+    result = await gpu_availability(
+        api_key=api_key or CredentialsScope.get_local("runpod"),
+        gpu=gpu,
+        datacenter_ids=datacenter_ids,
+        allowed_cuda_versions=allowed_cuda_versions,
+        min_cuda_version=min_cuda_version,
+        container_disk_gb=container_disk_gb,
+        require_secure_cloud=True,
+        require_network_volume=True,
+    )
+    return result.to_dict()
