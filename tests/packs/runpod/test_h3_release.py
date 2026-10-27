@@ -40,6 +40,17 @@ class Clock:
         self.value += seconds
 
 
+def test_cleanup_only_reconciles_empty_intent_without_allocating(tmp_path):
+    provider = Provider()
+    path = tmp_path / "intent.json"
+    path.write_text(json.dumps({"state": "allocating", "request_name": "known-intent", "volume_id": "vol"}))
+    result = build.build_release(provider, None, volume_id="vol", handle_path=path, cleanup_only=True)
+    assert result["state"] == "allocation_absent"
+    assert provider.created == 0
+    assert not provider.deleted
+    assert result["reconciliation"]["status"] == "no_matching_pod"
+
+
 class Provider:
     def __init__(self):
         self.pods = {}

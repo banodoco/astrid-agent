@@ -36,6 +36,10 @@ class CapacityUnavailable(BuildError):
     pass
 
 
+class AllocationRejected(BuildError):
+    pass
+
+
 def release_inputs():
     recipe = json.loads((_DATA / "environment.linux-cu130.json").read_text())
     lock = json.loads((_DATA / "models.lock.json").read_text())
@@ -158,6 +162,13 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
             cleanup(provider, handle, handle_path, now=now, sleep=sleep)
         elif handle and handle.get("state") == "allocating" and not handle.get("pod_id"):
             matches = provider.find(handle["request_name"])
+            if not matches and cleanup_only:
+                handle["state"] = "allocation_absent"
+                handle["reconciliation"] = {"status": "no_matching_pod", "observed_at": now(),
+                                            "verified_by": "GET /v1/pods: request_name absent"}
+                remote.atomic_json(handle_path, handle)
+                remote.atomic_json(handle_path.with_suffix(".receipt.json"), handle)
+                return handle
             if len(matches) != 1:
                 raise BuildError("allocation outcome unknown; reconcile request_name before using a new handle")
             handle["pod_id"] = matches[0]["id"]
@@ -234,7 +245,9 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                                "manifest_digest": "sha256:" + result["manifest_sha256"]})
                 remote.atomic_json(handle_path, handle)
         except BaseException as exc:
-            if handle["state"] != "capacity_unavailable":
+            if isinstance(exc, AllocationRejected) and not handle.get("pod_id"):
+                handle["state"] = "allocation_rejected"
+            elif handle["state"] != "capacity_unavailable":
                 handle["state"] = "failed" if handle.get("pod_id") else "allocating"
             handle["error_type"] = type(exc).__name__
             # Do not persist provider exception text: it may contain credentials.
@@ -245,7 +258,7 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                 if transport is not None:
                     transport.close()
             finally:
-                if not handle.get("pod_id") and handle["state"] != "capacity_unavailable":
+                if not handle.get("pod_id") and handle["state"] not in {"capacity_unavailable", "allocation_rejected"}:
                     # A POST can time out after allocation. Never retry an ambiguous POST.
                     matches = provider.find(handle["request_name"])
                     if len(matches) == 1:
@@ -285,7 +298,20 @@ class RunPodProvider:
                 ("no available", "no longer any instances", "not enough capacity", "out of stock")
             ):
                 raise CapacityUnavailable("no compatible build capacity")
-            raise BuildError(f"RunPod {method} failed: HTTP {response.status_code}")
+            detail = ""
+            try:
+                body = response.json()
+                message = body.get("message", body.get("error", "")) if isinstance(body, dict) else ""
+                if isinstance(message, str):
+                    for name in ("RUNPOD_API_KEY", "RUNPOD_SSH_PUBLIC_KEY"):
+                        secret = os.environ.get(name)
+                        if secret:
+                            message = message.replace(secret, "[redacted]")
+                    detail = ": " + message[:500] if message else ""
+            except ValueError:
+                pass
+            error = AllocationRejected if method == "POST" and response.status_code in {400, 401, 403, 422} else BuildError
+            raise error(f"RunPod {method} failed: HTTP {response.status_code}{detail}")
         return response.json() if response.content else {}
 
     def volume(self, volume_id):
@@ -385,7 +411,8 @@ def main(argv=None):
                                max_seconds=args.max_seconds, claim_seconds=args.claim_seconds,
                                max_hourly=args.max_hourly, cleanup_only=args.cleanup_only)
     except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - CLI boundary
-        print(f"H3 build stopped ({type(exc).__name__}); recovery handle: {handle}", file=sys.stderr)
+        detail = f": {exc}" if isinstance(exc, BuildError) else ""
+        print(f"H3 build stopped ({type(exc).__name__}){detail}; recovery handle: {handle}", file=sys.stderr)
         return 1
     finally:
         provider.http.close()
