@@ -17,7 +17,7 @@ AFTER = {**BEFORE, "value": {**BEFORE["value"], "boot_id": 201}}
 @pytest.fixture
 def recovery(tmp_path, monkeypatch):
     support = tmp_path / "support"
-    support.mkdir(mode=0o700)
+    host.platform.private_directory(support)
     state = {"pid": 4321, "process_birth_id": "windows-creation:1234", "support_root": str(support)}
     host._write_object(support / "generic-host.json", state)
     host._write_object(support / "generic-host.ready.json", {**state, "status": "ready"})
