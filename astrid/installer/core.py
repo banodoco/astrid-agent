@@ -174,8 +174,22 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
         extra_env=version.env, timeout=120,
     ))
     if require_current and value["identity"]["version"] != value["target"]:
-        raise ValueError("This release needs a workspace migration. Use the regular Pinokio update.")
+        raise ValueError("This release needs a workspace migration. Choose Pinokio's Update button.")
     return value
+
+
+def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str | None = None) -> bool:
+    """C2b numeric dispatch, shared by service and foreground adapters."""
+    release = install_release(manifest)
+    if release < old.release and mode != "update":
+        if managed_by == "pinokio":
+            raise ValueError(
+                "This Astrid is newer than astrid.haus offers. Choose Pinokio's Update button when a newer release is available."
+            )
+        raise ValueError(
+            "This Astrid is newer than astrid.haus offers. Try again when astrid.haus has a newer release."
+        )
+    return mode == "update" or release > old.release
 
 
 def current(root: Path, *, managed_by: str | None = None) -> Version | None:
@@ -356,7 +370,7 @@ class Installer:
 
     def _ready(self) -> None:
         if self.managed_by == "pinokio":
-            self.say("Astrid is installed. Choose Start in Pinokio.")
+            self.say("Astrid is installed. Choose Pinokio's Start button.")
         else:
             self.say("Open https://astrid.haus")
             self.backend.open()
@@ -368,9 +382,13 @@ class Installer:
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
         pending = read_json(absolute(self.root / "update-transaction.json"))
+        if (pending and pending.get("step") not in {"complete", "rolled_back"}
+                and isinstance(pending.get("transaction_context"), dict)
+                and pending["transaction_context"].get("owner") == "local-update"):
+            raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
         if pending and pending.get("step") not in {"complete", "rolled_back"} \
                 and pending.get("transaction_kind") == "app":
-            raise ValueError("Recover the interrupted Pinokio app update through the app updater.")
+            raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
 
         def switch_old(old: Version, _candidate: Version | None) -> None:
             if old.root.parent == self.root / "versions":
@@ -389,7 +407,8 @@ class Installer:
     def _run_update_transaction(self, old: Version, realm: dict, *, prepare, stop,
                                  switch_candidate, switch_old, activate, activate_old,
                                  backup=None, migrate=None, restore_workspace: bool = True,
-                                 kind: str = "migration") -> Version:
+                                 kind: str = "migration",
+                                 transaction_context: dict | None = None) -> Version:
         """Run the one durable stop/switch/ready/rollback policy for updates.
 
         ``prepare`` stages and validates while the old owner is still running.
@@ -409,6 +428,10 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            if transaction_context is not None:
+                # Adapter-owned recovery context lives in the shared journal,
+                # and is durable before any owner stop or checkout movement.
+                transaction["transaction_context"] = transaction_context
             self._save_update(transaction, "staged")
             authority.enter_context(transaction_stop_context(
                 self.backend, transaction,
@@ -463,13 +486,22 @@ class Installer:
                 except (Exception, KeyboardInterrupt) as recovery:
                     if isinstance(recovery, RuntimeOperationError) and recovery.stop_refused:
                         raise recovery
-                    raise RuntimeError(f"Update failed ({failure}); recovery also failed ({recovery}).") from failure
+                    combined = RuntimeError(
+                        f"Update failed ({failure}); recovery also failed ({recovery}).")
+                    combined.step = getattr(failure, "step", None) or "update"
+                    raise combined from failure
             raise
         finally:
             authority.close()
 
     def run(self, mode: str, manifest: dict, *, delete_data: bool = False,
             bundle: Path | None = None) -> None:
+        if (self.managed_by == "pinokio" and mode in {"install", "update"}
+                and current(self.root) is not None):
+            from .app_update import update_pinokio
+
+            return update_pinokio(self.root, self.backend, manifest, say=self.say,
+                                  force=mode == "update")
         # App updates use the same durable journal but have a separate entry
         # point. Serialize operations that recover or write that journal. Doctor
         # and uninstall do not run journal recovery; a first install has no
@@ -489,6 +521,12 @@ class Installer:
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)
+        # The public install path is also the normal update check. Compare
+        # only after journal recovery and after resolving the active owner;
+        # explicit ``update`` remains the forced restage operation.
+        if old is not None and mode not in {"doctor", "uninstall"}:
+            if update_required(mode, manifest, old, managed_by=self.managed_by):
+                mode = "update"
         if mode == "doctor":
             if old is None:
                 raise ValueError("No installed Astrid version is available for doctor.")

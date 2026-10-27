@@ -288,6 +288,7 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
 ])
 def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port):
     backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv')
+    backend.uv.touch()
     prior = Version(tmp_path / 'prior', tmp_path / 'python', tmp_path / 'profile',
                     {'ASTRID_RUNTIME_DOOR_PORT': prior_port}) if prior_port else None
     monkeypatch.setattr(backend, 'existing', lambda _data: prior)
@@ -578,6 +579,7 @@ def test_source_archives_are_flattened_to_shallow_managed_paths(tmp_path, monkey
 
 def test_source_retries_windows_sharing_violation_on_publish(tmp_path, monkeypatch):
     import os
+
     from astrid.installer import tools
 
     calls = []
