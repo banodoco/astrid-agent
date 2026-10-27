@@ -308,9 +308,10 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
 
 class RunPodProvider:
     """Lifecycle owns creation; exact REST GET/DELETE preserve strict custody."""
-    def __init__(self, key):
+    def __init__(self, key, *, min_cuda_version=None):
         import httpx
         self._api_key = key
+        self.min_cuda_version = min_cuda_version
         self.http = httpx.Client(base_url="https://rest.runpod.io/v1/", timeout=20,
                                  headers={"Authorization": "Bearer " + key})
 
@@ -362,7 +363,8 @@ class RunPodProvider:
                 public_key_string=os.environ["RUNPOD_SSH_PUBLIC_KEY"], ports="22/tcp",
                 compute_type="CPU" if cpu else "GPU", cpu_flavor_ids=("cpu3c", "cpu5c"),
                 cpu_flavor_priority="custom", vcpu_count=2, data_center_id=volume["datacenter"],
-                allowed_cuda_versions=None if cpu else ("13.0",),
+                allowed_cuda_versions=None if cpu or self.min_cuda_version else ("13.0",),
+                min_cuda_version=None if cpu else self.min_cuda_version,
             )
         except ProviderCapacityUnavailable as exc:
             raise CapacityUnavailable(str(exc)) from None
@@ -425,6 +427,7 @@ def main(argv=None):
     parser.add_argument("--max-seconds", type=int, default=10800)
     parser.add_argument("--claim-seconds", type=int, default=1800)
     parser.add_argument("--max-hourly", type=float, default=0.30)
+    parser.add_argument("--min-cuda-version", help="Minimum CUDA capability passed through lifecycle's SDK create path")
     parser.add_argument("--handle", type=Path, help="Durable local allocation/recovery handle")
     parser.add_argument("--cleanup-only", action="store_true")
     parser.add_argument("--plan", action="store_true", help="Print pinned inputs without provider calls")
@@ -440,7 +443,7 @@ def main(argv=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.volume):
         parser.error("invalid volume ID")
     handle = args.handle or Path.cwd() / ("h3-build-" + args.volume + ".json")
-    provider = RunPodProvider(os.environ["RUNPOD_API_KEY"])
+    provider = RunPodProvider(os.environ["RUNPOD_API_KEY"], min_cuda_version=args.min_cuda_version)
     try:
         result = build_release(provider, LifecycleTransport, volume_id=args.volume,
                                handle_path=handle, pod_type=args.pod_type,
