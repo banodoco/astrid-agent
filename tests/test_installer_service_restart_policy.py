@@ -48,7 +48,11 @@ def test_explicit_stop_preflight_keeps_registration_and_saved_choice(tmp_path, s
                                   "preferences": {"autostart": saved_choice, "other": "retained"}})
     before = manager.selection.read_bytes()
 
-    manager.disable()
+    if system == "darwin":
+        with pytest.raises(RuntimeError, match="C1 stop callback"):
+            manager.disable()
+    else:
+        manager.disable()
 
     assert manager.path.read_text(encoding="utf-8") == "registered"
     assert manager.selection.read_bytes() == before
@@ -56,34 +60,33 @@ def test_explicit_stop_preflight_keeps_registration_and_saved_choice(tmp_path, s
 
 
 def test_darwin_stop_reload_and_explicit_start_keep_launchagent_for_next_login(tmp_path, monkeypatch):
+    from tests.test_installer_lifecycle import _installer_runtime, _publish_owner
+    from tests.test_installer_launchd_stop_handoff import _launchd_harness, _real_c1_stop, _version
+
     current_user = Mock(return_value=501)
     monkeypatch.setattr(service.platform, "current_user", current_user)
-    calls = []
+    backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
+    version = _version(backend, "old", 17)
+    events = []
+    _real_c1_stop(data, boundary, events)
+    _loaded, _observations, bootouts, target, _crash = _launchd_harness(
+        backend, data, version, boundary, events)
+    manager = backend.service
+    record = read_json(manager.selection)
+    record["preferences"] = {"autostart": True}
+    write_json(manager.selection, record)
+    _publish_owner(paths)
 
-    def run(argv):
-        calls.append(argv)
-        return "service loaded" if argv[1] == "print" else ""
-
-    manager = service.Service(tmp_path / "program", tmp_path / "log", run,
-                              home=tmp_path, system="darwin")
-    version = Version(tmp_path / "version", tmp_path / "python", tmp_path / "profile", {})
-    write_json(manager.selection, {"owner": service.LABEL,
-                                   "preferences": {"autostart": True}})
-
-    manager.register(version, tmp_path / "data")
+    manager.register(version, data)
     assert manager.start()
-    manager.disable()  # C1a invokes this only after Runtime's validated down.
-    manager.register(version, tmp_path / "data")
+    backend.stop(version, data)
+    manager.register(version, data)
     assert manager.start()
 
-    target = f"gui/501/{service.LABEL}"
-    assert [call[:2] for call in calls] == [
-        ["launchctl", "bootstrap"], ["launchctl", "kickstart"],
-        ["launchctl", "print"], ["launchctl", "bootout"],
-        ["launchctl", "bootstrap"], ["launchctl", "kickstart"],
-    ]
-    assert calls[2] == ["launchctl", "print", target]
-    assert calls[3] == ["launchctl", "bootout", target]
+    assert target == f"gui/501/{service.LABEL}"
+    assert bootouts == [("launchctl", "bootout", target)]
+    assert events.index("c1-stop-owner") < events.index("launchctl-bootout")
+    assert events.count("launchctl-bootstrap") == events.count("launchctl-kickstart") == 2
     assert manager.path.exists()  # launchd auto-loads this plist at next login.
     assert read_json(manager.selection)["preferences"]["autostart"] is True
 

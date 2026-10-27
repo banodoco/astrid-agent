@@ -92,15 +92,14 @@ def test_launchd_operations_use_runtime_posix_user_identity(tmp_path, monkeypatc
     version, data, _ = sample('darwin')
     manager.register(version, data)
     assert manager.start()
-    manager.disable()
+    with pytest.raises(RuntimeError, match='C1 stop callback'):
+        manager.disable()
     target = f'gui/501/{service.LABEL}'
     assert [call.args[0] for call in runner.call_args_list] == [
         ['launchctl', 'bootstrap', 'gui/501', manager.path],
         ['launchctl', 'kickstart', target],
-        ['launchctl', 'print', target],
-        ['launchctl', 'bootout', target],
     ]
-    assert current_user.call_count == 3
+    assert current_user.call_count == 2
 
 
 def test_windows_task_settings_and_no_console_executable():

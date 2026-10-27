@@ -18,13 +18,36 @@ names, and secrets redacted. It excludes Runtime, chat, and service logs.
 
 ## Update Astrid
 
-macOS and Linux, in Terminal:
+### macOS: retry an interrupted update
+
+When an update replaces an older LaunchAgent plist, launchd may keep using the
+action it already loaded. If the old Runtime crashes before C1 reaches
+`launchctl bootout`, launchd can restart that still-selected Runtime from its
+cached action. Replacing the file on disk does not prove launchd reloaded it.
+
+This window is bounded: until C1 succeeds, the update has not selected the
+candidate or backed up/migrated the workspace. If the old Runtime restarts,
+wait for its work to finish, then retry through the normal Update path above.
+Recovery republishes the admission action and routes the stop through Runtime's
+C1 lifecycle fence before launchd bootout. If the fence reports busy, it leaves
+the workspace and pending update intact so you can retry later. Astrid does not
+bootout/bootstrap the service before C1 to refresh launchd's cached action.
+
+The interruption scenario is covered with a modeled service-manager boundary.
+Native launchd cache and restart behavior is **written, not run** until it has
+been exercised on macOS.
+
+**Copy for your agent:** “Update Astrid using the official command for my
+operating system. If the previous update was interrupted, use the C1-fenced
+recovery path above.”
+
+macOS and Linux — **No coding agent? Run this in Terminal:**
 
 ```sh
 curl -fsSL https://astrid.haus/install | sh -s -- --update
 ```
 
-Windows, in PowerShell:
+Windows — **Run it yourself in PowerShell:**
 
 ```powershell
 & ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --update
