@@ -32,7 +32,7 @@ jobs:
         run: python -m pytest -q tests/sdk/test_host_recovery.py tests/test_services.py -k windows
       - name: Check incident recovery and native boot proof
         run: >-
-          python -m pytest -q
+          python -m pytest -v
           tests/test_installer_forward_recovery.py
           tests/sdk/test_host_boot_recovery.py
           tests/core/execution/test_boot_identity.py
