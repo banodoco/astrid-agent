@@ -3,8 +3,34 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoveryProbe } from './discoveryProbe.ts';
+import { discoveryProbe, discoveryProbeInvocation } from './discoveryProbe.ts';
 import { processHasExited } from './testProcess.ts';
+
+test('Windows discovery probes route npm command shims through cmd.exe', () => {
+  assert.deepEqual(discoveryProbeInvocation('C:\\Program Files\\Astrid\\astrid.cmd', ['agent', 'models', '--json'], 'win32'), {
+    command: 'cmd.exe',
+    args: ['/d', '/s', '/c', '""C:\\Program Files\\Astrid\\astrid.cmd" "agent" "models" "--json""'],
+    windowsVerbatimArguments: true,
+  });
+  assert.deepEqual(discoveryProbeInvocation('C:\\Program Files\\Astrid\\astrid.exe', ['agent', 'models'], 'win32'), {
+    command: 'C:\\Program Files\\Astrid\\astrid.exe', args: ['agent', 'models'],
+  });
+  assert.deepEqual(discoveryProbeInvocation('/usr/bin/astrid', ['agent', 'models'], 'linux'), {
+    command: '/usr/bin/astrid', args: ['agent', 'models'],
+  });
+});
+
+test.skipIf(process.platform !== 'win32')('native Windows discovery launches a harmless .cmd probe through cmd.exe', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'astrid-windows-probe-'));
+  const shim = join(directory, 'probe.cmd');
+  writeFileSync(shim, '@echo off\r\necho windows-probe-ok\r\n', 'utf8');
+  try {
+    const result = await discoveryProbe(shim, [], { timeout: 5_000 });
+    assert.equal(result.stdout.trim(), 'windows-probe-ok');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('a discovery deadline kills a wrapper and its hanging CLI child', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'astrid-probe-tree-'));
@@ -41,7 +67,7 @@ test('discovery preserves nonzero status diagnostics for explicit signed-out det
 process.stdout.write('status output');
 process.stderr.write('Not logged in.');
 process.exit(7);
-`]), { code: 7, stdout: 'status output', stderr: 'Not logged in.' });
+`]), { code: 7, status: 7, signal: null, stdout: 'status output', stderr: 'Not logged in.' });
 });
 
 test('an unavailable discovery command rejects promptly', async () => {

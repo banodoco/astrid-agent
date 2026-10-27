@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import jsonschema
@@ -32,7 +33,8 @@ def test_declaration_matches_runtime_contract_with_space_containing_paths(tmp_pa
     assert chat["env"]["ASTRID_ACP_CWD"] == str(root / "chat")
     assert chat["env"]["ASTRID_ACP_LOCAL_MEDIA_ONLY"] == "1"
     assert chat["env"]["ASTRID_SERVICE_PYTHON"] == python
-    assert chat["env"]["ASTRID_ACP_COMMAND"] == "astrid"
+    expected_command = str(Path(python).with_name("astrid.exe")) if sys.platform == "win32" else "astrid"
+    assert chat["env"]["ASTRID_ACP_COMMAND"] == expected_command
     assert {row["restart"] for row in declaration["services"]} == {"always"}
 
 
@@ -59,3 +61,17 @@ def test_declaration_retains_the_existing_chat_store_and_profile(tmp_path, monke
     assert chat["ASTRID_ACP_PROFILE"] == "existing-profile"
     assert chat["ASTRID_ACP_COMMAND"] == str(tmp_path / "installed astrid")
     assert "ASTRID_ACP_BRIDGE_TOKEN" not in chat
+
+
+def test_windows_chat_binds_to_selected_launcher_and_preserves_override(tmp_path, monkeypatch):
+    monkeypatch.setattr("astrid.services.sys.platform", "win32")
+    monkeypatch.delenv("ASTRID_ACP_COMMAND", raising=False)
+    python = tmp_path / "selected version" / "py" / "Scripts" / "python.exe"
+    monkeypatch.setenv("PATH", str(tmp_path / "old version" / "Scripts"))
+    options = dict(source_checkout=tmp_path, data_root=tmp_path,
+                   python=str(python), bun=str(tmp_path / "bun.exe"))
+    chat = service_declaration(**options)["services"][1]["env"]
+    assert chat["ASTRID_ACP_COMMAND"] == str(python.with_name("astrid.exe"))
+    override = str(tmp_path / "custom agent" / "astrid.cmd")
+    monkeypatch.setenv("ASTRID_ACP_COMMAND", override)
+    assert service_declaration(**options)["services"][1]["env"]["ASTRID_ACP_COMMAND"] == override

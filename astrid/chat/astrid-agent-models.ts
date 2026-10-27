@@ -27,6 +27,22 @@ type AstridModelSnapshot = {
 
 type AstridModelOptions = { command?: string; cwd: string; profile?: string };
 
+function safeProbeFailureSummary(error: unknown): string {
+  if (!error || typeof error !== 'object') return '';
+  const read = (key: string) => Reflect.get(error, key);
+  const code = read('code');
+  const status = read('status');
+  const signal = read('signal');
+  const flags = [
+    typeof status === 'number' ? `exit=${status}` : undefined,
+    typeof signal === 'string' ? `signal=${signal}` : undefined,
+    typeof code === 'string' && code !== signal ? `error=${code}` : undefined,
+    read('timedOut') === true ? 'timeout=true' : undefined,
+    read('outputLimit') === true ? 'output_limit=true' : undefined,
+  ].filter(Boolean);
+  return flags.join(', ');
+}
+
 async function runAstrid(options: AstridModelOptions, args: string[]): Promise<string> {
   try {
     const result = await execFileAsync(options.command ?? ASTRID_ACP_COMMAND, ['agent', ...args, '--json'], {
@@ -39,9 +55,11 @@ async function runAstrid(options: AstridModelOptions, args: string[]): Promise<s
       maxBuffer: 8 * 1024 * 1024,
     });
     return result.stdout;
-  } catch {
+  } catch (error) {
     // Child diagnostics can contain private context. Astrid owns discovery,
-    // authentication and persistence; the bridge exposes no raw child output.
+    // authentication and persistence; logs only process state, never output.
+    const summary = safeProbeFailureSummary(error);
+    console.warn(`Astrid model command failed${summary ? ` (${summary})` : ''}.`);
     throw new Error('Astrid model operation failed. Try again.');
   }
 }

@@ -40,6 +40,10 @@ def service_declaration(
     }
     if program_root := os.environ.get("ASTRID_INSTALL_PROGRAM_ROOT"):
         env["ASTRID_INSTALL_PROGRAM_ROOT"] = program_root
+    # The Windows console entry point belongs to this selected environment.
+    # Resolve it at declaration time so the supervised bridge cannot select an
+    # older launcher through the Scheduled Task's inherited PATH.
+    default_agent_command = str(Path(python).with_name("astrid.exe")) if sys.platform == "win32" else "astrid"
     return {"version": 1, "services": [
         {"name": "pack-host", "argv": [python, "-X", "utf8", "-m", "astrid.core.execution.generic_host", "--service",
             "--source-checkout", str(source_checkout), "--support-root", str(discovery.parent)],
@@ -47,7 +51,7 @@ def service_declaration(
             "ready": {"file": "generic-host.ready.json", "timeout_seconds": 300}},
         {"name": "chat", "argv": [bun, str(Path(__file__).parent / "chat" / "service.mjs")],
             "env": {**env, **chat_options, "ASTRID_ACP_CWD": str(chat_cwd),
-                "ASTRID_ACP_COMMAND": os.environ.get("ASTRID_ACP_COMMAND") or "astrid",
+                "ASTRID_ACP_COMMAND": os.environ.get("ASTRID_ACP_COMMAND") or default_agent_command,
                 "PATH": os.pathsep.join((str(Path(python).parent), str(Path(bun).parent), os.environ.get("PATH", ""))),
                 "ASTRID_ACP_LOCAL_MEDIA_ONLY": "1"}, "restart": "always",
             "ready": {"file": "chat.json", "timeout_seconds": 30}},

@@ -1,12 +1,20 @@
 import { execFileSync, spawn, type ExecFileOptions } from 'node:child_process';
 import { join } from 'node:path';
+import { commandForPlatform } from './acpProcessHost.ts';
+
+/** Resolve command shims the same way as ACP hosts before spawning a probe. */
+export function discoveryProbeInvocation(command: string, args: string[], platform: NodeJS.Platform = process.platform) {
+  return commandForPlatform(command, args, platform);
+}
 
 /** Discovery owns the whole probe tree, including CLIs launched by a wrapper. */
 export function discoveryProbe(command: string, args: string[], options: ExecFileOptions & { input?: string } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const invocation = discoveryProbeInvocation(command, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd, env: options.env, detached: process.platform !== 'win32',
-      windowsHide: true, stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      windowsHide: true, windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     const output: Buffer[][] = [[], []];
     const sizes = [0, 0];
@@ -27,7 +35,7 @@ export function discoveryProbe(command: string, args: string[], options: ExecFil
       }
       try { child.kill('SIGKILL'); } catch { /* The root may already have exited. */ }
     };
-    const finish = (code: number | null) => {
+    const finish = (code: number | null, signal: NodeJS.Signals | null = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -36,12 +44,15 @@ export function discoveryProbe(command: string, args: string[], options: ExecFil
       }
       const result = { stdout: Buffer.concat(output[0]).toString('utf8'), stderr: Buffer.concat(output[1]).toString('utf8') };
       if (failure || code !== 0) reject(Object.assign(failure ?? new Error('Agent discovery probe failed.'), {
-        ...result, code: failure && 'code' in failure ? Reflect.get(failure, 'code') : code,
+        ...result,
+        code: failure && 'code' in failure ? Reflect.get(failure, 'code') : code,
+        status: code,
+        signal,
       }));
       else resolve(result);
     };
     const timer = setTimeout(() => {
-      failure = Object.assign(new Error('Agent discovery probe timed out.'), { killed: true });
+      failure = Object.assign(new Error('Agent discovery probe timed out.'), { killed: true, timedOut: true });
       stop();
     }, options.timeout ?? 5_000);
     if (child.stdin) {
@@ -52,11 +63,11 @@ export function discoveryProbe(command: string, args: string[], options: ExecFil
       if (stopping) return;
       sizes[index] += chunk.length;
       if (sizes[index] > (options.maxBuffer ?? 1024 * 1024)) {
-        failure = Object.assign(new Error('Agent discovery output exceeded its limit.'), { killed: true });
+        failure = Object.assign(new Error('Agent discovery output exceeded its limit.'), { killed: true, outputLimit: true });
         stop();
       } else output[index].push(chunk);
     }));
     child.once('error', error => { failure = error; finish(null); });
-    child.once('close', code => finish(code));
+    child.once('close', (code, signal) => finish(code, signal));
   });
 }

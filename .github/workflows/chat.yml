@@ -3,6 +3,32 @@ name: Chat service
 on: [push, pull_request]
 
 jobs:
+  windows-launchers:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci --ignore-scripts
+      - name: Exercise native Windows chat child launches
+        run: bun test ./astrid/chat/discoveryProbe.test.ts ./astrid/chat/astridAcpLauncher.windows.test.ts ./astrid/chat/acpProcessHost.test.ts
+      - name: Parse the operator diagnostic with Windows PowerShell
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$pwd/scripts/diagnostics/windows_acp_bridge.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+      - name: Parse the operator diagnostic with PowerShell Core
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$pwd/scripts/diagnostics/windows_acp_bridge.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
   chat:
     runs-on: ubuntu-latest
     steps:
