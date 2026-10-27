@@ -187,6 +187,52 @@ class Service:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    def recovery_state(self, versions, data: Path) -> dict:
+        """Validate the actual service action before recovery can disable it.
+
+        A same-named foreign Task Scheduler task must never be stopped merely
+        because an installer selection file still exists.
+        """
+        import hashlib
+        import xml.etree.ElementTree as ET
+
+        if self.system == "win32":
+            value = self.powershell(TASK_QUERY + "if ($t) { Export-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath }").strip()
+            if not value:
+                raise ValueError("The selected Astrid sign-in task is missing; recovery ownership is unproved.")
+            document = ET.fromstring(value)
+            namespace = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+            actions = document.findall("t:Actions/t:Exec", namespace)
+            if len(actions) != 1 or len(document.findall("t:Actions/*", namespace)) != 1:
+                raise ValueError("The Astrid task has an unexpected action; recovery ownership is unproved.")
+            principal = document.findall("t:Principals/t:Principal", namespace)
+            action_container = document.find("t:Actions", namespace)
+            current_user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip()
+            if (len(principal) != 1 or principal[0].get("id") != "Owner"
+                    or principal[0].findtext("t:UserId", namespaces=namespace) != current_user
+                    or principal[0].findtext("t:LogonType", namespaces=namespace) != "InteractiveToken"
+                    or principal[0].findtext("t:RunLevel", namespaces=namespace) != "LeastPrivilege"
+                    or action_container is None or action_container.get("Context") != "Owner"):
+                raise ValueError("The Astrid task principal differs from the selected user; recovery is blocked.")
+            action = actions[0]
+            actual = tuple(action.findtext("t:" + field, default="", namespaces=namespace)
+                           for field in ("Command", "Arguments", "WorkingDirectory"))
+            expected = []
+            for version in versions:
+                argv = command(version, data, windows=True, log=self.log, env_file=self.env_file)
+                expected.append((argv[0], subprocess.list2cmdline(argv[1:]), str(version.root)))
+            if actual not in expected:
+                raise ValueError("The Astrid task action belongs to another installation; recovery is blocked.")
+            disabled = document.findtext("t:Settings/t:Enabled", namespaces=namespace) == "false"
+            state = self.powershell(TASK_QUERY + "if ($t) { $t.State }").strip()
+            if state not in {"Ready", "Disabled", "Running", "Queued"}:
+                raise ValueError("The Astrid task state cannot be established; recovery is blocked.")
+            return {"sha256": hashlib.sha256(value.encode()).hexdigest(), "disabled": disabled,
+                    "running": state in {"Running", "Queued"}}
+        # Reboot-assisted legacy recovery is deliberately qualified for Windows
+        # first. Other platforms retain ordinary rollback and status diagnostics.
+        raise ValueError("Reboot-assisted forward recovery currently requires Windows Task Scheduler.")
+
     def disable(self) -> None:
         if self.system == "darwin":
             if self.path.exists():

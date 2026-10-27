@@ -28,7 +28,8 @@ def test_installer_has_no_lazy_third_party_imports():
                 assert name.split(".")[0] in allowed, (source.name, node.lineno, name)
 
 
-@pytest.mark.parametrize("flags", [[], ["--update"], ["--doctor"], ["--uninstall"], ["--uninstall", "--delete-data"]])
+@pytest.mark.parametrize("flags", [[], ["--update"], ["--doctor"], ["--uninstall"], ["--uninstall", "--delete-data"],
+                                          ["--recover", "status"], ["--recover", "prepare"], ["--recover", "resume"]])
 def test_every_installer_mode_imports_without_third_party_packages(tmp_path, flags):
     script = r'''
 import builtins, importlib, json, pkgutil, sys
@@ -76,6 +77,8 @@ write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
 assert gateway.main(["install", "--root", str(root), "--data-root", str(data),
                      "--manifest", str(manifest), "--uv", sys.executable, *flags]) == 0
 expected = "update" if "--update" in flags else "doctor" if "--doctor" in flags else "uninstall" if "--uninstall" in flags else "install"
+if "--recover" in flags:
+    expected = "recover-" + flags[flags.index("--recover") + 1]
 assert seen == [expected], seen
 '''
     result = subprocess.run(

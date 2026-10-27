@@ -245,3 +245,147 @@ server; leave ComfyUI on port 7860 untouched.
   service settings returns without restarting.
 - Default Windows service log path:
   `docs/testing/TESTING.md`.
+
+## Recover a retained candidate when the previous release cannot start
+
+A failed rollback now records `recovery_required` with separate data-restoration,
+data-validation and service-health status. Ordinary installs and updates stop at
+that state. They do not repeatedly restore the backup and restart the broken
+previous release. A healthy rollback continues to work on every supported OS.
+The reboot-assisted legacy-host transition below currently targets Windows x64;
+`--recover status` also explains interrupted transactions on other platforms.
+
+Run these commands with the **current recovery-capable bootstrap**, after its
+Agent pin has been released. The installed command from an older release cannot
+understand the new option. Downloading the bootstrap also avoids running the
+broken selected release's host:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://astrid.haus/install.ps1 -OutFile .\astrid-install.ps1
+& .\astrid-install.ps1 --recover status
+& .\astrid-install.ps1 --recover prepare
+# Save other work and use Windows Restart. Do not run the ordinary installer.
+& .\astrid-install.ps1 --recover resume
+```
+
+For a custom program directory, pass the same absolute `--root` to all three
+commands. The bootstrap forwards these arguments unchanged to its own newly
+installed `astrid install` package. No local manifest is required: recovery uses
+and validates the retained candidate's `manifest.json`, version record, source
+profile, installed product digest and Runtime code. It does not stage arbitrary
+code or launch the previous release. This flow requires an interrupted update
+that retained both a candidate and a backup, and a live workspace whose current
+schema is admitted identically by both releases. A missing/incomplete candidate,
+unknown schema or changed realm requires diagnosis rather than a guessed repair.
+
+`prepare` validates actual Task Scheduler action and user ownership, fences new
+task admission, stops only the selected Astrid Runtime, and disables its task.
+It admits the private checkpoint destination before stopping Astrid. Existing
+unprotected or unbound directories and partial artifacts are preserved and refused;
+recovery does not repair their ACLs or adopt an old helper's directory. Checkpoint
+files are private from birth and published atomically. Only an owned, same-boot
+`preparing` intent can replay its private directory or matching checkpoint.
+It saves a private checkpoint under `<program>\recovery\<operation-id>` that binds
+the transaction, source artifacts, live logical SQLite contents, support metadata,
+retained backup, task selection, exact host-marker bytes and native boot evidence.
+It does not restore the backup. SQLite WAL checkpoints may change physical pages;
+logical database contents must remain unchanged. Keep the checkpoint and backup.
+If preparation was interrupted before it committed, rerun `--recover prepare` in
+the same boot; `--recover status` reports the durable `preparing` phase.
+
+`resume` requires a different qualified native Windows boot identity and unchanged
+checkpoint-bound state. Under the lifecycle locks, it quarantines only the exact
+preboot host-marker pair. A new/changed registration, foreign ownership, same-boot
+retry, unavailable boot proof, modified checkpoint or changed workspace is refused.
+PID absence never substitutes for Job-drain proof, and recovery does not fabricate
+cleanup receipts. Normal same-boot host retirement continues to require custody.
+The boot-source ABI and the full Restart journey require native Windows release
+qualification; platform-neutral tests alone do not establish that boundary.
+
+Forward recovery runs the candidate's real Runtime `upgrade` to reconcile source
+profiles and catalog/support metadata even when no schema DDL is needed. It stops
+any temporary Runtime, selects/registers/starts the candidate, and completes only
+after Runtime/browser health and pack-host readiness pass. It retains the live
+workspace, backup and quarantine. New backups keep process markers as separate
+evidence; restoring an older backup does not resurrect its host registration or
+overwrite the live cleanup proof.
+
+Durable recovery stages can be retried with `--recover resume`. An interruption
+inside Runtime's own upgrade may leave an incomplete `upgrade-journal.json`.
+Recovery preserves that journal and stops with an explicit reconciliation error;
+it never deletes it or invents a completion record. The incident candidate Runtime
+`6d53a190` lacks `upgrade --reconcile`, so that case needs a compatible Runtime
+with a supported reconciliation API. A complete Runtime upgrade interrupted before
+the installer's next phase can be stopped and safely replayed. This limitation is
+separate from the retained legacy-host marker repair.
+
+### Prerelease operator acceptance handoff
+
+This is a release qualification procedure, not a published repair artifact.
+Use a disposable Windows x64 machine that can perform a real Restart, first on
+Windows 10 and then on Windows 11. Keep the retained backup and a copy of the
+broken-old/legacy-marker installation. Run this journey against the live clone;
+copying a backup over the realm during recovery would invalidate the test.
+
+The release owner must supply and record hashes for these exact inputs before
+the Windows agent executes the procedure:
+
+| Input | Prerelease qualification selection |
+| --- | --- |
+| Bootstrap `public/install.ps1` and base manifest/tool pins | App `d174f667aa04a7c43e6b0f767abb168b6022a6ab` |
+| Bootstrap Agent package | Agent `44d965542f80d8b1c7a2b4680eb0c2d419bad665` (the reviewed canonical code pinned by this private package) |
+| Bootstrap Runtime and Python client packages | Runtime `9fed6cfc02a1a130011f97af701f5edf9eb374b0` |
+| Retained candidate | The candidate already named by the installation's interrupted transaction, including incident `3204bb00-6d53a190-bffecb79` |
+
+Prepare a local manifest from the App base manifest, changing only `agent.sha`
+and `runtime.sha` to those bootstrap package commits. Keep all tool pins and
+asset hashes. Save it beside the checked, pinned bootstrap as
+`recovery-acceptance-manifest.json`. The bootstrap's existing `--manifest` option
+installs those packages into its separate temporary environment; it does not
+replace the retained candidate selected for forward recovery. Do not substitute
+the selected old environment's Python or the withdrawn helper ZIP. Confirm the
+Agent native recovery CI at the exact tested ref before starting this journey.
+
+The runnable private ZIP already includes its checksum-pinned manifest and
+bootstrap. Follow its `READ-ME-FIRST.txt`: `0-Inspect.cmd`, `1-Prepare.cmd`, manual
+Windows Restart, then `2-Resume.cmd` and `0-Inspect.cmd`. The packaged wrapper
+forwards only explicit recovery to the new isolated installer. For an agent
+performing the qualification sequence explicitly, use:
+
+```powershell
+.\Invoke-AstridRecovery.ps1 -Action status
+.\Invoke-AstridRecovery.ps1 -Action prepare
+# Qualification negative case: same-boot resume must refuse without quarantine.
+.\Invoke-AstridRecovery.ps1 -Action resume
+# Save other work, use Windows Restart, sign in, and return to this directory.
+.\Invoke-AstridRecovery.ps1 -Action resume
+.\Invoke-AstridRecovery.ps1 -Action status
+```
+
+Append the same absolute `-ProgramRoot` on every line for a custom installation.
+Before Restart, retain the nonzero same-boot refusal and `prepared` status,
+checkpoint path/hash, operation/realm/candidate identities, disabled/nonrunning
+Astrid task, and unchanged live logical data/backup digests. An unavailable,
+denied, mismatched or unsupported native boot source must also refuse with an
+explanatory status error. It must not stop a different owner, remove markers,
+write drain receipts, or advise bypassing the check.
+
+After the real Restart, require `step: complete`, recovery `phase: complete` and
+`service_healthy: true`; the selected candidate and realm must match the original
+transaction. Retain the old marker quarantine and unchanged backup. Check the
+actual enabled Task Scheduler action uses the candidate, the task is running,
+and authenticated Runtime status, discovery and browser health report the same
+Runtime instance. Check new service-log output for competing startup attempts;
+Windows venv launcher/child PIDs alone do not establish duplicate Runtime owners.
+Require pack-host readiness from this candidate after the quarantine.
+
+Finally, use Astrid's installed host to dispatch one existing, small creative
+workflow to the user's existing ComfyUI on port **7860**, and retain the durable
+Runtime task ID, completed settlement and produced artifact. A health response or
+chat response alone does not satisfy this gate. Preserve the existing ComfyUI
+checkout, configuration, models and artifacts; do not provision another ComfyUI
+or download replacement models for this check. Windows Restart ends existing
+processes, so reopen that same ComfyUI installation if needed before dispatch.
+Record source/package/schema hashes and Windows build with the evidence. Native
+CI without this actual Restart and installed creative-task settlement leaves
+this operator acceptance gate open.

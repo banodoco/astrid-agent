@@ -92,6 +92,15 @@ def _runtime_json(output: str) -> dict:
     return json.loads(output[start:])
 
 
+# These records describe one process lifetime. Retained snapshots are evidence,
+# never authority to resurrect a host or replace the current cleanup proof.
+PROCESS_SUPPORT = frozenset({
+    "discovery.json", "instance.lock", "bootstrap.lock", "generic-host.lock",
+    "generic-host.json", "generic-host.ready.json", "generic-host.busy.json",
+    "pack-host-job-cleanup.json", ".pack-host-job-cleanup.lock",
+})
+
+
 class Backend:
     def __init__(self, root: Path, log: Path, uv: Path, *, say=print,
                  process_control: str | None = None, managed_by: str | None = None):
@@ -357,13 +366,61 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if owner_state == "live":
                 raise RuntimeError("Astrid did not release its recorded Runtime owner.")
 
+    def preflight_host_update(self, data: Path) -> None:
+        from ..sdk.host_bootstrap import preflight_legacy_host_recovery
+
+        preflight_legacy_host_recovery(data / "runtime")
+
+    def assert_recovery_stopped(self, data: Path) -> None:
+        discovery = data / "runtime/discovery.json"
+        if discovery.exists() and self._discovery_owner_state(discovery) == "live":
+            raise ValueError("A Runtime owner appeared while recovery was stopped; refusing reconciliation.")
+
+    def stop_for_recovery(self, version: Version, data: Path, realm: dict) -> None:
+        """Fence task admission before stopping only the selected Astrid owner."""
+        from runtime_protocol.lifecycle import interruption_fence
+
+        # The preparer's service action validation must precede any stop.
+        discovery = data / "runtime/discovery.json"
+        if discovery.exists() and self._discovery_owner_state(discovery) == "live":
+            # Runtime owns its atomic idle-fenced stop; do not hold SQLite's
+            # writer lock while asking another process to acquire that fence.
+            self.runtime(version, data, "down", profile=True)
+        with interruption_fence(realm["realm_root"]):
+            self.stop(version, data)
+
+    def validate_recovery_candidate(self, version: Version) -> dict:
+        """Bind the retained candidate's actual installed product to its profile."""
+        profile = read_json(version.profile)
+        for key in ("runtime_checkout", "source_checkout", "runtime_environment"):
+            path = absolute(profile.get(key, ""))
+            if not path.is_relative_to(version.root) or not path.is_dir():
+                raise ValueError("The recovery candidate profile points outside its retained version.")
+        script = (
+            "from pathlib import Path; import sys; "
+            "from astrid.core.execution.generic_host import source_checkout_digest; "
+            "import json,astrid_runtime,runtime_protocol; "
+            "print(json.dumps({'source_digest':source_checkout_digest(Path(sys.argv[1])), "
+            "'runtime_root':str(Path(astrid_runtime.__file__).parent), "
+            "'protocol_root':str(Path(runtime_protocol.__file__).parent)}))"
+        )
+        actual = json.loads(self.run([version.python, "-I", "-c", script, profile["source_checkout"]],
+                          extra_env=version.env, timeout=120))
+        if not profile.get("source_digest") or actual.get("source_digest") != profile["source_digest"]:
+            raise ValueError("The recovery candidate's installed source digest changed.")
+        for key in ("runtime_root", "protocol_root"):
+            path = absolute(actual.get(key, ""))
+            if not path.is_relative_to(version.root) or not path.is_dir():
+                raise ValueError("The recovery candidate imports Runtime code outside its retained version.")
+        return actual
+
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:
         ignored = set()
         if support and parent == source:
             ignored.add("logs")
         if support and parent == source / "runtime":
-            ignored.update({"realms", "discovery.json", "instance.lock", "bootstrap.lock"})
+            ignored.update({"realms", *PROCESS_SUPPORT})
         for name in set(names) - ignored:
             entry = parent / name
             if linked(entry):
@@ -425,6 +482,17 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 finally:
                     self.stop(version, data)
             self._copy(data, destination / "support", clone=kind == "clone", support=True)
+            # Keep operational evidence separately from restorable support.
+            # Original legacy backups remain unchanged and restore applies the
+            # same non-resurrection policy when reading them.
+            evidence = destination / "process-evidence"
+            for name in {"generic-host.json", "generic-host.ready.json", "generic-host.busy.json", "pack-host-job-cleanup.json"}:
+                entry = data / "runtime" / name
+                if entry.exists():
+                    if linked(entry) or not entry.is_file():
+                        raise ValueError(f"Backup refused nonregular process evidence: {entry}")
+                    platform.private_directory(evidence)
+                    shutil.copy2(entry, evidence / name)
             result = {"root": str(destination), "kind": kind}
             write_json(destination / "backup.json", result)
             return result
@@ -486,12 +554,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if item.name == "runtime":
                 platform.private_directory(target)
                 for entry in target.iterdir():
-                    if entry.name != "realms":
+                    if entry.name != "realms" and entry.name not in PROCESS_SUPPORT:
+                        if linked(entry):
+                            raise ValueError(f"Restore refused a linked support entry: {entry}")
                         if entry.is_dir():
                             shutil.rmtree(entry)
                         else:
                             entry.unlink()
-                copy_support(item, target)
+                # Old snapshots included process markers. Preserve them in
+                # the retained image; never overwrite current ownership/proof.
+                for entry in item.iterdir():
+                    if entry.name not in PROCESS_SUPPORT:
+                        copy_support(entry, target / entry.name)
             else:
                 if target.is_dir():
                     shutil.rmtree(target)

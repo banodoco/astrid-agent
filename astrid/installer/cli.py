@@ -13,6 +13,7 @@ from .backend import Backend
 from .core import (
     BackupSpaceError,
     Installer,
+    RecoveryRequiredError,
     VerificationError,
     absolute,
     current,
@@ -40,6 +41,8 @@ def parser() -> argparse.ArgumentParser:
     mode.add_argument("--update", action="store_true", help="back up and install the pinned version")
     mode.add_argument("--update-app", action="store_true", help="update and relaunch Pinokio's app when no workspace migration is needed")
     mode.add_argument("--uninstall", action="store_true")
+    mode.add_argument("--recover", choices=["status", "prepare", "resume"],
+                      help="inspect or explicitly recover an interrupted same-schema update; prepare requires Windows Restart")
     mode.add_argument("--doctor", nargs="?", const="__default__", metavar="PATH",
                       help="write a redacted support bundle using the installed version")
     result.add_argument("--delete-data", action="store_true", help="also delete the selected data root during uninstall")
@@ -57,7 +60,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     mode = ("app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
-            else "doctor" if args.doctor is not None else "install")
+            else "doctor" if args.doctor is not None else "recover-" + args.recover if args.recover else "install")
     if args.delete_data and mode != "uninstall":
         parser().error("--delete-data is only valid for uninstall.")
     if args.managed_by and (args.root is None or not args.root.expanduser().is_absolute()):
@@ -122,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                     recorded = {**recorded, "uninstalled": True}
                     recorded.pop("managed_by", None)
                     recorded.pop("program_root", None)
-                    if mode != "doctor":
+                    if mode != "doctor" and mode != "recover-status":
                         write_json(backend.service.selection, recorded)
                 if mode == "doctor" and not args.root and recorded.get("managed_by") == "pinokio":
                     root = absolute(recorded["program_root"])
@@ -182,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory contains files Astrid does not own.")
                 if mode == "uninstall" and not marker and recorded.get("owner") != LABEL:
                     raise ValueError("No managed Astrid installation was found to uninstall.")
-                if mode not in {"uninstall", "doctor"}:
+                if mode not in {"uninstall", "doctor"} and not mode.startswith("recover-"):
                     platform.private_directory(root)
                     marker = {**marker, "owner": LABEL, "data_root": str(data)}
                     if managed_by:
@@ -197,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
                 if installed is not None and not installed.python.is_file():
                     installed = None
                 installed = installed or backend.existing(data)
-                if mode not in {"uninstall", "doctor"} and (mode == "update" or installed is None):
+                if mode not in {"uninstall", "doctor"} and not mode.startswith("recover-") and (mode == "update" or installed is None):
                     if not args.manifest:
                         args.manifest = root / "install-manifest.json"
                         download("https://astrid.haus/install-manifest.json", args.manifest)
@@ -220,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         print(FAILURE_MESSAGE)
         if isinstance(failure, (BackupSpaceError, ValueError)):
             print(str(failure))
+        elif isinstance(failure, RecoveryRequiredError):
+            print(failure.safe_message)
         elif isinstance(failure, VerificationError) and failure.safe_message:
             print(failure.safe_message)
         print(f"Details: {log}")
