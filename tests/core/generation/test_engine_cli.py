@@ -53,7 +53,6 @@ def test_target_planning(placement, capsys):
     (['install', *BASE, '--platform', 'linux-x86_64-cu124', '--dry-run'], 'unsupported_platform'),
     (['install', 'vibecomfy-h3', '--root', '../bad', '--dry-run'], 'unsafe_path'),
     (['install', *BASE, '--deadline', 'nan', '--dry-run'], 'invalid_recipe'),
-    (['install', *BASE], 'unsupported_platform'),
     (['install', *BASE, '--placement', 'runpod'], 'unsupported_placement'),
     (['install', 'vibecomfy-h3', '--platform', 'windows-x86_64-cu130', '--root', 'C:\\engines\\h3', '--placement', 'runpod', '--dry-run'], 'unsupported_platform'),
     (['install', 'vibecomfy-h3', '--platform', 'windows-x86_64-cu130', '--root', 'C:\\engines\\h3'], 'unsupported_platform'),
@@ -125,3 +124,24 @@ raise SystemExit(rc)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)['plan']['engine'] == 'vibecomfy-h3'
         assert not root.exists()
+
+
+def test_default_factory_constructs_agreed_client(monkeypatch, tmp_path):
+    import sys
+    import time
+    import types
+    from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+    captured = {}
+    class Client:
+        def __init__(self, **kw):
+            captured.update(kw)
+    module = types.ModuleType('astrid.core.generation.engine_custody')
+    module.LinuxEngineServiceClient = Client
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    root = str(tmp_path / 'engine')
+    context, adapter = engine_cli._default_backend(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+                                                   placement='local', root=root, deadline=time.monotonic() + 10)
+    assert isinstance(context, LocalLinuxExecutionContext) and context.adapter is adapter
+    assert captured['root'] == root and captured['engine'] == 'vibecomfy-h3'
+    assert len(captured['recipe_sha256']) == len(captured['helper_sha256']) == 64
+    assert not (tmp_path / 'engine').exists()

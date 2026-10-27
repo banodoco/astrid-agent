@@ -48,7 +48,9 @@ def _parser():
 def _default_backend(*, engine, platform, placement, root, deadline):
     if placement == 'runpod':
         raise UnsupportedPlacement('RunPod execution awaits P2-SELF orchestration')
-    raise UnsupportedPlatform('Local execution awaits the reviewed A2 context')
+    from .generation.engine_execution import create_local_backend
+    return create_local_backend(engine=engine, platform=platform, placement=placement,
+                                root=root, deadline=deadline)
 
 
 def _root(args):

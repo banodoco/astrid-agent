@@ -63,7 +63,8 @@ _CODE_PATHS = (
     "core/generation/model_downloader.py",
 )
 # A2 must extend this list with its transitive custody/helper imports when landing.
-_A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_platforms.py")
+_A2_PATHS = ("core/generation/engine_execution.py", "core/generation/engine_platforms.py",
+             "core/generation/_engine_target_files.py", "core/generation/engine_custody.py")
 
 
 def _plain(value):
