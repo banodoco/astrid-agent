@@ -34,7 +34,7 @@ from astrid.packs.h3_av.actions.transform.receipt import (
 from astrid.packs.h3_av.shared.input_bundle import build_input_bundle, materialize_input_bundle
 from astrid.packs.h3_av.shared.request import load_request_document, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import branch_for
-from astrid.sdk import AstridClient, observe_task_invocation
+from astrid.sdk import AstridClient, generate, observe_task_invocation
 from astrid.sdk.results import InvocationResult
 
 
@@ -587,6 +587,38 @@ def _invoke(
     return result
 
 
+def _invoke_workflow(
+    client: Any,
+    *,
+    placement: str,
+    inputs: Mapping[str, Any],
+    out: Path,
+    project: str | None,
+    execution_request: Mapping[str, Any] | None,
+    idempotency_context: Mapping[str, Any] | None,
+    recovery_path: Path,
+    resume: bool = False,
+) -> InvocationResult:
+    result = generate.workflow(
+        client=client,
+        placement=placement,
+        **inputs,
+        execution_request=execution_request,
+        out=out,
+        project=project,
+        idempotency_context=idempotency_context,
+        recovery_path=recovery_path,
+        resume=resume,
+        wait=True,
+        read_managed_outputs=True,
+        timeout_seconds=3600.0,
+        poll_seconds=1.0,
+    )
+    if not result.ok:
+        raise AstridError(f"vibecomfy.run failed: {result.error}")
+    return result
+
+
 def _execution_request_for_child(
     execution_request: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -1067,8 +1099,22 @@ def _invoke_canonical_run(
     journal: OperationJournal,
     resume: bool,
     idempotency_context: Mapping[str, Any] | None = None,
+    placement: str | None = None,
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
+
+    from astrid.core.generation.backends.registry import (
+        GenerationBackendRegistry, resolve_workflow_descriptor,
+    )
+
+    # Resolve only inert placement metadata before touching admission or the
+    # prepared client. The facade validates this same original target again.
+    descriptor = resolve_workflow_descriptor(
+        GenerationBackendRegistry(), placement=placement,
+        execution_request=execution_request,
+    )
+    workflow_placement = descriptor.placement.resolve(placement)
+    workflow_route = f"generation.workflow.v1/{workflow_placement}"
 
     admission_payload = {
         "capability_id": "vibecomfy.run",
@@ -1081,6 +1127,10 @@ def _invoke_canonical_run(
         "project": project,
     })
     prior_run = journal.latest("run")
+    # The creative/admission digest stays unchanged. Route compatibility is
+    # evidence in the existing operation journal, never a second recovery log.
+    if resume and prior_run is not None and prior_run.get("workflow_route") != workflow_route:
+        raise AstridError("cannot resume canonical run: incompatible workflow route; refusing replay")
     if resume and prior_run is not None and journal.admission_digest is None:
         raise AstridError("cannot resume canonical run: journal has no frozen admission identity")
     try:
@@ -1090,13 +1140,14 @@ def _invoke_canonical_run(
 
     receipt_path = _recovery_receipt_path(saved_result, journal)
     if resume and receipt_path.is_file():
-        if prior_run is not None:
-            recorded_admission = prior_run.get("admission_digest")
-            if isinstance(recorded_admission, str) and recorded_admission != admission_digest:
-                raise AstridError("cannot resume canonical run: journaled admission identity changed")
-        result = _invoke(
+        if prior_run is None:
+            raise AstridError("cannot resume canonical run: SDK receipt has no matching journal route")
+        recorded_admission = prior_run.get("admission_digest")
+        if isinstance(recorded_admission, str) and recorded_admission != admission_digest:
+            raise AstridError("cannot resume canonical run: journaled admission identity changed")
+        result = _invoke_workflow(
             client,
-            "vibecomfy.run",
+            placement=workflow_placement,
             inputs=inputs,
             out=out,
             project=project,
@@ -1116,7 +1167,7 @@ def _invoke_canonical_run(
             task_id=identity[0],
             run_id=identity[1],
             attempt_id=identity[2],
-            admission_digest=admission_digest,
+            admission_digest=admission_digest, workflow_route=workflow_route,
         )
         return result
 
@@ -1150,7 +1201,7 @@ def _invoke_canonical_run(
         journal.set_admission_phase("settled")
         journal.record(
             "run", "reused", task_id=identity[0], run_id=identity[1],
-            attempt_id=identity[2], admission_digest=admission_digest,
+            attempt_id=identity[2], admission_digest=admission_digest, workflow_route=workflow_route,
         )
         return result
 
@@ -1162,10 +1213,13 @@ def _invoke_canonical_run(
         raise AstridError("cannot resume canonical run: journal phase and saved result disagree")
 
     journal.set_admission_phase("admission_started")
-    journal.record("run", "admission_started", admission_digest=admission_digest)
+    journal.record(
+        "run", "admission_started", admission_digest=admission_digest,
+        workflow_route=workflow_route,
+    )
     try:
-        result = _invoke(
-            client, "vibecomfy.run", inputs=inputs, out=out, project=project,
+        result = _invoke_workflow(
+            client, placement=workflow_placement, inputs=inputs, out=out, project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
             recovery_path=receipt_path,
@@ -1177,14 +1231,14 @@ def _invoke_canonical_run(
     except Exception as exc:
         journal.set_admission_phase("uncertain")
         journal.record(
-            "run", "uncertain", admission_digest=admission_digest,
+            "run", "uncertain", admission_digest=admission_digest, workflow_route=workflow_route,
             error=type(exc).__name__, message=str(exc)[:1000],
         )
         raise
     journal.set_admission_phase("settled")
     journal.record(
         "run", "completed", task_id=identity[0], run_id=identity[1],
-        attempt_id=identity[2], admission_digest=admission_digest,
+        attempt_id=identity[2], admission_digest=admission_digest, workflow_route=workflow_route,
     )
     return result
 

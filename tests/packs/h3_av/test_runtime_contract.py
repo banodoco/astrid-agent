@@ -1241,10 +1241,16 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 kernel_attempt_id="attempt-cpu",
             )
 
+    from unittest.mock import Mock
+    workflow_facade = Mock(wraps=transform.generate.workflow)
+    monkeypatch.setattr(transform, "generate", SimpleNamespace(workflow=workflow_facade))
     client = Client()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
     execution_request = tmp_path / "execution-request.json"
-    execution_request.write_text(json.dumps({"target": {"kind": "runpod", "pod_id": "pod-cpu-test"}}))
+    execution_request.write_text(json.dumps({"target": {
+        "kind": "runpod", "pod_id": "pod-cpu-test", "provider_account_ref": "account-cpu-test",
+        "storage": {"network_volume_id": "volume-cpu-test"},
+    }}))
     result = transform.run_transform(transform.build_parser().parse_args([
         "--request", str(caller / "request.json"), "--asset-map", str(caller / "asset-map.json"),
         "--out", str(tmp_path / "parent"), "--project", "cpu-test",
@@ -1276,6 +1282,14 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
         expected_calls.append("h3_av.publication_finalizer")
     assert [name for name, _ in calls] == expected_calls
     call_inputs = {name: inputs for name, inputs in calls}
+    workflow_facade.assert_called_once()
+    forwarded = workflow_facade.call_args.kwargs
+    assert forwarded["client"] is client
+    assert forwarded["placement"] == "runpod"
+    assert {name: forwarded[name] for name in call_inputs["vibecomfy.run"]} == call_inputs["vibecomfy.run"]
+    assert forwarded["workflow_inputs"] == json.dumps(client.compilation["workflow_inputs"], sort_keys=True, separators=(",", ":"))
+    assert all(event["workflow_route"] == "generation.workflow.v1/runpod"
+               for event in journal["events"] if event["phase"] == "run")
     # VibeComfy's source port is workflow provenance, not the source video.
     assert call_inputs["vibecomfy.run"]["source"]["filename"] == "source.json"
     intent = call_inputs["vibecomfy.run"]["generation_intent"]

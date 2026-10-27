@@ -56,7 +56,9 @@ def test_uncertain_canonical_admission_cannot_be_replayed(tmp_path) -> None:
 
     kwargs = {
         "inputs": {"workflow": {"digest": "sha256:workflow"}},
-        "execution_request": {"target": {"pod_id": "pod-1"}},
+        "execution_request": {"target": {"kind": "runpod", "pod_id": "pod-1",
+                                         "provider_account_ref": "account-1",
+                                         "storage": {"network_volume_id": "volume-1"}}},
         "out": tmp_path / "run",
         "project": "project-1",
         "saved_result": result_path,
