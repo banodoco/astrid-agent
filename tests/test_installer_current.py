@@ -31,6 +31,7 @@ def test_partial_uninstall_can_finish_after_version_metadata_was_removed(
     write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
     (root / "current").write_text("removed-version\n")
     backend = Mock()
+    backend.source_checkout_ownership.return_value = False
     backend.service.recorded.return_value = {
         "owner": LABEL, "program_root": str(root),
         "data_root": str(data), "uninstalled": True,
@@ -143,3 +144,23 @@ def test_explicit_null_version_identity_is_malformed(tmp_path):
              "profile": str(tmp_path / "profile"), "env": {}, "identity": None}
     with pytest.raises(ValueError, match="Invalid installation identity"):
         Version.load(value)
+
+
+def test_managed_version_with_source_profile_is_still_an_installed_release(tmp_path):
+    root = tmp_path / "program"
+    version_root = root / "versions/v1"
+    version_root.mkdir(parents=True)
+    version = Version(version_root, tmp_path / "python", version_root / "profile.json", {}, 8, None)
+    write_json(version_root / "version.json", version.document())
+    write_json(version_root / "manifest.json", {"release": 8, "agent": {"sha": "a" * 40},
+                                                   "runtime": {"sha": "b" * 40}})
+    write_json(version_root / "profile.json", {
+        "profile": "astrid", "runtime_checkout": str(version_root / "r"),
+        "source_checkout": str(version_root / "a"),
+    })
+    (root / "current").write_text("v1\n", encoding="utf-8")
+
+    selected = current(root)
+    assert selected is not None
+    assert selected.release == 8
+    assert selected.managed_by is None
