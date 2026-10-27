@@ -18,6 +18,17 @@ from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod import worker_staging as staging
 
 
+def test_owner_provisioned_200gb_volume_is_reused_without_resize():
+    value = {"id": "2z2dlu1v8g", "name": "storage", "size": 200, "dataCenterId": "EUR-NO-1"}
+    original = copy.deepcopy(value)
+    result = build.normalize_volume(value, value["id"])
+    assert result["size_gb"] == 200
+    assert result["datacenter"] == "EUR-NO-1"
+    assert value == original
+    with pytest.raises(build.BuildError):
+        build.normalize_volume({**value, "size": 99}, value["id"])
+
+
 class Clock:
     def __init__(self):
         self.value = time.time()

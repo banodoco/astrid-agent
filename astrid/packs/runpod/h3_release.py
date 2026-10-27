@@ -52,8 +52,8 @@ def normalize_volume(value, volume_id):
     if value.get("id") != volume_id:
         raise BuildError("provider returned a different volume")
     size = value.get("size")
-    if type(size) is not int or not 100 <= size <= 150:
-        raise BuildError("H3 build requires an existing 100–150 GB volume (models plus runtime/headroom)")
+    if type(size) is not int or size < 100:
+        raise BuildError("H3 build requires an existing volume of at least 100 GB (models plus runtime/headroom)")
     dc = value.get("dataCenterId")
     if not isinstance(dc, str) or not dc:
         raise BuildError("volume has no authoritative data center")
