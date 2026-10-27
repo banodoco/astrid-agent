@@ -7,21 +7,18 @@ import { resolveAstridAcpSystemPromptFile, resolveAstridAgentContext } from './a
 
 test.skipIf(process.platform !== 'win32')('native Windows ACP profile and context lookups can launch a .cmd Astrid shim', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'Astrid & ACP-'));
-  const profile = join(directory, 'astrid-profile.md');
+  const profileDirectory = mkdtempSync(join(tmpdir(), 'astrid-profile-'));
+  const profile = join(profileDirectory, 'astrid-profile.md');
   const shim = join(directory, 'astrid.cmd');
   const failingShim = join(directory, 'failing-astrid.cmd');
   writeFileSync(profile, '# Astrid profile\n', 'utf8');
-  // Batch files parse & as a command separator, even when the path came from
-  // %~dp0 inside a parenthesized block. Escape the fixture's literal ampersand
-  // so this shim tests the launcher path quoting rather than failing itself.
-  const profileForCmd = profile.replace(/&/g, '^&');
   writeFileSync(shim, [
     '@echo off',
-    'if "%1"=="--agent-profile-file" (',
-    '  echo ' + profileForCmd,
+    'if "%~1"=="--agent-profile-file" (',
+    '  echo ' + profile,
     '  exit /b 0',
     ')',
-    'if "%1"=="--agent-context" (',
+    'if "%~1"=="--agent-context" (',
     '  echo context-sentinel',
     '  exit /b 0',
     ')',
@@ -39,6 +36,7 @@ test.skipIf(process.platform !== 'win32')('native Windows ACP profile and contex
     });
   } finally {
     rmSync(directory, { recursive: true, force: true });
+    rmSync(profileDirectory, { recursive: true, force: true });
   }
 });
 
