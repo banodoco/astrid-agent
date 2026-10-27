@@ -15,3 +15,5 @@
 *.ps1 text eol=lf
 # Preserve the reviewed diff verbatim; its context prefixes precede source tabs.
 astrid/installer/omp/source.patch -text -whitespace
+# Operator launchers must retain native Windows line endings in the delivered ZIP.
+scripts/operator_recovery/*.cmd text eol=crlf
