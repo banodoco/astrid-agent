@@ -19,11 +19,16 @@ function Quote-WindowsArgument([string]$Value) {
 function Invoke-LocalRequest([System.Net.Http.HttpClient]$Client, [string]$Base,
                              [string]$Path, [string]$Method, [string]$Token,
                              [string]$Body = $null) {
-    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), "$Base$Path")
+    $uri = [System.Uri]::new("$Base$Path")
+    if ($uri.Scheme -ne 'http' -or
+        ($uri.Host -ne 'localhost' -and -not [System.Net.IPAddress]::IsLoopback($uri.Host -as [System.Net.IPAddress]))) {
+        throw 'Diagnostic endpoint is not loopback HTTP.'
+    }
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::new($Method), $uri)
     $request.Headers.Add('Origin', 'https://astrid.haus')
     $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
     $request.Headers.Add('X-Astrid-Bridge-Version', 'v1')
-    if ($null -ne $Body) {
+    if ($Method -eq 'POST' -and $PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
         $request.Content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, 'application/json')
     }
     try {
@@ -37,15 +42,58 @@ function Invoke-LocalRequest([System.Net.Http.HttpClient]$Client, [string]$Base,
     } finally { $request.Dispose() }
 }
 
+function Get-SafeExceptionSummary([System.Exception]$Exception) {
+    $chain = @()
+    $current = $Exception
+    while ($null -ne $current -and $chain.Count -lt 6) {
+        $chain += [pscustomobject]@{ class = $current.GetType().Name; hresult = ('0x{0:X8}' -f $current.HResult) }
+        $current = $current.InnerException
+    }
+    $root = $Exception
+    while ($null -ne $root.InnerException) { $root = $root.InnerException }
+    $classification = 'other'
+    if ($root -is [System.Threading.Tasks.TaskCanceledException] -or
+        $root -is [System.TimeoutException]) { $classification = 'timeout' }
+    elseif ($root -is [System.Net.Sockets.SocketException] -and
+        $root.SocketErrorCode -eq [System.Net.Sockets.SocketError]::ConnectionRefused) { $classification = 'connect-refused' }
+    elseif ($root -is [System.Net.ProtocolViolationException]) { $classification = 'http-protocol-violation' }
+    elseif ($root -is [System.FormatException]) { $classification = 'format-error' }
+    elseif ($root -is [System.InvalidOperationException]) { $classification = 'invalid-operation' }
+    return [pscustomobject]@{ class = $Exception.GetType().Name; classification = $classification; chain = $chain }
+}
+
+function Invoke-SafeProbe([string]$Name, [scriptblock]$Request, [System.Collections.IDictionary]$Result) {
+    $script:phase = $Name
+    try { return (& $Request) }
+    catch {
+        $summary = Get-SafeExceptionSummary $_.Exception
+        $classification = $summary.classification
+        $classes = @($summary.chain | ForEach-Object { $_.class })
+        if ($Name -in @('health', 'models') -and $classes -contains 'ProtocolViolationException') {
+            $classification = 'get-content-unsupported'
+        } elseif ($classes -contains 'FormatException') { $classification = 'header-format' }
+        $Result['request_errors'] += [pscustomobject]@{ phase = $Name; class = $summary.class; classification = $classification; chain = $summary.chain }
+        return $null
+    }
+}
+
 function Safe-ErrorCode([object]$Value) {
     if ($Value -is [string] -and $Value -match '^[A-Za-z0-9_.-]{1,64}$') { return $Value }
     return 'redacted'
 }
 
 $result = [ordered]@{
+    phase = 'startup'
+    owner_ready = $false
+    registration_found = $false
+    endpoint_loopback = $null
+    endpoint_port = $null
+    request_errors = @()
+    exception = $null
     selected_version = $null
     bun_version = $null
     command_kind = $null
+    health_http = $null
     models_http = $null
     provider_count = $null
     model_count = $null
@@ -63,6 +111,7 @@ $owner = $null
 $client = $null
 $connectionId = $null
 $registration = $null
+$script:phase = 'startup'
 
 try {
     $task = Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop
@@ -344,6 +393,7 @@ finally:
     $owner = [System.Diagnostics.Process]::new()
     $owner.StartInfo = $ownerStart
     if (-not $owner.Start()) { throw 'Runtime Job owner did not start.' }
+    $script:phase = 'owner-handshake'
     $owner.StandardError.ReadToEndAsync() | Out-Null
     $helloTask = $owner.StandardOutput.ReadLineAsync()
     if (-not $helloTask.Wait(20000)) { throw 'Runtime Job owner start timed out.' }
@@ -351,37 +401,53 @@ finally:
     if (-not $hello.StartsWith('ASTRID_DIAG:')) { throw 'Runtime Job owner did not report readiness.' }
     $helloValue = $hello.Substring('ASTRID_DIAG:'.Length) | ConvertFrom-Json
     if (-not $helloValue.started) { throw 'Runtime Job owner could not start the selected Bun service.' }
+    $result.owner_ready = $true
 
+    $script:phase = 'registration-wait'
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
     while ([DateTime]::UtcNow -lt $deadline -and -not (Test-Path -LiteralPath $registrationPath)) {
         if ($owner.HasExited) { break }
         Start-Sleep -Milliseconds 100
     }
     if (-not (Test-Path -LiteralPath $registrationPath)) { throw 'Isolated bridge did not publish its temporary registration.' }
+    $result.registration_found = $true
+    $script:phase = 'registration-read'
     $registration = Get-Content -LiteralPath $registrationPath -Raw | ConvertFrom-Json
     if (-not $registration.endpoint -or -not $registration.token) { throw 'Temporary bridge registration is incomplete.' }
+    $script:phase = 'endpoint-validation'
+    $endpoint = [System.Uri]::new([string]$registration.endpoint)
+    $result.endpoint_loopback = ($endpoint.Scheme -eq 'http' -and
+        ($endpoint.Host -eq 'localhost' -or [System.Net.IPAddress]::IsLoopback($endpoint.Host -as [System.Net.IPAddress])))
+    if (-not $result.endpoint_loopback) { throw 'Temporary bridge endpoint is not loopback HTTP.' }
+    $result.endpoint_port = $endpoint.Port
+    $script:phase = 'client-create'
     $client = [System.Net.Http.HttpClient]::new()
     $client.Timeout = [TimeSpan]::FromSeconds(35)
 
-    $models = Invoke-LocalRequest $client ([string]$registration.endpoint) '/models' 'GET' ([string]$registration.token)
-    $result.models_http = $models.status
-    if ($models.body.providers -is [array]) {
+    $health = Invoke-SafeProbe 'health' { Invoke-LocalRequest $client ([string]$registration.endpoint) '/health' 'GET' ([string]$registration.token) } $result
+    if ($null -ne $health) { $result.health_http = $health.status }
+
+    $models = Invoke-SafeProbe 'models' { Invoke-LocalRequest $client ([string]$registration.endpoint) '/models' 'GET' ([string]$registration.token) } $result
+    if ($null -ne $models) { $result.models_http = $models.status }
+    if ($null -ne $models -and $models.body.providers -is [array]) {
         $providers = @($models.body.providers)
         $result.provider_count = $providers.Count
         $result.model_count = ($providers | ForEach-Object { @($_.models).Count } | Measure-Object -Sum).Sum
         $result.signed_in_count = @($providers | Where-Object { $_.signedIn -eq $true }).Count
-    } elseif ($models.body.error) { $result.models_error_code = Safe-ErrorCode $models.body.error }
+    } elseif ($null -ne $models -and $models.body.error) { $result.models_error_code = Safe-ErrorCode $models.body.error }
 
-    $connect = Invoke-LocalRequest $client ([string]$registration.endpoint) '/connect' 'POST' `
-        ([string]$registration.token) '{"agent":"astrid"}'
-    $result.connect_http = $connect.status
-    if ($connect.body.error) { $result.connect_error_code = Safe-ErrorCode $connect.body.error }
-    if ($connect.status -ge 200 -and $connect.status -lt 300 -and $connect.body.connection_id) {
+    $connect = Invoke-SafeProbe 'connect' { Invoke-LocalRequest $client ([string]$registration.endpoint) '/connect' 'POST' `
+        ([string]$registration.token) '{"agent":"astrid"}' } $result
+    if ($null -ne $connect) { $result.connect_http = $connect.status }
+    if ($null -ne $connect -and $connect.body.error) { $result.connect_error_code = Safe-ErrorCode $connect.body.error }
+    if ($null -ne $connect -and $connect.status -ge 200 -and $connect.status -lt 300 -and $connect.body.connection_id) {
         $connectionId = [string]$connect.body.connection_id
         $result.initialize_succeeded = $true
     }
 } catch {
-    $result.error = 'Diagnostic failed: ' + $_.Exception.GetType().Name
+    $result.phase = $script:phase
+    $result.exception = Get-SafeExceptionSummary $_.Exception
+    $result.error = 'Diagnostic failed during ' + $script:phase + ': ' + $result.exception.class + ' (' + $result.exception.classification + ')'
 } finally {
     if ($connectionId -and $client -and $registration) {
         try {
@@ -418,4 +484,5 @@ finally:
     }
 }
 
+$result.phase = $script:phase
 [pscustomobject]$result | ConvertTo-Json -Depth 8

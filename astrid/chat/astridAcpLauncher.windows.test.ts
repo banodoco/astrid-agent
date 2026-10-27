@@ -11,10 +11,14 @@ test.skipIf(process.platform !== 'win32')('native Windows ACP profile and contex
   const shim = join(directory, 'astrid.cmd');
   const failingShim = join(directory, 'failing-astrid.cmd');
   writeFileSync(profile, '# Astrid profile\n', 'utf8');
+  // Batch files parse & as a command separator, even when the path came from
+  // %~dp0 inside a parenthesized block. Escape the fixture's literal ampersand
+  // so this shim tests the launcher path quoting rather than failing itself.
+  const profileForCmd = profile.replace(/&/g, '^&');
   writeFileSync(shim, [
     '@echo off',
     'if "%1"=="--agent-profile-file" (',
-    '  for %%P in ("%~dp0astrid-profile.md") do echo %%~fP',
+    '  echo ' + profileForCmd,
     '  exit /b 0',
     ')',
     'if "%1"=="--agent-context" (',
