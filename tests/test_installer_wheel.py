@@ -10,6 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 CHAT_RESOURCES = ("chat/service.mjs", "chat/astrid-acp-local-only.yml", "chat/THIRD_PARTY_LICENSES.txt")
 OMP_RESOURCES = ("installer/omp/recipe.json",)
+GENERATION_GUIDE_RESOURCES = (
+    "packs/generation/pack.yaml",
+    "packs/generation/docs/SKILL.md",
+    "packs/generation/actions/generate_image/STAGE.md",
+)
 
 
 def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
@@ -19,7 +24,7 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     source.mkdir()
     shutil.copy2(ROOT / "pyproject.toml", source / "pyproject.toml")
     files = ("__init__.py", "version.py", "services.py", "chat/__init__.py", *CHAT_RESOURCES,
-             "installer/__init__.py", "installer/tools.py", *OMP_RESOURCES,
+             "installer/__init__.py", "installer/tools.py", *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES,
              "chat/service.ts", "chat/service.test.ts")
     for name in files:
         destination = source / "astrid" / name
@@ -40,9 +45,9 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     installed = tmp_path / "unpacked-wheel"
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = set(wheel.namelist())
-        assert {f"astrid/{name}" for name in (*CHAT_RESOURCES, *OMP_RESOURCES)} <= names
+        assert {f"astrid/{name}" for name in (*CHAT_RESOURCES, *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES)} <= names
         assert not {f"astrid/{name}" for name in (*excluded, "chat/service.ts", "chat/service.test.ts")} & names
-        for name in (*CHAT_RESOURCES, *OMP_RESOURCES):
+        for name in (*CHAT_RESOURCES, *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES):
             assert wheel.read(f"astrid/{name}") == (ROOT / "astrid" / name).read_bytes()
         wheel.extractall(installed)
     script = """
