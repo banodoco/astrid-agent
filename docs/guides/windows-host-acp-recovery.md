@@ -120,6 +120,26 @@ queries no models, and changes no installation settings. This reconstruction
 cannot read the already-running process's environment; differences between it
 and the live bridge remain possible.
 
+The operator's follow-up profile probe succeeded in all four combinations in
+198–218 ms with Bun 1.3.14. This rules out a plain no-console/stdin difference
+under the reconstructed configuration; it does not test retained Job membership,
+an open supervised stdin pipe, or the running bundle's full launch code.
+
+To test those conditions, use the installed bundle in a temporary bridge:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\diagnostics\windows_acp_isolated_bridge.ps1
+```
+
+This imports the installed `service.mjs` from its original directory, preserving
+relative resources. It holds the temporary service's stdin open and gives it
+its own retained Windows Job and temporary registration. It checks model
+discovery and ACP initialize, records bounded subprocess diagnostics, deletes
+any temporary connection, then stops the Job. It sends no prompt and does not
+replace or restart the live bridge. The reported `job_drained` value states
+whether cleanup was positively observed.
+
 To capture current, bounded evidence without printing the bridge credential or
 environment, run the repository diagnostic from PowerShell:
 
