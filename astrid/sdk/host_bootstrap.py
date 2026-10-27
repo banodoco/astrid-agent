@@ -556,7 +556,7 @@ def _decode_recovery_proof(support: Path, proof: Mapping[str, Any]) -> dict[str,
             or not isinstance(proof.get("markers"), Mapping) or set(proof["markers"]) != set(_RECOVERY_MARKERS)):
         raise PackHostBootstrapError("host recovery checkpoint binding is invalid")
     validate_boot_identity(proof["boot_identity"])
-    result = {}
+    result: dict[str, bytes | None] = {}
     for name in _RECOVERY_MARKERS:
         item = proof["markers"][name]
         if item is None:
@@ -572,7 +572,10 @@ def _decode_recovery_proof(support: Path, proof: Mapping[str, Any]) -> dict[str,
         except (TypeError, ValueError) as exc:
             raise PackHostBootstrapError("host recovery checkpoint marker digest is invalid") from exc
     try:
-        state = json.loads(result["generic-host.json"])
+        state_bytes = result["generic-host.json"]
+        if state_bytes is None:
+            raise ValueError("missing state")
+        state = json.loads(state_bytes)
         if (not isinstance(state, dict) or type(state.get("pid")) is not int or state["pid"] <= 1
                 or not isinstance(state.get("process_birth_id"), str) or not state["process_birth_id"]
                 or not _same_windows_path(str(state.get("support_root") or ""), str(support))):
