@@ -25,7 +25,9 @@ type AstridModelSnapshot = {
   }>;
 };
 
-type AstridModelOptions = { command?: string; cwd: string; profile?: string };
+type AstridModelOptions = { command?: string; cwd: string; profile?: string; timeoutMs?: number };
+
+const MODEL_CATALOG_TIMEOUT_MS = 30_000;
 
 function safeProbeFailureSummary(error: unknown): string {
   if (!error || typeof error !== 'object') return '';
@@ -49,8 +51,11 @@ async function runAstrid(options: AstridModelOptions, args: string[]): Promise<s
       cwd: options.cwd,
       env: { ...process.env, ...(options.profile ? { OMP_PROFILE: options.profile } : {}) },
       encoding: 'utf8',
-      // The wrapper starts OMP once for models and again for login providers.
-      timeout: 10_000,
+      // The Python wrapper starts OMP sequentially for model metadata and login
+      // providers, then may spend up to three seconds on optional usage data.
+      // Keep the HTTP request bounded while allowing the installed OMP startup
+      // path to complete on slower Windows service hosts.
+      timeout: options.timeoutMs ?? MODEL_CATALOG_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 8 * 1024 * 1024,
     });

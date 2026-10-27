@@ -13,6 +13,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Exercise native Windows chat child launches
         run: bun test ./astrid/chat/discoveryProbe.test.ts ./astrid/chat/astridAcpLauncher.windows.test.ts ./astrid/chat/acpProcessHost.test.ts
+      - name: Allow slow Windows model discovery through HTTP
+        run: bun test ./astrid/chat/astrid-agent-models.test.ts -t "model discovery allows sequential OMP startup"
       - name: Parse the operator diagnostic with Windows PowerShell
         shell: powershell
         run: |

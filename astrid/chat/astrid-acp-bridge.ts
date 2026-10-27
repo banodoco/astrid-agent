@@ -429,7 +429,10 @@ export class AstridAcpBridge {
       if (request.method === 'GET' && url.pathname === '/agents') {
         const [agents, astridModels] = await Promise.all([
           this.discoverAgents({ cwd: this.config.cwd }),
-          this.astridModelCatalog({ command: this.config.command, cwd: this.config.cwd, profile: this.config.profile }).catch(() => null),
+          // /agents only needs a bounded readiness hint; a slow OMP catalog
+          // must not hold up agent discovery. The dedicated /models route gets
+          // the full catalog budget.
+          this.astridModelCatalog({ command: this.config.command, cwd: this.config.cwd, profile: this.config.profile, timeoutMs: 10_000 }).catch(() => null),
         ]);
         // A provider with available models can be used without a configured key.
         // A failed catalog lookup is unknown, and unknown sign-in counts as ready.

@@ -31,9 +31,12 @@ New Windows service declarations bind chat to the selected environment's
 `astrid.exe`, preserving an explicit launcher override. Chat discovery, packaged
 profile lookup, and preference lookup use the same Windows command-shim handling
 as ACP startup. Failures report bounded process status rather than private child
-output. These fixes do not establish the cause of the report's live `.exe`
-failure: standalone profile lookup worked, but a later live diagnostic still
-returned `/models` 500 and `/connect` 502 after the absolute command change.
+output. The model-catalog budget is 30 seconds to cover sequential OMP metadata
+and login-provider startup plus optional usage lookup; the old 10-second budget
+killed successful discovery on the operator's Windows installation. A regression
+test exercises successful discovery beyond the old cutoff, and timeout tests
+still verify child-tree cleanup. The earlier live `/connect` 502 remains
+unexplained; the isolated installed bundle later initialized successfully.
 
 Native Windows checks are included in CI. Local macOS checks cannot establish
 that the Windows chat panel answers or a task completes on the user's existing
@@ -139,6 +142,34 @@ discovery and ACP initialize, records bounded subprocess diagnostics, deletes
 any temporary connection, then stops the Job. It sends no prompt and does not
 replace or restart the live bridge. The reported `job_drained` value states
 whether cleanup was positively observed.
+
+The operator's `isolated-bridge-4` result (`message (11).txt`, 27 October)
+returned health 200, models 500, and connect 200 with successful initialize
+and connection deletion. The model-catalog child was killed with SIGKILL at
+10,032 ms without stderr, matching the bridge's 10-second discovery deadline.
+The profile lookup completed successfully in 215 ms; Job drain was confirmed.
+The asynchronous subprocess instrumentation's `timed_out: false` only means
+it did not observe a native spawn timeout error; it cannot detect the bridge's
+own timer. The later ACP child's SIGTERM is consistent with connection cleanup,
+not evidence that initialize failed. The earlier live bridge's 502 remains
+unexplained: this successful isolated run does not prove the live bridge is fixed.
+
+The operator subsequently relayed successful OMP-stage results: startup 0.2 s,
+plain model listing 5.2 s (8 models), model listing with the Astrid extension
+5.5 s (96 providers), and authentication-provider discovery 5.9 s. The production
+path does not repeat the plain-list baseline: it lists models with the extension,
+then requests login providers over RPC, then optionally fetches usage with its
+own three-second timeout. Even the two required operations total roughly 11.4 s,
+exceeding the bridge's old 10-second budget. No JSON is printed until they finish.
+This explains why the service's model discovery is killed despite successful
+individual operations. Missing OMP in a separate interactive shell environment
+does not explain the service timeout. Verify the increased discovery budget
+against this installation before claiming the live model picker is repaired.
+
+Native Windows custody checks passed for commits `0286720d` and `8dd6c650`;
+the latter's full Scheduled Task host journey also passed under both
+`powershell.exe` and `pwsh.exe`. These results cover the custody fixes, not the
+subsequent model-discovery deadline change or the operator's existing state.
 
 To capture current, bounded evidence without printing the bridge credential or
 environment, run the repository diagnostic from PowerShell:

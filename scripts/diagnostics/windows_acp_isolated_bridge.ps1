@@ -83,6 +83,7 @@ function Safe-ErrorCode([object]$Value) {
 }
 
 $result = [ordered]@{
+    diagnostic_revision = 'isolated-bridge-4'
     phase = 'startup'
     owner_ready = $false
     registration_found = $false
