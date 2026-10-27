@@ -28,7 +28,12 @@ from astrid.core.generation.storage_policy import (
     ImageStoragePolicyError,
 )
 from astrid.core.model_catalog.schema import BackendSpec, ModelEntry
-from astrid.core.util.credentials_scope import CredentialsScope
+from astrid.core.util.generation_helpers import (
+    DEFAULT_OUTPUT_MAX_BYTES,
+    download_output,
+    load_provider_key,
+    output_suffix,
+)
 from astrid.core.util.http import (
     HttpClient,
     default_client,
@@ -218,7 +223,7 @@ class FalBackend(BackendAdapter):
     def _resolve_api_key(self) -> str:
         """Return ``FAL_KEY``, loading from environment / .env on first call."""
         if self._api_key is None:
-            self._api_key = CredentialsScope.get_local("fal", env_file=self._env_file)
+            self._api_key = load_provider_key("fal", env_file=self._env_file)
             self._client.register_secret(self._api_key)
         return self._api_key
 
@@ -546,32 +551,29 @@ class FalBackend(BackendAdapter):
 
         for idx, url in enumerate(asset_urls):
             try:
-                download_kwargs = (
-                    {"max_bytes": bounded_policy.output_max_bytes}
+                data_max_bytes = (
+                    bounded_policy.output_max_bytes
                     if bounded_policy is not None
-                    else {}
+                    else DEFAULT_OUTPUT_MAX_BYTES
                 )
-                data = self._client.get_bytes(
-                    url,
-                    timeout=120,
-                    **download_kwargs,
+                validate = (
+                    (lambda data, index=idx: bounded_policy.validate_download(data, index=index))
+                    if bounded_policy is not None
+                    else None
                 )
-                if bounded_policy is not None:
-                    bounded_policy.validate_download(data, index=idx)
+                suffix = _guess_suffix(url)
+                dst = out_dir / f"output_{idx:03d}{suffix}"
+                dst, data = download_output(
+                    self._client, url, dst, timeout=120,
+                    max_bytes=data_max_bytes, fallback_suffix=".png",
+                    unique=True, validate=validate,
+                )
             except ImageStoragePolicyError as exc:
                 raise ValueError(str(exc)) from exc
             except Exception as exc:
                 raise ValueError(
                     f"Failed to download fal result output {idx}: {exc}"
                 ) from exc
-            suffix = _guess_suffix(url)
-            dst = out_dir / f"output_{idx:03d}{suffix}"
-            if dst.exists():
-                counter = 1
-                while dst.exists():
-                    dst = out_dir / f"output_{idx:03d}_{counter}{suffix}"
-                    counter += 1
-            dst.write_bytes(data)
             image_paths.append(dst)
 
         return GenerationResult(
@@ -738,12 +740,4 @@ def _extract_asset_urls(result: dict[str, Any]) -> list[str]:
 
 def _guess_suffix(url: str) -> str:
     """Guess a file extension from a URL path."""
-    path = url.split("?")[0]
-    suffix = Path(path).suffix.lower()
-    if suffix in {
-        ".png", ".jpg", ".jpeg", ".webp", ".gif",
-        ".mp4", ".webm", ".mov",
-        ".wav", ".mp3", ".flac", ".m4a",
-    }:
-        return suffix
-    return ".png"
+    return output_suffix(url, fallback=".png")

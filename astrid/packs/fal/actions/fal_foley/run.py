@@ -16,12 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from astrid.core._shared.result_manifest import build_manifest, write_manifest
-from astrid.core.util.credentials_scope import CredentialsScope
 from astrid.core.util.http import (
-    FAL_QUEUE_URL,
     HttpClient,
     default_client,
     fal_submit_and_poll,
+)
+from astrid.core.util.generation_helpers import (
+    DEFAULT_OUTPUT_MAX_BYTES,
+    download_output,
+    load_provider_key,
+    write_journal_atomic,
 )
 
 FAL_MODEL_ID = "fal-ai/hunyuan-video-foley"
@@ -39,13 +43,6 @@ def _data_uri_for_video(path: Path) -> str:
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def _submit(client: HttpClient, payload: dict[str, Any], api_key: str) -> dict[str, Any]:
-    """Submit a Foley job via HttpClient."""
-    url = f"{FAL_QUEUE_URL}/{FAL_MODEL_ID}"
-    headers = {"authorization": f"Key {api_key}"}
-    return client.post_json(url, payload, headers=headers, timeout=180)
-
-
 def _save_audio(
     client: HttpClient, result: dict[str, Any], dest: Path
 ) -> dict[str, Any]:
@@ -57,9 +54,10 @@ def _save_audio(
     if not audio or not audio.get("url"):
         raise SystemExit(f"fal foley result had no audio url: {str(result)[:400]}")
     url = audio["url"]
-    raw = client.get_bytes(url, timeout=300)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(raw)
+    dest, raw = download_output(
+        client, url, dest, timeout=300, max_bytes=DEFAULT_OUTPUT_MAX_BYTES,
+        fallback_suffix=".wav", infer_suffix=False,
+    )
     return {
         "path": str(dest),
         "source_url": url,
@@ -108,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload_preview, indent=2))
         return 0
 
-    api_key = CredentialsScope.get_local("fal", env_file=args.env_file)
+    api_key = load_provider_key("fal", env_file=args.env_file)
     payload = {
         "video_url": _data_uri_for_video(clip),
         "text_prompt": args.prompt,
@@ -128,17 +126,13 @@ def main(argv: list[str] | None = None) -> int:
     saved = _save_audio(client, result, out)
 
     sidecar = out.with_suffix(out.suffix + ".fal.json")
-    sidecar.write_text(
-        json.dumps(
-            {
-                **payload_preview,
-                "request_id": result.get("request_id"),
-                "saved": saved,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    write_journal_atomic(
+        sidecar,
+        {
+            **payload_preview,
+            "request_id": result.get("request_id"),
+            "saved": saved,
+        },
     )
 
     manifest = build_manifest(
