@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 from filelock import FileLock
 
+from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
 from astrid.packs.runpod import h3_release_remote as remote
 
 _DATA = Path(__file__).parent
@@ -45,8 +46,23 @@ class AttachmentPending(BuildError):
 
 
 def release_inputs():
+    # The remote builder retains its historic receipt vocabulary as an adapter,
+    # while source pins and model rows come from the verified canonical files.
+    canonical = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    by_name = {source.name: {"repository": source.pin.repository, "revision": source.pin.revision}
+               for source in canonical.sources}
     recipe = json.loads((_DATA / "environment.linux-cu130.json").read_text())
-    lock = json.loads((_DATA / "models.lock.json").read_text())
+    recipe["source"] = by_name["comfyui"]
+    recipe["vibecomfy_source"] = by_name["vibecomfy"]
+    recipe["custom_nodes"] = [
+        {"name": "ComfyUI-H3-Motion-Context-MultiRef", **by_name["h3-motion-context"]},
+        {"name": "ComfyUI-VideoHelperSuite", **by_name["videohelpersuite"]},
+    ]
+    model_lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    repository = model_lock.models[0].repository if model_lock.models else None
+    lock = {"schema_version": 1, "repository": repository, "metadata_fetched_at": "2026-10-27",
+            "models": [{"path": row.path, "revision": row.revision, "bytes": row.bytes,
+                        "sha256": row.sha256} for row in model_lock.models]}
     # Provisioner changes create a new release as well as source/model pin changes.
     identity = {"recipe": recipe, "lock": lock,
                 "provisioner_sha256": remote.digest(Path(remote.__file__))}

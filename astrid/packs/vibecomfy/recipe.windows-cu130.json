@@ -1,0 +1,122 @@
+{
+  "schema": "astrid.engine-recipe.v1",
+  "engine": "vibecomfy",
+  "platform": "windows-x86_64-cu130",
+  "pins": {
+    "path": "packs/vibecomfy/pins.json",
+    "sha256": "305c2d6641f691eef5d990da0a974ed9b3b2e663361aeb362ef61fdc486d42a7"
+  },
+  "source_bindings": [
+    {
+      "name": "comfyui",
+      "pin": "comfyui",
+      "relative_path": "runtime/ComfyUI"
+    },
+    {
+      "name": "vibecomfy",
+      "pin": "vibecomfy",
+      "relative_path": "runtime/vibecomfy"
+    },
+    {
+      "name": "h3-motion-context",
+      "pin": "h3-motion-context",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-H3-Motion-Context-MultiRef"
+    },
+    {
+      "name": "videohelpersuite",
+      "pin": "videohelpersuite",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite"
+    }
+  ],
+  "environments": [
+    {
+      "name": "comfy",
+      "relative_path": "runtime/venv",
+      "python_version": "3.12.10",
+      "uv_version": "0.11.32",
+      "requirements": {
+        "mode": "resolve-once",
+        "packaged_lock": null,
+        "input_paths": [
+          {
+            "source": "comfyui",
+            "path": "requirements.txt"
+          },
+          {
+            "source": "vibecomfy",
+            "path": "pyproject.toml"
+          },
+          {
+            "source": "h3-motion-context",
+            "path": "requirements.txt"
+          },
+          {
+            "source": "videohelpersuite",
+            "path": "requirements.txt"
+          }
+        ],
+        "constraints": [
+          "comfy-kitchen==0.2.34",
+          "comfy-aimdo==0.5.3",
+          "opencv-python-headless==5.0.0.93",
+          "setuptools==80.9.0",
+          "wheel==0.46.3"
+        ],
+        "exclude_newer": "2026-10-19T00:00:00Z"
+      },
+      "final_wheels": [
+        {
+          "name": "torch",
+          "version": "2.10.0+cu130",
+          "url": "https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-win_amd64.whl",
+          "sha256": "224649fa0ab181ec483cc368e3303dda1760e4ba31bea806b88979f855436aaa"
+        },
+        {
+          "name": "torchvision",
+          "version": "0.25.0+cu130",
+          "url": "https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-win_amd64.whl",
+          "sha256": "7dd245ee7df0ceb00125e57615de31ca7232bf046143c2c3fe7a3b321bb50958"
+        },
+        {
+          "name": "torchaudio",
+          "version": "2.10.0+cu130",
+          "url": "https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-win_amd64.whl",
+          "sha256": "267c6724da81b9f0773c4707079f8e92b31fc95bf543845fb06ef9b5fdce99b0"
+        }
+      ],
+      "node_lock": null,
+      "source_installs": []
+    }
+  ],
+  "primary_environment": "comfy",
+  "models_lock": {
+    "path": "packs/vibecomfy/models.lock.json",
+    "sha256": "ebb3379140c96ea72af8fa21c5255a3298b8cbf205aef091861f471127bb5cbe"
+  },
+  "start": {
+    "argv": [
+      "{python}",
+      "main.py",
+      "--listen",
+      "127.0.0.1",
+      "--port",
+      "{port}"
+    ],
+    "cwd": "{comfy_root}",
+    "env": {
+      "VIBECOMFY_HEADLESS": "1"
+    },
+    "bind_host": "127.0.0.1",
+    "port": 8188
+  },
+  "health": {
+    "path": "/system_stats",
+    "object_info_path": "/object_info",
+    "required_nodes": [
+      "MiniMaxH3ReferenceToVideo",
+      "VHS_VideoCombine"
+    ],
+    "timeout_seconds": 120,
+    "poll_interval_seconds": 2
+  }
+}

@@ -8,23 +8,19 @@
     "torchaudio": "2.10.0+cu130"
   },
   "source": {
-    "repository": "https://github.com/Comfy-Org/ComfyUI.git",
-    "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
+    "pin": "comfyui"
   },
   "vibecomfy_source": {
-    "repository": "https://github.com/peteromallet/VibeComfy.git",
-    "revision": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+    "pin": "vibecomfy"
   },
   "custom_nodes": [
     {
       "name": "ComfyUI-H3-Motion-Context-MultiRef",
-      "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
-      "revision": "361624fb406b63eb6694442eac6c895fc1533a70"
+      "pin": "h3-motion-context"
     },
     {
       "name": "ComfyUI-VideoHelperSuite",
-      "repository": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
-      "revision": "4ee72c065db22c9d96c2427954dc69e7b908444b"
+      "pin": "videohelpersuite"
     }
   ],
   "platform": "linux-x86_64",

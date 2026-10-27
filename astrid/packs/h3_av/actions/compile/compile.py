@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
+from astrid.core.generation.engine_recipe import engine_source_revision
 
 from astrid.packs.h3_av.shared.request import H3Request, H3RequestError, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import CHARACTER_SWAP_ID, REF2VA_MODEL, branch_for, effective_settings, read_prepared_request
@@ -630,7 +631,7 @@ def _compile_character_swap_v2(
     (workflow_resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_character_swap_adapter",
         "node": "MiniMaxH3ReferenceToVideo",
-        "comfy_commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
     }, sort_keys=True) + "\n", encoding="utf-8")
     workflow_inputs: dict[str, Any] = {
         "model": settings["model"],
@@ -976,7 +977,7 @@ def _compile_generation(
     emit_bundle(graph, resource / "workflow.py", provenance=Provenance.AGENT_AUTHORED)
     (resource / "source.json").write_text(json.dumps({
         "kind": "authored_h3_reference_adapter", "node": "MiniMaxH3ReferenceToVideo",
-        "comfy_commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+        "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
     }, sort_keys=True) + "\n")
     capabilities = {
         "operation": "generate",

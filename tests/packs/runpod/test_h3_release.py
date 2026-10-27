@@ -468,7 +468,9 @@ def test_real_lock_and_recipe_pins():
     assert sum(row["bytes"] for row in models) == 53484234760
     assert all(len(row["sha256"]) == 64 and len(row["revision"]) == 40 for row in models)
     assert inputs["recipe"]["vibecomfy_source"]["revision"] == VIBECOMFY_ENGINE_REVISION
-    windows = json.loads((build._DATA.parent / "vibecomfy/environment.windows-nvidia.json").read_text())
+    from astrid.core.generation.gpu_environment import _description
+
+    _, windows = _description("vibecomfy")
     assert inputs["recipe"]["source"] == windows["source"]
     assert inputs["recipe"]["custom_nodes"] == windows["custom_nodes"]
     assert inputs["recipe"]["torch"] == windows["torch"]

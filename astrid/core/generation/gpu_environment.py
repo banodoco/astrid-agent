@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
+from astrid.core.generation.engine_recipe import load_recipe
 
 # No longer changes anything; still accepted in service-env.json so old
 # settings files load (astrid/installer/service.py SERVICE_SETTINGS).
@@ -106,8 +106,26 @@ def _description(pack: str) -> tuple[Path, dict[str, Any]]:
         raise GPUEnvironmentError(f"unknown GPU pack: {pack}")
     directory = _PACKS / pack
     description = json.loads((directory / "environment.windows-nvidia.json").read_text(encoding="utf-8"))
+    platform = "windows-x86_64-cu130" if pack == "vibecomfy" else "windows-x86_64-cu128"
+    recipe = load_recipe(pack, platform)
+    sources = {source.name: source.pin for source in recipe.sources}
     if pack == "vibecomfy":
-        description["vibecomfy_source"]["revision"] = VIBECOMFY_ENGINE_REVISION
+        comfy = sources["comfyui"]
+        vibecomfy = sources["vibecomfy"]
+        description["source"] = {"repository": comfy.repository, "revision": comfy.revision}
+        description["vibecomfy_source"] = {"repository": vibecomfy.repository,
+                                             "revision": vibecomfy.revision}
+        node_sources = {
+            "ComfyUI-H3-Motion-Context-MultiRef": sources["h3-motion-context"],
+            "ComfyUI-VideoHelperSuite": sources["videohelpersuite"],
+        }
+        for node in description["custom_nodes"]:
+            pin = node_sources[node["name"]]
+            node.pop("pin", None)
+            node.update(repository=pin.repository, revision=pin.revision)
+    else:
+        pin = sources["wan2gp"]
+        description["source"] = {"repository": pin.repository, "revision": pin.revision}
     return directory, description
 
 

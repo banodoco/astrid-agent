@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from astrid.core.generation.engine_recipe import engine_source_revision
+
 from .timing import frame_index, smallest_h3_run_at_least
 
 IMAGE_REFERENCE_CAPACITY = 9
@@ -234,7 +236,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         models=model_assets,
         requirements={
             "runtime": {
-                "comfy_commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+                "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
                 "comfy_version": "==0.36.0",
                 "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],
