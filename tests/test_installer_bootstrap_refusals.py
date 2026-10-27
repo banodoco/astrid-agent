@@ -7,14 +7,26 @@ import sys
 from pathlib import Path
 
 import pytest
+import runtime_protocol
 
 from astrid.installer import cli
 from astrid.installer.service import LABEL
+from tests.lanes import unavailable
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
-APP_ROOT = Path("/home/user/banodoco/astrid-app")
+APP_CHECKOUT_ENV = "ASTRID_APP_CHECKOUT"
 SOURCE_REFUSAL = "This Astrid runs from source checkouts; update those instead."
+
+
+def _app_root() -> Path:
+    checkout = os.environ.get(APP_CHECKOUT_ENV)
+    if not checkout:
+        unavailable(f"set {APP_CHECKOUT_ENV} to a banodoco/astrid-app checkout")
+    root = Path(checkout).expanduser().resolve()
+    if not (root / "public/install").is_file() or not (root / "public/install.ps1").is_file():
+        unavailable(f"{APP_CHECKOUT_ENV} must point to a checkout containing public/install and public/install.ps1")
+    return root
 
 
 def _git_checkout(path: Path) -> Path:
@@ -144,9 +156,9 @@ raise SystemExit('unhandled fake uv args: ' + repr(args))
 
 
 @pytest.mark.parametrize("handoff", ["direct", "pipe"])
+@pytest.mark.app_checkout
 def test_real_posix_bootstrap_handoff_preserves_refusal_and_status(tmp_path, handoff):
-    if not (APP_ROOT / "public/install").is_file():
-        pytest.skip("App bootstrap checkout is unavailable")
+    app_root = _app_root()
     home = tmp_path / "home"
     xdg = home / ".local" / "share"
     bootstrap = xdg / "astrid" / "bootstrap"
@@ -164,14 +176,15 @@ def test_real_posix_bootstrap_handoff_preserves_refusal_and_status(tmp_path, han
         "agent": {"sha": "a" * 40, "repo": str(AGENT_ROOT)},
         "runtime": {"sha": "b" * 40, "repo": str(AGENT_ROOT)},
     }), encoding="utf-8")
+    runtime_import_root = Path(runtime_protocol.__file__).resolve().parent.parent
     env = os.environ.copy()
     env.update({"HOME": str(home), "USERPROFILE": str(home), "XDG_DATA_HOME": str(xdg),
                 "ASTRID_INSTALL_UV": str(uv),
-                "PYTHONPATH": os.pathsep.join((str(AGENT_ROOT), "/home/user/work/UPD-C1/astrid-runtime"))})
+                "PYTHONPATH": os.pathsep.join((str(AGENT_ROOT), str(runtime_import_root)))})
     args = ["--manifest", str(manifest), "--root", str(root), "--data-root", str(data)]
-    command = (["sh", str(APP_ROOT / "public/install"), *args] if handoff == "direct"
+    command = (["sh", str(app_root / "public/install"), *args] if handoff == "direct"
                else ["sh", "-s", "--", *args])
-    result = subprocess.run(command, input=(APP_ROOT / "public/install").read_bytes() if handoff == "pipe" else None,
+    result = subprocess.run(command, input=(app_root / "public/install").read_bytes() if handoff == "pipe" else None,
                             cwd=tmp_path, env=env, text=False, capture_output=True, timeout=90)
     combined = result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace")
     assert result.returncode != 0
@@ -180,8 +193,9 @@ def test_real_posix_bootstrap_handoff_preserves_refusal_and_status(tmp_path, han
     assert not (xdg / "astrid-install.json").exists()
 
 
+@pytest.mark.app_checkout
 def test_windows_bootstrap_forwards_core_refusal_and_keeps_scriptblock_open():
-    script = (APP_ROOT / "public/install.ps1").read_text(encoding="utf-8")
+    script = (_app_root() / "public/install.ps1").read_text(encoding="utf-8")
     assert "$RunArgs += $InstallerArgs" in script
     assert "if ($FileInvocation) {" in script and "exit $NativeExitCode" in script
     assert "throw $Message" in script
