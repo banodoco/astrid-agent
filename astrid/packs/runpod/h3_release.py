@@ -24,6 +24,7 @@ from urllib.parse import quote
 from filelock import FileLock
 
 from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
+from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 
 _DATA = Path(__file__).parent
@@ -63,10 +64,8 @@ def release_inputs():
     lock = {"schema_version": 1, "repository": repository, "metadata_fetched_at": "2026-10-27",
             "models": [{"path": row.path, "revision": row.revision, "bytes": row.bytes,
                         "sha256": row.sha256} for row in model_lock.models]}
-    # Provisioner changes create a new release as well as source/model pin changes.
-    identity = {"recipe": recipe, "lock": lock,
-                "provisioner_sha256": remote.digest(Path(remote.__file__))}
-    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    # Bind the exact delivered helper, downloader, contracts and bootstrap code.
+    digest = bootstrap.release_digest(recipe, lock, bootstrap.source_archive())
     return {"recipe": recipe, "lock": lock, "recipe_sha256": digest,
             "release_id": "h3-cu130-" + digest,
             "root": "/workspace/h3-golden/releases/h3-cu130-" + digest}
@@ -456,14 +455,11 @@ class LifecycleTransport:
             raise ConnectionError("build pod SSH is not ready") from None
 
     def provision(self, request, timeout):
-        program = Path(remote.__file__).read_bytes()
-        wrapper = ("import base64,json; ns={'__name__':'h3_release_provisioner'}; "
-                   "exec(compile(base64.b64decode('" + base64.b64encode(program).decode() + "'),'<h3-release>','exec'),ns); "
-                   "request=json.loads(base64.b64decode('" + base64.b64encode(json.dumps(request).encode()).decode() + "')); "
-                   "result=ns['provision'](request); "
-                   "result['manifest_base64']=base64.b64encode((ns['Path'](request['root'])/'release-manifest.json').read_bytes()).decode(); "
-                   "print(json.dumps(result))")
-        code, stdout, _stderr = self.ssh.execute_command("python3 -c " + shlex.quote(wrapper), timeout=timeout)
+        try:
+            wrapper = bootstrap.command_source(request, bootstrap.source_archive())
+        except ValueError as exc:
+            raise BuildError(str(exc)) from None
+        code, stdout, _stderr = self.ssh.execute_command("python3 -I -S -c " + shlex.quote(wrapper), timeout=timeout)
         if code:
             raise BuildError("remote H3 build failed; inspect runtime/build.log on the volume")
         try:

@@ -3,17 +3,24 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import http.server
 import io
 import json
+import os
+import shlex
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+import zipfile
 
 import httpx
 import pytest
 
 from astrid.packs.runpod import h3_release as build
+from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
 from astrid.packs.runpod import worker_staging as staging
 
@@ -320,14 +327,14 @@ def test_real_downloader_crash_resume_skip_and_atomic_promotion(tmp_path):
         return RangeResponse(payload, start, end)
 
     with pytest.raises(KeyboardInterrupt):
-        remote.download_model(row, destination, "repo", time.time() + 60, opener=opener, chunk_bytes=64)
+        remote.download_model(row, destination, "owner/repo", time.time() + 60, opener=opener, chunk_bytes=64)
     assert destination.with_suffix(".safetensors.part").read_bytes() == payload[:64]
-    remote.download_model(row, destination, "repo", time.time() + 60, opener=opener, chunk_bytes=64)
+    remote.download_model(row, destination, "owner/repo", time.time() + 60, opener=opener, chunk_bytes=64)
     assert requests[:3] == [0, 64, 64]
     assert destination.read_bytes() == payload
     assert not destination.with_suffix(".safetensors.part").exists()
     count = len(requests)
-    remote.download_model(row, destination, "repo", time.time() + 60, opener=opener)
+    remote.download_model(row, destination, "owner/repo", time.time() + 60, opener=opener)
     assert len(requests) == count
 
 
@@ -337,13 +344,13 @@ def test_redirect_body_and_bad_sha_never_promote(tmp_path, monkeypatch):
     row = model_row(payload)
     destination = tmp_path / "model"
     with pytest.raises(RuntimeError, match="range failed"):
-        remote.download_model(row, destination, "repo", time.time() + 60,
+        remote.download_model(row, destination, "owner/repo", time.time() + 60,
                               opener=lambda *_a, **_kw: RangeResponse(payload, 0, len(payload) - 1, honor=False))
     assert not destination.exists()
     assert not (tmp_path / "model.part").exists()
     (tmp_path / "model.part").write_bytes(b"x" * len(payload))
     with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
-        remote.download_model(row, destination, "repo", time.time() + 60)
+        remote.download_model(row, destination, "owner/repo", time.time() + 60)
     assert not destination.exists()
     assert not (tmp_path / "model.part").exists()
 
@@ -567,7 +574,7 @@ def test_legacy_tiny_redirect_part_is_quarantined_before_resume(tmp_path):
         starts.append(start)
         return RangeResponse(payload, start, end)
 
-    remote.download_model(row, destination, "repo", time.time() + 60, opener=opener)
+    remote.download_model(row, destination, "owner/repo", time.time() + 60, opener=opener)
     assert starts == [0]
     assert destination.read_bytes() == payload
     assert part.with_name(part.name + ".quarantine").read_bytes() == b"redirecting to xet"
@@ -582,3 +589,195 @@ def test_rest_observation_enriches_datacenter_from_existing_sdk(monkeypatch):
     assert result["machine"]["dataCenterId"] == "EUR-NO-1"
     assert result["computeType"] == "GPU"
     assert result["networkVolumeId"] == "v"
+
+
+def test_bootstrap_packages_exact_product_sources_deterministically():
+    payload = bootstrap.source_archive()
+    assert payload == bootstrap.source_archive()
+    package = Path(build.__file__).parents[2]
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        assert set(archive.namelist()) == {
+            *("astrid/" + name for name in bootstrap._SOURCES), f"astrid-{bootstrap.__version__}.dist-info/METADATA",
+        }
+        for name in bootstrap._SOURCES:
+            assert archive.read("astrid/" + name) == (package / name).read_bytes()
+        assert all("tests" not in name and "fixture" not in name for name in archive.namelist())
+
+
+@pytest.mark.parametrize("source", [
+    "core/generation/engine_contracts.py", "core/generation/model_downloader.py",
+    "packs/runpod/h3_release_remote.py", "packs/runpod/h3_release_bootstrap.py",
+])
+def test_release_identity_binds_dependencies_and_refuses_stale_wire_source(monkeypatch, source):
+    previous = build.release_inputs()
+    path = Path(build.__file__).parents[2] / source
+    original = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: original(self) + b"\n" if self == path else original(self))
+    updated = build.release_inputs()
+    assert previous["release_id"] != updated["release_id"]
+    assert previous["root"] != updated["root"]
+    assert previous["recipe_sha256"] != updated["recipe_sha256"]
+    assert set(updated) == {"recipe", "lock", "recipe_sha256", "release_id", "root"}
+    transport = object.__new__(build.LifecycleTransport)
+    transport.ssh = SimpleNamespace(execute_command=lambda *_a, **_kw: pytest.fail("stale source sent"))
+    with pytest.raises(build.BuildError, match="source identity changed"):
+        transport.provision(previous, timeout=10)
+
+
+@pytest.mark.parametrize("tamper", ["package", "request", "release_id"])
+def test_cold_bootstrap_refuses_tampering_before_provision(tmp_path, tamper):
+    request = {**build.release_inputs(), "root": str(tmp_path / "untouched")}
+    archive = bootstrap.source_archive()
+    wrapper = bootstrap.command_source(request, archive)
+    if tamper == "package":
+        wrapper = wrapper.replace(base64.b64encode(archive).decode(), base64.b64encode(archive + b"x").decode())
+        message = "package digest mismatch"
+    else:
+        changed = copy.deepcopy(request)
+        if tamper == "request":
+            changed["lock"]["models"][0]["bytes"] += 1
+        else:
+            changed["release_id"] = "h3-cu130-" + "0" * 64
+        wrapper = wrapper.replace(base64.b64encode(json.dumps(request).encode()).decode(),
+                                  base64.b64encode(json.dumps(changed).encode()).decode())
+        message = "release source identity mismatch"
+    env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", wrapper], cwd=tmp_path,
+                            env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert not Path(request["root"]).exists()
+
+
+def test_actual_transport_bootstrap_downloads_and_skips_on_stdlib_only_cold_target(tmp_path):
+    """Execute the exact wire wrapper; fake only CPU installation and HF routing."""
+    payload = b"cold-target-verified-model" * 64
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.headers["Range"])
+            start, end = map(int, self.headers["Range"].removeprefix("bytes=").split("-"))
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.end_headers()
+            self.wfile.write(payload[start:end + 1])
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    # No repository files or installed packages are available in the child cwd.
+    cold = tmp_path / "cold"
+    cold.mkdir()
+    temporary = tmp_path / "helper-temporaries"
+    temporary.mkdir()
+    request = {**build.release_inputs(), "root": str(tmp_path / "volume/release"),
+               "volume": {"mount": str(tmp_path / "volume")}, "deadline": time.time() + 30}
+    request["lock"] = {"repository": "test/repo", "models": [model_row(payload)]}
+    request["recipe_sha256"] = bootstrap.release_digest(request["recipe"], request["lock"], bootstrap.source_archive())
+    request["release_id"] = "h3-cu130-" + request["recipe_sha256"]
+    env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
+    env["TMPDIR"] = str(temporary)
+    source_hashes = {
+        name: hashlib.sha256((Path(build.__file__).parents[2] / name).read_bytes()).hexdigest()
+        for name in ("core/generation/engine_contracts.py", "core/generation/model_downloader.py")
+    }
+    # Instrument function entry without altering a byte of the generated wire
+    # wrapper or shared modules. The real provision/build/download/receipt path
+    # runs; source checkout, pip/uv and runtime commands are local fakes.
+    harness = f'''
+import hashlib,importlib.util,json,os,sys
+from pathlib import Path
+from types import SimpleNamespace
+assert sys.flags.no_site and sys.flags.isolated
+assert 'PYTHONPATH' not in os.environ
+assert importlib.util.find_spec('astrid') is None
+assert importlib.util.find_spec('filelock') is None
+def enter(frame,event,arg):
+    if event != 'call' or frame.f_code.co_name != 'provision':
+        return
+    if frame.f_globals.get('__name__') != 'astrid.packs.runpod.h3_release_remote':
+        return
+    sys.setprofile(None)
+    from astrid.core.generation import engine_contracts as contracts, model_downloader as downloader
+    from astrid.packs.runpod import h3_release_remote as remote
+    assert remote.ModelSpec is contracts.ModelSpec
+    assert remote._download_model is downloader._download_model
+    for name,sha in {source_hashes!r}.items():
+        path=Path(remote.__file__).parents[2]/name
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == sha
+        assert path.is_relative_to(Path({str(temporary)!r}))
+    remote.os.path.ismount=lambda _p: True
+    remote.Provisioner.sources=lambda self: None
+    remote.Provisioner.launch=lambda self: None
+    remote.Provisioner.run=lambda *a,**kw: SimpleNamespace(returncode=0,stdout='')
+    def environment(self):
+        path=self.runtime/'environment-receipt.json'
+        if not path.exists():
+            remote.atomic_json(path,{{'requirements_lock_sha256':'b'*64}})
+    remote.Provisioner.environment=environment
+    real_open=downloader.urllib.request.urlopen
+    def local_open(request,timeout):
+        assert request.full_url.startswith('https://huggingface.co/test/repo/resolve/')
+        local=downloader.urllib.request.Request('http://127.0.0.1:{server.server_port}/model',headers={{'Range':request.headers['Range']}})
+        return real_open(local,timeout=timeout)
+    remote.urllib.request.urlopen=local_open
+sys.setprofile(enter)
+exec(compile(Path(sys.argv[1]).read_bytes(),'<actual-wire-bootstrap>','exec'))
+assert sys.getprofile() is None
+'''
+    calls = []
+
+    class ColdTransport:
+        def execute_command(self, command, timeout):
+            calls.append(timeout)
+            argv = shlex.split(command)
+            assert argv[:4] == ["python3", "-I", "-S", "-c"]
+            wrapper = cold / "wire.py"
+            wrapper.write_text(argv[4])
+            result = subprocess.run([sys.executable, *argv[1:4], harness, str(wrapper)],
+                                    cwd=cold, env=env, text=True, capture_output=True, timeout=timeout)
+            assert result.returncode == 0, result.stderr
+            return result.returncode, result.stdout, result.stderr
+
+    transport = object.__new__(build.LifecycleTransport)
+    transport.ssh = ColdTransport()
+    try:
+        result = transport.provision(request, timeout=10)
+        assert requests == [f"bytes=0-{len(payload) - 1}"]
+        assert transport.provision(request, timeout=10) == result
+        assert requests == [f"bytes=0-{len(payload) - 1}"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    assert calls == [10, 10]
+    assert list(temporary.iterdir()) == []
+    root = Path(request["root"])
+    assert (root / "models" / request["lock"]["models"][0]["path"]).read_bytes() == payload
+    manifest = base64.b64decode(result["manifest_base64"], validate=True)
+    assert hashlib.sha256(manifest).hexdigest() == result["manifest_sha256"]
+    assert manifest == (root / "release-manifest.json").read_bytes()
+    assert result["gpu_qualified"] is False
+    assert json.loads((root / "READY").read_text()) == {"manifest_sha256": result["manifest_sha256"]}
+
+
+@pytest.mark.parametrize("relative", ["vae/test.safetensors", "renamed.safetensors"])
+def test_legacy_downloader_forwards_to_real_contract_types_and_monotonic_deadline(tmp_path, monkeypatch, relative):
+    from astrid.core.generation.engine_contracts import ModelSpec
+
+    calls = []
+    monkeypatch.setattr(remote, "_download_model", lambda model, **kwargs: calls.append((model, kwargs)))
+    monkeypatch.setattr(remote, "time", SimpleNamespace(time=lambda: 1000.0, monotonic=lambda: 50.0))
+    destination = tmp_path / relative
+    opener = object()
+    assert remote.download_model(model_row(b"model"), destination, "test/repo", 1010.0,
+                                 opener=opener, chunk_bytes=64) is None
+    model, options = calls[0]
+    assert type(model) is ModelSpec
+    assert model.destination == relative
+    assert options == {"models_root": str(tmp_path), "deadline": 60.0, "opener": opener, "range_bytes": 64}

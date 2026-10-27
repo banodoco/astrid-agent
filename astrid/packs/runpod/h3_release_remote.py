@@ -1,4 +1,6 @@
-"""Standalone Linux provisioner, sent over lifecycle SSH; no Astrid install needed.
+"""Linux provisioner, delivered with its shared modules by lifecycle transport.
+
+The cold-target package needs only Python 3.11+ stdlib, without installed Astrid.
 
 All writes live in the selected content-derived release directory. A volume flock
 allows one writer. CPU import/metadata checks deliberately grant no GPU admission.
@@ -10,12 +12,14 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import time
 import tomllib
 import urllib.request
 from pathlib import Path
+
+from astrid.core.generation.engine_contracts import ModelSpec
+from astrid.core.generation.model_downloader import _download_model
 
 
 def digest(path):
@@ -43,84 +47,27 @@ def atomic_json(path, value):
         os.close(fd)
 
 
-def verified(path, row):
-    path = Path(path)
-    return (path.is_file() and not path.is_symlink()
-            and path.stat().st_size == row["bytes"] and digest(path) == row["sha256"])
-
-
 def download_model(row, destination, repository, deadline, *, opener=None, chunk_bytes=64 << 20):
-    """Append only complete, validated ranges; never append a redirect/error body.
-
-    A failed range leaves the previous .part untouched. An interrupted append is
-    safe to resume at its exact byte count. Only a full SHA match is promoted.
-    """
-    opener = urllib.request.urlopen if opener is None else opener
+    """Adapt the old H3 row/signature onto the shared verified downloader."""
     destination = Path(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if verified(destination, row):
-        return
-    if destination.exists():
-        raise RuntimeError("existing model failed integrity: " + str(destination))
-    part = destination.with_name(destination.name + ".part")
-    chunk = destination.with_name(destination.name + ".chunk")
-    if part.is_symlink() or chunk.is_symlink():
-        raise RuntimeError("model temporary path is a symlink")
-    if part.exists() and part.stat().st_size > row["bytes"]:
-        part.replace(part.with_name(part.name + ".quarantine"))
-    if part.exists() and part.stat().st_size < 1024 * 1024 < row["bytes"]:
-        with part.open("rb") as stream:
-            header = stream.read(9)
-        if (len(header) < 9 or header[8:] != b"{"
-                or not 2 <= int.from_bytes(header[:8], "little") <= 100 * 1024 * 1024):
-            part.replace(part.with_name(part.name + ".quarantine"))
-    url = f"https://huggingface.co/{repository}/resolve/{row['revision']}/{row['path']}"
-    failures = 0
-    while not part.exists() or part.stat().st_size < row["bytes"]:
-        if time.time() >= deadline:
-            raise TimeoutError("model deadline exceeded")
-        offset = part.stat().st_size if part.exists() else 0
-        end = min(row["bytes"], offset + chunk_bytes) - 1
-        request = urllib.request.Request(url, headers={"Range": f"bytes={offset}-{end}",
-                                                       "Accept-Encoding": "identity"})
-        try:
-            with opener(request, timeout=min(60, max(1, deadline - time.time()))) as response:
-                expected = f"bytes {offset}-{end}/{row['bytes']}"
-                if response.status != 206 or response.headers.get("Content-Range") != expected:
-                    raise RuntimeError("server did not honor exact model byte range")
-                count = 0
-                with chunk.open("wb") as output:
-                    while True:
-                        if time.time() >= deadline:
-                            raise TimeoutError("model deadline exceeded")
-                        block = response.read(min(1024 * 1024, end - offset + 2 - count))
-                        if not block:
-                            break
-                        count += len(block)
-                        if count > end - offset + 1:
-                            raise RuntimeError("oversized model range")
-                        output.write(block)
-                    output.flush()
-                    os.fsync(output.fileno())
-                if count != end - offset + 1:
-                    raise OSError("incomplete model range")
-            with part.open("ab") as output, chunk.open("rb") as source:
-                shutil.copyfileobj(source, output)
-                output.flush()
-                os.fsync(output.fileno())
-            failures = 0
-        except (OSError, RuntimeError) as exc:
-            failures += 1
-            if failures >= 3 or time.time() >= deadline:
-                raise RuntimeError("model range failed; .part retained for resume") from exc
-            time.sleep(min(2, max(0, deadline - time.time())))
-        finally:
-            chunk.unlink(missing_ok=True)
-    if not verified(part, row):
-        # A legacy redirect body or corrupt prefix must not poison every retry.
-        part.unlink(missing_ok=True)
-        raise RuntimeError("model SHA-256 mismatch; corrupt .part removed")
-    part.replace(destination)
+    row_parts = Path(row["path"]).parts
+    if len(destination.parts) >= len(row_parts) and destination.parts[-len(row_parts):] == row_parts:
+        models_root = destination.parents[len(row_parts) - 1]
+        relative_destination = "/".join(row_parts)
+    else:
+        models_root = destination.parent
+        relative_destination = destination.name
+    model = ModelSpec(name=str(row.get("path", Path(destination).name)),
+                      repository=repository, revision=row["revision"], path=row["path"],
+                      url=None, destination=relative_destination, bytes=row["bytes"],
+                      sha256=row["sha256"])
+    # H3's historical request deadline is wall-clock time. The shared contract
+    # uses an absolute monotonic deadline, so preserve its remaining duration.
+    shared_deadline = time.monotonic() + max(0.0, deadline - time.time())
+    _download_model(model, models_root=str(models_root),
+                    deadline=shared_deadline,
+                    opener=urllib.request.urlopen if opener is None else opener,
+                    range_bytes=min(chunk_bytes, 64 << 20))
 
 
 def manifest_for(request, facts):
