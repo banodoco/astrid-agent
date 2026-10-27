@@ -18,7 +18,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, ContextManager
 from types import ModuleType
 
 from astrid.core._shared.result_manifest import (  # noqa: E402
@@ -501,11 +501,37 @@ def _run_and_settle(
     workflow_inputs: str = "{}",
     comfy_url: str = "",
     comfy_output_dir: str = "",
+    placement: str | None = None,
+    execution_request: Any = None,
+    registry: Any = None,
+    endpoint_checkout: Callable[..., ContextManager[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run *workflow_path*, copy every engine result, and write its receipt."""
     if not isinstance(task_identity, str) or not task_identity.strip():
         raise AstridValueError("host-issued task identity is required")
-    from astrid.packs.vibecomfy import production_engine
+    from astrid.core.generation.backends.registry import (
+        load_default_generation_backend_registry, resolve_workflow_descriptor,
+    )
+    from astrid.core.generation.backends.workflow import WorkflowBackendAdapter
+
+    # The host injects admitted scheduling intent and its original endpoint
+    # attachment. Neither value is part of the workflow's creative inputs.
+    registry = registry if registry is not None else load_default_generation_backend_registry()
+    selected = resolve_workflow_descriptor(
+        registry, placement=placement, execution_request=execution_request,
+    )
+    if selected.placement.requires_endpoint:
+        if endpoint_checkout is None:
+            raise AstridValueError("RunPod workflow endpoint_checkout integration is unavailable (pending38)")
+        if comfy_url or comfy_output_dir:
+            raise AstridValueError("RunPod workflow cannot use local_server overrides")
+    elif endpoint_checkout is not None:
+        raise AstridValueError("endpoint_checkout requires the RunPod workflow route")
+    adapter = selected.create(init_overrides=(
+        {"endpoint_checkout": endpoint_checkout} if selected.placement.requires_endpoint else None
+    ))
+    if not isinstance(adapter, WorkflowBackendAdapter):
+        raise AstridValueError("selected generation backend does not support workflows")
 
     if comfy_url:
         from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -604,12 +630,14 @@ def _run_and_settle(
         production_kwargs["comfy_output_dir"] = comfy_output_dir
     if attempt_identity != "-":
         production_kwargs["attempt_identity"] = attempt_identity
+    if selected.placement.requires_endpoint and os.environ.get("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"):
+        raise AstridValueError("RunPod workflow endpoint route cannot use the T9 substitute")
     synthetic = _t9_child_dispatch(
         readiness_profile, profile_path=readiness_profile_path, profile_hash=readiness_profile_hash,
         task_identity=task_identity, attempt_identity=attempt_identity, execution_identity=execution_identity,
     )
     if synthetic is None:
-        production_result = production_engine.run_workflow_result_path(
+        production_result = adapter.workflow(
             workflow_path, output_root, **production_kwargs,
         )
     else:

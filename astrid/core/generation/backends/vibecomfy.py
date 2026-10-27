@@ -23,7 +23,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -479,12 +479,43 @@ def _parse_resolution(res: str) -> tuple[int, int] | None:
 # ---------------------------------------------------------------------------
 
 
+if TYPE_CHECKING:
+    from astrid.packs.vibecomfy.production_engine import ProductionRunResult
+
+
 class VibeComfyBackend(BackendAdapter):
     """Local generation backend via pinned VibeComfy ready templates.
 
     The base adapter has no transport endpoint.  ``CheckoutServerAdapter`` is
     the explicit remote-only subclass and owns all remote HTTP behavior.
     """
+
+    def workflow(
+        self, workflow_path: Path, out_dir: Path, *, task_identity: str,
+        attempt_identity: str | None = None,
+        expected_execution_identity: str | None = None,
+        workflow_input_bindings: Mapping[str, Any] | None = None,
+        profile_id: str = "pip_embedded",
+        hc03_profile: Mapping[str, Any] | None = None,
+        comfy_url: str = "", comfy_output_dir: str = "",
+    ) -> ProductionRunResult:
+        """Run authored workflows through the existing production path."""
+        from astrid.packs.vibecomfy.production_engine import run_workflow_result_path
+
+        kwargs = dict(
+            task_identity=task_identity, profile_id=profile_id,
+            hc03_profile=hc03_profile,
+            expected_execution_identity=expected_execution_identity,
+        )
+        if attempt_identity is not None:
+            kwargs["attempt_identity"] = attempt_identity
+        if workflow_input_bindings is not None:
+            kwargs["workflow_input_bindings"] = workflow_input_bindings
+        if comfy_url:
+            kwargs["comfy_url"] = comfy_url
+        if comfy_output_dir:
+            kwargs["comfy_output_dir"] = comfy_output_dir
+        return run_workflow_result_path(workflow_path, out_dir, **kwargs)
 
     def _run_workflow(self, workflow: Any) -> Any:
         """Run a workflow through the local embedded VibeComfy runtime."""

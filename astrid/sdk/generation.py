@@ -10,7 +10,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Protocol, TYPE_CHECKING
 
 from ._module import _sdk_module
 from .exceptions import (
@@ -18,6 +18,18 @@ from .exceptions import (
     CapabilityValidationError,
 )
 from .results import _reconstruct_generation_result
+
+if TYPE_CHECKING:
+    from .execution_request import ExecutionRequest
+    from .results import InvocationResult
+    from astrid.core.generation.engine_contracts import Placement
+
+
+WorkflowFile = str | Path | Mapping[str, Any]
+
+
+class WorkflowInvocationClient(Protocol):
+    def invoke_result(self, capability_id: str, *, kind: str, **kwargs: Any) -> InvocationResult: ...
 
 
 def _load_model_registry(
@@ -217,8 +229,89 @@ class GenerationFacade:
             hint = f" Available plugin verbs: {', '.join(known)}." if known else ""
             raise AttributeError(
                 f"'GenerationFacade' has no attribute {name!r}. "
-                f"Built-in methods: image, audio, video.{hint}"
+                f"Built-in methods: image, audio, video, workflow.{hint}"
             ) from None
+
+    def workflow(
+        self, *,
+        workflow: WorkflowFile | None = None,
+        python: WorkflowFile | None = None,
+        companion: WorkflowFile | None = None,
+        source: WorkflowFile | None = None,
+        source_video: WorkflowFile | None = None,
+        source_video_node: str | None = None,
+        source_video_widget: str | None = None,
+        managed_assets: WorkflowFile | None = None,
+        workflow_inputs: str | None = None,
+        comfy_url: str | None = None,
+        comfy_output_dir: str | None = None,
+        generation_intent: Mapping[str, Any] | None = None,
+        placement: Placement | None = None,
+        out: Path | str | None = None,
+        project: str | None = None,
+        client: WorkflowInvocationClient | None = None,
+        execution_request: ExecutionRequest | Mapping[str, Any] | None = None,
+        idempotency_context: Mapping[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        recovery_path: Path | str | None = None,
+        resume: bool = False,
+        wait: bool = True,
+        read_managed_outputs: bool = True,
+        timeout_seconds: float = 3600.0,
+        poll_seconds: float = 1.0,
+        project_root: str | Path | None = None,
+        extra_pack_roots: tuple[str, ...] = (),
+        banodoco_config: Any | None = None,
+        active_theme: str | Path | None = None,
+        include_missing_roots: bool = False,
+        brief: Path | str | None = None,
+        dry_run: bool = False,
+        check_binaries: bool = False,
+        python_exec: str | None = None,
+        verbose: bool = False,
+        argv: tuple[str, ...] = (),
+    ) -> InvocationResult:
+        """Invoke the existing workflow action through the supplied client.
+
+        Placement validates scheduling intent; it is never a creative input.
+        Omitted domain values stay omitted so the action owns its defaults.
+        """
+        from astrid.core.generation.backends.registry import (
+            GenerationBackendRegistry, resolve_workflow_descriptor,
+        )
+
+        resolve_workflow_descriptor(
+            GenerationBackendRegistry(), placement=placement,
+            execution_request=execution_request,
+        )
+        inputs = {
+            name: value for name, value in {
+                "workflow": workflow, "python": python, "companion": companion,
+                "source": source, "source_video": source_video,
+                "source_video_node": source_video_node,
+                "source_video_widget": source_video_widget,
+                "managed_assets": managed_assets, "workflow_inputs": workflow_inputs,
+                "comfy_url": comfy_url, "comfy_output_dir": comfy_output_dir,
+                "generation_intent": generation_intent,
+            }.items() if value is not None
+        }
+        invoke_out, invoke_project = _resolve_invoke_destination(
+            client=client, out=out, project=project, project_root=project_root,
+        )
+        sdk_module = importlib.import_module(self.sdk_module_name)
+        invoke_result = client.invoke_result if client is not None else sdk_module.invoke_result
+        return invoke_result(
+            "vibecomfy.run", kind="executor", inputs=inputs, client=client,
+            out=invoke_out, project=invoke_project, execution_request=execution_request,
+            idempotency_context=idempotency_context, idempotency_key=idempotency_key,
+            recovery_path=recovery_path, resume=resume, wait=wait,
+            read_managed_outputs=read_managed_outputs, timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds, project_root=project_root,
+            extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
+            active_theme=active_theme, include_missing_roots=include_missing_roots,
+            brief=brief, dry_run=dry_run, check_binaries=check_binaries,
+            python_exec=python_exec, verbose=verbose, argv=argv,
+        )
 
     def image(
         self,

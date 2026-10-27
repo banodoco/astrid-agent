@@ -147,6 +147,29 @@ class GenerationBackendRegistry:
         )
 
 
+def resolve_workflow_descriptor(
+    registry: GenerationBackendRegistry, *,
+    placement: str | None = None,
+    execution_request: Any = None,
+) -> GenerationBackendDescriptor:
+    """Select the one workflow route using existing immutable target intent.
+
+    This is read-only: no backend import, claim, endpoint or provider lookup.
+    Profile/machine selectors cannot establish the exact RunPod proof target.
+    """
+    from astrid.sdk.execution_request import normalize_execution_request
+    from astrid.core.generation.engine_contracts import UnsupportedPlacement
+
+    request = normalize_execution_request(execution_request)
+    target_kind = request["target"]["kind"] if request else "default"
+    if target_kind not in {"default", "runpod"}:
+        raise UnsupportedPlacement("workflow requires a default local or exact RunPod target")
+    backend_id = "vibecomfy-h3-workflow" if target_kind == "runpod" else LOCAL_BACKEND_ID
+    descriptor = registry.get_descriptor(backend_id)
+    descriptor.placement.resolve(placement)
+    return descriptor
+
+
 def descriptors_from_pack(pack: PackDefinition) -> tuple[GenerationBackendDescriptor, ...]:
     """Return inert backend descriptors declared by one pack manifest."""
     generation = pack.extensions.get("generation")
@@ -206,6 +229,16 @@ def load_default_generation_backend_registry(
 
 def _builtin_generation_backend_descriptors() -> tuple[GenerationBackendDescriptor, ...]:
     return (
+        GenerationBackendDescriptor(
+            backend_id="vibecomfy-h3-workflow",
+            module="astrid.core.generation.backends.vibecomfy_workflow",
+            class_name="VibeComfyWorkflowBackend",
+            label="VibeComfy H3 workflow",
+            placement=PlacementDescriptor(
+                "astrid.generation-placement.v1", ("runpod",), "runpod",
+                "vibecomfy-h3", True,
+            ),
+        ),
         GenerationBackendDescriptor(
             backend_id=CLOUD_BACKEND_ID,
             module="astrid.core.generation.backends.fal",

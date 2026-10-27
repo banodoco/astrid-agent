@@ -45,6 +45,7 @@ def test_registry_lists_builtins_without_importing_third_party_modules(
         "codex",
         "local",
         "third-party",
+        "vibecomfy-h3-workflow",
         "wavespeed",
     ]
     assert module_name not in sys.modules
@@ -353,8 +354,13 @@ def test_builtin_and_legacy_positional_construction_have_local_only_placement():
     assert legacy.placement == expected
     assert legacy.init_kwargs == {"setting": 1}
     registry = GenerationBackendRegistry()
-    assert {d.backend_id for d in registry.descriptors()} == {"local", "cloud", "codex", "wavespeed"}
-    assert all(d.placement == expected for d in registry.descriptors())
+    assert {d.backend_id for d in registry.descriptors()} == {"local", "cloud", "codex", "wavespeed", "vibecomfy-h3-workflow"}
+    assert all(d.placement == expected for d in registry.descriptors()
+               if d.backend_id != "vibecomfy-h3-workflow")
+    workflow = registry.get_descriptor("vibecomfy-h3-workflow")
+    assert workflow.placement == PlacementDescriptor(
+        "astrid.generation-placement.v1", ("runpod",), "runpod", "vibecomfy-h3", True
+    )
 
 
 @pytest.mark.parametrize("placement", [None, {}, False, "runpod"])
@@ -431,8 +437,11 @@ def test_fresh_registry_discovery_does_not_load_providers_recipes_or_runtime(tmp
         sys.meta_path.insert(0, RefuseSideEffects())
         from astrid.core.generation.backends.registry import GenerationBackendRegistry
         registry = GenerationBackendRegistry()
-        assert len(registry.descriptors()) == 4
+        assert len(registry.descriptors()) == 5
         for descriptor in registry.descriptors():
+            if descriptor.backend_id == "vibecomfy-h3-workflow":
+                assert descriptor.placement.resolve(None) == "runpod"
+                continue
             assert descriptor.placement.resolve(None) == "local"
             assert descriptor.placement.engine is None
             assert descriptor.placement.requires_endpoint is False
