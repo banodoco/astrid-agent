@@ -20,6 +20,9 @@ from runtime_protocol import platform
 PROFILE = "astrid"
 RECONFIGURE_ACTION = "run the Astrid install line again"
 INSTALL_RUNTIME_ACTION = "run the Astrid install line again"
+IDENTITY_REFUSAL_MESSAGE = (
+    "An older Astrid is still running. Run `astrid-runtime restart`; it waits for running tasks."
+)
 
 
 class AutoBootstrapError(RuntimeError):
@@ -255,6 +258,13 @@ def _lifecycle_result(
         else:
             raw_details = {}
             reason = str(raw_error or "launcher rejected the request")
+        if reason == IDENTITY_REFUSAL_MESSAGE:
+            raise AutoBootstrapError(
+                IDENTITY_REFUSAL_MESSAGE,
+                next_action="astrid-runtime restart",
+                code="runtime_identity_mismatch",
+                details=raw_details,
+            )
         raise AutoBootstrapError(
             f"neutral runtime {action} was not ready: {reason}; {RECONFIGURE_ACTION}",
             code="runtime_" + action + "_rejected",

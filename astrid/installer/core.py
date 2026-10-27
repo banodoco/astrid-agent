@@ -83,20 +83,64 @@ class Version:
     python: Path
     profile: Path
     env: dict[str, str]
+    release: int = 0
+    managed_by: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.release) is not int or self.release < 0:
+            raise ValueError("The install manifest release must be a nonnegative integer.")
+        if self.managed_by not in {None, "pinokio"}:
+            raise ValueError("Invalid installation manager.")
+        env = dict(self.env)
+        object.__setattr__(self, "env", env)
+        env["ASTRID_INSTALL_RELEASE"] = str(self.release)
+        env["ASTRID_INSTALL_MANAGED_BY"] = self.managed_by or ""
 
     def document(self) -> dict:
         return {"root": str(self.root), "python": str(self.python),
-                "profile": str(self.profile), "env": self.env}
+                "profile": str(self.profile), "env": dict(self.env),
+                "identity": {"release": self.release, "managed_by": self.managed_by}}
 
     @classmethod
-    def load(cls, value: dict) -> "Version":
+    def load(cls, value: dict, *, managed_by: str | None = None) -> "Version":
         python = Path(value["python"])
         absolute(python.parent)  # POSIX venv interpreters themselves are links.
-        return cls(absolute(value["root"]), python,
-                   absolute(value["profile"]), dict(value["env"]))
+        root = absolute(value["root"])
+        identity = value.get("identity")
+        marker = read_json(root.parent.parent / "install.json")
+        context_managed_by = marker.get("managed_by")
+        if context_managed_by not in {None, "pinokio"}:
+            raise ValueError("Invalid installation manager in install record.")
+        if "identity" not in value:
+            # Older version records predate identity. Recover it from the
+            # immutable staged manifest and the existing install context.
+            manifest = read_json(root / "manifest.json")
+            release = install_release(manifest)
+            managed_by = context_managed_by if "managed_by" in marker else managed_by
+        else:
+            if not isinstance(identity, dict):
+                raise ValueError("Invalid installation identity in version record.")
+            release = identity.get("release")
+            managed_by = identity.get("managed_by")
+            if "managed_by" in marker:
+                managed_by = context_managed_by
+        if type(release) is not int or release < 0 or managed_by not in {None, "pinokio"}:
+            raise ValueError("Invalid installation identity in version record.")
+        env = dict(value["env"])
+        env["ASTRID_INSTALL_RELEASE"] = str(release)
+        env["ASTRID_INSTALL_MANAGED_BY"] = managed_by or ""
+        return cls(root, python, absolute(value["profile"]), env, release, managed_by)
 
 
-def current(root: Path) -> Version | None:
+def install_release(manifest: dict) -> int:
+    """Return the validated decimal release from a staged version manifest."""
+    release = manifest.get("release", 0)
+    if type(release) is not int or release < 0:
+        raise ValueError("The install manifest release must be a nonnegative integer.")
+    return release
+
+
+def current(root: Path, *, managed_by: str | None = None) -> Version | None:
     pointer = root / "current"
     if not pointer.exists():
         return None
@@ -106,7 +150,7 @@ def current(root: Path) -> Version | None:
     # The service's retained selection can still finish uninstalling this root.
     if not record.exists() and not linked(record):
         return None
-    version = Version.load(read_json(record))
+    version = Version.load(read_json(record), managed_by=managed_by)
     if version.root != root / "versions" / name:
         raise ValueError("The current version points outside the managed directory.")
     return version
@@ -213,6 +257,11 @@ class Installer:
 
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
+            # Repair may be a no-op when the service is already healthy. Still
+            # migrate the existing records in place without touching services.
+            persist = getattr(self.backend, "persist_identity", None)
+            if persist is not None:
+                persist(old)
             realm = self.backend.workspace(old, self.data)
             if self.managed_by == "pinokio":
                 self.backend.register(old, self.data)

@@ -191,13 +191,17 @@ def test_local_source_cleans_failed_extraction(repository, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("with_vibecomfy", [False, True])
-def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch, with_vibecomfy):
+@pytest.mark.parametrize("managed_by", [None, "pinokio"])
+@pytest.mark.parametrize("release", [None, 73])
+def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch, with_vibecomfy, managed_by, release):
     value = manifest()
+    if release is not None:
+        value["release"] = release
     value["agent"]["repo"] = str(tmp_path / "agent")
     value["runtime"]["repo"] = (tmp_path / "runtime").as_uri()
     if with_vibecomfy:
         value["vibecomfy"] = {"sha": "c" * 40, "repo": str(tmp_path / "vibecomfy")}
-    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv", managed_by=managed_by)
     calls = []
 
     def materialize(name, sha, destination, *, repo=None):
@@ -222,6 +226,12 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     assert calls == [(name, effective[name]["sha"], version.root / directory, effective[name].get("repo"))
                      for name, directory in (("agent", "a"), ("runtime", "r"), ("vibecomfy", "v"))]
     assert json.loads((version.root / "manifest.json").read_text()) == effective
+    expected_release = release or 0
+    assert json.loads((version.root / "version.json").read_text())["identity"] == {
+        "release": expected_release, "managed_by": managed_by,
+    }
+    assert version.env["ASTRID_INSTALL_RELEASE"] == str(expected_release)
+    assert version.env["ASTRID_INSTALL_MANAGED_BY"] == (managed_by or "")
     assert ("vibecomfy" in value) is with_vibecomfy
     assert "ASTRID_VIBECOMFY_CHECKOUT" not in version.env
 

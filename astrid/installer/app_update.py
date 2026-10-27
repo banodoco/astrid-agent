@@ -53,7 +53,7 @@ def selection(root: Path, backend) -> tuple[Version, Path, dict]:
         raise ValueError("Program files and the workspace must be separate.")
     # Foreground PID changes are expected; workspace and manager changes are not.
     identity = {key: recorded.get(key) for key in (
-        "owner", "managed_by", "program_root", "data_root", "realm_id", "realm_root")}
+        "owner", "managed_by", "program_root", "data_root", "realm_id", "realm_root", "identity")}
     return old, data, identity
 
 
@@ -192,7 +192,11 @@ def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print
             with locked(lock, timeout=10):
                 if selection(root, backend) != (old, data, identity):
                     raise ValueError("The selected installation changed before activation.")
+                # Upgrade a legacy selected record under the installer lock,
+                # then publish the candidate's identity with its pointer.
+                backend.persist_identity(old)
                 switch(root, candidate)
+                backend.persist_identity(candidate)
             # The foreground launcher needs the lifetime lock itself.
             lifecycle.start(candidate, data, realm["realm_id"])
         except (Exception, KeyboardInterrupt) as failure:
@@ -207,6 +211,7 @@ def update_app(root: Path, backend, manifest: dict, *, lifecycle=None, say=print
                             if current(root) != candidate:
                                 raise ValueError("The app selection changed during rollback.")
                             switch(root, old)
+                            backend.persist_identity(old)
                     lifecycle.start(old, data, realm["realm_id"])
                     say("The new app could not start; the previous app is running again.")
                 except (Exception, KeyboardInterrupt) as recovery:

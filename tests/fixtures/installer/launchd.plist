@@ -4,6 +4,10 @@
 <dict>
 	<key>EnvironmentVariables</key>
 	<dict>
+		<key>ASTRID_INSTALL_MANAGED_BY</key>
+		<string></string>
+		<key>ASTRID_INSTALL_RELEASE</key>
+		<string>0</string>
 		<key>PATH</key>
 		<string>/astrid/tools:/usr/bin:/bin</string>
 		<key>PYTHONUTF8</key>

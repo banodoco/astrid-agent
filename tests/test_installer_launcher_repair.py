@@ -45,7 +45,7 @@ def test_absolute_launcher_works_with_clean_home_and_unchanged_path(tmp_path):
         f"    sys.path.insert(0, {source_root!r})\n"
         "    script = sys.argv[4]; sys.argv = [script, *sys.argv[5:]]; runpy.run_path(script, run_name='__main__')\n"
         "else:\n"
-        "    print(json.dumps({'args': sys.argv[1:], 'path': os.environ['PATH'], 'home': os.environ['HOME'], 'managed': os.environ['ASTRID_TEST_MANAGED'], 'root': os.environ['ASTRID_INSTALL_PROGRAM_ROOT']}))\n"
+        "    print(json.dumps({'args': sys.argv[1:], 'path': os.environ['PATH'], 'home': os.environ['HOME'], 'managed': os.environ['ASTRID_TEST_MANAGED'], 'root': os.environ['ASTRID_INSTALL_PROGRAM_ROOT'], 'release': os.environ['ASTRID_INSTALL_RELEASE'], 'managed_by': os.environ['ASTRID_INSTALL_MANAGED_BY']}))\n"
     )
     python.write_text(fake_python, encoding="utf-8")
     python.chmod(0o755)
@@ -62,6 +62,8 @@ def test_absolute_launcher_works_with_clean_home_and_unchanged_path(tmp_path):
         "home": str(home),
         "managed": "yes",
         "root": str(root),
+        "release": "0",
+        "managed_by": "",
     }
 
     credentials = subprocess.run(
@@ -114,7 +116,8 @@ def test_generated_runner_windows_handoff_waits_and_keeps_argv_and_environment(t
     assert exc.value.code == 41
     assert captured["argv"] == [str(python), "-X", "utf8", "-I", "-m", "astrid.omp_agent", *arguments]
     assert captured["kwargs"] == {
-        "env": {**os.environ, "MANAGED": "selected version", "ASTRID_INSTALL_PROGRAM_ROOT": str(root)},
+        "env": {**os.environ, "MANAGED": "selected version", "ASTRID_INSTALL_PROGRAM_ROOT": str(root),
+                "ASTRID_INSTALL_RELEASE": "0", "ASTRID_INSTALL_MANAGED_BY": ""},
         "check": False,
     }
     assert "MANAGED" not in os.environ
@@ -151,7 +154,8 @@ def test_generated_runner_supports_selected_older_package_under_isolation(tmp_pa
     (package / "omp_agent.py").write_text(
         "import json, os, sys\n"
         "print(json.dumps({'args': sys.argv[1:], 'isolated': sys.flags.isolated, 'utf8_mode': sys.flags.utf8_mode, "
-        "'managed': os.environ['MANAGED'], 'root': os.environ['ASTRID_INSTALL_PROGRAM_ROOT']}))\n"
+        "'managed': os.environ['MANAGED'], 'root': os.environ['ASTRID_INSTALL_PROGRAM_ROOT'], "
+        "'release': os.environ['ASTRID_INSTALL_RELEASE'], 'managed_by': os.environ['ASTRID_INSTALL_MANAGED_BY']}))\n"
         "sys.exit(37)\n",
         encoding="utf-8",
     )
@@ -164,7 +168,8 @@ def test_generated_runner_supports_selected_older_package_under_isolation(tmp_pa
         "import json, os, sys\n"
         "def main(args):\n"
         "    print(json.dumps({'args': args, 'isolated': sys.flags.isolated, 'utf8_mode': sys.flags.utf8_mode, "
-        "'managed': os.environ['MANAGED'], 'root': os.environ['ASTRID_INSTALL_PROGRAM_ROOT']}))\n"
+        "'managed': os.environ['MANAGED'], 'root': os.environ['ASTRID_INSTALL_PROGRAM_ROOT'], "
+        "'release': os.environ['ASTRID_INSTALL_RELEASE'], 'managed_by': os.environ['ASTRID_INSTALL_MANAGED_BY']}))\n"
         "    return 37\n",
         encoding="utf-8",
     )
@@ -172,6 +177,8 @@ def test_generated_runner_supports_selected_older_package_under_isolation(tmp_pa
         "root": str(version_root), "python": str(python), "env": {"MANAGED": "selected version"},
     })
     (root / "current").write_text("v1\n", encoding="utf-8")
+    write_json(version_root / "manifest.json", {"release": 31})
+    write_json(root / "install.json", {"owner": "haus.astrid.runtime", "managed_by": "pinokio"})
     _, runner = install(root)
     ambient = tmp_path / "ambient"
     (ambient / "astrid").mkdir(parents=True)
@@ -193,6 +200,7 @@ def test_generated_runner_supports_selected_older_package_under_isolation(tmp_pa
     assert result.returncode == 37, result.stderr
     assert json.loads(result.stdout) == {
         "args": arguments, "isolated": 1, "utf8_mode": 1, "managed": "selected version", "root": str(root),
+        "release": "31", "managed_by": "pinokio",
     }
     assert not (package / "_process.py").exists()
     assert not (package / "core" / "util" / "process.py").exists()

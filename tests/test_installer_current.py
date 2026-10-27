@@ -1,6 +1,7 @@
 """Public command recovery after a partial program removal."""
 
 import os
+import json
 import subprocess
 import sys
 from unittest.mock import Mock
@@ -100,3 +101,45 @@ def test_current_record_cannot_point_outside_managed_versions(tmp_path):
 
     with pytest.raises(ValueError, match="points outside the managed directory"):
         current(root)
+
+
+@pytest.mark.parametrize("managed_by", [None, "pinokio"])
+def test_version_identity_roundtrips_and_legacy_version_uses_manifest(tmp_path, managed_by):
+    from astrid.installer.core import Version
+
+    root = tmp_path / "program/versions/v1"
+    root.mkdir(parents=True)
+    version = Version(root, tmp_path / "python", tmp_path / "profile", {}, 37, managed_by)
+    write_json(root / "version.json", version.document())
+    loaded = Version.load(json.loads((root / "version.json").read_text()))
+    assert loaded.release == 37
+    assert loaded.managed_by == managed_by
+    assert loaded.env["ASTRID_INSTALL_RELEASE"] == "37"
+    assert loaded.env["ASTRID_INSTALL_MANAGED_BY"] == (managed_by or "")
+
+    write_json(root / "manifest.json", {"release": 8})
+    legacy = {key: value for key, value in version.document().items() if key != "identity"}
+    write_json(root / "version.json", legacy)
+    write_json(tmp_path / "program/install.json", {"owner": LABEL, "managed_by": managed_by})
+    recovered = Version.load(legacy)
+    assert recovered.release == 8
+    assert recovered.managed_by == managed_by
+
+
+def test_release_must_be_nonnegative_integer():
+    from astrid.installer.core import install_release
+
+    assert install_release({}) == 0
+    assert install_release({"release": 12}) == 12
+    for value in (-1, True, "12", 1.5):
+        with pytest.raises(ValueError, match="nonnegative integer"):
+            install_release({"release": value})
+
+
+def test_explicit_null_version_identity_is_malformed(tmp_path):
+    root = tmp_path / "versions/v1"
+    root.mkdir(parents=True)
+    value = {"root": str(root), "python": str(tmp_path / "python"),
+             "profile": str(tmp_path / "profile"), "env": {}, "identity": None}
+    with pytest.raises(ValueError, match="Invalid installation identity"):
+        Version.load(value)
