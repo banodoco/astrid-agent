@@ -41,6 +41,7 @@ astrid = "astrid.omp_agent:main"
 astrid-credential = "astrid.core.util.credential_store:main"
 astrid-with-credential = "astrid.core.util.credential_exec:main"
 astrid-upgrade = "astrid.sdk.upgrade:main"
+build-h3-release = "astrid.packs.runpod.h3_release:main"
 
 [project.optional-dependencies]
 dev = [
