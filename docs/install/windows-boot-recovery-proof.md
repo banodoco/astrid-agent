@@ -45,6 +45,8 @@ at `0x260`; its architecture/version fields precede BootId at `0x2c4`. Only know
 Windows 10/11 x64 build families are accepted. Other architectures, unknown
 builds, missing registry values, type errors, access denial and counter
 disagreement fail closed. Adding a build requires native qualification.
+The build allowlist constrains ABI parsing; inclusion alone does not assert that
+the full native restart journey has been qualified for that release.
 
 Comparison requires the same MachineGuid and a strictly larger positive DWORD
 sequence. Equal sequences mean the same boot; decreases, resets, wraparound and
@@ -70,7 +72,10 @@ The `windows_native` test in `tests/core/execution/test_boot_identity.py` querie
 the actual kernel/registry source and requires equality in a second Python
 process. On Windows, unsupported or unavailable proof is a test failure, not a
 skip. Passing that test establishes API availability and same-boot consistency;
-it does not establish the full restart journey.
+it does not establish the full restart journey. A second `windows_native` test
+in `tests/sdk/test_host_boot_recovery.py` uses the real kernel/registry query and
+private markers for an owned, exited child; it requires same-boot retirement to
+refuse while preserving the exact files. It does not simulate a reboot.
 
 Before advertising a qualified recovery journey for a Windows release, run on
 a disposable native VM: prepare against exact legacy markers, verify same-boot

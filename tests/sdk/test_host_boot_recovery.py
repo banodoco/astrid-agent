@@ -182,3 +182,39 @@ def test_preflight_routes_legacy_record_to_prepare_before_staging(recovery):
     with pytest.raises(host.PackHostBootstrapError) as failure:
         host.preflight_legacy_host_recovery(support)
     assert failure.value.code == "legacy_windows_recovery_required"
+
+
+@pytest.mark.windows_native
+def test_native_same_boot_proof_cannot_retire_exact_legacy_markers(tmp_path):
+    """Exercise actual kernel/registry proof and private files; no simulated reboot."""
+    import subprocess
+    import sys
+
+    support = tmp_path / "native-support"
+    host.platform.private_directory(support)
+    process = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+                               stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        identity = host.platform.process_identity(process.pid)
+        assert identity is not None
+        process.communicate(timeout=10)
+        assert process.returncode == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+    state = {"pid": process.pid, "process_birth_id": identity["birth_id"], "support_root": str(support)}
+    host._write_object(support / "generic-host.json", state)
+    host._write_object(support / "generic-host.ready.json", {**state, "status": "ready"})
+    before = {name: (support / name).read_bytes() for name in host._RECOVERY_MARKERS}
+    proof = host.capture_legacy_host_recovery(support)
+    assert proof is not None
+    current = boot.capture_boot_identity()
+    assert current == proof["boot_identity"]
+    quarantine = tmp_path / "native-quarantine"
+    with pytest.raises(host.PackHostBootstrapError, match="different current OS boot is unproved"):
+        host.retire_preboot_host(support, proof, prepared_boot=proof["boot_identity"],
+                                current_boot=current, quarantine=quarantine)
+    assert {name: (support / name).read_bytes() for name in host._RECOVERY_MARKERS} == before
+    assert not quarantine.exists()
+    assert not (support / "pack-host-job-cleanup.json").exists()
