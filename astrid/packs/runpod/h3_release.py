@@ -67,13 +67,15 @@ def normalize_volume(value, volume_id):
 
 def check_attachment(pod, volume, image, pod_type):
     network = pod.get("networkVolume") or {}
-    attached = pod.get("networkVolumeId", network.get("id"))
+    attached = pod.get("networkVolumeId") or network.get("id")
     machine = pod.get("machine") or {}
-    dc = pod.get("dataCenterId", machine.get("dataCenterId", network.get("dataCenterId")))
+    dc = pod.get("dataCenterId") or machine.get("dataCenterId") or network.get("dataCenterId")
     if (attached != volume["id"] or dc != volume["datacenter"]
             or pod.get("volumeMountPath") != volume["mount"]
             or pod.get("imageName") != image):
-        raise BuildError("provider did not verify the exact volume, data center, mount and image")
+        observed = {"volume_id": attached, "datacenter": dc,
+                    "mount": pod.get("volumeMountPath"), "image": pod.get("imageName")}
+        raise BuildError("provider attachment mismatch: " + json.dumps(observed, sort_keys=True))
     expected = "CPU" if pod_type == "cpu" else "GPU"
     if pod.get("computeType") != expected:
         raise BuildError("provider returned a different compute type")
@@ -213,6 +215,9 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                     observed = provider.get(handle["pod_id"])
                     if observed is None:
                         raise BuildError("build pod disappeared")
+                    handle["provider_observation"] = {key: observed.get(key) for key in (
+                        "id", "networkVolumeId", "networkVolume", "dataCenterId", "volumeMountPath", "imageName", "computeType", "gpuCount")}
+                    remote.atomic_json(handle_path, handle)
                     check_attachment(observed, volume, inputs["recipe"]["image"], pod_type)
                     price = observed.get("costPerHr")
                     if (isinstance(price, bool) or not isinstance(price, (float, int))
