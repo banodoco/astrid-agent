@@ -172,16 +172,45 @@ replace_process([python, "-X", "utf8", "-I", "-m", "astrid.omp_agent", *sys.argv
 '''
 
 
+def publish_runtime_runner(root: Path) -> Path:
+    """Durably publish current admission before an update can stop or migrate."""
+    from runtime_protocol import platform
+
+    from . import foreground
+
+    root = Path(root).absolute()
+    runtime_runner = root / "run_runtime.py"
+    # A retained version supplies the interpreter, core and service.command,
+    # but its foreground admission may predate this transaction kind. Carry
+    # this installer's authoritative foreground implementation across rollback
+    # just as run_astrid.py carries the process helper below. Relative imports
+    # still resolve against the selected package; there is one admission/argv
+    # owner, and the journal's exact operation/version binding stays intact.
+    foreground_source = Path(foreground.__file__).read_text(encoding="utf-8")
+    source = (
+        'import sys\nfrom pathlib import Path\n'
+        '_foreground = {"__name__": "astrid.installer.foreground", '
+        '"__package__": "astrid.installer"}\n'
+        f'exec(compile({foreground_source!r}, "<Astrid foreground launcher>", "exec"), _foreground)\n'
+        '_foreground["launch"](Path(__file__).resolve().parent, sys.argv[1:])\n'
+    )
+    fd, temporary = platform.private_temporary(root, ".run_runtime.py.")
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(source)
+            stream.flush()
+            os.fsync(stream.fileno())
+        platform.durable_replace(temporary, runtime_runner)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return runtime_runner
+
+
 def install(root: Path) -> tuple[Path, ...]:
     """Write stable launchers that follow root/current without changing PATH."""
     root = Path(root).absolute()
-    runtime_runner = root / "run_runtime.py"
-    runtime_runner.write_text(
-        'import sys\nfrom pathlib import Path\n'
-        'from astrid.installer.foreground import launch\n'
-        'launch(Path(__file__).resolve().parent, sys.argv[1:])\n',
-        encoding="utf-8", newline="\n",
-    )
+    publish_runtime_runner(root)
     # Both renderings are useful for packaging/review; only the native one
     # is invoked. They follow current just like the agent launcher below.
     (root / "run.cmd").write_text(
