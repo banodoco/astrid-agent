@@ -673,12 +673,37 @@ def _helper_sources(root, recipe):
     for source in recipe.sources:
         directory = root / source.relative_path
         directory.mkdir(parents=True, exist_ok=True)
-        (directory / "requirements.txt").write_text("demo==1.0\n")
+        if source.name in {"comfyui", "videohelpersuite"}:
+            (directory / "requirements.txt").write_text("demo==1.0\n")
         if source.name == "vibecomfy":
             (directory / "pyproject.toml").write_text('[build-system]\nrequires = ["setuptools==80.9.0", "wheel==0.46.3"]\n')
 
 
 HASH_LOCK = "demo==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"
+
+
+def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(tmp_path):
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    _helper_sources(tmp_path, recipe)
+    h3 = next(source for source in recipe.sources if source.name == "h3-motion-context")
+    h3_requirements = tmp_path / h3.relative_path / "requirements.txt"
+    # H3 361624fb has no runtime requirements file. Its torch, numpy,
+    # safetensors, torchaudio and imageio-ffmpeg dependencies are supplied by
+    # ComfyUI/VHS and the final wheels; custom_nodes.lock declares safetensors.
+    assert not h3_requirements.exists()
+    payload = _helper_payload(tmp_path, environment="comfy")
+    assert target.dispatch("lock-inputs", payload)["facts"] == {"lock_exists": False}
+    assert [(path.source, path.path) for path in recipe.environments[0].requirements.input_paths] == [
+        ("comfyui", "requirements.txt"),
+        ("vibecomfy", "pyproject.toml"),
+        ("videohelpersuite", "requirements.txt"),
+    ]
+    assert not h3_requirements.exists()
+    # Removing the erroneous input must not relax validation of real inputs.
+    comfy = next(source for source in recipe.sources if source.name == "comfyui")
+    (tmp_path / comfy.relative_path / "requirements.txt").unlink()
+    with pytest.raises(IntegrityError, match="requirements input is absent"):
+        target.dispatch("lock-inputs", payload)
 
 
 @pytest.mark.parametrize("declared", [False, True])

@@ -47,10 +47,6 @@
             "path": "pyproject.toml"
           },
           {
-            "source": "h3-motion-context",
-            "path": "requirements.txt"
-          },
-          {
             "source": "videohelpersuite",
             "path": "requirements.txt"
           }
