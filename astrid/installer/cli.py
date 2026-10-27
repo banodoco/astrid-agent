@@ -38,6 +38,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or restart Astrid for astrid.haus.")
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--update", action="store_true", help="back up and install the pinned version")
+    mode.add_argument("--update-app", action="store_true", help="update and relaunch Pinokio's app when no workspace migration is needed")
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--doctor", nargs="?", const="__default__", metavar="PATH",
                       help="write a redacted support bundle using the installed version")
@@ -55,12 +56,14 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    mode = ("update" if args.update else "uninstall" if args.uninstall
+    mode = ("app-update" if args.update_app else "update" if args.update else "uninstall" if args.uninstall
             else "doctor" if args.doctor is not None else "install")
     if args.delete_data and mode != "uninstall":
         parser().error("--delete-data is only valid for uninstall.")
     if args.managed_by and (args.root is None or not args.root.expanduser().is_absolute()):
         parser().error("--managed-by pinokio requires an absolute --root.")
+    if args.update_app and (args.managed_by != "pinokio" or args.data_root or args.sandbox):
+        parser().error("--update-app requires --managed-by pinokio and keeps the existing workspace and process settings.")
     if args.sandbox and mode not in ("install", "update"):
         parser().error("--sandbox is only valid for install or update.")
     from runtime_protocol import platform
@@ -71,6 +74,18 @@ def main(argv: list[str] | None = None) -> int:
         uv = args.uv or Path(os.environ.get("ASTRID_INSTALL_UV", bootstrap_root(Path.home(), sys.platform) / ("uv.exe" if sys.platform == "win32" else "uv")))
         process_control = ("sandbox" if args.sandbox else "strict") if mode in {"install", "update"} else None
         backend = Backend(root, log, uv, process_control=process_control)
+        if args.update_app:
+            from .app_update import selection, update_app
+
+            backend.managed_by = "pinokio"
+            selection(root, backend)  # Validate existing ownership before downloading anything.
+            if not uv.is_absolute() or not uv.is_file():
+                raise ValueError("Run the install line to provide the pinned user-local uv.")
+            manifest_path = args.manifest or root / "install-manifest.json"
+            if not args.manifest:
+                download("https://astrid.haus/install-manifest.json", manifest_path)
+            update_app(root, backend, validate_manifest(read_json(manifest_path)))
+            return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:
