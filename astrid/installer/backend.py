@@ -479,10 +479,12 @@ class Backend:
             raise self._stop_failure(exc) from exc
 
     def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> None:
-        """Let Runtime authorize the owner and every manager action once.
+        """Adapt installer recovery/receipt checks to Runtime's shared stop path.
 
-        The callback runs within Runtime's existing writer fence, after its
-        birth/custody-checked owner stop. It must never invoke another down.
+        ``installer_stop`` preserves the installer compatibility checks while
+        sharing down/restart's fenced stop-and-manager primitive. The callback
+        runs after its birth/custody-checked owner stop and must never invoke
+        another down.
         """
         try:
             from astrid_runtime.bootstrap import (

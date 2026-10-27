@@ -151,6 +151,19 @@ def test_idle_owner_stops_once_before_manager_with_fence_held(tmp_path, monkeypa
     publish(paths, realm)
     boundary = Boundary(paths, calls)
     monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    # Backend.stop is the real installer caller. Observe the Runtime shared
+    # interruption primitive as well as its effects so this test fails if the
+    # compatibility adapter grows a second fenced stop implementation.
+    import importlib
+    bootstrap = importlib.import_module('astrid_runtime.bootstrap')
+    shared_calls = []
+    fenced_stop_and_manager = bootstrap._fenced_stop_and_manager
+
+    def observe_shared_stop(*args, **kwargs):
+        shared_calls.append((args, kwargs))
+        return fenced_stop_and_manager(*args, **kwargs)
+
+    monkeypatch.setattr(bootstrap, '_fenced_stop_and_manager', observe_shared_stop)
     def manager_disable():
         calls.append('disable')
         with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
@@ -159,6 +172,8 @@ def test_idle_owner_stops_once_before_manager_with_fence_held(tmp_path, monkeypa
     monkeypatch.setattr(backend.service, 'disable', manager_disable)
     backend.stop(old, data)
     assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
+    assert len(shared_calls) == 1
+    assert any(callable(value) for value in shared_calls[0][1].values())
     assert not paths.discovery_path.exists()
     assert not paths.instance_lock_path.exists()
 
