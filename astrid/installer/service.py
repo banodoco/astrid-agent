@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import platform as system_platform
 import plistlib
 import subprocess
@@ -67,16 +67,40 @@ def bootstrap_root(home: Path, system: str) -> Path:
 
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
-            lock_fd: int | None = None) -> list[str]:
+            lock_fd: int | None = None, installer_operation_id: str | None = None) -> list[str]:
     python = version.python.with_name("pythonw.exe") if windows else version.python
     arguments = ["run", "--profile", "astrid", "--data-root", str(data),
                  "--source-manifest", str(version.profile), *(extra_args or [])]
-    if env_file is None and not windows and lock_fd is None:
+    if (env_file is None and not windows and lock_fd is None and not installer_operation_id
+            and "ASTRID_INSTALLER_OPERATION_ID" not in os.environ
+            and "ASTRID_INSTALLER_OPERATION_ID" not in version.env):
         return [str(python), "-X", "utf8", "-I", "-m", "astrid_runtime", *arguments]
     # Task Scheduler cannot set an environment and Hidden does not hide a
     # console. pythonw executes the foreground Runtime in this same process.
     script = "import json,os,sys\nfrom pathlib import Path\n"
     script += f"os.environ.update({version.env!r})\n"
+    if installer_operation_id:
+        transaction_path = version.root.parent.parent / "update-transaction.json"
+        script += f"_astrid_operation_id={installer_operation_id!r}\n"
+        script += f"_astrid_version={version.document()!r}\n"
+        script += f"_astrid_transaction_path=Path({str(transaction_path)!r})\n"
+        script += (
+            "try:\n"
+            "    _astrid_tx=json.loads(_astrid_transaction_path.read_text(encoding='utf-8'))\n"
+            "    _astrid_intent=_astrid_tx.get('launch_intent') or {}\n"
+            "    _astrid_authorized=(_astrid_tx.get('step') not in {'complete','rolled_back'} "
+            "and _astrid_tx.get('operation_id') == _astrid_operation_id "
+            "and _astrid_intent.get('operation_id') == _astrid_operation_id "
+            "and _astrid_intent.get('purpose') in {'backup','migration','service_start','pinokio_start'} "
+            "and _astrid_intent.get('version') == _astrid_version "
+            "and _astrid_version in (_astrid_tx.get('old'),_astrid_tx.get('candidate')))\n"
+            "except (OSError,ValueError,TypeError,AttributeError):\n"
+            "    _astrid_authorized=False\n"
+            "if _astrid_authorized: os.environ['ASTRID_INSTALLER_OPERATION_ID']=_astrid_operation_id\n"
+            "else: os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n"
+        )
+    else:
+        script += "os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)\n"
     if lock_fd is not None:
         # The foreground owner inherited this locked descriptor across exec.
         # Keep it open here, but never pass it to a subsequently exec'd child.
@@ -103,21 +127,26 @@ def systemd_quote(value: str) -> str:
 
 
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
-           env_file: Path | None = None) -> str:
+           env_file: Path | None = None, installer_operation_id: str | None = None) -> str:
     log = log.with_name("runtime-service.log")
-    argv = command(version, data, windows=system == "win32", log=log, env_file=env_file)
+    argv = command(version, data, windows=system == "win32", log=log, env_file=env_file,
+                   installer_operation_id=installer_operation_id)
+    service_env = {key: value for key, value in version.env.items()
+                   if key != "ASTRID_INSTALLER_OPERATION_ID"}
+    if installer_operation_id:
+        service_env["ASTRID_INSTALLER_OPERATION_ID"] = installer_operation_id
     if system == "darwin":
         return plistlib.dumps({
             "Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
             # KeepAlive's SuccessfulExit condition is false: launchd respawns
             # crashes, while an orderly Runtime exit stays stopped.
             "KeepAlive": {"SuccessfulExit": False}, "ExitTimeOut": 90,
-            "EnvironmentVariables": version.env,
+            "EnvironmentVariables": service_env,
             "StandardOutPath": str(log), "StandardErrorPath": str(log),
         }, sort_keys=True).decode("utf-8")
     if system == "linux":
         executable = " ".join(systemd_quote(s).replace("$", "$$") for s in argv)
-        environment = "".join("Environment=" + systemd_quote(k + "=" + v) + "\n" for k, v in sorted(version.env.items()))
+        environment = "".join("Environment=" + systemd_quote(k + "=" + v) + "\n" for k, v in sorted(service_env.items()))
         return ("[Unit]\nDescription=Astrid Runtime\n\n[Service]\n"
                 f"ExecStart={executable}\n{environment}Restart=on-failure\nRestartSec=5\n"
                 "KillMode=mixed\nTimeoutStopSec=90\n"
@@ -191,7 +220,9 @@ class Service:
         except (OSError, subprocess.SubprocessError):
             return False
 
-    def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None) -> None:
+    def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None,
+                             installer_operation_id: str | None = None,
+                             installer_launch_version: Version | None = None) -> None:
         """Read-only confirmation that the named OS job belongs to this owner.
 
         The install selection alone cannot authorize stopping a label that was
@@ -249,8 +280,14 @@ class Service:
         allowed = []
         for candidate in candidates:
             for env_file in (None, self.env_file):
-                argv = command(candidate, data, windows=True, log=self.log, env_file=env_file)
-                allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
+                launch_version = (installer_launch_version is not None
+                                  and candidate.document() == installer_launch_version.document())
+                launch_ids = ((installer_operation_id, None)
+                              if launch_version and installer_operation_id else (None,))
+                for launch_id in launch_ids:
+                    argv = command(candidate, data, windows=True, log=self.log, env_file=env_file,
+                                   installer_operation_id=launch_id)
+                    allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
         if actions not in allowed:
             raise ValueError("The scheduled task does not match the selected installation.")
 
@@ -310,19 +347,25 @@ class Service:
                 time.sleep(0.2)
             raise RuntimeError("The foreground Astrid Runtime did not finish stopping.")
 
-    def register(self, version: Version, data: Path) -> None:
+    def register(self, version: Version, data: Path, *, installer_operation_id: str | None = None,
+                 refresh_only: bool = False) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_file.exists():
             write_json(self.env_file, {})
         settings = self.settings()
         user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
-        self.path.write_text(render(self.system, version, data, self.log, user=user, env_file=self.env_file), encoding="utf-8", newline="\n")
+        self.path.write_text(render(
+            self.system, version, data, self.log, user=user, env_file=self.env_file,
+            installer_operation_id=installer_operation_id,
+        ), encoding="utf-8", newline="\n")
         if self.system == "darwin":
-            self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
+            if not refresh_only:
+                self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
         elif self.system == "linux":
             if self.systemd():
                 self.run(["systemctl", "--user", "daemon-reload"])
-                self.run(["systemctl", "--user", "enable", "astrid.service"])
+                if not refresh_only:
+                    self.run(["systemctl", "--user", "enable", "astrid.service"])
             else:
                 self.say("There is no systemd user service; run the install line to restart Astrid.")
         else:
@@ -334,6 +377,10 @@ class Service:
                   "data_root": str(data), "service_settings": settings,
                   "identity": {"release": version.release, "managed_by": version.managed_by}}
         write_json(self.selection, record)
+
+    def clear_launch_operation_id(self, version: Version, data: Path) -> None:
+        """Rewrite the on-disk manager spec without triggering another start."""
+        self.register(version, data, refresh_only=True)
 
     def settings(self) -> dict:
         settings = read_json(self.env_file)
@@ -358,15 +405,21 @@ class Service:
             self.powershell(f"Enable-ScheduledTask -TaskName '{TASK}' | Out-Null; Start-ScheduledTask -TaskName '{TASK}'")
         return True
 
-    def start_foreground(self, version: Version, data: Path) -> None:
+    def start_foreground(self, version: Version, data: Path, *, installer_operation_id: str | None = None) -> None:
         """No systemd: detach Runtime's own supervisor; the line is the restart."""
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
-            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH"}}
+            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH", "ASTRID_INSTALLER_OPERATION_ID"}}
         env.update(version.env)
+        env.pop("ASTRID_INSTALLER_OPERATION_ID", None)
+        if installer_operation_id:
+            env["ASTRID_INSTALLER_OPERATION_ID"] = installer_operation_id
         with self.log.open("a", encoding="utf-8") as stream:
-            process = platform.spawn_tree(command(version, data, env_file=self.env_file), detached=True,
+            process = platform.spawn_tree(command(
+                version, data, env_file=self.env_file,
+                installer_operation_id=installer_operation_id,
+            ), detached=True,
                                           cwd=version.root, env=env, stdin=subprocess.DEVNULL,
                                           stdout=stream, stderr=subprocess.STDOUT)
         self._foreground_process = process

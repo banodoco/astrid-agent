@@ -86,6 +86,13 @@ def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkey
     before = snapshot(watched)
     before_names = sorted(str(p) for p in data.rglob('*'))
     installer = Installer(backend.root, data, backend, say=lambda _: None)
+    if operation == 'update':
+        # C2 stages online. Only lifecycle signals and workspace changes are
+        # forbidden on a busy refusal; preparing isolated program files is safe.
+        candidate = Version(backend.root / 'versions' / 'candidate', old.python,
+                            backend.root / 'versions' / 'candidate' / 'profile.json', {})
+        monkeypatch.setattr(backend, 'stage', Mock(return_value=candidate))
+        monkeypatch.setattr(backend, 'validate_candidate', Mock())
     if operation == 'recovery':
         write_json(backend.root / 'update-transaction.json', {'format': 'astrid-install-update/v1',
             'operation_id': 'a' * 32, 'data_root': str(data), 'old': old.document(), 'candidate': None,
@@ -103,6 +110,11 @@ def test_busy_stop_path_matrix_has_no_manager_signal_or_cleanup(tmp_path, monkey
     assert snapshot(watched) == before
     assert sorted(str(p) for p in data.rglob('*')) == before_names
     assert calls == []
+    if operation == 'update':
+        backend.stage.assert_called_once()
+        backend.validate_candidate.assert_called_once_with(candidate, data, {
+            'realm_id': 'selected', 'realm_root': str(realm),
+        })
 
 
 class Boundary:

@@ -41,6 +41,9 @@ class PinokioBackend:
         self.calls.append(("workspace", data))
         return {"realm_id": "test-realm", "realm_root": str(data / "realm")}
 
+    def validate_candidate(self, candidate, data, realm):
+        self.calls.append(("validate_candidate", candidate, data, realm))
+
     def create(self, *_args):
         self.calls.append(("create",))
         return {"realm_id": "test-realm", "realm_root": str(self.data / "realm")}
@@ -144,7 +147,8 @@ def test_pinokio_update_never_registers_or_starts_login_service(tmp_path):
 
     names = [call[0] for call in backend.calls]
     assert names.count("stop") >= 1
-    assert names.index("backup") < names.index("upgrade")
+    assert names.index("stage") < names.index("validate_candidate") < names.index("stop")
+    assert names.index("stop") < names.index("backup") < names.index("upgrade")
     assert names.count("register") == 1
     assert "start" not in names
     assert "verify" not in names
@@ -163,6 +167,7 @@ def test_pinokio_update_rollback_keeps_login_service_unmodified(tmp_path):
 
     names = [call[0] for call in backend.calls]
     assert "restore" in names
+    assert names.index("stage") < names.index("validate_candidate") < names.index("stop")
     assert names.count("register") >= 1
     assert "start" not in names
     assert "verify" not in names
