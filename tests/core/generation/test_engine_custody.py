@@ -579,3 +579,287 @@ def test_invalid_command_deadline_and_output_budget_do_not_spawn(session):
     with pytest.raises(RecipeValidationError):
         client.run(_request(root, "raise SystemExit(99)", limit=2 * 1024 * 1024))
     assert client.run(_request(root, "print('still healthy')")).exit_code == 0
+
+
+@pytest.fixture
+def installed_consumer(session, monkeypatch):
+    """Real registry/engine, explicit CPU recipe and synthetic installed receipt.
+
+    The receipt has the canonical lock inventory but this fixture does not
+    download/qualify those models or claim a real installation.
+    """
+    from types import SimpleNamespace
+    from astrid.core.generation import engine_recipe
+    from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+    from astrid.core.generation.engine_runner import _plain, plan_install
+    from astrid.packs.runpod.installed_session import LocalInstalledVibeComfySessionTransport
+    from astrid.packs.runpod.worker_session import RunPodManagedVibeComfySessionOwner
+    from vibecomfy.runtime import session as vibe
+
+    client, payload, recipe, root, mode, started = session
+    facts = _call(client, payload)
+    monkeypatch.setattr(engine_recipe, "load_recipe", lambda engine, platform: recipe)
+    monkeypatch.setattr(vibe, "find_repo_root", lambda: root / "runtime/vibecomfy")
+    plan = plan_install(recipe, root=str(root), placement="local")
+    models = engine_recipe.load_model_lock(recipe.models_lock)
+    stamp = "2026-10-27T23:00:00+00:00"
+    receipt = InstallReceipt(
+        "astrid.engine-install.v1", "fixture-receipt", recipe.engine, recipe.platform,
+        "local", str(root), "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
+        {e.name: "a" * 64 for e in recipe.environments},
+        {s.name: s.pin.revision for s in recipe.sources},
+        tuple(DownloadResult(m.name, str(root / "models" / m.destination), "skipped",
+                             m.bytes, m.sha256, True, 0) for m in models.models),
+        tuple(StepReceipt(s.id, s.kind, "executed", "passed",
+                          {"owner_id": facts["owner_id"], "launch_sha256": facts["launch_sha256"]}
+                          if s.kind == "start" else {}) for s in plan.steps),
+        HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None,
+    )
+    (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
+    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    # Noncanonical whitespace proves that selection hashes actual bytes.
+    config = json.loads((registry / "config.json").read_bytes())
+    raw = json.dumps(config, indent=2).encode() + b"\n"
+    (registry / "config.json").write_bytes(raw)
+    reference = SimpleNamespace(
+        effective_target={"kind": "runpod", "provider_account_ref": "account-1", "pod_id": "pod-1"},
+        executable=SimpleNamespace(path=root / "runtime/venv/bin/python"),
+        model_root=root / "models", output_root=Path(config["output_directory"]),
+        session_ref="vibecomfy-h3", session_config_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+    )
+    readiness = {
+        "status": "cpu_ready", "gpu_qualified": False,
+        "python_executable": str(reference.executable.path),
+        "effective_paths": {"candidate_namespace": str(root), "comfy_root": str(root / "runtime/ComfyUI"),
+                            "model_root": str(reference.model_root), "output_root": str(reference.output_root),
+                            "vibecomfy_root": str(root / "runtime/vibecomfy")},
+    }
+    transport = LocalInstalledVibeComfySessionTransport()
+    owner = RunPodManagedVibeComfySessionOwner(transport)
+    return owner, transport, reference, readiness, registry
+
+
+def test_installed_consumer_retains_exact_engine_and_detach_has_no_stop_authority(installed_consumer, session, monkeypatch):
+    from astrid.packs.runpod.worker_session import ManagedSessionError
+    from vibecomfy.commands import session as commands
+
+    owner, transport, reference, readiness, registry = installed_consumer
+    client, payload, recipe, root, mode, started = session
+    before = {name: (registry / name).read_bytes() for name in (
+        "pid", "comfy_pid", "comfy_process_start_identity", "launch.json", "config.json")}
+    def forbidden(*args, **kwargs):
+        pytest.fail("attachment called a legacy engine start/stop")
+    monkeypatch.setattr(commands, "_cmd_session_start", forbidden)
+    monkeypatch.setattr(commands, "_cmd_session_stop", forbidden)
+    monkeypatch.setattr(transport, "start", forbidden)
+    monkeypatch.setattr(transport, "stop", forbidden)
+    selection = owner.select(reference, readiness, port=recipe.start.port)
+    receipt = owner.start(selection)
+    assert selection.config["cwd"] == str(root / "runtime/ComfyUI")
+    assert selection.config_digest == reference.session_config_digest
+    assert selection.config_digest != "sha256:" + _sha(selection.config)
+    assert receipt.daemon_pid == client._spawned.pid
+    assert receipt.comfy_pid == int(started.read_text().strip())
+    assert owner.resume(selection, receipt.as_dict()) == receipt
+    assert owner.observe_config(selection, receipt)["session_config_digest"] == reference.session_config_digest
+    with pytest.raises(ManagedSessionError, match="original supervisor stop"):
+        owner.stop(selection, receipt)
+    assert all((registry / name).read_bytes() == raw for name, raw in before.items())
+    assert len(started.read_text().splitlines()) == 1
+    assert _alive(receipt.daemon_pid) and _alive(receipt.comfy_pid)
+    assert _call(client, payload, "health")["owner_id"] == json.loads(before["launch.json"])["launch_token"]
+
+
+@pytest.mark.parametrize("change", ["absent", "wrong_config", "source_revision", "source_content", "model_root",
+                                         "receipt", "receipt_owner", "receipt_launch", "birth", "config_bytes",
+                                         "live_source", "missing_receipt", "receipt_model"])
+def test_installed_consumer_refuses_changed_evidence_without_legacy_control(installed_consumer, session, monkeypatch, change):
+    from astrid.packs.runpod.worker_session import ManagedSessionError
+
+    owner, transport, reference, readiness, registry = installed_consumer
+    client, payload, recipe, root, mode, started = session
+    selection = owner.select(reference, readiness, port=recipe.start.port)
+    receipt = owner.start(selection)
+    monkeypatch.setattr(transport, "start", lambda *_: pytest.fail("legacy start"))
+    monkeypatch.setattr(transport, "stop", lambda *_: pytest.fail("legacy stop"))
+    if change == "absent":
+        (registry / "config.json").unlink()
+    elif change == "live_source":
+        (root / "runtime/vibecomfy/tiny.py").write_text("# changed effective source at the same commit\n")
+    elif change == "missing_receipt":
+        (root / ".astrid-engine/install.json").unlink()
+    elif change in {"wrong_config", "model_root"}:
+        config = json.loads((registry / "config.json").read_bytes())
+        config["cwd" if change == "wrong_config" else "models_root"] = str(root / "foreign")
+        (registry / "config.json").write_text(json.dumps(config))
+    elif change in {"source_revision", "source_content"}:
+        (registry / ("source_revision" if change == "source_revision" else "source_content_digest")).write_text(
+            "0" * 40 if change == "source_revision" else "sha256:" + "0" * 64)
+    elif change.startswith("receipt"):
+        path = root / ".astrid-engine/install.json"
+        value = json.loads(path.read_bytes())
+        if change == "receipt_model":
+            value["models"][0]["path"] = str(root / "foreign-model")
+        elif change == "receipt":
+            value["recipe_sha256"] = "0" * 64
+        else:
+            facts = next(s["facts"] for s in value["steps"] if s["kind"] == "start")
+            facts["owner_id" if change == "receipt_owner" else "launch_sha256"] = "0" * 64
+        path.write_text(json.dumps(value))
+    elif change == "birth":
+        marker = json.loads((registry / "launch.json").read_bytes())
+        marker["process_start_identity"] = "stale-birth"
+        (registry / "launch.json").write_text(json.dumps(marker))
+    else:
+        with (registry / "config.json").open("ab") as stream:
+            stream.write(b"\n")
+    with pytest.raises(ManagedSessionError):
+        owner.start(selection)
+    with pytest.raises(ManagedSessionError):
+        owner.resume(selection, receipt)
+    with pytest.raises(ManagedSessionError):
+        owner.stop(selection, receipt)
+    assert started.read_text().splitlines() == [str(receipt.comfy_pid)]
+    assert _alive(receipt.comfy_pid)
+
+
+def test_installed_consumer_capacity_replacement_refuses_before_controls(installed_consumer, monkeypatch):
+    from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
+    from types import SimpleNamespace
+
+    owner, transport, reference, readiness, registry = installed_consumer
+    adapter = object.__new__(CheckoutServerAdapter)
+    adapter._host_session = {"session_dir": str(registry)}
+    def forbidden(*args, **kwargs):
+        pytest.fail("capacity replacement reached engine/CLI control")
+    adapter._engine = SimpleNamespace(_clear_warm=forbidden, _clear_prepared=forbidden,
+                                      _clear_retention_hint=forbidden, release=forbidden)
+    adapter._control_preflight = forbidden
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    with pytest.raises(ValueError, match="capacity replacement"):
+        adapter.release(reason="capacity_replacement")
+    with pytest.raises(ValueError, match="capacity replacement"):
+        adapter._restart_owned_session()
+
+
+@pytest.mark.parametrize("failure", [None, "wrong_bearer", "denied_file", "corrupt_digest"])
+def test_remote_installed_files_cannot_fabricate_live_attachment(installed_consumer, session, tmp_path, failure):
+    import threading
+    from types import SimpleNamespace
+    from runpod_lifecycle.https import HttpsPodTransport
+    from runpod_lifecycle.pod_agent import AgentServer, Handler
+    from astrid.packs.runpod.installed_session import RunPodInstalledVibeComfySessionTransport
+    from astrid.packs.runpod.worker_session import ManagedSessionError, create_managed_session_owner
+
+    _, _, reference, readiness, registry = installed_consumer
+    client, payload, recipe, root, mode, started = session
+    token = "fixture-https-bearer-" + "x" * 40
+    policy = {"schema": "astrid.pod-observation.v1",
+              "roots": [str(registry)], "files": [str(root / ".astrid-engine/install.json")]}
+    if failure == "denied_file":
+        policy["files"] = []
+    server = AgentServer(("127.0.0.1", 0), token, tmp_path / "agent-state", observation_policy=policy)
+    calls = []
+    class AuditedHandler(Handler):
+        def handle_request(self):
+            calls.append((self.command, self.path, list(self.headers)))
+            return super().handle_request()
+
+        def reply(self, status, data=None, **kwargs):
+            if failure == "corrupt_digest" and isinstance(data, dict) and "sha256" in data:
+                data = {**data, "sha256": "0" * 64}
+            return super().reply(status, data, **kwargs)
+
+        do_GET = do_POST = do_PUT = do_DELETE = handle_request
+    server.RequestHandlerClass = AuditedHandler
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    def https_transport():
+        bearer = "wrong-fixture-bearer-" + "y" * 40 if failure == "wrong_bearer" else token
+        return HttpsPodTransport("pod1", bearer, base_url=f"http://127.0.0.1:{server.server_port}")
+    reference.effective_target["pod_id"] = "pod1"
+    pod = SimpleNamespace(id="pod1", config=SimpleNamespace(transport="https"), https_transport=https_transport)
+    owner = create_managed_session_owner(pod, session_ref=reference.session_ref)
+    assert isinstance(owner.transport, RunPodInstalledVibeComfySessionTransport)
+    try:
+        if failure is None:
+            selection = owner.select(reference, readiness, port=recipe.start.port)
+            assert selection.config_digest == reference.session_config_digest
+            with pytest.raises(ManagedSessionError, match="lacks live installer session composite verification"):
+                owner.start(selection)
+        else:
+            with pytest.raises(ManagedSessionError):
+                owner.select(reference, readiness, port=recipe.start.port)
+        assert calls and all(method == "POST" and path == "/download-chunk" for method, path, _ in calls)
+        assert all(not any(h.lower() in {"range", "upgrade"} for h in headers) for _, _, headers in calls)
+        assert not server.jobs
+        assert len(started.read_text().splitlines()) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_original_prepared_owner_records_installed_engine_without_allocation(installed_consumer, session, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from runtime_protocol.remote_worker_deployment import ProjectedLaunch
+    from runtime_protocol.remote_worker_activation import RemotePreparationLaunch
+    from astrid.packs.runpod.worker_owner import RunPodRemoteWorkerPreparer, RunPodWorkerOwnerError
+    from astrid.packs.runpod.worker_preparation import write_target_record
+    from tests.packs.runpod.test_worker_preparation import _claim_handle
+    from runpod_lifecycle import api
+
+    owner, transport, reference, readiness, registry = installed_consumer
+    client, payload, recipe, root, mode, started = session
+    claim_path = tmp_path / "original-claim.json"
+    claim = _claim_handle(provider_account_ref="account-1", pod_id="pod-1")
+    write_target_record(claim_path, claim)
+    def forbidden(*args, **kwargs):
+        pytest.fail("session attachment attempted a provider operation or legacy daemon control")
+    for name in ("create_pod", "terminate_pod", "get_pod_status", "list_pods"):
+        if hasattr(api, name):
+            monkeypatch.setattr(api, name, forbidden)
+    monkeypatch.setattr(transport, "start", forbidden)
+    monkeypatch.setattr(transport, "stop", forbidden)
+    reference.digest = lambda: "sha256:" + "e" * 64
+    reference.credential_ref = str(root / "credentials/executor.token")
+    reference.ready_file = None
+    reference.support_root = root / "support"
+    reference.source_checkout = root / "prepared/source/astrid"
+    reference.source_closure_digest = "sha256:" + "f" * 64
+    launch = ProjectedLaunch((str(reference.executable.path), "-m", "fixture-host"), (),
+                             reference.digest(), reference.source_checkout)
+    staging = {"cpu_readiness": readiness, "plan_digest": "sha256:" + "d" * 64}
+    process = SimpleNamespace(as_dict=lambda: {"fixture_host": "selected-original-host"})
+    launches = []
+    class ProcessOwner:
+        async def launch_projected(self, projected):
+            launches.append(projected)
+            return process
+    preparer = RunPodRemoteWorkerPreparer(
+        SimpleNamespace(id="pod-1"), provider_account_ref="account-1", runtime_session_id="runtime-1",
+        claim_handle_path=claim_path, journal_dir=tmp_path / "journal", staging_inputs={},
+        preparation_transport=object(), process_transport=object(), session_owner=owner,
+        session_port=recipe.start.port,
+    )
+    monkeypatch.setattr(preparer, "_stage", lambda ref: staging)
+    monkeypatch.setattr(preparer, "_owner", lambda ref: ProcessOwner())
+    handle = preparer.prepare(RemotePreparationLaunch(reference, launch))
+    assert handle.session_receipt.daemon_pid == client._spawned.pid
+    assert handle.session_receipt.comfy_pid == int(started.read_text().strip())
+    assert handle.session_selection.config_digest == reference.session_config_digest
+    assert len(launches) == 1
+    saved = json.loads(claim_path.read_bytes())
+    # Existing claim fields, including sole provider-release ownership, survive.
+    assert {key: saved[key] for key in claim} == claim
+    assert saved["managed_session"]["claim_operation_id"] == claim["operation_id"]
+    assert saved["managed_session"]["receipt"] == handle.session_receipt.as_dict()
+    assert saved["managed_session"]["selection"]["config"] == json.loads((registry / "config.json").read_bytes())
+    with preparer._claim_owner() as (current, lock_fd):
+        with pytest.raises(RunPodWorkerOwnerError, match="conflicts with original session custody"):
+            preparer._write_managed_session(
+                current, handle.session_selection,
+                replace(handle.session_receipt, comfy_birth_id="different-incarnation"), owner_lock_fd=lock_fd,
+            )
+    assert json.loads(claim_path.read_bytes()) == saved
+    assert len(started.read_text().splitlines()) == 1

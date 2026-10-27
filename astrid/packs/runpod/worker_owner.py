@@ -376,7 +376,11 @@ class RunPodRemoteWorkerPreparer:
             "receipt": receipt.as_dict(),
             "gpu_qualified": False,
         }
-        updated = {**self._read_claim(), "managed_session": record}
+        current = self._read_claim()
+        if (selection.session_ref == "vibecomfy-h3" and current.get("managed_session") is not None
+                and current["managed_session"] != record):
+            raise RunPodWorkerOwnerError("installer attachment conflicts with original session custody")
+        updated = {**current, "managed_session": record}
         replace_target_record(
             self.claim_handle_path, updated, operation_id=str(claim.get("operation_id"))
         )
@@ -455,6 +459,9 @@ class RunPodRemoteWorkerPreparer:
         previous = claim.get("managed_worker")
         if isinstance(previous, Mapping) and previous.get("state") not in {"stopped", "released"}:
             raise RunPodWorkerOwnerError("P1 custody already contains a live or unresolved managed worker")
+
+        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+            raise RunPodWorkerOwnerError("installer-owned session attachment is required")
 
         staging = self._stage(reference)
         session_selection = None
@@ -1247,6 +1254,8 @@ class RunPodRemoteWorkerPreparer:
             raise RunPodWorkerOwnerError("selected P2 plan differs from durable RunPod preparation custody")
         session_selection = None
         session_receipt = None
+        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+            raise RunPodWorkerOwnerError("installer-owned session attachment is required")
         if self.session_owner is not None:
             saved_session = claim.get("managed_session")
             if (not isinstance(saved_session, Mapping)

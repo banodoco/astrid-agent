@@ -513,8 +513,7 @@ class _ProductionPreparedTaskRuntime:
 
         from .worker_owner import RunPodRemoteWorkerInspector, RunPodRemoteWorkerPreparer, _run_sync
         from .worker_session import (
-            RunPodManagedVibeComfySessionOwner,
-            RunPodVibeComfySessionTransport,
+            create_managed_session_owner,
         )
         from .worker_staging import RunPodPreparationTransport
 
@@ -548,8 +547,8 @@ class _ProductionPreparedTaskRuntime:
                 str(claim["pod_id"]), config, name=str(claim.get("name") or claim["pod_id"]),
             ))
         preparation_transport = RunPodPreparationTransport(pod)
-        session_owner = RunPodManagedVibeComfySessionOwner(
-            RunPodVibeComfySessionTransport(pod, preparation_transport=preparation_transport),
+        session_owner = create_managed_session_owner(
+            pod, session_ref=reference.session_ref, preparation_transport=preparation_transport,
         )
         staging = dict(self.selection.staging_inputs)
         staging.update({
