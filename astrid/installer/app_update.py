@@ -212,8 +212,8 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
     selected, data, _identity = selection(root, backend, allow_transaction=True)
     if absolute(pending["data_root"]) != data:
         raise ValueError("The interrupted app update workspace does not match the selected installation.")
-    previous = Version.load(pending["old"], managed_by="pinokio")
-    candidate = Version.load(pending["candidate"], managed_by="pinokio") if pending.get("candidate") else None
+    previous = Version.load(pending["old"])
+    candidate = Version.load(pending["candidate"]) if pending.get("candidate") else None
     if selected not in (previous, candidate):
         raise ValueError("The interrupted app update does not match the selected app version.")
     lifecycle = lifecycle or PinokioLifecycle(root, backend)

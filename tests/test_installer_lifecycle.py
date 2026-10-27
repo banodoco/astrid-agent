@@ -2,6 +2,8 @@
 
 import importlib
 import json
+import os
+import runpy
 import shutil
 import sqlite3
 import subprocess
@@ -411,6 +413,96 @@ def test_runtime_stop_report_preserves_details_and_only_lifecycle_refusal_skips_
     transaction = read_json(root / "update-transaction.json")
     assert transaction["step"] == "complete"
     assert transaction["outcome"] == "stop_refused"
+
+
+@pytest.mark.parametrize("operation", ["update", "restart-repair", "recovery"])
+def test_legacy_terminal_survives_public_install_final_stop_refusal(tmp_path, monkeypatch, operation):
+    from astrid.installer import launcher
+
+    root, data = tmp_path / "program", tmp_path / "data"
+    folder = root / "versions" / "old"
+    legacy = {"root": str(folder), "python": sys.executable,
+              "profile": str(folder / "profile.json"), "env": {}}
+    write_json(folder / "version.json", legacy)
+    write_json(folder / "manifest.json", {"release": 0})
+    marker = {"owner": LABEL, "data_root": str(data), "preferences": {"open": False}}
+    write_json(root / "install.json", marker)
+    (root / "current").write_text("old\n", encoding="utf-8")
+    # Generate the retained pre-X6 command, rather than pre-stamping the legacy
+    # record to make the new runner accept it. Production has no such fallback.
+    with monkeypatch.context() as retained:
+        retained.setattr(launcher, "_RUNNER", (
+            Path(__file__).parent / "fixtures" / "installer_legacy_runner.py"
+        ).read_text(encoding="utf-8"))
+        terminal, runner = launcher.install(root)
+    retained_command = {path: path.read_bytes() for path in (terminal, runner)}
+    (root / "run_runtime.py").write_text("# stale Runtime gate\n", encoding="utf-8")
+    backend = LifecycleBackend(root, data)
+    backend.restart_required_value = True
+    release = 1 if operation == "update" else 0
+    pending = {"format": "astrid-install-update/v1", "operation_id": "a" * 32,
+               "transaction_kind": "migration", "data_root": str(data),
+               "old": legacy, "candidate": None, "backup": None,
+               "realm": backend.workspace(), "step": "stopping"}
+    if operation == "recovery":
+        write_json(root / "update-transaction.json", pending)
+    admission = []
+    stops = []
+
+    def publish(version, workspace):
+        admission.append((version, workspace))
+        assert "launch_admission" in (root / "run_runtime.py").read_text(encoding="utf-8")
+
+    def refuse(version, workspace):
+        stops.append((version, workspace))
+        assert admission == [(version, workspace)]
+        assert read_json(folder / "version.json") == legacy
+        assert read_json(root / "install.json") == marker
+        if operation in {"update", "recovery"}:
+            assert read_json(root / "update-transaction.json")["step"] == "stopping"
+        raise RuntimeOperationError("Astrid is busy",
+                                    details={"safe": False, "kind": "busy"})
+
+    backend.publish_launch_admission = publish
+    backend.stop = refuse
+    handoffs = []
+
+    class SelectedCLI(Exception):
+        pass
+
+    def execvpe(python, argv, env):
+        handoffs.append((python, argv, env))
+        raise SelectedCLI
+
+    monkeypatch.setattr(os, "execvpe", execvpe)
+    monkeypatch.setattr(sys, "argv", [str(runner), "projects", "list"])
+
+    def invoke_terminal():
+        with pytest.raises(SelectedCLI):
+            runpy.run_path(str(runner), run_name="__main__")
+        assert handoffs[-1][0] == sys.executable
+        assert handoffs[-1][1] == [sys.executable, "-X", "utf8", "-I", "-m",
+                                   "astrid.omp_agent", "projects", "list"]
+        assert handoffs[-1][2]["ASTRID_INSTALL_PROGRAM_ROOT"] == str(root)
+
+    invoke_terminal()
+    with pytest.raises(RuntimeOperationError, match="Astrid is busy") as raised:
+        Installer(root, data, backend, say=lambda _line: None).run("install", {"release": release})
+
+    assert is_lifecycle_refusal(raised.value)
+    assert len(stops) == 1
+    assert (root / "current").read_text(encoding="utf-8") == "old\n"
+    assert read_json(folder / "version.json") == legacy
+    assert read_json(root / "install.json") == marker
+    if release:
+        transaction = read_json(root / "update-transaction.json")
+        assert transaction["step"] == "complete"
+        assert transaction["outcome"] == "stop_refused"
+    elif operation == "recovery":
+        assert read_json(root / "update-transaction.json") == pending
+    invoke_terminal()
+    assert len(handoffs) == 2
+    assert all(path.read_bytes() == content for path, content in retained_command.items())
 
 
 def test_post_stop_failure_runs_update_recovery(tmp_path):

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .launcher import install as install_launcher
+from .launcher import install_runtime
 from .support import HELP_MESSAGE
 
 
@@ -117,34 +118,19 @@ class Version:
                 "identity": {"release": self.release, "managed_by": self.managed_by}}
 
     @classmethod
-    def load(cls, value: dict, *, managed_by: str | None = None) -> "Version":
+    def load(cls, value: dict) -> "Version":
         python = Path(value["python"])
         absolute(python.parent)  # POSIX venv interpreters themselves are links.
         root = absolute(value["root"])
-        identity = value.get("identity")
-        marker = read_json(root.parent.parent / "install.json")
-        context_managed_by = marker.get("managed_by")
-        if context_managed_by not in {None, "pinokio"}:
-            raise ValueError("Invalid installation manager in install record.")
-        if "identity" not in value:
-            # Older version records predate identity. Recover it from the
-            # immutable staged manifest and the existing install context.
-            manifest = read_json(root / "manifest.json")
-            release = install_release(manifest)
-            managed_by = context_managed_by if "managed_by" in marker else managed_by
-        else:
-            if not isinstance(identity, dict):
-                raise ValueError("Invalid installation identity in version record.")
-            release = identity.get("release")
-            managed_by = identity.get("managed_by")
-            if "managed_by" in marker:
-                managed_by = context_managed_by
+        # Legacy reconstruction is read-only. Persist only after recovery and
+        # successful stop admission (or a healthy repair requiring no stop).
+        identity = value["identity"] if "identity" in value else install_identity(root)
+        if not isinstance(identity, dict):
+            raise ValueError("Invalid installation identity in version record.")
+        release, managed_by = identity.get("release"), identity.get("managed_by")
         if type(release) is not int or release < 0 or managed_by not in {None, "pinokio"}:
             raise ValueError("Invalid installation identity in version record.")
-        env = dict(value["env"])
-        env["ASTRID_INSTALL_RELEASE"] = str(release)
-        env["ASTRID_INSTALL_MANAGED_BY"] = managed_by or ""
-        return cls(root, python, absolute(value["profile"]), env, release, managed_by)
+        return cls(root, python, absolute(value["profile"]), value["env"], release, managed_by)
 
 
 def install_release(manifest: dict) -> int:
@@ -153,6 +139,32 @@ def install_release(manifest: dict) -> int:
     if type(release) is not int or release < 0:
         raise ValueError("The install manifest release must be a nonnegative integer.")
     return release
+
+
+def install_identity(version_root: Path) -> dict:
+    """Derive a managed install's identity from its immutable manifest and marker."""
+    managed_by = read_json(version_root.parent.parent / "install.json").get("managed_by")
+    if managed_by not in {None, "pinokio"}:
+        raise ValueError("Invalid installation manager in install record.")
+    return {"release": install_release(read_json(version_root / "manifest.json")),
+            "managed_by": managed_by}
+
+
+def persist_install_identity(version: Version, program_root: Path, *,
+                             selection: Path | None = None, fields: dict | None = None) -> None:
+    """Stamp version metadata and merge the K2 identity at a caller's commit point."""
+    record = read_json(selection) if selection is not None else {}
+    if record and record.get("owner") != "haus.astrid.runtime":
+        raise ValueError("The service record belongs to another installer.")
+    if version.root.parent == program_root / "versions":
+        path = version.root / "version.json"
+        if read_json(path) != version.document():
+            write_json(path, version.document())
+    if selection is not None and (record or fields):
+        updated = {**record, **(fields or {}), "identity": version.document()["identity"]}
+        updated.pop("uninstalled", None)
+        if updated != record:
+            write_json(selection, updated)
 
 
 def inspect_schema(backend, version: Version, realm: dict, *, require_current: bool = True) -> dict:
@@ -186,7 +198,7 @@ def update_required(mode: str, manifest: dict, old: Version, *, managed_by: str 
     return mode == "update" or release > old.release
 
 
-def current(root: Path, *, managed_by: str | None = None) -> Version | None:
+def current(root: Path) -> Version | None:
     pointer = root / "current"
     if not pointer.exists():
         return None
@@ -196,7 +208,7 @@ def current(root: Path, *, managed_by: str | None = None) -> Version | None:
     # The service's retained selection can still finish uninstalling this root.
     if not record.exists() and not linked(record):
         return None
-    version = Version.load(read_json(record), managed_by=managed_by)
+    version = Version.load(read_json(record))
     if version.root != root / "versions" / name:
         raise ValueError("The current version points outside the managed directory.")
     return version
@@ -301,7 +313,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         retained = absolute(backup["root"])
         if retained.parent != absolute(root / "backups"):
             raise ValueError("The interrupted update backup is outside this installation.")
-    install_launcher(root)
+    install_runtime(root)
     publish = getattr(backend, "publish_launch_admission", None)
     if publish is not None:
         publish(current(root) or Version.load(transaction["old"]), data)
@@ -311,6 +323,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
         save=save,
     )
+    install_launcher(root)
 
 
 class Installer:
@@ -329,7 +342,7 @@ class Installer:
     def _publish_stop_admission(self, version: Version | None) -> None:
         publish = getattr(self.backend, "publish_launch_admission", None)
         if publish is not None and version is not None:
-            install_launcher(self.root)
+            install_runtime(self.root)
             publish(version, self.data)
 
     def _ready(self) -> None:
@@ -407,7 +420,7 @@ class Installer:
                 transaction["transaction_context"] = transaction_context
             self._save_update(transaction, "staged")
             authority.enter_context(update_context(self.backend, transaction))
-            install_launcher(self.root)
+            install_runtime(self.root)
             publish = getattr(self.backend, "publish_launch_admission", None)
             if publish is not None:
                 publish(old, self.data)
@@ -458,6 +471,7 @@ class Installer:
                 switch_candidate(candidate)
                 self._save_update(transaction, "switched")
                 activate(candidate, self.data, realm)
+                install_launcher(self.root)
                 self._save_update(transaction, "verified")
                 self._last_update_backup = backup_image
                 if kind == "migration":
@@ -523,15 +537,10 @@ class Installer:
 
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
-            # Repair may be a no-op when the service is already healthy. Still
-            # migrate the existing records in place without touching services.
-            persist = getattr(self.backend, "persist_identity", None)
             realm = self.backend.workspace(old, self.data)
             if self.managed_by == "pinokio":
-                install_launcher(self.root)
-                if persist is not None:
-                    persist(old)
                 self.backend.register(old, self.data)
+                install_launcher(self.root)
                 try:
                     self.backend.sync_skills(old)
                 except Exception:  # noqa: BLE001 - skill setup is best effort
@@ -546,19 +555,20 @@ class Installer:
                 pass
             else:
                 if not self.backend.restart_required():
-                    install_launcher(self.root)
+                    # The only repair path without registration still stamps
+                    # legacy records, after recovery and healthy verification.
+                    persist = getattr(self.backend, "persist_identity", None)
                     if persist is not None:
                         persist(old)
+                    install_launcher(self.root)
                     self.say("Open https://astrid.haus")
                     self.backend.open()
                     return
             self.say("Restarting Astrid with the installed version.")
             self._publish_stop_admission(old)
             self.backend.stop(old, self.data)
-            install_launcher(self.root)
-            if persist is not None:
-                persist(old)
             self.backend.register(old, self.data)
+            install_launcher(self.root)
             self.backend.start(old, self.data)
             self.backend.verify(old, self.data, realm["realm_id"])
             self.say("Open https://astrid.haus")
@@ -587,7 +597,6 @@ class Installer:
 
             def select(candidate: Version) -> None:
                 switch(self.root, candidate)
-                install_launcher(self.root)
 
             def activate(candidate: Version, data: Path, selected_realm: dict) -> None:
                 self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
@@ -632,9 +641,9 @@ class Installer:
             else:
                 realm = self.backend.create(candidate, self.data)
             switch(self.root, candidate)
-            install_launcher(self.root)
             self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
             self.backend.register(candidate, self.data)
+            install_launcher(self.root)
             if self.managed_by != "pinokio":
                 self.backend.start(candidate, self.data)
             if self.managed_by != "pinokio":

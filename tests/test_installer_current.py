@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from astrid.installer import cli
-from astrid.installer.core import Version, current, write_json
+from astrid.installer.core import Version, current, read_json, write_json
 from astrid.installer.service import LABEL, default_program_root
 
 
@@ -125,6 +125,32 @@ def test_version_identity_roundtrips_and_legacy_version_uses_manifest(tmp_path, 
     recovered = Version.load(legacy)
     assert recovered.release == 8
     assert recovered.managed_by == managed_by
+    assert recovered.env["ASTRID_INSTALL_RELEASE"] == "8"
+    assert recovered.env["ASTRID_INSTALL_MANAGED_BY"] == (managed_by or "")
+    assert read_json(root / "version.json") == legacy  # Selection remains read-only.
+
+
+@pytest.mark.parametrize("manifest,marker,error", [
+    ({"release": True}, {}, "nonnegative integer"),
+    ({"release": -1}, {}, "nonnegative integer"),
+    ({"release": "8"}, {}, "nonnegative integer"),
+    ({"release": 8}, {"managed_by": "source"}, "Invalid installation manager"),
+])
+def test_legacy_current_rejects_invalid_canonical_identity_without_writes(tmp_path, manifest, marker, error):
+    root = tmp_path / "program"
+    folder = root / "versions/v1"
+    value = {"root": str(folder), "python": str(tmp_path / "python"),
+             "profile": str(folder / "profile.json"), "env": {"ASTRID_INSTALL_RELEASE": "99"}}
+    write_json(folder / "version.json", value)
+    write_json(folder / "manifest.json", manifest)
+    write_json(root / "install.json", marker)
+    (root / "current").write_text("v1\n")
+    before = (folder / "version.json").read_bytes()
+
+    with pytest.raises(ValueError, match=error):
+        current(root)
+
+    assert (folder / "version.json").read_bytes() == before
 
 
 def test_release_must_be_nonnegative_integer():

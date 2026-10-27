@@ -142,28 +142,10 @@ python = str(Path(record["python"]))
 env = dict(os.environ)
 env.update({str(key): str(value) for key, value in record["env"].items()})
 env["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
-identity = record.get("identity")
-if "identity" in record:
-    if not isinstance(identity, dict):
-        raise SystemExit("Astrid's selected install identity is invalid.")
-else:
-    manifest_path = version_root / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
-    marker_path = root / "install.json"
-    marker = json.loads(marker_path.read_text(encoding="utf-8")) if marker_path.is_file() else {}
-    identity = {"release": manifest.get("release", 0),
-                "managed_by": marker.get("managed_by")}
-release = identity.get("release")
-managed_by = identity.get("managed_by")
-install_marker = root / "install.json"
-if install_marker.is_file():
-    marker = json.loads(install_marker.read_text(encoding="utf-8"))
-    if "managed_by" in marker:
-        managed_by = marker.get("managed_by")
-if type(release) is not int or release < 0 or managed_by not in (None, "pinokio"):
-    raise SystemExit("Astrid's selected install identity is invalid.")
-env["ASTRID_INSTALL_RELEASE"] = str(release)
-env["ASTRID_INSTALL_MANAGED_BY"] = managed_by or ""
+if (not isinstance(record["env"].get("ASTRID_INSTALL_RELEASE"), str)
+        or not re.fullmatch(r"0|[1-9][0-9]*", record["env"]["ASTRID_INSTALL_RELEASE"])
+        or record["env"].get("ASTRID_INSTALL_MANAGED_BY") not in ("", "pinokio")):
+    raise SystemExit("Astrid's selected install identity needs repair; run the install line again.")
 if sys.argv[1:2] == ["credential"]:
     os.environ.update(env)
     from astrid.core.util.credential_store import main
@@ -222,8 +204,8 @@ def publish_runtime_runner(root: Path) -> Path:
     return runtime_runner
 
 
-def install(root: Path) -> tuple[Path, ...]:
-    """Write stable launchers that follow root/current without changing PATH."""
+def install_runtime(root: Path) -> None:
+    """Refresh Runtime admission without replacing the retained terminal command."""
     root = Path(root).absolute()
     publish_runtime_runner(root)
     # Both renderings are useful for packaging/review; only the native one
@@ -246,10 +228,15 @@ def install(root: Path) -> tuple[Path, ...]:
         encoding="utf-8", newline="\n",
     )
     runtime_launcher.chmod(0o755)
+
+
+def install(root: Path) -> tuple[Path, ...]:
+    """Write stable launchers after the selected version has identity stamps."""
+    root = Path(root).absolute()
+    install_runtime(root)
     runner = root / "run_astrid.py"
-    # This launcher is rewritten before repair/update, while the selected
-    # version may predate the helper. Embed its authoritative implementation
-    # so the runner also works after a failed update or rollback.
+    # The selected package may predate the process helper. Embed it so the
+    # runner also works after a failed update or rollback.
     process_source = Path(_process.__file__).read_text(encoding="utf-8")
     runner.write_text(process_source + "\n" + _RUNNER, encoding="utf-8", newline="\n")
     if os.name == "nt":
