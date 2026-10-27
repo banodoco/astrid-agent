@@ -261,13 +261,120 @@ class Service:
         except (OSError, subprocess.SubprocessError):
             return False
 
-    def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None) -> None:
+    def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
+        """Validate and snapshot the loaded, installer-owned LaunchAgent."""
+        target = f"gui/{platform.current_user()}/{LABEL}"
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("The launchd service state is malformed.")
+        rendered = value.rstrip("\r\n")
+        if (not rendered.startswith(f"{target} = {{\n")
+                or not rendered.endswith("\n}")):
+            raise ValueError("The launchd service print result has an invalid target header.")
+        starts = list(re.finditer(r"^[ \t]*arguments = \{[ \t]*$", value, re.MULTILINE))
+        if len(starts) != 1:
+            raise ValueError("The launchd service identity is malformed.")
+        opening_indent = re.match(r"^([ \t]*)", value[starts[0].start():]).group(1)
+        tail = value[starts[0].end():]
+        closing = re.search(r"^" + re.escape(opening_indent) + r"\}[ \t]*$", tail, re.MULTILINE)
+        if closing is None:
+            raise ValueError("The launchd service arguments are malformed.")
+        argument_text = tail[:closing.start()]
+        # Parse only fields outside arguments; the Python command contains
+        # ordinary source lines that can have the same names as print fields.
+        metadata = value[:starts[0].start()] + tail[closing.end():]
+        states = re.findall(r"^[ \t]*state = ([^\r\n]+)[ \t]*$", metadata, re.MULTILINE)
+        pids = re.findall(r"^[ \t]*pid = (\d+)[ \t]*$", metadata, re.MULTILINE)
+        if len(re.findall(r"^[ \t]*pid[ \t]*=", metadata, re.MULTILINE)) != len(pids):
+            raise ValueError("The launchd service PID is malformed.")
+        paths = re.findall(r"^[ \t]*path = ([^\r\n]+)[ \t]*$", metadata, re.MULTILINE)
+        programs = re.findall(r"^[ \t]*program = ([^\r\n]+)[ \t]*$", metadata, re.MULTILINE)
+        if len(states) != 1 or len(pids) > 1 or len(paths) != 1 or len(programs) != 1:
+            raise ValueError("The launchd service identity is malformed.")
+        state = states[0].strip()
+        if state not in {"running", "not running"}:
+            raise ValueError("The launchd service state is unknown; refusing to stop it.")
+        pid = int(pids[0]) if pids else None
+        if pid is not None and pid <= 0:
+            raise ValueError("The launchd service PID is malformed.")
+        # launchctl prints raw argv lines, including a multiline final script.
+        # Only an exact action recognized by the retained-action validator can
+        # establish ownership; unknown output is not stopped-state evidence.
+        loaded_argv = None
+        raw_arguments = argument_text.strip("\r\n")
+
+        record = self.recorded()
+        if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                or record.get("data_root") != str(data)):
+            raise ValueError("The launchd service has no matching install selection.")
+        try:
+            observed_stat = self.path.lstat()
+            if not stat.S_ISREG(observed_stat.st_mode) or observed_stat.st_uid != os.getuid():
+                raise ValueError("The launchd service file is not installer-owned.")
+            raw = self.path.read_bytes()
+            document = plistlib.loads(raw)
+            action = document.get("ProgramArguments")
+            if (document.get("Label") != LABEL or not isinstance(action, list)
+                    or any(not isinstance(part, str) for part in action)):
+                raise ValueError("The launchd service configuration is malformed.")
+            script = action[-1] if len(action) >= 5 and action[1:5] == ["-X", "utf8", "-I", "-c"] else None
+            if not self._known_launch_action(action, data, windows=False, script=script):
+                raise ValueError("The launchd service action is not owned by this installation.")
+        except (OSError, TypeError, KeyError, plistlib.InvalidFileException) as exc:
+            raise ValueError("The launchd service configuration is malformed.") from exc
+        if loaded_argv is None:
+            first_line = next((line for line in raw_arguments.splitlines() if line.strip()), "")
+            arg_indent = re.match(r"^[ \t]*", first_line).group(0)
+            argument_forms = {raw_arguments}
+            if arg_indent:
+                argument_forms.add("\n".join(
+                    line[len(arg_indent):] if line.startswith(arg_indent) else line
+                    for line in raw_arguments.split("\n")))
+            for rendered in argument_forms:
+                lines = rendered.split("\n")
+                # A direct argv has one line per element. A generated `-c`
+                # command has exactly five fixed prefix arguments and one
+                # multiline final script. The retained-action validator then
+                # accepts only known bytes, including retained legacy actions.
+                possibilities = [lines]
+                if len(lines) >= 6 and lines[1:5] == ["-X", "utf8", "-I", "-c"]:
+                    possibilities.append(lines[:5] + ["\n".join(lines[5:])])
+                for candidate in possibilities:
+                    candidate_script = (candidate[-1] if len(candidate) >= 5
+                                        and candidate[1:5] == ["-X", "utf8", "-I", "-c"] else None)
+                    if (candidate and candidate[0] == programs[0].strip()
+                            and self._known_launch_action(candidate, data, windows=False,
+                                                          script=candidate_script)):
+                        loaded_argv = candidate
+                        break
+                if loaded_argv is not None:
+                    break
+        loaded_script = (loaded_argv[-1] if loaded_argv and len(loaded_argv) >= 5
+                         and loaded_argv[1:5] == ["-X", "utf8", "-I", "-c"] else None)
+        if (loaded_argv is None or paths[0].strip() != str(self.path)
+                or programs[0].strip() != loaded_argv[0]
+                or not self._known_launch_action(loaded_argv, data, windows=False, script=loaded_script)):
+            raise ValueError("The loaded launchd action does not match its owned configuration.")
+        identity = {
+            "target": target, "path": paths[0].strip(), "program": programs[0].strip(),
+            "arguments": tuple(loaded_argv), "plist": raw,
+            "plist_stat": tuple(getattr(observed_stat, key) for key in
+                                 ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size",
+                                  "st_mtime_ns", "st_ctime_ns")),
+        }
+        return identity, {"state": state, "pid": pid}
+
+    def validate_stop_target(self, version: Version | None, data: Path, *, owner_pid: int | None,
+                             expected_identity: dict | None = None,
+                             require_stopped: bool = False) -> dict | None:
         """Read-only confirmation that the named OS job belongs to this owner.
 
         The install selection alone cannot authorize stopping a label that was
         replaced outside the installer. Runtime still owns the actual stop.
         """
         self._validated_systemd_stop = False
+        if self.system == "darwin" and not require_stopped:
+            self._validated_launchd_stop = None
+            self._validated_launchd_stop_checked = False
         if self.system == "linux":
             if not self.systemd():
                 foreground = self.recorded().get("foreground")
@@ -295,14 +402,27 @@ class Service:
                 value = self.run(["launchctl", "print", target])
             except subprocess.CalledProcessError as exc:
                 if "Could not find service" in str(exc.output) or "Could not find specified service" in str(exc.output):
-                    return
+                    if require_stopped:
+                        self._validated_launchd_stop = None
+                        self._validated_launchd_stop_checked = True
+                    return None
                 raise
-            import re
-
-            match = re.search(r"^\s*pid = (\d+)\s*$", value, re.MULTILINE)
-            if match is None or int(match[1]) != owner_pid:
+            identity, observation = self._launchd_stop_identity(value, data)
+            state, pid = observation["state"], observation["pid"]
+            if expected_identity is not None and identity != expected_identity:
+                raise ValueError("The loaded launchd service changed during Runtime stop.")
+            if require_stopped:
+                if state != "not running" or pid is not None:
+                    raise ValueError("The launchd service did not remain stopped after Runtime exit.")
+            elif state == "running":
+                if owner_pid is None or pid != owner_pid:
+                    raise ValueError("The launchd service does not match the selected Runtime owner.")
+            elif pid is not None:
                 raise ValueError("The launchd service does not match the selected Runtime owner.")
-            return
+            if require_stopped:
+                self._validated_launchd_stop = identity
+                self._validated_launchd_stop_checked = True
+            return identity
         # Task Scheduler exposes the registered action, rather than a reliable
         # owner PID. Compare it with the command for an owned retained version.
         value = self.powershell(TASK_QUERY + "if ($t) { ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments) }")
@@ -557,18 +677,30 @@ class Service:
 
     def disable(self) -> None:
         if self.system == "darwin":
-            if self.path.exists():
-                # This runs in the post-fence stop callback. Unload the job for
-                # this GUI session, but retain its LaunchAgents plist so
-                # launchd can honor the saved autostart choice next login.
+            try:
+                selected = getattr(self, "_validated_launchd_stop", None)
+                checked = getattr(self, "_validated_launchd_stop_checked", False)
+                if not checked and not self.path.exists():
+                    return  # Autostart is off; there is no loaded file to unload.
+                if not checked:
+                    raise RuntimeError("LaunchAgent bootout requires the validated Runtime C1 stop callback.")
+                if selected is not None and not self.path.exists():
+                    raise ValueError("The selected launchd service file disappeared before bootout.")
+                record = self.recorded()
+                data = Path(record["data_root"])
+                latest = self.validate_stop_target(
+                    None, data, owner_pid=None, expected_identity=selected, require_stopped=True)
+                if selected is None and latest is not None:
+                    raise ValueError("A launchd service appeared after the C1 stop admission.")
+                if latest is None:
+                    return  # Already unloaded after the C1 callback.
+                # Reprint and compare exact loaded identity immediately at
+                # the bootout boundary; C1 remains the only stop authority.
                 target = f"gui/{platform.current_user()}/{LABEL}"
-                try:
-                    self.run(["launchctl", "print", target])
-                except subprocess.CalledProcessError as exc:
-                    if "Could not find service" not in str(exc.output) and "Could not find specified service" not in str(exc.output):
-                        raise
-                    return  # Already unloaded after an orderly Runtime stop.
                 self.run(["launchctl", "bootout", target])
+            finally:
+                self._validated_launchd_stop = None
+                self._validated_launchd_stop_checked = False
             return
         if self.system == "linux":
             available = self.systemd()
