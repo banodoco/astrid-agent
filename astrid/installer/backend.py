@@ -525,9 +525,8 @@ class Backend:
                 raise ValueError("The selected foreground process record is malformed.")
             if restore_selection is not None and foreground is not None:
                 raise ValueError("Restore recovery refuses a retained foreground process record.")
-            # Reject busy or unreadable realms before querying or changing an
-            # OS manager. The final down path repeats admission under its fence.
-            self.preflight_stop(data)
+            # CLI entry already preflighted; down takes fresh C1 admission for
+            # every stop, including recovery and rollback.
             discovery = read_json(paths.discovery_path)
             owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
             if type(owner_pid) is not int or owner_pid <= 0:

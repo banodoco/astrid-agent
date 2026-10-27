@@ -329,9 +329,6 @@ class Installer:
     def _publish_stop_admission(self, version: Version | None) -> None:
         publish = getattr(self.backend, "publish_launch_admission", None)
         if publish is not None and version is not None:
-            preflight = getattr(self.backend, "preflight_stop", None)
-            if preflight is not None:
-                preflight(self.data)
             install_launcher(self.root)
             publish(version, self.data)
 

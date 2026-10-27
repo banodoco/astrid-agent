@@ -208,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
             if pending and pending.get("step") not in {"complete", "rolled_back"}:
                 recover_app(root, backend)
                 return 0
+            # Recovery-only invocations return above; fresh operations preflight
+            # once here before downloads or staging. C1 remains stop authority.
             backend.preflight_stop(absolute(marker["data_root"]))
             if not uv.is_absolute() or not uv.is_file():
                 raise ValueError("Run the install line to provide the pinned user-local uv.")
@@ -366,8 +368,8 @@ def main(argv: list[str] | None = None) -> int:
                 if mode != "doctor":
                     if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
                         raise ValueError("This Astrid runs from source checkouts; update those instead.")
-                    # A read-only busy refusal must precede install/selection
-                    # claims. The real stop repeats this under Runtime's fence.
+                    # Preflight each fresh operation once, before install/selection
+                    # claims or staging. Every real stop still takes Runtime's fence.
                     backend.preflight_stop(data)
                 if release_stale_selection:
                     write_json(backend.service.selection, recorded)
