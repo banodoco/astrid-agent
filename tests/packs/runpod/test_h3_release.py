@@ -249,7 +249,7 @@ def test_ssh_wait_timeout_releases(tmp_path):
     def unavailable(*_args):
         raise ConnectionError()
 
-    with pytest.raises(TimeoutError, match="SSH wait"):
+    with pytest.raises(TimeoutError, match="transport readiness wait"):
         build.build_release(provider, unavailable, volume_id="volume-1",
                             handle_path=tmp_path / "handle.json", claim_seconds=5,
                             now=clock.now, sleep=clock.sleep)

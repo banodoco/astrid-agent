@@ -193,6 +193,8 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                 raise BuildError("no allocation handle to clean up")
             remote.atomic_json(handle_path.with_suffix(".receipt.json"), handle)
             return handle
+        if hasattr(provider, "preflight"):
+            provider.preflight()
         volume = normalize_volume(provider.volume(volume_id), volume_id)
         started = now()
         # Leave a cleanup budget inside the requested maximum billed time.
@@ -228,7 +230,7 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
                 remote.atomic_json(handle_path, handle)
                 while True:
                     if now() >= claim_deadline:
-                        raise TimeoutError("build pod SSH wait exceeded")
+                        raise TimeoutError("build pod transport readiness wait exceeded")
                     observed = provider.get(handle["pod_id"])
                     if observed is None:
                         raise BuildError("build pod disappeared")
@@ -308,8 +310,11 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
 
 class RunPodProvider:
     """Lifecycle owns creation; exact REST GET/DELETE preserve strict custody."""
-    def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None, cpu_only_gpu_build=False):
+    def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None, cpu_only_gpu_build=False, transport="ssh"):
         import httpx
+        import secrets
+        self.transport = transport
+        self.https_token = secrets.token_urlsafe(32) if transport == "https" else None
         self._api_key = key
         self.min_cuda_version = min_cuda_version
         self.cpu_api = cpu_api
@@ -354,6 +359,13 @@ class RunPodProvider:
             raise BuildError("network volume does not exist")
         return result
 
+    def preflight(self):
+        from runpod_lifecycle.preflight import preflight_transport
+        try:
+            preflight_transport(self.transport)
+        except RuntimeError as exc:
+            raise BuildError(str(exc)) from None
+
     def create(self, volume, image, pod_type, name):
         from runpod_lifecycle import api
         from runpod_lifecycle.errors import ProviderCapacityUnavailable, ProviderRequestRejected
@@ -363,7 +375,8 @@ class RunPodProvider:
                 self._api_key, None if cpu else pod_type, image, name=name,
                 network_volume_id=volume["id"], volume_mount_path=volume["mount"],
                 container_disk_in_gb=20, disk_in_gb=0,
-                public_key_string=os.environ["RUNPOD_SSH_PUBLIC_KEY"], ports="22/tcp",
+                public_key_string=os.environ.get("RUNPOD_SSH_PUBLIC_KEY") if self.transport == "ssh" else None,
+                ports="22/tcp", transport=self.transport, https_token=self.https_token,
                 compute_type="CPU" if cpu else "GPU", cpu_flavor_ids=("cpu3c", "cpu5c"),
                 cpu_flavor_priority="custom", vcpu_count=2, data_center_id=volume["datacenter"],
                 allowed_cuda_versions=None if cpu or self.min_cuda_version or self.cpu_only_gpu_build else ("13.0",),
@@ -401,7 +414,18 @@ class RunPodProvider:
 
 
 class LifecycleTransport:
-    def __init__(self, pod, connect_timeout):
+    def __init__(self, pod, connect_timeout, *, transport="ssh", token=None):
+        if transport == "https":
+            from runpod_lifecycle.https import HttpsPodTransport, PodTransportError
+            self.ssh = HttpsPodTransport(pod["id"], token or "", request_timeout=max(1, connect_timeout))
+            try:
+                self.ssh.connect()
+            except PodTransportError as exc:
+                self.ssh.disconnect()
+                if "HTTP 401" in str(exc) or "HTTP 403" in str(exc):
+                    raise BuildError("HTTPS agent authentication rejected") from None
+                raise ConnectionError("build pod HTTPS is not ready") from None
+            return
         from runpod_lifecycle.ssh import SSHClient
         port = (pod.get("portMappings") or {}).get("22")
         ip = pod.get("publicIp")
@@ -437,6 +461,7 @@ class LifecycleTransport:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--transport", choices=("ssh", "https"), default="ssh")
     parser.add_argument("--volume", required=True)
     parser.add_argument("--pod-type", default="cpu", help="cpu or exact RunPod GPU type ID")
     parser.add_argument("--max-seconds", type=int, default=10800)
@@ -454,8 +479,15 @@ def main(argv=None):
     if args.plan:
         print(json.dumps(release_inputs(), indent=2))
         return 0
+    if not args.cleanup_only and args.transport == "ssh":
+        from runpod_lifecycle.preflight import preflight_transport
+        try:
+            preflight_transport("ssh")
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     required = ["RUNPOD_API_KEY"]
-    if not args.cleanup_only:
+    if not args.cleanup_only and args.transport == "ssh":
         required += ["RUNPOD_SSH_PUBLIC_KEY", "RUNPOD_SSH_KEY_PATH"]
     if any(not os.environ.get(name) for name in required):
         parser.error("required environment: " + ", ".join(required))
@@ -464,9 +496,11 @@ def main(argv=None):
     handle = args.handle or Path.cwd() / ("h3-build-" + args.volume + ".json")
     provider = RunPodProvider(os.environ["RUNPOD_API_KEY"], min_cuda_version=args.min_cuda_version,
                               cpu_api=args.cpu_api, cpu_instance_id=args.cpu_instance_id,
-                              cpu_only_gpu_build=args.cpu_only_gpu_build)
+                              cpu_only_gpu_build=args.cpu_only_gpu_build, transport=args.transport)
     try:
-        result = build_release(provider, LifecycleTransport, volume_id=args.volume,
+        def transport_factory(pod, timeout):
+            return LifecycleTransport(pod, timeout, transport=args.transport, token=provider.https_token)
+        result = build_release(provider, transport_factory, volume_id=args.volume,
                                handle_path=handle, pod_type=args.pod_type,
                                max_seconds=args.max_seconds, claim_seconds=args.claim_seconds,
                                max_hourly=args.max_hourly, cleanup_only=args.cleanup_only)

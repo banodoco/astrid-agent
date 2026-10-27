@@ -114,7 +114,8 @@ This snapshot does not qualify the eventual host or reserve stock.
 
 Install Astrid with this checkout's patch and the pinned `runpod-lifecycle`
 dependency. Select the volume's data center before creating that volume; this
-command accepts an existing **100–150 GB** volume and never creates storage.
+command accepts an existing volume of at least **100 GB** and attaches it without
+creating or resizing it.
 Load `RUNPOD_API_KEY`, `RUNPOD_SSH_PUBLIC_KEY` (the public key text), and
 `RUNPOD_SSH_KEY_PATH` (the matching local private key path) in the invoking
 process, then run:
@@ -649,3 +650,46 @@ Related repository guidance: [Astrid intro execution record](astrid-intro-animat
 [compute profiles](../docs/reference/compute-profiles.md),
 [VibeComfy execution skill](../../vibecomfy/docs/agent-skill/skills/run-comfy-workflow/SKILL.md),
 and [RunPod pack skill](../astrid/packs/runpod/skill/SKILL.md).
+
+
+## HTTPS-only RunPod clients
+
+The H3 release builder and claim waiter accept `--transport https`. This starts
+a single-file Python pod agent through the provider creation command and uses
+`https://<pod-id>-8000.proxy.runpod.net`; an SSH identity is not required.
+Install the companion runpod-lifecycle and RunPod SDK patches first.
+
+```sh
+build-h3-release --transport https --volume EXISTING_VOLUME_ID --handle ./h3-build.json
+python scripts/claim_runpod_5090_backup.py --transport https --storage-name EXISTING_VOLUME_NAME --provider-account-ref YOUR_ACCOUNT_LABEL --release-root /workspace/h3-golden/releases/EXACT_RELEASE_ID --handle-path ./claim.json
+```
+
+Keep all existing budget, storage, provider identity and cleanup requirements.
+SSH is still the default; proxy-configured SSH clients fail before allocation
+with `SSH egress unavailable; use --transport https`. `--plan` and builder
+`--cleanup-only` do not require pod-agent connectivity or an SSH key.
+
+The builder keeps its random agent token in memory. The claim waiter writes a
+random per-claim token to an owned 0600 sidecar; only its absolute path enters
+the ordinary claim handle. Keep that sidecar private and available for the
+claim lifetime. `--resume --transport https` reuses it; it never generates a
+replacement token for an existing pod. New HTTPS attachment without the
+original claim/token is refused. Prepared-worker composition reads the handle's
+transport and token-file reference automatically, so the normal
+`h3_av.transform --prepared-worker` selection format remains unchanged.
+Staging commands, source uploads, session operations, worker-process operations
+and pre-reserved worker credentials use the selected transport. A quiescent
+provider-only release does not require the token file.
+
+Claim transport/token custody also takes precedence over ambient reconnect
+variables. Provider-only cleanup after durable quiescence ignores an ambient
+token-file setting, so an unavailable sidecar cannot block exact provider
+cleanup. Failure cleanup for newly allocated, unactivated pods retains the
+Phase 0 release policy and preserves the existing network volume; unresolved
+cleanup remains in the same handle for reconciliation.
+
+Local transport tests cover staging probes and inode-preserving credential
+transfer. No complete GPU transform has been live-qualified. The single capped
+live smoke passed `uname -a` and a 50 MiB upload, but failed its original Range
+download. JSON download envelopes were added and tested locally afterwards;
+this remains a rollout limitation, not a successful live round trip.

@@ -13,6 +13,12 @@ from runpod_lifecycle import AllocationUnknown, LaunchFailure, PostCreateHookFai
 from astrid.packs.runpod import worker_preparation
 from scripts import claim_runpod_5090_backup as claim
 
+@pytest.fixture(autouse=True)
+def offline_egress(monkeypatch):
+    # These tests fake the provider; real egress preflight has dedicated tests.
+    monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", lambda *_a, **_kw: None)
+
+
 _TEST_API_KEY = "rpa_test_secret_must_not_persist"
 _VOLUME = {"id": "vol-backup", "name": "backup", "size": 250}
 
@@ -909,10 +915,13 @@ def test_wait_forever_is_explicit_and_storage_help_names_override():
     assert 'existing network volume name or ID' in help_text
 
 
-@pytest.mark.parametrize('phase', ['readiness', 'ssh', 'preflight', 'post_create'])
+@pytest.mark.parametrize('transport,phase', [
+    ('ssh', 'readiness'), ('ssh', 'ssh'), ('ssh', 'preflight'), ('ssh', 'post_create'),
+    ('https', 'readiness'), ('https', 'preflight'), ('https', 'post_create'),
+])
 @pytest.mark.parametrize('cleanup_fails', [False, True])
 def test_new_allocation_failure_releases_exact_unactivated_pod(
-    tmp_path, monkeypatch, phase, cleanup_fails,
+    tmp_path, monkeypatch, transport, phase, cleanup_fails,
 ):
     import runpod_lifecycle.api as api
 
@@ -926,6 +935,7 @@ def test_new_allocation_failure_releases_exact_unactivated_pod(
             if phase == 'readiness':
                 raise RuntimeError('fixture failure')
         async def _ensure_ssh_details(self):
+            assert transport == 'ssh'
             if phase == 'ssh':
                 raise RuntimeError('fixture failure')
             return {'ip': '127.0.0.1', 'port': 22}
@@ -966,7 +976,7 @@ def test_new_allocation_failure_releases_exact_unactivated_pod(
     monkeypatch.setattr(worker_preparation, '_release_inventory', release_inventory)
     monkeypatch.setattr(api, 'terminate_pod', terminate)
     with pytest.raises((RuntimeError, PostCreateHookFailure)):
-        asyncio.run(claim._claim(_args(handle_path)))
+        asyncio.run(claim._claim(_args(handle_path, '--transport', transport)))
     record = json.loads(handle_path.read_text())
     assert len(launches) == 1
     assert deletes == ['pod-failed']
@@ -980,6 +990,11 @@ def test_new_allocation_failure_releases_exact_unactivated_pod(
         assert record['cleanup']['backup_volume_id'] == _VOLUME['id']
         assert record['cleanup']['backup_volume_preserved'] is True
     assert _TEST_API_KEY not in handle_path.read_text()
+    if transport == 'https':
+        from runpod_lifecycle.https import read_token_file
+        assert record['transport'] == 'https'
+        token = read_token_file(record['https_token_file'])
+        assert token not in handle_path.read_text()
 
 
 @pytest.mark.parametrize('arguments', [

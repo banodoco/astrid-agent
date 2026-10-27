@@ -527,9 +527,17 @@ class _ProductionPreparedTaskRuntime:
 
         api_key_ref = str(claim.get("api_key_ref") or "RUNPOD_API_KEY")
         credential = CredentialsScope.resolve_local("runpod", env_var=api_key_ref)
-        config = RunPodConfig.from_env(api_key=credential.value)
-        if (claim.get("state") in {"release_pending", "cleanup_pending"}
-                and isinstance(claim.get("release_quiescence"), Mapping)):
+        transport = claim.get("transport", "ssh")
+        # Claim custody, rather than ambient reconnect state, selects auth.
+        # Provider-only cleanup must work even after the sidecar is removed.
+        transport_config = {"transport": transport, "https_token": None}
+        provider_only = (claim.get("state") in {"release_pending", "cleanup_pending"}
+                         and isinstance(claim.get("release_quiescence"), Mapping))
+        if transport == "https" and not provider_only:
+            from runpod_lifecycle.https import read_token_file
+            transport_config["https_token"] = read_token_file(claim["https_token_file"])
+        config = RunPodConfig.from_env(api_key=credential.value, **transport_config)
+        if provider_only:
             # The durable quiescence receipt means release resume needs only
             # the exact provider config and journal; the pod may be gone.
             from types import SimpleNamespace

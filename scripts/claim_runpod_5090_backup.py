@@ -433,7 +433,9 @@ def _handle(
         "request_name": attempt.get("request_name") or str(pod.name),
         "pod_id": str(pod.id),
         "name": str(pod.name),
-        "ssh": f"root@{ssh['ip']} -p {ssh['port']}",
+        "ssh": f"root@{ssh['ip']} -p {ssh['port']}" if config.transport == "ssh" else "",
+        "transport": config.transport,
+        **({"https_token_file": attempt["https_token_file"]} if config.transport == "https" else {}),
         "claimed_at": claimed_at,
         "gpu_type": selected_gpu,
         "storage_name": selected_storage,
@@ -481,9 +483,9 @@ async def _finish_claim(
     allocated = dict(attempt)
     observation = acquired.observation
 
-    failure_phase = "ssh"
+    failure_phase = "transport"
     try:
-        ssh = await pod._ensure_ssh_details()
+        ssh = {} if config.transport == "https" else await pod._ensure_ssh_details()
         failure_phase = "release_preflight"
         preflight = await _preflight_release(pod, args.release_root)
         final_attempt = {
@@ -523,6 +525,8 @@ async def _finish_claim(
 
 
 async def _claim(args: argparse.Namespace) -> dict[str, Any]:
+    from runpod_lifecycle.preflight import preflight_transport
+    preflight_transport(getattr(args, "transport", "ssh"))
     provider_account_ref = getattr(args, "provider_account_ref", None)
     if not isinstance(provider_account_ref, str) or not provider_account_ref.strip():
         raise RuntimeError(
@@ -545,6 +549,9 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
     # explicit values below prevent ambient GPU/storage fallbacks from changing
     # the request this waiter is intended to claim.
     config = RunPodConfig.from_env(
+        transport=getattr(args, "transport", "ssh"),
+        # Fresh claims never inherit a previous claim's bearer from ambient env.
+        https_token=None,
         gpu_type=args.gpu_type,
         storage_name=args.storage_name,
         storage_volumes=(args.storage_name,),
@@ -561,6 +568,21 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         disk_size_gb=0,
         attach_only=True,
     )
+    if config.transport == "https":
+        from runpod_lifecycle.https import read_token_file, write_token_file
+        if prior_attempt and prior_attempt.get("transport") != "https":
+            raise RuntimeError("resume transport differs from recorded claim")
+        token_file = (Path(prior_attempt["https_token_file"]) if prior_attempt
+                      else handle_path.with_name(handle_path.name + "." + uuid.uuid4().hex + ".token"))
+        if prior_attempt:
+            config.https_token = read_token_file(token_file)
+        else:
+            if getattr(args, "pod_id", None):
+                raise RuntimeError("HTTPS attach requires --resume of a claim with its original token")
+            handle_path.parent.mkdir(parents=True, exist_ok=True)
+            write_token_file(token_file, config.https_token)
+    elif prior_attempt and prior_attempt.get("transport", "ssh") != "ssh":
+        raise RuntimeError("resume transport differs from recorded claim")
     volume = await _require_existing_volume(config, args.storage_name)
     if prior_attempt is not None:
         _validate_resume_request(prior_attempt, args=args, volume=volume)
@@ -573,6 +595,9 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
             rollover=rollover,
             pod_id=getattr(args, "pod_id", None),
         )
+    if config.transport == "https":
+        attempt.update({"transport": "https", "https_token_file": str(token_file)})
+        _replace_allocation_attempt(handle_path, attempt, operation_id=str(attempt["operation_id"]))
     operation_id = str(attempt["operation_id"])
     request_name = str(attempt.get("request_name") or "")
     _log(
@@ -646,6 +671,7 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--transport", choices=("ssh", "https"), default="ssh")
     parser.add_argument("--gpu-type", default=DEFAULT_GPU)
     parser.add_argument(
         "--storage-name", default=DEFAULT_STORAGE,
