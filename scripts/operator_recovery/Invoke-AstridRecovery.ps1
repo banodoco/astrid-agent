@@ -40,9 +40,17 @@ try {
   Write-Host 'The isolated bootstrap may download its pinned packages. Windows is never restarted automatically.'
   # Separate PowerShell process preserves both bootstrap failure exit codes and
   # its file-invocation argument contract. Never dispatch recovery through the selected old launcher.
-  & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $bootstrap `
-      --manifest $manifest --root $ProgramRoot --recover $Action
-  $code = $LASTEXITCODE
+  # A PS7 parent can export a module path that hides PS5.1's native modules.
+  # Let only this child rebuild its defaults; restore this process immediately.
+  $modulePath = [Environment]::GetEnvironmentVariable('PSModulePath', [EnvironmentVariableTarget]::Process)
+  try {
+    [Environment]::SetEnvironmentVariable('PSModulePath', $null, [EnvironmentVariableTarget]::Process)
+    & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $bootstrap `
+        --manifest $manifest --root $ProgramRoot --recover $Action
+    $code = $LASTEXITCODE
+  } finally {
+    [Environment]::SetEnvironmentVariable('PSModulePath', $modulePath, [EnvironmentVariableTarget]::Process)
+  }
   if ($code -ne 0) {
     Write-Host ('Recovery stopped with exit code ' + $code + '. Keep all checkpoint and backup files; send this output.')
     exit $code

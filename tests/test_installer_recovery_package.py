@@ -42,7 +42,13 @@ def native_package(tmp_path):
     pins = {name: re.search(rf"\$Expected{name}Sha = '([0-9a-f]{{40}})'", source).group(1)
             for name in ('Agent', 'Runtime')}
     bootstrap = package / 'bootstrap/install.ps1'
-    bootstrap.write_text("Write-Output ('FORWARDED:' + (ConvertTo-Json -Compress -InputObject @($args)))\n"
+    bootstrap.write_text("if ($env:ASTRID_TEST_COMMAND_SURFACE) {\n"
+                         "  if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { throw 'PS5.1 required' }\n"
+                         "  foreach ($name in $env:ASTRID_TEST_COMMAND_SURFACE.Split(',')) {\n"
+                         "    $command = Get-Command -Name $name -CommandType Cmdlet -ErrorAction Stop\n"
+                         "    [Console]::WriteLine('COMMAND:' + $command.Name)\n"
+                         "  }\n}\n"
+                         "Write-Output ('FORWARDED:' + (ConvertTo-Json -Compress -InputObject @($args)))\n"
                          "if ($env:ASTRID_TEST_BOOTSTRAP_EXIT) { exit ([int]$env:ASTRID_TEST_BOOTSTRAP_EXIT) }\nexit 0\n")
     manifest = package / 'recovery-manifest.json'
     manifest.write_text(json.dumps({'agent': {'sha': pins['Agent']}, 'runtime': {'sha': pins['Runtime']}}))
@@ -74,24 +80,20 @@ def run_package(fixture, action='status', *, extra_env=None, root=None):
 
 @pytest.mark.windows_native
 def test_native_ps51_has_wrapper_and_bootstrap_command_surface(native_package):
-    # Preserve the inherited environment: PS7's module path previously hid the
-    # Get-FileHash function from PS5.1. The remaining entrypoint surface uses
-    # compiled cmdlets, including the real pinned bootstrap's preparation path.
+    # Exercise the actual wrapper's child under a poisoned inherited PS7 path.
+    # The child must rebuild PS5.1's native module path before bootstrap prep.
     commands = ['Test-Path', 'Get-Item', 'Get-Content', 'ConvertFrom-Json', 'ConvertTo-Json',
                 'Write-Host', 'Write-Output', 'New-Object', 'Join-Path', 'Split-Path', 'Get-Acl', 'Add-Type',
                 'Get-ExecutionPolicy', 'Where-Object', 'Invoke-WebRequest',
                 'Remove-Item', 'Out-Null', 'Out-String', 'Start-Sleep']
-    names = ','.join("'" + name + "'" for name in commands)
-    script = ("$ErrorActionPreference='Stop'; "
-              "if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { throw 'PS5.1 required' }; "
-              f"foreach ($name in @({names})) {{ "
-              "$command = Get-Command -Name $name -CommandType Cmdlet -ErrorAction Stop; "
-              "[Console]::WriteLine($command.Name) }")
-    result = subprocess.run([str(native_package[0]), '-NoProfile', '-NonInteractive', '-Command', script],
-                            env=dict(os.environ), stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, encoding='utf-8', errors='replace', timeout=30)
+    result = run_package(native_package, extra_env={
+        'PSModulePath': r'C:\missing-pwsh\Modules;C:\missing-pwsh\7\Modules',
+        'ASTRID_TEST_COMMAND_SURFACE': ','.join(commands),
+    })
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.splitlines() == commands
+    assert [line.removeprefix('COMMAND:') for line in result.stdout.splitlines()
+            if line.startswith('COMMAND:')] == commands
+    assert 'FORWARDED:' in result.stdout
 
 
 @pytest.mark.windows_native
