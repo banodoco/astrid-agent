@@ -38,7 +38,7 @@ def _pinokio_claim_is_live(recorded: dict) -> bool:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="astrid install", description="Install or restart Astrid for astrid.haus.")
     mode = result.add_mutually_exclusive_group()
-    mode.add_argument("--update", action="store_true", help="back up and install the pinned version")
+    mode.add_argument("--update", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--update-app", action="store_true", help="update and relaunch Pinokio's app when no workspace migration is needed")
     mode.add_argument("--uninstall", action="store_true")
     mode.add_argument("--doctor", nargs="?", const="__default__", metavar="PATH",
@@ -235,14 +235,11 @@ def main(argv: list[str] | None = None) -> int:
                                    "program_root": str(root), "data_root": str(data), "managed_by": "pinokio"})
                 print(f"Using your workspace at {data}.")
                 manifest = {}
-                installed = installed or backend.existing(data)
-                if mode not in {"uninstall", "doctor"} and (mode == "update" or installed is None):
+                if mode not in {"uninstall", "doctor"}:
                     if not args.manifest:
                         args.manifest = root / "install-manifest.json"
                         download("https://astrid.haus/install-manifest.json", args.manifest)
                     manifest = validate_manifest(read_json(args.manifest))
-                    if not uv.is_absolute() or not uv.is_file():
-                        raise ValueError("Run the install line to provide the pinned user-local uv.")
                 bundle = None
                 if mode == "doctor":
                     bundle = default_doctor_bundle() if args.doctor == "__default__" else Path(args.doctor)

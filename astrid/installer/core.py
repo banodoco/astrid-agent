@@ -489,6 +489,13 @@ class Installer:
         if old is not None and not old.python.is_file():
             old = None
         old = old or self.backend.existing(self.data)
+        # The public install path is also the normal update check. Compare
+        # only after journal recovery and after resolving the active owner;
+        # explicit ``update`` remains the forced restage operation.
+        if old is not None and mode not in {"doctor", "uninstall"}:
+            candidate_release = install_release(manifest)
+            if mode != "update" and candidate_release > old.release:
+                mode = "update"
         if mode == "doctor":
             if old is None:
                 raise ValueError("No installed Astrid version is available for doctor.")
