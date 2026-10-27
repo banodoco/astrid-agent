@@ -1,10 +1,10 @@
 """The public installer recovers durable updates before consulting fresh inputs."""
 
-import os
-import sys
 import json
+import os
 import shutil
 import subprocess
+import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,10 +12,16 @@ from types import SimpleNamespace
 import pytest
 from runtime_protocol import platform
 
-from astrid.installer import app_update, cli
+from astrid.installer import app_update, cli, update_job
 from astrid.installer.backend import Backend
 from astrid.installer.core import (
-    Installer, VerificationError, Version, current, read_json, switch, write_json,
+    Installer,
+    VerificationError,
+    Version,
+    current,
+    read_json,
+    switch,
+    write_json,
 )
 from astrid.installer.service import LABEL, SERVICE_SETTINGS, Service, command
 
@@ -103,6 +109,110 @@ def test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs
     assert recovered == ["restoring_realm"]
     assert (data / "runtime" / "realms" / "original-realm").is_dir()
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+
+
+@pytest.mark.parametrize("update_flag", [False, True], ids=["install", "update"])
+def test_recovery_only_cli_sweeps_owned_job_under_installer_lock_after_recovery(
+        tmp_path, monkeypatch, update_flag):
+    root, data = tmp_path / "program", tmp_path / "workspace"
+    backend = _cli_backend(tmp_path, root, data)
+    _prepare_cli(monkeypatch, tmp_path, root, data, backend)
+    operation_id = "a" * 32
+
+    def descriptor(operation, *, name=None):
+        expected = f"astrid-update-{operation}.service"
+        return {
+            "format": "astrid-update-platform/v1", "system": "linux",
+            "name": name or expected, "unit": name or expected,
+            "operation_id": operation, "user": "123",
+        }
+
+    inactive = descriptor(operation_id)
+    active = descriptor("b" * 32)
+    unqueryable = descriptor("c" * 32)
+    unrelated = descriptor("d" * 32, name="foreign.service")
+    marker = read_json(root / "install.json")
+    marker["update_job"] = {
+        "format": update_job.JOB_FORMAT, "operation_id": operation_id,
+        "state": "active", "job_name": f"astrid-update-{operation_id}",
+        "platform": inactive, "cleanup_status": "pending",
+        "message": "Update is running.",
+    }
+    original_residues = [
+        {"operation_id": "b" * 32, "descriptor": active,
+         "cleanup_status": "residue", "residue": active["name"]},
+        {"operation_id": "c" * 32, "descriptor": unqueryable,
+         "cleanup_status": "unknown", "cleanup_error": "manager query unavailable",
+         "residue": unqueryable["name"]},
+        {"operation_id": "d" * 32, "descriptor": unrelated,
+         "cleanup_status": "unknown", "residue": unrelated["name"]},
+    ]
+    marker["update_job_residue"] = original_residues
+    write_json(root / "install.json", marker)
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "e" * 32,
+        "transaction_kind": "migration", "step": "stopping", "data_root": str(data),
+        "update_job": {"operation_id": operation_id},
+    })
+    lock_path = cli.installer_lock_path(Path.home(), sys.platform)
+    events = []
+
+    def assert_installer_lock_held():
+        with lock_path.open("a+b") as competing:
+            with pytest.raises(BlockingIOError):
+                platform.lock_file(competing.fileno(), blocking=False)
+
+    def recover(installer):
+        assert isinstance(installer, Installer)
+        assert_installer_lock_held()
+        events.append("recover")
+        write_json(root / "update-transaction.json", {
+            "format": "astrid-install-update/v1", "operation_id": "e" * 32,
+            "transaction_kind": "migration", "step": "rolled_back", "data_root": str(data),
+            "update_job": {"operation_id": operation_id},
+        })
+
+    class Adapter:
+        def is_active(self, value):
+            assert_installer_lock_held()
+            assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+            events.append(("query", value["name"]))
+            if value == inactive:
+                return False
+            if value == active:
+                return True
+            if value == unqueryable:
+                raise RuntimeError("manager query unavailable")
+            pytest.fail(f"unexpected platform query: {value}")
+
+        def cleanup(self, value, **_kwargs):
+            assert_installer_lock_held()
+            assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+            events.append(("cleanup", value["name"]))
+
+    monkeypatch.setattr(cli.Installer, "_recover_update", recover)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: Adapter())
+    monkeypatch.setattr(cli, "download", lambda *_args: pytest.fail(
+        "recovery-only CLI must return without fetching new inputs"))
+
+    args = ["--root", str(root), "--manifest", str(tmp_path / "missing-manifest"),
+            "--uv", str(tmp_path / "missing-uv")]
+    if update_flag:
+        args.insert(0, "--update")
+    assert cli.main(args) == 0
+
+    assert events == [
+        "recover",
+        ("query", inactive["name"]),
+        ("cleanup", inactive["name"]),
+        ("query", inactive["name"]),
+        ("query", active["name"]),
+        ("query", unqueryable["name"]),
+    ]
+    repaired = read_json(root / "install.json")
+    assert repaired["update_job"]["state"] == "recovery-needed"
+    assert repaired["update_job"]["cleanup_status"] == "clean"
+    assert repaired["update_job_residue"] == original_residues
 
 
 def test_regular_cli_recovers_app_journal_without_holding_installer_lock(
