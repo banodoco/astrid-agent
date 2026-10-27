@@ -166,6 +166,9 @@ class Provisioner:
         self.env.update({"UV_PYTHON_INSTALL_DIR": str(self.runtime / "python"),
                                  "UV_CACHE_DIR": str(self.runtime / "uv-cache"),
                                  "PYTHONDONTWRITEBYTECODE": "1"})
+        # This provisioner establishes CPU readiness even when rented hardware
+        # includes a GPU. Inference qualification belongs to the later worker.
+        self.env["CUDA_VISIBLE_DEVICES"] = ""
 
     def run(self, argv, *, check=True):
         remaining = self.request["deadline"] - time.time()
@@ -228,6 +231,7 @@ expected=json.loads(sys.argv[1])
 assert {n:m.version(n) for n in expected} == expected
 assert {n:mod.__version__ for n,mod in [('torch',torch),('torchvision',torchvision),('torchaudio',torchaudio)]} == {n:expected[n] for n in ['torch','torchvision','torchaudio']}
 assert torch.version.cuda == '13.0'
+assert not torch.cuda.is_initialized()
 '''
         result = self.run([self.python, "-I", "-c", program, json.dumps(expected), self.recipe["python"]], check=check)
         if result.returncode:

@@ -308,12 +308,13 @@ def build_release(provider, transport_factory, *, volume_id, handle_path, pod_ty
 
 class RunPodProvider:
     """Lifecycle owns creation; exact REST GET/DELETE preserve strict custody."""
-    def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None):
+    def __init__(self, key, *, min_cuda_version=None, cpu_api="rest", cpu_instance_id=None, cpu_only_gpu_build=False):
         import httpx
         self._api_key = key
         self.min_cuda_version = min_cuda_version
         self.cpu_api = cpu_api
         self.cpu_instance_id = cpu_instance_id
+        self.cpu_only_gpu_build = cpu_only_gpu_build
         self.http = httpx.Client(base_url="https://rest.runpod.io/v1/", timeout=20,
                                  headers={"Authorization": "Bearer " + key})
 
@@ -365,8 +366,8 @@ class RunPodProvider:
                 public_key_string=os.environ["RUNPOD_SSH_PUBLIC_KEY"], ports="22/tcp",
                 compute_type="CPU" if cpu else "GPU", cpu_flavor_ids=("cpu3c", "cpu5c"),
                 cpu_flavor_priority="custom", vcpu_count=2, data_center_id=volume["datacenter"],
-                allowed_cuda_versions=None if cpu or self.min_cuda_version else ("13.0",),
-                min_cuda_version=None if cpu else self.min_cuda_version,
+                allowed_cuda_versions=None if cpu or self.min_cuda_version or self.cpu_only_gpu_build else ("13.0",),
+                min_cuda_version=None if cpu or self.cpu_only_gpu_build else self.min_cuda_version,
                 cpu_api=self.cpu_api, instance_id=self.cpu_instance_id,
             )
         except ProviderCapacityUnavailable as exc:
@@ -433,6 +434,8 @@ def main(argv=None):
     parser.add_argument("--min-cuda-version", help="Minimum CUDA capability passed through lifecycle's SDK create path")
     parser.add_argument("--cpu-api", choices=("rest", "sdk"), default="rest")
     parser.add_argument("--cpu-instance-id", help="Exact CPU instance type supported by the provider SDK")
+    parser.add_argument("--cpu-only-gpu-build", action="store_true",
+                        help="Use GPU capacity for CPU-only staging with CUDA devices hidden; no GPU qualification")
     parser.add_argument("--handle", type=Path, help="Durable local allocation/recovery handle")
     parser.add_argument("--cleanup-only", action="store_true")
     parser.add_argument("--plan", action="store_true", help="Print pinned inputs without provider calls")
@@ -449,7 +452,8 @@ def main(argv=None):
         parser.error("invalid volume ID")
     handle = args.handle or Path.cwd() / ("h3-build-" + args.volume + ".json")
     provider = RunPodProvider(os.environ["RUNPOD_API_KEY"], min_cuda_version=args.min_cuda_version,
-                              cpu_api=args.cpu_api, cpu_instance_id=args.cpu_instance_id)
+                              cpu_api=args.cpu_api, cpu_instance_id=args.cpu_instance_id,
+                              cpu_only_gpu_build=args.cpu_only_gpu_build)
     try:
         result = build_release(provider, LifecycleTransport, volume_id=args.volume,
                                handle_path=handle, pod_type=args.pod_type,

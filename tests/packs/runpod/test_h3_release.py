@@ -282,6 +282,10 @@ def test_lifecycle_payload_cpu_gpu_and_strict_get(monkeypatch):
         assert cpu["public_key_string"] == "ssh-ed25519 PUBLIC-TEST"
         provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
         assert calls[-1][1]["allowed_cuda_versions"] == ("13.0",)
+        provider.cpu_only_gpu_build = True
+        provider.create(volume, "image", "NVIDIA GeForce RTX 4090", "name")
+        assert calls[-1][1]["allowed_cuda_versions"] is None
+        assert calls[-1][1]["min_cuda_version"] is None
         assert provider.get("missing") is None
         with pytest.raises(build.BuildError):
             provider.get("unavailable")
