@@ -330,7 +330,7 @@ def _prepare_gateway_lifecycle(tmp_path, monkeypatch, *, installed=9):
 )
 @pytest.mark.parametrize("manifest_source", ["explicit", "hosted"])
 def test_gateway_dispatches_installed_release_through_real_installer(
-        tmp_path, monkeypatch, candidate, forced, unhealthy, expected_stage, manifest_source):
+        tmp_path, monkeypatch, candidate, forced, unhealthy, expected_stage, manifest_source, capsys):
     from astrid.core.gateway import main as gateway_main
 
     root, data, old, backend = _prepare_gateway_lifecycle(tmp_path, monkeypatch)
@@ -357,7 +357,12 @@ def test_gateway_dispatches_installed_release_through_real_installer(
     if forced:
         args.append("--update")
 
-    assert gateway_main(args) == 0
+    refused_older = candidate < old.release and not forced
+    assert gateway_main(args) == (1 if refused_older else 0)
+    if refused_older:
+        output = capsys.readouterr().out
+        assert "This Astrid is newer than astrid.haus offers." in output
+        assert "Try again when astrid.haus has a newer release." in output
     names = [call[0] for call in backend.calls]
     assert ("stage" in names) is expected_stage
     if expected_stage:

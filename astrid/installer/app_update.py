@@ -216,6 +216,9 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
     pending = read_json(root / "update-transaction.json")
     if not pending or pending.get("step") in {"complete", "rolled_back"}:
         return False
+    context = pending.get("transaction_context")
+    if isinstance(context, dict) and context.get("owner") == "local-update":
+        raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
     lock = installer_lock_path(backend.service.home, backend.service.system)
     selected, data, _identity = selection(root, backend, allow_transaction=True)
     if absolute(pending["data_root"]) != data:
