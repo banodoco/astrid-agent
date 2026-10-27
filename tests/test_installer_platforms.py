@@ -394,13 +394,18 @@ def test_clone_rollback_restores_workspace_and_support_without_deleting_other_re
     other.mkdir()
     (realm / 'realm.sqlite3').write_text('original')
     (other / 'unselected').write_text('keep')
-    write_json(data / 'runtime/catalog.json', {'selected': 'one'})
+    write_json(data / 'runtime/catalog.json', {
+        'version': 1, 'selected_realm_id': 'one',
+        'realms': [
+            {'realm_id': 'one', 'display_name': 'One', 'data_root': str(realm)},
+        ], 'source_profiles': {},
+    })
     write_json(data / 'runtime/source-profiles/astrid.json', {'version': 'old'})
     monkeypatch.setattr('runtime_protocol.fsclone.clone_or_copy_file', lambda src, dst: shutil.copy2(src, dst))
     backend = Backend(program, tmp_path / 'log', tmp_path / 'uv')
     backend.service.system = 'darwin'
     version = Version(program / 'versions/old', tmp_path / 'python', tmp_path / 'profile', {})
-    identity = {'realm_root': str(realm)}
+    identity = {'realm_id': 'one', 'realm_root': str(realm)}
     backup = backend.backup(version, data, identity)
     (realm / 'realm.sqlite3').write_text('migrated')
     write_json(data / 'runtime/source-profiles/astrid.json', {'version': 'new'})
