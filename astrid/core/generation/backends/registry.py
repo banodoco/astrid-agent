@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from astrid.core.foundation.paths import REPO_ROOT
 from astrid.core.generation.backends.base import BackendAdapter
+from astrid.core.generation.engine_contracts import PlacementDescriptor
 from astrid.core.model_catalog.taxonomy import (
     CLOUD_BACKEND_ID,
     CODEX_BACKEND_ID,
@@ -34,6 +35,28 @@ class GenerationBackendDescriptor:
     class_name: str
     label: str = ""
     init_kwargs: Mapping[str, Any] = field(default_factory=dict)
+    placement: PlacementDescriptor = field(default_factory=lambda: PlacementDescriptor(
+        schema="astrid.generation-placement.v1",
+        supported=("local",),
+        default="local",
+        engine=None,
+        requires_endpoint=False,
+    ))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.placement, PlacementDescriptor):
+            raise ValueError("placement must be a PlacementDescriptor")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return pack-compatible data, including explicit placement defaults."""
+        return {
+            "id": self.backend_id,
+            "module": self.module,
+            "class": self.class_name,
+            "label": self.label,
+            "init_kwargs": dict(self.init_kwargs),
+            "placement": self.placement.to_dict(),
+        }
 
     def create(
         self,
@@ -144,6 +167,8 @@ def descriptors_from_pack(pack: PackDefinition) -> tuple[GenerationBackendDescri
                 class_name=str(raw_backend["class"]),
                 label=str(raw_backend.get("label", "")),
                 init_kwargs=dict(raw_backend.get("init_kwargs", {})),
+                **({"placement": PlacementDescriptor.from_dict(raw_backend["placement"])}
+                   if "placement" in raw_backend else {}),
             )
         )
     return tuple(descriptors)

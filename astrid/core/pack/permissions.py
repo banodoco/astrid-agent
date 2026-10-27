@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrid.core.generation.engine_contracts import PlacementDescriptor
 from astrid.core.pack._common import (
     PACK_ALIAS_KINDS,
     PACK_PERMISSION_IDS,
@@ -251,7 +252,7 @@ def _normalize_generation_backends(value: Any, *, path: str) -> list[dict[str, A
         raise PackValidationError(f"{path} must be an array")
 
     normalized: list[dict[str, Any]] = []
-    allowed_keys = {"id", "label", "module", "class", "init_kwargs"}
+    allowed_keys = {"id", "label", "module", "class", "init_kwargs", "placement"}
     for index, raw_backend in enumerate(value):
         backend_path = f"{path}[{index}]"
         backend = _require_mapping(raw_backend, backend_path)
@@ -277,6 +278,13 @@ def _normalize_generation_backends(value: Any, *, path: str) -> list[dict[str, A
                 backend["init_kwargs"],
                 path=f"{backend_path}.init_kwargs",
             )
+        if "placement" in backend:
+            try:
+                normalized_backend["placement"] = PlacementDescriptor.from_dict(
+                    backend["placement"]
+                ).to_dict()
+            except ValueError as exc:
+                raise PackValidationError(f"{backend_path}.placement: {exc}") from exc
         normalized.append(normalized_backend)
     return normalized
 
