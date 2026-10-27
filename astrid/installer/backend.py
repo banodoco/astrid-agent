@@ -177,7 +177,7 @@ class Backend:
                 result = _runtime_json(exc.output or "")
             except (TypeError, ValueError):
                 raise RuntimeOperationError("Runtime command failed without a valid result.") from exc
-            self._raise_runtime_error(result, stop_refused=args == ("down",))
+            self._raise_runtime_error(result)
             raise RuntimeOperationError("Runtime command exited unsuccessfully.") from exc
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RuntimeOperationError(f"Runtime command failed: {self._command_failure(exc)}") from exc
@@ -185,24 +185,20 @@ class Backend:
             result = _runtime_json(output)
         except (TypeError, ValueError) as exc:
             raise RuntimeOperationError("Runtime command returned an invalid result.") from exc
-        self._raise_runtime_error(result, stop_refused=args == ("down",))
+        self._raise_runtime_error(result)
         return result
 
     @staticmethod
-    def _raise_runtime_error(result: dict, *, stop_refused: bool = False) -> None:
+    def _raise_runtime_error(result: dict) -> None:
         if not isinstance(result, dict):
             raise RuntimeOperationError("Runtime command returned an invalid result.")
         if result.get("ok") is False:
             error = result.get("error")
             if isinstance(error, dict):
                 details = error.get("details")
-                # The Runtime lifecycle report is an explicit refusal even
-                # when it came from upgrade's internal stop. Never infer stop
-                # permission from its count or human-readable message.
-                lifecycle_refused = isinstance(details, dict) and details.get("safe") is False
                 raise RuntimeOperationError(str(error.get("message") or "Runtime command failed."),
-                                            details=details, stop_refused=stop_refused or lifecycle_refused)
-            raise RuntimeOperationError(str(error or "Runtime command failed."), stop_refused=stop_refused)
+                                            details=details)
+            raise RuntimeOperationError(str(error or "Runtime command failed."))
 
     def existing(self, data: Path) -> Version | None:
         record = self.service.recorded()
@@ -434,10 +430,13 @@ class Backend:
     @staticmethod
     def _stop_failure(exc: Exception) -> RuntimeOperationError:
         details = getattr(exc, "details", None)
-        completed = (isinstance(details, dict) and details.get("stop_completed") is True
-                     and details.get("stop_authority_lost") is not True)
-        return RuntimeOperationError(str(exc), details=details,
-                                     stop_refused=not completed, stop_completed=completed)
+        return RuntimeOperationError(str(exc), details=details)
+
+    @staticmethod
+    def _downstream_stop_failure(exc: Exception) -> RuntimeOperationError:
+        """Keep post-C1 failures as context, never as a lifecycle refusal."""
+        details = getattr(exc, "details", None)
+        return RuntimeOperationError(str(exc), details={"cause_details": details})
 
     def _pending_restore_selection(self, data: Path):
         """Supply Runtime's narrow context for replaying an interrupted restore."""
@@ -503,7 +502,6 @@ class Backend:
 
     def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> None:
         """Run Runtime's single fenced stop and validated manager handoff."""
-        stop_completed = False
         try:
             from astrid_runtime.bootstrap import down
             from astrid_runtime.paths import RuntimePaths
@@ -570,7 +568,12 @@ class Backend:
                  stop_foreground=(stop_selected_foreground
                                   if restore_selection is None and isinstance(foreground, dict) else None),
                  restore_selection=restore_selection)
-            stop_completed = True
+        except Exception as exc:
+            raise self._stop_failure(exc) from exc
+
+        # The Runtime fence has been released and C1 succeeded. Keep failures
+        # from local bookkeeping downstream of the original lifecycle report.
+        try:
             if self.process_control:
                 self._write_process_control(data)
             # Retire only the unchanged foreground record after C1 completed.
@@ -581,16 +584,8 @@ class Backend:
                     selected.pop("foreground")
                     write_json(self.service.selection, selected)
                     self.service._foreground_process = None
-        except RuntimeOperationError as exc:
-            if stop_completed and not exc.stop_completed:
-                raise RuntimeOperationError(str(exc), details=exc.details or {"stop_completed": True},
-                                            stop_completed=True) from exc
-            raise
         except Exception as exc:
-            if stop_completed:
-                raise RuntimeOperationError(str(exc), details={"stop_completed": True},
-                                            stop_completed=True) from exc
-            raise self._stop_failure(exc) from exc
+            raise self._downstream_stop_failure(exc) from exc
 
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:

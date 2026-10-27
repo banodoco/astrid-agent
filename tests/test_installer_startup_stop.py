@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 from runtime_protocol import platform
 
-from astrid.installer.core import RuntimeOperationError, write_json
+from astrid.installer.core import RuntimeOperationError, is_lifecycle_refusal, write_json
 from tests.test_installer_busy_fence import Boundary, publish, realm_fixture
 
 
@@ -225,7 +225,7 @@ def test_stop_preserves_explicit_process_policy_and_defers_setting_write(tmp_pat
     if busy:
         with pytest.raises(RuntimeOperationError) as raised:
             chosen.stop(old, data)
-        assert raised.value.stop_refused
+        assert is_lifecycle_refusal(raised.value)
         assert raised.value.details['safe'] is False
         assert snapshot(data.rglob('*')) == before
         assert sorted(str(p) for p in data.rglob('*')) == names_before
@@ -257,8 +257,7 @@ def test_explicit_policy_still_refuses_invalid_stored_metadata(tmp_path, monkeyp
     chosen.service = backend.service
     with pytest.raises(RuntimeOperationError, match='process-control.json') as raised:
         chosen.stop(old, data)
-    assert raised.value.stop_refused
-    assert not raised.value.stop_completed
+    assert not is_lifecycle_refusal(raised.value)
     assert calls == []
     assert setting.read_bytes() == before
     assert setting.is_symlink() == (invalid == 'symlink')
@@ -325,8 +324,7 @@ def test_manager_failure_after_owner_removes_advertisements_allows_installer_rec
         monkeypatch.setattr(backend, operation, lambda *_, name=operation, **__: calls.append(name))
     with pytest.raises(RuntimeOperationError, match='manager unavailable') as raised:
         Installer(backend.root, data, backend, say=lambda _: None).run('update', {})
-    assert raised.value.stop_completed
-    assert not raised.value.stop_refused
+    assert not is_lifecycle_refusal(raised.value)
     assert calls == ['prepare', 'runtime-stop', 'disable', 'stop', 'register', 'start', 'verify']
     assert attempts == ['disable', 'disable']
     assert read_json(backend.root / 'update-transaction.json')['step'] == 'rolled_back'
@@ -428,7 +426,7 @@ def test_mutex_time_malformed_publication_revokes_completed_handoff_receipt(
         race.setattr(bootstrap, '_bootstrap_mutex', malformed_at_mutex_entry)
         with pytest.raises(RuntimeOperationError, match='malformed') as first:
             backend.stop(old, data)
-    assert first.value.stop_refused
+    assert not is_lifecycle_refusal(first.value)
     assert calls == []
 
     advertisement.unlink()
@@ -475,7 +473,7 @@ def test_agent_pre_handoff_validation_revokes_completed_receipt(
             backend.stop(old, data)
         else:
             backend.preflight_stop(data)
-    assert refusal.value.stop_refused
+    assert not is_lifecycle_refusal(refusal.value)
     assert calls == []
 
     if prior_bytes is None:
