@@ -35,6 +35,8 @@ import json
 import sys
 import sysconfig
 from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 def qualified():
     runtime = importlib.import_module('astrid_runtime.bootstrap')
@@ -47,21 +49,23 @@ def qualified():
     if environment != Path(sys.prefix).resolve():
         return False
     module = Path(runtime.__file__).resolve()
-    if module.parent.parent == checkout:
-        return True
     distribution = importlib.metadata.distribution('astrid-runtime')
     site = Path(distribution.locate_file('')).resolve()
     sites = {Path(sysconfig.get_path(name)).resolve() for name in ('purelib', 'platlib')}
     if site not in sites or not site.is_relative_to(environment):
         return False
-    entry = Path('astrid_runtime/bootstrap.py')
-    if entry not in (distribution.files or ()):
-        return False
-    if module != Path(distribution.locate_file(entry)).resolve():
+    # RECORD paths are POSIX; compare text so Windows path flavours match.
+    entry = next((item for item in (distribution.files or ())
+                  if item.as_posix() == 'astrid_runtime/bootstrap.py'), None)
+    if entry is None or module != Path(distribution.locate_file(entry)).resolve():
         return False
     origin = json.loads(distribution.read_text('direct_url.json') or '{}')
-    return (isinstance(origin, dict) and origin.get('url') == checkout.as_uri()
-            and origin.get('dir_info') == {})
+    if not isinstance(origin, dict) or origin.get('dir_info') != {}:
+        return False
+    url = urlsplit(origin.get('url') or '')
+    if url.scheme != 'file' or url.netloc not in ('', 'localhost') or url.query or url.fragment:
+        return False
+    return Path(url2pathname(url.path)).resolve() == checkout
 
 try:
     accepted = qualified()

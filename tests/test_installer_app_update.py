@@ -3,6 +3,7 @@
 import contextlib
 import json
 import runpy
+import shutil
 import subprocess
 import sys
 import venv
@@ -168,6 +169,43 @@ def test_selected_interpreter_refuses_unrelated_import_package_and_metadata_mism
         check=True, capture_output=True, text=True,
     )
     assert Path(probe.stdout.strip()) == rogue / "bootstrap.py"
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        lifecycle.validate(installed.selected)
+    assert "cannot safely hand off Pinokio Stop" in raised.value.stderr
+
+
+def test_selected_interpreter_qualifies_encoded_and_symlinked_checkout_paths(tmp_path):
+    """PEP 610 URLs are percent-encoded; profiles may name a symlinked folder."""
+    spaced = tmp_path / "Program Files %20"
+    spaced.mkdir()
+    installed = _install_test_runtime(spaced, "selected")
+    lifecycle, _calls = _qualification_lifecycle(spaced, installed.python)
+    lifecycle.validate(installed.selected)
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(spaced, target_is_directory=True)
+    profile = json.loads(installed.profile.read_text(encoding="utf-8"))
+    profile["runtime_checkout"] = str(alias / installed.source.name)
+    write_json(installed.profile, profile)
+    lifecycle.validate(installed.selected)
+
+
+def test_selected_interpreter_refuses_source_path_imports_without_installed_package(tmp_path):
+    """A .pth import of the recorded checkout is not the Backend.stage layout."""
+    installed = _install_test_runtime(tmp_path, "selected")
+    lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
+    for item in installed.site.iterdir():
+        if item.name.startswith("astrid_runtime"):
+            shutil.rmtree(item)
+    (installed.site / "runtime-checkout.pth").write_text(str(installed.source) + "\n",
+                                                         encoding="utf-8")
+    probe = subprocess.run(
+        [installed.python, "-I", "-c",
+         "import importlib; print(importlib.import_module('astrid_runtime.bootstrap').__file__)"],
+        check=True, capture_output=True, text=True,
+    )
+    assert Path(probe.stdout.strip()).resolve().parent.parent == installed.source.resolve()
 
     with pytest.raises(subprocess.CalledProcessError) as raised:
         lifecycle.validate(installed.selected)
