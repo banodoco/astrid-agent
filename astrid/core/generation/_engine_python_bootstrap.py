@@ -8,6 +8,7 @@ execution, deadlines and process custody; this module never runs anything.
 """
 from __future__ import annotations
 
+import glob
 import re
 
 PYPI_INDEX = "https://pypi.org/simple"
@@ -72,3 +73,24 @@ def linux_bootstrap_commands(*, install_root, uv_version, python_version, venv_r
              "--ignore-installed", "--prefix", paths["bootstrap"], "uv==" + uv_version),
             (paths["uv"], "--no-config", "venv", "--allow-existing", "--python", python_version,
              "--managed-python", paths["venv"]))
+
+
+SYSTEM_DRIVER_DIRS = ("/usr/local/nvidia/lib", "/usr/local/nvidia/lib64")
+
+
+def engine_child_env(venv_prefix, env=None):
+    """Child environment owned by the engine, for EVERY engine subprocess.
+
+    ``LD_LIBRARY_PATH`` is rebuilt from scratch and the caller's value is never
+    read: a system CUDA toolkit (``/usr/local/cuda*``, compat dirs included)
+    would otherwise shadow the wheels' own CUDA libraries. Order: the venv's
+    ``nvidia/*/lib`` directories (existing ones only), then the system driver
+    directories. Install helpers, readiness probes and the engine launch all
+    use this, so the launch fingerprint depends on the engine alone.
+    """
+    out = {k: v for k, v in dict(env or {}).items() if k != "LD_LIBRARY_PATH"}
+    venv = _root(venv_prefix)
+    pattern = glob.escape(venv) + "/lib/python*/site-packages/nvidia/*/lib"
+    venv_dirs = sorted(d for d in glob.glob(pattern) if not d.startswith("/usr/local/cuda"))
+    out["LD_LIBRARY_PATH"] = ":".join((*venv_dirs, *SYSTEM_DRIVER_DIRS))
+    return out

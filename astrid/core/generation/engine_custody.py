@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import math
@@ -28,6 +28,7 @@ import uuid
 from runtime_protocol import platform as native
 
 from . import engine_recipe as recipes
+from ._engine_python_bootstrap import engine_child_env
 from .engine_contracts import (
     CommandRequest, CommandResult, CustodyUnresolved, DeadlineExceeded,
     EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
@@ -310,7 +311,9 @@ class _Output:
 class _Owned:
     def __init__(self, request):
         from astrid.core.execution.process_group import popen_owned_group
-        env = dict(os.environ)
+        # The caller's library path is never inherited; request.env (built by
+        # engine_child_env) is the only source.
+        env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
         for key, value in request.env.items():
             if value is None:
                 env.pop(key, None)
@@ -470,6 +473,14 @@ class _Supervisor:
         if select.select([channel], [], [], 0)[0] and not channel.recv(1, socket.MSG_PEEK):
             raise EOFError
 
+    def child_request(self, request):
+        """Every engine subprocess (install helper, readiness probe, launch) gets the
+        engine-built environment. Applied at spawn, so the launch fingerprint (the
+        recipe env) never depends on the caller's or install-time library paths."""
+        primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
+        venv = self.adapter.join(self.root, primary.relative_path)
+        return replace(request, env=engine_child_env(venv, request.env))
+
     def spawn(self, request):
         if self.unresolved:
             raise CustodyUnresolved("session retains an unresolved native cleanup obligation")
@@ -477,7 +488,7 @@ class _Supervisor:
         owned = _Owned.__new__(_Owned)
         self.commands.append(owned)
         try:
-            owned.__init__(request)
+            owned.__init__(self.child_request(request))
         except BaseException as exc:
             if getattr(owned, "process", None) is not None:
                 self.unresolved = True
