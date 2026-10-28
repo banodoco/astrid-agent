@@ -255,6 +255,13 @@ def _lifecycle_result(
         else:
             raw_details = {}
             reason = str(raw_error or "launcher rejected the request")
+        if raw_details.get("code") == "identity_mismatch":
+            raise AutoBootstrapError(
+                reason,
+                next_action="astrid-runtime restart",
+                code="runtime_identity_mismatch",
+                details=raw_details,
+            )
         raise AutoBootstrapError(
             f"neutral runtime {action} was not ready: {reason}; {RECONFIGURE_ACTION}",
             code="runtime_" + action + "_rejected",

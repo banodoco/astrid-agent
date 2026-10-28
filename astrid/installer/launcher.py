@@ -142,6 +142,10 @@ python = str(Path(record["python"]))
 env = dict(os.environ)
 env.update({str(key): str(value) for key, value in record["env"].items()})
 env["ASTRID_INSTALL_PROGRAM_ROOT"] = str(root)
+if (not isinstance(record["env"].get("ASTRID_INSTALL_RELEASE"), str)
+        or not re.fullmatch(r"0|[1-9][0-9]*", record["env"]["ASTRID_INSTALL_RELEASE"])
+        or record["env"].get("ASTRID_INSTALL_MANAGED_BY") not in ("", "pinokio")):
+    raise SystemExit("Astrid's selected install identity needs repair; run the install line again.")
 if sys.argv[1:2] == ["credential"]:
     os.environ.update(env)
     from astrid.core.util.credential_store import main
@@ -150,16 +154,60 @@ replace_process([python, "-X", "utf8", "-I", "-m", "astrid.omp_agent", *sys.argv
 '''
 
 
-def install(root: Path) -> tuple[Path, ...]:
-    """Write stable launchers that follow root/current without changing PATH."""
+def publish_runtime_runner(root: Path) -> Path:
+    """Durably publish current admission before an update can stop or migrate."""
+    from runtime_protocol import platform
+
+    from . import foreground, service
+
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
-    runtime_runner.write_text(
-        'import sys\nfrom pathlib import Path\n'
-        'from astrid.installer.foreground import launch\n'
-        'launch(Path(__file__).resolve().parent, sys.argv[1:])\n',
-        encoding="utf-8", newline="\n",
+    # Retained packages supply the interpreter and core. Carry the current
+    # command builder and admission together so their older service cannot
+    # reintroduce an ordinary-launch bypass after rollback.
+    import inspect
+
+    admission_source = inspect.getsource(service.launch_admission)
+    service_source = (
+        'import inspect,json,os,re,sys\nfrom pathlib import Path\n'
+        'from astrid.installer.core import Version,absolute,current,read_json,version_id\n'
+        f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
+        + "\n".join(inspect.getsource(function) for function in (
+            service.default_program_root, service.installer_lock_path,
+            service.launch_admission, service.command,
+        ))
     )
+    foreground_source = Path(foreground.__file__).read_text(encoding="utf-8")
+    source = (
+        'import sys, importlib, types\nfrom pathlib import Path\n'
+        '_retained_service = importlib.import_module("astrid.installer.service")\n'
+        '_service = types.ModuleType("astrid.installer.service")\n'
+        '_service.__dict__.update(_retained_service.__dict__)\n'
+        f'exec(compile({service_source!r}, "<Astrid service launcher>", "exec"), _service.__dict__)\n'
+        f'_service._ADMISSION_SOURCE = {admission_source!r}\n'
+        'sys.modules["astrid.installer.service"] = _service\n'
+        '_foreground = {"__name__": "astrid.installer.foreground", '
+        '"__package__": "astrid.installer"}\n'
+        f'exec(compile({foreground_source!r}, "<Astrid foreground launcher>", "exec"), _foreground)\n'
+        '_foreground["launch"](Path(__file__).resolve().parent, sys.argv[1:])\n'
+    )
+    fd, temporary = platform.private_temporary(root, ".run_runtime.py.")
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(source)
+            stream.flush()
+            os.fsync(stream.fileno())
+        platform.durable_replace(temporary, runtime_runner)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return runtime_runner
+
+
+def install_runtime(root: Path) -> None:
+    """Refresh Runtime admission without replacing the retained terminal command."""
+    root = Path(root).absolute()
+    publish_runtime_runner(root)
     # Both renderings are useful for packaging/review; only the native one
     # is invoked. They follow current just like the agent launcher below.
     (root / "run.cmd").write_text(
@@ -180,10 +228,15 @@ def install(root: Path) -> tuple[Path, ...]:
         encoding="utf-8", newline="\n",
     )
     runtime_launcher.chmod(0o755)
+
+
+def install(root: Path) -> tuple[Path, ...]:
+    """Write stable launchers after the selected version has identity stamps."""
+    root = Path(root).absolute()
+    install_runtime(root)
     runner = root / "run_astrid.py"
-    # This launcher is rewritten before repair/update, while the selected
-    # version may predate the helper. Embed its authoritative implementation
-    # so the runner also works after a failed update or rollback.
+    # The selected package may predate the process helper. Embed it so the
+    # runner also works after a failed update or rollback.
     process_source = Path(_process.__file__).read_text(encoding="utf-8")
     runner.write_text(process_source + "\n" + _RUNNER, encoding="utf-8", newline="\n")
     if os.name == "nt":

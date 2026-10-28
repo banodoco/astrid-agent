@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import runpy
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -11,7 +12,7 @@ from types import ModuleType
 import pytest
 
 from astrid.installer import foreground, launcher, service
-from astrid.installer.core import Version, current, write_json
+from astrid.installer.core import Version, current, switch, write_json
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +38,8 @@ def _installation(tmp_path: Path, name: str = "v1") -> tuple[Path, Path, Version
     python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     python.chmod(0o755)
     profile.write_text("{}\n", encoding="utf-8")
-    version = Version(version_root, python, profile, {"ASTRID_VERSION_MARKER": name})
+    version = Version(version_root, python, profile, {"ASTRID_VERSION_MARKER": name},
+                      release=52, managed_by="pinokio")
     write_json(version_root / "version.json", version.document())
     write_json(root / "install.json", {
         "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data)
@@ -55,6 +57,7 @@ def _clean_environment(version: Version) -> dict[str, str]:
         "ASTRID_RUNTIME_SOURCE_MANIFEST",
         "ASTRID_RUNTIME_DATA_ROOT",
         "ASTRID_PACKS_PATH",
+        "ASTRID_INSTALLER_OPERATION_ID",
     }
     env = {key: value for key, value in os.environ.items() if key not in excluded}
     env.update(version.env)
@@ -104,7 +107,8 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         windows_python = version.root / "py" / "Scripts" / "python.exe"
         windows_python.parent.mkdir(parents=True)
         windows_python.write_text("fake console Python", encoding="utf-8")
-        version = Version(version.root, windows_python, version.profile, version.env)
+        version = Version(version.root, windows_python, version.profile, version.env,
+                          version.release, version.managed_by)
         write_json(version.root / "version.json", version.document())
         expected = service.command(
             version,
@@ -151,6 +155,7 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         assert Path(task_command[0]).name == "pythonw.exe"
         assert str(root / "service-env.json") in expected[-1]
         assert windows_env["ASTRID_INSTALL_MANAGED_BY"] == "pinokio"
+        assert windows_env["ASTRID_INSTALL_RELEASE"] == "52"
         assert windows_env["ASTRID_VERSION_MARKER"] == "v1"
         assert "PYTHONPATH" not in windows_env
         assert windows_env["ASTRID_WARM_IDLE_SECONDS"] == "17"
@@ -159,8 +164,10 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     with pytest.raises(ExecCalled):
         foreground.launch(root, extra_args, system=system)
 
+    selected = current(root)
+    assert selected is not None
     expected = service.command(
-        version,
+        selected,
         data,
         windows=False,
         env_file=root / "service-env.json",
@@ -169,8 +176,9 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     )
     assert seen["file"] == expected[0]
     assert seen["argv"] == expected
-    assert seen["env"] == _clean_environment(version)
+    assert seen["env"] == _clean_environment(selected)
     assert seen["env"]["ASTRID_INSTALL_MANAGED_BY"] == "pinokio"  # type: ignore[index]
+    assert seen["env"]["ASTRID_INSTALL_RELEASE"] == "52"  # type: ignore[index]
     for key in (
         "PYTHONPATH",
         "PYTHONHOME",
@@ -179,6 +187,7 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
         "ASTRID_RUNTIME_SOURCE_MANIFEST",
         "ASTRID_RUNTIME_DATA_ROOT",
         "ASTRID_PACKS_PATH",
+        "ASTRID_INSTALLER_OPERATION_ID",
     ):
         assert key not in seen["env"]  # type: ignore[operator]
     # The settings file is consumed by the embedded service command itself.
@@ -188,6 +197,125 @@ def test_launch_uses_current_version_service_command_and_pinokio_environment(
     assert _runtime_args(expected)[-len(extra_args):] == extra_args
 
 
+def _second_version(root: Path, name: str = "candidate") -> Version:
+    folder = root / "versions" / name
+    python = folder / "py" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    profile = folder / "profile.json"
+    profile.write_text("{}\n", encoding="utf-8")
+    result = Version(folder, python, profile, {"ASTRID_VERSION_MARKER": name},
+                    release=53, managed_by="pinokio")
+    write_json(folder / "version.json", result.document())
+    return result
+
+
+def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, monkeypatch):
+    root, data, old = _installation(tmp_path)
+    candidate = _second_version(root)
+    switch(root, candidate)
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "1" * 32,
+        "transaction_kind": "migration", "step": "switched", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": {"realm_id": "test-realm", "realm_root": str(data / "realm")},
+    })
+
+    class ExecCalled(Exception):
+        pass
+
+    monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "not-used")
+    monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: (_ for _ in ()).throw(ExecCalled()))
+    with (tmp_path / "installer.lock").open("a+b") as lock:
+        with pytest.raises(ExecCalled):
+            foreground._run(root, [], "linux", lock.fileno())
+
+
+def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path, monkeypatch):
+    root, data, old = _installation(tmp_path)
+    candidate = _second_version(root)
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "1" * 32,
+        "transaction_kind": "migration", "step": "migrated", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+    })
+
+    with pytest.raises(ValueError, match="interrupted|Update"):
+        foreground._run(root, [], "linux", 123)
+
+
+@pytest.mark.parametrize(("step", "selected", "allowed", "data_matches"), [
+    ("switched", "candidate", True, True),
+    ("switched", "old", False, True),
+    ("rollback_selected", "old", True, True),
+    ("rollback_selected", "candidate", False, True),
+    ("migrated", "old", False, True),
+    ("future-step", "old", False, True),
+    ("switched", "candidate", False, False),
+    ("complete", "old", True, True),
+    ("rolled_back", "old", True, True),
+    (None, "old", True, True),
+])
+def test_generated_foreground_retains_exact_admission_across_rollback(
+        tmp_path, monkeypatch, step, selected, allowed, data_matches):
+    root, data, old = _installation(tmp_path)
+    candidate = _second_version(root)
+    chosen = candidate if selected == "candidate" else old
+    if selected == "candidate":
+        switch(root, candidate)
+    if step is not None:
+        write_json(root / "update-transaction.json", {
+            "format": "astrid-install-update/v1", "operation_id": "a" * 32,
+            "transaction_kind": "migration", "step": step,
+            "data_root": str(data if data_matches else data / "other"),
+            "old": old.document(), "candidate": candidate.document(),
+            "realm": {"realm_id": "test-realm", "realm_root": str(data / "realm")},
+        })
+    launcher.install(root)
+
+    # The generated entry carries the admission prelude even when the selected
+    # retained package predates the current service builder.
+    monkeypatch.setattr(foreground, "launch", lambda *_args, **_kwargs: pytest.fail("old foreground imported"))
+    monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py"), "--hosted-origin", "off"])
+    observed = []
+
+    class ExecCalled(Exception):
+        pass
+
+    def capture(_file, arguments, environment):
+        observed.append((arguments, environment))
+        raise ExecCalled
+
+    monkeypatch.setattr(os, "execvpe", capture)
+    if allowed:
+        with pytest.raises(ExecCalled):
+            runpy.run_path(str(root / "run_runtime.py"))
+        arguments, environment = observed[0]
+        assert arguments[0] == str(chosen.python)
+        assert _runtime_args(arguments) == [
+            "run", "--profile", "astrid", "--data-root", str(data),
+            "--source-manifest", str(chosen.profile), "--hosted-origin", "off",
+        ]
+        assert "ASTRID_INSTALLER_OPERATION_ID" not in environment
+    else:
+        with pytest.raises(ValueError, match="interrupted|Update"):
+            runpy.run_path(str(root / "run_runtime.py"))
+        assert observed == []
+
+
+def test_generated_foreground_refuses_malformed_pending_journal(tmp_path, monkeypatch):
+    root, _data, _old = _installation(tmp_path)
+    candidate = _second_version(root)
+    (root / "current").write_text(candidate.root.name + "\n", encoding="utf-8")
+    (root / "update-transaction.json").write_text("{broken", encoding="utf-8")
+    launcher.install(root)
+    monkeypatch.setattr(sys, "argv", [str(root / "run_runtime.py")])
+    monkeypatch.setattr(os, "execvpe", lambda *_args: pytest.fail("malformed journal launched Runtime"))
+    with pytest.raises(ValueError, match="interrupted|Update"):
+        runpy.run_path(str(root / "run_runtime.py"))
+
+
 def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, data, first = _installation(tmp_path, "v1")
     second_root = root / "versions" / "v2"
@@ -195,7 +323,7 @@ def test_launch_resolves_the_selected_version_each_time(tmp_path: Path, monkeypa
     second_python.parent.mkdir(parents=True)
     second_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     second_python.chmod(0o755)
-    second = Version(second_root, second_python, second_root / "profile.json", {"ASTRID_VERSION_MARKER": "v2"})
+    second = Version(second_root, second_python, second_root / "profile.json", {"ASTRID_VERSION_MARKER": "v2"}, managed_by="pinokio")
     write_json(second_root / "version.json", second.document())
     calls: list[list[str]] = []
 
@@ -230,3 +358,36 @@ def test_run_renderings_keep_arguments_and_windows_console_owner(tmp_path):
     assert '"%ASTRID_PROGRAM_ROOT%versions\\%ASTRID_VERSION%\\py\\Scripts\\python.exe" -X utf8 -I "%ASTRID_PROGRAM_ROOT%run_runtime.py" %*' in windows
     assert 'exit /b %errorlevel%' in windows
     assert 'pythonw' not in windows and 'start ' not in windows.lower()
+
+
+def test_publish_runtime_runner_fsyncs_before_atomic_replace_and_preserves_wrappers(tmp_path, monkeypatch):
+    from runtime_protocol import platform
+
+    root, _data, _version = _installation(tmp_path)
+    launcher.install(root)
+    wrappers = {path: path.read_bytes() for path in root.iterdir() if path.is_file()}
+    runner = root / "run_runtime.py"
+    runner.write_text("# obsolete admission\n")
+    events = []
+    fsync, replace = os.fsync, platform.durable_replace
+
+    def flushed(fd):
+        events.append("fsync")
+        fsync(fd)
+
+    def publish(source, target):
+        assert events == ["fsync"]
+        assert source.parent == root
+        assert target == runner
+        assert runner.read_text() == "# obsolete admission\n"
+        compile(source.read_text(), str(source), "exec")
+        replace(source, target)
+        events.append("replaced")
+
+    monkeypatch.setattr(os, "fsync", flushed)
+    monkeypatch.setattr(platform, "durable_replace", publish)
+    assert launcher.publish_runtime_runner(root) == runner
+    assert events[-1] == "replaced"
+    assert runner.read_bytes() == wrappers.pop(runner)
+    assert all(path.read_bytes() == content for path, content in wrappers.items())
+    assert list(root.glob(".run_runtime.py.*")) == []

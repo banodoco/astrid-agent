@@ -49,8 +49,10 @@ def test_windows_installer_lock_stays_outside_program_and_workspace(tmp_path, mo
         path.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     data = platform.data_root()
     monkeypatch.setattr(cli, "current", lambda _: SimpleNamespace(python=Path(__file__)))
@@ -97,8 +99,10 @@ def test_windows_installer_does_not_bypass_existing_directory_validation(tmp_pat
         Path(path).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     monkeypatch.setattr(platform, "lock_file", Mock())
     monkeypatch.setattr(platform, "unlock_file", Mock())
@@ -183,8 +187,10 @@ def test_windows_refuses_selected_roots_containing_installer_lock(tmp_path, monk
         Path(path).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     monkeypatch.setattr(platform, "lock_file", Mock())
     monkeypatch.setattr(platform, "unlock_file", Mock())
@@ -206,6 +212,7 @@ def test_unix_installer_retains_original_per_user_lock(tmp_path, monkeypatch, sy
     monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     monkeypatch.setattr(cli, "current", lambda _: SimpleNamespace(python=Path(__file__)))
     monkeypatch.setattr(cli, "Installer", Mock())

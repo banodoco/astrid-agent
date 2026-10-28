@@ -9,10 +9,19 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from runtime_protocol import platform
 
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-from astrid.installer import tools
+from astrid.installer import cli, tools
 from astrid.installer.backend import Backend
+from astrid.installer.core import (
+    RuntimeOperationError,
+    VerificationError,
+    Version,
+    switch,
+    write_json,
+)
+from astrid.installer.service import LABEL, venv_python
 
 
 def test_first_tool_archive_creates_its_missing_parent(tmp_path, monkeypatch):
@@ -191,13 +200,21 @@ def test_local_source_cleans_failed_extraction(repository, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("with_vibecomfy", [False, True])
-def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch, with_vibecomfy):
+@pytest.mark.parametrize("managed_by", [None, "pinokio"])
+@pytest.mark.parametrize("release", [None, 73])
+def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch, with_vibecomfy, managed_by, release):
     value = manifest()
+    if release is not None:
+        value["release"] = release
     value["agent"]["repo"] = str(tmp_path / "agent")
     value["runtime"]["repo"] = (tmp_path / "runtime").as_uri()
     if with_vibecomfy:
         value["vibecomfy"] = {"sha": "c" * 40, "repo": str(tmp_path / "vibecomfy")}
-    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv", managed_by=managed_by)
+    backend.uv.touch()
+    # The CLI writes this marker before staging; install_identity reads managed_by from it.
+    write_json(tmp_path / "program" / "install.json",
+               {"owner": LABEL, "data_root": str(tmp_path / "data"), **({"managed_by": managed_by} if managed_by else {})})
     calls = []
 
     def materialize(name, sha, destination, *, repo=None):
@@ -223,8 +240,203 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     assert calls == [(name, effective[name]["sha"], version.root / directory, effective[name].get("repo"))
                      for name, directory in (("agent", "a"), ("runtime", "r"), ("vibecomfy", "v"))]
     assert json.loads((version.root / "manifest.json").read_text()) == effective
+    expected_release = release or 0
+    assert json.loads((version.root / "version.json").read_text())["identity"] == {
+        "release": expected_release, "managed_by": managed_by,
+    }
+    assert version.env["ASTRID_INSTALL_RELEASE"] == str(expected_release)
+    assert version.env["ASTRID_INSTALL_MANAGED_BY"] == (managed_by or "")
     assert ("vibecomfy" in value) is with_vibecomfy
     assert "ASTRID_VIBECOMFY_CHECKOUT" not in version.env
+
+
+@pytest.mark.parametrize("uv_kind", ["relative", "missing", "directory"])
+def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypatch, uv_kind):
+    if uv_kind == "relative":
+        uv = Path("uv")
+    elif uv_kind == "directory":
+        uv = tmp_path / "uv-directory"
+        uv.mkdir()
+    else:
+        uv = tmp_path / "missing-uv"
+    backend = Backend(tmp_path / "program", tmp_path / "log", uv)
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: pytest.fail(
+        "subprocess setup must not start without the bootstrap uv"))
+    monkeypatch.setattr("astrid.installer.backend.source", lambda *_args, **_kwargs: pytest.fail(
+        "source materialization must not start without the bootstrap uv"))
+
+    with pytest.raises(ValueError, match="pinned user-local uv"):
+        backend.stage(manifest(), backend.root, tmp_path / "data")
+
+    assert not backend.root.exists()
+
+
+@pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback"])
+def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
+        tmp_path, monkeypatch, capsys, outcome):
+    """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
+    home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
+    old_root = root / "versions" / "old"
+    for path in (old_root / "a", old_root / "r", old_root / "tools"):
+        path.mkdir(parents=True)
+    (old_root / "a" / "broken-source.txt").write_text("damaged old Agent")
+    (old_root / "tools" / "broken-tool").write_text("damaged old tool")
+    old_profile = old_root / "profile.json"
+    old_services = old_root / "services.json"
+    old_services.write_text(json.dumps({"services": [{"name": "chat", "env": {
+        "ASTRID_ACP_CWD": str(home / "saved-chat"),
+        "ASTRID_ACP_PROFILE": "saved-profile",
+    }}]}), encoding="utf-8")
+    write_json(old_profile, {
+        "profile": "astrid", "runtime_checkout": str(old_root / "r"),
+        "source_checkout": str(old_root / "a"), "runtime_environment": str(old_root),
+        "service_declaration": str(old_services),
+    })
+    old = Version(old_root, Path(sys.executable), old_profile,
+                  {"PATH": os.defpath, "ASTRID_RUNTIME_DOOR_PORT": "17399"}, release=9)
+    write_json(old_root / "version.json", old.document())
+    root.mkdir(parents=True, exist_ok=True)
+    switch(root, old)
+    data.mkdir()
+    workspace_sentinel = data / "user-work.txt"
+    workspace_sentinel.write_bytes(b"user workspace stays byte-identical")
+    write_json(root / "install.json", {"owner": LABEL, "data_root": str(data)})
+    manifest_path = tmp_path / "candidate.json"
+    candidate_manifest = manifest()
+    candidate_manifest["release"] = 9
+    write_json(manifest_path, candidate_manifest)
+    uv = tmp_path / "uv"
+    uv.touch()
+
+    backend = Backend(root, tmp_path / "install.log", uv)
+    backend.service.recorded = lambda: {}
+    backend.service.login_service_exists = lambda: False
+    backend.source_checkout_ownership = lambda *_args: False
+    backend.preflight_stop = lambda *_args: None
+    backend.workspace = lambda *_args: {"realm_id": "retained-realm", "realm_root": str(data / "realm")}
+    backend.has_workspace = lambda _data: True
+    calls = {name: [] for name in ("validate", "stop", "backup", "upgrade", "register", "start", "verify", "finish")}
+
+    def validate_candidate(*args):
+        calls["validate"].append(args[0])
+        if outcome == "preparation-failure":
+            raise ValueError("candidate rejected during preparation")
+
+    def stop(version, _data):
+        calls["stop"].append(version.root)
+        if outcome == "busy" and version.root == old_root:
+            raise RuntimeOperationError("Runtime is busy", details={"safe": False})
+
+    def verify(version, *_args, **_kwargs):
+        calls["verify"].append(version.root)
+        if outcome == "rollback" and version.root != old_root:
+            raise VerificationError("candidate did not become ready")
+
+    backend.validate_candidate = validate_candidate
+    backend.stop = stop
+    backend.backup = lambda *_args: calls["backup"].append("called")
+    backend.upgrade = lambda *_args: calls["upgrade"].append("called")
+    backend.register = lambda version, *_args: calls["register"].append(version.root)
+    backend.start = lambda version, *_args: calls["start"].append(version.root)
+    backend.verify = verify
+    backend.finish = lambda *_args: calls["finish"].append("called")
+    backend.open = lambda: None
+    materialized = []
+
+    def source(name, sha, destination, **_kwargs):
+        destination.mkdir(parents=True)
+        (destination / "fresh-source.txt").write_text(f"{name}:{sha}")
+        if name == "agent":
+            (destination / "remotion/node_modules").mkdir(parents=True)
+            (destination / "remotion/package-lock.json").write_text("{}\n")
+        materialized.append((name, destination))
+        return destination
+
+    def run(argv, **_kwargs):
+        args = [str(part) for part in argv]
+        if args[1:] == ["--version"]:
+            return "uv 1.2.3"
+        if args[1] == "venv":
+            environment = Path(args[-1])
+            python = venv_python(environment)
+            python.parent.mkdir(parents=True)
+            python.touch()  # The subprocess boundary below supplies this candidate's commands.
+            return ""
+        if any("source_checkout_digest" in part for part in args):
+            return "fresh-source-digest"
+        return ""
+
+    monkeypatch.setattr("astrid.installer.backend.source", source)
+    monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args: (
+        dest.mkdir(parents=True) or {
+            "PATH": str(dest), "ASTRID_NODE_EXECUTABLE": str(dest / "node"),
+            "ASTRID_BUN_EXECUTABLE": str(dest / "bun"),
+        }))
+    monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
+    monkeypatch.setattr(backend, "run", run)
+    monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
+    monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
+        parents=True, exist_ok=True))
+    monkeypatch.setattr(cli, "Backend", lambda *_args, **_kwargs: backend)
+
+    result = cli.main(["--update", "--root", str(root), "--data-root", str(data),
+                       "--manifest", str(manifest_path), "--uv", str(uv)])
+
+    candidates = [path for name, path in materialized if name == "agent"]
+    assert len(candidates) == 1
+    fresh_root = candidates[0].parent
+    assert fresh_root != old_root
+    assert (old_root / "a" / "broken-source.txt").read_text() == "damaged old Agent"
+    assert (old_root / "tools" / "broken-tool").read_text() == "damaged old tool"
+    assert (fresh_root / "a" / "fresh-source.txt").is_file()
+    assert (fresh_root / "tools").is_dir()
+    assert [name for name, _path in materialized] == ["agent", "runtime", "vibecomfy"]
+    assert all(path.is_relative_to(fresh_root) for _name, path in materialized)
+    staged = json.loads((fresh_root / "version.json").read_text(encoding="utf-8"))
+    assert staged["identity"]["release"] == 9
+    assert staged["env"]["ASTRID_RUNTIME_DOOR_PORT"] == "17399"
+    assert (fresh_root / "profile.json").is_file()
+    assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
+
+    selected = (root / "current").read_text(encoding="utf-8").strip()
+    transaction = json.loads((root / "update-transaction.json").read_text(encoding="utf-8")) \
+        if (root / "update-transaction.json").exists() else None
+    if outcome == "ready":
+        assert result == 0
+        assert selected == fresh_root.name
+        assert transaction["step"] == "complete"
+        assert calls["stop"] == [old_root, fresh_root]
+        assert calls["backup"] == ["called"] and calls["upgrade"] == ["called"]
+        assert calls["finish"] == ["called"]
+    elif outcome == "preparation-failure":
+        assert result == 1
+        assert selected == old_root.name
+        assert transaction is None
+        assert len(calls["validate"]) == 1
+        assert calls["stop"] == calls["backup"] == calls["upgrade"] == []
+        assert calls["register"] == calls["start"] == calls["verify"] == []
+    elif outcome == "busy":
+        assert result == 1
+        assert selected == old_root.name
+        assert transaction["step"] == "complete"
+        assert transaction["outcome"] == "stop_refused"
+        assert calls["stop"] == [old_root]
+        assert calls["backup"] == calls["upgrade"] == []
+        assert calls["register"] == calls["start"] == calls["verify"] == []
+    else:
+        assert result == 1
+        assert selected == old_root.name
+        assert transaction["step"] == "rolled_back"
+        assert calls["stop"] == [old_root, fresh_root, fresh_root]
+        assert calls["backup"] == ["called"] and calls["upgrade"] == ["called"]
+        assert calls["register"] == [fresh_root, old_root]
+        assert calls["start"] == [fresh_root, old_root]
+        assert calls["verify"] == [fresh_root, old_root]
+    output = capsys.readouterr().out.lower()
+    assert ("couldn't finish" not in output) is (outcome == "ready")
 
 
 @pytest.mark.parametrize("pin", [None, {}, {"sha": None}, {"sha": "main"}, {"sha": "A" * 40}])
@@ -269,7 +481,10 @@ def test_vibecomfy_download_uses_the_pinned_fork(tmp_path, monkeypatch):
 def test_installed_vibecomfy_is_visible_to_pack_host_without_checkout(tmp_path, monkeypatch):
     import importlib.util
 
-    from astrid.core.execution.generic_host import GenericPackHost, _install_host_vibecomfy_import_root
+    from astrid.core.execution.generic_host import (
+        GenericPackHost,
+        _install_host_vibecomfy_import_root,
+    )
     from astrid.core.generation import gpu_environment
     from astrid.core.generation.vibecomfy_dependency import configured_vibecomfy_checkout
 
