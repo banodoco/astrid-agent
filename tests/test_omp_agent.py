@@ -16,9 +16,37 @@ from astrid import agent_context
 from astrid.core.util import process as _process
 
 
+# Launcher env that omp_agent reads or writes straight into os.environ. Clearing
+# them per test keeps a foreign shell or an earlier test from steering routing.
+_LAUNCHER_ENV = (
+    "ASTRID_AGENT_IDENTITY",
+    "ASTRID_AGENT_LAUNCHER",
+    "ASTRID_HOST_EXECUTION_PROFILE",
+    "ASTRID_OMP_PYTHON",
+    "ASTRID_STOCK_OMP",
+    "ASTRID_SYSTEM_PROMPT",
+    "ASTRID_SYSTEM_PROMPT_FILE",
+    "OMP_AGENT_IDENTITY",
+    "OMP_AGENT_IDENTITY_FILE",
+    "OMP_AGENT_LAUNCHER",
+    "OMP_BIN",
+    "OMP_DISPLAY_VERSION",
+)
+
+
 @pytest.fixture(autouse=True)
 def stub_preferences_context(monkeypatch):
     monkeypatch.setattr(agent_context, "current_context", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def isolate_launcher_environment(monkeypatch):
+    # monkeypatch only records a name it already sees, so setenv-then-delenv
+    # records the true prior state of every name. Teardown then restores it
+    # even for names that were absent and that main() writes directly.
+    for name in _LAUNCHER_ENV:
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
 
 
 def test_installed_mode_uses_shipped_profile_despite_user_profile(monkeypatch) -> None:
