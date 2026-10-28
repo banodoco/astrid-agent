@@ -685,6 +685,11 @@ def main(argv: list[str] | None = None) -> int:
 
         return engines_main(rest[1:])
 
+    if rest and rest[0] == "action":
+        from .core.action_cli import main as action_main
+
+        return action_main(rest[1:])
+
     if rest and rest[0] == "install":
         return _dispatch_toolkit(rest)
 
