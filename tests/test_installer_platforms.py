@@ -246,7 +246,7 @@ def test_backend_native_failures_reach_transaction_and_log_details(tmp_path, mon
 
 def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tmp_path, monkeypatch):
     backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv')
-    old_command = tmp_path / 'old astrid command'
+    old_command = tmp_path / 'old astrid command.exe'
     old_command.write_text('external executable')
     old_command.chmod(0o755)
     old_profile = tmp_path / 'old' / 'profile.json'
@@ -258,7 +258,7 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
             'ASTRID_ACP_CWD': str(tmp_path / 'previous chat cwd'),
             'ASTRID_ACP_SESSION_DIR': str(tmp_path / 'chat sessions'),
             'ASTRID_ACP_PROFILE': 'film-profile',
-            'ASTRID_ACP_COMMAND': str(tmp_path / 'old astrid command'),
+            'ASTRID_ACP_COMMAND': str(old_command),
         },
     }]}))
     old = Version(tmp_path / 'old', tmp_path / 'old' / 'py' / 'bin' / 'python', old_profile, {})
@@ -289,7 +289,7 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
     assert pinned_bun in recorded['argv']
     assert recorded['env']['ASTRID_ACP_SESSION_DIR'] == str(tmp_path / 'chat sessions')
     assert recorded['env']['ASTRID_ACP_PROFILE'] == 'film-profile'
-    assert recorded['env']['ASTRID_ACP_COMMAND'] == str(tmp_path / 'old astrid command')
+    assert recorded['env']['ASTRID_ACP_COMMAND'] == str(old_command)
     assert Path(recorded['argv'][-2]) == tmp_path / 'previous chat cwd'
     assert services_path == tmp_path / 'candidate' / 'services.json'
     assert json.loads(services_path.read_text(encoding='utf-8')) == {'version': 1, 'services': []}
@@ -789,19 +789,17 @@ def test_chat_declaration_failure_can_retry_without_claiming_fresh_workspace(tmp
     backend.register(version, data)
     assert read_json(backend.service.selection)['chat_settings']['ASTRID_ACP_CWD'] == str(data / 'chat')
 
-@pytest.mark.parametrize('kind', ['missing', 'bare', 'stale', 'version', 'external', 'directory', 'non_executable'])
+@pytest.mark.parametrize('kind', ['missing', 'bare', 'stale', 'version', 'external', 'directory'])
 @pytest.mark.parametrize('mode', ['install', 'update'])
 def test_chat_command_carryover_uses_selected_default_or_external(tmp_path, monkeypatch, kind, mode):
     from astrid.services import service_declaration
 
-    if kind == 'non_executable' and sys.platform == 'win32':
-        pytest.skip('Windows does not expose POSIX executable permission bits')
     root, data = tmp_path / 'program', tmp_path / 'data'
     folder = root / 'versions' / 'candidate'
     folder.mkdir(parents=True)
     python = folder / 'py' / 'bin' / 'python'
     bun = folder / 'bun'
-    external = tmp_path / 'external command'
+    external = tmp_path / 'external command.exe'
     external.write_text('executable')
     external.chmod(0o755)
     internal = root / 'versions' / 'old' / 'astrid'
@@ -853,7 +851,7 @@ def test_repair_chat_command_uses_selected_default_or_external(tmp_path, kind):
     internal.parent.mkdir(parents=True)
     internal.write_text('old')
     internal.chmod(0o755)
-    external = tmp_path / 'external'
+    external = tmp_path / 'external.exe'
     external.write_text('external')
     external.chmod(0o755)
     values = {'missing': None, 'bare': 'astrid-other', 'stale': str(tmp_path / 'missing'),
@@ -869,3 +867,38 @@ def test_repair_chat_command_uses_selected_default_or_external(tmp_path, kind):
     default = str(python.with_name('astrid.exe')) if sys.platform == 'win32' else 'astrid'
     assert command == (str(external) if kind == 'external' else default)
     assert changed == (kind != 'external')
+
+
+@pytest.mark.windows_installer
+def test_chat_command_windows_rejects_text_and_accepts_external_cmd(tmp_path):
+    backend = Backend(tmp_path / 'program', tmp_path / 'log', tmp_path / 'uv')
+    text_file = tmp_path / 'command.txt'
+    text_file.write_text('not a command')
+    command = tmp_path / 'command.CMD'
+    command.write_text('@echo off\r\n')
+    assert not backend._external_chat_command(str(text_file))
+    assert backend._external_chat_command(str(command))
+
+
+def test_chat_command_windows_extensions_without_native_runner(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import astrid.installer.backend as backend_module
+
+    backend = Backend(tmp_path / 'program', tmp_path / 'log', tmp_path / 'uv')
+    monkeypatch.setattr(backend_module, 'sys', SimpleNamespace(platform='win32'))
+    for suffix, expected in [('.txt', False), ('.exe', True), ('.com', True), ('.CMD', True), ('.bat', True)]:
+        command = tmp_path / ('command' + suffix)
+        command.write_text('fixture')
+        assert backend._external_chat_command(str(command)) is expected
+    unsafe = tmp_path / 'unsafe%command.cmd'
+    unsafe.write_text('fixture')
+    assert not backend._external_chat_command(str(unsafe))
+
+
+@pytest.mark.posix_native
+def test_chat_command_rejects_non_executable_file(tmp_path):
+    backend = Backend(tmp_path / 'program', tmp_path / 'log', tmp_path / 'uv')
+    command = tmp_path / 'command'
+    command.write_text('fixture')
+    command.chmod(0o644)
+    assert not backend._external_chat_command(str(command))

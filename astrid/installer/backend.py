@@ -233,8 +233,16 @@ class Backend:
             path = Path(command)
             resolved = path.resolve(strict=True)
             versions = (self.root / "versions").resolve()
+            if sys.platform == "win32":
+                # Node launches exe/com directly; cmd/bat go through cmd.exe.
+                suffix = path.suffix.lower()
+                launchable = suffix in {".exe", ".com", ".cmd", ".bat"}
+                if suffix in {".cmd", ".bat"} and any(c in command for c in '\r\n"%'):
+                    launchable = False
+            else:
+                launchable = os.access(resolved, os.X_OK)
             return (path.is_absolute() and resolved.is_file()
-                    and os.access(resolved, os.X_OK)
+                    and launchable
                     and not resolved.is_relative_to(versions)
                     and not Path(os.path.abspath(path)).is_relative_to(Path(os.path.abspath(self.root / "versions"))))
         except (OSError, ValueError, RuntimeError):
