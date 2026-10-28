@@ -679,6 +679,10 @@ class _ManagedVibeSessionAdapter:
             if reason == "cpu_residency_eviction":
                 self.cpu_handoff_failed = True
             raise
+        finally:
+            transport = getattr(self.backend, "_endpoint_transport", None)
+            if transport is not None:
+                transport.close()
 
 
 class _ManagedWanChildAdapter:
@@ -1110,18 +1114,11 @@ def _read_readiness_profile_document() -> Mapping[str, Any] | None:
     profile_path = os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH")
     if not profile_path:
         return None
+    from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
     try:
-        profile_bytes = Path(profile_path).read_bytes()
-        expected_hash = os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH", "")
-        actual_hash = "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
-        if not expected_hash or expected_hash != actual_hash:
-            raise HostError("readiness profile hash does not match the supplied profile")
-        profile = json.loads(profile_bytes.decode("utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HostError(f"readiness profile is unreadable: {exc}") from exc
-    if not isinstance(profile, Mapping):
-        raise HostError("readiness profile is not an object")
-    return profile
+        return read_workflow_profile(profile_path, os.environ.get("ASTRID_HOST_READINESS_PROFILE_HASH", ""))
+    except Exception:
+        raise HostError("readiness profile is unreadable or its hash does not match") from None
 
 
 def _registration_verified_facts() -> dict[str, dict[str, Any]] | dict[str, Any]:
@@ -7849,6 +7846,7 @@ class GenericPackHost:
         network_broker: _NetworkBrokerContext | None = None,
         network_policy: Mapping[str, Any] | None = None,
         allow_runtime_connection: bool = True,
+        workflow_execution_request: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Build a redacted, manifest-scoped child environment.
 
@@ -7869,6 +7867,7 @@ class GenericPackHost:
             )
         }
         explicit = dict(explicit_env or {})
+        explicit.pop("ASTRID_VIBECOMFY_EXECUTION_REQUEST_JSON", None)
         # A worker may deliberately execute a qualified, local VibeComfy
         # snapshot rather than the normal published dependency pin.  The
         # candidate is selected only by the digest-bound readiness profile; never
@@ -7953,6 +7952,13 @@ class GenericPackHost:
             secret_values=secrets,
             declared_secrets=declared_secrets,
         )
+        from astrid.packs.vibecomfy.endpoint_checkout import EXECUTION_REQUEST_ENV
+        env.pop(EXECUTION_REQUEST_ENV, None)
+        if record.id == "vibecomfy.run" and workflow_execution_request is not None:
+            env[EXECUTION_REQUEST_ENV] = json.dumps(
+                workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            )
+            env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
         if not allow_runtime_connection:
             # A parent has only its inherited three-operation channel.
             # Also remove manifest passthrough aliases of the worker secret.
@@ -8263,6 +8269,24 @@ class GenericPackHost:
         Built-in pipeline steps and command capabilities are both runnable from
         an attempt directory alone.
         """
+        command_admission = dict(admission or {})
+        workflow_request = command_admission.pop("workflow_execution_request", None)
+        admission = command_admission if admission is not None else None
+        workflow_policy = None
+        if record.id == "vibecomfy.run":
+            from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
+            profile = _read_readiness_profile_document()
+            runpod = isinstance(workflow_request, Mapping) and workflow_request.get("target", {}).get("kind") == "runpod"
+            if runpod:
+                if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
+                    raise HostError("RunPod workflow cannot use local_server overrides")
+                endpoint = load_workflow_endpoint(
+                    profile, profile_path=Path(os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH", "")),
+                    execution_request=workflow_request,
+                )
+                workflow_policy = workflow_endpoint_network_policy(endpoint)
+            elif isinstance(profile, Mapping) and ("workflow_endpoint" in profile or "endpoint_evidence" in profile):
+                raise HostError("workflow endpoint requires its current admitted execution request")
         command = record.definition.command
         if command is None:
             raise HostError(f"capability {record.id!r} has no dispatchable command")
@@ -8367,7 +8391,8 @@ class GenericPackHost:
             authority_context=authority_context,
             admission=admission,
             network_broker=network_broker,
-            network_policy=(
+            workflow_execution_request=workflow_request if record.id == "vibecomfy.run" else None,
+            network_policy=workflow_policy or (
                 _network_policy(record, inputs)
                 if record.id == "vibecomfy.run" and inputs.get("comfy_url") else None
             ),
@@ -9272,6 +9297,20 @@ class GenericPackHost:
                 task_data,
                 runtime_session_id=self.runtime_state.get("runtime_session_id"),
             )
+            workflow_endpoint = None
+            workflow_policy = None
+            if capability_id == "vibecomfy.run":
+                from astrid.packs.vibecomfy.endpoint_checkout import load_workflow_endpoint, workflow_endpoint_network_policy
+                selected_profile = _read_readiness_profile_document()
+                runpod = (execution_contract or {}).get("target", {}).get("kind") == "runpod"
+                if runpod:
+                    workflow_endpoint = load_workflow_endpoint(
+                        selected_profile, profile_path=Path(os.environ.get("ASTRID_HOST_READINESS_PROFILE_PATH", "")),
+                        execution_request=execution_contract,
+                    )
+                    workflow_policy = workflow_endpoint_network_policy(workflow_endpoint)
+                elif isinstance(selected_profile, Mapping) and ("workflow_endpoint" in selected_profile or "endpoint_evidence" in selected_profile):
+                    raise HostError("workflow endpoint requires its current admitted execution request")
             contract_limits = execution_contract.get("limits", {}) if execution_contract else {}
             queue_limit = contract_limits.get("max_queue_seconds")
             if queue_limit is not None and _contract_queue_age(task_data) > queue_limit:
@@ -9368,6 +9407,9 @@ class GenericPackHost:
             "network_nonce": secrets_module.token_urlsafe(24),
             "allowed_routes": list((_network_policy(record) or {}).get("allowed_routes", (_network_policy(record) or {}).get("allowed_destinations", ()))),
         }
+        if workflow_policy is not None:
+            network_admission["allowed_routes"] = list(workflow_policy["allowed_destinations"])
+        endpoint_transport = None
         cancel_signal = threading.Event()
         managed_adapter = _ManagedTaskAdapter(
             cancel_signal,
@@ -9797,6 +9839,8 @@ class GenericPackHost:
                     current_binding is not None
                     and current_binding.execution_identity != stable_session_identity
                 ):
+                    if workflow_endpoint is not None:
+                        raise HostError("installed endpoint replacement requires original owner reconciliation")
                     self.managed_tool_session.release(reason="capacity_replacement")
                     readiness_profile = _read_readiness_profile_document()
                     refreshed_session = (
@@ -9845,7 +9889,18 @@ class GenericPackHost:
                         managed_binding, execution_identity=stable_session_identity
                     )
             if capability_id == "vibecomfy.run" and isinstance(vibe_session, Mapping):
+                endpoint_kwargs = {}
+                if workflow_endpoint is not None:
+                    if inputs.get("comfy_url") or inputs.get("comfy_output_dir"):
+                        raise HostError("RunPod workflow cannot use local_server overrides")
+                    from astrid.core.generation.engine_transport import EngineEndpointTransport
+                    from runpod_lifecycle.https import PORT
+                    endpoint_transport = EngineEndpointTransport(
+                        workflow_endpoint, pod_id=workflow_endpoint.attestation.pod_id, agent_port=PORT,
+                    )
+                    endpoint_kwargs["endpoint_transport"] = endpoint_transport
                 managed_adapter = _ManagedVibeSessionAdapter.from_host_session(
+                    **endpoint_kwargs,
                     native_graph=getattr(self, "_native_engine_graph", None),
                     hc03_profile=readiness_profile,
                     model_id=model_id,
@@ -9987,7 +10042,10 @@ class GenericPackHost:
                             if isinstance(spec, Mapping)
                             else None
                         ),
-                        admission=network_admission,
+                        admission={**network_admission, **(
+                            {"workflow_execution_request": execution_contract}
+                            if capability_id == "vibecomfy.run" and execution_contract is not None else {}
+                        )},
                         network_broker=network_broker,
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
@@ -10420,6 +10478,10 @@ class GenericPackHost:
                         )
                     except Exception as exc:
                         cleanup_errors.append(f"managed release: {exc}")
+            if endpoint_transport is not None and (
+                not managed_opened or self.managed_tool_session.current_adapter is not managed_adapter
+            ):
+                endpoint_transport.close()
             if capability_id == "vibecomfy.run" and not settled:
                 self._vibecomfy_warmth_hint = None
                 self._vibecomfy_current_warmth_hint = None
@@ -14054,9 +14116,12 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
             or not readiness_path.is_file()
         ):
             parser.error("--readiness-profile-path must be an absolute non-symlink regular file")
-        actual_readiness_hash = "sha256:" + hashlib.sha256(readiness_path.read_bytes()).hexdigest()
-        if args.readiness_profile_hash != actual_readiness_hash:
-            parser.error("--readiness-profile-hash does not match the readiness profile")
+        from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+        try:
+            profile = read_workflow_profile(readiness_path, args.readiness_profile_hash)
+        except Exception:
+            parser.error("--readiness-profile-hash does not match a safe readiness profile")
+        actual_readiness_hash = args.readiness_profile_hash
         os.environ["ASTRID_HOST_READINESS_PROFILE_PATH"] = str(readiness_path)
         os.environ["ASTRID_HOST_READINESS_PROFILE_HASH"] = actual_readiness_hash
         # Make an explicitly selected local VibeComfy candidate visible to
@@ -14064,7 +14129,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         # Without this, the host would reject the candidate while constructing
         # PYTHONPATH before it ever reached the child boundary.
         try:
-            profile = json.loads(readiness_path.read_text(encoding="utf-8"))
+            profile = read_workflow_profile(readiness_path, actual_readiness_hash)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             parser.error(f"readiness profile is unreadable: {exc}")
         candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None

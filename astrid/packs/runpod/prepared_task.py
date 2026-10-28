@@ -519,6 +519,18 @@ class _ProductionPreparedTaskRuntime:
 
         reference = _reference_for_task(self.selection, self.client, task)
         claim = _read_mapping(self.selection.claim_handle_path, label="P1 claim")
+        managed = claim.get("managed_worker")
+        qualification = managed.get("activation_qualification", {}) if isinstance(managed, Mapping) else {}
+        if (isinstance(managed, Mapping) and "engine_endpoint" in managed
+                and (managed.get("task_id") == reference.task_id
+                     or qualification.get("task_id") == reference.task_id)):
+            from dataclasses import replace
+
+            if managed.get("readiness_profile_path") != str(reference.readiness_profile_path):
+                raise PreparedWorkerError("persisted endpoint readiness path changed")
+            reference = replace(reference, readiness_profile_hash=managed.get("readiness_profile_hash"))
+            if reference.digest() != managed.get("deployment_digest"):
+                raise PreparedWorkerError("persisted endpoint readiness reference changed")
         account_env = os.environ.get("ASTRID_RUNPOD_ACCOUNT_REF", "").strip()
         if account_env != claim["provider_account_ref"]:
             raise PreparedWorkerError("ASTRID_RUNPOD_ACCOUNT_REF must match the exact P1 claim account")
@@ -684,6 +696,26 @@ class _ProductionPreparedTaskRuntime:
                 raise PreparedWorkerError(f"unsupported persisted RunPod activation phase: {state or 'unknown'}")
         elif isinstance(managed, Mapping):
             self._restore_local_worker()
+        # Recovery above always runs first. Only a genuinely new proof host
+        # generation prepares its installed session and freezes final bytes.
+        if getattr(reference, "session_ref", None) == "vibecomfy-h3":
+            import time
+            from astrid.core.generation.engine_contracts import SecretRef
+            from runpod_lifecycle.https import PORT
+            from .worker_owner import _run_sync
+
+            def read_file(path: str, *, deadline: float) -> bytes:
+                return _run_sync(preparer.preparation_transport.read_endpoint_file(path, deadline=deadline))
+
+            reference = preparer.finalize_endpoint_readiness(
+                reference, engine="vibecomfy-h3", platform="linux-x86_64-cu130",
+                endpoint_id="vibecomfy-h3", agent_port=PORT,
+                token_ref=SecretRef("file", claim["https_token_file"]), read_file=read_file,
+                deadline=time.monotonic() + preparer.ready_timeout_seconds,
+            )
+            self._reference = reference
+        elif getattr(reference, "session_ref", None) is not None:
+            raise PreparedWorkerError("prepared workflow requires the original installed vibecomfy-h3 session")
         try:
             parked = launcher.park(reference, target=reference.effective_target)
             self._relinquish_local_worker(preparer, reference)

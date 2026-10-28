@@ -246,7 +246,8 @@ def load_endpoint_profile_evidence(value: str | bytes) -> EndpointProfileEvidenc
     return parse_endpoint_profile_evidence(_load(value))
 
 
-def read_private_endpoint_file(path: str, *, deadline: float) -> bytes:
+def read_private_endpoint_file(path: str, *, deadline: float, private: bool = True,
+                               private_directory: bool = False) -> bytes:
     """Read an owned, bounded regular file through no-follow directory fds.
 
     Used for the controller's immutable claim snapshot. The trusted remote
@@ -268,12 +269,17 @@ def read_private_endpoint_file(path: str, *, deadline: float) -> bytes:
                             dir_fd=directory)
             os.close(directory)
             directory = child
+        parent_info = os.fstat(directory)
+        if private_directory and (parent_info.st_uid != os.getuid()
+                                  or stat.S_IMODE(parent_info.st_mode) != 0o700):
+            _bad()
         fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                      dir_fd=directory)
         try:
             info = os.fstat(fd)
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_nlink != 1
+                    or (stat.S_IMODE(info.st_mode) != 0o600 if private else bool(info.st_mode & 0o022))
                     or info.st_size > 8 * 1024 * 1024):
                 _bad()
             blocks, size = [], 0
@@ -300,44 +306,13 @@ def read_private_endpoint_file(path: str, *, deadline: float) -> bytes:
         os.close(directory)
 
 
-def ensure_prepared_endpoint(inspector, handle, *, engine, platform, endpoint_id,
-                             agent_port, token_ref, read_file, deadline):
-    """Observe one ready slot under the original prepared owner; never install.
-
-    ``read_file(path, deadline=...)`` is the trusted target file boundary for
-    the already selected readiness document and canonical install receipt.
-    It returns exact bytes with bounded/no-follow reads, not asserted hashes.
-    No Runtime admission, activation, source or publication check is replaced.
-    """
+def _prepared_session_evidence(reference, session_selection, session_receipt, profile,
+                               *, engine, platform, read_file, deadline):
     import hashlib
-    import time
-    from .engine_contracts import (
-        DeadlineExceeded, EndpointHealthError, EndpointOwnershipError, UnsupportedPlatform,
-    )
     from .engine_recipe import load_recipe
     from .engine_runner import _parse_receipt, plan_install
-    from .engine_transport import EngineEndpointTransport
 
-    if not isinstance(platform, str) or not platform.startswith("linux-"):
-        raise UnsupportedPlatform("prepared RunPod endpoints require Linux")
-    recipe = load_recipe(engine, platform)  # support admission before effects
-    if type(agent_port) is not int or not 1 <= agent_port <= 65535:
-        _bad()
-    _id(endpoint_id)
-    if time.monotonic() >= deadline:
-        raise DeadlineExceeded("endpoint ensure deadline exceeded")
-    preparer = inspector.preparer
-    handle = preparer._assert_handle(handle)
-    reference = handle.reference
-    if not reference.readiness_profile_path or not reference.readiness_profile_hash:
-        _bad()
-    # Keep all existing provider/process/Runtime/credential/source checks.
-    inspector.observe_ready(handle)
-    profile_bytes = read_file(str(reference.readiness_profile_path), deadline=deadline)
-    if (type(profile_bytes) is not bytes or len(profile_bytes) > 8 * 1024 * 1024
-            or "sha256:" + hashlib.sha256(profile_bytes).hexdigest() != reference.readiness_profile_hash):
-        _bad()
-    profile = _load(profile_bytes)
+    recipe = load_recipe(engine, platform)
     if (type(profile) is not dict or profile.get("schema_version") != "hc03-worker-readiness.v1"
             or profile.get("status") != "ready"):
         _bad()
@@ -350,7 +325,7 @@ def ensure_prepared_endpoint(inspector, handle, *, engine, platform, endpoint_id
     if hashlib.sha256(snapshot_bytes).hexdigest() != attestation.claim_handle_sha256:
         _bad()
     snapshot = _load(snapshot_bytes)
-    session = handle.session_receipt
+    session = session_receipt
     session_profile = profile.get("vibecomfy_session")
     if type(session_profile) is not dict:
         _bad()
@@ -373,21 +348,119 @@ def ensure_prepared_endpoint(inspector, handle, *, engine, platform, endpoint_id
     # and placement; never rewrite a local install receipt as a RunPod claim.
     receipt = _parse_receipt(raw_receipt, plan_install(recipe, root=root, placement="local"))
     if (receipt.status != "installed" or receipt.health != attestation.health
-            or handle.session_selection is None
-            or handle.session_selection.runtime_root != root + "/runtime"):
+            or session_selection is None
+            or session_selection.runtime_root != root + "/runtime"):
         _bad()
+    return recipe, evidence, snapshot
+
+
+def _endpoint_for_prepared_claim(preparer, reference, session, evidence, snapshot, claim,
+                                 *, engine, platform, endpoint_id, agent_port, token_ref):
+    attestation = evidence.claim_attestation
+    identity = ("operation_id", "provider_account_ref", "pod_id", "network_volume_id",
+                "network_volume_name", "network_volume_size_gb",
+                "network_volume_datacenter_id", "volume_mount_path", "acquisition_mode",
+                "transport", "https_token_file")
+    if (type(snapshot) is not dict or snapshot.get("state") != "claimed"
+            or any(claim.get(k) is None or claim.get(k) != snapshot.get(k) for k in identity)
+            or claim["operation_id"] != evidence.claim_operation_id
+            or claim["pod_id"] != attestation.pod_id
+            or claim["provider_account_ref"] != attestation.provider_account_ref
+            or session.pod_id != claim["pod_id"] or session.account_ref != claim["provider_account_ref"]):
+        _bad()
+    target = reference.effective_target
+    storage = target.get("storage", {})
+    if (target.get("kind") != "runpod" or target.get("pod_id") != claim["pod_id"]
+            or target.get("provider_account_ref") != claim["provider_account_ref"]
+            or storage.get("network_volume_id") != claim["network_volume_id"]):
+        _bad()
+    attached = claim.get("acquisition_mode") == "attach"
+    if claim.get("acquisition_mode") not in {"attach", "allocate"}:
+        _bad()
+    from runpod_lifecycle.https import PORT, pod_url
+    # The existing prepared HTTPS composition always uses lifecycle's
+    # agent port and original claim bearer; no caller-selected auth slot.
+    if (claim["transport"] != "https" or agent_port != PORT
+            or token_ref != SecretRef("file", claim["https_token_file"])):
+        _bad()
+    endpoint = EngineEndpoint(
+        "astrid.engine-endpoint.v1", endpoint_id, engine, platform, "runpod",
+        pod_url(claim["pod_id"], agent_port) + "/engines/" + endpoint_id,
+        EndpointAuth("bearer-file", token_ref), "ready", attestation.health,
+        # Existing prepared requests retain custody; finish/release remains
+        # the original prepared owner, never this transport adapter.
+        LifecycleOwner("attached" if attached else "astrid-runpod", claim["operation_id"],
+                       str(preparer.claim_handle_path), None, claim["pod_id"], False), attestation)
+    endpoint = parse_endpoint(endpoint_to_dict(endpoint))
+    return endpoint
+
+
+def _probe_prepared_endpoint(endpoint, recipe, *, agent_port, deadline):
+    import hashlib
+    import time
+    from .engine_contracts import DeadlineExceeded, EndpointHealthError
+    from .engine_transport import EngineEndpointTransport
+
+    transport = EngineEndpointTransport(endpoint, pod_id=endpoint.attestation.pod_id, agent_port=agent_port)
+    try:
+        objects = transport.object_info(deadline=deadline)
+    finally:
+        transport.close()
+    digest = hashlib.sha256(json.dumps(objects, sort_keys=True, separators=(",", ":"),
+                                       ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    if digest != endpoint.attestation.object_info_sha256 or not all(node in objects for node in recipe.health.required_nodes):
+        raise EndpointHealthError("claimed engine object_info differs from readiness")
+    if time.monotonic() >= deadline:
+        raise DeadlineExceeded("endpoint ensure deadline exceeded")
+
+
+def ensure_prepared_endpoint(inspector, handle, *, engine, platform, endpoint_id,
+                             agent_port, token_ref, read_file, deadline):
+    """Observe one ready slot under the original prepared owner; never install.
+
+    ``read_file(path, deadline=...)`` is the trusted target file boundary for
+    the already selected readiness document and canonical install receipt.
+    It returns exact bytes with bounded/no-follow reads, not asserted hashes.
+    No Runtime admission, activation, source or publication check is replaced.
+    """
+    import hashlib
+    import time
+    from .engine_contracts import (
+        DeadlineExceeded, EndpointOwnershipError, UnsupportedPlatform,
+    )
+    from .engine_recipe import load_recipe
+
+    if not isinstance(platform, str) or not platform.startswith("linux-"):
+        raise UnsupportedPlatform("prepared RunPod endpoints require Linux")
+    recipe = load_recipe(engine, platform)  # support admission before effects
+    if type(agent_port) is not int or not 1 <= agent_port <= 65535:
+        _bad()
+    _id(endpoint_id)
+    if time.monotonic() >= deadline:
+        raise DeadlineExceeded("endpoint ensure deadline exceeded")
+    preparer = inspector.preparer
+    handle = preparer._assert_handle(handle)
+    reference = handle.reference
+    if not reference.readiness_profile_path or not reference.readiness_profile_hash:
+        _bad()
+    # Keep all existing provider/process/Runtime/credential/source checks.
+    inspector.observe_ready(handle)
+    profile_bytes = read_file(str(reference.readiness_profile_path), deadline=deadline)
+    if (type(profile_bytes) is not bytes or len(profile_bytes) > 8 * 1024 * 1024
+            or "sha256:" + hashlib.sha256(profile_bytes).hexdigest() != reference.readiness_profile_hash):
+        _bad()
+    profile = _load(profile_bytes)
+    recipe, evidence, snapshot = _prepared_session_evidence(
+        reference, handle.session_selection, handle.session_receipt, profile,
+        engine=engine, platform=platform, read_file=read_file, deadline=deadline,
+    )
+    session = handle.session_receipt
     with preparer._claim_owner() as (claim, lock_fd):
-        identity = ("operation_id", "provider_account_ref", "pod_id", "network_volume_id",
-                    "network_volume_name", "network_volume_size_gb",
-                    "network_volume_datacenter_id", "volume_mount_path", "acquisition_mode",
-                    "transport", "https_token_file")
-        if (type(snapshot) is not dict or snapshot.get("state") != "claimed"
-                or any(claim.get(k) is None or claim.get(k) != snapshot.get(k) for k in identity)
-                or claim["operation_id"] != evidence.claim_operation_id
-                or claim["pod_id"] != attestation.pod_id
-                or claim["provider_account_ref"] != attestation.provider_account_ref
-                or session.pod_id != claim["pod_id"] or session.account_ref != claim["provider_account_ref"]):
-            _bad()
+        endpoint = _endpoint_for_prepared_claim(
+            preparer, reference, session, evidence, snapshot, claim,
+            engine=engine, platform=platform, endpoint_id=endpoint_id,
+            agent_port=agent_port, token_ref=token_ref,
+        )
         current = claim.get("managed_worker")
         if (not isinstance(current, dict) or current.get("deployment_digest") != reference.digest()
                 or current.get("process_handle") != handle.process.as_dict()
@@ -397,47 +470,66 @@ def ensure_prepared_endpoint(inspector, handle, *, engine, platform, endpoint_id
                 or current.get("activation_qualification", {}).get("activation_id") != handle.activation_id
                 or current.get("state") not in {"committed", "ready", "ready_observed_by_preparer"}):
             raise EndpointOwnershipError("original prepared activation is no longer ready")
-        target = reference.effective_target
-        storage = target.get("storage", {})
-        if (target.get("kind") != "runpod" or target.get("pod_id") != claim["pod_id"]
-                or target.get("provider_account_ref") != claim["provider_account_ref"]
-                or storage.get("network_volume_id") != claim["network_volume_id"]):
-            _bad()
-        attached = claim.get("acquisition_mode") == "attach"
-        if claim.get("acquisition_mode") not in {"attach", "allocate"}:
-            _bad()
-        from runpod_lifecycle.https import PORT, pod_url
-        # The existing prepared HTTPS composition always uses lifecycle's
-        # agent port and original claim bearer; no caller-selected auth slot.
-        if (claim["transport"] != "https" or agent_port != PORT
-                or token_ref != SecretRef("file", claim["https_token_file"])):
-            _bad()
-        endpoint = EngineEndpoint(
-            "astrid.engine-endpoint.v1", endpoint_id, engine, platform, "runpod",
-            pod_url(claim["pod_id"], agent_port) + "/engines/" + endpoint_id,
-            EndpointAuth("bearer-file", token_ref), "ready", attestation.health,
-            # Existing prepared requests retain custody; finish/release remains
-            # the original prepared owner, never this transport adapter.
-            LifecycleOwner("attached" if attached else "astrid-runpod", claim["operation_id"],
-                           str(preparer.claim_handle_path), None, claim["pod_id"], False), attestation)
-        endpoint = parse_endpoint(endpoint_to_dict(endpoint))
         previous = current.get("engine_endpoint")
         if previous is not None:
             if parse_endpoint(previous) != endpoint:
                 raise EndpointOwnershipError("the original prepared endpoint slot is already bound")
             return endpoint
-        transport = EngineEndpointTransport(endpoint, pod_id=claim["pod_id"], agent_port=agent_port)
-        try:
-            objects = transport.object_info(deadline=deadline)
-        finally:
-            transport.close()
-        digest = hashlib.sha256(json.dumps(objects, sort_keys=True, separators=(",", ":"),
-                                           ensure_ascii=False, allow_nan=False).encode()).hexdigest()
-        if digest != attestation.object_info_sha256 or not all(node in objects for node in recipe.health.required_nodes):
-            raise EndpointHealthError("claimed engine object_info differs from readiness")
-        if time.monotonic() >= deadline:
-            raise DeadlineExceeded("endpoint ensure deadline exceeded")
+        _probe_prepared_endpoint(endpoint, recipe, agent_port=agent_port, deadline=deadline)
         current = {**current, "engine_endpoint": endpoint_to_dict(endpoint)}
         preparer._write_worker_state(current, owner_lock_fd=lock_fd)
         handle.persisted = current
+        return endpoint
+
+
+def ensure_prepared_session_endpoint(
+    preparer, *, reference, staging, session_selection, session_receipt,
+    profile, endpoint_id, agent_port, token_ref, read_file, deadline,
+):
+    """Ensure the installed session before a host/profile generation is frozen.
+
+    This boundary never observes a nonexistent host as ready. Its result is
+    retained by the original preparer until the ordinary managed-worker record
+    exists; no second persistent endpoint registry or claim lock is created.
+    """
+    import time
+    from .engine_contracts import DeadlineExceeded, EndpointOwnershipError
+    from .engine_recipe import load_recipe
+
+    evidence = parse_endpoint_profile_evidence(profile.get("endpoint_evidence"))
+    recipe = load_recipe(evidence.engine, evidence.platform)  # before I/O
+    _id(endpoint_id)
+    if time.monotonic() >= deadline:
+        raise DeadlineExceeded("endpoint ensure deadline exceeded")
+    cpu = staging.get("cpu_readiness", {})
+    paths = cpu.get("effective_paths", {})
+    if (staging.get("status") != "cpu_ready" or staging.get("gpu_qualified") is not False
+            or cpu.get("status") != "cpu_ready" or cpu.get("gpu_qualified") is not False
+            or session_selection is None or session_receipt is None
+            or session_selection.session_ref != reference.session_ref
+            or session_selection.config_digest != reference.session_config_digest
+            or session_selection.account_ref != session_receipt.account_ref
+            or session_selection.pod_id != session_receipt.pod_id
+            or session_selection.port != recipe.start.port
+            or paths.get("model_root") != str(reference.model_root)
+            or paths.get("output_root") != str(reference.output_root)
+            or session_selection.output_root != str(reference.output_root)):
+        _bad()
+    recipe, evidence, snapshot = _prepared_session_evidence(
+        reference, session_selection, session_receipt, profile,
+        engine=evidence.engine, platform=evidence.platform, read_file=read_file, deadline=deadline,
+    )
+    # The selected session owner supplies live custody observation; registry
+    # reads alone never permit process adoption or a legacy start fallback.
+    preparer.session_owner.resume(session_selection, session_receipt)
+    with preparer._claim_owner() as (claim, _fd):
+        current = claim.get("managed_worker")
+        if current is not None and current.get("state") not in {"stopped", "released"}:
+            raise EndpointOwnershipError("original prepared endpoint owner changed")
+        endpoint = _endpoint_for_prepared_claim(
+            preparer, reference, session_receipt, evidence, snapshot, claim,
+            engine=evidence.engine, platform=evidence.platform, endpoint_id=endpoint_id,
+            agent_port=agent_port, token_ref=token_ref,
+        )
+        _probe_prepared_endpoint(endpoint, recipe, agent_port=agent_port, deadline=deadline)
         return endpoint

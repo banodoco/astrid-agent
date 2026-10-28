@@ -549,16 +549,12 @@ def _run_and_settle(
     if (readiness_profile_path == "-") != (readiness_profile_hash == "-"):
         raise AstridValueError("readiness profile path and hash must be supplied together")
     if readiness_profile_path != "-":
+        from astrid.packs.vibecomfy.endpoint_checkout import read_workflow_profile
+        from astrid.core.generation.engine_contracts import EngineError
         try:
-            profile_bytes = Path(readiness_profile_path).read_bytes()
-            actual_hash = "sha256:" + hashlib.sha256(profile_bytes).hexdigest()
-            if readiness_profile_hash != actual_hash:
-                raise AstridValueError("Worker readiness profile hash does not match")
-            readiness_profile = json.loads(profile_bytes.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AstridValueError("Worker readiness profile could not be read") from exc
-        if not isinstance(readiness_profile, dict):
-            raise AstridValueError("Worker readiness profile must be an object")
+            readiness_profile = read_workflow_profile(readiness_profile_path, readiness_profile_hash)
+        except (EngineError, OSError):
+            raise AstridValueError("Worker readiness profile could not be read or its hash does not match") from None
     if comfy_url:
         profile_id = "local_server"
     elif isinstance(readiness_profile, dict) and isinstance(readiness_profile.get("vibecomfy_session"), dict):
@@ -736,6 +732,28 @@ def _run_and_settle(
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        from astrid.packs.vibecomfy.endpoint_checkout import (
+            checkout_from_profile, read_host_workflow_execution_request, read_workflow_profile,
+        )
+        request = read_host_workflow_execution_request(os.environ)
+        profile = None
+        if args.readiness_profile_path != "-":
+            profile = read_workflow_profile(args.readiness_profile_path, args.readiness_profile_hash)
+        endpoint_bearing = isinstance(profile, dict) and (
+            "workflow_endpoint" in profile or "endpoint_evidence" in profile
+        )
+        runpod = isinstance(request, dict) and request.get("target", {}).get("kind") == "runpod"
+        if endpoint_bearing and not runpod:
+            raise AstridValueError("workflow endpoint requires its host-admitted execution request")
+        endpoint_checkout = None
+        if runpod:
+            if args.comfy_url or args.comfy_output_dir:
+                raise AstridValueError("RunPod workflow cannot use local_server overrides")
+            endpoint_checkout = checkout_from_profile(
+                profile_path=Path(args.readiness_profile_path), profile_hash=args.readiness_profile_hash,
+                execution_request=request, task_identity=args.task_identity,
+                attempt_identity=args.attempt_identity, execution_identity=args.execution_identity,
+            )
         scratch = (
             args.out.expanduser().resolve().parent
             if args.out is not None
@@ -782,6 +800,8 @@ def main(argv: list[str] | None = None) -> int:
                 workflow_inputs=args.workflow_inputs,
                 comfy_url=args.comfy_url,
                 comfy_output_dir=args.comfy_output_dir,
+                execution_request=request, placement="runpod" if runpod else None,
+                endpoint_checkout=endpoint_checkout,
             )
     except Exception as exc:
         error = exc if isinstance(exc, AstridError) else AstridError(
