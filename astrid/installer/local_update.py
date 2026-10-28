@@ -109,7 +109,7 @@ def _tag_step(exc: Exception, step: str) -> Exception:
     if not message.startswith(f"{label}:"):
         message = f"{label}: {message}"
     try:
-        exc.step = label
+        setattr(exc, "step", label)
         if str(exc) != message:
             exc.args = (message,)
         return exc
@@ -217,8 +217,12 @@ def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
         raise ValueError("This Astrid runs from source checkouts; update those instead.")
     realm = backend.workspace(old, data)
     try:
-        recorded_realm_root = absolute(recorded["realm_root"])
-        active_realm_root = absolute(realm.get("realm_root"))
+        recorded_realm_root_value = recorded.get("realm_root")
+        active_realm_root_value = realm.get("realm_root")
+        if not isinstance(recorded_realm_root_value, str) or not isinstance(active_realm_root_value, str):
+            raise ValueError("workspace root is missing")
+        recorded_realm_root = absolute(recorded_realm_root_value)
+        active_realm_root = absolute(active_realm_root_value)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("The selected workspace record is invalid.") from exc
     if (not recorded.get("realm_id") or not recorded.get("realm_root")
@@ -238,8 +242,12 @@ def _assert_selection(root: Path, backend: Backend, expected_versions: tuple[Ver
     if selected not in expected_versions or selected_data != data or selected_identity != identity:
         raise ValueError("The selected installation changed while preparing the local update.")
     current_realm = backend.workspace(selected, selected_data)
+    current_root = current_realm.get("realm_root")
+    expected_root = realm.get("realm_root")
+    if not isinstance(current_root, str) or not isinstance(expected_root, str):
+        raise ValueError("The selected workspace changed while preparing the local update.")
     if (current_realm.get("realm_id") != realm.get("realm_id")
-            or absolute(current_realm.get("realm_root")) != absolute(realm.get("realm_root"))):
+            or absolute(current_root) != absolute(expected_root)):
         raise ValueError("The selected workspace changed while preparing the local update.")
 
 
@@ -252,12 +260,17 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
         return False
     if transaction.get("transaction_kind") not in {"app", "migration"}:
         raise LocalUpdateStepError("recover-journal", "The local update journal kind is invalid.")
+    if not isinstance(owner, dict):
+        raise LocalUpdateStepError("recover-context", "The local update journal context is invalid.")
     app = _at_step("recover-context", validate_app_context, owner.get("app"))
     hooks.app = app
     previous = _at_step("recover-selection", Version.load, transaction["old"])
     _selected, data, identity = _at_step("recover-selection", _selection, root, backend)
-    candidate = (_at_step("recover-selection", Version.load, transaction["candidate"])
-                 if transaction.get("candidate") else None)
+    candidate_value = transaction.get("candidate")
+    if candidate_value is not None and not isinstance(candidate_value, str):
+        raise LocalUpdateStepError("recover-selection", "The interrupted local update candidate is invalid.")
+    candidate = (_at_step("recover-selection", Version.load, candidate_value)
+                 if candidate_value else None)
     if current(root) not in (previous, candidate):
         raise LocalUpdateStepError(
             "recover-selection", "The interrupted local update does not match the selected Runtime.")

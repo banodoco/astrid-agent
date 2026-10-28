@@ -15,17 +15,17 @@
     "--no-pretty",
     "--show-error-codes"
   ],
-  "finding_count": 1930,
+  "finding_count": 1929,
   "code_counts": {
-    "arg-type": 426,
-    "assignment": 158,
-    "attr-defined": 511,
+    "arg-type": 421,
+    "assignment": 160,
+    "attr-defined": 510,
     "call-arg": 1,
     "call-overload": 38,
     "dict-item": 33,
     "func-returns-value": 1,
     "import-untyped": 23,
-    "index": 152,
+    "index": 155,
     "list-item": 5,
     "method-assign": 2,
     "misc": 32,
@@ -38,8 +38,8 @@
     "str-bytes-safe": 1,
     "type-var": 5,
     "typeddict-item": 6,
-    "union-attr": 353,
+    "union-attr": 352,
     "valid-type": 17,
-    "var-annotated": 62
+    "var-annotated": 63
   }
 }
