@@ -455,8 +455,11 @@ class Backend:
             return
         self.service.publish_launch_admission(version, data)
 
-    def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> None:
-        """Run Runtime's single fenced stop and validated manager handoff."""
+    def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> dict | None:
+        """Run Runtime's single fenced stop and validated manager handoff.
+
+        Returns C1's result; callers that ignore it are unaffected.
+        """
         try:
             from astrid_runtime.bootstrap import down
             from astrid_runtime.paths import RuntimePaths
@@ -528,10 +531,10 @@ class Backend:
                     raise ValueError("The foreground selection changed before signal; refusing to stop it.")
                 self.service.stop_foreground(expected=foreground)
 
-            down(paths, boundary, stop_manager=stop_selected_manager,
-                 stop_foreground=(stop_selected_foreground
-                                  if restore_selection is None and isinstance(foreground, dict) else None),
-                 restore_selection=restore_selection)
+            result = down(paths, boundary, stop_manager=stop_selected_manager,
+                          stop_foreground=(stop_selected_foreground
+                                           if restore_selection is None and isinstance(foreground, dict) else None),
+                          restore_selection=restore_selection)
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
@@ -550,6 +553,7 @@ class Backend:
                     self.service._foreground_process = None
         except Exception as exc:
             raise self._downstream_stop_failure(exc) from exc
+        return result
 
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:

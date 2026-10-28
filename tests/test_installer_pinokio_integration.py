@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import shlex
@@ -496,15 +497,24 @@ def test_pinokio_session_binds_real_runtime_to_pending_launch_intent(
                         timeout=50, clean_bun_env=True)
 
 
+# Mixed old/new regression: the retained Version runs a genuinely unpatched
+# Runtime archived from this commit (never the worktree), while the session
+# uses the current launcher. It is the earliest landed prog/upd Runtime with
+# PINOKIO_STOP_HANDOFF_VERSION 1, which the installer requires before stopping
+# a retained Runtime, and it predates UPD-EL-X3's C1 stop report.
+RETAINED_RUNTIME_REVISION = "efcb3264e854fc312faa0bc6e702a9034edc2e06"
+
+
 @pytest.mark.integration
 @pytest.mark.linux_native
+@pytest.mark.parametrize("runtime_kind", ["retained", "current"])
 @pytest.mark.parametrize(("interrupt_at", "mode"), [
     ("stopping", "backend"), ("candidate_ready", "backend"),
     ("migrated", "backend"), ("migrated", "local"), ("switched", "backend"),
     ("before_owner", "backend"),
 ])
 def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
-        tmp_path, monkeypatch, interrupt_at, mode):
+        tmp_path, monkeypatch, interrupt_at, mode, runtime_kind):
     """Rollback and fresh CLI recovery launch the committed pre-E2 Agent."""
     fail_before_owner = interrupt_at == "before_owner"
     if fail_before_owner:
@@ -595,7 +605,7 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
     runtime_root = _runtime_source_checkout()
     prepared_packages = Path(sysconfig.get_paths()["purelib"])
 
-    def version(root, release, source_root):
+    def version(root, release, source_root, runtime_checkout=runtime_root):
         environment = root / "py"
         venv.EnvBuilder(with_pip=False).create(environment)
         python = environment / "bin" / "python"
@@ -605,7 +615,7 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             encoding="utf-8",
         )
         runtime_source = _copy_runtime_package_source(
-            runtime_root, root / "runtime-source",
+            runtime_checkout, root / "runtime-source",
         )
         if fail_before_owner and root == candidate_root:
             boundary_source = runtime_source / "astrid_runtime" / "runtime_boundary.py"
@@ -660,8 +670,47 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
     candidate_source.mkdir(parents=True)
     shutil.copytree(checkout / "astrid", candidate_source / "astrid")
     shutil.copyfile(checkout / "pyproject.toml", candidate_source / "pyproject.toml")
-    old = version(old_root, 17, legacy_source)
+    if runtime_kind == "retained":
+        retained_runtime = tmp_path / "retained-runtime"
+        archive = subprocess.run(["git", "archive", "--format=tar", RETAINED_RUNTIME_REVISION],
+                                 cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source_archive:
+            source_archive.extractall(retained_runtime, filter="data")
+    else:
+        retained_runtime = runtime_root
+    old = version(old_root, 17, legacy_source, runtime_checkout=retained_runtime)
     candidate = version(candidate_root, 18, candidate_source)
+
+    def installed_runtime_file(python, name):
+        probe = subprocess.run(
+            [str(python), "-I", "-c",
+             f"import importlib; print(importlib.import_module('astrid_runtime.{name}').__file__)"],
+            check=True, text=True, stdout=subprocess.PIPE)
+        return Path(probe.stdout.strip()).resolve()
+
+    # Each interpreter imports its own installed Runtime copy, never a worktree.
+    for selected in (old, candidate):
+        module = installed_runtime_file(selected.python, "cli")
+        assert module.is_relative_to(selected.root / "py"), module
+        assert not module.is_relative_to(runtime_root), module
+    retained_cli = installed_runtime_file(old.python, "cli").read_bytes()
+    if runtime_kind == "retained":
+        original_cli = subprocess.run(
+            ["git", "show", f"{RETAINED_RUNTIME_REVISION}:astrid_runtime/cli.py"],
+            cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
+        assert hashlib.sha256(retained_cli).digest() == hashlib.sha256(original_cli).digest()
+        assert b'if args.command in {"restart", "down"}' in retained_cli
+        # This identifies the revision's own restart branch; it does not reproduce P1.
+        assert b'No selected runtime owner to restart' in retained_cli
+        original_bootstrap = subprocess.run(
+            ["git", "show", f"{RETAINED_RUNTIME_REVISION}:astrid_runtime/bootstrap.py"],
+            cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
+        assert installed_runtime_file(old.python, "bootstrap").read_bytes() == original_bootstrap
+        handoff = subprocess.run(
+            [str(old.python), "-I", "-c",
+             "import importlib; print(importlib.import_module('astrid_runtime.bootstrap').PINOKIO_STOP_HANDOFF_VERSION)"],
+            check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+        assert handoff == "1"
     write_json(app_root / "install.json", {
         "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data_root),
     })
@@ -1005,6 +1054,15 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             assert boundary.owner_startup_identity(
                 endpoint=discovery["endpoint"], instance_id=discovery["runtime_instance_id"],
             )["runtime_instance_id"] == discovery["runtime_instance_id"]
+        # A fresh Update from the retained owner, whose current-launcher session
+        # captured the retained Runtime CLI, completes after C1's stop report.
+        backend.verify = real_verify
+        backend.upgrade = original_upgrade
+        update_pinokio(app_root, backend, {"release": candidate.release}, lifecycle=lifecycle,
+                       say=lambda _line: None)
+        assert read_json(app_root / "update-transaction.json")["step"] == "complete"
+        assert current(app_root) == candidate
+        assert workspace_marker.read_bytes() == original_workspace
     finally:
         support = data_root / "runtime"
         if (support / "discovery.json").is_file() or (app_root / "pinokio-control.json").is_file():

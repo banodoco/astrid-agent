@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import http.client
+import re
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from runtime_protocol import platform as runtime_platform
 
 from .core import (
     Installer,
@@ -177,41 +181,97 @@ class PinokioLifecycle:
                          timeout=30, clean_bun_env=True)
 
     def stop(self, version: Version, data: Path) -> None:
-        # Stop the selected Runtime under its durable fence first. Pinokio's
-        # authenticated controller shutdown runs only after that handoff has
-        # completed and the Runtime fence/mutex have been released; its session
-        # must never issue a nested `down` while the fence is held.
-        self.backend.stop(version, data)
+        # C1 (Backend.stop) is the only Runtime stop. Before it, this adapter
+        # only reads the controller record file: no signal, liveness probe or
+        # controller request may precede C1 admission (Windows os.kill(pid, 0)
+        # is CTRL_C_EVENT/TerminateProcess). A C1 refusal or unknown outcome
+        # raises here and leaves the controller, session and children untouched.
+        control = self.root / "pinokio-control.json"
 
-        def stop_controller() -> None:
+        def snapshot():
             try:
-                self.backend.run([self.node(version), self.lifecycle, "stop", self.root],
-                                 timeout=50, clean_bun_env=True)
-            except subprocess.CalledProcessError:
-                # C1 has already stopped Runtime. Its session can finish and
-                # remove the controller between the CLI's read and POST. Only
-                # disappearance admits that race; a remaining/replacement
-                # controller still requires a successful authenticated stop.
-                if (self.root / "pinokio-control.json").exists():
+                raw = control.read_bytes()
+            except FileNotFoundError:
+                return None
+            record = json.loads(raw)
+            if (not isinstance(record, dict) or type(record.get("schema")) is not int or record["schema"] != 1
+                    or type(record.get("pid")) is not int or record["pid"] < 1
+                    or type(record.get("port")) is not int or not 1 <= record["port"] <= 65535
+                    or not isinstance(record.get("token"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", record["token"])):
+                raise ValueError("Invalid Astrid controller record.")
+            return raw, record
+
+        bound = snapshot()
+        result = self.backend.stop(version, data)
+        if not isinstance(result, dict) or result.get("status") != "stopped":
+            # Unknown outcome: report nothing; the session keeps its down gate.
+            raise ValueError("The Runtime stop result is unknown; the Pinokio controller was not told.")
+
+        def dead(record):
+            # Read-only observation (after C1). Unknown never means dead.
+            try:
+                return runtime_platform.process_identity(record["pid"]) is None
+            except OSError as exc:
+                raise ValueError("The Pinokio controller process could not be observed.") from exc
+
+        def report_c1_stopped():
+            # The session's controller receives C1's result as data. It skips
+            # its own Runtime down only for exactly this result; anything else
+            # (or an older controller ignoring the body) keeps today's
+            # down-gated shutdown.
+            if snapshot() != bound:
+                raise ValueError("The Pinokio controller changed during stop.")
+            if bound is None:
+                return
+            record = bound[1]
+            body = b'{"c1":"stopped"}'
+            conn = http.client.HTTPConnection("127.0.0.1", record["port"], timeout=50)
+            try:
+                try:
+                    conn.request("POST", "/stop", body=body, headers={
+                        "Authorization": "Bearer " + record["token"],
+                        "Host": f"127.0.0.1:{record['port']}",
+                        "Content-Type": "application/json",
+                    })
+                    response = conn.getresponse()
+                    raw = response.read(65537)
+                except OSError:
+                    # The session may finish (its own exit finalizer) and close
+                    # between the read and the POST. Only a vanished record or
+                    # a positively absent controller process admits that race.
+                    current_record = snapshot()
+                    if current_record is None or (current_record == bound and dead(record)):
+                        return
                     raise
-            deadline = time.monotonic() + 10
-            while (self.root / "pinokio-control.json").exists():
-                pid = read_json(self.root / "pinokio-control.json").get("pid")
-                if isinstance(pid, int) and pid > 0:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        break  # The canonical launcher removes a dead controller record.
+            finally:
+                conn.close()
+            if len(raw) > 65536:
+                raise ValueError("Pinokio controller response is too large.")
+            result = json.loads(raw or b"{}")
+            if response.status != 200 or not isinstance(result, dict) or result.get("ok") is not True:
+                error = ValueError(" ".join((result.get("errors") if isinstance(result, dict) else None)
+                                            or ["Pinokio controller stop failed."]))
+                error.details = result.get("details") if isinstance(result, dict) else None
+                raise error
+
+        try:
+            report_c1_stopped()
+            deadline = time.monotonic() + 30
+            while True:
+                current_record = snapshot()
+                if current_record is None:
+                    break
+                if current_record != bound:
+                    raise ValueError("The Pinokio controller changed during finalization.")
+                if dead(bound[1]):
+                    break  # The canonical launcher removes a dead controller record.
                 if time.monotonic() >= deadline:
                     raise ValueError("The Pinokio supervisor has not finished stopping.")
                 time.sleep(0.1)
-
-        try:
-            stop_controller()
         except (Exception, KeyboardInterrupt) as exc:
             # C1 has already completed. Preserve the controller failure as
-            # downstream context so its details cannot masquerade as a
-            # pre-destruction lifecycle refusal.
+            # downstream context so it cannot masquerade as a lifecycle refusal.
             raise RuntimeOperationError(str(exc), details={
                 "cause_details": getattr(exc, "details", None),
             }) from exc
