@@ -310,10 +310,23 @@ def verify_candidate(
         preservation_status = "no_protected_permissions"
 
     spatial_evidence: list[dict[str, Any]] = []
-    spatial_masks = _spatial_video_masks(preparation)
+    spatial_masks = _spatial_video_masks(preparation, source_path)
     if spatial_masks:
         if source_path is None:
             raise VerificationError("regional video preservation requires an authoritative source")
+        declared_segments = (
+            composition.get("composition", {}).get("video_segments", [])
+            if isinstance(composition.get("composition"), Mapping) else []
+        )
+        for segment in declared_segments:
+            if isinstance(segment, Mapping) and segment.get("mask_sha256"):
+                for mask in spatial_masks:
+                    if mask.get("asset") == segment.get("mask_asset") and _sha256(
+                        Path(str(mask["path"]))
+                    ) != segment["mask_sha256"]:
+                        raise VerificationError(
+                            "regional mask provenance does not match composition evidence"
+                        )
         try:
             spatial_evidence = _verify_spatial_mask_complement(
                 source=source_path,
