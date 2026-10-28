@@ -222,6 +222,8 @@ class Installer:
                     self.say("Couldn't add Astrid's skill to your agents; see the log.")
                 self._ready()
                 return
+            repair_chat_command = getattr(self.backend, "repair_chat_command", None)
+            chat_changed = bool(repair_chat_command and repair_chat_command(old))
             try:
                 # The browser health endpoint refuses a changed Runtime identity
                 # with runtime_identity_mismatch, which requires this restart.
@@ -229,7 +231,7 @@ class Installer:
             except VerificationError:
                 pass
             else:
-                if not self.backend.restart_required():
+                if not chat_changed and not self.backend.restart_required():
                     self.say("Open https://astrid.haus")
                     self.backend.open()
                     return

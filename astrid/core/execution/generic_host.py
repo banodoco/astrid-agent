@@ -5086,11 +5086,10 @@ _OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "hivemind.", "seedance_l
 
 
 def _unapproved_reason(capability_id: str, matrix_path: Path | None) -> str:
-    where = str(matrix_path) if matrix_path is not None else "config/astrid-beta-capabilities.json"
     return (
         f"capability {capability_id!r} has no approved capability-matrix row; "
-        f"add a row to {where} (disposition, evidence_reason, adapter_family, resource_keys), "
-        "then restart the host and run: python -m astrid.core.execution.capability_ledger approve"
+        "add a row to the source capability matrix (disposition, evidence_reason, "
+        "adapter_family, resource_keys), regenerate the capability census, then restart the host"
     )
 
 
@@ -6251,6 +6250,10 @@ class GenericPackHost:
                 for capability_id in expected - discovered
                 if not capability_id.startswith(_OPTIONAL_EXTERNAL_MATRIX_PREFIXES)
                 and capability_id.split(".", 1)[0] not in quarantined_ids
+                # This declared local orchestrator is registered outside the
+                # executor discovery path, so its valid matrix row is expected
+                # to be absent from ``discovered``.
+                and capability_id != "h3_av.transform"
             ))
             if self.stale_matrix_entries:
                 _LOGGER.warning(
