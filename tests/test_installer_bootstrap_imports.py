@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_installer_has_no_lazy_third_party_imports():
     # Include imports inside functions: a dependency introduced only in update,
     # doctor or uninstall must not evade the cold-import check below.
-    allowed = sys.stdlib_module_names | {"runtime_protocol", "astrid_runtime_client"}
+    allowed = sys.stdlib_module_names | {"runtime_protocol", "astrid_runtime", "astrid_runtime_client"}
     for source in (ROOT / "astrid/installer").glob("*.py"):
         for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
             names = []
@@ -34,7 +34,7 @@ def test_every_installer_mode_imports_without_third_party_packages(tmp_path, fla
 import builtins, importlib, json, pkgutil, sys
 from pathlib import Path
 sys.path[:0] = json.loads(sys.argv[1])
-allowed = sys.stdlib_module_names | {"astrid", "astrid_runtime_client", "runtime_protocol"}
+allowed = sys.stdlib_module_names | {"astrid", "astrid_runtime", "astrid_runtime_client", "runtime_protocol"}
 original = builtins.__import__
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
     if not level and name.split(".")[0] not in allowed:
@@ -49,6 +49,10 @@ except ModuleNotFoundError as error:
 else:
     raise AssertionError("Blocked third-party import unexpectedly succeeded")
 import astrid.installer
+# The installer imports these Runtime modules in-process; each must stay stdlib-only
+# under the guard, because bootstrap installs Runtime with --no-deps.
+for name in ("bootstrap", "runtime_boundary", "identity", "paths", "io"):
+    importlib.import_module("astrid_runtime." + name)
 # Import every installer module, including the backend and every mode's helpers.
 for item in pkgutil.iter_modules(astrid.installer.__path__):
     importlib.import_module("astrid.installer." + item.name)

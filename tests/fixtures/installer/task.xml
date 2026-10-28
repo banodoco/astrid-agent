@@ -12,10 +12,72 @@
     <RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
   </Settings>
-  <Actions Context="Owner"><Exec><Command>C:\Astrid\versions\v1\py\Scripts\pythonw.exe</Command><Arguments>-X utf8 -I -c "import json,os,sys
+  <Actions Context="Owner"><Exec><Command>C:\Astrid\versions\v1\py\Scripts\pythonw.exe</Command><Arguments>-X utf8 -I -c "import json,os,re,sys
 from pathlib import Path
-os.environ.update({'PATH': 'C:\\Astrid\\tools;C:\\Windows\\System32', 'PYTHONUTF8': '1', 'ASTRID_INSTALL_RELEASE': '0', 'ASTRID_INSTALL_MANAGED_BY': ''})
-os.environ.pop('ASTRID_INSTALLER_OPERATION_ID',None)
+from astrid.installer.core import Version,absolute,current,read_json,version_id
+def launch_admission(version: Version, data: Path) -&gt; bool:
+    \"\"\"Validate the selected managed launch; return whether it is activating.
+
+    The pending journal selects a version, never a process or stop authority.
+    This function is also embedded verbatim in the generated command prelude.
+    \"\"\"
+    if version.root.parent.name != \"versions\":
+        return False  # Source checkouts are outside the managed launch contract.
+    root = absolute(version.root.parent.parent)
+    path = absolute(root / \"update-transaction.json\")
+    try:
+        selected = current(root)
+        if selected is None or selected.document() != version.document():
+            raise ValueError(\"The managed launch is not the selected version.\")
+        if not path.exists():
+            return False
+        transaction = read_json(path)
+        if (transaction.get(\"format\") != \"astrid-install-update/v1\"
+                or not isinstance(transaction.get(\"operation_id\"), str)
+                or re.fullmatch(r\"[0-9a-f]{32}\", transaction[\"operation_id\"]) is None
+                or transaction.get(\"transaction_kind\") not in {None, \"app\", \"migration\"}
+                or absolute(transaction[\"data_root\"]) != absolute(data)):
+            raise ValueError(\"Invalid update journal identity.\")
+
+        realm = transaction.get(\"realm\")
+        if (not isinstance(realm, dict) or not isinstance(realm.get(\"realm_id\"), str)
+                or not realm[\"realm_id\"] or absolute(realm[\"realm_root\"]) != Path(realm[\"realm_root\"])):
+            raise ValueError(\"Invalid update workspace identity.\")
+        terminal = transaction.get(\"step\") in {\"complete\", \"rolled_back\"}
+
+        def retained(value):
+            candidate = Version.load(value)
+            folder = absolute(root / \"versions\" / version_id(candidate.root.name))
+            if (candidate.root != folder or not candidate.python.is_absolute()
+                    or not candidate.python.is_relative_to(folder)
+                    or not candidate.profile.is_relative_to(folder)
+                    or (\"identity\" in value and value[\"identity\"] != candidate.document()[\"identity\"])
+                    or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value[\"env\"].items())
+                    or any(str(candidate.document()[key]) != value[key] for key in (\"root\", \"python\", \"profile\"))
+                    or ((not terminal or (folder / \"version.json\").exists())
+                        and Version.load(read_json(absolute(folder / \"version.json\"))).document() != candidate.document())):
+                raise ValueError(\"Invalid managed update version.\")
+            return candidate
+
+        old = retained(transaction[\"old\"])
+        candidate = retained(transaction[\"candidate\"]) if transaction.get(\"candidate\") else None
+        step = transaction.get(\"step\")
+        if step in {\"complete\", \"rolled_back\"}:
+            return False
+        allowed = candidate if step == \"switched\" else old if step == \"rollback_selected\" else None
+        if allowed is None or allowed.document() != version.document():
+            raise ValueError(\"The pending update does not permit this launch.\")
+        return True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        action = (\"Choose Pinokio's Update button to finish it.\"
+                  if version.managed_by == \"pinokio\" else
+                  \"Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh\"
+                  if os.name != \"nt\" else
+                  \"Run the install line to finish it: irm https://astrid.haus/install.ps1 | iex\")
+        raise ValueError(\"An Astrid update was interrupted; \" + action) from exc
+
+launch_admission(Version(Path('C:\\Astrid\\versions\\v1'),Path('C:\\Astrid\\versions\\v1\\py\\Scripts\\python.exe'),Path('C:\\Astrid\\versions\\v1\\profile.json'),{'ASTRID_INSTALL_MANAGED_BY': '', 'ASTRID_INSTALL_RELEASE': '0', 'PATH': 'C:\\Astrid\\tools;C:\\Windows\\System32', 'PYTHONUTF8': '1'},0,None),Path('C:\\Astrid Data'))
+os.environ.update({'ASTRID_INSTALL_MANAGED_BY': '', 'ASTRID_INSTALL_RELEASE': '0', 'PATH': 'C:\\Astrid\\tools;C:\\Windows\\System32', 'PYTHONUTF8': '1'})
 sys.stdout=sys.stderr=open('C:\\Astrid\\logs\\runtime-service.log','a',encoding='utf-8',buffering=1)
 from astrid_runtime.cli import main
 sys.exit(main(['run', '--profile', 'astrid', '--data-root', 'C:\\Astrid Data', '--source-manifest', 'C:\\Astrid\\versions\\v1\\profile.json']))"</Arguments><WorkingDirectory>C:\Astrid\versions\v1</WorkingDirectory></Exec></Actions>

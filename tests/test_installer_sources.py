@@ -212,6 +212,9 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
         value["vibecomfy"] = {"sha": "c" * 40, "repo": str(tmp_path / "vibecomfy")}
     backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv", managed_by=managed_by)
     backend.uv.touch()
+    # The CLI writes this marker before staging; install_identity reads managed_by from it.
+    write_json(tmp_path / "program" / "install.json",
+               {"owner": LABEL, "data_root": str(tmp_path / "data"), **({"managed_by": managed_by} if managed_by else {})})
     calls = []
 
     def materialize(name, sha, destination, *, repo=None):
