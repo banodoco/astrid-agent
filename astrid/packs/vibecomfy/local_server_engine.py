@@ -6,6 +6,7 @@ save prefixes, image upload, owned-prompt cleanup) reads as one unit.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from collections.abc import Mapping
@@ -25,6 +26,45 @@ from astrid.packs.vibecomfy.production_engine import (
 _LOCAL_PROMPT_TIMEOUT_SEC = 3300  # leave containment time below the host's 3600s deadline
 
 
+class _UploadedMediaSchema:
+    """Live schema view whose video/audio file pickers accept uploaded names.
+
+    A managed video/audio value is a staged basename, then an uploaded
+    ``astrid/<task>/<name>`` reference; neither can appear in the picker's
+    choices read before the upload, and VibeComfy only exempts image pickers
+    from that enum check. Everything else is delegated unchanged, and only the
+    classes and fields that managed video/audio public inputs name are exempt.
+    """
+
+    def __init__(self, provider: Any, targets: set[tuple[str, str]]) -> None:
+        self._provider = provider
+        self._targets = targets
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
+
+    def get_schema(self, class_type: str) -> Any:
+        schema = self._provider.get_schema(class_type)
+        fields = {field for kind, field in self._targets if kind == class_type}
+        if schema is None or not fields.intersection(schema.inputs):
+            return schema
+        inputs = dict(schema.inputs)
+        for field in fields.intersection(inputs):
+            inputs[field] = dataclasses.replace(inputs[field], choices=None, unresolved_choices=True)
+        return dataclasses.replace(schema, inputs=inputs)
+
+
+def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -> set[tuple[str, str]]:
+    targets: set[tuple[str, str]] = set()
+    for name in run_inputs or {}:
+        spec = bundle.workflow.inputs.get(name)
+        media = str(getattr(spec, "media_semantics", "") or "").lower()
+        node = bundle.workflow.nodes.get(str(getattr(spec, "node_id", ""))) if spec is not None else None
+        if media in {"video", "audio"} and node is not None:
+            targets.add((node.class_type, str(spec.field)))
+    return targets
+
+
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
@@ -35,7 +75,10 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
         validate_api_link_shapes,
     )
 
-    provider = get_target_schema_provider(url, cache_dir=destination / ".vibecomfy-schema")
+    provider = _UploadedMediaSchema(
+        get_target_schema_provider(url, cache_dir=destination / ".vibecomfy-schema"),
+        _uploaded_media_targets(bundle, run_inputs),
+    )
     # Inspect an unapproved projection first, so a missing live class gets
     # our actionable gap report before the approval gate can reject it.
     api = bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
@@ -169,6 +212,19 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
     return load_bundle(derived.python_path, trust=Provenance.USER_CONFIRMED)
 
 
+def _staged_digest(destination: Path, name: str) -> str | None:
+    """Digest recorded by managed-asset staging for one engine-input file."""
+    path = destination / "engine-input" / ".managed-asset-digests.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        digests = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    value = digests.get(name) if isinstance(digests, dict) else None
+    return value if isinstance(value, str) else None
+
+
 def run_local_server(
     resolved: Any, destination: Path, *, comfy_url: str, comfy_output_dir: str,
     task_identity: str, attempt_identity: str | None, run_inputs: Mapping[str, Any] | None,
@@ -180,6 +236,7 @@ def run_local_server(
     from astrid.core.generation.backends.vibecomfy_local_server import (
         cleanup_prompts,
         upload_image,
+        upload_media,
         validate_comfy_url,
         validate_identity,
         validate_output_directory,
@@ -216,9 +273,15 @@ def run_local_server(
         media = str(getattr(spec, "media_semantics", "") or "").lower()
         if media in {"image", "mask", "video", "audio"}:
             source = destination / "engine-input" / str(value)
-            if media not in {"image", "mask"}:
-                raise ProductionEngineError("local_server managed assets must be images")
-            bindings[name] = upload_image(url, source, task_id=task_identity)
+            if media in {"image", "mask"}:
+                bindings[name] = upload_image(url, source, task_id=task_identity)
+            else:
+                # Same custody as images, plus the digest the managed-assets
+                # archive was verified against when it was staged.
+                bindings[name] = upload_media(
+                    url, source, task_id=task_identity, kind=media,
+                    expected_sha256=_staged_digest(destination, str(value)),
+                )
     record = _approve_live(bundle, bindings, provider)
 
     def stop(signum: int, _frame: Any) -> None:

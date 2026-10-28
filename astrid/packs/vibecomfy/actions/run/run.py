@@ -191,6 +191,22 @@ def _stage_managed_asset_manifest(
             raise AstridValueError(f"managed asset destination collision: {destination.name}")
         if not destination.exists():
             destination.write_bytes(data)
+    if not (isinstance(readiness_profile, dict)
+            and isinstance(readiness_profile.get("vibecomfy_session"), dict)):
+        # Local placements upload from engine-input later; record the digests
+        # verified above so video/audio uploads can be checked against them.
+        ledger = input_directory / ".managed-asset-digests.json"
+        if ledger.is_symlink():
+            raise AstridValueError("managed asset digest ledger must not be a symlink")
+        try:
+            digests = json.loads(ledger.read_text(encoding="utf-8")) if ledger.exists() else {}
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            digests = {}
+        digests.update({
+            Path(str(record["member"])).name: str(record["sha256"])
+            for record in resolved.manifest["assets"]
+        })
+        ledger.write_text(json.dumps(digests, sort_keys=True), encoding="utf-8")
     return resolved
 
 
@@ -595,8 +611,8 @@ def _run_and_settle(
             raise AstridValueError("source_video was supplied by more than one input path")
         workflow_input_bindings["source_video"] = source_video_name
     if "source_video" in workflow_input_bindings:
-        if comfy_url:
-            raise AstridValueError("local_server cannot use source_video")
+        # Under local_server this is a managed asset (``--source-video`` itself
+        # is still rejected above); it is uploaded after the same preflight.
         from astrid.packs.vibecomfy.invocation_preflight import preflight_invocation
 
         staged_input = _source_video_input_directory(

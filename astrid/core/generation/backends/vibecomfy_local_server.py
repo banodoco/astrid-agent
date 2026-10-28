@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import re
@@ -63,19 +64,40 @@ def _opener():
 
 
 def upload_image(url: str, source: Path, *, task_id: str) -> str:
+    return upload_media(url, source, task_id=task_id, kind="image")
+
+
+def upload_media(
+    url: str, source: Path, *, task_id: str, kind: str = "image",
+    expected_sha256: str | None = None,
+) -> str:
+    """Upload one managed asset into ComfyUI's namespaced input subfolder.
+
+    Images keep their original contract. Video and audio use the same endpoint,
+    namespace and returned-reference checks, and additionally require the bytes
+    sent to match the digest verified when the managed-assets archive was read.
+    """
+    if kind not in {"image", "video", "audio"}:
+        raise ValueError(f"unsupported local_server managed asset kind: {kind}")
     subfolder = f"astrid/{validate_identity(task_id)}"
     if source.is_symlink() or not source.is_file():
-        raise ValueError(f"managed image is not a regular file: {source}")
+        raise ValueError(f"managed {kind} is not a regular file: {source}")
     media_type = mimetypes.guess_type(source.name)[0] or ""
-    if not media_type.startswith("image/"):
-        raise ValueError("local_server managed assets must be images")
+    if not media_type.startswith(f"{kind}/"):
+        if kind == "image":
+            raise ValueError("local_server managed assets must be images")
+        raise ValueError(f"local_server managed {kind} asset must have a {kind}/* media type")
+    data = source.read_bytes()
+    if kind != "image" or expected_sha256 is not None:
+        if expected_sha256 is None or hashlib.sha256(data).hexdigest() != expected_sha256:
+            raise ValueError(f"managed {kind} failed hash verification: {source.name}")
     boundary = uuid.uuid4().hex
     body = bytearray()
     for name, value in (("subfolder", subfolder), ("type", "input")):
         body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
     filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
     body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
-    body.extend(source.read_bytes())
+    body.extend(data)
     body.extend(f"\r\n--{boundary}--\r\n".encode())
     request = urllib.request.Request(
         validate_comfy_url(url) + "/upload/image", data=bytes(body),
