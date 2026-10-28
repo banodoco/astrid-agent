@@ -190,7 +190,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
     ``masked_edit`` (keys ``source_binding``, ``start_time``, ``frame_load_cap``,
-    ``mask_binding``, ``mask_channel``) inserts the native spatial V2V node
+    ``mask_binding``, ``mask_channel``, optional ``mask_kind="video"``) inserts the native spatial V2V node
     between the target latent and the sampler; it also permits zero references.
 
     Graph shape depends only on reference list length. Filenames remain managed
@@ -334,9 +334,24 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             )
             wf.register_input(masked_edit["source_binding"], masked_edit["source_binding"], "video", "",
                               type="CHOICE", default="", required=True, media_semantics="video")
-            mask = LoadImageMask(image="", channel=masked_edit["mask_channel"], _id=masked_edit["mask_binding"])
-            wf.register_input(masked_edit["mask_binding"], masked_edit["mask_binding"], "image", "",
-                              type="CHOICE", default="", required=True, media_semantics="image")
+            if masked_edit.get("mask_kind") == "video":
+                # Binary mask video: read the RED channel of the IMAGE output. The VHS MASK
+                # output is alpha-derived and must not be used.
+                mask_loader = VHS_LoadVideoFFmpeg(
+                    custom_height=0, custom_width=0, force_rate=24, format="AnimateDiff",
+                    frame_load_cap=int(masked_edit["frame_load_cap"]),
+                    start_time=0.0, video="",
+                    videopreview={"hidden": False, "paused": False, "params": {}, "muted": False},
+                    _id=masked_edit["mask_binding"],
+                )
+                wf.register_input(masked_edit["mask_binding"], masked_edit["mask_binding"], "video", "",
+                                  type="CHOICE", default="", required=True, media_semantics="video")
+                mask = node("ImageToMask", _outputs=("MASK",), image=mask_loader.out("IMAGE"),
+                            channel=masked_edit["mask_channel"])
+            else:
+                mask = LoadImageMask(image="", channel=masked_edit["mask_channel"], _id=masked_edit["mask_binding"])
+                wf.register_input(masked_edit["mask_binding"], masked_edit["mask_binding"], "image", "",
+                                  type="CHOICE", default="", required=True, media_semantics="image")
             v2v_inputs = ["latent", "model", "vae", "audio_vae", "source_frames", "source_audio", "source_fps",
                           "mode", "global_strength", "inside_strength", "outside_strength", "audio_strength",
                           "source_fit", "crop", "mask_temporal_reduce", "invert_mask", "source_mask"]

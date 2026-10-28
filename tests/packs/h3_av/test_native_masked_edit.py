@@ -87,3 +87,57 @@ def test_rectangle_masks_still_fail_closed(tmp_path):
     raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 10, 10]}
     with pytest.raises(Exception):
         compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+
+
+def _video_mask_prepare(tmp_path: Path, frames: int) -> dict:
+    from tests.packs.h3_av.test_moving_masks import _mask_video
+
+    raw = json.loads(json.dumps(PILL))
+    raw["media"][0]["edit"][0]["mask"] = {"asset": "pill-mask"}
+    prepared = _prepare(raw, tmp_path)
+    mask = tmp_path / "pill-mask.mkv"
+    _mask_video(mask, frames=frames)
+    for record in prepared["assets"]:
+        if record["asset"] == "pill-mask":
+            record.update(path=str(mask), size=mask.stat().st_size,
+                          sha256=hashlib.sha256(mask.read_bytes()).hexdigest())
+    return prepared
+
+
+@pytest.mark.ffmpeg
+def test_native_masked_edit_video_mask_binding(tmp_path):
+    import zipfile
+
+    manifest = compile_preparation(_video_mask_prepare(tmp_path, 120), out_dir=tmp_path / "out")
+    text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
+    assert "start_time=0.0" in text and text.count("frame_load_cap=120") == 2
+    assert "imagetomask = ImageToMask(" in text
+    assert "image=vhs_loadvideoffmpeg_2.out('IMAGE')" in text
+    assert "channel='red'" in text and "LoadImageMask" not in text
+    block = _v2v_block(manifest)
+    assert "mode='spatial'" in block and "source_mask=imagetomask.out('MASK')" in block
+    assert "node=ref('vhs_loadvideoffmpeg_2'), field='video'" in text and "'video_mask_0'" in text
+    assert "vhs_loadvideoffmpeg_2.out('MASK')" not in text
+    assert manifest["capabilities"]["mask_binding"] == "per-frame video mask"
+    archives = [Path(row["path"]) for row in _all_files(manifest) if str(row["path"]).endswith("managed-assets.zip")]
+    assert archives, "managed-assets.zip missing"
+    with zipfile.ZipFile(archives[0]) as zf:
+        assert any("pill-mask" in name or "video_mask_0" in name for name in zf.namelist()), zf.namelist()
+
+
+def _all_files(manifest: dict):
+    stack = [manifest]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if "path" in item and isinstance(item["path"], str):
+                yield item
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+@pytest.mark.ffmpeg
+def test_native_masked_edit_video_mask_frame_mismatch_raises(tmp_path):
+    with pytest.raises(CompilationError, match="frames"):
+        compile_preparation(_video_mask_prepare(tmp_path, 100), out_dir=tmp_path / "out")

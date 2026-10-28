@@ -501,6 +501,21 @@ def _has_regional_image_mask(request: H3Request) -> bool:
     )
 
 
+def _native_mask_kind(path: Path, mask_id: str) -> str:
+    """Return "video" for a lossless per-frame mask video, else "image".
+
+    Opaque non-media fixtures (ffprobe cannot decode them) keep the static path.
+    """
+    from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
+
+    try:
+        return str(probe_mask(path, mask_id=mask_id)["kind"])
+    except CompositionError as exc:
+        if "not decodable image or video media" in str(exc):
+            return "image"
+        raise CompilationError(str(exc)) from exc
+
+
 def _compile_native_masked_edit(
     request: H3Request, assets: Mapping[str, Path], destination: Path, *, branch: str
 ) -> dict[str, Any]:
@@ -540,14 +555,29 @@ def _compile_native_masked_edit(
             raise CompilationError(f"native masked edit mask {mask['asset']!r} is missing from preparation")
         masks.append(mask["asset"])
     if len(set(masks)) != 1:
-        raise CompilationError("native masked edit supports one static image mask per request")
+        raise CompilationError("native masked edit supports one mask per request (static image or mask video)")
     source_id = str(source["asset"])
     if source_id not in assets:
         raise CompilationError(f"native masked edit asset {source_id!r} is missing from preparation")
     references = [item for item in value["media"] if item["role"] == "reference"]
     if any(item.get("modality") != "image" for item in references):
         raise CompilationError("native masked edit accepts image references only")
-    bindings: dict[str, Path] = {"source_video": assets[source_id], "mask_0": assets[masks[0]]}
+    frame_load_cap = int(resolved[1]) - int(resolved[0])
+    mask_kind = _native_mask_kind(assets[masks[0]], masks[0])
+    mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
+    if mask_kind == "video":
+        from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
+
+        try:
+            mask_frames = int(probe_mask(assets[masks[0]], mask_id=masks[0])["frames"])
+        except CompositionError as exc:
+            raise CompilationError(str(exc)) from exc
+        if mask_frames != frame_load_cap:
+            raise CompilationError(
+                f"native masked edit mask video {masks[0]!r} has {mask_frames} frames; "
+                f"the source window loads {frame_load_cap}"
+            )
+    bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: assets[masks[0]]}
     for index, item in enumerate(references):
         if str(item["asset"]) not in assets:
             raise CompilationError(f"native masked edit reference {item['asset']!r} is missing from preparation")
@@ -564,9 +594,10 @@ def _compile_native_masked_edit(
         steps=settings["steps"], seed=settings["seed"], sampler=settings["sampler"],
         scheduler=settings["scheduler"], guidance=turbo["strength"], turbo_enabled=turbo["enabled"],
         masked_edit={
-            "source_binding": "source_video", "mask_binding": "mask_0", "mask_channel": _MASK_CHANNEL,
+            "source_binding": "source_video", "mask_binding": mask_binding, "mask_channel": _MASK_CHANNEL,
+            "mask_kind": mask_kind,
             "start_time": float(source["range"][0]),
-            "frame_load_cap": int(resolved[1]) - int(resolved[0]),
+            "frame_load_cap": frame_load_cap,
         },
     )
     active_assets, unresolved = resolve_referenced_assets(graph)
@@ -593,7 +624,10 @@ def _compile_native_masked_edit(
         capabilities={
             "operation": "transform", "native_v2_branch": branch,
             "source_binding": "source_video",
-            "mask_binding": "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")",
+            "mask_binding": (
+                "per-frame video mask"
+                if mask_kind == "video"
+                else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
             "audio_binding": "source_audio_from_source_video, audio_strength=0",
             "references": len(references),
             "output_contract": "muxed_av_full_timeline",
@@ -604,7 +638,7 @@ def _compile_native_masked_edit(
         },
         limitations=[
             "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
-            "one static image mask per request; per-frame masks, rectangle and polygon masks are unsupported",
+            "one mask per request (static image or per-frame mask video); rectangle and polygon masks are unsupported",
             "windows are limited to 15 s with no automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
