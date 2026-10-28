@@ -83,8 +83,29 @@ PY
   fi
 }
 
+# The engine's FIX-RECEIPT-PROBE change lives in these two astrid modules. astrid is installed
+# non-editable, so the installed copy must be the one from src/astrid-agent: a hand-copied file or
+# any other drift would run the old probe with no warning. Compare the modules by sha256 and
+# reinstall astrid only on a mismatch or a missing copy. Cheap enough to run on every bootstrap.
+PROBE_MODULES=(engine_runner.py engine_runner_target.py)
+verify_astrid_install() {
+  local rel want got site
+  site="$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  for rel in "${PROBE_MODULES[@]}"; do
+    want="$(sha256sum "src/astrid-agent/astrid/core/generation/$rel" | cut -d' ' -f1)"
+    got="$(sha256sum "$site/astrid/core/generation/$rel" 2>/dev/null | cut -d' ' -f1)" || got=""
+    if [ "$want" != "$got" ]; then
+      echo "pod_bootstrap: installed astrid differs from src/astrid-agent ($rel); reinstalling astrid"
+      uv pip install --python "$VENV" --reinstall-package astrid src/astrid-agent
+      return 0
+    fi
+  done
+  echo "pod_bootstrap: installed astrid matches src/astrid-agent"
+}
+
 if [ -f "$marker" ]; then
   echo "pod_bootstrap: already done ($marker)"
+  verify_astrid_install
   setup_runtime
   exit 0
 fi
@@ -116,6 +137,12 @@ else
   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
     uv pip install --python "$VENV" "${SRC_DIRS[@]}"
 fi
+
+# pip in the venv. The engine install's helper runs `python3 -m pip` for its uv bootstrap, and a
+# venv made by `uv venv` has no pip. This sits outside the if above, so a venv that already holds
+# the packages gets it too. uv leaves an installed pip alone, so this is idempotent.
+uv pip install --python "$VENV" pip
+verify_astrid_install
 
 # VibeComfy stays editable: find_repo_root() looks for pyproject.toml beside the imported
 # package, which a site-packages copy lacks. --no-deps keeps the dependency set unchanged.

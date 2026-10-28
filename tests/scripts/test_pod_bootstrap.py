@@ -132,6 +132,41 @@ def test_vibecomfy_editable_install_after_package_step_before_marker():
 
 
 TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln"]
+PROBE_MODULES = ("engine_runner.py", "engine_runner_target.py")
+PROBE_TEXT = {name: f"# {name} from src/astrid-agent\n" for name in PROBE_MODULES}
+
+
+def _site(venv: Path) -> Path:
+    return venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+
+
+def _fake_venv(tmp_path: Path, copies: dict | None) -> Path:
+    """A venv whose interpreter reports its own site-packages, optionally holding astrid copies."""
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True, exist_ok=True)
+    (venv / "bin" / "python").symlink_to(sys.executable)
+    (venv / "pyvenv.cfg").write_text(f"home = {Path(sys.executable).resolve().parent}\n")
+    stub = venv / "bin" / "astrid-runtime"  # what the fake uv venv command writes, for setup_runtime
+    stub.write_text(
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --realm-root ] && { mkdir -p \"$2\"; : > \"$2/realm.sqlite3\"; }; shift; done\n"
+    )
+    stub.chmod(0o755)
+    if copies is not None:
+        gen = _site(venv) / "astrid" / "core" / "generation"
+        gen.mkdir(parents=True, exist_ok=True)
+        for name, text in copies.items():
+            (gen / name).write_text(text)
+    return venv
+
+
+def _uv_calls(log: Path) -> list:
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def _line_index(calls: list, prefix: str) -> int:
+    matches = [i for i, c in enumerate(calls) if c.startswith(prefix)]
+    assert len(matches) == 1, (prefix, calls)
+    return matches[0]
 
 
 def _tool_bin(tmp_path: Path, with_uv: bool) -> Path:
@@ -149,8 +184,9 @@ def _tool_bin(tmp_path: Path, with_uv: bool) -> Path:
         uv = b / "uv"
         uv.write_text(
             "#!/usr/bin/env bash\n"
+            '[ -z "${UV_LOG:-}" ] || echo "$*" >> "$UV_LOG"\n'
             'case "$1 $2" in\n'
-            '  "pip list") exit 1;;\n'
+            '  "pip list") if [ -n "${FAKE_UV_FREEZE:-}" ]; then cat "$FAKE_UV_FREEZE"; else exit 1; fi;;\n'
             '  "venv "*) for a; do v="$a"; done; mkdir -p "$v/bin"; ln -sf "$PY" "$v/bin/python"\n'
             '    printf \'#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = --realm-root ] && { mkdir -p "$2"; : > "$2/realm.sqlite3"; }; shift; done\\n\' > "$v/bin/astrid-runtime"\n'
             '    chmod +x "$v/bin/astrid-runtime";;\n'
@@ -165,6 +201,10 @@ def _boot(tmp_path: Path, extra: dict, with_uv=True) -> subprocess.CompletedProc
     for d in ("runpod-python", "astrid-runtime", "runpod-lifecycle", "astrid-agent", "VibeComfy"):
         (src / d).mkdir(parents=True, exist_ok=True)
         (src / d / "f.txt").write_text(d)
+    gen = src / "astrid-agent" / "astrid" / "core" / "generation"
+    gen.mkdir(parents=True, exist_ok=True)
+    for name in PROBE_MODULES:
+        (gen / name).write_text(PROBE_TEXT[name])
     env = {
         "PATH": str(_tool_bin(tmp_path, with_uv)),
         "HOME": str(tmp_path / "home"),
@@ -231,3 +271,86 @@ def test_no_hardcoded_cache_paths_or_curl():
     assert '${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}' in text
     assert '${UV_PYTHON_INSTALL_DIR:-$DATA_ROOT/uv-python}' in text
     assert "curl" not in text
+
+
+def _probe_function_body(text: str) -> str:
+    start = text.index("verify_astrid_install() {")
+    return text[start : text.index("\n}\n", start) + 3]
+
+
+def test_pip_step_is_unindented_after_package_install_and_before_marker():
+    text = SCRIPT.read_text()
+    # Unindented means it runs whether or not the packages were already installed (the if/else above).
+    pip_line = re.compile(r'^uv pip install --python "\$VENV" pip$', re.M)
+    assert len(pip_line.findall(text)) == 1
+    package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
+    assert text.index(package_step) < pip_line.search(text).start() < text.index('mkdir -p "$marker_dir"')
+
+
+def test_probe_check_runs_on_rerun_and_after_package_install_and_never_cleans_engine_state():
+    text = SCRIPT.read_text()
+    assert "PROBE_MODULES=(engine_runner.py engine_runner_target.py)" in text
+    calls = [m.start() for m in re.finditer(r"^\s*verify_astrid_install$", text, re.M)]
+    assert len(calls) == 2
+    rerun, full = calls
+    package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
+    editable = 'uv pip install --python "$VENV" --no-deps -e src/VibeComfy'
+    assert text.index('if [ -f "$marker" ]') < rerun < text.index("  setup_runtime\n  exit 0")
+    assert text.index(package_step) < full < text.index(editable) < text.index('mkdir -p "$marker_dir"')
+    body = _probe_function_body(text)
+    assert "sha256sum" in body and "--reinstall-package astrid" in body
+    # The bootstrap never deletes engine state; stale state is documented in SETUP.md instead.
+    assert "rm -" not in text and ".astrid-engine" not in text
+
+
+def test_fresh_boot_orders_package_pip_probe_check_then_editable(tmp_path):
+    log = tmp_path / "uv.log"
+    r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log)})
+    assert r.returncode == 0, r.stderr + r.stdout
+    calls = _uv_calls(log)
+    venv = tmp_path / "venv"
+    pkg = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
+    pip = _line_index(calls, f"pip install --python {venv} pip")
+    probe = _line_index(calls, f"pip install --python {venv} --reinstall-package astrid ")
+    editable = _line_index(calls, f"pip install --python {venv} --no-deps -e src/VibeComfy")
+    assert pkg < pip < probe < editable
+
+
+def test_existing_packages_skip_install_but_still_get_pip_and_a_matching_probe_check(tmp_path):
+    venv = _fake_venv(tmp_path, dict(PROBE_TEXT))
+    freeze = tmp_path / "freeze.txt"
+    freeze.write_text("runpod==1.0\nastrid-runtime==1.0\nrunpod-lifecycle==1.0\nastrid==1.0\nvibecomfy==1.0\n")
+    log = tmp_path / "uv.log"
+    env = {**_overrides(tmp_path), "UV_LOG": str(log), "FAKE_UV_FREEZE": str(freeze)}
+    r = _boot(tmp_path, env)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "skipping install" in r.stdout and "installed astrid matches" in r.stdout
+    calls = _uv_calls(log)
+    assert not any(c.startswith(f"pip install --python {venv} src/runpod-python") for c in calls)
+    _line_index(calls, f"pip install --python {venv} pip")
+    assert not any("--reinstall-package astrid" in c for c in calls)
+
+
+def test_probe_check_reinstalls_astrid_when_installed_module_differs(tmp_path):
+    copies = dict(PROBE_TEXT)
+    copies["engine_runner_target.py"] = "# older probe\n"
+    venv = _fake_venv(tmp_path, copies)
+    log = tmp_path / "uv.log"
+    r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log)})
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "installed astrid differs from src/astrid-agent (engine_runner_target.py)" in r.stdout
+    _line_index(_uv_calls(log), f"pip install --python {venv} --reinstall-package astrid ")
+
+
+def test_marker_rerun_still_verifies_installed_astrid(tmp_path):
+    venv = _fake_venv(tmp_path, dict(PROBE_TEXT))
+    log = tmp_path / "uv.log"
+    env = {**_overrides(tmp_path), "UV_LOG": str(log)}
+    first = _boot(tmp_path, env)
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert not any("--reinstall-package astrid" in c for c in _uv_calls(log))
+    (_site(venv) / "astrid" / "core" / "generation" / "engine_runner.py").write_text("# hand-copied\n")
+    second = _boot(tmp_path, env)
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "already done" in second.stdout and "installed astrid differs" in second.stdout
+    assert sum("--reinstall-package astrid" in c for c in _uv_calls(log)) == 1
