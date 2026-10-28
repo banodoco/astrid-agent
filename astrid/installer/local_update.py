@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -18,6 +17,7 @@ from typing import TextIO
 
 from .backend import Backend
 from .core import (
+    TERMINAL_STEPS,
     Installer,
     RuntimeOperationError,
     Version,
@@ -25,12 +25,15 @@ from .core import (
     current,
     install_release,
     is_lifecycle_refusal,
+    owned_by_local_update,
+    pending_transaction,
     read_json,
     recover_transaction,
+    separate_roots,
     switch,
     update_required,
 )
-from .service import LABEL, bootstrap_root, installer_lock_path
+from .service import LABEL, default_uv, installer_lock_path
 from .tools import validate_manifest
 
 _HOOKS = {
@@ -190,10 +193,7 @@ def _backend(root: Path) -> Backend:
 
     log = platform.log_dir() / "install.log"
     platform.private_directory(log.parent)
-    uv = Path(os.environ.get(
-        "ASTRID_INSTALL_UV",
-        str(bootstrap_root(Path.home(), sys.platform) / ("uv.exe" if sys.platform == "win32" else "uv")),
-    ))
+    uv = default_uv()
     return Backend(root, log, uv, say=lambda message: print(message, file=sys.stderr),
                    managed_by=read_json(root / "install.json").get("managed_by"))
 
@@ -207,7 +207,7 @@ def _selection(root: Path, backend: Backend) -> tuple[Version, Path, dict]:
             or recorded.get("managed_by") != marker.get("managed_by")):
         raise ValueError("The selected Astrid installation is invalid.")
     data = absolute(marker["data_root"])
-    if data == root or data in root.parents or root in data.parents:
+    if not separate_roots(root, data):
         raise ValueError("Program files and the workspace must be separate.")
     old = current(root)
     if (old is None or not old.python.is_file()
@@ -245,10 +245,10 @@ def _assert_selection(root: Path, backend: Backend, expected_versions: tuple[Ver
 
 def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
     transaction = read_json(root / "update-transaction.json")
-    if not transaction or transaction.get("step") in {"complete", "rolled_back"}:
+    if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return False
     owner = transaction.get("transaction_context")
-    if not isinstance(owner, dict) or owner.get("owner") != "local-update":
+    if not owned_by_local_update(transaction):
         return False
     if transaction.get("transaction_kind") not in {"app", "migration"}:
         raise LocalUpdateStepError("recover-journal", "The local update journal kind is invalid.")
@@ -500,10 +500,8 @@ def execute(action: dict, root: Path, *, stdin: TextIO, stdout: TextIO, say=prin
     if action.get("action") not in {"recover", "update"}:
         raise LocalUpdateStepError("validate-request", "The local update action is invalid.")
     if action["action"] == "recover":
-        pending = read_json(root / "update-transaction.json")
-        if (pending and pending.get("step") not in {"complete", "rolled_back"}
-                and not (isinstance(pending.get("transaction_context"), dict)
-                         and pending["transaction_context"].get("owner") == "local-update")):
+        pending = pending_transaction(root)
+        if pending and not owned_by_local_update(pending):
             raise LocalUpdateStepError(
                 "recover-journal", "Use the owning installer to recover the interrupted update first.")
     backend = _backend(root)
@@ -527,14 +525,13 @@ def _execute_locked(action: dict, root: Path, backend: Backend, *,
     hooks: HookClient
     if action["action"] == "recover":
         pending = read_json(root / "update-transaction.json")
-        if (pending and pending.get("step") not in {"complete", "rolled_back"}
-                and not (isinstance(pending.get("transaction_context"), dict)
-                         and pending["transaction_context"].get("owner") == "local-update")):
+        if (pending and pending.get("step") not in TERMINAL_STEPS
+                and not owned_by_local_update(pending)):
             raise LocalUpdateStepError(
                 "recover-journal", "Use the owning installer to recover the interrupted update first.")
         context = pending.get("transaction_context", {})
         app_context = _at_step("recover-context", validate_app_context, context["app"]) if (
-            isinstance(context, dict) and context.get("owner") == "local-update"
+            owned_by_local_update(pending)
         ) else {}
         hooks = HookClient(app_context, stdin, stdout)
         did_recover = _at_step("recover-transaction", _recover, root, backend, hooks, say=say)
@@ -546,8 +543,7 @@ def _execute_locked(action: dict, root: Path, backend: Backend, *,
     if app.get("manifest") != manifest:
         raise LocalUpdateStepError("validate-manifest", "The App and Runtime update manifests do not match.")
     hooks = HookClient(app, stdin, stdout)
-    pending = read_json(root / "update-transaction.json")
-    if pending and pending.get("step") not in {"complete", "rolled_back"}:
+    if pending_transaction(root):
         if _at_step("recover-transaction", _recover, root, backend, hooks, say=say):
             raise ValueError("An interrupted local update was recovered; retry the update.")
         raise ValueError("Use the owning installer to recover the interrupted update first.")

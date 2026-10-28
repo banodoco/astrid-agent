@@ -78,6 +78,16 @@ def bootstrap_root(home: Path, system: str) -> Path:
     return (root.parent / "Astrid Installer" if system == "win32" else root) / "bootstrap"
 
 
+def default_uv() -> Path:
+    """The pinned user-local uv, unless the bootstrap supplies ASTRID_INSTALL_UV."""
+    return Path(os.environ.get("ASTRID_INSTALL_UV", str(
+        bootstrap_root(Path.home(), sys.platform) / ("uv.exe" if sys.platform == "win32" else "uv"))))
+
+
+def pinokio_owned(record: dict) -> bool:
+    return record.get("owner") == LABEL and record.get("managed_by") == "pinokio"
+
+
 def launch_admission(version: Version, data: Path) -> bool:
     """Validate the selected managed launch; return whether it is activating.
 

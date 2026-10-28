@@ -15,19 +15,23 @@ from pathlib import Path
 from runtime_protocol import platform as runtime_platform
 
 from .core import (
+    TERMINAL_STEPS,
     Installer,
     RuntimeOperationError,
     Version,
     absolute,
     current,
     inspect_schema,
+    owned_by_local_update,
+    pending_transaction,
     read_json,
     recover_transaction,
+    separate_roots,
     switch,
     update_required,
 )
 from .launcher import publish_runtime_runner
-from .service import LABEL, installer_lock_path
+from .service import installer_lock_path, pinokio_owned
 
 # Run with the Version's interpreter in isolated mode. Backend.stage installs
 # Runtime from a local source directory non-editably; PEP 610 records that
@@ -104,20 +108,18 @@ def locked(path: Path, *, timeout: float = 0):
 
 def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[Version, Path, dict]:
     marker, recorded = read_json(root / "install.json"), backend.service.recorded()
-    if (marker.get("owner") != LABEL or marker.get("managed_by") != "pinokio"
-            or recorded.get("owner") != LABEL or recorded.get("managed_by") != "pinokio"
+    if (not pinokio_owned(marker) or not pinokio_owned(recorded)
             or recorded.get("program_root") != str(root) or recorded.get("uninstalled")
             or marker.get("data_root") != recorded.get("data_root")):
         raise ValueError("App updates require the selected, existing Pinokio installation.")
-    transaction = read_json(root / "update-transaction.json")
-    if (transaction and transaction.get("step") not in {"complete", "rolled_back"}
-            and not allow_transaction):
+    transaction = pending_transaction(root)
+    if transaction and not allow_transaction:
         raise ValueError("Finish recovering the interrupted migration update before updating the app.")
     old = current(root)
     if old is None or not old.python.is_file():
         raise ValueError("The installed app is incomplete; use the regular installer to repair it.")
     data = absolute(recorded["data_root"])
-    if data == root or data in root.parents or root in data.parents:
+    if not separate_roots(root, data):
         raise ValueError("Program files and the workspace must be separate.")
     # Foreground PID changes are expected; workspace and manager changes are not.
     identity = {key: recorded.get(key) for key in (
@@ -319,10 +321,9 @@ class PinokioLifecycle:
 def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bool:
     """Recover Pinokio's shared journal while its operation lock is held."""
     pending = read_json(root / "update-transaction.json")
-    if not pending or pending.get("step") in {"complete", "rolled_back"}:
+    if not pending or pending.get("step") in TERMINAL_STEPS:
         return False
-    context = pending.get("transaction_context")
-    if isinstance(context, dict) and context.get("owner") == "local-update":
+    if owned_by_local_update(pending):
         raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
     lock = installer_lock_path(backend.service.home, backend.service.system)
     selected, data, _identity = selection(root, backend, allow_transaction=True)
