@@ -22,6 +22,7 @@ from astrid.core.execution.generic_host import (
     GenericPackHost,
     HostError,
     _preflight_unavailable_reason,
+    _unapproved_reason,
 )
 from astrid.core.pack import PackValidationError, discover_packs
 from astrid.core.pack import loader
@@ -238,6 +239,16 @@ def test_census_check_classifies_ok_degraded_and_drift():
     missing = check({"a"}, ["a", "b"], set())
     assert missing["status"] == "drift" and missing["missing"] == ["b"]
     assert check({"a"}, None, set())["added"] == ["a"]
+
+
+def test_unapproved_capability_guidance_does_not_point_into_install_versions():
+    reason = _unapproved_reason(
+        "goodpack.extra", Path(r"C:\Astrid\versions\1.2.3\config\astrid-beta-capabilities.json")
+    )
+
+    assert "source capability matrix" in reason
+    assert "versions\\" not in reason
+    assert "restart the host" in reason
 
 
 def test_approve_regenerates_lock_and_keeps_quarantined_approvals(tmp_path):

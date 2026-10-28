@@ -17,13 +17,14 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
     }
     # h3_av.transform declares metadata.local_orchestrator, so the action
     # loader rejects it as a host executor; it is owned by the orchestrator
-    # registry and its stale matrix row is reported, not discovered.
+    # registry and its matrix row is not part of executor discovery.
     local_orchestrators = {"h3_av.transform"}
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
     assert {record.id for record in records} == (
         set(host.matrix) - uninstalled_external_contracts - local_orchestrators
     )
+    assert "h3_av.transform" not in host.stale_matrix_entries
     assert {record.matrix["disposition"] for record in records} <= {"required", "optional", "unsupported", "retired"}
     for record in records:
         assert record.matrix["evidence_reason"]
