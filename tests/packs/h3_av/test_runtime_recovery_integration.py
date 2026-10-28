@@ -175,7 +175,9 @@ def test_runtime_response_loss_resumes_canonical_run_into_h3_verified_receipt(tm
                     from astrid.sdk.invocation import invoke_result
 
                     kwargs.pop("kind", None)
-                    kwargs.setdefault("project_root", ASTRID_ROOT)
+                    assert kwargs.pop("client", self) is self
+                    if kwargs.get("project_root") is None:
+                        kwargs["project_root"] = ASTRID_ROOT
                     kwargs.setdefault("timeout_seconds", 5)
                     kwargs.setdefault("poll_seconds", 0.005)
                     return invoke_result(capability_id, kind="executor", client=client, **kwargs)

@@ -161,7 +161,9 @@ def test_non_systemd_fallback_is_explicit_and_requests_runtime_start(tmp_path):
     version = Version(tmp_path / 'program/versions/v1', tmp_path / 'python', tmp_path / 'profile', {'PATH': '/tools:/bin'})
     manager.register(version, tmp_path / 'data')
     assert manager.start() is False
-    assert lines == ['There is no systemd user service; run the install line to restart Astrid.']
+    assert lines == [service.UNSUPERVISED_WARNING]
+    assert "does not restart after a crash" in lines[0]
+    assert "reboot" in lines[0] and "external supervisor" in lines[0]
     assert read_json(manager.selection)['data_root'] == str(tmp_path / 'data')
     assert 'version' not in read_json(manager.selection)
     assert not (service.default_program_root(tmp_path, 'linux') / 'service.json').exists()
@@ -728,7 +730,7 @@ def test_delete_data_includes_identity_checked_external_attached_workspace(tmp_p
     assert not program.exists() and not data.exists() and not external.exists()
 
 
-def test_no_systemd_starts_foreground_runtime_supervisor_with_recorded_birth_identity(tmp_path, monkeypatch):
+def test_no_systemd_starts_one_detached_runtime_with_recorded_birth_identity(tmp_path, monkeypatch):
     from runtime_protocol import platform
     run = Mock(side_effect=FileNotFoundError('no systemd'))
     manager = service.Service(tmp_path / 'program', tmp_path / 'log', run, home=tmp_path, system='linux')
@@ -804,3 +806,34 @@ def test_chat_declaration_failure_can_retry_without_claiming_fresh_workspace(tmp
     monkeypatch.setattr(backend, 'workspace', lambda *_args: {'realm_id': 'selected', 'realm_root': str(data / 'realm')})
     backend.register(version, data)
     assert read_json(backend.service.selection)['chat_settings']['ASTRID_ACP_CWD'] == str(data / 'chat')
+
+
+@pytest.mark.parametrize("observation", ["missing", "inactive", "other-owner", "timeout", "active"])
+def test_supervision_warning_checks_systemd_owner_read_only(tmp_path, monkeypatch, observation):
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service, "install_selection", lambda *_args: tmp_path / "selection.json")
+    write_json(tmp_path / "runtime/discovery.json", {"pid": 123})
+    if observation == "missing":
+        runner = Mock(side_effect=FileNotFoundError())
+    elif observation == "timeout":
+        runner = Mock(side_effect=subprocess.TimeoutExpired("systemctl", 3))
+    else:
+        runner = Mock(return_value=subprocess.CompletedProcess([], 0, stdout={
+            "inactive": "0\n", "other-owner": "456\n", "active": "123\n"}[observation]))
+    monkeypatch.setattr(service.subprocess, "run", runner)
+    assert service.supervision_warning(tmp_path) == (None if observation == "active" else service.UNSUPERVISED_WARNING)
+    assert runner.call_args.args[0] == [
+        "systemctl", "--user", "show", "astrid.service", "--property=MainPID", "--value"]
+    assert runner.call_args.kwargs["timeout"] == 3
+
+
+def test_supervision_warning_respects_pinokio_and_other_platforms(tmp_path, monkeypatch):
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service, "install_selection", lambda *_args: tmp_path / "selection.json")
+    write_json(tmp_path / "selection.json", {"owner": service.LABEL, "managed_by": "pinokio"})
+    runner = Mock(side_effect=AssertionError("must not query systemd"))
+    monkeypatch.setattr(service.subprocess, "run", runner)
+    assert service.supervision_warning(tmp_path) is None
+    monkeypatch.setattr(service.sys, "platform", "darwin")
+    assert service.supervision_warning(tmp_path) is None
+    runner.assert_not_called()

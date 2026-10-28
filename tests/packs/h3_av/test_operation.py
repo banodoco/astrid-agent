@@ -56,7 +56,9 @@ def test_uncertain_canonical_admission_cannot_be_replayed(tmp_path) -> None:
 
     kwargs = {
         "inputs": {"workflow": {"digest": "sha256:workflow"}},
-        "execution_request": {"target": {"pod_id": "pod-1"}},
+        "execution_request": {"target": {"kind": "runpod", "pod_id": "pod-1",
+                                         "provider_account_ref": "account-1",
+                                         "storage": {"network_volume_id": "volume-1"}}},
         "out": tmp_path / "run",
         "project": "project-1",
         "saved_result": result_path,
@@ -606,6 +608,104 @@ def test_dry_run_includes_the_final_publication_stage(tmp_path: Path) -> None:
     ]))
     assert result["status"] == "planned"
     assert result["stages"][-1] == "h3_av.publication_finalizer"
+
+
+def _transform_args(tmp_path: Path, *extra: str, target=None):
+    import json
+    from astrid.packs.h3_av.actions.transform.run import build_parser
+    args = build_parser().parse_args([
+        "--request", str(tmp_path / "raw-request.json"), "--asset-map", str(tmp_path / "assets.json"),
+        "--out", str(tmp_path / "operation"), *extra,
+    ])
+    if target is not None:
+        args.execution_request = tmp_path / "execution-request.json"
+        args.execution_request.write_text(json.dumps({"target": target}), encoding="utf-8")
+    return args
+
+
+def test_placement_flag_defaults_to_unset_and_accepts_local_runpod(tmp_path: Path) -> None:
+    assert _transform_args(tmp_path).placement is None
+    assert _transform_args(tmp_path, "--placement", "local").placement == "local"
+    assert _transform_args(tmp_path, "--placement", "runpod").placement == "runpod"
+    with pytest.raises(SystemExit):
+        _transform_args(tmp_path, "--placement", "mars")
+
+
+def test_local_placement_fails_fast_when_engine_not_installed(tmp_path: Path, monkeypatch) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.engine_local_endpoint import EngineNotInstalled
+    from astrid.packs.h3_av.actions.transform import run as transform
+    def not_installed(*args, **kwargs):
+        raise EngineNotInstalled("vibecomfy-h3", "no install receipt")
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_engine_endpoint", not_installed)
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected before engine check"))
+    for extra in ((), ("--placement", "local")):
+        with pytest.raises(AstridError) as caught:
+            transform.run_transform(_transform_args(tmp_path, *extra))
+        assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+
+
+def test_runpod_placement_without_prepared_worker_uses_the_remote_wrapper(tmp_path: Path, monkeypatch) -> None:
+    from astrid.packs.h3_av.actions.transform import run as transform
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected"))
+    monkeypatch.setattr(transform, "_resolve_local_engine", lambda: pytest.fail("local engine resolved"))
+    monkeypatch.setattr(transform, "_run_remote_placement", lambda args: {"placement": "runpod"})
+    assert transform.run_transform(_transform_args(tmp_path, "--placement", "runpod")) == {"placement": "runpod"}
+
+
+@pytest.mark.parametrize("target", [{"kind": "runpod"}, {"kind": "runpod", "pod_id": "pod"}])
+def test_runpod_target_requires_runpod_placement(tmp_path: Path, monkeypatch, target) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform import run as transform
+    monkeypatch.setattr(transform, "_resolve_local_engine", lambda: pytest.fail("local engine resolved"))
+    args = _transform_args(tmp_path, "--placement", "local", target=target)
+    with pytest.raises(AstridError, match="--placement runpod"):
+        transform.run_transform(args)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_transform_rejects_unknown_target_kind(tmp_path: Path, dry_run) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform.run import run_transform
+    extra = ("--prepared-worker", str(tmp_path / "must-not-be-read.json")) + (("--dry-run",) if dry_run else ())
+    with pytest.raises(AstridError, match="target must be default or runpod"):
+        run_transform(_transform_args(tmp_path, *extra, target={"kind": "local"}))
+
+
+def test_dry_run_reports_the_resolved_placement(tmp_path: Path) -> None:
+    from astrid.packs.h3_av.actions.transform.run import run_transform
+    assert run_transform(_transform_args(tmp_path, "--dry-run"))["placement"] == "local"
+    legacy = run_transform(_transform_args(tmp_path, "--dry-run", "--prepared-worker", str(tmp_path / "p.json")))
+    assert legacy["placement"] == "runpod"
+
+
+def test_local_placement_passes_endpoint_inputs_and_records_receipt(tmp_path: Path, monkeypatch) -> None:
+    """The local branch hands comfy_url/comfy_output_dir to the run and placement=local."""
+    from types import SimpleNamespace
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.engine_contracts import HealthEvidence, LocalAttestation
+    from astrid.packs.h3_av.actions.transform import run as transform
+    health = HealthEvidence("healthy", "2026-10-28T00:00:00Z", "ab" * 32, True)
+    attestation = LocalAttestation("local-engine.v1", "/r/.astrid-engine/install.json", "cd" * 32, health, "ab" * 32)
+    engine = SimpleNamespace(endpoint=SimpleNamespace(url="http://127.0.0.1:8188", attestation=attestation),
+                             comfy_output_dir="/r/ComfyUI/output")
+    monkeypatch.setattr(transform, "_resolve_local_engine", lambda: engine)
+    class Stop(Exception):
+        pass
+    def open_client(**kwargs):
+        raise Stop
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", open_client)
+    with pytest.raises(Stop):
+        transform.run_transform(_transform_args(tmp_path))
+
+    from astrid.packs.h3_av.actions.transform.receipt import build_final_receipt
+    from dataclasses import asdict
+    receipt = build_final_receipt(request_digest="d", task_succeeded=None, candidate_verified=None,
+                                  placement="local", local_attestation=asdict(attestation))
+    assert receipt["placement"] == "local"
+    assert receipt["local_attestation"]["install_receipt_sha256"] == "cd" * 32
+    assert receipt["local_attestation"]["object_info_sha256"] == "ab" * 32
+    assert "placement" not in build_final_receipt(request_digest="d", task_succeeded=None, candidate_verified=None)
 
 
 def test_prepared_worker_selection_is_exclusive_and_declared(tmp_path: Path) -> None:

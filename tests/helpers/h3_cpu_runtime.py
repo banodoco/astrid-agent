@@ -560,6 +560,7 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(self.rfile.read(length))
             prompt = request["prompt"]
             expected = json.loads(expected_path.read_text(encoding="utf-8"))
+            loader_id, basename, digest, staged = "", None, None, None
             if expected.get("character_swap") is True:
                 video_loaders = [node for node in prompt.values()
                                  if node.get("class_type") == "VHS_LoadVideoFFmpeg"]
@@ -581,21 +582,63 @@ class Handler(BaseHTTPRequestHandler):
                     if (hashlib.sha256(staged.read_bytes()).hexdigest() != record["sha256"]
                             or staged.stat().st_size != record["size"]):
                         raise ValueError(f"staged Character Swap {modality} differs from the input bundle")
+            elif expected.get("native_masked_edit") is True:
+                by_class: dict[str, list[dict]] = {}
+                for node in prompt.values():
+                    by_class.setdefault(node.get("class_type"), []).append(node)
+                for class_type in ("VHS_LoadVideoFFmpeg", "LoadImageMask", "H3V2VGranularFractionalDenoise"):
+                    if len(by_class.get(class_type, [])) != 1:
+                        raise ValueError(f"native masked edit fixture requires exactly one {class_type}")
+                v2v = by_class["H3V2VGranularFractionalDenoise"][0]["inputs"]
+                if v2v.get("mode") != "spatial" or v2v.get("crop") != "disabled" or v2v.get("audio_strength") != 0:
+                    raise ValueError("native masked edit node must be spatial, crop disabled, audio_strength 0")
+                for key in ("source_frames", "source_audio", "source_mask", "latent", "model"):
+                    if not isinstance(v2v.get(key), list):
+                        raise ValueError(f"native masked edit node input {key} is not connected")
+                for class_type, key in (("VHS_LoadVideoFFmpeg", "video"), ("LoadImageMask", "image")):
+                    member = by_class[class_type][0]["inputs"].get(key)
+                    if member not in expected["asset_files"] or Path(member).name != member:
+                        raise ValueError(f"native masked edit {class_type} is not bound to a managed member")
+                if any(n.get("class_type") == "LanPaint_KSampler" for n in prompt.values()):
+                    raise ValueError("native masked edit must not use LanPaint")
             else:
-                loader = prompt["99"]
-                basename = loader["inputs"]["video"]
-                if loader["class_type"] != "VHS_LoadVideoFFmpeg" or basename != expected["basename"]:
-                    raise ValueError("compiled node 99 video differs from the managed source basename")
-                if not isinstance(basename, str) or Path(basename).name != basename:
-                    raise ValueError("compiled source video is not a basename")
-                staged = input_directory / basename
-                if staged.is_symlink() or not staged.is_file():
-                    raise ValueError("managed source video is absent from configured input_directory")
-                digest = hashlib.sha256(staged.read_bytes()).hexdigest()
-                if digest != expected["sha256"] or staged.stat().st_size != expected["size"]:
-                    raise ValueError("staged source video differs from the managed archive digest")
+                # The generate graph the real local run sends: the loader is found by
+                # class (its node id is the compiler's, not this fixture's), and a
+                # source-free graph has none.
+                loaders = [(node_id, node) for node_id, node in prompt.items()
+                           if node.get("class_type") == "VHS_LoadVideoFFmpeg"]
+                if len(loaders) > 1 or (loaders and "basename" not in expected):
+                    raise ValueError("generate graph must carry at most one source video loader")
+                loader = None
+                if loaders:
+                    loader_id, loader = loaders[0]
+                    basename = loader["inputs"]["video"]
+                if loader is not None:
+                    if basename != expected["basename"]:
+                        raise ValueError("compiled source video loader differs from the managed source basename")
+                    if not isinstance(basename, str) or Path(basename).name != basename:
+                        raise ValueError("compiled source video is not a basename")
+                    staged = input_directory / basename
+                    if staged.is_symlink() or not staged.is_file():
+                        raise ValueError("managed source video is absent from configured input_directory")
+                    digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+                    if digest != expected["sha256"] or staged.stat().st_size != expected["size"]:
+                        raise ValueError("staged source video differs from the managed archive digest")
+            # Whatever the branch, the graph must be a closed ComfyUI prompt: typed nodes,
+            # and every link naming a node that exists (ComfyUI rejects dangling links).
+            for node_id, node in prompt.items():
+                if not isinstance(node, dict) or not isinstance(node.get("class_type"), str) \
+                        or not isinstance(node.get("inputs"), dict):
+                    raise ValueError(f"node {node_id} is not a class_type/inputs object")
+                for key, value in node["inputs"].items():
+                    if (isinstance(value, list) and len(value) == 2 and isinstance(value[0], str)
+                            and isinstance(value[1], int) and value[0] not in prompt):
+                        raise ValueError(f"node {node_id} input {key} links to missing node {value[0]}")
+            # The graph also carries preview sinks (save_output false); the declared
+            # sink is the one ComfyUI would write to the output directory.
             sinks = [node_id for node_id, node in prompt.items()
-                     if node.get("class_type") in {"MiniMaxH3StreamLiveExtensionAVToVHS", "VHS_VideoCombine"}]
+                     if node.get("class_type") in {"MiniMaxH3StreamLiveExtensionAVToVHS", "VHS_VideoCombine"}
+                     and node["inputs"].get("save_output", True) is not False]
             if len(sinks) != 1:
                 raise ValueError("fixture requires exactly one declared H3 video sink")
             with queue_lock:
@@ -618,10 +661,10 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 evidence_path.write_text(json.dumps({
                     "prompt_id": prompt_id,
-                    "node_id": "99",
+                    "node_id": loader_id,
                     "video": basename,
                     "sha256": digest,
-                    "size": staged.stat().st_size,
+                    "size": staged.stat().st_size if staged is not None else None,
                     "output_node": sinks[0],
                     "output_filename": filename,
                 }, sort_keys=True), encoding="utf-8")

@@ -97,6 +97,14 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main_impl(raw: list[str]) -> int:
     first_arg = next(iter(raw), None)
+    if first_arg == "engines":
+        from astrid.core.engine_cli import main as engines_main
+
+        return engines_main(raw[1:])
+    if first_arg == "action":
+        from astrid.core.action_cli import main as action_main
+
+        return action_main(raw[1:])
     if first_arg == "--agent-context":
         # This public helper is intentionally session-light: agent_context
         # opens an already-running Runtime and turns unavailability into a

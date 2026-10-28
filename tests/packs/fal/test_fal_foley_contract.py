@@ -13,8 +13,9 @@ class _FakeClient:
     def register_secret(self, _value: str) -> None:
         return None
 
-    def get_bytes(self, _url: str, *, timeout: int) -> bytes:
+    def get_bytes(self, _url: str, *, timeout: int, max_bytes: int) -> bytes:
         assert timeout == 300
+        assert max_bytes == 512 * 1024 * 1024
         return b"audio"
 
 
@@ -30,7 +31,7 @@ def test_foley_host_contract_declares_inputs_outputs_and_typed_manifest(
     out = tmp_path / "run"
     client = _FakeClient()
 
-    monkeypatch.setattr(run.CredentialsScope, "get_local", lambda *args, **kwargs: "test-key")
+    monkeypatch.setattr(run, "load_provider_key", lambda *args, **kwargs: "test-key")
     monkeypatch.setattr(run, "default_client", lambda: client)
     monkeypatch.setattr(
         run,

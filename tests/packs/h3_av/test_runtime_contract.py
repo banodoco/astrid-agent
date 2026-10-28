@@ -376,7 +376,7 @@ def test_interval_lists_cannot_certify_a_copied_non_media_candidate(tmp_path: Pa
             }
         },
     )
-    with pytest.raises(VerificationError, match="byte-identical|decodable media|protected_samples"):
+    with pytest.raises(VerificationError, match="ffprobe|byte-identical|decodable media|protected_samples"):
         verify_candidate(preparation=preparation, composition=composition, source=source)
 
 
@@ -385,11 +385,11 @@ def test_composition_carries_provenance_and_decoded_protected_samples(tmp_path: 
     source = tmp_path / "source.mp4"
     generated = tmp_path / "generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -455,11 +455,11 @@ def test_protected_audio_witness_tolerates_aac_to_pcm_roundtrip(tmp_path: Path) 
     source = tmp_path / "source-32k-aac.mp4"
     generated = tmp_path / "generated-32k-aac.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=32000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=32000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -482,11 +482,11 @@ def test_composition_normalizes_generated_working_resolution_to_source(tmp_path:
     source = tmp_path / "source.mp4"
     generated = tmp_path / "generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=8", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=8", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(generated)],
         check=True,
     )
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
@@ -623,11 +623,14 @@ def test_missing_dependency_stops_transform_before_any_import_or_submission(tmp_
     request_path.write_text(json.dumps(_request().value))
     asset_map = tmp_path / "asset-map.json"
     asset_map.write_text("{}")
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {"kind": "runpod", "pod_id": "pod-test"}}))
     client = Mock()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
     with pytest.raises(ValueError, match="needs a file in asset_map"):
         transform.run_transform(transform.build_parser().parse_args([
             "--request", str(request_path), "--asset-map", str(asset_map), "--out", str(tmp_path / "out"),
+            "--execution-request", str(execution_request),
         ]))
     client.invoke_result.assert_not_called()
     client.media.import_file.assert_not_called()
@@ -1238,11 +1241,20 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 kernel_attempt_id="attempt-cpu",
             )
 
+    from unittest.mock import Mock
+    workflow_facade = Mock(wraps=transform.generate.workflow)
+    monkeypatch.setattr(transform, "generate", SimpleNamespace(workflow=workflow_facade))
     client = Client()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
+    execution_request = tmp_path / "execution-request.json"
+    execution_request.write_text(json.dumps({"target": {
+        "kind": "runpod", "pod_id": "pod-cpu-test", "provider_account_ref": "account-cpu-test",
+        "storage": {"network_volume_id": "volume-cpu-test"},
+    }}))
     result = transform.run_transform(transform.build_parser().parse_args([
         "--request", str(caller / "request.json"), "--asset-map", str(caller / "asset-map.json"),
         "--out", str(tmp_path / "parent"), "--project", "cpu-test",
+        "--execution-request", str(execution_request),
     ]))
     assert result["status"] == "candidate_verified"
     assert Path(result["candidate"]).is_file()
@@ -1270,6 +1282,14 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
         expected_calls.append("h3_av.publication_finalizer")
     assert [name for name, _ in calls] == expected_calls
     call_inputs = {name: inputs for name, inputs in calls}
+    workflow_facade.assert_called_once()
+    forwarded = workflow_facade.call_args.kwargs
+    assert forwarded["client"] is client
+    assert forwarded["placement"] == "runpod"
+    assert {name: forwarded[name] for name in call_inputs["vibecomfy.run"]} == call_inputs["vibecomfy.run"]
+    assert forwarded["workflow_inputs"] == json.dumps(client.compilation["workflow_inputs"], sort_keys=True, separators=(",", ":"))
+    assert all(event["workflow_route"] == "generation.workflow.v1/runpod"
+               for event in journal["events"] if event["phase"] == "run")
     # VibeComfy's source port is workflow provenance, not the source video.
     assert call_inputs["vibecomfy.run"]["source"]["filename"] == "source.json"
     intent = call_inputs["vibecomfy.run"]["generation_intent"]

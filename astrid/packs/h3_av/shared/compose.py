@@ -370,7 +370,61 @@ def _segments(duration: float, generated: list[list[float]]) -> list[tuple[float
     ]
 
 
-def _spatial_video_masks(preparation: Mapping[str, Any]) -> list[dict[str, Any]]:
+_IMAGE_MASK_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+_LOSSLESS_MASK_CODECS = {"ffv1", "ffvhuff", "huffyuv", "png", "rawvideo", "utvideo"}
+_MASK_FPS = 24
+
+
+def probe_mask(
+    path: Path,
+    *,
+    mask_id: str = "mask",
+    source: Path | None = None,
+    duration: float | None = None,
+) -> dict[str, Any]:
+    """Classify a mask as a still image or a lossless per-frame mask video."""
+
+    if path.suffix.lower() in _IMAGE_MASK_SUFFIXES:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image.verify()
+        except Exception as exc:  # noqa: BLE001 - fail closed on untrusted mask bytes
+            raise CompositionError(f"regional video mask {mask_id!r} is not a decodable image") from exc
+        return {"kind": "image", "frames": 1}
+    probe = _probe(path)
+    if probe is None:
+        raise CompositionError(f"regional video mask {mask_id!r} is not decodable image or video media")
+    width, height = _video_dimensions(probe, role=f"mask {mask_id!r}")
+    stream = _streams(probe, "video")[0]
+    if str(stream.get("codec_name")) not in _LOSSLESS_MASK_CODECS:
+        raise CompositionError(
+            f"regional video mask {mask_id!r} must use a lossless codec "
+            f"({', '.join(sorted(_LOSSLESS_MASK_CODECS))}), not {stream.get('codec_name')!r}"
+        )
+    if source is not None:
+        source_dimensions = _video_dimensions(_probe(source), role="source")
+        if (width, height) != source_dimensions:
+            raise CompositionError(
+                f"regional video mask {mask_id!r} is {width}x{height} but the source is "
+                f"{source_dimensions[0]}x{source_dimensions[1]}"
+            )
+    try:
+        frames = int(stream.get("nb_read_frames") or stream.get("nb_frames"))
+    except (TypeError, ValueError):
+        raise CompositionError(f"regional video mask {mask_id!r} has no countable frames") from None
+    if duration is not None and frames != round(float(duration) * _MASK_FPS):
+        raise CompositionError(
+            f"regional video mask {mask_id!r} has {frames} frames; "
+            f"expected {round(float(duration) * _MASK_FPS)}"
+        )
+    return {"kind": "video", "frames": frames}
+
+
+def _spatial_video_masks(
+    preparation: Mapping[str, Any], source: Path | None = None
+) -> list[dict[str, Any]]:
     """Resolve generated-region masks needed to preserve unedited pixels."""
 
     schedule = preparation.get("mask_schedule")
@@ -388,7 +442,7 @@ def _spatial_video_masks(preparation: Mapping[str, Any]) -> list[dict[str, Any]]
         and isinstance(record.get("path"), str)
     }
     result: list[dict[str, Any]] = []
-    image_suffixes = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
+    schedule_duration = schedule.get("duration") if isinstance(schedule, Mapping) else None
     for change in changes:
         if not isinstance(change, Mapping) or change.get("action") != "generate":
             continue
@@ -407,22 +461,22 @@ def _spatial_video_masks(preparation: Mapping[str, Any]) -> list[dict[str, Any]]
         mask_path = resolved.get(mask_id)
         if mask_path is None or not mask_path.is_file():
             raise CompositionError(f"regional video mask {mask_id!r} is not resolved")
-        if mask_path.suffix.lower() not in image_suffixes:
-            raise CompositionError("regional video preservation currently requires an image mask")
-        try:
-            from PIL import Image
-
-            with Image.open(mask_path) as image:
-                image.verify()
-        except Exception as exc:  # noqa: BLE001 - fail closed on untrusted mask bytes
-            raise CompositionError(f"regional video mask {mask_id!r} is not a decodable image") from exc
+        mask_info = probe_mask(
+            mask_path,
+            mask_id=mask_id,
+            source=source,
+            duration=schedule_duration,
+        )
         during = change.get("during")
         if not isinstance(during, (list, tuple)) or len(during) != 2:
             raise CompositionError("regional video mask has a malformed edit interval")
         start, end = float(during[0]), float(during[1])
         if end <= start:
             raise CompositionError("regional video mask interval must be positive")
-        result.append({"during": [start, end], "asset": mask_id, "path": mask_path})
+        result.append({
+            "during": [start, end], "asset": mask_id, "path": mask_path,
+            "kind": mask_info["kind"], "frames": mask_info["frames"],
+        })
     return result
 
 
@@ -432,6 +486,51 @@ def _spatial_video_masks(preparation: Mapping[str, Any]) -> list[dict[str, Any]]
 # packed rgb24 it picks by default (duplicated chroma samples), so evidence
 # must be decoded through the same path or yuv420p sources never compare equal.
 _CANONICAL_RGB_FILTER = "scale={size}:flags=lanczos,format=gbrp,format=rgb24"
+
+
+def iter_mask_frames(path: Path, *, start_frame: int, count: int, width: int, height: int):
+    """Yield ``count`` decoded rgb24 mask frames starting at ``start_frame``."""
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise CompositionError("ffmpeg is required to verify regional video preservation")
+    video_filter = (
+        f"trim=start_frame={start_frame}:end_frame={start_frame + count},setpts=PTS-STARTPTS,"
+        "format=gbrp,format=rgb24"
+    )
+    frame_bytes = width * height * 3
+    process = subprocess.Popen(
+        [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(path), "-vf", video_filter,
+         "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert process.stdout is not None
+        for _ in range(count):
+            frame = process.stdout.read(frame_bytes)
+            if len(frame) != frame_bytes:
+                raise CompositionError("regional mask video ended before the requested frames")
+            yield frame
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _protected_from_rgb(frame: bytes) -> list[int]:
+    """Pixel indexes whose every mask channel is zero."""
+
+    return [
+        index for index in range(len(frame) // 3)
+        if not (frame[index * 3] or frame[index * 3 + 1] or frame[index * 3 + 2])
+    ]
 
 
 def _verify_spatial_mask_complement(
@@ -471,10 +570,22 @@ def _verify_spatial_mask_complement(
         if frame_count <= 0 or abs(exact_frames - frame_count) > 1e-6:
             raise CompositionError("regional mask interval is not aligned to the native frame grid")
         mask_path = Path(str(mask["path"]))
-        with Image.open(mask_path) as opened:
-            mask_pixels = opened.convert("L").resize((width, height), resampling).tobytes()
-        protected_pixels = [index for index, value in enumerate(mask_pixels) if value == 0]
-        if not protected_pixels:
+        is_video = mask.get("kind") == "video"
+        mask_frame_iter = None
+        protected_pixels: list[int] = []
+        if is_video:
+            mask_probe = _probe(mask_path)
+            if _video_dimensions(mask_probe, role="mask") != (width, height):
+                raise CompositionError("regional video mask dimensions do not match the source")
+            mask_frame_iter = iter_mask_frames(
+                mask_path, start_frame=round(start * fps), count=frame_count,
+                width=width, height=height,
+            )
+        else:
+            with Image.open(mask_path) as opened:
+                mask_pixels = opened.convert("L").resize((width, height), resampling).tobytes()
+            protected_pixels = [index for index, value in enumerate(mask_pixels) if value == 0]
+        if not is_video and not protected_pixels:
             results.append({
                 "during": [start, end],
                 "asset": mask.get("asset"),
@@ -508,8 +619,12 @@ def _verify_spatial_mask_complement(
         ]
         max_difference = 0
         observed_frames = 0
+        per_frame_counts: list[int] = []
         try:
             for frame_index in range(frame_count):
+                if mask_frame_iter is not None:
+                    protected_pixels = _protected_from_rgb(next(mask_frame_iter))
+                    per_frame_counts.append(len(protected_pixels))
                 frames: list[bytes] = []
                 for decoder in decoders:
                     assert decoder.stdout is not None
@@ -540,6 +655,8 @@ def _verify_spatial_mask_complement(
                 if decoder.stdout.read(1):
                     raise CompositionError("regional preservation decoder returned extra frames")
         finally:
+            if mask_frame_iter is not None:
+                mask_frame_iter.close()
             for decoder in decoders:
                 if decoder.stdout is not None:
                     decoder.stdout.close()
@@ -558,6 +675,8 @@ def _verify_spatial_mask_complement(
             "protected_pixel_count_per_frame": len(protected_pixels),
             "max_abs_channel_difference": max_difference,
             "tolerance": tolerance,
+            **({"mask_kind": "video", "protected_pixel_count_per_frame": per_frame_counts}
+               if is_video else {}),
         })
     return results
 
@@ -712,7 +831,10 @@ def _compose_media(
         path = str(mask["path"])
         if path not in mask_input_indices:
             mask_input_indices[path] = next_input_index
-            input_args.extend(["-loop", "1", "-framerate", str(mask_fps), "-i", path])
+            if mask.get("kind") == "video":
+                input_args.extend(["-i", path])
+            else:
+                input_args.extend(["-loop", "1", "-framerate", str(mask_fps), "-i", path])
             next_input_index += 1
     if mask_input_indices:
         # Preservation is verified on decoded RGB pixels. Keep every segment
@@ -744,6 +866,19 @@ def _compose_media(
                     base = f"vbase{index}"
                     overlay = f"voverlay{index}"
                     mask_label = f"vmask{index}"
+                    mask_index = mask_input_indices[str(spatial_mask["path"])]
+                    if spatial_mask.get("kind") == "video":
+                        mask_filter = (
+                            f"[{mask_index}:v:0]"
+                            f"trim=start_frame={round(start * 24)}:end_frame={round(end * 24)},"
+                            f"setpts=PTS-STARTPTS,fps={mask_fps},format=gbrp[{mask_label}]"
+                        )
+                    else:
+                        mask_filter = (
+                            f"[{mask_index}:v:0]"
+                            f"scale={output_width}:{output_height}:flags=neighbor,fps={mask_fps},format=gbrp,"
+                            f"trim=duration={end - start},setpts=PTS-STARTPTS[{mask_label}]"
+                        )
                     filters.extend([
                         f"[0:v:0]trim=start={source_offset + start}:end={source_offset + end},"
                         f"scale={output_width}:{output_height}:flags=lanczos,setsar=1,fps={mask_fps},"
@@ -751,9 +886,7 @@ def _compose_media(
                         f"[1:v:0]trim=start={start}:end={end},"
                         f"scale={output_width}:{output_height}:flags=lanczos,setsar=1,fps={mask_fps},"
                         f"format=gbrp,setpts=PTS-STARTPTS[{overlay}]",
-                        f"[{mask_input_indices[str(spatial_mask['path'])]}:v:0]"
-                        f"scale={output_width}:{output_height}:flags=neighbor,fps={mask_fps},format=gbrp,"
-                        f"trim=duration={end - start},setpts=PTS-STARTPTS[{mask_label}]",
+                        mask_filter,
                         f"[{base}][{overlay}][{mask_label}]maskedmerge[{piece}_rgb]",
                         f"[{piece}_rgb]format={video_format}[{piece}]",
                     ])
@@ -807,7 +940,9 @@ def _compose_media(
             {
                 "during": [start, end],
                 "source": "generated" if use_generated else "source",
-                **({"mask_asset": spatial_mask["asset"], "mask_sha256": _sha256(Path(spatial_mask["path"]))}
+                **({"mask_asset": spatial_mask["asset"], "mask_sha256": _sha256(Path(spatial_mask["path"])),
+                    "mask_kind": spatial_mask.get("kind", "image"),
+                    "mask_frames": spatial_mask.get("frames", 1)}
                    if spatial_mask is not None else {}),
             }
             for start, end, use_generated, spatial_mask in video_segments
@@ -1073,7 +1208,7 @@ def compose_candidate(
         source_path = Path(source).expanduser().resolve()
         if not source_path.is_file():
             raise CompositionError(f"source does not exist: {source_path}")
-    spatial_video_masks = _spatial_video_masks(preparation)
+    spatial_video_masks = _spatial_video_masks(preparation, source_path)
     protected = (
         any(schedule[domain]["protected_intervals"] for domain in ("video", "audio"))
         or bool(spatial_video_masks)

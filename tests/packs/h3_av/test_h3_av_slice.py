@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -94,11 +95,20 @@ def test_prepare_does_not_claim_unmapped_managed_assets_are_local() -> None:
     assert prepared["status"] == "prepared"
 
 
+def _media(path: Path, color: str = "blue") -> Path:
+    # verify fails closed on ffprobe failure, so fixtures must be real media.
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "8",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
+        check=True,
+    )
+    return path
+
+
 def test_wholly_protected_candidate_requires_exact_source_match(tmp_path: Path) -> None:
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"same")
-    generated = tmp_path / "generated.bin"
-    generated.write_bytes(b"same")
+    source = _media(tmp_path / "source.mp4")
+    generated = source
     prepared = prepare_request(request(), asset_map={"source.mp4": str(source)})
     composition = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "out")
     report = verify_candidate(preparation=prepared, composition=composition, source=source)
@@ -107,17 +117,15 @@ def test_wholly_protected_candidate_requires_exact_source_match(tmp_path: Path) 
 
 
 def test_wholly_protected_candidate_rejects_changed_bytes(tmp_path: Path) -> None:
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"source")
-    generated = tmp_path / "generated.bin"
-    generated.write_bytes(b"changed")
+    source = _media(tmp_path / "source.mp4")
+    generated = _media(tmp_path / "generated.mp4", "red")
     prepared = prepare_request(request(), asset_map={"source.mp4": str(source)})
     composition = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "out")
     # The composer correctly selects source bytes for wholly protected media.
     # A changed candidate, even with self-consistent declared hash, must fail.
     import hashlib
     candidate = Path(composition["candidate"]["path"])
-    candidate.write_bytes(b"changed")
+    candidate.write_bytes(_media(tmp_path / "changed.mp4", "green").read_bytes())
     composition["candidate"]["sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
     composition["candidate"]["size"] = candidate.stat().st_size
     with pytest.raises(VerificationError, match="byte-identical"):
@@ -139,7 +147,7 @@ def test_partial_preservation_requires_complete_permission_evidence(tmp_path: Pa
         asset_map={"source.mp4": str(source)},
     )
     composition = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "out")
-    with pytest.raises(VerificationError, match="decodable media|protected_samples"):
+    with pytest.raises(VerificationError, match="ffprobe|decodable media|protected_samples"):
         verify_candidate(preparation=prepared, composition=composition, source=source)
 
 
@@ -159,10 +167,8 @@ def test_compose_rejects_unresolved_schedule(tmp_path: Path) -> None:
 
 
 def test_manifest_is_json_serializable_and_lifecycle_is_explicit(tmp_path: Path) -> None:
-    source = tmp_path / "source.bin"
-    source.write_bytes(b"same")
-    generated = tmp_path / "generated.bin"
-    generated.write_bytes(b"same")
+    source = _media(tmp_path / "source.mp4")
+    generated = source
     prepared = prepare_request(request(), asset_map={"source.mp4": str(source)})
     composed = compose_candidate(preparation=prepared, generated=generated, source=source, out_dir=tmp_path / "out")
     report = verify_candidate(preparation=prepared, composition=composed, source=source)

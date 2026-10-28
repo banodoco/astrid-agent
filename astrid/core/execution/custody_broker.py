@@ -2911,8 +2911,20 @@ def _checked_pid_target(pid: int, birth: str, *, held: bool) -> _CheckedPidTarge
     if held:
         return _CheckedPidTarget(None)
     identity = platform.process_identity(pid)
-    if identity is None or identity.get("birth_id") != "proc-start-ticks:" + birth.rpartition(":")[2]:
+    if identity is None:
         return None
+    # Agent records boot UUID:start ticks; Runtime also captures the target's
+    # PID namespace. Require the complete, unambiguous native scope at admission
+    # and agree on BOTH Agent fields. Tick-only evidence cannot prove the boot.
+    runtime_birth = identity.get("birth_id")
+    scoped = (
+        re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;:]+);pidns:[1-9][0-9]*", runtime_birth)
+        if isinstance(runtime_birth, str) else None
+    )
+    if scoped is None or f"{scoped[2]}:{scoped[1]}" != birth:
+        return None
+    # Keep every scope for Runtime's exact recheck immediately before signalling;
+    # a changed or unreadable boot/namespace must never become signal authority.
     return _CheckedPidTarget(identity)
 
 

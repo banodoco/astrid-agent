@@ -39,10 +39,11 @@ dependencies = [
 # as the package gateway, while the shorter ``astrid`` command opens the
 # named Astrid OMP agent (see ``astrid.omp_agent``).
 astrid-tools = "astrid.core.gateway:main"
-astrid = "astrid.omp_agent:main"
+astrid = "astrid.console:main"
 astrid-credential = "astrid.core.util.credential_store:main"
 astrid-with-credential = "astrid.core.util.credential_exec:main"
 astrid-upgrade = "astrid.sdk.upgrade:main"
+build-h3-release = "astrid.packs.runpod.h3_release:main"
 
 [project.optional-dependencies]
 dev = [
@@ -153,6 +154,8 @@ astrid = [
     "packs/**/actions/**/*.md",
     "packs/**/actions/**/*.txt",
     "packs/**/requirements.txt",
+    # Resolved Linux cu130 engine dependency lock consumed by the packaged recipe.
+    "packs/runpod/requirements.linux-cu130.lock",
     "packs/**/requirements.windows-nvidia.txt",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",

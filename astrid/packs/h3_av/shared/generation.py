@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from astrid.core.generation.engine_recipe import engine_source_revision
+
 from .timing import frame_index, smallest_h3_run_at_least
 
 IMAGE_REFERENCE_CAPACITY = 9
@@ -183,8 +185,13 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                               sampler: str = "res_multistep", guidance: float = 0.95,
                               scheduler: str = "simple", video_references: list[dict[str, Any]] | None = None,
                               adapter_strength: float | None = None, turbo_enabled: bool = True,
-                              character_swap_sha256: str = CHARACTER_SWAP_SHA256):
+                              character_swap_sha256: str = CHARACTER_SWAP_SHA256,
+                              masked_edit: dict[str, Any] | None = None):
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
+
+    ``masked_edit`` (keys ``source_binding``, ``start_time``, ``frame_load_cap``,
+    ``mask_binding``, ``mask_channel``, optional ``mask_kind="video"``) inserts the native spatial V2V node
+    between the target latent and the sampler; it also permits zero references.
 
     Graph shape depends only on reference list length. Filenames remain managed
     run bindings, not graph defaults; ordered slots bind Picture 1..N without
@@ -198,7 +205,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     )
     from vibecomfy.nodes.videohelpersuite import VHS_LoadVideoFFmpeg, VHS_VideoCombine
 
-    if not 1 <= len(references) <= IMAGE_REFERENCE_CAPACITY:
+    if not (0 if masked_edit else 1) <= len(references) <= IMAGE_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires one to nine image references")
     video_references = list(video_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
@@ -234,7 +241,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         models=model_assets,
         requirements={
             "runtime": {
-                "comfy_commit": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+                "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
                 "comfy_version": "==0.36.0",
                 "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],
@@ -243,7 +250,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                 {"slug": "ComfyUI-H3-Motion-Context-MultiRef", "source": "git",
                  "url": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
                  "commit": "361624fb406b63eb6694442eac6c895fc1533a70",
-                 "classes": ["MiniMaxH3AudioVAECompatibility"]},
+                 "classes": ["MiniMaxH3AudioVAECompatibility"]
+                            + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])},
                 {"slug": "ComfyUI-VideoHelperSuite", "source": "git",
                  "url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
                  "commit": "4ee72c065db22c9d96c2427954dc69e7b908444b",
@@ -313,11 +321,63 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                       },
                       clip=clip.out("CLIP"), vae=video_vae.out("VAE"), audio_vae=audio.out("audio_vae"),
                       prompt=prompt, width=1024, height=576, length=frames, ref_image_size="match", **refs)
-        schedule = BasicScheduler(model=shifted.out("MODEL"), scheduler=scheduler, steps=steps, denoise=1.0, _id="schedule")
+        sampling_model = shifted.out("MODEL")
+        sampling_latent = target.out("LATENT")
+        if masked_edit:
+            from vibecomfy.nodes.core import LoadImageMask
+            source = VHS_LoadVideoFFmpeg(
+                custom_height=0, custom_width=0, force_rate=24, format="AnimateDiff",
+                frame_load_cap=int(masked_edit["frame_load_cap"]),
+                start_time=float(masked_edit["start_time"]), video="",
+                videopreview={"hidden": False, "paused": False, "params": {}, "muted": False},
+                _id=masked_edit["source_binding"],
+            )
+            wf.register_input(masked_edit["source_binding"], masked_edit["source_binding"], "video", "",
+                              type="CHOICE", default="", required=True, media_semantics="video")
+            if masked_edit.get("mask_kind") == "video":
+                # Binary mask video: read the RED channel of the IMAGE output. The VHS MASK
+                # output is alpha-derived and must not be used.
+                mask_loader = VHS_LoadVideoFFmpeg(
+                    custom_height=0, custom_width=0, force_rate=24, format="AnimateDiff",
+                    frame_load_cap=int(masked_edit["frame_load_cap"]),
+                    start_time=0.0, video="",
+                    videopreview={"hidden": False, "paused": False, "params": {}, "muted": False},
+                    _id=masked_edit["mask_binding"],
+                )
+                wf.register_input(masked_edit["mask_binding"], masked_edit["mask_binding"], "video", "",
+                                  type="CHOICE", default="", required=True, media_semantics="video")
+                mask = node("ImageToMask", _outputs=("MASK",), image=mask_loader.out("IMAGE"),
+                            channel=masked_edit["mask_channel"])
+            else:
+                mask = LoadImageMask(image="", channel=masked_edit["mask_channel"], _id=masked_edit["mask_binding"])
+                wf.register_input(masked_edit["mask_binding"], masked_edit["mask_binding"], "image", "",
+                                  type="CHOICE", default="", required=True, media_semantics="image")
+            v2v_inputs = ["latent", "model", "vae", "audio_vae", "source_frames", "source_audio", "source_fps",
+                          "mode", "global_strength", "inside_strength", "outside_strength", "audio_strength",
+                          "source_fit", "crop", "mask_temporal_reduce", "invert_mask", "source_mask"]
+            v2v = node("H3V2VGranularFractionalDenoise", _id="masked_edit",
+                       _outputs=("LATENT", "MODEL", "diagnostics"),
+                       _native_ports={
+                           "native_input_names": v2v_inputs,
+                           "native_input_types": ["LATENT", "MODEL", "VAE", "VAE", "IMAGE", "AUDIO", "FLOAT",
+                                                  "COMBO", "FLOAT", "FLOAT", "FLOAT", "FLOAT", "COMBO", "COMBO",
+                                                  "COMBO", "BOOLEAN", "MASK"],
+                           "native_output_names": ["latent", "model", "diagnostics"],
+                           "native_output_types": ["LATENT", "MODEL", "STRING"],
+                       },
+                       latent=target.out("LATENT"), model=shifted.out("MODEL"), vae=video_vae.out("VAE"),
+                       audio_vae=audio.out("audio_vae"), source_frames=source.out("IMAGE"),
+                       source_audio=source.out(2), source_fps=24.0, mode="spatial",
+                       global_strength=0.9995, inside_strength=1, outside_strength=0, audio_strength=0,
+                       source_fit="start", crop="disabled", mask_temporal_reduce="max", invert_mask=False,
+                       source_mask=mask.out("MASK"))
+            sampling_model = v2v.out("MODEL")
+            sampling_latent = v2v.out("LATENT")
+        schedule = BasicScheduler(model=sampling_model, scheduler=scheduler, steps=steps, denoise=1.0, _id="schedule")
         selected = KSamplerSelect(sampler_name=sampler, _id="sampler")
         noise = RandomNoise(noise_seed=seed, _id="noise")
-        guider = BasicGuider(model=shifted.out("MODEL"), conditioning=target.out("positive"))
-        sampled = SamplerCustomAdvanced(guider=guider.out("GUIDER"), latent_image=target.out("LATENT"),
+        guider = BasicGuider(model=sampling_model, conditioning=target.out("positive"))
+        sampled = SamplerCustomAdvanced(guider=guider.out("GUIDER"), latent_image=sampling_latent,
                                        noise=noise.out("NOISE"), sampler=selected.out("SAMPLER"), sigmas=schedule.out("SIGMAS"))
         video = VAEDecode(samples=sampled.out("OUTPUT"), vae=video_vae.out("VAE"))
         sound = VAEDecodeAudio(samples=sampled.out("OUTPUT"), vae=audio.out("audio_vae"))

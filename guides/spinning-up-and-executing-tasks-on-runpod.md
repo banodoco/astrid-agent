@@ -98,17 +98,19 @@ export ASTRID_RUNPOD_ACCOUNT_REF=runpod-default
 Run the canonical claim from the repository root exactly as follows:
 
 ```bash
-python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 43200 --poll-seconds 120
+python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 3600 --poll-seconds 120
 ```
 
-The 43,200-second bound is 12 hours. Capacity polling is 120 seconds by
+The default 3,600-second bound is one hour. Use `--wait-forever` only for an
+explicitly unbounded capacity wait. Capacity polling is 120 seconds by
 default; the explicit flag keeps the operator command self-describing. A
 5-second interval can be explicitly requested for a short, deliberate watch,
 but it generates substantially more provider API traffic and is not the
 normal setting.
 
-The claim helper uses the existing `backup` network volume and discovers its
-current size. It requests `attach_only=True` with `disk_size_gb=0`, so it does
+The claim helper uses the existing `backup` network volume by default; pass
+`--storage-name storage` (or another existing volume name or ID) to select a
+different volume. It discovers the selected volume's current size. It requests `attach_only=True` with `disk_size_gb=0`, so it does
 not create, replace, or resize that persistent storage. The 200 GB value is
 the disposable container disk only. It pins the prepared CUDA-13 image, allows
 CUDA 13.0, uses no generic provider template, waits for readiness and SSH, and
@@ -284,7 +286,7 @@ inference behavior.
 Use the claim command from section 1. The exact current operation is:
 
 ```bash
-python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 43200 --poll-seconds 120
+python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 3600 --poll-seconds 120
 ```
 
 On success, read the exact `pod_id` from that handle. The claim is
@@ -562,21 +564,10 @@ authorization to terminate the pod and are not a provider capacity-wait limit.
 
 The canonical SDK dispatch launches the H3 orchestrator with the request,
 asset map, output root, execution request, project and prepared-worker
-selection. For the current Matrix
-Minkhole example, its runner-owned command resolves to:
-
-```bash
-.venv/bin/python -m astrid.packs.h3_av.orchestrators.transform.run \
-  --request runs/matrix-minkhole/h3-canonical-submit-20260924/request.json \
-  --asset-map runs/matrix-minkhole/h3-canonical-submit-20260924/asset-map.json \
-  --out .otto/runs/h3-av-simplicity-20260924-T2/receipts/h3-transform \
-  --execution-request .otto/runs/h3-av-simplicity-20260924-T2/execution-request.json \
-  --project matrix-minkhole
-```
-
-That module command is runner-owned and guarded against ad-hoc direct use. The
-operator submits the same values through the public SDK so Astrid creates that
-command in the canonical invocation context:
+selection. The implementation entry point is
+`astrid/packs/h3_av/actions/transform/run.py`. Its runner-owned command is
+guarded against ad-hoc direct use. Submit through the public SDK so Astrid
+creates that command in the canonical invocation context:
 
 ```python
 from pathlib import Path
@@ -635,11 +626,15 @@ the same request.
 
 ### Leave-running and later cleanup
 
-`leave_running` is exact: neither the claim helper nor successful H3 settlement
-terminates the pod. An allocated pod whose readiness/SSH/release preflight
-fails is also left running and recorded as `allocated_unverified`; reconcile
-that exact pod before any retry. A queue/runtime timeout does not change this
-postcondition.
+A successful claim leaves the pod running, as does successful H3 settlement.
+If readiness, SSH, or release preflight fails for a pod allocated by this run,
+`--on-failure release` is the default: the helper releases that exact,
+never-activated pod and verifies the persistent volume is preserved.
+Use `--on-failure leave_running` to retain a failed allocation for inspection.
+Attached pods and resumed allocations default to `leave_running`; they are not
+new allocations by this run. Uncertain identity or cleanup remains journaled
+and requires reconciliation before another allocation. Published worker claims
+still require the full task drain and process-stop evidence for release.
 
 If a separately authorized owner later terminates the pod, cleanup must target
 the exact claimed `pod_id`, never a GPU type or volume. Preserve the `backup`
@@ -818,7 +813,7 @@ image/host profile, waits for provider and SSH readiness, checks the mounted rel
 It prints a secret-free lifecycle handle only after successful verification.
 
 ```bash
-python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 43200 --poll-seconds 120
+python3 scripts/claim_runpod_5090_backup.py --handle-path .otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json --max-wait-seconds 3600 --poll-seconds 120
 ```
 
 The script defaults pin the prepared image and CUDA 13.0 constraint; do not

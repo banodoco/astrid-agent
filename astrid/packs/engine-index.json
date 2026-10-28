@@ -1,0 +1,29 @@
+{
+  "schema": "astrid.engine-index.v1",
+  "entries": [
+    {
+      "engine": "vibecomfy",
+      "platform": "windows-x86_64-cu130",
+      "recipe": {
+        "path": "packs/vibecomfy/recipe.windows-cu130.json",
+        "sha256": "2bda030319a06c1a5b3d2997047712948d98349baf60e36aa3a00c2d8f22d612"
+      }
+    },
+    {
+      "engine": "vibecomfy-h3",
+      "platform": "linux-x86_64-cu130",
+      "recipe": {
+        "path": "packs/runpod/recipe.linux-cu130.json",
+        "sha256": "5c40a1e657050437d5c9d23dc15638daca1d34746accf6fa51177e8904500a3c"
+      }
+    },
+    {
+      "engine": "wan2gp",
+      "platform": "windows-x86_64-cu128",
+      "recipe": {
+        "path": "packs/wan2gp/recipe.windows-cu128.json",
+        "sha256": "c7b0457a62e35cdc056fee6b1fcb398053321c06fe896cb52ada9c69fbe71a5a"
+      }
+    }
+  ]
+}

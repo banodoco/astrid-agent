@@ -182,6 +182,12 @@ class RunPodRemoteWorkerPreparer:
         self.activation_timeout_seconds = activation_timeout_seconds
         self.ready_timeout_seconds = ready_timeout_seconds
         self._handle: PreparedRunPodHost | None = None
+        original = self._read_claim()
+        self._endpoint_claim_identity = {key: original.get(key) for key in (
+            "operation_id", "provider_account_ref", "pod_id", "network_volume_id", "network_volume_name",
+            "network_volume_size_gb", "network_volume_datacenter_id", "volume_mount_path", "acquisition_mode",
+            "transport", "https_token_file",
+        )}
 
     def _binding(self, reference: Any) -> WorkerBinding:
         target = reference.effective_target
@@ -254,6 +260,183 @@ class RunPodRemoteWorkerPreparer:
                 or expected_ready == reference.support_root):
             raise RunPodWorkerOwnerError("GenericPackHost ready file must stay inside the selected support root")
         return result
+
+    def finalize_endpoint_readiness(
+        self, reference: Any, *, engine: str, platform: str, endpoint_id: str,
+        agent_port: int, token_ref: Any, read_file: Any, deadline: float,
+    ) -> Any:
+        """Prepare/attach once, ensure once, then freeze the existing final file.
+
+        The trusted startup must already have supplied ordinary ready facts in
+        its private engine-readiness.json. CPU staging never manufactures those
+        facts or ingests the final token-reference/session extension.
+        """
+        from astrid.core.generation.engine_contracts import AttestationError, EndpointOwnershipError
+        from astrid.core.generation.engine_endpoint import (
+            _load, endpoint_to_dict, ensure_prepared_session_endpoint, parse_endpoint_profile_evidence,
+            read_private_endpoint_file,
+        )
+        from astrid.core.generation.engine_recipe import load_recipe
+        from astrid.core.generation.engine_runner import _parse_receipt, plan_install
+        from .worker_preparation import create_target_record_exclusive
+
+        recipe = load_recipe(engine, platform)  # support admission precedes effects
+        if engine != "vibecomfy-h3" or endpoint_id != engine or reference.session_ref != engine:
+            raise AttestationError("workflow endpoint readiness binding is invalid")
+        retained = getattr(self, "_endpoint_preparation", None)
+        if retained is not None:
+            if reference.digest() not in {retained["input_digest"], retained["reference"].digest()}:
+                raise EndpointOwnershipError("original prepared endpoint owner changed")
+            with self._claim_owner() as (claim, _fd):
+                self._validate_endpoint_preparation(claim, retained)
+            if (engine, platform, endpoint_id, agent_port, token_ref) != retained["arguments"]:
+                raise EndpointOwnershipError("original prepared endpoint owner changed")
+            return retained["reference"]
+        if getattr(self, "_endpoint_finalization_started", False):
+            raise EndpointOwnershipError("original endpoint finalization is unresolved; retain custody")
+        if self.session_owner is None:
+            raise RunPodWorkerOwnerError("installed session attachment is required before endpoint finalization")
+        self._endpoint_finalization_started = True
+        with self._claim_owner() as (claim, lock_fd):
+            current = claim.get("managed_worker")
+            if (any(claim.get(key) != value for key, value in self._endpoint_claim_identity.items())
+                    or (current is not None and current.get("state") not in {"stopped", "released"})):
+                raise EndpointOwnershipError("original prepared endpoint owner changed")
+            from astrid.core.generation.engine_contracts import SecretRef
+            from runpod_lifecycle.https import PORT
+            storage = reference.effective_target.get("storage", {})
+            if (claim.get("transport") != "https" or agent_port != PORT
+                    or token_ref != SecretRef("file", claim.get("https_token_file"))
+                    or storage.get("network_volume_id") != claim.get("network_volume_id")):
+                raise AttestationError("workflow endpoint readiness binding is invalid")
+            self._binding(reference)
+            staging = self._stage(reference)
+            selection = self.session_owner.select(reference, staging["cpu_readiness"], port=self.session_port)
+            receipt = self.session_owner.start(selection)  # 47: observe installed engine; never legacy start
+            self._write_managed_session(claim, selection, receipt, owner_lock_fd=lock_fd)
+            self.preparation_transport.select_endpoint_files(
+                profile_path=str(reference.readiness_profile_path), runtime_root=selection.runtime_root,
+                profile_hash=reference.readiness_profile_hash,
+            )
+        raw = read_file(str(reference.readiness_profile_path), deadline=deadline)
+        if "sha256:" + hashlib.sha256(raw).hexdigest() != reference.readiness_profile_hash:
+            raise AttestationError("workflow endpoint readiness binding is invalid")
+        profile = _load(raw)
+        if (not isinstance(profile, dict) or profile.get("schema_version") != "hc03-worker-readiness.v1"
+                or profile.get("status") != "ready" or "workflow_endpoint" in profile):
+            raise AttestationError("trusted startup ready profile is unavailable or already frozen")
+        root = str(Path(selection.runtime_root).parent)
+        installed_path = root + "/.astrid-engine/install.json"
+        installed_bytes = read_file(installed_path, deadline=deadline)
+        installed = _parse_receipt(_load(installed_bytes), plan_install(recipe, root=root, placement="local"))
+        if installed.status != "installed" or installed.health is None or installed.health.status != "healthy":
+            raise AttestationError("canonical installed endpoint receipt is unavailable")
+        registry = selection.runtime_root + "/out/sessions/" + selection.session_ref
+        files = {name: read_file(registry + "/" + name, deadline=deadline) for name in (
+            "config.json", "launch.json", "pid", "comfy_pid", "comfy_process_start_identity", "url",
+            "source_revision", "source_content_digest", "daemon.log",
+        )}
+        config, marker = _load(files["config.json"]), _load(files["launch.json"])
+        session = {
+            "session_dir": registry, "server_url": receipt.url,
+            "pid": receipt.daemon_pid, "process_birth_id": receipt.daemon_birth_id,
+            "comfy_pid": receipt.comfy_pid, "comfy_process_birth_id": receipt.comfy_birth_id,
+            "launch_token": marker.get("launch_token"), "config_digest": receipt.config_digest,
+            "source_revision": files["source_revision"].decode().strip(),
+            "source_content_digest": files["source_content_digest"].decode().strip(),
+        }
+        source = next(source for source in recipe.sources if source.name == "vibecomfy")
+        if (config != selection.config or config.get("output_directory") != str(reference.output_root)
+                or "sha256:" + hashlib.sha256(files["config.json"]).hexdigest() != receipt.config_digest
+                or files["pid"].decode().strip() != str(receipt.daemon_pid)
+                or files["comfy_pid"].decode().strip() != str(receipt.comfy_pid)
+                or files["url"].decode().strip() != receipt.url
+                or files["comfy_process_start_identity"].decode().strip() != receipt.comfy_birth_id
+                or not isinstance(session["launch_token"], str) or not session["launch_token"]
+                or "sha256:" + hashlib.sha256(session["launch_token"].encode()).hexdigest() != receipt.launch_token_digest
+                or marker.get("pid") != receipt.daemon_pid or marker.get("comfy_pid") != receipt.comfy_pid
+                or marker.get("process_start_identity") != receipt.daemon_birth_id
+                or marker.get("comfy_process_start_identity") != receipt.comfy_birth_id
+                or marker.get("url") != receipt.url or session["source_revision"] != source.pin.revision
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", session["source_content_digest"])):
+            raise AttestationError("installed endpoint session evidence changed")
+        # Independently re-read the collection, rather than trusting a session receipt's digest alone.
+        if any(read_file(registry + "/" + name, deadline=deadline) != value for name, value in files.items()):
+            raise AttestationError("installed endpoint session evidence changed")
+        existing_session = profile.get("vibecomfy_session", {})
+        if (not isinstance(existing_session, dict) or ("vibecomfy_session" in profile
+                and any(existing_session.get(key) != value for key, value in session.items()))):
+            raise AttestationError("startup and installed endpoint session disagree")
+        profile["vibecomfy_session"] = {**existing_session, **session}
+        if "endpoint_evidence" in profile:
+            # Retain an existing approved snapshot/evidence binding verbatim.
+            # The shared ensure below validates its actual bytes and live P1.
+            evidence = parse_endpoint_profile_evidence(profile["endpoint_evidence"])
+            attestation = evidence.claim_attestation
+            if (evidence.engine != engine or evidence.platform != platform
+                    or attestation.install_receipt_path != installed_path
+                    or attestation.install_receipt_sha256 != hashlib.sha256(installed_bytes).hexdigest()
+                    or attestation.health != installed.health):
+                raise AttestationError("startup and original endpoint evidence disagree")
+            snapshot_bytes = read_private_endpoint_file(attestation.claim_handle_path, deadline=deadline)
+        else:
+            with self._claim_owner() as (current, _fd):
+                if any(current.get(key) != value for key, value in self._endpoint_claim_identity.items()):
+                    raise EndpointOwnershipError("original prepared endpoint owner changed")
+                # Approved immutable evidence, never a competing claim journal.
+                snapshot_path = self.journal_dir / ("endpoint-claim-" + secrets.token_hex(16) + ".json")
+                create_target_record_exclusive(snapshot_path, dict(current))
+                snapshot_bytes = read_private_endpoint_file(str(snapshot_path), deadline=deadline)
+            profile["endpoint_evidence"] = {
+                "schema": "astrid.runpod.endpoint-evidence.v1", "engine": engine, "platform": platform,
+                "claim_operation_id": claim["operation_id"],
+                "claim_attestation": {
+                    "kind": "runpod-engine.v1", "provider_account_ref": claim["provider_account_ref"],
+                    "pod_id": claim["pod_id"], "claim_handle_path": str(snapshot_path),
+                    "claim_handle_sha256": hashlib.sha256(snapshot_bytes).hexdigest(),
+                    "install_receipt_path": installed_path,
+                    "install_receipt_sha256": hashlib.sha256(installed_bytes).hexdigest(),
+                    "health": asdict(installed.health), "object_info_sha256": installed.health.object_info_sha256,
+                },
+            }
+        endpoint = ensure_prepared_session_endpoint(
+            self, reference=reference, staging=staging, session_selection=selection,
+            session_receipt=receipt, profile=profile, endpoint_id=endpoint_id, agent_port=agent_port,
+            token_ref=token_ref, read_file=read_file, deadline=deadline,
+        )
+        profile["workflow_endpoint"] = {
+            "endpoint_id": endpoint_id,
+            "token_ref": {"kind": "file", "path": str(reference.readiness_profile_path.parent / "engine-bearer.token")},
+        }
+        _run_sync(self.preparation_transport.write_endpoint_profile(
+            str(reference.readiness_profile_path), profile, deadline=deadline,
+        ))
+        final_bytes = read_file(str(reference.readiness_profile_path), deadline=deadline)
+        expected = json.dumps(profile, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+        if final_bytes != expected:
+            raise AttestationError("workflow endpoint final profile readback differs")
+        final = replace(reference, readiness_profile_hash="sha256:" + hashlib.sha256(final_bytes).hexdigest())
+        retained = {
+            "input_digest": reference.digest(), "reference": final, "staging": staging,
+            "selection": selection, "receipt": receipt, "endpoint": endpoint_to_dict(endpoint),
+            "snapshot": _load(snapshot_bytes), "arguments": (engine, platform, endpoint_id, agent_port, token_ref),
+        }
+        with self._claim_owner() as (current, _fd):
+            self._validate_endpoint_preparation(current, retained)
+        self._endpoint_preparation = retained
+        return final
+
+    def _validate_endpoint_preparation(self, claim: Mapping[str, Any], retained: Mapping[str, Any]) -> None:
+        from astrid.core.generation.engine_contracts import EndpointOwnershipError
+
+        snapshot = retained["snapshot"]
+        fields = ("operation_id", "provider_account_ref", "pod_id", "network_volume_id", "network_volume_name",
+                  "network_volume_size_gb", "network_volume_datacenter_id", "volume_mount_path", "acquisition_mode",
+                  "transport", "https_token_file")
+        if (any(claim.get(key) != snapshot.get(key) for key in fields)
+                or any(claim.get(key) != value for key, value in self._endpoint_claim_identity.items())):
+            raise EndpointOwnershipError("original prepared endpoint owner changed")
+        self.session_owner.resume(retained["selection"], retained["receipt"])
 
     def observe_provider_identity(self, handle: PreparedRunPodHost) -> dict[str, str]:
         """Re-query this account's full pod and volume inventory by exact IDs."""
@@ -376,7 +559,11 @@ class RunPodRemoteWorkerPreparer:
             "receipt": receipt.as_dict(),
             "gpu_qualified": False,
         }
-        updated = {**self._read_claim(), "managed_session": record}
+        current = self._read_claim()
+        if (selection.session_ref == "vibecomfy-h3" and current.get("managed_session") is not None
+                and current["managed_session"] != record):
+            raise RunPodWorkerOwnerError("installer attachment conflicts with original session custody")
+        updated = {**current, "managed_session": record}
         replace_target_record(
             self.claim_handle_path, updated, operation_id=str(claim.get("operation_id"))
         )
@@ -390,7 +577,7 @@ class RunPodRemoteWorkerPreparer:
                        for key in required)):
             raise RunPodWorkerOwnerError("Runtime local-worker generation is incomplete")
         saved = {key: generation[key] for key in required}
-        with self._claim_owner() as (claim, _fd):
+        with self._claim_owner() as (claim, lock_fd):
             managed = claim.get("managed_worker")
             if (not isinstance(managed, Mapping)
                     or managed.get("schema") != "astrid.runpod.managed-worker.v1"
@@ -401,7 +588,7 @@ class RunPodRemoteWorkerPreparer:
             if prior is not None and prior != saved:
                 raise RunPodWorkerOwnerError("P1 custody already records a different local worker generation")
             state = {**dict(managed), "local_worker_generation": saved}
-            self._write_worker_state(state)
+            self._write_worker_state(state, owner_lock_fd=lock_fd)
 
     def persist_credential_reservation(
         self, handle: object, reservation: Mapping[str, Any],
@@ -456,17 +643,29 @@ class RunPodRemoteWorkerPreparer:
         if isinstance(previous, Mapping) and previous.get("state") not in {"stopped", "released"}:
             raise RunPodWorkerOwnerError("P1 custody already contains a live or unresolved managed worker")
 
-        staging = self._stage(reference)
-        session_selection = None
-        session_receipt = None
-        if self.session_owner is not None:
-            session_selection = self.session_owner.select(
-                reference, staging["cpu_readiness"], port=self.session_port,
-            )
-            session_receipt = self.session_owner.start(session_selection)
-            self._write_managed_session(
-                claim, session_selection, session_receipt, owner_lock_fd=owner_lock_fd,
-            )
+        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+            raise RunPodWorkerOwnerError("installer-owned session attachment is required")
+
+        retained = getattr(self, "_endpoint_preparation", None)
+        if retained is not None:
+            if reference.digest() != retained["reference"].digest():
+                raise RunPodWorkerOwnerError("endpoint final readiness reference changed before park")
+            self._validate_endpoint_preparation(claim, retained)
+            staging, session_selection, session_receipt = retained["staging"], retained["selection"], retained["receipt"]
+        else:
+            # Legacy RemotePreparer callers retain their existing session path.
+            # The production workflow composition always finalizes before park.
+            staging = self._stage(reference)
+            session_selection = None
+            session_receipt = None
+            if self.session_owner is not None:
+                session_selection = self.session_owner.select(
+                    reference, staging["cpu_readiness"], port=self.session_port,
+                )
+                session_receipt = self.session_owner.start(session_selection)
+                self._write_managed_session(
+                    claim, session_selection, session_receipt, owner_lock_fd=owner_lock_fd,
+                )
         operation_id, channel_id = secrets.token_hex(12), secrets.token_hex(12)
         socket_path = f"/tmp/.a{secrets.token_hex(8)}/s"
         if len(os.fsencode(socket_path)) >= 108:
@@ -518,6 +717,10 @@ class RunPodRemoteWorkerPreparer:
             "activation_socket_path": socket_path,
             "ready_file": ready_file,
             "staging_plan_digest": staging["plan_digest"],
+            **({"engine_endpoint": retained["endpoint"],
+                "task_id": reference.task_id, "run_id": reference.run_id,
+                "readiness_profile_path": str(reference.readiness_profile_path),
+                "readiness_profile_hash": reference.readiness_profile_hash} if retained is not None else {}),
             "gpu_qualified": False,
         }, owner_lock_fd=owner_lock_fd, replace_previous=True)
         return handle
@@ -1247,6 +1450,8 @@ class RunPodRemoteWorkerPreparer:
             raise RunPodWorkerOwnerError("selected P2 plan differs from durable RunPod preparation custody")
         session_selection = None
         session_receipt = None
+        if getattr(reference, "session_ref", None) == "vibecomfy-h3" and self.session_owner is None:
+            raise RunPodWorkerOwnerError("installer-owned session attachment is required")
         if self.session_owner is not None:
             saved_session = claim.get("managed_session")
             if (not isinstance(saved_session, Mapping)
@@ -1325,9 +1530,30 @@ class RunPodRemoteWorkerInspector:
         self.session_config_observer = session_config_observer
         self.executor_observer = executor_observer
 
+    def ensure_endpoint(self, handle: object, *, engine: str, platform: str,
+                        endpoint_id: str, agent_port: int, token_ref: Any,
+                        read_file: Any, deadline: float):
+        """Bind the one endpoint slot to this already prepared claim/activation."""
+        from astrid.core.generation.engine_endpoint import ensure_prepared_endpoint
+
+        return ensure_prepared_endpoint(
+            self, handle, engine=engine, platform=platform, endpoint_id=endpoint_id,
+            agent_port=agent_port, token_ref=token_ref, read_file=read_file, deadline=deadline,
+        )
+
     def observe(self, raw_handle: object) -> Mapping[str, Any]:
         handle = self.preparer._assert_handle(raw_handle)
         reference = handle.reference
+        if "engine_endpoint" in (self.preparer._read_claim().get("managed_worker") or {}):
+            self.preparer.preparation_transport.select_endpoint_files(
+                profile_path=str(reference.readiness_profile_path), runtime_root=handle.session_selection.runtime_root,
+                profile_hash=reference.readiness_profile_hash,
+            )
+            raw = _run_sync(self.preparer.preparation_transport.read_endpoint_file(
+                str(reference.readiness_profile_path), deadline=time.monotonic() + 20,
+            ))
+            if "sha256:" + hashlib.sha256(raw).hexdigest() != reference.readiness_profile_hash:
+                raise RunPodWorkerOwnerError("delivered final endpoint readiness bytes changed")
         process_evidence = _run_sync(handle.owner.observe(handle.process))
         provider = self.preparer.observe_provider_identity(handle)
         if (process_evidence.get("provider_identity") != provider

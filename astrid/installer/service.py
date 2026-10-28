@@ -66,6 +66,38 @@ def install_selection(home: Path, system: str) -> Path:
     return default_program_root(home, system).parent / "astrid-install.json"
 
 
+UNSUPERVISED_WARNING = (
+    "No active systemd user supervisor was detected for Astrid Runtime. "
+    "The installer's detached fallback survives terminal closure, but does not "
+    "restart after a crash, logout cleanup, container shutdown, or reboot. "
+    "Run the install line to start it again. For automatic recovery, run "
+    "astrid-runtime run under your container or another service supervisor; "
+    "see docs/setup/local-source-install.md#linux-without-systemd. "
+    "If you already use an external supervisor, verify its restart policy."
+)
+
+
+def supervision_warning(data_root: Path) -> str | None:
+    """Read-only Linux check; external supervisor policies cannot be inferred."""
+    if sys.platform != "linux":
+        return None
+    record = read_json(install_selection(Path.home(), sys.platform))
+    if record.get("managed_by") == "pinokio":
+        return None  # Pinokio explicitly owns this launch, rather than the fallback.
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", "astrid.service", "--property=MainPID", "--value"],
+            check=True, capture_output=True, text=True, timeout=3,
+        )
+        pid = int(result.stdout.strip())
+        discovery = read_json(data_root / "runtime" / "discovery.json")
+        if pid > 0 and pid == discovery.get("pid"):
+            return None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return UNSUPERVISED_WARNING
+
+
 def installer_lock_path(home: Path, system: str) -> Path:
     parent = default_program_root(home, system).parent
     # The lock must survive removal of program files and workspace data.
@@ -810,7 +842,7 @@ class Service:
                 self.run(["systemctl", "--user", "daemon-reload"])
                 self.run(["systemctl", "--user", "enable", "astrid.service"])
             else:
-                self.say("There is no systemd user service; run the install line to restart Astrid.")
+                self.say(UNSUPERVISED_WARNING)
         else:
             xml_path = str(self.path).replace("'", "''")
             self.powershell(f"Register-ScheduledTask -TaskName '{TASK}' -Xml ([IO.File]::ReadAllText('{xml_path}')) -Force | Out-Null")
@@ -843,7 +875,7 @@ class Service:
         return True
 
     def start_foreground(self, version: Version, data: Path) -> None:
-        """No systemd: detach Runtime's own supervisor; the line is the restart."""
+        """Detach one Runtime process without crash recovery or boot startup."""
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",

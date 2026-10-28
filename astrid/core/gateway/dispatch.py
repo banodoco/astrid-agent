@@ -192,12 +192,16 @@ def _dispatch_doctor(args: list[str]) -> int:
         return 0
     parsed = parser.parse_args(args)
     support_root = None
+    warning = None
     try:
         from astrid.core.gateway.diagnostics import collect_diagnostic
         from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
         from astrid.sdk.storage_root import resolve_runtime_data_root
 
         support_root = resolve_runtime_data_root()
+        from astrid.installer.service import supervision_warning
+
+        warning = supervision_warning(Path(support_root))
         diagnostic, _workspace, observed = collect_diagnostic(
             RuntimeCLI(),
             support_root=support_root,
@@ -217,6 +221,8 @@ def _dispatch_doctor(args: list[str]) -> int:
             "authorization_required": False,
             "error": str(exc),
         }
+        if warning:
+            payload["warnings"] = [warning]
         if parsed.bundle:
             from astrid.core.gateway.doctor_bundle import write_bundle
             from astrid.sdk.storage_root import resolve_runtime_data_root
@@ -252,12 +258,16 @@ def _dispatch_doctor(args: list[str]) -> int:
         else:
             print(f"Astrid doctor: {payload['error']}", file=sys.stderr)
             print(f"next action: {payload['next_action']}", file=sys.stderr)
+            for item in payload.get("warnings", []):
+                print(f"warning: {item}", file=sys.stderr)
         return 1
     report.setdefault("effects", ["observe"])
     report.setdefault("authorization_required", False)
     report.setdefault("ok", result_code == 0)
     report.setdefault("problem_code", diagnostic["problemCode"])
     report["diagnostic"] = diagnostic
+    if warning:
+        report["warnings"] = [*report.get("warnings", []), warning]
     if parsed.bundle:
         from astrid.core.gateway.doctor_bundle import write_bundle
 
@@ -333,6 +343,8 @@ def _dispatch_doctor(args: list[str]) -> int:
     else:
         state = report.get("state", "ready") if isinstance(report, dict) else "ready"
         print(f"Astrid doctor\nstate: {state}")
+        for warning in report.get("warnings", []):
+            print(f"warning: {warning}")
         renderer_node = report.get("renderer_node")
         if renderer_node:
             print(f"renderer node: {renderer_node.get('status', 'unknown')} · {renderer_node.get('detail', '')}"

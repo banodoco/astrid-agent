@@ -9,6 +9,7 @@ import re
 import shutil
 import zipfile
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -34,8 +35,38 @@ from astrid.packs.h3_av.actions.transform.receipt import (
 from astrid.packs.h3_av.shared.input_bundle import build_input_bundle, materialize_input_bundle
 from astrid.packs.h3_av.shared.request import load_request_document, normalize_request
 from astrid.packs.h3_av.shared.request_v2 import branch_for
-from astrid.sdk import AstridClient, observe_task_invocation
+from astrid.sdk import AstridClient, generate, observe_task_invocation
 from astrid.sdk.results import InvocationResult
+
+
+UNSUPPORTED_TARGET_MESSAGE = (
+    "H3 execution-request target must be default or runpod; choose where H3 runs with --placement local|runpod"
+)
+LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
+
+
+def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
+    """``--placement runpod``: claim a pod, run the local command there, pull back, release."""
+
+    from astrid.packs.runpod.remote_placement import run_remote_placement
+
+    return run_remote_placement(args)
+
+
+def _resolve_local_engine() -> Any:
+    """Resolve the installed local engine endpoint or fail fast with the next action."""
+
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+
+    try:
+        return local_engine_endpoint("vibecomfy-h3")
+    except EngineError as exc:
+        raise AstridError(
+            f"local H3 engine is not ready ({exc.code}): "
+            f"run `{LOCAL_ENGINE_INSTALL_ACTION}` first",
+            recovery_command=LOCAL_ENGINE_INSTALL_ACTION,
+        ) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help="resume from SDK recovery receipts or verified legacy locators without resampling",
+    )
+    parser.add_argument(
+        "--placement",
+        choices=("local", "runpod"),
+        default=None,
+        help=(
+            "where the H3 engine runs (default: local, or runpod when a legacy "
+            "--worker-qualification/--prepared-worker/runpod target is given)"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -584,6 +624,38 @@ def _invoke(
     return result
 
 
+def _invoke_workflow(
+    client: Any,
+    *,
+    placement: str,
+    inputs: Mapping[str, Any],
+    out: Path,
+    project: str | None,
+    execution_request: Mapping[str, Any] | None,
+    idempotency_context: Mapping[str, Any] | None,
+    recovery_path: Path,
+    resume: bool = False,
+) -> InvocationResult:
+    result = generate.workflow(
+        client=client,
+        placement=placement,
+        **inputs,
+        execution_request=execution_request,
+        out=out,
+        project=project,
+        idempotency_context=idempotency_context,
+        recovery_path=recovery_path,
+        resume=resume,
+        wait=True,
+        read_managed_outputs=True,
+        timeout_seconds=3600.0,
+        poll_seconds=1.0,
+    )
+    if not result.ok:
+        raise AstridError(f"vibecomfy.run failed: {result.error}")
+    return result
+
+
 def _execution_request_for_child(
     execution_request: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -1064,8 +1136,27 @@ def _invoke_canonical_run(
     journal: OperationJournal,
     resume: bool,
     idempotency_context: Mapping[str, Any] | None = None,
+    placement: str | None = None,
 ) -> InvocationResult:
     """Admit once; an unsettled or identity-free response cannot be replayed."""
+
+    from astrid.core.generation.backends.registry import (
+        GenerationBackendRegistry, resolve_workflow_descriptor,
+    )
+
+    # An unplaced call carrying a RunPod target is the legacy prepared route.
+    if placement is None:
+        target = execution_request.get("target") if isinstance(execution_request, Mapping) else None
+        if isinstance(target, Mapping) and target.get("kind") == "runpod":
+            placement = "runpod"
+    # Resolve only inert placement metadata before touching admission or the
+    # prepared client. The facade validates this same original target again.
+    descriptor = resolve_workflow_descriptor(
+        GenerationBackendRegistry(), placement=placement,
+        execution_request=execution_request,
+    )
+    workflow_placement = descriptor.placement.resolve(placement)
+    workflow_route = f"generation.workflow.v1/{workflow_placement}"
 
     admission_payload = {
         "capability_id": "vibecomfy.run",
@@ -1078,6 +1169,10 @@ def _invoke_canonical_run(
         "project": project,
     })
     prior_run = journal.latest("run")
+    # The creative/admission digest stays unchanged. Route compatibility is
+    # evidence in the existing operation journal, never a second recovery log.
+    if resume and prior_run is not None and prior_run.get("workflow_route") != workflow_route:
+        raise AstridError("cannot resume canonical run: incompatible workflow route; refusing replay")
     if resume and prior_run is not None and journal.admission_digest is None:
         raise AstridError("cannot resume canonical run: journal has no frozen admission identity")
     try:
@@ -1087,13 +1182,14 @@ def _invoke_canonical_run(
 
     receipt_path = _recovery_receipt_path(saved_result, journal)
     if resume and receipt_path.is_file():
-        if prior_run is not None:
-            recorded_admission = prior_run.get("admission_digest")
-            if isinstance(recorded_admission, str) and recorded_admission != admission_digest:
-                raise AstridError("cannot resume canonical run: journaled admission identity changed")
-        result = _invoke(
+        if prior_run is None:
+            raise AstridError("cannot resume canonical run: SDK receipt has no matching journal route")
+        recorded_admission = prior_run.get("admission_digest")
+        if isinstance(recorded_admission, str) and recorded_admission != admission_digest:
+            raise AstridError("cannot resume canonical run: journaled admission identity changed")
+        result = _invoke_workflow(
             client,
-            "vibecomfy.run",
+            placement=workflow_placement,
             inputs=inputs,
             out=out,
             project=project,
@@ -1113,7 +1209,7 @@ def _invoke_canonical_run(
             task_id=identity[0],
             run_id=identity[1],
             attempt_id=identity[2],
-            admission_digest=admission_digest,
+            admission_digest=admission_digest, workflow_route=workflow_route,
         )
         return result
 
@@ -1147,7 +1243,7 @@ def _invoke_canonical_run(
         journal.set_admission_phase("settled")
         journal.record(
             "run", "reused", task_id=identity[0], run_id=identity[1],
-            attempt_id=identity[2], admission_digest=admission_digest,
+            attempt_id=identity[2], admission_digest=admission_digest, workflow_route=workflow_route,
         )
         return result
 
@@ -1159,10 +1255,13 @@ def _invoke_canonical_run(
         raise AstridError("cannot resume canonical run: journal phase and saved result disagree")
 
     journal.set_admission_phase("admission_started")
-    journal.record("run", "admission_started", admission_digest=admission_digest)
+    journal.record(
+        "run", "admission_started", admission_digest=admission_digest,
+        workflow_route=workflow_route,
+    )
     try:
-        result = _invoke(
-            client, "vibecomfy.run", inputs=inputs, out=out, project=project,
+        result = _invoke_workflow(
+            client, placement=workflow_placement, inputs=inputs, out=out, project=project,
             execution_request=execution_request,
             idempotency_context=idempotency_context,
             recovery_path=receipt_path,
@@ -1174,14 +1273,14 @@ def _invoke_canonical_run(
     except Exception as exc:
         journal.set_admission_phase("uncertain")
         journal.record(
-            "run", "uncertain", admission_digest=admission_digest,
+            "run", "uncertain", admission_digest=admission_digest, workflow_route=workflow_route,
             error=type(exc).__name__, message=str(exc)[:1000],
         )
         raise
     journal.set_admission_phase("settled")
     journal.record(
         "run", "completed", task_id=identity[0], run_id=identity[1],
-        attempt_id=identity[2], admission_digest=admission_digest,
+        attempt_id=identity[2], admission_digest=admission_digest, workflow_route=workflow_route,
     )
     return result
 
@@ -1273,14 +1372,41 @@ def _finalizer_generation_intent(
 def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
+    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    requested_target = execution_request.get("target") if execution_request else None
+    if isinstance(requested_target, Mapping) and requested_target.get("kind") not in (None, "default", "runpod"):
+        raise AstridError(UNSUPPORTED_TARGET_MESSAGE)
+    has_runpod_worker = (
+        isinstance(requested_target, Mapping)
+        and requested_target.get("kind") == "runpod"
+        and isinstance(requested_target.get("pod_id"), str)
+        and bool(requested_target["pod_id"].strip())
+    )
+    legacy_prepared = bool(
+        has_runpod_worker
+        or args.worker_qualification is not None
+        or args.prepared_worker is not None
+    )
+    placement = getattr(args, "placement", None) or ("runpod" if legacy_prepared else "local")
+    if placement == "local" and (legacy_prepared or (
+            isinstance(requested_target, Mapping) and requested_target.get("kind") == "runpod")):
+        raise AstridError(
+            "a RunPod worker selection or target requires --placement runpod",
+            valid_options=("--placement runpod",),
+        )
     if args.dry_run:
         return {
             "status": "planned",
+            "placement": placement,
             "request": str(args.request.resolve()),
             "asset_map": str(args.asset_map.resolve()),
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
-    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    local_engine = None
+    if placement == "local":
+        local_engine = _resolve_local_engine()
+    elif not legacy_prepared:
+        return _run_remote_placement(args)
     prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
@@ -1290,7 +1416,9 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
                 qualification, execution_request
             )
         except WorkerQualificationError as exc:
-            raise AstridError(f"worker qualification failed before admission: {exc}") from exc
+            raise AstridError(
+                f"worker qualification failed before admission: {exc}"
+            ) from exc
         root.mkdir(parents=True, exist_ok=True)
         (root / "00-worker-qualification.json").write_text(
             json.dumps(
@@ -1429,6 +1557,9 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
             "generation_intent": generation_intent,
         }
+        if local_engine is not None:
+            run_inputs["comfy_url"] = local_engine.endpoint.url
+            run_inputs["comfy_output_dir"] = local_engine.comfy_output_dir
         saved_run_path = root / "04-run" / "run-result.json"
         child_execution_request = _execution_request_for_child(execution_request)
         run_client = client
@@ -1454,6 +1585,7 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             journal=journal,
             resume=bool(getattr(args, "resume", False)),
             idempotency_context=idempotency_context,
+            placement=placement,
         )
         output_contract = compilation.get("capabilities", {}).get("output_contract")
         generated_audio_path: Path | None = None
@@ -1639,6 +1771,10 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
                 else None
             ),
             cleanup=cleanup_receipt,
+            placement=placement,
+            local_attestation=(
+                asdict(local_engine.endpoint.attestation) if local_engine is not None else None
+            ),
             raw_managed_publication=raw_managed_publication,
             final_managed_publication=final_managed_publication,
         )
