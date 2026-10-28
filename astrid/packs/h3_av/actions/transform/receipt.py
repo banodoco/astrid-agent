@@ -733,6 +733,8 @@ def build_final_receipt(
     cleanup: Mapping[str, Any] | None = None,
     raw_managed_publication: _RuntimeManagedPublication | None = None,
     final_managed_publication: _RuntimeManagedPublication | None = None,
+    placement: str | None = None,
+    local_attestation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the raw-publication, local-composition, and cleanup receipt."""
     if not isinstance(request_digest, str) or not request_digest.strip():
@@ -799,10 +801,16 @@ def build_final_receipt(
         and editorial_status == "passed"
     ):
         overall = "complete"
+    placement_report: dict[str, Any] = {}
+    if placement is not None:
+        placement_report["placement"] = placement
+        if local_attestation is not None:
+            placement_report["local_attestation"] = dict(local_attestation)
     return {
         "schema_version": 1,
         "kind": "h3_av_final_receipt",
         "request_digest": request_digest,
+        **placement_report,
         "publication_contract": {
             "published_scope": "final_composition" if final_status == "passed" else "raw_internal_lineage",
             "effect_type": "generation.publish_v1",

@@ -25,6 +25,8 @@ from astrid.core.model_catalog.taxonomy import (
 from astrid.core.pack import PackDefinition, discover_packs
 from astrid.core.pack.discovery import discover_pack_metadata
 
+H3_WORKFLOW_BACKEND_ID = "vibecomfy-h3-workflow"
+
 
 @dataclass(frozen=True)
 class GenerationBackendDescriptor:
@@ -152,7 +154,12 @@ def resolve_workflow_descriptor(
     placement: str | None = None,
     execution_request: Any = None,
 ) -> GenerationBackendDescriptor:
-    """Select the one workflow route using existing immutable target intent.
+    """Select the engine-bound H3 workflow backend and validate placement.
+
+    Backend choice no longer depends on ``target.kind``: engine-bound workflows
+    always use ``vibecomfy-h3-workflow``. Placement defaults to ``local``. A
+    ``runpod`` execution-request target is accepted only on the legacy prepared
+    route (explicit ``placement="runpod"``); otherwise it is refused.
 
     This is read-only: no backend import, claim, endpoint or provider lookup.
     Profile/machine selectors cannot establish the exact RunPod proof target.
@@ -164,9 +171,12 @@ def resolve_workflow_descriptor(
     target_kind = request["target"]["kind"] if request else "default"
     if target_kind not in {"default", "runpod"}:
         raise UnsupportedPlacement("workflow requires a default local or exact RunPod target")
-    backend_id = "vibecomfy-h3-workflow" if target_kind == "runpod" else LOCAL_BACKEND_ID
-    descriptor = registry.get_descriptor(backend_id)
-    descriptor.placement.resolve(placement)
+    descriptor = registry.get_descriptor(H3_WORKFLOW_BACKEND_ID)
+    resolved = descriptor.placement.resolve(placement)
+    if (resolved == "runpod") != (target_kind == "runpod"):
+        raise UnsupportedPlacement(
+            "a runpod target is accepted only with placement runpod (legacy prepared route)"
+        )
     return descriptor
 
 
@@ -230,12 +240,12 @@ def load_default_generation_backend_registry(
 def _builtin_generation_backend_descriptors() -> tuple[GenerationBackendDescriptor, ...]:
     return (
         GenerationBackendDescriptor(
-            backend_id="vibecomfy-h3-workflow",
+            backend_id=H3_WORKFLOW_BACKEND_ID,
             module="astrid.core.generation.backends.vibecomfy_workflow",
             class_name="VibeComfyWorkflowBackend",
             label="VibeComfy H3 workflow",
             placement=PlacementDescriptor(
-                "astrid.generation-placement.v1", ("runpod",), "runpod",
+                "astrid.generation-placement.v1", ("local", "runpod"), "local",
                 "vibecomfy-h3", True,
             ),
         ),

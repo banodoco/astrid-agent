@@ -517,10 +517,16 @@ def _run_and_settle(
     # The host injects admitted scheduling intent and its original endpoint
     # attachment. Neither value is part of the workflow's creative inputs.
     registry = registry if registry is not None else load_default_generation_backend_registry()
+    if placement is None:
+        # An unplaced call carrying a RunPod target is the legacy prepared route.
+        target = execution_request.get("target") if isinstance(execution_request, dict) else None
+        if isinstance(target, dict) and target.get("kind") == "runpod":
+            placement = "runpod"
     selected = resolve_workflow_descriptor(
         registry, placement=placement, execution_request=execution_request,
     )
-    if selected.placement.requires_endpoint:
+    runpod_route = selected.placement.resolve(placement) == "runpod"
+    if runpod_route:
         if endpoint_checkout is None:
             raise AstridValueError("RunPod workflow endpoint_checkout integration is unavailable (pending38)")
         if comfy_url or comfy_output_dir:
@@ -528,7 +534,7 @@ def _run_and_settle(
     elif endpoint_checkout is not None:
         raise AstridValueError("endpoint_checkout requires the RunPod workflow route")
     adapter = selected.create(init_overrides=(
-        {"endpoint_checkout": endpoint_checkout} if selected.placement.requires_endpoint else None
+        {"endpoint_checkout": endpoint_checkout} if runpod_route else None
     ))
     if not isinstance(adapter, WorkflowBackendAdapter):
         raise AstridValueError("selected generation backend does not support workflows")
@@ -626,7 +632,7 @@ def _run_and_settle(
         production_kwargs["comfy_output_dir"] = comfy_output_dir
     if attempt_identity != "-":
         production_kwargs["attempt_identity"] = attempt_identity
-    if selected.placement.requires_endpoint and os.environ.get("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"):
+    if runpod_route and os.environ.get("ASTRID_H3_T9_MODEL_SUBSTITUTE_PROFILE"):
         raise AstridValueError("RunPod workflow endpoint route cannot use the T9 substitute")
     synthetic = _t9_child_dispatch(
         readiness_profile, profile_path=readiness_profile_path, profile_hash=readiness_profile_hash,

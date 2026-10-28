@@ -9,6 +9,7 @@ import re
 import shutil
 import zipfile
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -38,7 +39,30 @@ from astrid.sdk import AstridClient, generate, observe_task_invocation
 from astrid.sdk.results import InvocationResult
 
 
-RUNPOD_ONLY_MESSAGE = "H3 currently runs only on RunPod workers (see docs/reference/where-things-run.md)"
+UNSUPPORTED_TARGET_MESSAGE = (
+    "H3 execution-request target must be default or runpod; choose where H3 runs with --placement local|runpod"
+)
+LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
+
+
+class PlacementNotImplemented(AstridError, NotImplementedError):
+    """Raised for a placement whose wrapper is not built yet."""
+
+
+def _resolve_local_engine() -> Any:
+    """Resolve the installed local engine endpoint or fail fast with the next action."""
+
+    from astrid.core.generation.engine_contracts import EngineError
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+
+    try:
+        return local_engine_endpoint("vibecomfy-h3")
+    except EngineError as exc:
+        raise AstridError(
+            f"local H3 engine is not ready ({exc.code}): "
+            f"run `{LOCAL_ENGINE_INSTALL_ACTION}` first",
+            recovery_command=LOCAL_ENGINE_INSTALL_ACTION,
+        ) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,6 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help="resume from SDK recovery receipts or verified legacy locators without resampling",
+    )
+    parser.add_argument(
+        "--placement",
+        choices=("local", "runpod"),
+        default=None,
+        help=(
+            "where the H3 engine runs (default: local, or runpod when a legacy "
+            "--worker-qualification/--prepared-worker/runpod target is given)"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -1107,6 +1140,11 @@ def _invoke_canonical_run(
         GenerationBackendRegistry, resolve_workflow_descriptor,
     )
 
+    # An unplaced call carrying a RunPod target is the legacy prepared route.
+    if placement is None:
+        target = execution_request.get("target") if isinstance(execution_request, Mapping) else None
+        if isinstance(target, Mapping) and target.get("kind") == "runpod":
+            placement = "runpod"
     # Resolve only inert placement metadata before touching admission or the
     # prepared client. The facade validates this same original target again.
     descriptor = resolve_workflow_descriptor(
@@ -1332,24 +1370,44 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     root.mkdir(parents=True, exist_ok=True)
     execution_request = _json_mapping(args.execution_request) if args.execution_request else None
     requested_target = execution_request.get("target") if execution_request else None
-    if isinstance(requested_target, Mapping) and requested_target.get("kind") not in (None, "runpod"):
-        raise AstridError(RUNPOD_ONLY_MESSAGE)
+    if isinstance(requested_target, Mapping) and requested_target.get("kind") not in (None, "default", "runpod"):
+        raise AstridError(UNSUPPORTED_TARGET_MESSAGE)
     has_runpod_worker = (
         isinstance(requested_target, Mapping)
         and requested_target.get("kind") == "runpod"
         and isinstance(requested_target.get("pod_id"), str)
         and bool(requested_target["pod_id"].strip())
     )
-    if (not args.dry_run and not has_runpod_worker
-            and args.worker_qualification is None and args.prepared_worker is None):
-        raise AstridError(RUNPOD_ONLY_MESSAGE)
+    legacy_prepared = bool(
+        has_runpod_worker
+        or args.worker_qualification is not None
+        or args.prepared_worker is not None
+    )
+    placement = getattr(args, "placement", None) or ("runpod" if legacy_prepared else "local")
+    if placement == "local" and (legacy_prepared or (
+            isinstance(requested_target, Mapping) and requested_target.get("kind") == "runpod")):
+        raise AstridError(
+            "a RunPod worker selection or target requires --placement runpod",
+            valid_options=("--placement runpod",),
+        )
     if args.dry_run:
         return {
             "status": "planned",
+            "placement": placement,
             "request": str(args.request.resolve()),
             "asset_map": str(args.asset_map.resolve()),
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
+    local_engine = None
+    if placement == "local":
+        local_engine = _resolve_local_engine()
+    elif not legacy_prepared:
+        raise PlacementNotImplemented(
+            "--placement runpod without a prepared worker is not implemented yet (W1 pod wrapper); "
+            "use --worker-qualification or --prepared-worker for the legacy prepared route, "
+            "or --placement local",
+            valid_options=("--placement local", "--prepared-worker", "--worker-qualification"),
+        )
     prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
@@ -1360,7 +1418,7 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             )
         except WorkerQualificationError as exc:
             raise AstridError(
-                f"{RUNPOD_ONLY_MESSAGE}; worker qualification failed before admission: {exc}"
+                f"worker qualification failed before admission: {exc}"
             ) from exc
         root.mkdir(parents=True, exist_ok=True)
         (root / "00-worker-qualification.json").write_text(
@@ -1500,6 +1558,9 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
             "generation_intent": generation_intent,
         }
+        if local_engine is not None:
+            run_inputs["comfy_url"] = local_engine.endpoint.url
+            run_inputs["comfy_output_dir"] = local_engine.comfy_output_dir
         saved_run_path = root / "04-run" / "run-result.json"
         child_execution_request = _execution_request_for_child(execution_request)
         run_client = client
@@ -1525,6 +1586,7 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             journal=journal,
             resume=bool(getattr(args, "resume", False)),
             idempotency_context=idempotency_context,
+            placement=placement,
         )
         output_contract = compilation.get("capabilities", {}).get("output_contract")
         generated_audio_path: Path | None = None
@@ -1710,6 +1772,10 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
                 else None
             ),
             cleanup=cleanup_receipt,
+            placement=placement,
+            local_attestation=(
+                asdict(local_engine.endpoint.attestation) if local_engine is not None else None
+            ),
             raw_managed_publication=raw_managed_publication,
             final_managed_publication=final_managed_publication,
         )

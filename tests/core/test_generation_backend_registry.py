@@ -359,7 +359,7 @@ def test_builtin_and_legacy_positional_construction_have_local_only_placement():
                if d.backend_id != "vibecomfy-h3-workflow")
     workflow = registry.get_descriptor("vibecomfy-h3-workflow")
     assert workflow.placement == PlacementDescriptor(
-        "astrid.generation-placement.v1", ("runpod",), "runpod", "vibecomfy-h3", True
+        "astrid.generation-placement.v1", ("local", "runpod"), "local", "vibecomfy-h3", True
     )
 
 
@@ -440,7 +440,9 @@ def test_fresh_registry_discovery_does_not_load_providers_recipes_or_runtime(tmp
         assert len(registry.descriptors()) == 5
         for descriptor in registry.descriptors():
             if descriptor.backend_id == "vibecomfy-h3-workflow":
-                assert descriptor.placement.resolve(None) == "runpod"
+                assert descriptor.placement.resolve(None) == "local"
+                assert descriptor.placement.supported == ("local", "runpod")
+                assert descriptor.placement.engine == "vibecomfy-h3"
                 continue
             assert descriptor.placement.resolve(None) == "local"
             assert descriptor.placement.engine is None
