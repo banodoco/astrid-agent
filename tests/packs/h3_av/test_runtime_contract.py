@@ -376,7 +376,7 @@ def test_interval_lists_cannot_certify_a_copied_non_media_candidate(tmp_path: Pa
             }
         },
     )
-    with pytest.raises(VerificationError, match="byte-identical|decodable media|protected_samples"):
+    with pytest.raises(VerificationError, match="ffprobe|byte-identical|decodable media|protected_samples"):
         verify_candidate(preparation=preparation, composition=composition, source=source)
 
 

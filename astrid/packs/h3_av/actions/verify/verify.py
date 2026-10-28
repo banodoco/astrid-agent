@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
 from astrid.packs.h3_av.shared.compose import (
     CompositionError,
     _audio_witness,
-    _continuation_timing,
-    _is_source_free_generation,
-    _probe,
     _sample_digest,
     _spatial_video_masks,
     _validate_candidate_coverage,
@@ -29,6 +29,31 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _probe_strict(path: Path) -> dict[str, Any]:
+    """Probe media with ffprobe, failing closed on any probe failure.
+
+    A missing ffprobe, non-zero exit, empty output or unparsable JSON all raise
+    VerificationError; no default duration, size or codec is ever substituted.
+    """
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise VerificationError(f"ffprobe is unavailable; cannot verify {path.name}")
+    try:
+        completed = subprocess.run(
+            [ffprobe, "-v", "error", "-count_frames", "-show_streams", "-show_format", "-of", "json", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        value = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as exc:
+        raise VerificationError(f"ffprobe failed for {path.name}") from exc
+    if not isinstance(value, dict) or not value:
+        raise VerificationError(f"ffprobe produced no usable output for {path.name}")
+    return value
 
 
 def _source_offset(preparation: Mapping[str, Any]) -> float:
@@ -157,8 +182,14 @@ def _verify_sample_evidence(
                     raise VerificationError("protected audio samples could not be decoded") from exc
                 if float(witness["similarity"]) < 0.985 or witness["sample_count"] <= 0:
                     raise VerificationError("protected audio evidence is not a positive matching sample witness")
-            elif not isinstance(entry.get("witness_digest"), str) or not entry["witness_digest"]:
-                raise VerificationError(f"protected {stream_type} non-ffmpeg evidence lacks a witness digest")
+            else:
+                # A witness_digest the record declares about itself is not
+                # evidence: only methods verify can recompute from the source
+                # and candidate are accepted. Anything else is rejected.
+                raise VerificationError(
+                    f"protected {stream_type} evidence method {method!r} cannot be recomputed; "
+                    "self-declared witness digests are not trusted"
+                )
 
 
 def _verify_provenance(preparation: Mapping[str, Any], composition: Mapping[str, Any]) -> None:
@@ -223,40 +254,33 @@ def verify_candidate(
     if "size" in candidate_info and candidate_info.get("size") != candidate_path.stat().st_size:
         raise VerificationError("candidate size does not match composition evidence")
 
-    if _probe(candidate_path) is not None:
-        try:
-            actual_coverage = _validate_candidate_coverage(
-                preparation=preparation,
-                candidate=candidate_path,
-            )
-        except CompositionError as exc:
-            raise VerificationError(str(exc)) from exc
-        declared_coverage = composition.get("coverage")
-        declared_candidate = (
-            declared_coverage.get("candidate")
-            if isinstance(declared_coverage, Mapping)
-            else None
+    _probe_strict(candidate_path)
+    try:
+        actual_coverage = _validate_candidate_coverage(
+            preparation=preparation,
+            candidate=candidate_path,
         )
-        # Paths are observational attempt-local details, never identity. All
-        # measured coverage fields still have to match the settled evidence.
-        def portable_coverage(value):
-            if not isinstance(value, Mapping):
-                return value
-            return {
-                key: {field: item for field, item in entry.items() if field != "path"}
-                if key in {"video", "audio"} and isinstance(entry, Mapping) else entry
-                for key, entry in value.items()
-            }
+    except CompositionError as exc:
+        raise VerificationError(str(exc)) from exc
+    declared_coverage = composition.get("coverage")
+    declared_candidate = (
+        declared_coverage.get("candidate")
+        if isinstance(declared_coverage, Mapping)
+        else None
+    )
+    # Paths are observational attempt-local details, never identity. All
+    # measured coverage fields still have to match the settled evidence.
+    def portable_coverage(value):
+        if not isinstance(value, Mapping):
+            return value
+        return {
+            key: {field: item for field, item in entry.items() if field != "path"}
+            if key in {"video", "audio"} and isinstance(entry, Mapping) else entry
+            for key, entry in value.items()
+        }
 
-        if portable_coverage(declared_candidate) != portable_coverage(actual_coverage):
-            raise VerificationError("candidate coverage does not match composition evidence")
-    else:
-        try:
-            continuation = _continuation_timing(preparation)
-        except CompositionError as exc:
-            raise VerificationError(str(exc)) from exc
-        if continuation is not None or _is_source_free_generation(preparation):
-            raise VerificationError("H3 candidate is not decodable audiovisual media")
+    if portable_coverage(declared_candidate) != portable_coverage(actual_coverage):
+        raise VerificationError("candidate coverage does not match composition evidence")
 
     schedule = preparation["mask_schedule"]
     protected_video = schedule["video"]["protected_intervals"]
@@ -293,8 +317,8 @@ def verify_candidate(
     elif protected_video or protected_audio:
         if source_path is None:
             raise VerificationError("partial preservation requires an authoritative source")
-        if _probe(source_path) is None or _probe(candidate_path) is None:
-            raise VerificationError("partial preservation requires decodable media, not a copied/non-media candidate")
+        _probe_strict(source_path)
+        _probe_strict(candidate_path)
         samples = evidence.get("protected_samples")
         if not isinstance(samples, Mapping):
             raise VerificationError("partial preservation requires protected_samples evidence")
