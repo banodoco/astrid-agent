@@ -645,12 +645,12 @@ def test_local_placement_fails_fast_when_engine_not_installed(tmp_path: Path, mo
         assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
 
 
-def test_runpod_placement_without_prepared_worker_is_not_implemented(tmp_path: Path, monkeypatch) -> None:
+def test_runpod_placement_without_prepared_worker_uses_the_remote_wrapper(tmp_path: Path, monkeypatch) -> None:
     from astrid.packs.h3_av.actions.transform import run as transform
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected"))
     monkeypatch.setattr(transform, "_resolve_local_engine", lambda: pytest.fail("local engine resolved"))
-    with pytest.raises(NotImplementedError, match="W1"):
-        transform.run_transform(_transform_args(tmp_path, "--placement", "runpod"))
+    monkeypatch.setattr(transform, "_run_remote_placement", lambda args: {"placement": "runpod"})
+    assert transform.run_transform(_transform_args(tmp_path, "--placement", "runpod")) == {"placement": "runpod"}
 
 
 @pytest.mark.parametrize("target", [{"kind": "runpod"}, {"kind": "runpod", "pod_id": "pod"}])

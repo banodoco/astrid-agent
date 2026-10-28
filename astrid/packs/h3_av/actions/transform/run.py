@@ -45,8 +45,12 @@ UNSUPPORTED_TARGET_MESSAGE = (
 LOCAL_ENGINE_INSTALL_ACTION = "astrid engines install vibecomfy-h3"
 
 
-class PlacementNotImplemented(AstridError, NotImplementedError):
-    """Raised for a placement whose wrapper is not built yet."""
+def _run_remote_placement(args: argparse.Namespace) -> dict[str, Any]:
+    """``--placement runpod``: claim a pod, run the local command there, pull back, release."""
+
+    from astrid.packs.runpod.remote_placement import run_remote_placement
+
+    return run_remote_placement(args)
 
 
 def _resolve_local_engine() -> Any:
@@ -1402,12 +1406,7 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     if placement == "local":
         local_engine = _resolve_local_engine()
     elif not legacy_prepared:
-        raise PlacementNotImplemented(
-            "--placement runpod without a prepared worker is not implemented yet (W1 pod wrapper); "
-            "use --worker-qualification or --prepared-worker for the legacy prepared route, "
-            "or --placement local",
-            valid_options=("--placement local", "--prepared-worker", "--worker-qualification"),
-        )
+        return _run_remote_placement(args)
     prepared_selection = None
     qualification: dict[str, Any] | None = None
     if args.worker_qualification is not None:
