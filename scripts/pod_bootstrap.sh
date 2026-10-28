@@ -9,6 +9,9 @@ VENV="${ASTRID_VENV:-/opt/astrid}"
 RUNPOD_PRETEND_VERSION="1.12.0+astrid.2"
 SRC_DIRS=(src/runpod-python src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)
 PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
+# Headless Runtime setup. The data root follows astrid_runtime/paths.py on Linux.
+DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
+REALM_ROOT="${ASTRID_REALM_ROOT:-/workspace/astrid/realm}"
 
 for d in "${SRC_DIRS[@]}"; do
   [ -d "$d" ] || { echo "pod_bootstrap: missing source dir $d" >&2; exit 1; }
@@ -23,8 +26,51 @@ digest="$(
 marker_dir="/workspace/astrid/bootstrap/$digest"
 marker="/workspace/astrid/bootstrap/$digest/ok"
 
+# Headless Runtime setup: a source profile plus a configured workspace, so
+# `astrid action run` works with no manual step. It never runs `astrid-runtime up`:
+# a running Runtime holds the door port (17340) and `astrid action run` refuses to
+# start its own beside it. `action run` starts and stops its own ephemeral Runtime.
+setup_runtime() {
+  local profile="$DATA_ROOT/runtime/source-profiles/astrid.json"
+  local runtime_src agent_src
+  runtime_src="$(cd src/astrid-runtime && pwd)"
+  agent_src="$(cd src/astrid-agent && pwd)"
+  mkdir -p "$(dirname "$profile")"
+  if "$VENV/bin/python" - "$profile" "$runtime_src" "$agent_src" "$VENV" <<'PY'
+import json, sys
+path, runtime, agent, env = sys.argv[1:]
+want = {"profile": "astrid", "runtime_checkout": runtime, "source_checkout": agent, "runtime_environment": env}
+try:
+    with open(path, encoding="utf-8") as fh:
+        sys.exit(0 if json.load(fh) == want else 1)
+except (OSError, ValueError):
+    sys.exit(1)
+PY
+  then
+    echo "pod_bootstrap: source profile already current ($profile)"
+  else
+    "$VENV/bin/python" - "$profile" "$runtime_src" "$agent_src" "$VENV" <<'PY'
+import json, os, sys
+path, runtime, agent, env = sys.argv[1:]
+tmp = path + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    json.dump({"profile": "astrid", "runtime_checkout": runtime, "source_checkout": agent, "runtime_environment": env}, fh)
+os.replace(tmp, path)
+PY
+    echo "pod_bootstrap: wrote source profile ($profile)"
+  fi
+  if [ -e "$REALM_ROOT/realm.sqlite3" ]; then
+    echo "pod_bootstrap: workspace already exists ($REALM_ROOT)"
+  else
+    mkdir -p "$(dirname "$REALM_ROOT")"
+    "$VENV/bin/astrid-runtime" workspace create --data-root "$DATA_ROOT" --realm-root "$REALM_ROOT" --json
+  fi
+}
+
 if [ -f "$marker" ]; then
   echo "pod_bootstrap: already done ($marker)"
+  setup_runtime
   exit 0
 fi
 
@@ -46,6 +92,13 @@ else
   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
     uv pip install --python "$VENV" "${SRC_DIRS[@]}"
 fi
+
+# VibeComfy stays editable: find_repo_root() looks for pyproject.toml beside the imported
+# package, which a site-packages copy lacks. --no-deps keeps the dependency set unchanged.
+# Runs before the marker is written, so a failed run is retried and a rerun still skips.
+uv pip install --python "$VENV" --no-deps -e src/VibeComfy
+
+setup_runtime
 
 mkdir -p "$marker_dir"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$marker"
