@@ -700,11 +700,17 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
         assert hashlib.sha256(retained_cli).digest() == hashlib.sha256(original_cli).digest()
         assert b'if args.command in {"restart", "down"}' in retained_cli
+        # This identifies the revision's own restart branch; it does not reproduce P1.
         assert b'No selected runtime owner to restart' in retained_cli
         original_bootstrap = subprocess.run(
             ["git", "show", f"{RETAINED_RUNTIME_REVISION}:astrid_runtime/bootstrap.py"],
             cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
         assert installed_runtime_file(old.python, "bootstrap").read_bytes() == original_bootstrap
+        handoff = subprocess.run(
+            [str(old.python), "-I", "-c",
+             "import importlib; print(importlib.import_module('astrid_runtime.bootstrap').PINOKIO_STOP_HANDOFF_VERSION)"],
+            check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+        assert handoff == "1"
     write_json(app_root / "install.json", {
         "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data_root),
     })

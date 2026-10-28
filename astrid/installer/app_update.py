@@ -203,7 +203,10 @@ class PinokioLifecycle:
             return raw, record
 
         bound = snapshot()
-        self.backend.stop(version, data)
+        result = self.backend.stop(version, data)
+        if not isinstance(result, dict) or result.get("status") != "stopped":
+            # Unknown outcome: report nothing; the session keeps its down gate.
+            raise ValueError("The Runtime stop result is unknown; the Pinokio controller was not told.")
 
         def dead(record):
             # Read-only observation (after C1). Unknown never means dead.
@@ -222,7 +225,7 @@ class PinokioLifecycle:
             if bound is None:
                 return
             record = bound[1]
-            body = json.dumps({"c1": "stopped"}).encode()
+            body = b'{"c1":"stopped"}'
             conn = http.client.HTTPConnection("127.0.0.1", record["port"], timeout=50)
             try:
                 try:

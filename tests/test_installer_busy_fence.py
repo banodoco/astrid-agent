@@ -536,6 +536,7 @@ def test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success(tmp
         def log_message(self, *_args): pass
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+            assert body == b'{"c1":"stopped"}'  # byte-exact data, never a command
             requests.append((self.path, json.loads(body)))
             # C1 completed and released its fence before the report arrives.
             assert calls == ['prepare', 'runtime-stop']
