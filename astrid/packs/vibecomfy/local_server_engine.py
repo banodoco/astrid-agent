@@ -201,14 +201,27 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
     root = destination / "local-server-workflow"
     root.mkdir(parents=True, exist_ok=True)
     source = bundle.python_path.with_name("source.json") if bundle.python_path else None
-    derived = emit_bundle_with_candidate(
-        workflow, root / "workflow.py", Provenance.USER_CONFIRMED, bundle.ui_sidecar,
-        parent_revision=bundle.revision_id, operation="authored",
-        parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
-        source_format="ready_template",
-        # A full path: a bare name is published relative to the process cwd.
-        extra_members={root / "source.json": source.read_bytes()} if source and source.is_file() else None,
-    )
+    from vibecomfy.workflow_bundle import WorkflowBundleError
+
+    # A full path: a bare name is published relative to the process cwd.
+    extra_members = {root / "source.json": source.read_bytes()} if source and source.is_file() else None
+    derived = None
+    # The ready-template renderer rebuilds ``requirements`` from the workflow and drops the pinned
+    # ``runtime`` block of a materialized template (the H3 graph carries one), so the publish check
+    # refuses the pair; the scratchpad renderer keeps it.  Publication verifies the semantic digest
+    # either way, so whichever renderer round-trips the graph exactly is the one that is used.
+    for source_format in ("ready_template", "scratchpad"):
+        try:
+            derived = emit_bundle_with_candidate(
+                workflow, root / "workflow.py", Provenance.USER_CONFIRMED, bundle.ui_sidecar,
+                parent_revision=bundle.revision_id, operation="authored",
+                parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
+                source_format=source_format, extra_members=extra_members,
+            )
+            break
+        except WorkflowBundleError:
+            if source_format == "scratchpad":
+                raise
     return load_bundle(derived.python_path, trust=Provenance.USER_CONFIRMED)
 
 

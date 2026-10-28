@@ -34,6 +34,7 @@ ACTIONS: Mapping[str, Mapping[str, str]] = {
     "h3_av.transform": {"request": "request", "asset_map": "asset_map"},
 }
 PLACEMENTS = ("local",)
+LOCAL_ENGINE = "vibecomfy-h3"
 _LIFECYCLE_TIMEOUT = 300.0
 
 
@@ -139,6 +140,20 @@ def _submission_id(inputs: Mapping[str, Path]) -> str:
     return "action-" + digest.hexdigest()[:32]
 
 
+def _local_engine_environment() -> Mapping[str, str]:
+    """Placement local: tell the pack host to derive its model-root binding from the installed engine.
+
+    No readiness profile exists for an ephemeral host.  The host calls ``local_model_root_binding`` (the
+    install receipt's verified model lock plus the engine root) the first time a VibeComfy task needs the
+    binding (the client starts that host from this process's environment).  A missing or unverified install
+    is refused there, naming ``astrid engines install``, after ``h3_av.transform`` has already refused an
+    engine that is not installed and healthy.
+    """
+    from astrid.core.generation.engine_local_endpoint import LOCAL_ENGINE_HOST_ENV
+
+    return {LOCAL_ENGINE_HOST_ENV: LOCAL_ENGINE}
+
+
 def run_action(args: argparse.Namespace, *, workspace: Path) -> dict[str, Any]:
     """Run ``args.action_id`` in a fresh Runtime under ``workspace``; return the JSON summary."""
     from astrid.sdk.client import AstridClient
@@ -150,8 +165,9 @@ def run_action(args: argparse.Namespace, *, workspace: Path) -> dict[str, Any]:
     out = args.out.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     ports = ACTIONS[args.action_id]
+    engine_env = _local_engine_environment() if args.placement == "local" else {}
     with ephemeral_runtime(workspace) as env, _environment(
-        {key: env[key] for key in ("ASTRID_RUNTIME_DATA_ROOT", "ASTRID_RUNTIME_SOURCE_MANIFEST")}
+        {**{key: env[key] for key in ("ASTRID_RUNTIME_DATA_ROOT", "ASTRID_RUNTIME_SOURCE_MANIFEST")}, **engine_env}
     ):
         client = AstridClient.open_from_launcher(client_name="astrid-action", client_version="1")
         project = client.projects.create(slug=PROJECT_SLUG, name="Action run", idempotency_key="action-run-project")

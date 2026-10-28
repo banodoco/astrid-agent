@@ -165,6 +165,7 @@ from astrid.core.execution.thumbnails import (
     is_visual_media_type,
 )
 from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS, WarmHolds, WarmLease, idle_seconds
+from astrid.core.generation.engine_local_endpoint import LOCAL_ENGINE_HOST_ENV
 from astrid.core.generation.model_root import (
     MODEL_ROOT_BINDING_ENV,
     MODEL_ROOT_ENV,
@@ -7835,6 +7836,25 @@ class GenericPackHost:
             thumbnails_by_digest[thumbnail_digest] = descriptor
         return thumbnails, diagnostics
 
+    def _local_engine_model_root_env(self, engine: str) -> dict[str, str]:
+        """Model-root environment derived from the installed local engine (once per host)."""
+        cached = getattr(self, "_local_engine_model_root_cache", None)
+        if cached is not None and cached[0] == engine:
+            return dict(cached[1])
+        from astrid.core.generation.engine_contracts import EngineError
+        from astrid.core.generation.engine_local_endpoint import local_model_root_binding
+
+        try:
+            binding = local_model_root_binding(engine)
+        except EngineError as exc:
+            raise HostError(f"VibeComfy model-root binding cannot be derived from the installed engine: {exc}") from exc
+        values = {
+            MODEL_ROOT_ENV: str(binding.path),
+            MODEL_ROOT_BINDING_ENV: json.dumps(binding.as_dict(), sort_keys=True, separators=(",", ":")),
+        }
+        self._local_engine_model_root_cache = (engine, values)
+        return dict(values)
+
     def _child_environment(
         self,
         record: CapabilityRecord,
@@ -7901,6 +7921,10 @@ class GenericPackHost:
                 receipt_dir = os.environ.get(MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV)
                 if receipt_dir:
                     explicit[MODEL_ROOT_QUALIFICATION_RECEIPT_DIR_ENV] = receipt_dir
+            elif os.environ.get(LOCAL_ENGINE_HOST_ENV):
+                # Local placement without a readiness profile: the binding is attested by
+                # the installed engine's own receipt, never by a profile or the ambient env.
+                explicit.update(self._local_engine_model_root_env(os.environ[LOCAL_ENGINE_HOST_ENV]))
             candidate = profile.get("vibecomfy_candidate") if isinstance(profile, Mapping) else None
             if isinstance(candidate, Mapping) and candidate.get("kind") == "local_snapshot":
                 revision = candidate.get("revision")
