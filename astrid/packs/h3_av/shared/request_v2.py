@@ -121,6 +121,18 @@ def _at(value: Any, path: str) -> tuple[dict[str, int | float], int]:
     return {"seconds": _json_number(seconds)}, _ticks(seconds, FPS, f"{path}.seconds")
 
 
+def _edge(value: Any, path: str) -> dict[str, int]:
+    item = _object(value, path) or {}
+    _unknown(item, {"dilate", "feather"}, path)
+    result = {}
+    for key in ("dilate", "feather"):
+        number = item.get(key, 0)
+        if type(number) is not int or not 0 <= number <= 64:
+            raise H3RequestError(f"{path}.{key} must be an integer 0..64")
+        result[key] = number
+    return result
+
+
 def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[str, Any]:
     if isinstance(value, str):
         asset, modality = _asset(value, path, modalities)
@@ -128,7 +140,7 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
             raise H3RequestError(f"{path} must reference an image/video mask")
         return {"asset": asset, "polarity": "black_preserve_white_edit"}
     item = _object(value, path) or {}
-    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape"}, path)
+    _unknown(item, {"asset", "full_frame", "rectangle", "polygon", "range", "polarity", "shape", "edge", "track", "threshold"}, path)
     geometry = [key for key in ("full_frame", "rectangle", "polygon") if key in item]
     if "asset" in item and geometry:
         raise H3RequestError(f"{path} cannot combine an asset with geometry")
@@ -140,6 +152,12 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         if modality not in (None, "image", "video"):
             raise H3RequestError(f"{path}.asset must reference an image/video mask")
         result["asset"] = asset
+        result["edge"] = _edge(item.get("edge", {}), f"{path}.edge")
+        if "threshold" in item:
+            threshold = item["threshold"]
+            if type(threshold) is not int or not 1 <= threshold <= 254:
+                raise H3RequestError(f"{path}.threshold must be an integer 1..254")
+            result["threshold"] = threshold
     elif item.get("full_frame") is True:
         result["full_frame"] = True
     elif "rectangle" in item:
@@ -152,6 +170,13 @@ def _mask(value: Any, path: str, modalities: Mapping[str, str] | None) -> dict[s
         if not isinstance(points, list) or len(points) < 3:
             raise H3RequestError(f"{path}.polygon must contain at least three points")
         result["polygon"] = [[_number(coord, f"{path}.polygon[{i}][{axis}]") for axis, coord in enumerate(point)] for i, point in enumerate(points)]
+    if "edge" in item and "asset" not in item:
+        raise H3RequestError(f"{path}.edge is allowed only with an asset mask")
+    if "threshold" in item and "asset" not in item:
+        raise H3RequestError(f"{path}.threshold is allowed only with an asset mask")
+    if "track" in item:
+        # Reserved for M4: accepted and stored, never acted on here.
+        result["track"] = item["track"]
     if "range" in item:
         raw_range = item["range"]
         if not isinstance(raw_range, list) or len(raw_range) != 2 or any(type(value) is not int for value in raw_range) or raw_range[0] < 0 or raw_range[1] <= raw_range[0]:

@@ -80,6 +80,69 @@ def _resolve_assets(request: H3Request, asset_map: Mapping[str, str] | None) -> 
     return records
 
 
+def _validate_mask_assets(request: H3Request, assets: list[dict[str, Any]]) -> None:
+    """Fail before scheduling when a resolved video mask breaks the contract."""
+
+    from astrid.packs.h3_av.shared.compose import CompositionError, iter_mask_frames, probe_mask
+
+    resolved = {
+        str(record["asset"]): Path(str(record["path"]))
+        for record in assets
+        if record.get("status") == "resolved" and isinstance(record.get("path"), str)
+    }
+    duration = request.value["duration"]
+    total = round(float(duration) * 24)
+    for item in request.value["media"]:
+        for edit in item.get("edit", []):
+            mask = edit.get("mask")
+            if edit.get("stream") != "video" or not isinstance(mask, Mapping) or "asset" not in mask:
+                continue
+            mask_id = str(mask["asset"])
+            path = resolved.get(mask_id)
+            if path is None:
+                continue
+            source = resolved.get(str(item["asset"])) if item.get("modality") == "video" else None
+            threshold = mask.get("threshold")
+            start = round(float(edit["during"][0]) * 24)
+            end = round(float(edit["during"][1]) * 24)
+            try:
+                info = probe_mask(path, mask_id=mask_id, source=source, duration=duration)
+                if info["kind"] != "video":
+                    continue
+                width, height = _mask_dimensions(path, mask_id)
+                for index, frame in enumerate(
+                    iter_mask_frames(path, start_frame=0, count=total, width=width, height=height)
+                ):
+                    values = set(frame)
+                    if threshold is not None:
+                        values = {255 if value >= threshold else 0 for value in values}
+                    if not values <= {0, 255}:
+                        raise PreparationError(
+                            f"mask video {mask_id!r} frame {index} has values other than 0 and 255"
+                        )
+                    if not start <= index < end and values - {0}:
+                        raise PreparationError(
+                            f"mask video {mask_id!r} frame {index} is non-zero outside the edit's during"
+                        )
+            except CompositionError as exc:
+                raise PreparationError(f"mask video {mask_id!r}: {exc}") from exc
+
+
+def _mask_dimensions(path: Path, mask_id: str) -> tuple[int, int]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise PreparationError(f"mask video {mask_id!r} inspection requires ffprobe")
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        check=False, capture_output=True, text=True, timeout=30,
+    )
+    try:
+        width, height = (int(part) for part in result.stdout.strip().split(","))
+    except ValueError as exc:
+        raise PreparationError(f"mask video {mask_id!r} has no readable dimensions") from exc
+    return width, height
+
+
 def _v2_mask_schedule(
     request: H3Request,
     *,
@@ -237,6 +300,7 @@ def prepare_request(
                     if "video" not in streams:
                         raise PreparationError("Character Swap timeline source contains no video stream")
                     timeline_audio_presence[str(item["asset"])] = "audio" in streams
+        _validate_mask_assets(request, assets)
         try:
             schedule = _v2_mask_schedule(request, timeline_audio_presence=timeline_audio_presence)
         except MaskScheduleError as exc:
