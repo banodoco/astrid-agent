@@ -36,11 +36,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS  # noqa: E402
 
 STEPS = ("claim", "bundle", "bootstrap", "install", "rerun", "s0", "clip", "download", "release")
 JOB_LIMIT = 100
 DEFAULT_GPUS = ("RTX 5090", "RTX PRO 4500")
-CUDA_VERSIONS = "13.0,13.1,13.2,13.3"
+CUDA_VERSIONS = ",".join(DEFAULT_ALLOWED_CUDA_VERSIONS)
 ENGINE = "vibecomfy-h3"
 PLATFORM = "linux-x86_64-cu130"
 ENGINE_ROOT = "/root/astrid/engines/vibecomfy-h3"
@@ -132,7 +134,6 @@ def remote_asset_map(local_map: Path, request: dict) -> tuple[dict[str, str], di
 
 def recipe_footprint_gb() -> int:
     """Install footprint of the engine: its model bytes plus a 10 GB runtime allowance."""
-    sys.path.insert(0, str(REPO))
     from astrid.core.generation.engine_recipe import load_recipe_model_lock
 
     total = sum(m.bytes for m in load_recipe_model_lock(ENGINE, PLATFORM).models)
