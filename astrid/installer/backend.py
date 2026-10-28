@@ -489,6 +489,10 @@ class Backend:
             owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
             if type(owner_pid) is not int or owner_pid <= 0:
                 owner_pid = None
+            # Read-only OS-manager probe. It stays ahead of C1 on every platform:
+            # the in-callback recheck runs after Runtime's owner stop and its
+            # refusals are downstream-classified. C1 busy admission runs later in
+            # down(), so a probe refusal can be reported before the busy message.
             launchd_identity = None
             if self.managed_by != "pinokio":
                 launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)

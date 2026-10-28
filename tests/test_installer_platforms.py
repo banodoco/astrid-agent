@@ -431,14 +431,16 @@ def test_door_verification_requires_selected_realm_recorded_instance_and_live_ow
     program, data = tmp_path / 'program', tmp_path / 'data'
     version = Version(program / 'versions/old', tmp_path / 'python', tmp_path / 'profile',
                       {'ASTRID_RUNTIME_DOOR_PORT': str(door_port)})
+    # Runtime publishes its startup identity on discovery and on door health.
+    identity = {'release': 0, 'managed_by': None}
     discovery = {'active_realm': 'selected', 'runtime_instance_id': 'owned-instance',
-                 'door_endpoint': f'http://127.0.0.1:{door_port}'}
+                 'door_endpoint': f'http://127.0.0.1:{door_port}', 'identity': identity}
     if mismatch == 'port':
         discovery['door_endpoint'] = 'http://127.0.0.1:9999'
     write_json(data / 'runtime/discovery.json', discovery)
     (data / 'runtime/generic-host.ready.json').write_text('{}')
     health = {'status': 'ok', 'runtime_instance_id': 'foreign' if mismatch == 'instance' else 'owned-instance',
-              'services': [{'name': 'pack-host', 'state': 'running'}]}
+              'identity': identity, 'services': [{'name': 'pack-host', 'state': 'running'}]}
     realm = {'realm_id': 'other' if mismatch == 'realm' else 'selected'}
     def opening(request, timeout):
         if mismatch == 'restart-required':
@@ -466,11 +468,12 @@ def test_door_verification_retries_status_observed_before_discovery_was_publishe
 
     program, data = tmp_path / "program", tmp_path / "data"
     version = Version(program / "versions/old", tmp_path / "python", tmp_path / "profile", {})
+    identity = {"release": 0, "managed_by": None}
     discovery = {"active_realm": "selected", "runtime_instance_id": "owned-instance",
-                 "door_endpoint": "http://127.0.0.1:17340"}
+                 "door_endpoint": "http://127.0.0.1:17340", "identity": identity}
     write_json(data / "runtime/discovery.json", discovery)
     (data / "runtime/generic-host.ready.json").write_text("{}")
-    health = {"status": "ok", "runtime_instance_id": "owned-instance",
+    health = {"status": "ok", "runtime_instance_id": "owned-instance", "identity": identity,
               "services": [{"name": "pack-host", "state": "running"}]}
     realm = {"realm_id": "selected"}
     opener = Mock()
@@ -501,8 +504,9 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
     version_root = program / "versions" / "v1"
     version = Version(version_root, tmp_path / "python", version_root / "profile.json", {})
     endpoint = "http://127.0.0.1:17340"
+    identity = {"release": 0, "managed_by": None}
     discovery = {"active_realm": "selected", "runtime_instance_id": "owned-instance",
-                 "door_endpoint": endpoint}
+                 "door_endpoint": endpoint, "identity": identity}
     write_json(data / "runtime" / "discovery.json", discovery)
     timeout = 2 if scenario == "hang" else 300
     declaration = tmp_path / "services.json"
@@ -544,7 +548,7 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
             else:
                 services = host_states
             return Response({"status": "ok", "runtime_instance_id": "owned-instance",
-                             "services": services})
+                             "identity": identity, "services": services})
 
     monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_: Opener())
     monkeypatch.setattr(module.time, "monotonic", lambda: clock.now)
