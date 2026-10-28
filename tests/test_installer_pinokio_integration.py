@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import shlex
+import socket
 import shutil
 import signal
 import subprocess
 import sysconfig
 import tarfile
 import textwrap
+import time
 import venv
 from pathlib import Path
 
@@ -230,9 +233,15 @@ def test_pinokio_session_binds_real_runtime_to_pending_launch_intent(
     repo = user_home / "api" / "astrid-pinokio"
     pinokio_directory = repo / "pinokio"
     pinokio_directory.mkdir(parents=True)
+    with socket.socket() as port_socket:
+        port_socket.bind(("127.0.0.1", 0))
+        runtime_port = port_socket.getsockname()[1]
     for name in ("session.mjs", "environment.js", "lifecycle.mjs", "lib.js",
                  "update.js", "start.js", "shell.mjs"):
         shutil.copyfile(canonical_pinokio / "pinokio" / name, pinokio_directory / name)
+    for name in ("session.mjs", "lib.js"):
+        path = pinokio_directory / name
+        path.write_text(path.read_text().replace("17340", str(runtime_port)))
     platforms = pinokio_directory / "platforms"
     platforms.mkdir()
     for name in ("posix.js", "windows.js"):
@@ -240,7 +249,6 @@ def test_pinokio_session_binds_real_runtime_to_pending_launch_intent(
 
     app_root = repo / "app" / "astrid"
     data_root = tmp_path / "workspace"
-    runtime_port = 17340
     old_root = app_root / "versions" / "old"
     version_root = app_root / "versions" / "candidate"
     environment = version_root / "py"
@@ -387,7 +395,7 @@ def test_pinokio_session_binds_real_runtime_to_pending_launch_intent(
         )
         assert metadata["realm_id"] == realm["realm_id"]
         assert metadata["runtime_instance_id"] == discovery["runtime_instance_id"]
-        assert lifecycle.session.read_bytes() == canonical_session.read_bytes()
+        assert lifecycle.session.read_text() == canonical_session.read_text().replace("17340", str(runtime_port))
         if transaction_kind == "migration":
             # A normal Stop has no receipt. A fresh Pinokio Update controller
             # still replays the switched journal through C1 after the session
@@ -432,12 +440,13 @@ def test_pinokio_session_binds_real_runtime_to_pending_launch_intent(
 
 @pytest.mark.integration
 @pytest.mark.linux_native
+@pytest.mark.parametrize("runtime_kind", ["retained", "current"])
 @pytest.mark.parametrize(("interrupt_at", "mode"), [
     ("stopping", "backend"), ("candidate_ready", "backend"),
     ("migrated", "backend"), ("migrated", "local"),
 ])
 def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
-        tmp_path, monkeypatch, interrupt_at, mode):
+        tmp_path, monkeypatch, interrupt_at, mode, runtime_kind):
     """Rollback and fresh CLI recovery launch the committed pre-E2 Agent."""
     import astrid_runtime
     import runtime_protocol
@@ -485,9 +494,18 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
     repo = user_home / "api" / "astrid-pinokio"
     pinokio_directory = repo / "pinokio"
     pinokio_directory.mkdir(parents=True)
+    with socket.socket() as port_socket:
+        port_socket.bind(("127.0.0.1", 0))
+        runtime_port = port_socket.getsockname()[1]
+    with socket.socket() as port_socket:
+        port_socket.bind(("127.0.0.1", 0))
+        local_port = port_socket.getsockname()[1]
     for name in ("session.mjs", "environment.js", "lifecycle.mjs", "lib.js",
                  "start.js", "update.js", "shell.mjs"):
         shutil.copyfile(canonical_pinokio / "pinokio" / name, pinokio_directory / name)
+    for name in ("session.mjs", "lib.js"):
+        path = pinokio_directory / name
+        path.write_text(path.read_text().replace("17340", str(runtime_port)).replace("5180", str(local_port)))
     shutil.copyfile(canonical_pinokio / "pinokio.js", repo / "pinokio.js")
     platforms = pinokio_directory / "platforms"
     platforms.mkdir()
@@ -513,14 +531,13 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             "      response.end(JSON.stringify({schemaVersion:1,runtimeInstanceId:owner.runtime_instance_id,realmId:owner.active_realm})); return;\n"
             "    }\n"
             "    response.writeHead(404); response.end();\n"
-            "  }).listen(5180, '127.0.0.1');\n"
+            f"  }}).listen({local_port}, '127.0.0.1');\n"
             "}\n",
             encoding="utf-8",
         )
 
     app_root = repo / "app" / "astrid"
     data_root = tmp_path / "workspace"
-    runtime_port = 17340
     old_root = app_root / "versions" / "retained-c2"
     candidate_root = app_root / "versions" / "e2-candidate"
     runtime_root = Path(astrid_runtime.__file__).resolve().parent.parent
@@ -579,9 +596,30 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
     candidate_source.mkdir()
     shutil.copytree(checkout / "astrid", candidate_source / "astrid")
     shutil.copyfile(checkout / "pyproject.toml", candidate_source / "pyproject.toml")
-    old = version(old_root, 17, legacy_source)
+    retained_runtime = tmp_path / "retained-runtime"
+    if runtime_kind == "retained":
+        archive = subprocess.run(["git", "archive", "--format=tar", "bcc2bf14c82191504f9e91ffa9314cbedcfc4f81"],
+                                 cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source_archive:
+            source_archive.extractall(retained_runtime, filter="data")
+    else:
+        retained_runtime = runtime_root
+    old = version(old_root, 17, legacy_source, profile_runtime=retained_runtime)
+    probe = subprocess.run([str(old.python), "-I", "-c", "import astrid_runtime; print(astrid_runtime.__file__)"],
+                           check=True, text=True, stdout=subprocess.PIPE)
+    assert Path(probe.stdout.strip()).resolve() == (retained_runtime / "astrid_runtime" / "__init__.py").resolve()
     candidate = version(candidate_root, 18, candidate_source,
                         profile_runtime=candidate_runtime, profile_source=candidate_source)
+    candidate_probe = subprocess.run([str(candidate.python), "-I", "-c", "import astrid_runtime; print(astrid_runtime.__file__)"],
+                                     check=True, text=True, stdout=subprocess.PIPE)
+    assert Path(candidate_probe.stdout.strip()).resolve() == (candidate_runtime / "astrid_runtime" / "__init__.py").resolve()
+    if runtime_kind == "retained":
+        cli = (retained_runtime / "astrid_runtime" / "cli.py").read_bytes()
+        original_cli = subprocess.run(["git", "show", "bcc2bf14c82191504f9e91ffa9314cbedcfc4f81:astrid_runtime/cli.py"],
+                                      cwd=runtime_root, check=True, stdout=subprocess.PIPE).stdout
+        assert hashlib.sha256(cli).digest() == hashlib.sha256(original_cli).digest()
+        assert b'if args.command in {"restart", "down"}' in cli
+        assert b'No selected runtime owner to restart' in cli
     write_json(app_root / "install.json", {
         "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data_root),
     })
@@ -824,15 +862,25 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             offered = json.loads(menu.stdout)
             assert offered["menu"][0]["text"] == "Start"
             assert offered["menu"][0]["default"] is True
-            start_attempt = subprocess.run(
-                ["bash", "-c", offered["start"]["message"]],
-                cwd=offered["start"]["path"], env=child_env,
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60,
-            )
-            assert start_attempt.returncode != 0, start_attempt.stdout
-            assert "Choose Pinokio's Update button" in start_attempt.stdout
-            assert "ASTRID_PINOKIO_READY" not in start_attempt.stdout
-            assert not (app_root / "pinokio-control.json").exists()
+            # The old CLI can refuse ownerless down after launch admission
+            # fails. Keep its controller alive and let the real recovery run C1.
+            start_log = tmp_path / "refused-start.log"
+            with start_log.open("w") as output:
+                start_attempt = subprocess.Popen(
+                    ["bash", "-c", offered["start"]["message"]],
+                    cwd=offered["start"]["path"], env=child_env,
+                    text=True, stdout=output, stderr=subprocess.STDOUT,
+                )
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                start_output = start_log.read_text()
+                if "Choose Pinokio's Update button" in start_output:
+                    break
+                if start_attempt.poll() is not None:
+                    break
+                time.sleep(0.1)
+            assert "Choose Pinokio's Update button" in start_output
+            assert "ASTRID_PINOKIO_READY" not in start_output
             assert not (data_root / "runtime" / "discovery.json").exists()
             assert read_json(app_root / "update-transaction.json")["step"] == "migrated"
             # The actual Update script takes its existing pending branch and
@@ -858,6 +906,9 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
                 cwd=tmp_path, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180,
             )
         assert recovery.returncode == 0, recovery.stdout
+        if interrupt_at == "migrated":
+            start_attempt.wait(timeout=40)
+            assert start_attempt.returncode != 0
         recovered = read_json(app_root / "update-transaction.json")
         assert recovered["step"] == "rolled_back"
         assert recovered["operation_id"] == recovery_id
@@ -902,6 +953,13 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
             assert boundary.owner_startup_identity(
                 endpoint=discovery["endpoint"], instance_id=discovery["runtime_instance_id"],
             )["runtime_instance_id"] == discovery["runtime_instance_id"]
+        backend.verify = real_verify
+        backend.upgrade = original_upgrade
+        update_pinokio(app_root, backend, {"release": candidate.release}, lifecycle=lifecycle,
+                       say=lambda _line: None)
+        assert read_json(app_root / "update-transaction.json")["step"] == "complete"
+        assert current(app_root) == candidate
+        assert workspace_marker.read_bytes() == original_workspace
     finally:
         support = data_root / "runtime"
         if (support / "discovery.json").is_file() or (app_root / "pinokio-control.json").is_file():
@@ -909,6 +967,5 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
         assert not (app_root / "pinokio-control.json").exists()
         assert not (support / "discovery.json").exists()
         if mode == "local":
-            import socket
             with pytest.raises(OSError):
-                socket.create_connection(("127.0.0.1", 5180), timeout=1)
+                socket.create_connection(("127.0.0.1", local_port), timeout=1)

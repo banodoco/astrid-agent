@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import http.client
+import re
 import os
 import subprocess
 import sys
@@ -121,44 +123,95 @@ class PinokioLifecycle:
                          clean_bun_env=True)
 
     def stop(self, version: Version, data: Path) -> None:
-        # Stop the selected Runtime under its durable fence first. Pinokio's
-        # authenticated controller shutdown runs only after that handoff has
-        # completed and the Runtime fence/mutex have been released; its session
-        # must never issue a nested `down` while the fence is held.
-        self.backend.stop(version, data)
+        control = self.root / "pinokio-control.json"
 
-        def stop_controller() -> None:
+        def snapshot():
             try:
-                self.backend.run([self.node(version), self.lifecycle, "stop", self.root],
-                                 timeout=50, clean_bun_env=True)
-            except subprocess.CalledProcessError:
-                # C1 has already stopped Runtime. Its session can finish and
-                # remove the controller between the CLI's read and POST. Only
-                # disappearance admits that race; a remaining/replacement
-                # controller still requires a successful authenticated stop.
-                if (self.root / "pinokio-control.json").exists():
-                    raise
-            deadline = time.monotonic() + 10
-            while (self.root / "pinokio-control.json").exists():
-                pid = read_json(self.root / "pinokio-control.json").get("pid")
-                if isinstance(pid, int) and pid > 0:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        break  # The canonical launcher removes a dead controller record.
+                raw = control.read_bytes()
+            except FileNotFoundError:
+                return None
+            record = json.loads(raw)
+            if (not isinstance(record, dict) or type(record.get("schema")) is not int or record["schema"] != 1
+                    or type(record.get("pid")) is not int or record["pid"] < 1
+                    or type(record.get("port")) is not int or not 1 <= record["port"] <= 65535
+                    or not isinstance(record.get("token"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", record["token"])):
+                raise ValueError("Invalid Astrid controller record.")
+            return raw, record
+
+        bound = snapshot()
+
+        def dead(record):
+            try:
+                os.kill(record["pid"], 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        stale = bound is not None and dead(bound[1])
+
+        def request(method):
+            if snapshot() != bound:
+                raise ValueError("The Pinokio controller changed during stop.")
+            if bound is None:
+                return
+            record = bound[1]
+            if stale:
+                if not dead(record):
+                    raise ValueError("The Pinokio controller process changed during stop.")
+                return
+            conn = http.client.HTTPConnection("127.0.0.1", record["port"], timeout=30)
+            try:
+                conn.request(method, "/manager-stop", headers={
+                    "Authorization": "Bearer " + record["token"],
+                    "Host": f"127.0.0.1:{record['port']}",
+                })
+                response = conn.getresponse()
+                body = response.read(65537)
+                if len(body) > 65536:
+                    raise ValueError("Pinokio controller response is too large.")
+                result = json.loads(body)
+                if response.status != 200 or result.get("ok") is not True:
+                    raise ValueError(" ".join(result.get("errors") or ["Pinokio manager stop failed."]))
+            finally:
+                conn.close()
+
+        if bound is not None and not stale:
+            try:
+                request("OPTIONS")
+            except Exception as exc:
+                raise ValueError("The Pinokio launcher must be stopped and started before updating.") from exc
+
+        vanished_during_request = False
+
+        def stop_controller():
+            nonlocal vanished_during_request
+            try:
+                request("POST")
+            except Exception as exc:
+                # Verify a vanished process after C1 releases its locks: its
+                # finalizer may be waiting for those locks itself.
+                if bound is None or control.exists():
+                    raise RuntimeOperationError(str(exc), details={"cause_details": getattr(exc, "details", None)}) from exc
+                vanished_during_request = True
+
+        self.backend.stop(version, data, stop_manager=stop_controller)
+        try:
+            deadline = time.monotonic() + 30
+            while True:
+                current_control = snapshot()
+                if current_control is None:
+                    if not vanished_during_request or dead(bound[1]):
+                        break
+                elif current_control != bound:
+                    raise ValueError("The Pinokio controller changed during finalization.")
+                if current_control is not None and stale and dead(bound[1]):
+                    break
                 if time.monotonic() >= deadline:
                     raise ValueError("The Pinokio supervisor has not finished stopping.")
                 time.sleep(0.1)
-
-        try:
-            stop_controller()
         except (Exception, KeyboardInterrupt) as exc:
-            # C1 has already completed. Preserve the controller failure as
-            # downstream context so its details cannot masquerade as a
-            # pre-destruction lifecycle refusal.
-            raise RuntimeOperationError(str(exc), details={
-                "cause_details": getattr(exc, "details", None),
-            }) from exc
+            raise RuntimeOperationError(str(exc), details={"cause_details": getattr(exc, "details", None)}) from exc
 
     def start(self, version: Version, data: Path, realm_id: str) -> None:
         # The existing session selects current/version.json and passes its exact

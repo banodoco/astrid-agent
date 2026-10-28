@@ -483,3 +483,156 @@ def test_service_record_must_belong_to_selected_install(tmp_path, monkeypatch, k
         backend.stop(old, data)
     assert calls == []
     assert paths.discovery_path.exists()
+
+
+@pytest.mark.parametrize('outcome', ['busy', 'late_busy', 'replacement', 'unknown', 'timeout', 'malformed', 'success'])
+def test_pinokio_real_c1_only_admits_bound_manager_after_stop(tmp_path, monkeypatch, outcome):
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid.installer.app_update import PinokioLifecycle
+
+    backend, old, data, paths, realm, calls = realm_fixture(
+        tmp_path, monkeypatch, blocker='running' if outcome == 'busy' else None)
+    backend.managed_by = 'pinokio'
+    publish(paths, realm)
+    boundary = Boundary(paths, calls, failure=(TimeoutError('stop timeout') if outcome == 'timeout'
+                                              else RuntimeError('unknown stop') if outcome == 'unknown' else None))
+    if outcome == 'late_busy':
+        bootstrap = importlib.import_module('astrid_runtime.bootstrap')
+        original_fenced = bootstrap._fenced_stop_and_manager
+        def inject_busy(*args, **kwargs):
+            with sqlite3.connect(realm / 'realm.sqlite3') as db:
+                db.execute("INSERT INTO tasks VALUES ('late','render','running',NULL)")
+            return original_fenced(*args, **kwargs)
+        monkeypatch.setattr(bootstrap, '_fenced_stop_and_manager', inject_busy)
+    if outcome == 'replacement':
+        def stop_owner(**_kwargs):
+            calls.append('runtime-stop')
+            record = json.loads(paths.discovery_path.read_text())
+            record['runtime_instance_id'] = 'replacement'
+            write_json(paths.discovery_path, record)
+            return {'status': 'stopped'}
+        boundary.stop_owner = stop_owner
+    if outcome == 'malformed':
+        paths.discovery_path.write_text('{invalid')
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    control = backend.root / 'pinokio-control.json'
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args): pass
+        def respond(self):
+            requests.append(self.command)
+            if self.command == 'POST':
+                assert calls == ['prepare', 'runtime-stop']
+                with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
+                    with pytest.raises(sqlite3.OperationalError, match='locked'):
+                        db.execute("INSERT INTO tasks VALUES ('race','render','running',NULL)")
+                control.unlink()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+        do_OPTIONS = respond
+        do_POST = respond
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    write_json(control, {'schema': 1, 'pid': os.getpid(), 'port': server.server_port, 'token': 'a' * 64})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    lifecycle = object.__new__(PinokioLifecycle)
+    lifecycle.root, lifecycle.backend = backend.root, backend
+    try:
+        if outcome == 'success':
+            lifecycle.stop(old, data)
+            assert requests == ['OPTIONS', 'POST']
+            assert calls == ['prepare', 'runtime-stop']
+            assert not control.exists()
+        else:
+            with pytest.raises(RuntimeOperationError):
+                lifecycle.stop(old, data)
+            assert requests == ['OPTIONS']
+            assert control.exists()
+            if outcome == 'busy':
+                with sqlite3.connect(realm / 'realm.sqlite3') as db:
+                    db.execute("DELETE FROM tasks")
+                lifecycle.stop(old, data)
+                assert requests == ['OPTIONS', 'OPTIONS', 'POST']
+                assert not control.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("failure", ["drain", "timeout"])
+def test_pinokio_manager_failure_retries_ownerless_through_fresh_c1(tmp_path, monkeypatch, failure):
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from astrid.installer.app_update import PinokioLifecycle
+
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    backend.managed_by = 'pinokio'
+    publish(paths, realm)
+    boundary = Boundary(paths, calls)
+    def stop_owner(**_kwargs):
+        calls.append('runtime-stop')
+        paths.discovery_path.unlink()
+        paths.instance_lock_path.unlink()
+        return {'status': 'stopped'}
+    boundary.stop_owner = stop_owner
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    control = backend.root / 'pinokio-control.json'
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args): pass
+        def respond(self):
+            requests.append(self.command)
+            if self.command == 'POST':
+                with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
+                    with pytest.raises(sqlite3.OperationalError, match='locked'):
+                        db.execute("INSERT INTO tasks VALUES ('race','render','running',NULL)")
+                if failure == 'drain' and requests.count('POST') == 1:
+                    self.send_response(500); self.end_headers(); self.wfile.write(b'{"ok":false,"errors":["drain failed"]}'); return
+                if failure == 'timeout' and requests.count('POST') == 1:
+                    import time
+                    time.sleep(0.4)
+                    return
+                control.unlink()
+            self.send_response(200); self.end_headers(); self.wfile.write(b'{"ok":true}')
+        do_OPTIONS = respond
+        do_POST = respond
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    write_json(control, {'schema': 1, 'pid': os.getpid(), 'port': server.server_port, 'token': 'a' * 64})
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    if failure == 'timeout':
+        from astrid.installer import app_update
+        connection_type = app_update.http.client.HTTPConnection
+        timed_out = False
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                self.inner = connection_type(*args, **kwargs)
+            def request(self, method, *args, **kwargs):
+                nonlocal timed_out
+                if method == 'POST' and not timed_out:
+                    timed_out = True
+                    self.inner.timeout = 0.1
+                self.inner.request(method, *args, **kwargs)
+            def getresponse(self): return self.inner.getresponse()
+            def close(self): self.inner.close()
+        monkeypatch.setattr(app_update.http.client, 'HTTPConnection', Connection)
+    def lifecycle(value):
+        result = object.__new__(PinokioLifecycle)
+        result.root, result.backend = value.root, value
+        return result
+    try:
+        with pytest.raises(RuntimeOperationError, match='drain failed|timed out'):
+            lifecycle(backend).stop(old, data)
+        assert control.exists() and not paths.discovery_path.exists()
+        fresh = Backend(backend.root, tmp_path / 'fresh.log', tmp_path / 'uv', managed_by='pinokio')
+        fresh.service.selection = backend.service.selection
+        lifecycle(fresh).stop(old, data)
+        assert requests == ['OPTIONS', 'POST', 'OPTIONS', 'POST']
+        assert calls == ['prepare', 'runtime-stop']
+        assert not control.exists()
+    finally:
+        server.shutdown(); server.server_close(); thread.join()
