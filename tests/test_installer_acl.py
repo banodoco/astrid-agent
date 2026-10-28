@@ -31,7 +31,6 @@ def windows_move(monkeypatch):
     return move
 
 
-@pytest.mark.windows_installer
 @pytest.mark.parametrize("custom_root", [False, True])
 def test_windows_installer_lock_stays_outside_program_and_workspace(tmp_path, monkeypatch, custom_root, windows_move):
     local = tmp_path / "local"
@@ -50,8 +49,10 @@ def test_windows_installer_lock_stays_outside_program_and_workspace(tmp_path, mo
         path.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     data = platform.data_root()
     monkeypatch.setattr(cli, "current", lambda _: SimpleNamespace(python=Path(__file__)))
@@ -78,7 +79,6 @@ def test_windows_installer_lock_stays_outside_program_and_workspace(tmp_path, mo
     windows_move.assert_any_call(root / "install.json.tmp", root / "install.json")
 
 
-@pytest.mark.windows_installer
 @pytest.mark.parametrize("directory", ["program", "state"])
 def test_windows_installer_does_not_bypass_existing_directory_validation(tmp_path, monkeypatch, directory):
     log_dir = tmp_path / "logs"
@@ -99,8 +99,10 @@ def test_windows_installer_does_not_bypass_existing_directory_validation(tmp_pat
         Path(path).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     monkeypatch.setattr(platform, "lock_file", Mock())
     monkeypatch.setattr(platform, "unlock_file", Mock())
@@ -168,7 +170,6 @@ def test_windows_uninstall_deletes_default_workspace_while_lock_is_held(tmp_path
     windows_move.assert_any_call(root / "install.json.tmp", root / "install.json")
 
 
-@pytest.mark.windows_installer
 @pytest.mark.parametrize("selected", ["root", "data"])
 @pytest.mark.parametrize("directory", ["state", "parent", "child", "bootstrap"])
 def test_windows_refuses_selected_roots_containing_installer_lock(tmp_path, monkeypatch, selected, directory):
@@ -186,8 +187,10 @@ def test_windows_refuses_selected_roots_containing_installer_lock(tmp_path, monk
         Path(path).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(windows_security, "private_directory", private_directory)
+    monkeypatch.setattr(windows_security, "restrict", Mock())
     backend = Mock()
     backend.service.recorded.return_value = {}
+    backend.source_checkout_ownership.return_value = None
     monkeypatch.setattr(cli, "Backend", Mock(return_value=backend))
     monkeypatch.setattr(platform, "lock_file", Mock())
     monkeypatch.setattr(platform, "unlock_file", Mock())
