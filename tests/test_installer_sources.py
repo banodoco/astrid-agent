@@ -250,6 +250,24 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     assert "ASTRID_VIBECOMFY_CHECKOUT" not in version.env
 
 
+@pytest.mark.parametrize("damage", ["release-missing", "release-differs", "managed-by-differs"])
+def test_installed_profile_refuses_disagreeing_install_identity_markers(tmp_path, monkeypatch, damage):
+    backend = Backend(tmp_path / "program", tmp_path / "log", tmp_path / "uv")
+    folder = backend.root / "versions" / "candidate"
+    version = Version(folder, folder / "py" / "bin" / "python", folder / "profile.json",
+                      {"ASTRID_HOST_EXECUTION_PROFILE": "installed"}, release=5, managed_by="pinokio")
+    if damage == "release-missing":
+        del version.env["ASTRID_INSTALL_RELEASE"]
+    elif damage == "release-differs":
+        version.env["ASTRID_INSTALL_RELEASE"] = "6"
+    else:
+        version.env["ASTRID_INSTALL_MANAGED_BY"] = ""
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: pytest.fail("candidate was executed"))
+
+    with pytest.raises(ValueError, match="install identity markers disagree"):
+        backend.validate_candidate(version, tmp_path / "data", {"realm_id": "r", "realm_root": "/x"})
+
+
 @pytest.mark.parametrize("uv_kind", ["relative", "missing", "directory"])
 def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypatch, uv_kind):
     if uv_kind == "relative":

@@ -858,6 +858,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         folder = absolute(version.root)
         if folder.parent != absolute(self.root / "versions"):
             raise ValueError("The candidate is outside the managed versions directory.")
+        # The installed profile and the install identity markers describe the same
+        # release; refuse a candidate whose environment disagrees with itself.
+        if version.env.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
+            if (version.env.get("ASTRID_INSTALL_RELEASE") != str(version.release)
+                    or version.env.get("ASTRID_INSTALL_MANAGED_BY") != (version.managed_by or "")):
+                raise ValueError("The installed profile and install identity markers disagree.")
         # Venv interpreters may themselves be links on POSIX; their directory
         # and the source manifest must remain inside the candidate.
         if (not absolute(version.python.parent).is_relative_to(folder)
