@@ -12,6 +12,18 @@ PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
 # Headless Runtime setup. The data root follows astrid_runtime/paths.py on Linux.
 DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
 REALM_ROOT="${ASTRID_REALM_ROOT:-/workspace/astrid/realm}"
+BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/workspace/astrid/bootstrap}"
+# uv caches and managed Pythons live under the data root unless the caller set them.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$DATA_ROOT/uv-python}"
+
+# Create a directory we own, or fail clearly. Never chown, never needs root.
+ensure_dir() {
+  if ! mkdir -p "$1" 2>/dev/null || [ ! -d "$1" ] || [ ! -w "$1" ]; then
+    echo "pod_bootstrap: cannot create or write $1 as $(id -un); point the matching ASTRID_* variable at a path you own (this script does not chown)" >&2
+    exit 1
+  fi
+}
 
 for d in "${SRC_DIRS[@]}"; do
   [ -d "$d" ] || { echo "pod_bootstrap: missing source dir $d" >&2; exit 1; }
@@ -23,8 +35,11 @@ digest="$(
     find "$d" -type f -not -path '*/.git/*' -not -name '*.pyc' -not -path '*/__pycache__/*' -print0
   done | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16
 )"
-marker_dir="/workspace/astrid/bootstrap/$digest"
-marker="/workspace/astrid/bootstrap/$digest/ok"
+marker_dir="$BOOTSTRAP_ROOT/$digest"
+marker="$marker_dir/ok"
+ensure_dir "$BOOTSTRAP_ROOT"
+ensure_dir "$DATA_ROOT"
+ensure_dir "$(dirname "$REALM_ROOT")"
 
 # Headless Runtime setup: a source profile plus a configured workspace, so
 # `astrid action run` works with no manual step. It never runs `astrid-runtime up`:
@@ -73,6 +88,15 @@ if [ -f "$marker" ]; then
   setup_runtime
   exit 0
 fi
+
+# uv is never fetched here (no piping a download into a shell): use the one on PATH or stop.
+if ! command -v uv >/dev/null 2>&1; then
+  echo "pod_bootstrap: uv not found on PATH. Install uv (https://docs.astral.sh/uv/getting-started/installation/) and rerun; this script does not download it." >&2
+  exit 1
+fi
+ensure_dir "$UV_CACHE_DIR"
+ensure_dir "$UV_PYTHON_INSTALL_DIR"
+ensure_dir "$(dirname "$VENV")"
 
 have_all() {
   [ -x "$VENV/bin/python" ] || return 1

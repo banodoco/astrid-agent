@@ -17,7 +17,9 @@ def test_syntax_ok():
 def test_strict_mode_and_marker():
     text = SCRIPT.read_text()
     assert "set -euo pipefail" in text
-    assert "/workspace/astrid/bootstrap/$digest/ok" in text
+    assert '${ASTRID_BOOTSTRAP_ROOT:-/workspace/astrid/bootstrap}' in text
+    assert 'marker_dir="$BOOTSTRAP_ROOT/$digest"' in text
+    assert 'marker="$marker_dir/ok"' in text
     assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD" in text
     assert "1.12.0+astrid.2" in text
     assert "3.12.10" in text
@@ -127,3 +129,105 @@ def test_vibecomfy_editable_install_after_package_step_before_marker():
     # Rerun skip (marker check) < package install < editable install < marker write.
     assert text.index('[ -f "$marker" ]') < text.index(package_step)
     assert text.index(package_step) < text.index(editable) < text.index('mkdir -p "$marker_dir"')
+
+
+TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln"]
+
+
+def _tool_bin(tmp_path: Path, with_uv: bool) -> Path:
+    import shutil
+
+    b = tmp_path / "bin"
+    b.mkdir(exist_ok=True)
+    for t in TOOLS:
+        if not (b / t).exists():
+            (b / t).symlink_to(shutil.which(t))
+    curl = b / "curl"
+    curl.write_text(f'#!/bin/sh\necho "$@" >> "{tmp_path / "curl.log"}"\nexit 1\n')
+    curl.chmod(0o755)
+    if with_uv:
+        uv = b / "uv"
+        uv.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$1 $2" in\n'
+            '  "pip list") exit 1;;\n'
+            '  "venv "*) for a; do v="$a"; done; mkdir -p "$v/bin"; ln -sf "$PY" "$v/bin/python"\n'
+            '    printf \'#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = --realm-root ] && { mkdir -p "$2"; : > "$2/realm.sqlite3"; }; shift; done\\n\' > "$v/bin/astrid-runtime"\n'
+            '    chmod +x "$v/bin/astrid-runtime";;\n'
+            "esac\nexit 0\n"
+        )
+        uv.chmod(0o755)
+    return b
+
+
+def _boot(tmp_path: Path, extra: dict, with_uv=True) -> subprocess.CompletedProcess:
+    src = tmp_path / "src"
+    for d in ("runpod-python", "astrid-runtime", "runpod-lifecycle", "astrid-agent", "VibeComfy"):
+        (src / d).mkdir(parents=True, exist_ok=True)
+        (src / d / "f.txt").write_text(d)
+    env = {
+        "PATH": str(_tool_bin(tmp_path, with_uv)),
+        "HOME": str(tmp_path / "home"),
+        "PY": sys.executable,
+        "ASTRID_RUNTIME_DATA_ROOT": str(tmp_path / "data"),
+    }
+    env.update(extra)
+    return subprocess.run(["/bin/bash", str(SCRIPT)], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+
+def _workspace_snapshot() -> list:
+    ws = Path("/workspace")
+    return sorted(str(p) for p in ws.rglob("*")) if ws.exists() else []
+
+
+def _overrides(tmp_path: Path) -> dict:
+    return {
+        "ASTRID_BOOTSTRAP_ROOT": str(tmp_path / "boot"),
+        "ASTRID_REALM_ROOT": str(tmp_path / "realm"),
+        "ASTRID_VENV": str(tmp_path / "venv"),
+    }
+
+
+def test_bootstrap_root_override_writes_marker_and_avoids_workspace(tmp_path):
+    before = _workspace_snapshot()
+    r = _boot(tmp_path, _overrides(tmp_path))
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert len(list((tmp_path / "boot").glob("*/ok"))) == 1
+    assert "/workspace" not in r.stdout + r.stderr
+    assert _workspace_snapshot() == before
+    again = _boot(tmp_path, _overrides(tmp_path))
+    assert again.returncode == 0 and "already done" in again.stdout
+    assert _workspace_snapshot() == before
+
+
+def test_realm_and_venv_overrides_are_honoured(tmp_path):
+    r = _boot(tmp_path, _overrides(tmp_path))
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert (tmp_path / "venv" / "bin" / "python").exists()
+    assert (tmp_path / "realm" / "realm.sqlite3").exists()
+    profile = json.loads((tmp_path / "data" / "runtime" / "source-profiles" / "astrid.json").read_text())
+    assert profile["runtime_environment"] == str(tmp_path / "venv")
+
+
+def test_uv_missing_fails_clearly_without_curl(tmp_path):
+    r = _boot(tmp_path, _overrides(tmp_path), with_uv=False)
+    assert r.returncode != 0
+    assert "uv not found" in r.stderr
+    assert not (tmp_path / "curl.log").exists()
+    assert not list((tmp_path / "boot").glob("*/ok"))
+
+
+def test_unwritable_root_fails_clearly(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    r = _boot(tmp_path, {"ASTRID_BOOTSTRAP_ROOT": str(blocker / "sub")})
+    assert r.returncode != 0
+    assert "cannot create or write" in r.stderr and "does not chown" in r.stderr
+
+
+def test_no_hardcoded_cache_paths_or_curl():
+    text = SCRIPT.read_text()
+    assert "/root" not in text
+    assert '${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}' in text
+    assert '${UV_PYTHON_INSTALL_DIR:-$DATA_ROOT/uv-python}' in text
+    assert "curl" not in text
