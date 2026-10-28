@@ -66,6 +66,10 @@ class FakeBackend:
         self.step('stage')
         return self.candidate
 
+    def validate_candidate(self, version, data, realm):
+        # The real backend returns None once the staged package is admitted.
+        return None
+
     def upgrade(self, version, data):
         self.sentinel.write_text('migrated')
         self.step('upgrade')
@@ -125,8 +129,15 @@ def test_update_rolls_back_each_failure_boundary(installation, failure):
         installer.run('update', {})
     assert current(root) == backend.old
     assert backend.sentinel.read_text() == 'original'
-    assert backend.calls[-3:] == ['register-old', 'start-old', 'verify-old']
-    assert ('restore' in backend.calls) == (failure not in {'stop', 'backup'})
+    if failure == 'stage':
+        # Stage and validate run while the old owner is still running, before
+        # any stop: nothing was stopped, so nothing is restarted.
+        assert backend.calls == ['workspace', 'stage']
+        assert 'stop' not in backend.calls
+        assert not {'register-old', 'start-old', 'verify-old'} & set(backend.calls)
+    else:
+        assert backend.calls[-3:] == ['register-old', 'start-old', 'verify-old']
+    assert ('restore' in backend.calls) == (failure not in {'stop', 'backup', 'stage'})
     assert 'open' not in backend.calls
     assert not any(line.startswith('Open ') for line in lines)
 
@@ -146,7 +157,7 @@ def test_success_keeps_old_version_and_opens_only_after_identity_verification(in
     installer.run('update', {})
     assert current(root) == backend.candidate
     assert backend.old.root.is_dir()
-    assert backend.calls == ['workspace', 'stop', 'backup', 'stage', 'upgrade', 'stop',
+    assert backend.calls == ['workspace', 'stage', 'stop', 'backup', 'upgrade', 'stop',
                              'register-new', 'start-new', 'verify-new', 'finish', 'open']
     assert lines[-1] == 'Open https://astrid.haus'
 

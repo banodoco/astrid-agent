@@ -398,6 +398,8 @@ class Installer:
             raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
 
         def switch_old(old: Version, _candidate: Version | None) -> None:
+            if current(self.root) in (None, old):
+                return  # the pointer never moved; nothing to re-publish
             if old.root.parent == self.root / "versions":
                 switch(self.root, old)
             else:
@@ -634,6 +636,8 @@ class Installer:
                     self.say("Couldn't add Astrid's skill to your agents; see the log.")
 
             def select_old(previous: Version, _candidate: Version | None) -> None:
+                if current(self.root) in (None, previous):
+                    return  # the pointer never moved; nothing to re-publish
                 if previous.root.parent == self.root / "versions":
                     switch(self.root, previous)
                 else:
