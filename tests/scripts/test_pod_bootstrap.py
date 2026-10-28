@@ -354,3 +354,56 @@ def test_marker_rerun_still_verifies_installed_astrid(tmp_path):
     assert second.returncode == 0, second.stderr + second.stdout
     assert "already done" in second.stdout and "installed astrid differs" in second.stdout
     assert sum("--reinstall-package astrid" in c for c in _uv_calls(log)) == 1
+
+
+def _gpu_sanity_function() -> str:
+    text = SCRIPT.read_text()
+    start = text.index("run_gpu_sanity() {")
+    return text[start:text.index("\n}\n", start) + 3]
+
+
+def _run_sanity(tmp_path: Path, engine_root: Path, stub_exit: int = 0):
+    """Run only run_gpu_sanity with a stub python that records its argv."""
+    log = tmp_path / "argv.log"
+    venv = tmp_path / "astrid-venv"
+    (venv / "bin").mkdir(parents=True, exist_ok=True)
+    stub = venv / "bin" / "python"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\necho "libs: /stub/libcublas.so.13"\nexit {stub_exit}\n')
+    stub.chmod(0o755)
+    script = (f'set -euo pipefail\nVENV="{venv}"\nENGINE_ROOT="{engine_root}"\n' + _gpu_sanity_function() + "run_gpu_sanity\n")
+    r = subprocess.run(["bash", "-c", script], cwd=tmp_path, env={"PATH": os.environ["PATH"]}, capture_output=True, text=True)
+    return r, log
+
+
+def _engine_venv(root: Path) -> Path:
+    py = root / "runtime" / "venv" / "bin" / "python"
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\n")
+    py.chmod(0o755)
+    return root / "runtime" / "venv"
+
+
+def test_gpu_sanity_skips_when_engine_venv_absent(tmp_path):
+    r, log = _run_sanity(tmp_path, tmp_path / "engine")
+    assert r.returncode == 0, r.stderr
+    assert "skipped" in r.stdout and not log.exists()
+
+
+def test_gpu_sanity_runs_when_engine_venv_present(tmp_path):
+    venv = _engine_venv(tmp_path / "engine")
+    r, log = _run_sanity(tmp_path, tmp_path / "engine")
+    assert r.returncode == 0, r.stderr
+    assert log.read_text().split() == ["src/astrid-agent/scripts/gpu_sanity.py", "--venv", str(venv)]
+
+
+def test_gpu_sanity_failure_exits_2_and_names_the_venv(tmp_path):
+    venv = _engine_venv(tmp_path / "engine")
+    r, _ = _run_sanity(tmp_path, tmp_path / "engine", stub_exit=2)
+    assert r.returncode == 2 and str(venv) in r.stderr
+
+
+def test_bootstrap_wires_sanity_before_engine_side_work_and_into_install():
+    text = SCRIPT.read_text()
+    assert 'ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-' in text and "/root" not in text
+    assert text.index('[ -f "$marker" ]') < text.index("  run_gpu_sanity\n") < text.index("verify_astrid_install\n  setup_runtime")
+    assert "ASTRID_ENGINE_SANITY_CMD" in text and "cap 128" in text.split("set -euo")[0]

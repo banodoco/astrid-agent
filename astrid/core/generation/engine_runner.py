@@ -10,9 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import ntpath
 import posixpath
 import re
+import shlex
 import time
 import uuid
 from dataclasses import fields, is_dataclass, replace
@@ -258,6 +260,28 @@ class _Runner:
             raise CommandFailed(f"engine command failed (exit {result.exit_code}); inspect target log",
                                 step_id=self.step_id)
         return result
+
+    def sanity(self, command):
+        """Run the operator's sanity command under the engine child env, between environments and models.
+
+        ``command`` is a public argv string; ``--venv <primary venv>`` is appended. The child env is
+        ``engine_child_env`` (the one ComfyUI gets), never the caller's. A nonzero exit aborts the
+        install before any model download; the message carries the library paths, not raw output.
+        """
+        from ._engine_python_bootstrap import engine_child_env
+        self.step_id = "sanity"
+        argv = tuple(shlex.split(command))
+        primary = next(e for e in self.recipe.environments if e.name == self.recipe.primary_environment)
+        venv = self.path(primary.relative_path)
+        env = engine_child_env(venv, self.env) if self.plan.platform.startswith("linux-") else dict(self.env)
+        result = self.run(argv + ("--venv", venv), env=env, check=False)
+        if result.exit_code != 0:
+            keep = [ln.strip()[:300] for ln in (result.stdout + "\n" + result.stderr).splitlines()
+                    if ln.startswith(("LIB ", "FAIL ", "libs:", "gpu_sanity:"))][:20]
+            raise CommandFailed("engine sanity command failed (exit %s) before any model download; "
+                                "LD_LIBRARY_PATH=%s; %s" % (result.exit_code, env.get("LD_LIBRARY_PATH", ""),
+                                                            " | ".join(keep) or "no library paths reported"),
+                                step_id="sanity")
 
     def payload(self, **extra):
         return {"schema": _HELPER_SCHEMA, "engine": self.plan.engine, "platform": self.plan.platform,
@@ -591,8 +615,14 @@ class _Runner:
                               self.started_at, None if status == "installing" else _now(), error_code)
 
 
+SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
+
+
 def install_engine(plan: InstallPlan, *, context: ExecutionContext,
-                   adapter: PlatformAdapter, deadline: Deadline) -> InstallReceipt:
+                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None) -> InstallReceipt:
+    """Install the engine. ``sanity_cmd`` (default: ``ASTRID_ENGINE_SANITY_CMD``) runs once after the
+    last environment step and before the first model step; a failure aborts the install there."""
+    sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
     runner = _Runner(plan, context, adapter, deadline)
     with context.acquire_install_lock(plan.root, deadline=deadline):
         # Also bind installed target code/data before any source/environment action.
@@ -611,7 +641,11 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
         context.ensure_dir(runner.path(".astrid-engine"), deadline=deadline)
         runner.write(runner.path(_RECEIPT), runner.receipt("installing"))
         try:
+            sanity_pending = bool(sanity_cmd.strip())
             for step in plan.steps:
+                if sanity_pending and step.kind not in {"source", "environment"}:
+                    sanity_pending = False
+                    runner.sanity(sanity_cmd)
                 runner.execute(step)
                 runner.write(runner.path(_RECEIPT), runner.receipt("installing"))
             # Revalidate pinned trees after package builds, and lock/model facts
@@ -631,8 +665,8 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
         except EngineError as exc:
             if exc.step_id is None:
                 exc.step_id = runner.step_id
-            if runner.step_id:
-                step = next(s for s in plan.steps if s.id == runner.step_id)
+            step = next((s for s in plan.steps if s.id == runner.step_id), None)  # None: the sanity hook
+            if step is not None:
                 facts = {"error_code": exc.code}
                 if exc.recovery_handle is not None:
                     facts["recovery_handle"] = exc.recovery_handle

@@ -2,6 +2,7 @@
 # On-pod bootstrap (once per pod). Run from the directory that holds the five
 # uploaded source dirs: src/runpod-python src/astrid-runtime src/runpod-lifecycle
 # src/astrid-agent src/VibeComfy. Idempotent. Takes no auth input.
+# Job budget: every job start and execute is one agent job record (cap 128); poll with `job poll` (GET state, no record).
 set -euo pipefail
 
 PY_VERSION="3.12.10"
@@ -13,6 +14,7 @@ PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
 DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
 REALM_ROOT="${ASTRID_REALM_ROOT:-/workspace/astrid/realm}"
 BOOTSTRAP_ROOT="${ASTRID_BOOTSTRAP_ROOT:-/workspace/astrid/bootstrap}"
+ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-/workspace/astrid/engines/vibecomfy-h3}"
 # uv caches and managed Pythons live under the data root unless the caller set them.
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$DATA_ROOT/uv-cache}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$DATA_ROOT/uv-python}"
@@ -103,12 +105,39 @@ verify_astrid_install() {
   echo "pod_bootstrap: installed astrid matches src/astrid-agent"
 }
 
+# GPU sanity (bf16/fp16/fp32 GEMM) under the engine's own child env. Runs only when the engine venv
+# already exists; a fresh claim has none yet, so it says so and skips. Fails closed (exit 2).
+run_gpu_sanity() {
+  local engine_venv="$ENGINE_ROOT/runtime/venv" py=python3
+  if [ ! -x "$engine_venv/bin/python" ]; then
+    echo "pod_bootstrap: gpu sanity skipped: no engine venv yet (it runs on a rerun, or inside the engine install)"
+    return 0
+  fi
+  [ -x "$VENV/bin/python" ] && py="$VENV/bin/python"
+  "$py" src/astrid-agent/scripts/gpu_sanity.py --venv "$engine_venv" || {
+    echo "pod_bootstrap: gpu sanity FAILED for $engine_venv" >&2
+    exit 2
+  }
+}
+
+# Engine install hook: engine_runner.install_engine runs this command (plus --venv <engine venv>) after the
+# environment steps and before the model downloads, and aborts the install if it fails. Absolute path, so the
+# install may run from any cwd. Export it in the shell that runs `astrid engines install`.
+SANITY_PY="$VENV/bin/python"
+[ -x "$SANITY_PY" ] || SANITY_PY=python3
+export ASTRID_ENGINE_SANITY_CMD="$SANITY_PY $(cd src/astrid-agent && pwd)/scripts/gpu_sanity.py"
+echo "pod_bootstrap: for the engine install run: export ASTRID_ENGINE_SANITY_CMD='$ASTRID_ENGINE_SANITY_CMD'"
+
 if [ -f "$marker" ]; then
   echo "pod_bootstrap: already done ($marker)"
+  run_gpu_sanity
   verify_astrid_install
   setup_runtime
   exit 0
 fi
+
+# Fresh claim: no engine venv yet, so this says so and skips.
+run_gpu_sanity
 
 # uv is never fetched here (no piping a download into a shell): use the one on PATH or stop.
 if ! command -v uv >/dev/null 2>&1; then

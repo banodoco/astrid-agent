@@ -1401,3 +1401,49 @@ def test_environment_command_env_applies_only_to_its_indexed_bootstrap_command(s
     assert runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline).status == "installed"
     base = adapter.environment(context.recipe, ROOT)
     assert seen == [("pip", {**base, "DEB_PYTHON_INSTALL_LAYOUT": "deb"}), ("venv", base)]
+
+
+def _sanity_context(context, code=0, stdout=""):
+    original = context.run
+
+    def run(request):
+        if request.argv[0] == "fake-sanity":
+            context.events.append(("sanity", request.argv, dict(request.env)))
+            return context.result(stdout, code)
+        return original(request)
+    context.run = run
+
+
+def test_sanity_hook_runs_after_environments_and_before_models(setup, monkeypatch):
+    plan, context, adapter, deadline = setup
+    _sanity_context(context)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/cuda/lib64")
+    monkeypatch.setenv(runner.SANITY_CMD_ENV, "fake-sanity --flag")
+    assert install(setup).status == "installed"
+    kinds = [e[0] for e in context.events]
+    assert kinds.count("sanity") == 1
+    at = kinds.index("sanity")
+    assert any(e[0] == "argv" and e[1][0] == "fake-bootstrap" for e in context.events[:at])
+    assert "download" not in kinds[:at] and "download" in kinds[at:]
+    _, argv, env = context.events[at]
+    primary = next(e for e in context.recipe.environments if e.name == context.recipe.primary_environment)
+    assert argv[:2] == ("fake-sanity", "--flag") and argv[-2:] == ("--venv", adapter.join(ROOT, primary.relative_path))
+    assert "/usr/local/cuda" not in env["LD_LIBRARY_PATH"]
+
+
+def test_sanity_hook_is_off_by_default(setup, monkeypatch):
+    monkeypatch.delenv(runner.SANITY_CMD_ENV, raising=False)
+    _sanity_context(setup[1])
+    assert install(setup).status == "installed"
+    assert not [e for e in setup[1].events if e[0] == "sanity"]
+
+
+def test_sanity_failure_aborts_before_any_model_step_and_names_lib_paths(setup):
+    plan, context, adapter, deadline = setup
+    _sanity_context(context, code=2, stdout="FAIL RuntimeError: boom\nLIB /v/nvidia/cublas/lib/libcublas.so.13\n")
+    with pytest.raises(runner.CommandFailed) as caught:
+        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
+                              sanity_cmd="fake-sanity")
+    message = str(caught.value)
+    assert "libcublas.so.13" in message and "LD_LIBRARY_PATH=" in message and "exit 2" in message
+    assert not [e for e in context.events if e[0] in {"download", "service:start"}]

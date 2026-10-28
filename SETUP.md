@@ -7,6 +7,8 @@ these steps. Upload the five source trees (for example `git archive` of each
 head) so that these directories exist under the current directory:
 `src/runpod-python src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy`.
 
+Job budget: every job start and execute is one agent job record (cap 128); poll with `job poll` (GET state, no record).
+
 1. Bootstrap. The script is idempotent and writes
    `/workspace/astrid/bootstrap/<digest>/ok` on success:
 
@@ -28,10 +30,17 @@ head) so that these directories exist under the current directory:
    and reinstalls astrid only when they differ. It then writes the source profile and
    creates the workspace. It never starts a Runtime (`astrid-runtime up`).
 
+   On a rerun, once the engine venv exists, the bootstrap first runs
+   `scripts/gpu_sanity.py --venv <engine root>/runtime/venv` (bf16/fp16/fp32 GEMM under the
+   engine's own child env; exit 2 on failure, prints the libcublas paths). On a fresh claim
+   the venv is absent, so it is skipped; it runs inside the engine install (hook below) and on the next rerun.
+
 2. Install the engine:
 
    ```bash
    R=/workspace/astrid/engines/vibecomfy-h3
+   # sanity hook: bf16/fp16/fp32 GEMM after the environment steps, before the ~53 GB model downloads
+   export ASTRID_ENGINE_SANITY_CMD="/opt/astrid/bin/python $PWD/src/astrid-agent/scripts/gpu_sanity.py"
    astrid engines status  vibecomfy-h3 --placement local --root $R || \
    astrid engines install vibecomfy-h3 --placement local --root $R --deadline 5400
    ```
