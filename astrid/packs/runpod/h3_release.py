@@ -26,6 +26,7 @@ from runtime_protocol.deadline import bounded_operation
 from astrid.core.generation.engine_recipe import load_recipe, load_recipe_model_lock
 from astrid.packs.runpod import h3_release_bootstrap as bootstrap
 from astrid.packs.runpod import h3_release_remote as remote
+from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 
 _DATA = Path(__file__).parent
 
@@ -373,7 +374,7 @@ class RunPodProvider:
                 ports="22/tcp", transport=self.transport, https_token=self.https_token,
                 compute_type="CPU" if cpu else "GPU", cpu_flavor_ids=("cpu3c", "cpu5c"),
                 cpu_flavor_priority="custom", vcpu_count=2, data_center_id=volume["datacenter"],
-                allowed_cuda_versions=None if cpu or self.min_cuda_version or self.cpu_only_gpu_build else ("13.0",),
+                allowed_cuda_versions=None if cpu or self.min_cuda_version or self.cpu_only_gpu_build else DEFAULT_ALLOWED_CUDA_VERSIONS,
                 min_cuda_version=None if cpu or self.cpu_only_gpu_build else self.min_cuda_version,
                 cpu_api=self.cpu_api, instance_id=self.cpu_instance_id,
             )

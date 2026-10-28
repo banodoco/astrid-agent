@@ -57,6 +57,7 @@ from astrid.packs.runpod.worker_preparation import (
 from astrid.packs.runpod.worker_preparation import (
     write_target_record as _write_json,
 )
+from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
 
 DEFAULT_GPU = "NVIDIA GeForce RTX 5090"
 DEFAULT_STORAGE = "backup"
@@ -66,20 +67,6 @@ DEFAULT_CAPACITY_WINDOW_SECONDS = 3600
 DEFAULT_MAX_WAIT_SECONDS = 3600
 DEFAULT_READY_TIMEOUT_SECONDS = 900
 DEFAULT_WORKER_IMAGE = "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
-# The recipe requires CUDA 13.0 or newer. RunPod matches the allow-list exactly, so every
-# 13.x minor from that minimum through the newest one below must be listed explicitly.
-RECIPE_MINIMUM_CUDA_VERSION = "13.0"
-NEWEST_CUDA_13X_MINOR = 3
-
-
-def _cuda_versions_from_minimum(minimum: str, newest_minor: int) -> tuple[str, ...]:
-    major, _, minor = minimum.partition(".")
-    return tuple(f"{major}.{n}" for n in range(int(minor), newest_minor + 1))
-
-
-DEFAULT_ALLOWED_CUDA_VERSIONS = _cuda_versions_from_minimum(
-    RECIPE_MINIMUM_CUDA_VERSION, NEWEST_CUDA_13X_MINOR
-)
 DEFAULT_RELEASE_ROOT = "/workspace/h3-golden/releases/h3-cu130-v1-candidate"
 # The engine installs into CANONICAL_RELEASE_ROOT. The old candidate path stays
 # accepted; any other root is refused before the pod is contacted.

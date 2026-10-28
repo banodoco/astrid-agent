@@ -292,7 +292,7 @@ def test_lifecycle_payload_cpu_gpu_and_strict_get(monkeypatch):
         assert cpu["data_center_id"] == "TEST-1"
         assert cpu["public_key_string"] == "ssh-ed25519 PUBLIC-TEST"
         provider.create(volume, "image", "NVIDIA GeForce RTX 5090", "name")
-        assert calls[-1][1]["allowed_cuda_versions"] == ("13.0",)
+        assert calls[-1][1]["allowed_cuda_versions"] == ("13.0", "13.1", "13.2", "13.3")
         provider.cpu_only_gpu_build = True
         provider.create(volume, "image", "NVIDIA GeForce RTX 4090", "name")
         assert calls[-1][1]["allowed_cuda_versions"] is None
