@@ -37,7 +37,7 @@ def _request(*, protected_all: bool = False):
 
 def _av(path: Path, *, color: str, freq: int, seconds: int) -> None:
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=8",
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
          "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000", "-t", str(seconds),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
         check=True,
