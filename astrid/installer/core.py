@@ -214,6 +214,8 @@ class Installer:
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
             realm = self.backend.workspace(old, self.data)
+            repair_chat_command = getattr(self.backend, "repair_chat_command", None)
+            chat_changed = bool(repair_chat_command and repair_chat_command(old))
             if self.managed_by == "pinokio":
                 self.backend.register(old, self.data)
                 try:
@@ -222,8 +224,6 @@ class Installer:
                     self.say("Couldn't add Astrid's skill to your agents; see the log.")
                 self._ready()
                 return
-            repair_chat_command = getattr(self.backend, "repair_chat_command", None)
-            chat_changed = bool(repair_chat_command and repair_chat_command(old))
             try:
                 # The browser health endpoint refuses a changed Runtime identity
                 # with runtime_identity_mismatch, which requires this restart.

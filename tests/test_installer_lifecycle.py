@@ -754,3 +754,30 @@ def test_repair_restarts_healthy_service_after_fixing_stale_chat_command(tmp_pat
     default = str(python.with_name('astrid.exe')) if sys.platform == 'win32' else 'astrid'
     assert json.loads(services.read_text())['services'][0]['env']['ASTRID_ACP_COMMAND'] == default
     assert calls == ['verify', 'stop', 'register', 'start', 'verify', 'open']
+
+
+def test_pinokio_repair_chat_command_before_registration(tmp_path, monkeypatch):
+    from astrid.installer.backend import Backend
+
+    root, data = tmp_path / 'program', tmp_path / 'data'
+    folder = root / 'versions' / 'selected'
+    python = folder / 'py' / 'bin' / 'python'
+    python.parent.mkdir(parents=True)
+    python.write_text('python')
+    services, profile = folder / 'services.json', folder / 'profile.json'
+    write_json(services, {'services': [{'name': 'chat', 'env': {'ASTRID_ACP_COMMAND': str(root / 'versions' / 'pruned' / 'astrid')}}]})
+    write_json(profile, {'service_declaration': str(services)})
+    version = Version(folder, python, profile, {})
+    write_json(folder / 'version.json', version.document())
+    switch(root, version)
+    backend = Backend(root, tmp_path / 'log', tmp_path / 'uv', say=lambda _: None, managed_by='pinokio')
+    monkeypatch.setattr(backend, 'workspace', lambda *_: {'realm_id': 'realm'})
+    default = str(python.with_name('astrid.exe')) if sys.platform == 'win32' else 'astrid'
+    calls = []
+    def register(*_args):
+        assert json.loads(services.read_text())['services'][0]['env']['ASTRID_ACP_COMMAND'] == default
+        calls.append('register')
+    monkeypatch.setattr(backend, 'register', register)
+    monkeypatch.setattr(backend, 'sync_skills', lambda *_: calls.append('sync'))
+    Installer(root, data, backend, say=lambda _: None, managed_by='pinokio').run('repair', {})
+    assert calls == ['register', 'sync']
