@@ -151,6 +151,8 @@ astrid = [
     "packs/**/actions/**/*.md",
     "packs/**/actions/**/*.txt",
     "packs/**/requirements.txt",
+    # Resolved Linux cu130 engine dependency lock consumed by the packaged recipe.
+    "packs/runpod/requirements.linux-cu130.lock",
     "packs/**/requirements.windows-nvidia.txt",
     "packs/**/rendering/**/*.md",
     "packs/**/AGENTS.md",

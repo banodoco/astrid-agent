@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata as metadata
 import json
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -292,6 +293,26 @@ class FakeHttpsContext(FakeContext):
         return CommandResult(**json.loads(json.dumps(asdict(response))))
 
 
+def _resolve_once_recipe():
+    """The pre-lock Linux recipe: same sources/wheels, resolved by the canonical compile at install time."""
+    from astrid.core.generation.engine_contracts import RequirementsSpec, SourcePath
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    requirements = RequirementsSpec(
+        "resolve-once", None,
+        (SourcePath("comfyui", "requirements.txt"), SourcePath("vibecomfy", "pyproject.toml"),
+         SourcePath("videohelpersuite", "requirements.txt")),
+        ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python-headless==5.0.0.93", "pip==25.2"),
+        "2026-10-19T00:00:00Z")
+    return replace(recipe, environments=(replace(recipe.environments[0], requirements=requirements),))
+
+
+@pytest.fixture
+def resolve_once(monkeypatch):
+    recipe = _resolve_once_recipe()
+    monkeypatch.setattr(recipes, "load_recipe", lambda *_: recipe)
+    return recipe
+
+
 @pytest.fixture
 def setup(monkeypatch):
     adapter = FakeAdapter()
@@ -441,7 +462,7 @@ def test_target_paths_never_touch_controller_filesystem_or_processes(setup, monk
     assert install(setup).status == "installed"
 
 
-def test_order_generated_hash_lock_before_sync_and_wheels_last(setup):
+def test_order_generated_hash_lock_before_sync_and_wheels_last(resolve_once, setup):
     install(setup)
     events = setup[1].events
     commands = [e[1] for e in events if e[0] == "argv"]
@@ -682,7 +703,7 @@ def _helper_sources(root, recipe):
 HASH_LOCK = "demo==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n"
 
 
-def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(tmp_path):
+def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(resolve_once, tmp_path):
     recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
     _helper_sources(tmp_path, recipe)
     h3 = next(source for source in recipe.sources if source.name == "h3-motion-context")
@@ -707,7 +728,7 @@ def test_linux_lock_inputs_do_not_require_nonexistent_h3_requirements(tmp_path):
 
 
 @pytest.mark.parametrize("declared", [False, True])
-def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(tmp_path, monkeypatch, declared):
+def test_target_helper_persists_and_reuses_bound_hash_lock_before_install(resolve_once, tmp_path, monkeypatch, declared):
     recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
     if not declared:
         recipe = replace(recipe, environments=(replace(recipe.environments[0], source_installs=()),))
@@ -838,7 +859,7 @@ print(json.dumps({'python': sys.version.split()[0], 'packaging': metadata.versio
                                          "invalid_evidence_cases_refused": 3}, sort_keys=True))
 
 
-def test_target_lock_commit_interruption_reuses_exact_candidate(tmp_path, monkeypatch):
+def test_target_lock_commit_interruption_reuses_exact_candidate(resolve_once, tmp_path, monkeypatch):
     recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
@@ -863,7 +884,7 @@ def test_target_lock_commit_interruption_reuses_exact_candidate(tmp_path, monkey
 
 @pytest.mark.parametrize("bad", ["demo==1.0\n", "demo>=1.0 --hash=sha256:" + "a" * 64,
                                  "--index-url https://unreviewed.invalid\n", "", "demo==1.0 \\"])
-def test_target_refuses_unhashed_or_unresolved_locks(tmp_path, bad):
+def test_target_refuses_unhashed_or_unresolved_locks(resolve_once, tmp_path, bad):
     recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
@@ -875,7 +896,7 @@ def test_target_refuses_unhashed_or_unresolved_locks(tmp_path, bad):
     assert not (directory / "requirements.lock").exists()
 
 
-def test_target_refuses_modified_or_unbound_persisted_lock(tmp_path):
+def test_target_refuses_modified_or_unbound_persisted_lock(resolve_once, tmp_path):
     recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
     _helper_sources(tmp_path, recipe)
     payload = _helper_payload(tmp_path, environment="comfy")
@@ -1107,6 +1128,79 @@ def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatc
     assert target.dispatch("commit-lock", payload)["facts"] == {"requirements_lock_sha256": ref.sha256}
     target.dispatch("install-locks", payload)
     assert (tmp_path / ".astrid-engine/environments/comfy/requirements.lock").read_bytes() == lock_bytes
+
+
+LINUX_LOCK_PATH = "packs/runpod/requirements.linux-cu130.lock"
+LINUX_LOCK_SHA256 = "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+
+
+def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    requirements = recipe.environments[0].requirements
+    assert (requirements.mode, requirements.input_paths, requirements.constraints, requirements.exclude_newer) == (
+        "packaged", (), (), None)
+    ref = requirements.packaged_lock
+    assert (ref.path, ref.sha256) == (LINUX_LOCK_PATH, LINUX_LOCK_SHA256)
+    path = Path(recipes._ROOT) / LINUX_LOCK_PATH
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == LINUX_LOCK_SHA256
+    entries = target._entries(path.read_text(encoding="utf-8"))
+    by_name = {re.match(r"[A-Za-z0-9._-]+", row[0])[0].lower(): row for row in entries}
+    assert len(by_name) == len(entries) == 114
+    for wheel in recipe.environments[0].final_wheels:
+        requirement, hashes, _ = by_name[wheel.name]
+        assert requirement == f"{wheel.name} @ {wheel.url}"
+        assert hashes == [wheel.sha256]
+    for pin in ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python-headless==5.0.0.93", "pip==25.2"):
+        name, version = pin.split("==")
+        assert by_name[name][0] == pin
+    # The reviewed index digest binds the exact recipe bytes that name this lock.
+    entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("vibecomfy-h3", PLATFORM))
+    assert hashlib.sha256((Path(recipes._ROOT) / entry.recipe.path).read_bytes()).hexdigest() == entry.recipe.sha256
+
+
+def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path, monkeypatch):
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    shipped = (Path(recipes._ROOT) / LINUX_LOCK_PATH).read_bytes()
+    payload = _helper_payload(tmp_path, recipe, environment="comfy")
+    directory = tmp_path / ".astrid-engine/environments/comfy"
+    # A fresh root has no source checkouts or requirement inputs for a resolver to read.
+    assert not (tmp_path / "runtime").exists() and not directory.exists()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("fresh packaged-lock selection must not run a resolver or any child process")
+    for name in ("run", "Popen", "check_call", "check_output", "call"):
+        monkeypatch.setattr(subprocess, name, forbidden)
+    monkeypatch.setattr(target.os, "system", forbidden)
+
+    assert target.dispatch("lock-inputs", payload)["facts"] == {"lock_exists": False}
+    assert (directory / "requirements.lock.tmp").read_bytes() == shipped
+    assert not (directory / "requirements.in").exists()
+    committed = target.dispatch("commit-lock", payload)
+    assert committed["facts"] == {"requirements_lock_sha256": LINUX_LOCK_SHA256}
+    assert (directory / "requirements.lock").read_bytes() == shipped
+    metadata_value = json.loads((directory / "lock.json").read_text())
+    assert metadata_value["requirements_lock_sha256"] == LINUX_LOCK_SHA256
+    assert metadata_value["recipe_sha256"] == payload["recipe_sha256"]
+    assert target.dispatch("lock-inputs", payload)["facts"] == {"lock_exists": True}
+    target.dispatch("install-locks", payload)
+    support = (directory / "support.lock").read_text()
+    wheels = (directory / "wheels.lock").read_text()
+    assert "torch @" not in support and "torchvision @" not in support and "torchaudio @" not in support
+    assert "comfy-kitchen==0.2.34" in support and "opencv-python-headless==5.0.0.93" in support
+    assert all(w.sha256 in wheels and w.url in wheels for w in recipe.environments[0].final_wheels)
+    # An altered shipped lock is refused rather than re-resolved.
+    (directory / "requirements.lock").write_bytes(shipped + b"# tamper\n")
+    with pytest.raises(IntegrityError):
+        target.dispatch("install-locks", payload)
+
+
+def test_runner_installs_packaged_linux_lock_with_no_compile_step(setup):
+    result = install(setup)
+    assert result.status == "installed"
+    commands = [e[1] for e in setup[1].events if e[0] == "argv"]
+    assert not any("compile" in command for command in commands)
+    assert any("commit-lock" in command for command in commands)
+    assert result.requirements_locks == {"comfy": "b" * 64}
 
 
 def test_health_timeout_is_bounded_by_recipe_and_caller_deadline(setup):

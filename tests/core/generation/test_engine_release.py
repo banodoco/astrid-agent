@@ -73,6 +73,12 @@ def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fi
     for env in recipe['environments']:
         if env['requirements']['mode'] != 'packaged':
             assert 'resolved-linux-lock:' + env['name'] in manifest['missing']
+        else:
+            ref = env['requirements']['packaged_lock']
+            assert 'resolved-linux-lock:' + env['name'] not in manifest['missing']
+            bundled = root / 'site/astrid' / ref['path']
+            assert hashlib.sha256(bundled.read_bytes()).hexdigest() == ref['sha256']
+            assert bundled.read_bytes() == (REPO / 'astrid' / ref['path']).read_bytes()
     if not (REPO / 'astrid/core/generation/engine_custody.py').exists():
         assert 'module:astrid/core/generation/engine_custody.py' in manifest['missing']
     assert any(m.startswith('dependency:') for m in manifest['missing'])

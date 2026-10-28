@@ -35,29 +35,14 @@
       "python_version": "3.12.10",
       "uv_version": "0.11.32",
       "requirements": {
-        "mode": "resolve-once",
-        "packaged_lock": null,
-        "input_paths": [
-          {
-            "source": "comfyui",
-            "path": "requirements.txt"
-          },
-          {
-            "source": "vibecomfy",
-            "path": "pyproject.toml"
-          },
-          {
-            "source": "videohelpersuite",
-            "path": "requirements.txt"
-          }
-        ],
-        "constraints": [
-          "comfy-kitchen==0.2.34",
-          "comfy-aimdo==0.5.3",
-          "opencv-python-headless==5.0.0.93",
-          "pip==25.2"
-        ],
-        "exclude_newer": "2026-10-19T00:00:00Z"
+        "mode": "packaged",
+        "packaged_lock": {
+          "path": "packs/runpod/requirements.linux-cu130.lock",
+          "sha256": "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+        },
+        "input_paths": [],
+        "constraints": [],
+        "exclude_newer": null
       },
       "final_wheels": [
         {

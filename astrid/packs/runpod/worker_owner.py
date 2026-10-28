@@ -1334,6 +1334,17 @@ class RunPodRemoteWorkerInspector:
         self.session_config_observer = session_config_observer
         self.executor_observer = executor_observer
 
+    def ensure_endpoint(self, handle: object, *, engine: str, platform: str,
+                        endpoint_id: str, agent_port: int, token_ref: Any,
+                        read_file: Any, deadline: float):
+        """Bind the one endpoint slot to this already prepared claim/activation."""
+        from astrid.core.generation.engine_endpoint import ensure_prepared_endpoint
+
+        return ensure_prepared_endpoint(
+            self, handle, engine=engine, platform=platform, endpoint_id=endpoint_id,
+            agent_port=agent_port, token_ref=token_ref, read_file=read_file, deadline=deadline,
+        )
+
     def observe(self, raw_handle: object) -> Mapping[str, Any]:
         handle = self.preparer._assert_handle(raw_handle)
         reference = handle.reference
