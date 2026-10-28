@@ -362,8 +362,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
 
         A live owner's captured identity is authoritative. When stopped, the
         retained Runtime source profile is admitted through Runtime's normal
-        validator and its two paths must be Git checkout roots; unpacked source
-        archives in a managed version cannot pass that check.
+        validator and its two paths must be Git checkout roots. A managed
+        profile names the venv's installed product tree (``source_checkout``)
+        and an unpacked Runtime archive (``runtime_checkout``); neither is a
+        Git checkout root, so it cannot pass that check.
         """
         from astrid_runtime.bootstrap import SourceProfile
         from astrid_runtime.identity import validate_live_owner_identity
@@ -403,8 +405,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 return True
 
         # A selected managed version is explicit evidence that this workspace
-        # is an installed release. Its manifest/profile intentionally names
-        # unpacked source archives and must not be treated as a checkout owner.
+        # is an installed release. Its profile names the venv's installed
+        # product tree (source_checkout) and an unpacked Runtime archive
+        # (runtime_checkout); neither is a Git checkout root.
         if installed is not None:
             return False
 
