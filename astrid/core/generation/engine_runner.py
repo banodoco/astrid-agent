@@ -419,11 +419,13 @@ class _Runner:
         if preparation != {"lock_exists": lock.exists}:
             raise IntegrityError("requirements lock state changed", step_id=self.step_id)
         uv_verified = False
-        for argv in self.adapter.environment_commands(self.recipe, environment, self.plan.root):
+        extra_env = getattr(self.adapter, "environment_command_env", None)
+        for index, argv in enumerate(self.adapter.environment_commands(self.recipe, environment, self.plan.root)):
             if argv and argv[0] == uv and not uv_verified:
                 self.verify_uv(uv, environment.uv_version)
                 uv_verified = True
-            self.run(argv)
+            extra = {} if extra_env is None else extra_env(self.recipe, environment, self.plan.root, index)
+            self.run(argv, env={**self.env, **extra} if extra else None)
         if not uv_verified:
             self.verify_uv(uv, environment.uv_version)
         if not lock.exists:

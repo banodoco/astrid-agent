@@ -1191,3 +1191,27 @@ def test_target_health_hashes_parsed_canonical_json_with_nonascii_and_key_order(
 def test_target_health_invalid_or_missing_evidence_never_admits(health, objects, nodes):
     result = target._health_facts(health, objects, nodes)
     assert result["healthy"] is not True or result["required_nodes_present"] is not True
+
+
+def test_environment_command_env_applies_only_to_its_indexed_bootstrap_command(setup):
+    plan, context, _, deadline = setup
+
+    class PipEnvAdapter(FakeAdapter):
+        def environment_commands(self, recipe, environment, root):
+            return (("fake-bootstrap", environment.name, "pip"), ("fake-bootstrap", environment.name, "venv"))
+
+        def environment_command_env(self, recipe, environment, root, index):
+            return {"DEB_PYTHON_INSTALL_LAYOUT": "deb"} if index == 0 else {}
+
+    adapter = PipEnvAdapter()
+    seen = []
+    original = context.run
+
+    def recording(request):
+        if request.argv[0] == "fake-bootstrap":
+            seen.append((request.argv[-1], dict(request.env)))
+        return original(request)
+    context.run = recording
+    assert runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline).status == "installed"
+    base = adapter.environment(context.recipe, ROOT)
+    assert seen == [("pip", {**base, "DEB_PYTHON_INSTALL_LAYOUT": "deb"}), ("venv", base)]

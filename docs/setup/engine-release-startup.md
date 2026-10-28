@@ -107,7 +107,8 @@ with no controller site-packages or `PYTHONPATH` imports.
 The source is the trusted small verifier, not an inline product bundle. The
 product code/dependencies/locks all come from the one archive. The verifier
 needs no preinstalled Astrid. It verifies/extracts, refuses incomplete fixtures,
-then executes the retained `run.py startup` under the same explicit interpreter.
+then executes the retained `run.py startup` under the release's managed
+interpreter (see below); bootstrap time is charged to `--seconds`.
 Provider JSON arrays are `dockerEntrypoint = list(argv[:4])` and
 `dockerStartCmd = list(argv[4:])`. Freeze the resulting exact arrays and verifier
 source SHA before dispatch. Do not infer that `dockerArgs` alone overrides an
@@ -125,6 +126,45 @@ uv/managed Python bootstrap must be verified. An absolute `/usr/bin/python3`
 is an explicit prerequisite in this example, not a claim about that image; set
 `python=` to the independently verified executable when freezing argv. Bash is
 needed only if the original provider path explicitly uses a shell.
+
+## Managed interpreter handoff
+
+A complete release records its build interpreter, which must equal the H3
+recipe's managed Python (`python_version` 3.12.10, Linux x86_64) taken from the
+hash-indexed recipe inside the verified tree. When the image's `python3` patch
+version differs, the stdlib verifier does not relax that identity. After the
+archive digest, member set, every retained file hash and `complete=true` are
+verified, and before any product import, it runs the recipe's own bootstrap
+commands from the retained `_engine_python_bootstrap.py` (the same helper the
+Linux platform adapter uses): `python3 -m pip --version`, the pinned
+`uv==<uv_version>` prefix install, `uv --version`, `uv venv --allow-existing
+--python <python_version> --managed-python <root>/runtime/venv`, then a live
+identity probe of `<root>/runtime/venv/bin/python`. Only an exact identity match
+execs that interpreter on the same retained `run.py`, whose launcher repeats the
+exact manifest check. A matching running interpreter is used directly. A wrong
+platform, incomplete fixture, recipe/manifest mismatch, missing pip, wrong uv,
+wrong managed version or exceeded bound fails before exec. No resolver, source,
+model or engine step runs here; the canonical runner still owns installation.
+
+Operations with the same verifier source (`-I -S -c <source>`):
+
+```text
+prepare-python --archive A --sha256 S --retain R --root ROOT [--seconds N]
+  -> one JSON line {schema, python, release, run, bootstrapped, identity}
+cli --archive A --sha256 S --retain R --root ROOT [--seconds N] -- <canonical CLI args with --root ROOT>
+  -> exec <python> -I -S <release>/run.py cli <args>
+```
+
+`engine_release.release_cli_argv(...)` builds the `cli` argv for one existing
+authenticated agent job. Bootstrap children stay in that job's process group:
+the original job's cancel/timeout signals reach them, and each child is bounded
+by the remaining `--seconds`. They receive only an allowlisted environment
+(`PATH`, `HOME`, `LANG`, `LC_ALL`, proxy and CA variables) plus the recipe overlay;
+`DEB_PYTHON_INSTALL_LAYOUT=deb` is added for the system `pip --prefix` command
+only. No token, provider key, SSH or inherited `UV_*`/`PYTHON*` variable passes. The bootstrap is idempotent and not install-locked; one job
+per root is the caller's ownership rule, and the runner later re-verifies uv
+and the environment under its install lock. A failed handoff leaves only the
+recipe's own `runtime/bootstrap` and `runtime/venv`; rerun the same job command.
 
 ## Sequence, ownership and evidence
 

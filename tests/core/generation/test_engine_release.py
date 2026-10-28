@@ -76,6 +76,10 @@ def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fi
     if not (REPO / 'astrid/core/generation/engine_custody.py').exists():
         assert 'module:astrid/core/generation/engine_custody.py' in manifest['missing']
     assert any(m.startswith('dependency:') for m in manifest['missing'])
+    # The shared pre-CLI bootstrap helper travels in the verified release.
+    assert 'module:astrid/core/generation/_engine_python_bootstrap.py' not in manifest['missing']
+    assert (root / 'site/astrid/core/generation/_engine_python_bootstrap.py').read_bytes() == (
+        REPO / 'astrid/core/generation/_engine_python_bootstrap.py').read_bytes()
     # Whole ordinary packages and original initializers, never source stubs.
     for path in ('site/astrid/omp_agent.py', 'site/astrid/installer/backend.py',
                  'site/runtime_protocol/platform.py', 'site/runpod_lifecycle/pod_agent.py',

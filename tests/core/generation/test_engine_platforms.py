@@ -53,6 +53,8 @@ def test_pure_target_paths_and_canonical_launch(recipe):
         assert adapter.venv_python(ROOT + "/runtime/venv") == ROOT + "/runtime/venv/bin/python"
         assert adapter.uv_executable(ROOT + "/runtime") == ROOT + "/runtime/bootstrap/bin/uv"
         assert adapter.environment(recipe, ROOT) == {"PYTHONDONTWRITEBYTECODE": "1", "UV_CACHE_DIR": ROOT + "/runtime/uv-cache"}
+        assert adapter.environment_command_env(recipe, primary, ROOT, 0) == {"DEB_PYTHON_INSTALL_LAYOUT": "deb"}
+        assert adapter.environment_command_env(recipe, primary, ROOT, 1) == {}
         request = adapter.start_request(recipe, ROOT, deadline=deadline)
         assert request.argv == tuple(v.format_map(values) for v in recipe.start.argv)
         assert request.cwd == recipe.start.cwd.format_map(values)

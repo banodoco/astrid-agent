@@ -8,6 +8,7 @@ import stat
 import string
 import time
 
+from . import _engine_python_bootstrap as _bootstrap
 from .engine_contracts import (CommandRequest, DeadlineExceeded, RecipeValidationError,
                                UnsafePathError, UnsupportedPlatform)
 from .engine_runner import _root
@@ -62,7 +63,7 @@ class LinuxPlatformAdapter:
 
     def environment(self, recipe, root):
         self._recipe(recipe)
-        return {"PYTHONDONTWRITEBYTECODE": "1", "UV_CACHE_DIR": self.join(root, "runtime/uv-cache")}
+        return _bootstrap.linux_bootstrap_environment(install_root=self.validate_root(root))
 
     def _recipe(self, recipe):
         if recipe.platform != self.key:
@@ -70,14 +71,21 @@ class LinuxPlatformAdapter:
 
     def environment_commands(self, recipe, environment, root):
         self._recipe(recipe)
-        bootstrap = self.join(root, "runtime/bootstrap")
-        uv = self.uv_executable(self.join(root, "runtime"))
-        venv = self.join(root, environment.relative_path)
-        return (("python3", "-m", "pip", "--isolated", "install", "--index-url",
-                 "https://pypi.org/simple", "--ignore-installed", "--prefix", bootstrap,
-                 "uv==" + environment.uv_version),
-                (uv, "--no-config", "venv", "--allow-existing", "--python",
-                 environment.python_version, "--managed-python", venv))
+        # Validate with this adapter's own path rules first, then use the one
+        # shared stdlib argv construction that the release handoff also uses.
+        self.join(root, environment.relative_path)
+        try:
+            return _bootstrap.linux_bootstrap_commands(
+                install_root=self.validate_root(root), uv_version=environment.uv_version,
+                python_version=environment.python_version,
+                venv_relative_path=environment.relative_path)
+        except ValueError as exc:
+            raise RecipeValidationError("invalid environment bootstrap pins") from exc
+
+    def environment_command_env(self, recipe, environment, root, index):
+        """Extra public env for environment_commands()[index]; pip --prefix only."""
+        self._recipe(recipe)
+        return _bootstrap.linux_bootstrap_pip_environment() if index == 0 else {}
 
     def start_request(self, recipe, root, *, deadline):
         self._recipe(recipe)

@@ -12,11 +12,13 @@ import json
 import os
 import platform
 import re
+import runpy
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -29,6 +31,7 @@ REQUIRED = (
     'astrid/console.py', 'astrid/core/engine_cli.py',
     'astrid/core/generation/engine_release.py',
     'astrid/core/generation/_engine_release_entry.py',
+    'astrid/core/generation/_engine_python_bootstrap.py',
     'astrid/core/generation/engine_startup.py',
     'astrid/core/generation/engine_execution.py',
     'astrid/core/generation/_engine_target_files.py',
@@ -37,6 +40,23 @@ REQUIRED = (
     'runtime_protocol/platform.py', 'runtime_protocol/cancellation.py',
     'runpod_lifecycle/pod_agent.py',
 )
+
+
+# The one engine/platform whose recipe-owned managed interpreter a release
+# may hand off to. Expected identity always comes from the verified recipe.
+HANDOFF_ENGINE = 'vibecomfy-h3'
+HANDOFF_PLATFORM = 'linux-x86_64-cu130'
+HANDOFF_SCHEMA = 'astrid.release-python.v1'
+# Bootstrap children get ONLY these inherited public variables plus the
+# recipe overlay: no agent/owner/bridge tokens, provider keys, SSH material,
+# or inherited UV_*/PYTHON* configuration.
+_CHILD_ENV = ('PATH', 'HOME', 'LANG', 'LC_ALL',
+              'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy',
+              'ALL_PROXY', 'all_proxy',
+              'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE')
+_IDENTITY_PROBE = ('import json,platform,sys;print(json.dumps({"implementation":sys.implementation.name,'
+                   '"version":list(sys.version_info[:3]),"platform":sys.platform,'
+                   '"machine":platform.machine()}))')
 
 
 class ReleaseError(ValueError):
@@ -402,6 +422,168 @@ def extract_release(archive_path, sha256, retained):
     return target
 
 
+def _handoff_recipe(release):
+    """Primary environment of the hash-indexed recipe inside a VERIFIED tree."""
+    site = Path(release) / 'site/astrid'
+    try:
+        index = _json((site / 'packs/engine-index.json').read_bytes())
+        if not isinstance(index, dict) or index.get('schema') != 'astrid.engine-index.v1':
+            raise ReleaseError('invalid packaged recipe index')
+        entries = [e for e in index['entries'] if isinstance(e, dict)
+                   and e.get('engine') == HANDOFF_ENGINE and e.get('platform') == HANDOFF_PLATFORM]
+        if len(entries) != 1 or set(entries[0]) != {'engine', 'platform', 'recipe'}:
+            raise ReleaseError('release has no unique handoff recipe')
+        ref = entries[0]['recipe']
+        if (not isinstance(ref, dict) or set(ref) != {'path', 'sha256'}
+                or not isinstance(ref['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', ref['sha256'])):
+            raise ReleaseError('invalid handoff recipe reference')
+        path = site / _relative(ref['path'])
+        _regular(path)
+        raw = path.read_bytes()
+        if digest(raw) != ref['sha256']:
+            raise ReleaseError('handoff recipe differs from its index digest')
+        recipe = _json(raw)
+        if (not isinstance(recipe, dict) or recipe.get('schema') != 'astrid.engine-recipe.v1'
+                or recipe.get('engine') != HANDOFF_ENGINE or recipe.get('platform') != HANDOFF_PLATFORM):
+            raise ReleaseError('handoff recipe identity differs')
+        primary = [e for e in recipe['environments']
+                   if isinstance(e, dict) and e.get('name') == recipe.get('primary_environment')]
+        if len(primary) != 1:
+            raise ReleaseError('handoff recipe has no unique primary environment')
+        environment = {k: primary[0][k] for k in ('relative_path', 'python_version', 'uv_version')}
+    except (KeyError, TypeError, AttributeError, OSError):
+        raise ReleaseError('invalid packaged handoff recipe') from None
+    if not all(isinstance(v, str) for v in environment.values()):
+        raise ReleaseError('invalid packaged handoff recipe')
+    return environment
+
+
+def expected_identity(python_version, platform_key=HANDOFF_PLATFORM):
+    """Exact interpreter identity implied by a recipe pin and Linux platform key."""
+    match = re.fullmatch('([0-9]+)[.]([0-9]+)[.]([0-9]+)', python_version or '')
+    if match is None or not platform_key.startswith('linux-x86_64-'):
+        raise ReleaseError('recipe interpreter pin is not an exact Linux x86_64 CPython')
+    return {'implementation': 'cpython', 'version': [int(p) for p in match.groups()],
+            'platform': 'linux', 'machine': 'x86_64'}
+
+
+def _bounded(argv, *, env, end, capture=False):
+    """One bootstrap child in the CALLER's process group, bounded by ``end``.
+
+    The original agent job owns the group: its cancel signals reach these
+    children. On our own bound subprocess kills/reaps the direct child.
+    """
+    remaining = end - time.monotonic()
+    if remaining <= 0:
+        raise ReleaseError('python handoff budget exhausted')
+    try:
+        return subprocess.run(list(argv), env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE if capture else sys.stderr.fileno(),
+                              stderr=subprocess.DEVNULL if capture else sys.stderr.fileno(),
+                              timeout=remaining, check=False)
+    except subprocess.TimeoutExpired:
+        raise ReleaseError('python handoff step exceeded its bound') from None
+
+
+def prepare_release_python(*, archive, sha256, retain, root, seconds=1800):
+    """Verify a complete release, then return the exact interpreter for it.
+
+    Order is fixed: archive digest, member set and every retained file hash;
+    complete/non-fixture manifest; hash-indexed recipe; manifest identity equal
+    to the recipe's managed CPython/Linux x86_64. Only then, if the running
+    interpreter differs, the recipe's exact uv/managed-Python commands (shared
+    with LinuxPlatformAdapter) run and the venv interpreter's live identity is
+    checked. No product import, resolver, source or model step happens here.
+    Returns a locator: {schema, python, release, run, bootstrapped, identity}.
+    """
+    if type(seconds) not in (int, float) or not 0 < seconds <= 604800:
+        raise ReleaseError('invalid python handoff budget')
+    end = time.monotonic() + seconds
+    release = extract_release(archive, sha256, retain)
+    manifest = verify_tree(release)
+    if not manifest['complete'] or manifest['fixture']:
+        raise ReleaseError('incomplete release cannot hand off to a managed interpreter')
+    environment = _handoff_recipe(release)
+    expected = expected_identity(environment['python_version'])
+    if manifest['python'] != expected:
+        raise ReleaseError('release interpreter differs from the recipe managed Python')
+    locator = {'schema': HANDOFF_SCHEMA, 'release': str(release), 'run': str(release / 'run.py'),
+               'identity': expected}
+    current = interpreter_identity()
+    if current == expected:
+        return dict(locator, python=sys.executable, bootstrapped=False)
+    if (current['platform'], current['machine']) != (expected['platform'], expected['machine']):
+        raise ReleaseError('release target platform differs')
+    # Exact verified retained helper; the same file LinuxPlatformAdapter imports.
+    helper = runpy.run_path(str(release / 'site/astrid/core/generation/_engine_python_bootstrap.py'))
+    try:
+        commands = helper['linux_bootstrap_commands'](
+            install_root=root, uv_version=environment['uv_version'],
+            python_version=environment['python_version'],
+            venv_relative_path=environment['relative_path'])
+        paths = helper['linux_bootstrap_paths'](install_root=root,
+                                                venv_relative_path=environment['relative_path'])
+        overlay = helper['linux_bootstrap_environment'](install_root=root)
+    except ValueError:
+        raise ReleaseError('invalid managed interpreter bootstrap input') from None
+    env = {k: os.environ[k] for k in _CHILD_ENV if k in os.environ}
+    env.setdefault('PATH', os.defpath)
+    env.update(overlay)
+    pip_env = dict(env, **helper['linux_bootstrap_pip_environment']())
+    # Refuse before any mutation when the system interpreter cannot run pip.
+    if _bounded((commands[0][0], '-m', 'pip', '--version'), env=env, end=end, capture=True).returncode:
+        raise ReleaseError('system python3 with pip is required by the recipe bootstrap')
+    if _bounded(commands[0], env=pip_env, end=end).returncode:
+        raise ReleaseError('pinned uv bootstrap failed')
+    version = _bounded((paths['uv'], '--version'), env=env, end=end, capture=True)
+    if version.returncode or version.stdout.decode('utf-8', 'replace').split()[:2] != [
+            'uv', environment['uv_version']]:
+        raise ReleaseError('bootstrap uv differs from the recipe pin')
+    if _bounded(commands[1], env=env, end=end).returncode:
+        raise ReleaseError('managed interpreter bootstrap failed')
+    probe = _bounded((paths['python'], '-I', '-S', '-c', _IDENTITY_PROBE), env=env, end=end, capture=True)
+    try:
+        actual = _json(probe.stdout) if not probe.returncode and len(probe.stdout) < 4096 else None
+    except ReleaseError:
+        actual = None
+    if actual != expected:
+        raise ReleaseError('managed interpreter identity differs from the release manifest')
+    return dict(locator, python=paths['python'], bootstrapped=True)
+
+
+def _absolute(*paths):
+    for path in paths:
+        if (not isinstance(path, str) or not path.startswith('/')
+                or any(part in ('', '.', '..') for part in path.split('/')[1:])
+                or any(ord(c) < 32 for c in path) or '\\' in path):
+            raise ReleaseError('expected a normalized absolute startup path')
+
+
+def release_cli_argv(*, archive, sha256, retain, root, cli_args, seconds=1800,
+                     python='/usr/bin/python3'):
+    """Pure argv: verify, hand off, then exec the retained canonical CLI.
+
+    For an existing authenticated agent job (one job owns every child). The
+    CLI arguments must target the same ``--root`` as the handoff.
+    """
+    if not re.fullmatch('[0-9a-f]{64}', sha256 or ''):
+        raise ReleaseError('expected an exact archive SHA256')
+    _absolute(archive, retain, root, python)
+    cli_args = tuple(cli_args)
+    if not all(isinstance(a, str) for a in cli_args) or _cli_root(cli_args) != root:
+        raise ReleaseError('canonical CLI arguments must select the handoff root')
+    if type(seconds) not in (int, float) or not 0 < seconds <= 604800:
+        raise ReleaseError('invalid python handoff budget')
+    loader = Path(__file__).read_text(encoding='utf-8')
+    return (python, '-I', '-S', '-c', loader, 'cli', '--archive', archive, '--sha256', sha256,
+            '--retain', retain, '--root', root, '--seconds', str(seconds), '--', *cli_args)
+
+
+def _cli_root(cli_args):
+    roots = [cli_args[i + 1] for i, a in enumerate(cli_args[:-1]) if a == '--root']
+    return roots[0] if len(roots) == 1 and '--root' not in cli_args[-1:] else None
+
+
 def startup_argv(*, archive, sha256, retain, root, attempt, volume='/workspace',
                  seconds=3600, step_seconds=1800, python='/usr/bin/python3'):
     """Pure argv for an EXPLICIT provider entrypoint override, never a create.
@@ -412,11 +594,7 @@ def startup_argv(*, archive, sha256, retain, root, attempt, volume='/workspace',
     """
     if not re.fullmatch('[0-9a-f]{64}', sha256):
         raise ReleaseError('expected an exact archive SHA256')
-    for path in (archive, retain, root, volume, python):
-        if (not isinstance(path, str) or not path.startswith('/')
-                or any(part in ('', '.', '..') for part in path.split('/')[1:])
-                or any(ord(c) < 32 for c in path) or '\\' in path):
-            raise ReleaseError('expected a normalized absolute startup path')
+    _absolute(archive, retain, root, volume, python)
     if any(Path(volume) not in Path(path).parents for path in (archive, retain, root)):
         raise ReleaseError('archive, retention and install root must be below the selected volume')
     if not re.fullmatch('[A-Za-z0-9_-]{1,80}', attempt):
@@ -440,36 +618,54 @@ def main(argv=None):
     build.add_argument('--provenance', required=True)
     build.add_argument('--output', required=True)
     build.add_argument('--fixture', action='store_true')
-    for name in ('extract', 'start'):
+    for name in ('extract', 'start', 'prepare-python', 'cli'):
         extract = commands.add_parser(name)
         extract.add_argument('--archive', required=True)
         extract.add_argument('--sha256', required=True)
         extract.add_argument('--retain', required=True)
         if name == 'start':
             extract.add_argument('--volume', default='/workspace')
-            extract.add_argument('--root', required=True)
             extract.add_argument('--attempt', required=True)
             extract.add_argument('--seconds', type=float, default=3600)
             extract.add_argument('--step-seconds', type=float, default=1800)
+        if name in ('start', 'prepare-python', 'cli'):
+            extract.add_argument('--root', required=True)
+        if name in ('prepare-python', 'cli'):
+            extract.add_argument('--seconds', type=float, default=1800)
+        if name == 'cli':
+            extract.add_argument('cli_args', nargs='+')
     args = parser.parse_args(argv)
     try:
         if args.operation == 'build':
             path, _ = build_release(args.wheel, _json(Path(args.provenance).read_bytes()),
                                     args.output, fixture=args.fixture)
+        elif args.operation == 'extract':
+            path = extract_release(args.archive, args.sha256, args.retain)
         else:
+            started = time.monotonic()
             if args.operation == 'start' and any(
                     Path(args.volume) not in Path(path).parents
                     for path in (args.archive, args.retain, args.root)):
                 raise ReleaseError('startup paths must remain below the selected volume')
-            path = extract_release(args.archive, args.sha256, args.retain)
-            if args.operation == 'start':
-                manifest = verify_tree(path)
-                if not manifest['complete'] or manifest['fixture']:
-                    raise ReleaseError('incomplete release cannot self-start')
-                os.execv(sys.executable, [sys.executable, '-I', '-S', str(path / 'run.py'),
-                         'startup', '--volume', args.volume, '--root', args.root,
-                         '--attempt', args.attempt, '--seconds', str(args.seconds),
-                         '--step-seconds', str(args.step_seconds)])
+            if args.operation == 'cli' and _cli_root(tuple(args.cli_args)) != args.root:
+                raise ReleaseError('canonical CLI arguments must select the handoff root')
+            prepared = prepare_release_python(archive=args.archive, sha256=args.sha256,
+                                              retain=args.retain, root=args.root,
+                                              seconds=args.seconds)
+            if args.operation == 'prepare-python':
+                print(json.dumps(prepared, sort_keys=True, separators=(',', ':')))
+                return 0
+            python, run = prepared['python'], prepared['run']
+            if args.operation == 'cli':
+                os.execv(python, [python, '-I', '-S', run, 'cli', *args.cli_args])
+            # Bootstrap time is charged to the same bounded startup lifetime.
+            remaining = args.seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise ReleaseError('startup budget exhausted during python handoff')
+            os.execv(python, [python, '-I', '-S', run,
+                     'startup', '--volume', args.volume, '--root', args.root,
+                     '--attempt', args.attempt, '--seconds', str(remaining),
+                     '--step-seconds', str(min(args.step_seconds, remaining))])
         print(path)
         return 0
     except (ReleaseError, OSError, zipfile.BadZipFile, subprocess.TimeoutExpired):
