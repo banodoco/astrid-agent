@@ -461,10 +461,36 @@ class _Runner:
             self.run((uv, "--no-config", "pip", "install", "--python", python,
                       "--force-reinstall", "--no-deps", "--require-hashes", "-r", wheels))
         self.run((uv, "--no-config", "pip", "check", "--python", python))
+        self.write_install_receipts(environment)
         if not self.environment_probe(environment, lock.sha256):
             raise IntegrityError("environment final verification failed", step_id=self.step_id)
         self.write(state_path, {**identity, "requirements_lock_sha256": lock.sha256, "validated": True})
         return "executed", {"requirements_lock_sha256": lock.sha256}
+
+    def write_install_receipts(self, environment):
+        """Persist per-wheel receipts after the hash-pinned (--require-hashes) install.
+
+        uv leaves archive_info empty, so the later probe relies on these receipts
+        plus the installed RECORD digest captured here.
+        """
+        if not environment.final_wheels:
+            return
+        from .engine_runner_target import _RECEIPT_SCRIPT, receipt_name
+        python = self.adapter.venv_python(self.path(environment.relative_path))
+        wheels = {w.name: {"version": w.version} for w in environment.final_wheels}
+        result = self.run((python, "-I", "-c", _RECEIPT_SCRIPT, _json({"wheels": wheels})),
+                          env={**self.env, "CUDA_VISIBLE_DEVICES": ""})
+        try:
+            digests = json.loads(result.stdout)["record_sha256"]
+        except (ValueError, KeyError, TypeError):
+            raise IntegrityError("installed wheel RECORD digests are unreadable", step_id=self.step_id)
+        for wheel in environment.final_wheels:
+            digest = digests.get(wheel.name) if isinstance(digests, dict) else None
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise IntegrityError("installed wheel RECORD digest is missing", step_id=self.step_id)
+            self.write(self.path(".astrid-engine/environments", environment.name, receipt_name(wheel.name)),
+                       {"name": wheel.name, "version": wheel.version, "url": wheel.url,
+                        "sha256": wheel.sha256, "record_sha256": digest})
 
     def verify_uv(self, executable, version):
         result = self.run((executable, "--version"))

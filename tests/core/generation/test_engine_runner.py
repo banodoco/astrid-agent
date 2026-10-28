@@ -268,6 +268,8 @@ class FakeContext:
         if argv[0].endswith("/bin/python") and "-c" in argv:
             assert request.env["CUDA_VISIBLE_DEVICES"] == ""
             expected = json.loads(argv[-1])
+            if "fake_environment" not in expected:  # install receipt digest script
+                return self.result(runner._json({"record_sha256": {n: "c" * 64 for n in expected["wheels"]}}))
             return self.result(code=0 if self.environments.get(expected["fake_environment"]) else 1)
         pytest.fail("unexpected command: " + str(argv))
 
@@ -329,6 +331,18 @@ def setup(monkeypatch):
 def install(setup):
     plan, context, adapter, deadline = setup
     return runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline)
+
+
+def test_install_writes_private_receipt_per_final_wheel(setup):
+    install(setup)
+    context = setup[1]
+    wheels = context.recipe.environments[0].final_wheels
+    assert wheels
+    for wheel in wheels:
+        path = context.adapter.join(context.root, ".astrid-engine/environments",
+                                    context.recipe.environments[0].name, target.receipt_name(wheel.name))
+        assert context.files[path] == {"name": wheel.name, "version": wheel.version, "url": wheel.url,
+                                       "sha256": wheel.sha256, "record_sha256": "c" * 64}
 
 
 def status(setup):
@@ -857,6 +871,84 @@ print(json.dumps({'python': sys.version.split()[0], 'packaging': metadata.versio
                                          "pip_stderr": pip.stderr.strip(), "expected": expected,
                                          "probe_exit": result.returncode, "probe_stdout": result.stdout.strip(),
                                          "invalid_evidence_cases_refused": 3}, sort_keys=True))
+
+
+WHEEL_URL = "https://example.invalid/fakewheel-1.0-py3-none-any.whl"
+WHEEL_SHA = "d" * 64
+
+
+@pytest.fixture
+def receipt_environment(tmp_path):
+    """A disposable venv holding a fake hash-pinned wheel plus the real packaging library."""
+    root = tmp_path / "receipt-venv"
+    venv.EnvBuilder(with_pip=False).create(root)
+    python = root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    purelib = Path(subprocess.run([str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                                  capture_output=True, text=True, timeout=20, check=True).stdout.strip())
+    packaging_dist = metadata.distribution("packaging")
+    for relative in packaging_dist.files:
+        destination = purelib / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(packaging_dist.locate_file(relative).read_bytes())
+    (purelib / "fakewheel").mkdir()
+    (purelib / "fakewheel/__init__.py").write_text('__version__ = "1.0"\n')
+    info = purelib / "fakewheel-1.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: fakewheel\nVersion: 1.0\n")
+    (info / "direct_url.json").write_text(json.dumps({"url": WHEEL_URL, "archive_info": {}}))
+    (info / "RECORD").write_text("fakewheel/__init__.py,,\nfakewheel-1.0.dist-info/METADATA,,\nfakewheel-1.0.dist-info/RECORD,,\n")
+    receipt = tmp_path / "install-receipt-fakewheel.json"
+    expected = {"python": subprocess.run([str(python), "-I", "-c", "import sys; print(sys.version.split()[0])"],
+                                         capture_output=True, text=True, check=True).stdout.strip(),
+                "requirements": [], "constraints": [], "sources": [], "cuda": "13.0",
+                "wheels": {"fakewheel": {"version": "1.0", "url": WHEEL_URL, "sha256": WHEEL_SHA,
+                                         "receipt": str(receipt)}}}
+
+    def write_receipt(**override):
+        digest = subprocess.run([str(python), "-I", "-c", target._RECEIPT_SCRIPT,
+                                 runner._json({"wheels": {"fakewheel": {"version": "1.0"}}})],
+                                capture_output=True, text=True, timeout=20, check=True)
+        value = {"name": "fakewheel", "version": "1.0", "url": WHEEL_URL, "sha256": WHEEL_SHA,
+                 "record_sha256": json.loads(digest.stdout)["record_sha256"]["fakewheel"], **override}
+        receipt.write_text(json.dumps(value))
+
+    def probe():
+        return subprocess.run([str(python), "-I", "-c", target._ENV_PROBE, runner._json(expected)],
+                              capture_output=True, text=True, timeout=20, check=False).returncode == 0
+
+    yield types.SimpleNamespace(info=info, receipt=receipt, write_receipt=write_receipt, probe=probe)
+
+
+def test_probe_accepts_uv_empty_archive_info_with_matching_receipt(receipt_environment):
+    receipt_environment.write_receipt()
+    assert receipt_environment.probe()
+
+
+def test_probe_refuses_missing_receipt(receipt_environment):
+    assert not receipt_environment.probe()
+
+
+def test_probe_refuses_unreadable_receipt(receipt_environment):
+    receipt_environment.receipt.write_text("{not json")
+    assert not receipt_environment.probe()
+
+
+def test_probe_refuses_receipt_with_wrong_sha256(receipt_environment):
+    receipt_environment.write_receipt(sha256="e" * 64)
+    assert not receipt_environment.probe()
+
+
+def test_probe_refuses_record_modified_after_receipt(receipt_environment):
+    receipt_environment.write_receipt()
+    with (receipt_environment.info / "RECORD").open("a") as record:
+        record.write("fakewheel/evil.py,,\n")
+    assert not receipt_environment.probe()
+
+
+def test_probe_still_accepts_pip_style_archive_hash_without_receipt(receipt_environment):
+    (receipt_environment.info / "direct_url.json").write_text(json.dumps(
+        {"url": WHEEL_URL, "archive_info": {"hashes": {"sha256": WHEEL_SHA}}}))
+    assert receipt_environment.probe()
 
 
 def test_target_lock_commit_interruption_reuses_exact_candidate(resolve_once, tmp_path, monkeypatch):

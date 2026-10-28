@@ -103,6 +103,10 @@ def _entries(text):
     return result
 
 
+def receipt_name(wheel_name):
+    return f"install-receipt-{wheel_name}.json"
+
+
 def _paths(root, environment):
     directory = _safe(root, ".astrid-engine", "environments", environment.name)
     return directory, _safe(root, ".astrid-engine", "environments", environment.name, "requirements.lock")
@@ -125,12 +129,49 @@ def _validate_lock(recipe, helper_digest, environment, root):
     return directory, lock
 
 
+# Shared static snippet: sha256 of an installed distribution's own RECORD file.
+_RECORD_SHA = r'''
+import hashlib
+def record_sha256(distribution):
+    records = [f for f in (distribution.files or ()) if f.name == 'RECORD' and len(f.parts) == 2]
+    assert len(records) == 1
+    return hashlib.sha256(distribution.locate_file(records[0]).read_bytes()).hexdigest()
+'''
+
+# Static code run in the selected environment right after a hash-pinned install.
+# It only reports each installed wheel's RECORD digest; the runner persists the
+# install receipt. Never populated from recipe code.
+_RECEIPT_SCRIPT = _RECORD_SHA + r'''
+import importlib.metadata as metadata, json, sys
+expected=json.loads(sys.argv[1])
+digests={}
+for name, wheel in expected['wheels'].items():
+    distribution=metadata.distribution(name)
+    assert distribution.version == wheel['version'], name
+    digests[name]=record_sha256(distribution)
+print(json.dumps({'record_sha256': digests}))
+'''
+
 # Static product verification code, executed in the selected environment. This
 # is never populated from recipe code and does not install or repair anything.
-_ENV_PROBE = r'''
-import hashlib, importlib, importlib.metadata as metadata, json, sys
+_ENV_PROBE = _RECORD_SHA + r'''
+import importlib, importlib.metadata as metadata, json, sys
 from urllib.parse import unquote, urlsplit
 from packaging.requirements import Requirement
+def receipt_matches(name, wheel, distribution):
+    # uv records no hash in direct_url.json; the hash-pinned install verified the
+    # bytes, so accept the runner's install receipt if it still describes this dist.
+    try:
+        with open(wheel['receipt'], 'rb') as stream:
+            receipt=json.loads(stream.read())
+        return (isinstance(receipt, dict)
+                and receipt.get('name') == name
+                and receipt.get('version') == wheel['version']
+                and unquote(str(receipt.get('url',''))) == unquote(wheel['url'])
+                and receipt.get('sha256') == wheel['sha256']
+                and receipt.get('record_sha256') == record_sha256(distribution))
+    except Exception:
+        return False
 expected=json.loads(sys.argv[1])
 assert sys.version.split()[0] == expected['python']
 versions={}
@@ -149,7 +190,8 @@ for name, wheel in expected['wheels'].items():
     direct=json.loads(distribution.read_text('direct_url.json') or '{}')
     assert unquote(direct.get('url','')) == unquote(wheel['url']), name
     archive=direct.get('archive_info',{})
-    assert archive.get('hashes',{}).get('sha256') == wheel['sha256'] or archive.get('hash') == 'sha256='+wheel['sha256'], name
+    assert (archive.get('hashes',{}).get('sha256') == wheel['sha256'] or archive.get('hash') == 'sha256='+wheel['sha256']
+            or receipt_matches(name, wheel, distribution)), name
     module=importlib.import_module(name)
     assert module.__version__ == wheel['version'], name
 for constraint in expected['constraints']:
@@ -174,7 +216,9 @@ print(json.dumps({'valid': True}))
 
 def _environment_spec(recipe, environment, root, helper_digest):
     _, lock = _validate_lock(recipe, helper_digest, environment, root)
-    wheels = {w.name: {"version": w.version, "url": w.url, "sha256": w.sha256}
+    directory, _ = _paths(root, environment)
+    wheels = {w.name: {"version": w.version, "url": w.url, "sha256": w.sha256,
+                       "receipt": str(directory / receipt_name(w.name))}
               for w in environment.final_wheels}
     expected = {"python": environment.python_version, "wheels": wheels,
                 "constraints": list(environment.requirements.constraints),
