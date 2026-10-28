@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import http.client
-import re
+import json
 import os
+import re
 import subprocess
 import sys
 import time

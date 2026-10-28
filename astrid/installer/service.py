@@ -19,7 +19,15 @@ from xml.sax.saxutils import escape
 
 from runtime_protocol import platform
 
-from .core import Version, absolute, current, persist_install_identity, read_json, version_id, write_json
+from .core import (
+    Version,
+    absolute,
+    current,
+    persist_install_identity,
+    read_json,
+    version_id,
+    write_json,
+)
 
 LABEL = "haus.astrid.runtime"
 TASK = "Astrid Runtime"
