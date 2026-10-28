@@ -229,6 +229,10 @@ def test_managed_backend_stop_and_register_do_not_touch_login_service(tmp_path, 
     backend = Backend(root, tmp_path / "install.log", tmp_path / "uv", managed_by="pinokio")
     from astrid.installer.service import Service
     backend.service = Service(root, tmp_path / "install.log", backend.run, home=home, system=system)
+    # Runtime's C1 reader follows the host platform's canonical selection
+    # location; only the service backend is parameterized across OS formats.
+    from astrid_runtime.paths import _install_record_path
+    backend.service.selection = _install_record_path(home)
     calls = []
     for name in ("disable", "stop", "stop_foreground", "register", "unregister"):
         monkeypatch.setattr(backend.service, name, lambda *args, _name=name, **kwargs: calls.append(_name))
@@ -248,6 +252,26 @@ def test_managed_backend_stop_and_register_do_not_touch_login_service(tmp_path, 
     version_root = root / "versions" / "v1"
     version_root.mkdir(parents=True)
     version = _version(version_root)
+    if temporary_daemon:
+        import astrid_runtime
+        runtime_checkout = Path(astrid_runtime.__file__).resolve().parents[1]
+        source_checkout = Path(__file__).resolve().parents[1]
+        environment = version.python.parent.parent
+        declaration = version_root / "services.json"
+        write_json(declaration, {"services": []})
+        profile = {
+            "profile": "astrid", "runtime_checkout": str(runtime_checkout),
+            "source_checkout": str(source_checkout), "runtime_environment": str(environment),
+            "source_digest": "", "service_declaration": str(declaration),
+        }
+        write_json(version.profile, profile)
+        write_json(paths.source_profiles_dir / "astrid.json", profile)
+        catalog = read_json(paths.catalog_path)
+        catalog["source_profiles"] = {"astrid": profile}
+        write_json(paths.catalog_path, catalog)
+        version = Version(version.root, version.python, version.profile, {}, 1, "pinokio")
+        write_json(version_root / "version.json", version.document())
+        switch(root, version)
     runtime_calls = []
     c1_calls = []
     if temporary_daemon:
@@ -272,7 +296,11 @@ def test_managed_backend_stop_and_register_do_not_touch_login_service(tmp_path, 
         backend.stop(version, data)
         backend.unregister()
     else:
-        backend.stop(version, data)  # Fresh no-publication stop still takes C1.
+        # Pinokio selection without a live owner or a completed C1 stop is
+        # not sufficient authority to clean up the manager-owned Runtime.
+        with pytest.raises(RuntimeOperationError) as raised:
+            backend.stop(version, data)
+        assert raised.value.details == {"safe": False, "code": "stop_unproven"}
 
     assert calls == []
     assert backend.service.recorded()["managed_by"] == "pinokio"

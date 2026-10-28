@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import astrid_runtime
 import pytest
 from runtime_protocol import platform
 from runtime_protocol.upgrade import inspect_canonical_schema
@@ -28,14 +29,45 @@ def _stopped_transaction(tmp_path, monkeypatch, kind):
     backend.managed_by = manager
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
-    old = Version(folder, Path(sys.executable), folder / "profile.json", {}, 17, manager)
+    if manager == "pinokio":
+        python = folder / "py" / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        runtime_checkout = Path(astrid_runtime.__file__).resolve().parents[1]
+        source_checkout = Path(__file__).resolve().parents[1]
+        environment = python.parent.parent
+        declaration = folder / "services.json"
+        write_json(declaration, {"services": []})
+        profile = {
+            "profile": "astrid", "runtime_checkout": str(runtime_checkout),
+            "source_checkout": str(source_checkout), "runtime_environment": str(environment),
+            "source_digest": "", "service_declaration": str(declaration),
+        }
+        write_json(folder / "profile.json", profile)
+        write_json(paths.source_profiles_dir / "astrid.json", profile)
+        catalog = read_json(paths.catalog_path)
+        catalog["source_profiles"] = {"astrid": profile}
+        write_json(paths.catalog_path, catalog)
+        old = Version(folder, python, folder / "profile.json", {
+            "ASTRID_RUNTIME_DATA_ROOT": str(data),
+        }, 17, manager)
+    else:
+        old = Version(folder, Path(sys.executable), folder / "profile.json", {}, 17, manager)
     write_json(folder / "version.json", old.document())
     switch(root, old)
     record = {"owner": LABEL, "program_root": str(root), "data_root": str(data),
               "managed_by": manager}
     write_json(root / "install.json", record)
-    write_json(backend.service.selection, record)
-    backend.service.recorded = lambda: record.copy()
+    if manager == "pinokio":
+        record.update({
+            "realm_id": "realm-1", "realm_root": str(realm),
+            "identity": {"release": old.release, "managed_by": "pinokio"},
+        })
+        write_json(backend.service.selection, record)
+        backend.service.recorded = lambda: read_json(backend.service.selection)
+    else:
+        write_json(backend.service.selection, record)
+        backend.service.recorded = lambda: record.copy()
     transaction = {
         "format": "astrid-install-update/v1", "operation_id": "e" * 32,
         "transaction_kind": kind, "step": "stopping", "data_root": str(data),
@@ -47,6 +79,14 @@ def _stopped_transaction(tmp_path, monkeypatch, kind):
     def save(step, **details):
         installer._save_update(transaction, step, **details)
 
+    stop_owner = boundary.stop_owner
+
+    def stop_owner_and_mark_absent(**kwargs):
+        result = stop_owner(**kwargs)
+        boundary.live = False
+        return result
+
+    boundary.stop_owner = stop_owner_and_mark_absent
     _publish_owner(paths)
     save("stopping")
     backend.stop(old, data)
@@ -63,6 +103,17 @@ def _stopped_transaction(tmp_path, monkeypatch, kind):
         setattr(fresh, name, Mock())
     fresh_boundary = type(boundary)()
     fresh_boundary.live = False
+    # Race cases publish a replacement by toggling this fresh boundary live;
+    # a successful C1 stop must then report that exact process absent.
+    fresh_stop_owner = fresh_boundary.stop_owner
+
+    def fresh_stop_owner_and_mark_absent(**kwargs):
+        result = fresh_stop_owner(**kwargs)
+        fresh_boundary.live = False
+        fresh_boundary.process_birth_identity = lambda _pid: None
+        return result
+
+    fresh_boundary.stop_owner = fresh_stop_owner_and_mark_absent
     monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary", lambda: fresh_boundary)
 
     def recover():
@@ -393,7 +444,7 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     @contextmanager
     def replacement_after_absence(paths_arg):
         with mutex(paths_arg):
-            replacement = _publish_owner(paths_arg, pid=887, birth="replacement-birth")
+            _publish_owner(paths_arg, pid=887, birth="replacement-birth")
             yield
 
     monkeypatch.setattr(bootstrap, "_bootstrap_mutex", replacement_after_absence)
@@ -849,6 +900,7 @@ def _assert_restore_refusal_unchanged(backend, paths, realm, boundary, manager_c
                                   "unknown_owner", "pid_reused"])
 def test_backend_preflight_refuses_readable_restore_gap_before_writes(tmp_path, monkeypatch, case):
     import sqlite3
+
     from astrid.installer.core import RuntimeOperationError
 
     backend, data, paths, realm, boundary, manager_calls, _old, _candidate, backup, journal = (
