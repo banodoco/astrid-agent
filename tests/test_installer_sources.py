@@ -375,6 +375,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
     monkeypatch.setattr(backend, "run", run)
     monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
+    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
