@@ -119,7 +119,7 @@ def _require_mapping(value: Any, *, field: str) -> Mapping[str, Any]:
 def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str) -> None:
     health = _require_mapping(value, field="health")
     keys = frozenset(health)
-    if not _HEALTH_KEYS <= keys or keys - _HEALTH_KEYS - {"services"}:
+    if not _HEALTH_KEYS <= keys or keys - _HEALTH_KEYS - {"services", "identity"}:
         raise _protocol_error("health", "runtime health response has an unexpected schema")
     if health.get("status") != "ok":
         raise _protocol_error("health.status", "runtime health status is not ok")
@@ -134,6 +134,35 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
         identity = health.get(field)
         if not isinstance(identity, str) or not identity.strip():
             raise _protocol_error(f"health.{field}", f"runtime health {field} is invalid")
+    if "identity" in health:
+        identity = health["identity"]
+        if identity is not None:
+            identity = _require_mapping(identity, field="health.identity")
+            identity_keys = frozenset(identity)
+            installed_keys = frozenset({"release", "managed_by"})
+            source_keys = frozenset({"release", "managed_by", "runtime_head", "agent_head", "dirty", "dirty_hash"})
+            source_identity = identity.get("managed_by") == "source"
+            expected_keys = source_keys if source_identity else installed_keys
+            if identity_keys != expected_keys:
+                raise _protocol_error("health.identity", "runtime health identity has an unexpected schema")
+            release = identity.get("release")
+            if isinstance(release, bool) or not isinstance(release, int) or release < 0:
+                raise _protocol_error("health.identity.release", "runtime health identity release is invalid")
+            managed_by = identity.get("managed_by")
+            if managed_by not in (None, "pinokio", "source"):
+                raise _protocol_error("health.identity.managed_by", "runtime health identity managed_by is invalid")
+            if source_identity and release != 0:
+                raise _protocol_error("health.identity.release", "runtime source identity release is invalid")
+            if source_identity:
+                for field in ("runtime_head", "agent_head"):
+                    head = identity.get(field)
+                    if not isinstance(head, str) or len(head) != 40 or any(char not in "0123456789abcdef" for char in head):
+                        raise _protocol_error(f"health.identity.{field}", f"runtime health identity {field} is invalid")
+                if type(identity.get("dirty")) is not bool:
+                    raise _protocol_error("health.identity.dirty", "runtime health identity dirty is invalid")
+                dirty_hash = identity.get("dirty_hash")
+                if not isinstance(dirty_hash, str) or len(dirty_hash) != 64 or any(char not in "0123456789abcdef" for char in dirty_hash):
+                    raise _protocol_error("health.identity.dirty_hash", "runtime health identity dirty_hash is invalid")
     if "services" in health:
         services = health["services"]
         if not isinstance(services, list):
@@ -245,6 +274,10 @@ class AstridClient:
                 "runtime realm, actor, and client identity are required; run the Astrid install line again",
                 details={"next_action": "run the Astrid install line again"},
             )
+        selected_realm = str(realm_id)
+        selected_actor = str(actor_id)
+        selected_name = str(client_name)
+        selected_version = str(client_version)
 
         def unavailable(exc: Exception, *, operation: str | None = None) -> ServiceUnavailableError:
             from astrid.core.audit.util import redact
@@ -306,8 +339,8 @@ class AstridClient:
                 raise unavailable(exc, operation="health") from exc
             try:
                 handshake = workspace.handshake(
-                    client_name,
-                    client_version,
+                    selected_name,
+                    selected_version,
                     [
                         "projects:read",
                         "projects:write",
@@ -321,12 +354,12 @@ class AstridClient:
                     handshake,
                     expected_protocol=PROTOCOL,
                     expected_digest=SCHEMA_DIGEST,
-                    expected_realm=realm_id,
-                    expected_actor=actor_id,
+                    expected_realm=selected_realm,
+                    expected_actor=selected_actor,
                 )
             except Exception as exc:
                 raise unavailable(exc, operation="handshake") from exc
-            workspace.actor_id = actor_id
+            workspace.actor_id = selected_actor
             return workspace
 
         try:

@@ -136,6 +136,34 @@ def test_open_accepts_declared_optional_service_health(monkeypatch: pytest.Monke
     assert isinstance(_open_with_health(monkeypatch, _health(services=services)), AstridClient)
 
 
+@pytest.mark.parametrize("identity", [
+    None,
+    {"release": 3, "managed_by": "pinokio"},
+    {"release": 0, "managed_by": "source", "runtime_head": "a" * 40,
+     "agent_head": "b" * 40, "dirty": False, "dirty_hash": "c" * 64},
+])
+def test_open_accepts_declared_optional_runtime_identity(
+    monkeypatch: pytest.MonkeyPatch, identity: object
+) -> None:
+    assert isinstance(_open_with_health(monkeypatch, _health(identity=identity)), AstridClient)
+
+
+@pytest.mark.parametrize("identity,field", [
+    ({"release": 1, "managed_by": None, "extra": True}, "health.identity"),
+    ({"release": True, "managed_by": None}, "health.identity.release"),
+    ({"release": 1, "managed_by": "other"}, "health.identity.managed_by"),
+    ({"release": 0, "managed_by": "source", "runtime_head": "x", "agent_head": "b" * 40,
+      "dirty": False, "dirty_hash": "c" * 64}, "health.identity.runtime_head"),
+])
+def test_open_rejects_malformed_runtime_identity(
+    monkeypatch: pytest.MonkeyPatch, identity: object, field: str
+) -> None:
+    with pytest.raises(ServiceUnavailableError) as error:
+        _open_with_health(monkeypatch, _health(identity=identity))
+    assert error.value.details["reason"] == "protocol_error"
+    assert error.value.details["field"] == field
+
+
 @pytest.mark.parametrize("services,field", [
     (None, "health.services"),
     ({}, "health.services"),
