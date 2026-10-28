@@ -110,7 +110,14 @@ def test_defaults_bound_unattended_claim_to_one_hour() -> None:
     assert args.provider_account_ref is None
     assert args.worker_image == claim.DEFAULT_WORKER_IMAGE
     assert args.template_id is None
-    assert args.allowed_cuda_versions == "13.0"
+    assert args.allowed_cuda_versions == "13.0,13.1,13.2,13.3"
+
+
+def test_exact_match_cuda_filter_default_claim_list_covers_every_13x_from_recipe_minimum() -> None:
+    args = claim._parser().parse_args([])
+    built = [part.strip() for part in args.allowed_cuda_versions.split(",") if part.strip()]
+
+    assert {"13.0", "13.1", "13.2", "13.3"} <= set(built)
 
 
 def test_release_preflight_is_cpu_only_and_never_queries_cuda() -> None:
@@ -199,7 +206,7 @@ def test_allocation_unknown_persists_secret_free_marker_and_never_opens_another_
         assert config.storage_volumes == ("backup",)
         assert config.worker_image == claim.DEFAULT_WORKER_IMAGE
         assert config.template_id is None
-        assert config.allowed_cuda_versions == ("13.0",)
+        assert config.allowed_cuda_versions == ("13.0", "13.1", "13.2", "13.3")
         assert 1 <= kwargs["max_wait_sec"] <= 2
         assert kwargs["retry_interval_sec"] == 120
         raise AllocationUnknown(name, claim.DEFAULT_GPU, 72, "backup", "vol-backup")
@@ -657,7 +664,7 @@ def test_success_atomically_replaces_marker_with_claim_handle_and_leaves_pod_run
     assert final["container_disk_gb"] == 200
     assert final["worker_image"] == claim.DEFAULT_WORKER_IMAGE
     assert final["template_id"] is None
-    assert final["allowed_cuda_versions"] == ["13.0"]
+    assert final["allowed_cuda_versions"] == ["13.0", "13.1", "13.2", "13.3"]
     assert final["lifecycle"] == {"mode": "leave_running"}
     assert final["acquisition_mode"] == "allocate"
     assert final["release_authorized"] is True
