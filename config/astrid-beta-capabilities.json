@@ -775,9 +775,12 @@
    ],
    "required_env": [],
    "required_binaries": [
-    "ffmpeg"
+    "ffmpeg",
+    "ffprobe"
    ],
-   "required_packages": []
+   "required_packages": [
+    "numpy"
+   ]
   },
   {
    "id": "moirae.moirae",

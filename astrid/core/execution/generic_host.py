@@ -6211,12 +6211,20 @@ class GenericPackHost:
             project_root=self.pack_roots[0] if self.pack_roots else Path.cwd(),
             extra_pack_roots=tuple(str(root) for root in self.pack_roots),
         )
+        from astrid.core.execution.executor.actions import action_is_local_orchestrator
+
+        local_orchestrator_ids: set[str] = set()
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
             if not any(pack_root == root or pack_root.is_relative_to(root) for root in self.pack_roots):
                 continue
             for local_id, declaration in pack.actions.items():
+                try:
+                    if action_is_local_orchestrator(declaration):
+                        local_orchestrator_ids.add(f"{pack.id}.{local_id}")
+                except ExecutorValidationError:
+                    continue
                 try:
                     definition = action_executor_definition(discovered_pack, local_id, declaration)
                     source_roots = _admitted_source_roots(pack_root, definition)
@@ -6250,10 +6258,9 @@ class GenericPackHost:
                 for capability_id in expected - discovered
                 if not capability_id.startswith(_OPTIONAL_EXTERNAL_MATRIX_PREFIXES)
                 and capability_id.split(".", 1)[0] not in quarantined_ids
-                # This declared local orchestrator is registered outside the
-                # executor discovery path, so its valid matrix row is expected
-                # to be absent from ``discovered``.
-                and capability_id != "h3_av.transform"
+                # Declared local orchestrators are registered through the
+                # orchestrator registry, not executor discovery.
+                and capability_id not in local_orchestrator_ids
             ))
             if self.stale_matrix_entries:
                 _LOGGER.warning(
