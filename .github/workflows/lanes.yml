@@ -19,6 +19,7 @@ jobs:
       ASTRID_CI_JOB: lanes-integration
       ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
       ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/astrid-pinokio
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +40,16 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
+
+      # The canonical Pinokio checkout the Pinokio integration tests read (ASTRID_PINOKIO_CHECKOUT). There is no Pinokio
+      # pin file yet, so it follows main, as the astrid-app checkout in windows-journey.yml does. Pin it like the Runtime
+      # once the owner picks a commit.
+      - name: Check out Pinokio (astrid-pinokio)
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: main
+          path: astrid-pinokio
 
       - name: Set up Python
         uses: actions/setup-python@v5
