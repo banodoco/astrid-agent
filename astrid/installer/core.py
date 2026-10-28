@@ -87,6 +87,27 @@ def write_json(path: Path, value: dict) -> None:
     durable_replace(temporary, path)
 
 
+TERMINAL_STEPS = frozenset({"complete", "rolled_back"})
+
+
+def pending_transaction(root: Path) -> dict | None:
+    """Return the update journal under root only while its step is not terminal."""
+    journal = read_json(root / "update-transaction.json")
+    if not journal or journal.get("step") in TERMINAL_STEPS:
+        return None
+    return journal
+
+
+def owned_by_local_update(journal: dict) -> bool:
+    context = journal.get("transaction_context")
+    return isinstance(context, dict) and context.get("owner") == "local-update"
+
+
+def separate_roots(root: Path, data: Path) -> bool:
+    """Return whether program files and the workspace are disjoint directories."""
+    return not (data == root or data in root.parents or root in data.parents)
+
+
 def version_id(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value):
         raise ValueError("Invalid installation version identifier.")
@@ -278,7 +299,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     publishing ``stopped``.
     """
     transaction = read_json(absolute(root / "update-transaction.json"))
-    if not transaction or transaction.get("step") in {"complete", "rolled_back"}:
+    if not transaction or transaction.get("step") in TERMINAL_STEPS:
         return
     if (transaction.get("format") != "astrid-install-update/v1"
             or not isinstance(transaction.get("operation_id"), str)
@@ -370,11 +391,9 @@ class Installer:
     def _recover_update(self) -> None:
         """Replay rollback before inspecting mutable support or choosing an operation."""
         pending = read_json(absolute(self.root / "update-transaction.json"))
-        if (pending and pending.get("step") not in {"complete", "rolled_back"}
-                and isinstance(pending.get("transaction_context"), dict)
-                and pending["transaction_context"].get("owner") == "local-update"):
+        if pending and pending.get("step") not in TERMINAL_STEPS and owned_by_local_update(pending):
             raise ValueError("Use Astrid's local launcher to recover the interrupted app update.")
-        if pending and pending.get("step") not in {"complete", "rolled_back"} \
+        if pending and pending.get("step") not in TERMINAL_STEPS \
                 and pending.get("transaction_kind") == "app":
             raise ValueError("Choose Pinokio's Update button to recover the interrupted update.")
 

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from runtime_protocol import platform
 
-from astrid.installer import cli, update_job
+from astrid.installer import update_job
 from astrid.installer.core import Installer, Version, current, read_json, write_json
 from astrid.installer.service import LABEL, Service, install_selection
 from astrid.installer.tools import DEFAULT_OMP_SOURCE
@@ -220,11 +220,11 @@ def test_prior_rolled_back_journal_cannot_claim_new_job_rollback(tmp_path, monke
         "format": "astrid-install-update/v1", "operation_id": "e" * 32,
         "step": "rolled_back", "old": old.document(),
     })
-    monkeypatch.setattr(cli, "_canonical_identity",
-                        lambda _discovery, _instance: {"release": 7, "managed_by": None})
+    monkeypatch.setattr(update_job, "_probe_identity",
+                        lambda _data: ("instance-before", {"release": 7, "managed_by": None}))
     backend = SimpleNamespace(workspace=lambda *_args: {"realm_id": "realm"},
                               verify=lambda *_args, **_kwargs: None)
-    cli._record_update_failure(root, data, backend, job, old, RuntimeError("download or launch failed"))
+    update_job.record_failure(root, data, backend, job, old, RuntimeError("download or launch failed"))
     outcome = update_job.read_job(root)
     assert outcome["state"] == "failed"
     assert outcome["message"].startswith("Failed:")
@@ -724,10 +724,10 @@ def test_success_requires_canonical_target_identity_and_bound_c2_complete(tmp_pa
     write_json(discovery, {"runtime_instance_id": "instance-after"})
     backend = SimpleNamespace(workspace=lambda *_args: {"realm_id": "realm"},
                                verify=lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli, "_canonical_identity",
-                        lambda *_args: {"release": 7, "managed_by": None})
+    monkeypatch.setattr(update_job, "_probe_identity",
+                        lambda *_args: ("instance-after", {"release": 7, "managed_by": None}))
     with pytest.raises(ValueError, match="did not match the target"):
-        cli._record_update_success(root, data, backend, job)
+        update_job.record_success(root, data, backend, job)
     assert update_job.read_job(root)["state"] == "recovery-needed"
 
 
@@ -756,7 +756,7 @@ def test_rollback_is_not_reported_when_the_old_version_is_not_selected(tmp_path,
     write_json(root / "install.json", marker)
     backend = SimpleNamespace(workspace=lambda *_args: {"realm_id": "realm"},
                                verify=lambda *_args, **_kwargs: None)
-    cli._record_update_failure(root, data, backend, job, old, RuntimeError("start failed"))
+    update_job.record_failure(root, data, backend, job, old, RuntimeError("start failed"))
     assert update_job.read_job(root)["state"] == "recovery-needed"
 
 
@@ -783,8 +783,9 @@ def test_job_and_recovery_identity_probes_use_runtime_validator(tmp_path, monkey
         return validate(health, instance_id=instance_id)
 
     monkeypatch.setattr(runtime_identity, "validate_live_owner_identity", observe)
-    probe = (lambda: update_job._probe_identity(tmp_path)[1]) if caller == "job" else (
-        lambda: cli._canonical_identity(discovery, "instance"))
+    # Recovery's identity checks call the same _probe_identity as the job path.
+    def probe():
+        return update_job._probe_identity(tmp_path)[1]
     if payload["runtime_instance_id"] == "instance" and type(payload["identity"]["release"]) is int:
         assert probe() == {"release": 7, "managed_by": None}
     else:

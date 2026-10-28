@@ -22,8 +22,10 @@ from typing import TYPE_CHECKING
 from runtime_protocol import platform
 
 from . import tools
+from .core import TERMINAL_STEPS, current, pending_transaction
 
 if TYPE_CHECKING:
+    from .backend import Backend
     from .core import Version
 
 LABEL = "haus.astrid.runtime"
@@ -183,9 +185,17 @@ def _one_line(value: object) -> str:
     return line[:MAX_RESULT_LINE] or "Update did not complete."
 
 
+def autostart_off(value: object) -> bool:
+    return value is False or (isinstance(value, str) and value.casefold() == "off")
+
+
 def _selection_path() -> Path:
     from .service import install_selection
     return install_selection(Path.home(), sys.platform)
+
+
+class _IdentityUnavailable(ValueError):
+    """Discovery lacks the endpoint or instance id needed to probe Runtime identity."""
 
 
 def _probe_identity(data_root: Path) -> tuple[str, dict]:
@@ -193,12 +203,20 @@ def _probe_identity(data_root: Path) -> tuple[str, dict]:
     instance_id = discovery.get("runtime_instance_id")
     endpoint = discovery.get("endpoint") or discovery.get("door_endpoint")
     if not isinstance(instance_id, str) or not instance_id or not isinstance(endpoint, str) or not endpoint:
-        raise ValueError("The live Runtime owner identity is unavailable.")
+        raise _IdentityUnavailable("The live Runtime owner identity is unavailable.")
     from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
     health = LocalRuntimeBoundary().owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
     from astrid_runtime.identity import validate_live_owner_identity
     identity = validate_live_owner_identity(health, instance_id=instance_id)
     return instance_id, identity
+
+
+def _probe_startup_identity(data_root: Path) -> tuple[str, dict]:
+    """The success and failure paths keep the startup wording for unavailable identity."""
+    try:
+        return _probe_identity(data_root)
+    except _IdentityUnavailable:
+        raise ValueError("The Runtime startup identity is unavailable.") from None
 
 
 def _validate_request(request: dict, root: Path) -> dict:
@@ -300,7 +318,7 @@ def accept(request: dict) -> dict:
         marker = read_json(marker_path)
         prior = marker.get("update_job")
         pending = read_json(root / "update-transaction.json")
-        if pending and pending.get("step") not in {"complete", "rolled_back"}:
+        if pending and pending.get("step") not in TERMINAL_STEPS:
             raise ValueError("The installer must recover its pending update first.")
         if isinstance(prior, dict) and prior.get("state") in {"accepted", "launching", "active", "recovery-needed"}:
             raise ValueError("An update operation is already active.")
@@ -312,7 +330,7 @@ def accept(request: dict) -> dict:
             job["prior_transaction_id"] = pending.get("operation_id")
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
-        if autostart is False or (isinstance(autostart, str) and autostart.casefold() == "off"):
+        if autostart_off(autostart):
             raise ValueError("This update cannot run because saved autostart is off and the installer cannot preserve that choice yet.")
         job["autostart_snapshot"] = autostart
         log_path = Path(job["log_path"])
@@ -389,8 +407,8 @@ def fail(root: Path, operation_id: str, reason: object) -> dict:
     root = absolute(root)
     stream = _locked(root)
     try:
-        journal = read_json(root / "update-transaction.json")
-        if journal and journal.get("step") not in {"complete", "rolled_back"}:
+        journal = pending_transaction(root)
+        if journal:
             return _write_job(root, operation_id, state="recovery-needed",
                               message="Recovery needed. Run the install line to recover the interrupted update.",
                               transaction_id=journal.get("operation_id"))
@@ -525,10 +543,7 @@ def launch_job(root: Path, operation_id: str) -> dict:
         selection = read_json(_selection_path())
         preferences = selection.get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
-        if (autostart is False or (isinstance(autostart, str) and autostart.casefold() == "off")
-                or job.get("autostart_snapshot") is False
-                or (isinstance(job.get("autostart_snapshot"), str)
-                    and job["autostart_snapshot"].casefold() == "off")):
+        if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
             return _write_job(root, operation_id, state="failed",
                               message="Failed: saved autostart is off and the installer cannot preserve that choice.",
                               fields={"launch_status": "refused", "cleanup_status": "not-needed"})
@@ -722,7 +737,7 @@ def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
                     binding = journal.get("update_job") if isinstance(journal, dict) else None
                     transaction_started = (isinstance(binding, dict)
                                            and binding.get("operation_id") == job["operation_id"])
-                    pending = bool(journal and journal.get("step") not in {"complete", "rolled_back"})
+                    pending = bool(journal and journal.get("step") not in TERMINAL_STEPS)
                     if transaction_started or pending:
                         job = _write_job(root, job["operation_id"], state="recovery-needed",
                                          message="Recovery needed. The update worker exited during the installer transaction; run the install line to recover.",
@@ -779,6 +794,123 @@ def sweep_owned_jobs(root: Path, *, locked: bool = False) -> list[dict]:
             _unlock(stream)
 
 
+def admit_worker(root: Path, operation_id: str, backend: Backend, installed: Version | None,
+                 data: Path, manifest_path: Path | None) -> tuple[dict, Version]:
+    """Validate the accepted job before the worker's installer run; point backend at its log."""
+    job = _read_job(root, operation_id)
+    selection_record = read_json(backend.service.selection)
+    preferences = selection_record.get("preferences")
+    if isinstance(preferences, dict) and autostart_off(preferences.get("autostart")):
+        raise ValueError("This update cannot continue because saved autostart is off and the installer cannot preserve that choice yet.")
+    if autostart_off(job.get("autostart_snapshot")):
+        raise ValueError("This update cannot continue because saved autostart was off when it was accepted.")
+    accepted_old, selected_data = _validate_worker_binding(root, job)
+    metadata = job.get("metadata", {})
+    if (job.get("state") != "active" or installed is None
+            or installed.document() != job.get("old_version")
+            or accepted_old.document() != installed.document()
+            or data != selected_data or root != absolute(job.get("program_root", ""))
+            or manifest_path != Path(metadata.get("manifest_path", ""))):
+        raise ValueError("The accepted update job no longer matches this installation.")
+    validate_update_inputs(_validate_input_paths(metadata)[0],
+                           {"manifest_sha256": metadata["manifest_sha256"],
+                            "bootstrap_sha256": metadata["bootstrap_sha256"],
+                            "release": metadata["release"]}, installed.release)
+    if tools.validate_manifest(read_json(manifest_path)).get("release", 0) != job.get("target_release"):
+        raise ValueError("The selected update manifest release changed.")
+    if Path(job["log_path"]).is_symlink() or not Path(job["log_path"]).is_relative_to(root):
+        raise ValueError("The accepted update log path is invalid.")
+    backend.log = Path(job["log_path"])
+    return job, accepted_old
+
+
+def _safe_failure_line(failure: BaseException) -> str:
+    value = " ".join(str(failure).replace("\x00", " ").splitlines()).strip()
+    return (value or "Update failed.")[:180]
+
+
+def record_success(root: Path, data: Path, backend: Backend, job: dict) -> None:
+    saved_job = _read_job(root, job["operation_id"])
+    journal = read_json(root / "update-transaction.json")
+    binding = journal.get("update_job") if isinstance(journal, dict) else None
+    if (journal.get("step") != "complete" or not isinstance(binding, dict)
+            or binding.get("operation_id") != job["operation_id"]
+            or saved_job.get("transaction_id") != journal.get("operation_id")):
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. The completed C2 transaction was not bound to this update job.")
+        raise ValueError("The completed installer transaction was not bound to this update job.")
+    installed = current(root)
+    if installed is None or installed.release != job.get("target_release"):
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. The target release is not selected.")
+        raise ValueError("The selected target release did not become current.")
+    realm = backend.workspace(installed, data)["realm_id"]
+    backend.verify(installed, data, realm)
+    discovery = read_json(data / "runtime" / "discovery.json")
+    instance_id = discovery.get("runtime_instance_id")
+    if not isinstance(instance_id, str) or not instance_id or instance_id == job.get("old_instance_id"):
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. The updated Runtime instance was not confirmed.")
+        raise ValueError("The updated Runtime instance was not confirmed.")
+    _, identity = _probe_startup_identity(data)
+    if identity != {"release": job.get("target_release"), "managed_by": None}:
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. The updated Runtime identity did not match the target.")
+        raise ValueError("The updated Runtime identity did not match the target release.")
+    _write_job(root, job["operation_id"], state="updated", message=f"Updated to release {installed.release}.")
+
+
+def record_failure(root: Path, data: Path, backend: Backend, job: dict,
+                   accepted_old: Version, failure: BaseException) -> None:
+    journal = read_json(root / "update-transaction.json")
+    saved_job = _read_job(root, job["operation_id"])
+    binding = journal.get("update_job") if isinstance(journal, dict) else None
+    linked = (isinstance(binding, dict) and binding.get("operation_id") == job["operation_id"]
+              and saved_job.get("transaction_id") == journal.get("operation_id"))
+    step = journal.get("step") if linked else None
+    if journal and journal.get("step") not in TERMINAL_STEPS:
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. Run the install line to recover the interrupted update.",
+                   transaction_id=journal.get("operation_id") if linked else None)
+        return
+    selected = current(root)
+    if selected is None:
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. No current Astrid version is selected.")
+        return
+    try:
+        if step == "rolled_back" and linked:
+            if selected.document() != accepted_old.document():
+                raise ValueError("The old version was not restored.")
+            realm = backend.workspace(selected, data)["realm_id"]
+            backend.verify(selected, data, realm)
+            restored_id = read_json(data / "runtime" / "discovery.json").get("runtime_instance_id")
+            if not isinstance(restored_id, str) or not restored_id or restored_id == job.get("old_instance_id"):
+                raise ValueError("The restored Runtime instance was not confirmed.")
+            _, identity = _probe_startup_identity(data)
+            if identity != job.get("old_identity"):
+                raise ValueError("The restored Runtime identity did not match the prior release.")
+            message = f"Rolled back: {_safe_failure_line(failure)}"
+            _write_job(root, job["operation_id"], state="rolled_back", message=message,
+                       transaction_id=journal.get("operation_id"))
+            return
+        # A pre-stop or staged failure may leave C2 complete/absent. Report
+        # failed only when the old selected owner still passes canonical ready.
+        if selected.document() != accepted_old.document():
+            raise ValueError("The accepted old version is no longer selected.")
+        realm = backend.workspace(selected, data)["realm_id"]
+        backend.verify(selected, data, realm)
+        _, identity = _probe_startup_identity(data)
+        if identity != job.get("old_identity"):
+            raise ValueError("The previous Runtime identity is not ready.")
+        _write_job(root, job["operation_id"], state="failed",
+                   message=f"Failed: {_safe_failure_line(failure)}")
+    except (Exception, KeyboardInterrupt):  # noqa: BLE001 - readiness failures are recorded as recovery-needed.
+        _write_job(root, job["operation_id"], state="recovery-needed",
+                   message="Recovery needed. Astrid could not confirm the previous Runtime is ready.",
+                   transaction_id=journal.get("operation_id") if journal else None)
+
+
 def run_job(root: Path, operation_id: str) -> dict:
     """Run the accepted selected public bootstrap in an independent worker."""
     root = absolute(root)
@@ -798,8 +930,7 @@ def run_job(root: Path, operation_id: str) -> dict:
         # safely clean up from inside the OS job's own kill domain.
         _write_job(root, operation_id, state="active", message="Update worker is validating the accepted operation.")
         claimed = True
-        journal = read_json(root / "update-transaction.json")
-        if journal and journal.get("step") not in {"complete", "rolled_back"}:
+        if pending_transaction(root):
             from .backend import Backend
             backend = Backend(root, root / "logs" / "install.log", root / "bootstrap" / "uv")
             marker = read_json(root / "install.json")
@@ -865,7 +996,7 @@ def run_job(root: Path, operation_id: str) -> dict:
             failed = None
             with contextlib.suppress(Exception):
                 journal = read_json(root / "update-transaction.json")
-                state = ("recovery-needed" if journal and journal.get("step") not in {"complete", "rolled_back"}
+                state = ("recovery-needed" if journal and journal.get("step") not in TERMINAL_STEPS
                          else "failed")
                 message = ("Recovery needed. Run the install line to recover the interrupted update."
                            if state == "recovery-needed" else f"Failed: {_one_line(failure)}")
