@@ -63,7 +63,10 @@ def test_darwin_stop_reload_and_explicit_start_keep_launchagent_for_next_login(t
     from tests.test_installer_lifecycle import _installer_runtime, _publish_owner
     from tests.test_installer_launchd_stop_handoff import _launchd_harness, _real_c1_stop, _version
 
-    current_user = Mock(return_value=501)
+    # The plist this test writes is owned by the real process user, and the
+    # installer's ownership check and gui domain both name platform.current_user().
+    owner = service.platform.current_user()
+    current_user = Mock(return_value=owner)
     monkeypatch.setattr(service.platform, "current_user", current_user)
     backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
     version = _version(backend, "old", 17)
@@ -83,7 +86,7 @@ def test_darwin_stop_reload_and_explicit_start_keep_launchagent_for_next_login(t
     manager.register(version, data)
     assert manager.start()
 
-    assert target == f"gui/501/{service.LABEL}"
+    assert target == f"gui/{owner}/{service.LABEL}"
     assert bootouts == [("launchctl", "bootout", target)]
     assert events.index("c1-stop-owner") < events.index("launchctl-bootout")
     assert events.count("launchctl-bootstrap") == events.count("launchctl-kickstart") == 2

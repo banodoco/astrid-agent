@@ -19,6 +19,7 @@ from xml.sax.saxutils import escape
 
 from runtime_protocol import platform
 
+from ..core.execution.platform_helpers import owned_by_current_user
 from .core import (
     Version,
     absolute,
@@ -326,7 +327,7 @@ class Service:
             raise ValueError("The launchd service has no matching install selection.")
         try:
             observed_stat = self.path.lstat()
-            if not stat.S_ISREG(observed_stat.st_mode) or observed_stat.st_uid != os.getuid():
+            if not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat):
                 raise ValueError("The launchd service file is not installer-owned.")
             raw = self.path.read_bytes()
             document = plistlib.loads(raw)
@@ -547,7 +548,7 @@ class Service:
         message = f"The Astrid service {self.path} has an unknown or changed action/owner. Re-run the install line to repair it."
         selection = self.recorded()
         observed_stat = self.path.lstat()
-        if (not stat.S_ISREG(observed_stat.st_mode) or observed_stat.st_uid != os.getuid()
+        if (not stat.S_ISREG(observed_stat.st_mode) or not owned_by_current_user(self.path, observed_stat)
                 or selection.get("owner") != LABEL or selection.get("program_root") != str(self.root)
                 or selection.get("data_root") != str(data)):
             raise ValueError(message)
