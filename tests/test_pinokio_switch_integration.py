@@ -13,13 +13,14 @@ import venv
 from pathlib import Path
 
 import pytest
+from tests.lanes import unavailable
 
 from astrid.installer.core import Version, switch, write_json
 from astrid.installer.launcher import install as install_launcher
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(os.name == "nt", reason="POSIX generated shell and process control")
+@pytest.mark.posix_native  # POSIX generated shell and process control
 @pytest.mark.parametrize("initially_running", [False, True])
 def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_running):
     mode = "backend"
@@ -37,7 +38,7 @@ def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_
     canonical_session = canonical_pinokio / "pinokio" / "session.mjs"
     node_binary = shutil.which("node")
     if not canonical_session.is_file() or node_binary is None:
-        pytest.skip("The read-only canonical Pinokio checkout and Node executable are unavailable.")
+        unavailable("The read-only canonical Pinokio checkout (ASTRID_PINOKIO_CHECKOUT) and a Node executable are required.")
 
     user_home = tmp_path / "pinokio-home"
     host_home = tmp_path / "host-home"

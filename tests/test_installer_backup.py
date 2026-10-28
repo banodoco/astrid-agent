@@ -27,7 +27,12 @@ def workspace(tmp_path, system):
     realm.mkdir(parents=True)
     (realm / "realm.sqlite3").write_bytes(b"selected database")
     (realm / "media").write_bytes(b"selected media")
-    write_json(data / "runtime/catalog.json", {"selected": "selected"})
+    write_json(data / "runtime/catalog.json", {
+        "version": 1,
+        "selected_realm_id": "selected",
+        "realms": [{"realm_id": "selected", "display_name": "Selected workspace", "data_root": str(realm)}],
+        "source_profiles": {},
+    })
     write_json(data / "runtime/discovery.json", {"transient": True})
     (data / "runtime/instance.lock").write_bytes(b"live lock")
     (data / "runtime/bootstrap.lock").write_bytes(b"bootstrap lock")
@@ -147,7 +152,7 @@ def test_failed_clone_backup_removes_its_partial_snapshot(tmp_path, monkeypatch)
 def test_rollback_preserves_live_logs_even_in_an_older_snapshot(tmp_path, monkeypatch):
     backend, data, realm, version = workspace(tmp_path, "darwin")
     monkeypatch.setattr("runtime_protocol.fsclone.clone_or_copy_file", shutil.copy2)
-    identity = {"realm_root": str(realm)}
+    identity = {"realm_id": "selected", "realm_root": str(realm)}
     backup = backend.backup(version, data, identity)
     snapshot = Path(backup["root"]) / "support"
     assert not (snapshot / "logs").exists()
@@ -198,7 +203,7 @@ def test_support_rollback_preserves_posix_file_and_directory_modes(tmp_path, mon
     tool.write_bytes(b"#!/bin/sh\nexit 0\n")
     tool.chmod(0o750)
     monkeypatch.setattr("runtime_protocol.fsclone.clone_or_copy_file", shutil.copy2)
-    identity = {"realm_root": str(realm)}
+    identity = {"realm_id": "selected", "realm_root": str(realm)}
     backup = backend.backup(version, data, identity)
 
     backend.restore(version, data, identity, backup)
@@ -304,6 +309,9 @@ def test_windows_failed_update_restores_private_support_and_can_retry(
     backend.register = Mock()
     backend.finish = Mock()
     backend.open = Mock()
+    # The launch-admission script is published through PowerShell on Windows; this
+    # POSIX host cannot run it. Its own tests cover the script.
+    backend.publish_launch_admission = Mock()
 
     def restore_realm(argv, **_kwargs):
         # Only the offline realm restore subprocess is faked. Support rollback
@@ -363,7 +371,7 @@ def test_windows_restore_does_not_restrict_retained_unsafe_directory(
 ):
     backend, data, realm, version = workspace(tmp_path, "win32")
     windows_permissions.update({tmp_path, *tmp_path.rglob("*")})
-    identity = {"realm_root": str(realm)}
+    identity = {"realm_id": "selected", "realm_root": str(realm)}
     backup = backend.backup(version, data, identity)
     backend.run = Mock(side_effect=lambda argv, **_: shutil.copytree(Path(argv[-3]), Path(argv[-2])))
     unsafe = data / directory
@@ -376,26 +384,32 @@ def test_windows_restore_does_not_restrict_retained_unsafe_directory(
 
 
 def test_interrupted_support_file_copy_never_publishes_partial_catalog(tmp_path, monkeypatch):
+    from runtime_protocol import platform
+
     backend, data, realm, version = workspace(tmp_path, "darwin")
     monkeypatch.setattr("runtime_protocol.fsclone.clone_or_copy_file", shutil.copy2)
-    identity = {"realm_root": str(realm)}
+    identity = {"realm_id": "selected", "realm_root": str(realm)}
     backup = backend.backup(version, data, identity)
     catalog = data / "runtime/catalog.json"
     snapshot_catalog = Path(backup["root"]) / "support/runtime/catalog.json"
     expected = snapshot_catalog.read_bytes()
-    copy = shutil.copy2
+    durable_replace = platform.durable_replace
 
-    def interrupted_copy(source, target, **kwargs):
-        if Path(source) == snapshot_catalog:
-            Path(target).write_bytes(b'{"selected":')
+    def interrupted_replace(source, target, *args, **kwargs):
+        # The catalog is validated, then written through Runtime's atomic JSON
+        # publish: the temporary file is complete or absent, and the interruption
+        # lands before it can replace the live catalog.
+        if Path(target) == catalog:
             raise KeyboardInterrupt("support copy interrupted")
-        return copy(source, target, **kwargs)
+        return durable_replace(source, target, *args, **kwargs)
 
-    monkeypatch.setattr(shutil, "copy2", interrupted_copy)
+    monkeypatch.setattr(platform, "durable_replace", interrupted_replace)
+    before = catalog.read_bytes()
     with pytest.raises(KeyboardInterrupt, match="support copy interrupted"):
         backend.restore(version, data, identity, backup)
 
-    assert not catalog.exists()  # Runtime can admit the journal-bound restore gap.
-    monkeypatch.setattr(shutil, "copy2", copy)
+    assert catalog.read_bytes() == before  # The live catalog is never replaced by a partial one.
+    assert not list(catalog.parent.glob(".catalog.json.*"))  # The interrupted temporary is removed.
+    monkeypatch.setattr(platform, "durable_replace", durable_replace)
     backend.restore(version, data, identity, backup)
     assert catalog.read_bytes() == expected

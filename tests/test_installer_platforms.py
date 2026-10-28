@@ -60,6 +60,15 @@ def test_bun_build_environment_scrubs_ambient_policy_but_keeps_explicit_cache_an
     assert all(captured[1][key] == value for key, value in ambient.items())
 
 
+def _runtime_argv(script):
+    # The service command is an inline `-c` launch script; its Runtime argv is the literal list it passes to main().
+    import ast
+    for node in ast.walk(ast.parse(script)):
+        if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'main' and node.args:
+            return ast.literal_eval(node.args[0])
+    raise AssertionError('the launch script does not call main() with a Runtime argv')
+
+
 @pytest.mark.parametrize('system,fixture', [('darwin','launchd.plist'), ('linux','systemd.service'), ('win32','task.xml')])
 def test_service_definitions_match_reviewed_snapshots(system, fixture):
     version, data, log = sample(system)
@@ -79,7 +88,9 @@ def test_launchd_is_foreground_keepalive_with_explicit_environment():
     version, data, log = sample('darwin')
     value = plistlib.loads(service.render('darwin', version, data, log).encode())
     assert value['KeepAlive'] == {'SuccessfulExit': False} and value['RunAtLoad'] is True
-    assert value['ProgramArguments'] == [str(version.python), '-X', 'utf8', '-I', '-m', 'astrid_runtime', 'run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]
+    arguments = value['ProgramArguments']
+    assert arguments[:5] == [str(version.python), '-X', 'utf8', '-I', '-c']
+    assert _runtime_argv(arguments[5]) == ['run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]
     assert value['EnvironmentVariables']['PATH'] == version.env['PATH']
 
 
@@ -137,7 +148,7 @@ def test_systemd_quotes_spaces_percent_dollar_and_supply_tool_path():
     version = Version(version.root, Path('/astrid %v $x/py/bin/python'), version.profile, version.env)
     unit = service.render('linux', version, data, log)
     assert 'ExecStart="/astrid %%v $$x/py/bin/python"' in unit
-    assert '"/astrid data"' in unit
+    assert "'--data-root', '/astrid data'" in unit
     assert 'Environment="PATH=/astrid/tools:/usr/bin:/bin"' in unit
     assert 'Restart=on-failure' in unit
     assert 'WantedBy=default.target' in unit
