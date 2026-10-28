@@ -305,6 +305,11 @@ def accept(request: dict) -> dict:
         if isinstance(prior, dict) and prior.get("state") in {"accepted", "launching", "active", "recovery-needed"}:
             raise ValueError("An update operation is already active.")
         job = _validate_request(request, root)
+        # Capture the journal observed under the installer lock. A later direct
+        # transaction has a different operation ID; an unchanged journal predates
+        # this acceptance even if the bootstrap never reaches staging.
+        if not pending or isinstance(pending.get("operation_id"), str):
+            job["prior_transaction_id"] = pending.get("operation_id")
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart is False or (isinstance(autostart, str) and autostart.casefold() == "off"):

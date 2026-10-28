@@ -4,7 +4,10 @@ import contextlib
 import json
 import os
 import runpy
+import shutil
+import subprocess
 import sys
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -24,6 +27,190 @@ from astrid.installer.core import (
     write_json,
 )
 from astrid.installer.service import LABEL
+
+
+def _install_test_runtime(tmp_path, name, capability=1):
+    """Install a tiny noneditable Runtime as Backend.stage does."""
+    import setuptools
+
+    source = tmp_path / f"{name}-runtime-source"
+    package = source / "astrid_runtime"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "bootstrap.py").write_text(
+        f"PINOKIO_STOP_HANDOFF_VERSION = {capability!r}\n", encoding="utf-8")
+    (source / "pyproject.toml").write_text(
+        "[build-system]\nrequires = ['setuptools']\nbuild-backend = 'setuptools.build_meta'\n"
+        "[project]\nname = 'astrid-runtime'\nversion = '0.1.0'\n"
+        "[tool.setuptools]\npackages = ['astrid_runtime']\n",
+        encoding="utf-8",
+    )
+
+    environment = tmp_path / f"{name}-python"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    if sys.platform == "win32":
+        python = environment / "Scripts" / "python.exe"
+        site = environment / "Lib" / "site-packages"
+    else:
+        python = environment / "bin" / "python"
+        site = next((environment / "lib").glob("python*/site-packages"))
+
+    # The prepared agent environment supplies setuptools only during the build.
+    build_site = Path(setuptools.__file__).resolve().parent.parent
+    (site / "build-dependencies.pth").write_text(str(build_site) + "\n", encoding="utf-8")
+    subprocess.run(
+        ["uv", "pip", "install", "--python", str(python), "--no-deps",
+         "--no-build-isolation", "--no-cache", str(source)],
+        check=True, capture_output=True, text=True,
+    )
+    (site / "build-dependencies.pth").unlink()
+
+    profile = tmp_path / f"{name}-profile.json"
+    write_json(profile, {
+        "runtime_checkout": str(source),
+        "runtime_environment": str(environment),
+    })
+    selected = Version(tmp_path / name, python, profile, {})
+    return SimpleNamespace(source=source, environment=environment, python=python,
+                           site=site, profile=profile, selected=selected)
+
+
+def _qualification_lifecycle(tmp_path, selected_python):
+    calls = []
+
+    def execute(argv, **_kwargs):
+        calls.append(argv)
+        if argv[0] == selected_python:
+            return subprocess.run(argv, check=True, capture_output=True, text=True).stdout
+        return ""  # The canonical JavaScript validation is covered by caller tests.
+
+    lifecycle = object.__new__(update.PinokioLifecycle)
+    lifecycle.root = tmp_path
+    lifecycle.session = tmp_path / "session.mjs"
+    lifecycle.backend = SimpleNamespace(run=execute)
+    lifecycle.mode = lambda: "backend"
+    lifecycle.node = lambda _version: tmp_path / "node"
+    return lifecycle, calls
+
+
+def test_selected_interpreter_qualifies_noneditable_runtimes_for_both_versions(tmp_path):
+    """Retained and candidate environments qualify their own installed Runtime."""
+    for name in ("retained", "candidate"):
+        installed = _install_test_runtime(tmp_path, name)
+        lifecycle, calls = _qualification_lifecycle(tmp_path, installed.python)
+
+        probe = subprocess.run(
+            [installed.python, "-I", "-c",
+             "import importlib,importlib.metadata,json; "
+             "m=importlib.import_module('astrid_runtime.bootstrap'); "
+             "d=importlib.metadata.distribution('astrid-runtime'); "
+             "print(json.dumps({'module':m.__file__,'origin':json.loads(d.read_text('direct_url.json'))}))"],
+            check=True, capture_output=True, text=True,
+        )
+        installed_info = json.loads(probe.stdout)
+        module = Path(installed_info["module"]).resolve()
+        assert installed.source not in module.parents
+        assert module.is_relative_to(installed.site.resolve())
+        assert installed_info["origin"]["url"] == installed.source.resolve().as_uri()
+        assert installed_info["origin"]["dir_info"] == {}
+
+        lifecycle.validate(installed.selected)
+        assert calls[-1][0] == installed.python
+        assert "-I" in calls[-1]
+
+
+@pytest.mark.parametrize("capability", [None, True, False, 0, 2])
+def test_selected_interpreter_refuses_incapable_runtime_versions(tmp_path, capability):
+    installed = _install_test_runtime(tmp_path, "selected", capability=1)
+    (installed.site / "astrid_runtime" / "bootstrap.py").write_text(
+        f"PINOKIO_STOP_HANDOFF_VERSION = {capability!r}\n", encoding="utf-8")
+    lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        lifecycle.validate(installed.selected)
+    assert "cannot safely hand off Pinokio Stop" in raised.value.stderr
+
+
+def test_selected_interpreter_refuses_wrong_environment_and_unrelated_origin(tmp_path):
+    installed = _install_test_runtime(tmp_path, "selected")
+    lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
+    profile = json.loads(installed.profile.read_text(encoding="utf-8"))
+
+    profile["runtime_environment"] = str(tmp_path / "different-environment")
+    write_json(installed.profile, profile)
+    with pytest.raises(subprocess.CalledProcessError):
+        lifecycle.validate(installed.selected)
+
+    profile["runtime_environment"] = str(installed.environment)
+    write_json(installed.profile, profile)
+    direct_url = installed.site / "astrid_runtime-0.1.0.dist-info" / "direct_url.json"
+    direct_url.write_text(json.dumps({"url": (tmp_path / "unrelated").as_uri(),
+                                      "dir_info": {}}), encoding="utf-8")
+    with pytest.raises(subprocess.CalledProcessError):
+        lifecycle.validate(installed.selected)
+
+
+def test_selected_interpreter_refuses_unrelated_import_package_and_metadata_mismatch(tmp_path):
+    installed = _install_test_runtime(tmp_path, "selected")
+    lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
+    package = installed.site / "astrid_runtime"
+    alternate = installed.site / "alternate-runtime"
+    package.rename(alternate)
+    (installed.site / "unrelated-runtime.pth").write_text(
+        str(installed.site / "unrelated-runtime-root") + "\n", encoding="utf-8")
+    rogue = installed.site / "unrelated-runtime-root" / "astrid_runtime"
+    rogue.mkdir(parents=True)
+    (rogue / "__init__.py").write_text("", encoding="utf-8")
+    (rogue / "bootstrap.py").write_text(
+        "PINOKIO_STOP_HANDOFF_VERSION = 1\n", encoding="utf-8")
+
+    probe = subprocess.run(
+        [installed.python, "-I", "-c",
+         "import importlib; print(importlib.import_module('astrid_runtime.bootstrap').__file__)"],
+        check=True, capture_output=True, text=True,
+    )
+    assert Path(probe.stdout.strip()) == rogue / "bootstrap.py"
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        lifecycle.validate(installed.selected)
+    assert "cannot safely hand off Pinokio Stop" in raised.value.stderr
+
+
+def test_selected_interpreter_qualifies_encoded_and_symlinked_checkout_paths(tmp_path):
+    """PEP 610 URLs are percent-encoded; profiles may name a symlinked folder."""
+    spaced = tmp_path / "Program Files %20"
+    spaced.mkdir()
+    installed = _install_test_runtime(spaced, "selected")
+    lifecycle, _calls = _qualification_lifecycle(spaced, installed.python)
+    lifecycle.validate(installed.selected)
+
+    alias = tmp_path / "alias"
+    alias.symlink_to(spaced, target_is_directory=True)
+    profile = json.loads(installed.profile.read_text(encoding="utf-8"))
+    profile["runtime_checkout"] = str(alias / installed.source.name)
+    write_json(installed.profile, profile)
+    lifecycle.validate(installed.selected)
+
+
+def test_selected_interpreter_refuses_source_path_imports_without_installed_package(tmp_path):
+    """A .pth import of the recorded checkout is not the Backend.stage layout."""
+    installed = _install_test_runtime(tmp_path, "selected")
+    lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
+    for item in installed.site.iterdir():
+        if item.name.startswith("astrid_runtime"):
+            shutil.rmtree(item)
+    (installed.site / "runtime-checkout.pth").write_text(str(installed.source) + "\n",
+                                                         encoding="utf-8")
+    probe = subprocess.run(
+        [installed.python, "-I", "-c",
+         "import importlib; print(importlib.import_module('astrid_runtime.bootstrap').__file__)"],
+        check=True, capture_output=True, text=True,
+    )
+    assert Path(probe.stdout.strip()).resolve().parent.parent == installed.source.resolve()
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        lifecycle.validate(installed.selected)
+    assert "cannot safely hand off Pinokio Stop" in raised.value.stderr
 
 
 @pytest.fixture
@@ -130,6 +317,46 @@ def installed(tmp_path, monkeypatch):
 
 def run(env):
     update.update_app(env.root, env.backend, {}, lifecycle=env.lifecycle, say=lambda _: None)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_real_journal_and_installer_log_reach_doctor(installed, monkeypatch, capsys, rollback):
+    from astrid.installer.backend import Backend
+    from astrid_runtime import cli
+    from astrid_runtime.paths import RuntimePaths, _install_record_path
+    from runtime_protocol import platform
+
+    env = installed
+    paths = RuntimePaths.sandbox(env.tmp_path / "home")
+    selection = _install_record_path(paths.home)
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    selection.write_text(json.dumps({"owner": LABEL, "program_root": str(env.root), "data_root": str(env.data)}))
+    env.backend.log = env.tmp_path / "actual-installer.log"
+    secret_lines = ["Authorization: Bearer bearer-secret", "Cookie: session=cookie-secret",
+                    '"api_key": "api-secret"', "token=token-secret", str(paths.home / "private")]
+    Backend.run(env.backend, [sys.executable, "-c", "print(" + repr("\n".join(secret_lines)) + ")"])
+    assert platform.is_owner_only(env.backend.log)
+    if rollback:
+        start = env.lifecycle.start
+        def fail_candidate(version, *args):
+            if version == env.candidate:
+                raise ValueError("candidate failed")
+            return start(version, *args)
+        env.lifecycle.start = fail_candidate
+        with pytest.raises(ValueError, match="candidate failed"):
+            run(env)
+    else:
+        run(env)
+    journal = read_json(env.root / "update-transaction.json")
+    assert journal["log_path"] == str(env.backend.log)
+    monkeypatch.setattr(cli, "_paths", lambda _args: paths)
+    assert cli.main(["doctor"]) == 1
+    report = capsys.readouterr().out
+    assert "Last update result: " + ("rolled_back" if rollback else "complete") in report
+    assert "Installer transaction log:" in report and "[REDACTED]" in report
+    assert "catalog_missing" in report
+    for secret in ["bearer-secret", "cookie-secret", "api-secret", "token-secret", str(paths.home)]:
+        assert secret not in report
 
 
 @pytest.mark.parametrize("mode", ["migration", "app", "repair"])

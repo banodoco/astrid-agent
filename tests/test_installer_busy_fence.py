@@ -357,7 +357,7 @@ def test_cli_repair_and_uninstall_preflight_once_before_stop_admission(tmp_path,
 @pytest.mark.parametrize('system', ['linux', 'darwin', 'win32'])
 @pytest.mark.parametrize('busy', [False, True])
 def test_real_manager_methods_only_run_after_fenced_stop(tmp_path, monkeypatch, system, busy):
-    from astrid.installer.service import Service
+    from astrid.installer.service import LABEL, Service, command, platform, render
     backend, old, data, paths, realm, calls = realm_fixture(
         tmp_path, monkeypatch, system=system, blocker='running' if busy else None)
     publish(paths, realm)
@@ -366,11 +366,24 @@ def test_real_manager_methods_only_run_after_fenced_stop(tmp_path, monkeypatch, 
     monkeypatch.setattr(backend.service, 'disable', lambda: Service.disable(backend.service))
     monkeypatch.setattr(backend.service, 'stop', lambda: Service.stop(backend.service))
     monkeypatch.setattr(backend.service, 'systemd', lambda: True)
+    if system == 'darwin':
+        backend.service.path.write_text(render('darwin', old, data, backend.log), encoding='utf-8')
+        monkeypatch.setattr(backend.service, 'validate_stop_target',
+                            lambda *args, **kwargs: Service.validate_stop_target(backend.service, *args, **kwargs))
     native = []
 
     def run(argv):
         # This is the sole OS seam: no development-host service is touched.
         native.append([str(part) for part in argv])
+        if system == 'darwin' and argv[:2] == ['launchctl', 'print']:
+            action = command(old, data)
+            running = 'runtime-stop' not in calls
+            return (f'gui/{platform.current_user()}/{LABEL} = {{\n'
+                    f'\tpath = {backend.service.path}\n'
+                    f'\tstate = {"running" if running else "not running"}\n'
+                    f'\tprogram = {action[0]}\n\targuments = {{\n'
+                    + '\n'.join(action) + '\n\t}\n'
+                    + ('\tpid = 123\n' if running else '') + '}')
         assert 'runtime-stop' in calls
         with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
             with pytest.raises(sqlite3.OperationalError, match='locked'):
@@ -381,7 +394,7 @@ def test_real_manager_methods_only_run_after_fenced_stop(tmp_path, monkeypatch, 
     if busy:
         with pytest.raises(RuntimeOperationError):
             backend.stop(old, data)
-        assert native == []
+        assert all(argv[:2] == ['launchctl', 'print'] for argv in native)
         assert calls == []
     else:
         backend.stop(old, data)

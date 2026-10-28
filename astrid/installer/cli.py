@@ -434,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     except (Exception, KeyboardInterrupt) as failure:  # noqa: BLE001 - CLI boundary renders all install failures.
         with contextlib.suppress(OSError):
             with log.open("a", encoding="utf-8") as stream:
+                platform.owner_only(stream.fileno())
                 traceback.print_exc(file=stream)
         print(FAILURE_MESSAGE)
         if isinstance(failure, (BackupSpaceError, ValueError, RuntimeOperationError)):

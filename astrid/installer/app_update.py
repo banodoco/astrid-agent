@@ -29,6 +29,57 @@ from .core import (
 from .launcher import publish_runtime_runner
 from .service import LABEL, installer_lock_path
 
+# Run with the Version's interpreter in isolated mode. Backend.stage installs
+# Runtime from a local source directory non-editably; PEP 610 records that
+# directory even though imports live in this interpreter's site-packages.
+_PINOKIO_RUNTIME_QUALIFICATION = """
+import importlib
+import importlib.metadata
+import json
+import sys
+import sysconfig
+from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
+
+def qualified():
+    runtime = importlib.import_module('astrid_runtime.bootstrap')
+    capability = getattr(runtime, 'PINOKIO_STOP_HANDOFF_VERSION', None)
+    if type(capability) is not int or capability != 1:
+        return False
+    profile = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+    checkout = Path(profile['runtime_checkout']).resolve()
+    environment = Path(profile['runtime_environment']).resolve()
+    if environment != Path(sys.prefix).resolve():
+        return False
+    module = Path(runtime.__file__).resolve()
+    distribution = importlib.metadata.distribution('astrid-runtime')
+    site = Path(distribution.locate_file('')).resolve()
+    sites = {Path(sysconfig.get_path(name)).resolve() for name in ('purelib', 'platlib')}
+    if site not in sites or not site.is_relative_to(environment):
+        return False
+    # RECORD paths are POSIX; compare text so Windows path flavours match.
+    entry = next((item for item in (distribution.files or ())
+                  if item.as_posix() == 'astrid_runtime/bootstrap.py'), None)
+    if entry is None or module != Path(distribution.locate_file(entry)).resolve():
+        return False
+    origin = json.loads(distribution.read_text('direct_url.json') or '{}')
+    if not isinstance(origin, dict) or origin.get('dir_info') != {}:
+        return False
+    url = urlsplit(origin.get('url') or '')
+    if url.scheme != 'file' or url.netloc not in ('', 'localhost') or url.query or url.fragment:
+        return False
+    return Path(url2pathname(url.path)).resolve() == checkout
+
+try:
+    accepted = qualified()
+except (ImportError, OSError, ValueError, KeyError, TypeError):
+    accepted = False
+if not accepted:
+    sys.exit('The selected Runtime cannot safely hand off Pinokio Stop. '
+             'Update the Runtime through a qualified release first.')
+"""
+
 
 @contextlib.contextmanager
 def locked(path: Path, *, timeout: float = 0):
@@ -123,6 +174,11 @@ class PinokioLifecycle:
                           self.session.as_uri(), self.root, version.root.name,
                           self.root.parent / "editor", mode], timeout=30,
                          clean_bun_env=True)
+        # Both activation and rollback must invalidate a completed Stop before
+        # launching another owner. Qualify the selected interpreter's actual
+        # Runtime, rather than the candidate controller's imported package.
+        self.backend.run([version.python, "-I", "-c", _PINOKIO_RUNTIME_QUALIFICATION, version.profile],
+                         timeout=30, clean_bun_env=True)
 
     def stop(self, version: Version, data: Path) -> None:
         control = self.root / "pinokio-control.json"

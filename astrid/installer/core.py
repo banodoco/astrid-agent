@@ -411,6 +411,9 @@ class Installer:
                 "old": old.document(), "realm": realm, "backup": None,
                 "candidate": candidate.document(),
             }
+            log = getattr(self.backend, "log", None)
+            if isinstance(log, (str, Path)):
+                transaction["log_path"] = str(absolute(Path(log)))
             update_job_operation_id = getattr(self.backend, "_update_job_operation_id", None)
             if update_job_operation_id:
                 transaction["update_job"] = {"operation_id": update_job_operation_id}

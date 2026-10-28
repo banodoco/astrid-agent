@@ -123,6 +123,7 @@ class Backend:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
         with self.log.open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
             # Do not log inherited environments or credentials.
             stream.write(result.stdout + "\n")
         if result.returncode:
@@ -485,8 +486,9 @@ class Backend:
             owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
             if type(owner_pid) is not int or owner_pid <= 0:
                 owner_pid = None
+            launchd_identity = None
             if self.managed_by != "pinokio":
-                self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
                 current_record = self.service.recorded()
                 if current_record and (current_record.get("owner") != LABEL
@@ -502,7 +504,16 @@ class Backend:
                             raise ValueError("No selected service record authorizes this stop.")
                     else:
                         if (current_record or {}).get("foreground") is None:
-                            self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                            if self.service.system == "darwin":
+                                checked_identity = self.service.validate_stop_target(
+                                    version, data, owner_pid=owner_pid,
+                                    expected_identity=launchd_identity, require_stopped=True)
+                                if launchd_identity is None and checked_identity is not None:
+                                    self.service._validated_launchd_stop = None
+                                    self.service._validated_launchd_stop_checked = False
+                                    raise ValueError("A launchd service appeared after the C1 stop admission.")
+                            else:
+                                self.service.validate_stop_target(version, data, owner_pid=owner_pid)
                             self.service.disable()
                             self.service.stop()
                 if stop_manager is not None:
@@ -1049,6 +1060,7 @@ class Backend:
                 output = output.decode("utf-8", errors="replace")
             outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
         with self.log.open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
@@ -1199,6 +1211,7 @@ class Backend:
         def report(line):
             self.say(line)
             with self.log.open("a", encoding="utf-8") as stream:
+                platform.owner_only(stream.fileno())
                 stream.write(line + "\n")
 
         shim = hint = None
