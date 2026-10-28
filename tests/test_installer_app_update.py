@@ -1244,14 +1244,12 @@ def test_controller_exit_during_authenticated_stop_preserves_other_owners(instal
     calls, record = manager_controller
     lifecycle = object.__new__(update.PinokioLifecycle)
     lifecycle.root = installed.root
-    real_kill = os.kill
     def runtime_handoff(_version, _data, *, stop_manager):
         record.unlink()
-        monkeypatch.setattr(update.os, 'kill', lambda *_args: (_ for _ in ()).throw(ProcessLookupError()))
+        monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda *_args: None)
         stop_manager()
     lifecycle.backend = SimpleNamespace(stop=runtime_handoff)
     lifecycle.stop(installed.old, installed.data)
-    monkeypatch.setattr(update.os, 'kill', real_kill)
     assert calls == ["OPTIONS"]
     assert not record.exists()
 
@@ -1295,7 +1293,7 @@ def test_dead_bound_controller_requires_fresh_c1(installed, monkeypatch):
     lifecycle.root = installed.root
     record = installed.root / 'pinokio-control.json'
     write_json(record, {'schema': 1, 'pid': 123, 'port': 1, 'token': 'b' * 64})
-    monkeypatch.setattr(update.os, 'kill', lambda *_args: (_ for _ in ()).throw(ProcessLookupError()))
+    monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda *_args: None)
     calls = []
     def stop(_version, _data, *, stop_manager):
         calls.append('C1')
@@ -1311,18 +1309,97 @@ def test_disappeared_controller_is_verified_after_c1_returns(installed, manager_
     lifecycle = object.__new__(update.PinokioLifecycle)
     lifecycle.root = installed.root
     events = []
-    def kill(_pid, _signal):
+    def observe(_pid):
         events.append('pid check')
-        if len(events) >= 4:
-            raise ProcessLookupError()
+        return None if len(events) >= 4 else {'pid': _pid}
     def stop(_version, _data, *, stop_manager):
         events.append('C1 entered')
         record.unlink()
         stop_manager()
         events.append('C1 returned')
-    monkeypatch.setattr(update.os, 'kill', kill)
+    monkeypatch.setattr(update.runtime_platform, 'process_identity', observe)
     monkeypatch.setattr(update.time, 'sleep', lambda _delay: None)
     lifecycle.backend = SimpleNamespace(stop=stop)
     lifecycle.stop(installed.old, installed.data)
     assert events == ['pid check', 'C1 entered', 'C1 returned', 'pid check']
     assert calls == ['OPTIONS']
+
+
+def _no_signal(monkeypatch):
+    sent = []
+    for name in ('kill', 'killpg', 'terminate'):
+        if hasattr(update.os, name):
+            monkeypatch.setattr(update.os, name, lambda *a, _n=name: sent.append((_n, a)))
+    return sent
+
+
+@pytest.mark.parametrize("observation", ["live", "absent", "unknown", "reappearing"])
+def test_pre_c1_controller_probe_is_read_only_and_fail_closed(installed, monkeypatch, observation):
+    """Windows-style observer injected; no signal/terminate primitive may run."""
+    sent = _no_signal(monkeypatch)
+    record = installed.root / 'pinokio-control.json'
+    write_json(record, {'schema': 1, 'pid': 4321, 'port': 1, 'token': 'b' * 64})
+    seen = []
+    def observer(pid):
+        seen.append(pid)
+        if observation == 'live':
+            return {'pid': pid, 'birth_id': 'win:1'}
+        if observation == 'unknown':
+            raise OSError('OpenProcess denied')
+        if observation == 'reappearing':
+            return None if len(seen) == 1 else {'pid': pid, 'birth_id': 'win:2'}
+        return None
+    monkeypatch.setattr(update.runtime_platform, 'process_identity', observer)
+    monkeypatch.setattr(update.time, 'sleep', lambda _d: None)
+    posts = []
+    class Connection:
+        def __init__(self, *_a, **_k): pass
+        def request(self, method, *_a, **_k): posts.append(method)
+        def getresponse(self): raise OSError('refused')
+        def close(self): pass
+    monkeypatch.setattr(update.http.client, 'HTTPConnection', Connection)
+    c1 = []
+    def stop(_version, _data, *, stop_manager):
+        c1.append('C1')
+        stop_manager()
+    lifecycle = object.__new__(update.PinokioLifecycle)
+    lifecycle.root = installed.root
+    lifecycle.backend = SimpleNamespace(stop=stop)
+    if observation == 'absent':
+        lifecycle.stop(installed.old, installed.data)  # fresh C1 only; no POST
+        assert c1 == ['C1'] and posts == []
+    else:
+        with pytest.raises((ValueError, RuntimeOperationError)):
+            lifecycle.stop(installed.old, installed.data)
+    assert sent == []
+    assert seen and set(seen) == {4321}
+    if observation in {'live', 'unknown'}:
+        assert c1 == []  # refused before C1; unknown is not dead
+    if observation in {'live', 'unknown', 'reappearing'}:
+        assert 'POST' not in posts
+    assert record.exists()
+
+
+def test_c1_refusal_causes_no_manager_post_or_signal(installed, monkeypatch):
+    sent = _no_signal(monkeypatch)
+    record = installed.root / 'pinokio-control.json'
+    write_json(record, {'schema': 1, 'pid': 4321, 'port': 1, 'token': 'b' * 64})
+    monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda pid: {'pid': pid, 'birth_id': 'w'})
+    methods = []
+    class Connection:
+        def __init__(self, *_a, **_k): pass
+        def request(self, method, *_a, **_k): methods.append(method)
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda *_a: b'{"ok":true}')
+        def close(self): pass
+    monkeypatch.setattr(update.http.client, 'HTTPConnection', Connection)
+    def stop(*_a, **_k):
+        raise RuntimeOperationError('busy', details={'safe': False, 'kind': 'busy'})
+    lifecycle = object.__new__(update.PinokioLifecycle)
+    lifecycle.root = installed.root
+    lifecycle.backend = SimpleNamespace(stop=stop)
+    with pytest.raises(RuntimeOperationError, match='busy'):
+        lifecycle.stop(installed.old, installed.data)
+    assert methods == ['OPTIONS']
+    assert sent == []
+    assert record.exists()

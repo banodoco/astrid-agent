@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+from runtime_protocol import platform as runtime_platform
+
 from .core import (
     Installer,
     RuntimeOperationError,
@@ -142,11 +144,12 @@ class PinokioLifecycle:
         bound = snapshot()
 
         def dead(record):
+            # Read-only observation only: os.kill(pid, 0) is CTRL_C_EVENT or
+            # TerminateProcess on Windows. Unknown observations never mean dead.
             try:
-                os.kill(record["pid"], 0)
-            except ProcessLookupError:
-                return True
-            return False
+                return runtime_platform.process_identity(record["pid"]) is None
+            except OSError as exc:
+                raise ValueError("The Pinokio controller process could not be observed.") from exc
 
         stale = bound is not None and dead(bound[1])
 
