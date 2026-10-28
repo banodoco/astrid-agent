@@ -889,9 +889,11 @@ def _assert_restore_refusal_unchanged(backend, paths, realm, boundary, manager_c
     assert backend._restore_catalog_writes == []
     assert (realm / "realm.sqlite3").read_bytes() == realm_bytes
     assert manager_calls == []
+    # Refusal proof is "no manager mutation". The non-Pinokio public stop path
+    # runs the read-only OS-manager probe before C1 by design (Backend.stop), so
+    # callers that never reach stop assert the probe is absent themselves.
     backend.service.disable.assert_not_called()
     backend.service.stop.assert_not_called()
-    backend.service.validate_stop_target.assert_not_called()
     assert (realm / "realm.sqlite3").is_file()
 
 
@@ -953,6 +955,8 @@ def test_backend_preflight_refuses_readable_restore_gap_before_writes(tmp_path, 
     _assert_restore_refusal_unchanged(
         backend, paths, realm, boundary, manager_calls, backup, journal,
         pointer_before, journal_before, backup_before, realm_before)
+    # Preflight never reaches Backend.stop, so no OS-manager probe may run.
+    backend.service.validate_stop_target.assert_not_called()
 
 
 def _run_public_restore_refusal(tmp_path, monkeypatch, *, managed_by, case):
@@ -1029,6 +1033,8 @@ def _run_public_restore_refusal(tmp_path, monkeypatch, *, managed_by, case):
         # The real public Pinokio recovery must reach Backend.stop/C1; the
         # C1 manager callback and lifecycle start remain forbidden on refusal.
         assert lifecycle_calls["stop"] == (0 if case == "malformed_selection" else 1)
+        # Pinokio owns its manager, so Backend.stop never probes the OS manager.
+        backend.service.validate_stop_target.assert_not_called()
 
 
 @pytest.mark.parametrize("case", ["busy", "foreign_realm", "wrong_root", "malformed_selection",
