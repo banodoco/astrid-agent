@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import stat
 import sys
 import time
 from dataclasses import fields, is_dataclass
@@ -15,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from astrid.core.generation.engine_contracts import (
-    EngineError, RecipeValidationError, UnsupportedPlacement, UnsupportedPlatform,
+    EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
 )
 from astrid.core.generation.engine_recipe import load_recipe
 from astrid.core.generation.engine_runner import engine_status, install_engine, plan_install
@@ -63,6 +65,24 @@ def _root(args):
     return str(Path.home() / '.astrid-data' / 'engines' / args.engine)
 
 
+class CustodyNotOwnerOnly(UnsafePathError):
+    code = 'custody_not_owner_only'
+
+
+def _custody_preflight(root):
+    """Refuse an install whose engine custody directory is not an owner-only directory.
+
+    /workspace is a FUSE mount on pods and does not enforce the owner-only mode that custody needs, so
+    this runs before any backend is built and its public message names /workspace as FUSE-unsafe.
+    """
+    try:
+        info = os.lstat(os.path.join(root, '.astrid-engine'))
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+        raise CustodyNotOwnerOnly('engine custody directory must be an owner-only directory')
+
+
 def _plain(value):
     if is_dataclass(value):
         return {field.name: _plain(getattr(value, field.name)) for field in fields(value)}
@@ -83,6 +103,8 @@ def main(argv=None, *, backend_factory=None):
         if args.command == 'install' and args.dry_run:
             print(json.dumps({'plan': _plain(plan), 'recipe': _plain(recipe)}, sort_keys=True, ensure_ascii=False))
             return 0
+        if args.command == 'install':
+            _custody_preflight(plan.root)
         if args.platform.startswith('windows-'):
             raise UnsupportedPlatform('Windows execution awaits A7')
         deadline = time.monotonic() + args.deadline
@@ -111,6 +133,8 @@ def main(argv=None, *, backend_factory=None):
         messages = {
             'unsupported_platform': 'Target platform or local execution is unavailable; A2/A7 integration is pending.',
             'unsupported_placement': 'RunPod execution awaits W1 (runpod wrapper).',
+            'custody_not_owner_only': 'Engine custody directory must be owner-only. /workspace is FUSE-unsafe; '
+                                      'install under a local --root.',
         }
         print(json.dumps({'error': {'code': exc.code, 'step': step,
                                     'retryable': exc.retryable, 'recovery_handle': handle,

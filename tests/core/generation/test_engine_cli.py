@@ -184,3 +184,29 @@ def test_dry_run_and_runpod_install_record_nothing(capsys):
     rc, out, _ = invoke(['install', *BASE, '--placement', 'runpod'], capsys, backend_factory=backend)
     assert rc == 0 and json.loads(out)['status'] == 'installed'
     assert recorded_engine_root('vibecomfy-h3') is None
+
+
+def test_fuse_workspace_custody_install_refuses_a_777_directory_before_any_backend(tmp_path, capsys):
+    root = tmp_path / 'engine'
+    custody = root / '.astrid-engine'
+    custody.mkdir(parents=True)
+    custody.chmod(0o777)
+    code, _, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys,
+                          backend_factory=lambda **kwargs: pytest.fail('backend built for an unsafe custody directory'))
+    assert code == 1 and json.loads(err)['error']['code'] == 'custody_not_owner_only'
+    assert '/workspace' in err and 'FUSE-unsafe' in err
+    assert recorded_engine_root('vibecomfy-h3') is None
+
+
+def test_fuse_workspace_custody_owner_only_directory_passes_the_preflight(tmp_path, capsys):
+    root = tmp_path / 'engine'
+    custody = root / '.astrid-engine'
+    custody.mkdir(parents=True)
+    custody.chmod(0o700)
+    reached = []
+    def backend(**kwargs):
+        reached.append(kwargs['root'])
+        raise CommandFailed('stop after preflight', step_id='preflight')
+    _, _, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys, backend_factory=backend)
+    assert reached == [str(root)] and 'custody_not_owner_only' not in err
+
