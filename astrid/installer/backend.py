@@ -123,6 +123,7 @@ class Backend:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
         with self.log.open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
             # Do not log inherited environments or credentials.
             stream.write(result.stdout + "\n")
         if result.returncode:
@@ -1059,6 +1060,7 @@ class Backend:
                 output = output.decode("utf-8", errors="replace")
             outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
         with self.log.open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
@@ -1209,6 +1211,7 @@ class Backend:
         def report(line):
             self.say(line)
             with self.log.open("a", encoding="utf-8") as stream:
+                platform.owner_only(stream.fileno())
                 stream.write(line + "\n")
 
         shim = hint = None

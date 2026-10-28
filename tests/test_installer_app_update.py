@@ -131,6 +131,46 @@ def run(env):
     update.update_app(env.root, env.backend, {}, lifecycle=env.lifecycle, say=lambda _: None)
 
 
+@pytest.mark.parametrize("rollback", [False, True])
+def test_real_journal_and_installer_log_reach_doctor(installed, monkeypatch, capsys, rollback):
+    from astrid.installer.backend import Backend
+    from astrid_runtime import cli
+    from astrid_runtime.paths import RuntimePaths, _install_record_path
+    from runtime_protocol import platform
+
+    env = installed
+    paths = RuntimePaths.sandbox(env.tmp_path / "home")
+    selection = _install_record_path(paths.home)
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    selection.write_text(json.dumps({"owner": LABEL, "program_root": str(env.root), "data_root": str(env.data)}))
+    env.backend.log = env.tmp_path / "actual-installer.log"
+    secret_lines = ["Authorization: Bearer bearer-secret", "Cookie: session=cookie-secret",
+                    '"api_key": "api-secret"', "token=token-secret", str(paths.home / "private")]
+    Backend.run(env.backend, [sys.executable, "-c", "print(" + repr("\n".join(secret_lines)) + ")"])
+    assert platform.is_owner_only(env.backend.log)
+    if rollback:
+        start = env.lifecycle.start
+        def fail_candidate(version, *args):
+            if version == env.candidate:
+                raise ValueError("candidate failed")
+            return start(version, *args)
+        env.lifecycle.start = fail_candidate
+        with pytest.raises(ValueError, match="candidate failed"):
+            run(env)
+    else:
+        run(env)
+    journal = read_json(env.root / "update-transaction.json")
+    assert journal["log_path"] == str(env.backend.log)
+    monkeypatch.setattr(cli, "_paths", lambda _args: paths)
+    assert cli.main(["doctor"]) == 1
+    report = capsys.readouterr().out
+    assert "Last update result: " + ("rolled_back" if rollback else "complete") in report
+    assert "Installer transaction log:" in report and "[REDACTED]" in report
+    assert "catalog_missing" in report
+    for secret in ["bearer-secret", "cookie-secret", "api-secret", "token-secret", str(paths.home)]:
+        assert secret not in report
+
+
 @pytest.mark.parametrize("mode", ["migration", "app", "repair"])
 def test_admission_is_durable_before_staged_and_stop(installed, monkeypatch, mode):
     from runtime_protocol import platform
