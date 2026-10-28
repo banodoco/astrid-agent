@@ -39,6 +39,11 @@ def main():
     if operation == 'startup':
         from astrid.core.generation.engine_startup import main as startup
         return startup(args, release_root=root)
+    if operation == 'readiness':
+        # Target-local ordinary HC03 profile for the already installed engine;
+        # observes only, under this same verified release and interpreter.
+        from astrid.core.generation.engine_readiness import main as readiness
+        return readiness(args, release_root=root)
     if operation != 'check' or args:
         raise ValueError('unsupported release operation')
     from astrid.console import main as console

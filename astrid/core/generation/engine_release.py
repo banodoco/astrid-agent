@@ -33,6 +33,7 @@ REQUIRED = (
     'astrid/core/generation/_engine_release_entry.py',
     'astrid/core/generation/_engine_python_bootstrap.py',
     'astrid/core/generation/engine_startup.py',
+    'astrid/core/generation/engine_readiness.py',
     'astrid/core/generation/engine_execution.py',
     'astrid/core/generation/_engine_target_files.py',
     'astrid/core/generation/engine_custody.py',
