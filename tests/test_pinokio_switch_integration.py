@@ -14,6 +14,11 @@ from pathlib import Path
 
 import pytest
 from tests.lanes import unavailable
+from tests.test_installer_pinokio_integration import (
+    _copy_runtime_package_source,
+    _install_runtime_package,
+    _runtime_source_checkout,
+)
 
 from astrid.installer.core import Version, switch, write_json
 from astrid.installer.launcher import install as install_launcher
@@ -24,9 +29,6 @@ from astrid.installer.launcher import install as install_launcher
 @pytest.mark.parametrize("initially_running", [False, True])
 def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_running):
     mode = "backend"
-    import astrid_runtime
-    import runtime_protocol
-
     from astrid.installer.app_update import PinokioLifecycle
     from astrid.installer.backend import Backend
     from astrid.installer.core import Version, current, read_json, switch, write_json
@@ -51,7 +53,7 @@ def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_
         # selection at the normal host-home location so actual Update recovery
         # can discover it through that same filtered environment.
         "XDG_DATA_HOME": host_home / ".local" / "share",
-        "ASTRID_RUNTIME_CHECKOUT": str(Path(astrid_runtime.__file__).resolve().parent.parent),
+        "ASTRID_RUNTIME_CHECKOUT": str(_runtime_source_checkout()),
         "ASTRID_PINOKIO_CHECKOUT": str(canonical_pinokio),
     }.items():
         monkeypatch.setenv(key, str(value))
@@ -104,20 +106,22 @@ def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_
     data_root = tmp_path / "workspace"
     old_root = app_root / "versions" / "retained-c2"
     candidate_root = app_root / "versions" / "e2-candidate"
-    runtime_root = Path(astrid_runtime.__file__).resolve().parent.parent
-    protocol_root = Path(runtime_protocol.__file__).resolve().parent.parent
+    runtime_root = _runtime_source_checkout()
     prepared_packages = Path(sysconfig.get_paths()["purelib"])
 
-    def version(root, release, source_root, *, profile_runtime=None, profile_source=None):
+    def version(root, release, source_root, *, profile_source=None):
         environment = root / "py"
         venv.EnvBuilder(with_pip=False).create(environment)
         python = environment / "bin" / "python"
         site_packages = next((environment / "lib").glob("python*/site-packages"))
         (site_packages / "astrid-retained-foreground-test.pth").write_text(
-            "\n".join(map(str, (source_root, profile_runtime or runtime_root,
-                                  protocol_root, prepared_packages))) + "\n",
+            "\n".join(map(str, (source_root, prepared_packages))) + "\n",
             encoding="utf-8",
         )
+        # Backend.stage installs Runtime non-editably; the installer's
+        # hand-off qualification only accepts such an installed distribution.
+        runtime_package = _copy_runtime_package_source(runtime_root, root / "runtime-source")
+        _install_runtime_package(python, runtime_package)
         services = root / "services.json"
         host_script = (
             "from pathlib import Path; import os,signal; "
@@ -131,7 +135,7 @@ def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_
         }]})
         profile = root / "profile.json"
         write_json(profile, {
-            "profile": "astrid", "runtime_checkout": str(profile_runtime or runtime_root),
+            "profile": "astrid", "runtime_checkout": str(runtime_package),
             "source_checkout": str(profile_source or source_root), "runtime_environment": str(environment),
             "service_declaration": str(services),
         })
@@ -154,15 +158,13 @@ def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_
         write_json(root / "version.json", result.document())
         return result
 
-    candidate_runtime = candidate_root / "runtime-source"
     candidate_source = candidate_root / "agent-source"
-    shutil.copytree(runtime_root, candidate_runtime)
-    candidate_source.mkdir()
+    candidate_source.mkdir(parents=True)
     shutil.copytree(checkout / "astrid", candidate_source / "astrid")
     shutil.copyfile(checkout / "pyproject.toml", candidate_source / "pyproject.toml")
     old = version(old_root, 17, checkout)
     candidate = version(candidate_root, 18, candidate_source,
-                        profile_runtime=candidate_runtime, profile_source=candidate_source)
+                        profile_source=candidate_source)
     write_json(app_root / "install.json", {
         "owner": "haus.astrid.runtime", "managed_by": "pinokio", "data_root": str(data_root),
     })
@@ -180,6 +182,9 @@ def test_switch_after_installer_starts_session(tmp_path, monkeypatch, initially_
     })
     print("CREATE REALM", flush=True)
     realm = backend.create(old, data_root)
+    # A real install registers the realm in its selection record; the Runtime
+    # stop binding requires that record (realm_id, realm_root) to match.
+    backend.register(old, data_root)
     lifecycle = PinokioLifecycle(app_root, backend)
     backend.stage = lambda *_args, **_kwargs: candidate
     backend.sync_skills = lambda *_args, **_kwargs: None
