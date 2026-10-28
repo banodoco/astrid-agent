@@ -185,18 +185,52 @@ def test_idle_owner_stops_once_before_manager_with_fence_held(tmp_path, monkeypa
     assert not paths.instance_lock_path.exists()
 
 
+def assert_stopping_intent(paths, realm):
+    # Runtime's C1 writes the tagged `stopping` form of instance.lock inside the
+    # final fence, before the first signal, and leaves it there when the stop
+    # fails. Assert that exact owner intent rather than the original bytes.
+    lock = json.loads(paths.instance_lock_path.read_text(encoding='utf-8'))
+    assert lock['state'] == 'stopping'
+    assert set(lock['stopping']) == {'version', 'binding'}
+    assert lock['pid'] == 123
+    assert lock['process_birth_id'] == 'birth'
+    assert lock['runtime_instance_id'] == 'instance'
+    assert lock['realm_id'] == 'selected'
+    assert lock['realm_root'] == str(realm)
+
+
 @pytest.mark.parametrize('failure', [TimeoutError('timeout'), RuntimeError('identity changed')])
 def test_unknown_owner_stop_failure_never_falls_back_to_manager(tmp_path, monkeypatch, failure):
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
     publish(paths, realm)
     boundary = Boundary(paths, calls, failure=failure)
     monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
-    before = snapshot([paths.discovery_path, paths.instance_lock_path])
+    discovery_before = paths.discovery_path.read_bytes()
     with pytest.raises(RuntimeOperationError) as raised:
         backend.stop(old, data)
     assert raised.value.details is None
     assert calls == ['prepare', 'runtime-stop']
-    assert snapshot([paths.discovery_path, paths.instance_lock_path]) == before
+    assert paths.discovery_path.read_bytes() == discovery_before
+    assert_stopping_intent(paths, realm)
+
+
+def test_unknown_owner_stop_retry_succeeds_once_failure_clears(tmp_path, monkeypatch):
+    backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    publish(paths, realm)
+    boundary = Boundary(paths, calls, failure=TimeoutError('timeout'))
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+    discovery_before = paths.discovery_path.read_bytes()
+    with pytest.raises(RuntimeOperationError):
+        backend.stop(old, data)
+    assert calls == ['prepare', 'runtime-stop']
+    assert paths.discovery_path.read_bytes() == discovery_before
+    assert_stopping_intent(paths, realm)
+    boundary.failure = None
+    calls.clear()
+    backend.stop(old, data)
+    assert calls == ['prepare', 'runtime-stop', 'disable', 'stop']
+    assert not paths.discovery_path.exists()
+    assert not paths.instance_lock_path.exists()
 
 
 @pytest.mark.parametrize('output', [
