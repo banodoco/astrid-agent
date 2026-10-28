@@ -362,6 +362,17 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             python.parent.mkdir(parents=True)
             python.touch()  # The subprocess boundary below supplies this candidate's commands.
             return ""
+        if "find_spec" in args[-1]:
+            # The real product-root probe runs for this candidate's interpreter; answer it from its venv.
+            py = Path(args[0]).parent.parent
+            purelib = py / "lib/site-packages"
+            purelib.mkdir(parents=True, exist_ok=True)
+            origins = {}
+            for key in ("host", "child", "action", "client", "sdk"):
+                origin = purelib / f"{key}.py"
+                origin.write_text("", encoding="utf-8")
+                origins[key] = str(origin)
+            return json.dumps({"prefix": str(py), "purelib": str(purelib), "origins": origins})
         if any("source_checkout_digest" in part for part in args):
             return "fresh-source-digest"
         return ""
@@ -375,7 +386,6 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
     monkeypatch.setattr(backend, "run", run)
     monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
-    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
@@ -390,6 +400,8 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     assert len(candidates) == 1
     fresh_root = candidates[0].parent
     assert fresh_root != old_root
+    assert json.loads((fresh_root / "profile.json").read_text(encoding="utf-8"))["source_checkout"] == str(
+        (fresh_root / "py/lib/site-packages").resolve())
     assert (old_root / "a" / "broken-source.txt").read_text() == "damaged old Agent"
     assert (old_root / "tools" / "broken-tool").read_text() == "damaged old tool"
     assert (fresh_root / "a" / "fresh-source.txt").is_file()
