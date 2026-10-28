@@ -11,6 +11,7 @@ import pytest
 
 from astrid.core import engine_cli
 from astrid.core.generation.engine_contracts import CommandFailed, CustodyUnresolved
+from astrid.core.generation.engine_local_endpoint import recorded_engine_root
 
 ROOT = '/TARGET_ONLY/engine'
 BASE = ['vibecomfy-h3', '--root', ROOT]
@@ -20,6 +21,13 @@ def invoke(args, capsys, **kwargs):
     code = engine_cli.main(args, **kwargs)
     captured = capsys.readouterr()
     return code, captured.out, captured.err
+
+
+def _runner_fixture():
+    spec = importlib.util.spec_from_file_location('runner_fixtures', Path(__file__).with_name('test_engine_runner.py'))
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    return fixture
 
 
 def test_dry_run_is_pure_and_includes_identity(monkeypatch, capsys):
@@ -145,3 +153,34 @@ def test_default_factory_constructs_agreed_client(monkeypatch, tmp_path):
     assert captured['root'] == root and captured['engine'] == 'vibecomfy-h3'
     assert len(captured['recipe_sha256']) == len(captured['helper_sha256']) == 64
     assert not (tmp_path / 'engine').exists()
+
+
+def test_successful_local_install_records_its_root(capsys):
+    context = _runner_fixture().FakeContext()
+    def backend(**kwargs):
+        context.deadline = kwargs['deadline']
+        return context, context.adapter
+    rc, out, _ = invoke(['install', *BASE], capsys, backend_factory=backend)
+    assert rc == 0 and json.loads(out)['status'] == 'installed'
+    assert recorded_engine_root('vibecomfy-h3') == ROOT
+
+
+def test_failed_install_records_nothing(capsys):
+    def fail(**kwargs):
+        raise CommandFailed('secret', step_id='source:comfyui')
+    rc, _, _ = invoke(['install', *BASE], capsys, backend_factory=fail)
+    assert rc == 1 and recorded_engine_root('vibecomfy-h3') is None
+
+
+def test_dry_run_and_runpod_install_record_nothing(capsys):
+    rc, _, _ = invoke(['install', *BASE, '--dry-run'], capsys, backend_factory=lambda **kw: pytest.fail('backend'))
+    assert rc == 0 and recorded_engine_root('vibecomfy-h3') is None
+    class RunpodContext(_runner_fixture().FakeContext):
+        placement = 'runpod'
+    context = RunpodContext()
+    def backend(**kwargs):
+        context.deadline = kwargs['deadline']
+        return context, context.adapter
+    rc, out, _ = invoke(['install', *BASE, '--placement', 'runpod'], capsys, backend_factory=backend)
+    assert rc == 0 and json.loads(out)['status'] == 'installed'
+    assert recorded_engine_root('vibecomfy-h3') is None

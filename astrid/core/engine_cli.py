@@ -91,6 +91,10 @@ def main(argv=None, *, backend_factory=None):
                                    placement=args.placement, root=plan.root, deadline=deadline)
         if args.command == 'install':
             result = install_engine(plan, context=context, adapter=adapter, deadline=deadline)
+            if args.placement == 'local' and result.status == 'installed':
+                # Run-path resolution (action run, the pack host) finds this install without an env var.
+                from .generation.engine_local_endpoint import record_engine_root
+                record_engine_root(args.engine, plan.root)
         else:
             result = engine_status(args.engine, platform=args.platform, placement=args.placement,
                                    root=plan.root, context=context, deadline=deadline)

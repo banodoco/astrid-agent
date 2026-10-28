@@ -10,10 +10,12 @@ import pytest
 
 from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence
 from astrid.core.generation.engine_local_endpoint import (
+    ENGINE_ROOT_ENV,
     LOCAL_ENGINE_HOST_ENV,
     EngineNotInstalled,
     local_model_root_binding,
     model_root_binding_from_receipt,
+    record_engine_root,
 )
 from astrid.core.generation.model_root import (
     MODEL_ROOT_BINDING_ENV,
@@ -89,6 +91,16 @@ def test_valid_receipt_yields_the_binding_of_the_installed_model_lock(tmp_path):
     # It is a binding the consumer accepts, byte for byte, exactly as the readiness-profile one is.
     document = json.loads(json.dumps(binding.as_dict()))
     assert validate_model_root_binding(document, verify_files=True).inventory_digest == binding.inventory_digest
+
+
+def test_binding_follows_the_recorded_install_root_without_an_env_var(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENGINE_ROOT_ENV, raising=False)
+    root, models = _install(tmp_path)
+    record_engine_root("vibecomfy-h3", str(root))
+    stub = _status(_receipt(models))
+    binding = local_model_root_binding("vibecomfy-h3", platform=PLATFORM, context=object(), status=stub)
+    assert stub.calls[0][1]["root"] == str(root)
+    assert str(binding.path) == str(root / "models")
 
 
 def test_derived_binding_rejects_a_model_file_that_changed_after_the_install(tmp_path):
