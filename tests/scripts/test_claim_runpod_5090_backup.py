@@ -123,12 +123,51 @@ def test_release_preflight_is_cpu_only_and_never_queries_cuda() -> None:
             return 0, "python=3.12.8", ""
 
     pod = Pod()
-    result = asyncio.run(claim._preflight_release(pod, "/workspace/release"))
+    result = asyncio.run(claim._preflight_release(pod, claim.CANONICAL_RELEASE_ROOT))
 
     assert result["probe"] == "python=3.12.8"
     assert "torch" not in pod.command.casefold()
     assert "cuda" not in pod.command.casefold()
     assert "nvidia-smi" not in pod.command
+
+
+def test_release_preflight_accepts_canonical_install_root() -> None:
+    class Pod:
+        commands: list[str] = []
+
+        async def exec_ssh(self, command: str, *, timeout: int):
+            self.commands.append(command)
+            return 0, "python=3.12.8", ""
+
+    pod = Pod()
+    result = asyncio.run(claim._preflight_release(pod, "/workspace/astrid/engines/vibecomfy-h3"))
+
+    assert result["release_root"] == "/workspace/astrid/engines/vibecomfy-h3"
+    assert result["release_python"] == "/workspace/astrid/engines/vibecomfy-h3/runtime/venv/bin/python"
+    assert result["release_launcher"] == "/workspace/astrid/engines/vibecomfy-h3/runtime/launch-comfy.sh"
+    assert len(pod.commands) == 1
+    assert "/workspace/astrid/engines/vibecomfy-h3/runtime/venv/bin/python" in pod.commands[0]
+
+
+@pytest.mark.parametrize("release_root", [
+    "/workspace/astrid/engines/vibecomfy-h3/",
+    "/workspace/astrid/engines/vibecomfy-h3/../other",
+    "/workspace/astrid/engines/other",
+    "/workspace/astrid/engines/vibecomfy-h3; echo injected",
+    "/workspace/release",
+])
+def test_release_preflight_refuses_other_roots_before_contacting_pod(release_root: str) -> None:
+    class Pod:
+        calls: list[str] = []
+
+        async def exec_ssh(self, command: str, *, timeout: int):
+            self.calls.append(command)
+            return 0, "python=3.12.8", ""
+
+    pod = Pod()
+    with pytest.raises(RuntimeError, match="not an accepted install root"):
+        asyncio.run(claim._preflight_release(pod, release_root))
+    assert pod.calls == []
 
 
 def test_allocation_unknown_persists_secret_free_marker_and_never_opens_another_window(

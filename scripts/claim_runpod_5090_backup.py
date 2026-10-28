@@ -68,6 +68,10 @@ DEFAULT_READY_TIMEOUT_SECONDS = 900
 DEFAULT_WORKER_IMAGE = "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
 DEFAULT_ALLOWED_CUDA_VERSIONS = ("13.0",)
 DEFAULT_RELEASE_ROOT = "/workspace/h3-golden/releases/h3-cu130-v1-candidate"
+# The engine installs into CANONICAL_RELEASE_ROOT. The old candidate path stays
+# accepted; any other root is refused before the pod is contacted.
+CANONICAL_RELEASE_ROOT = "/workspace/astrid/engines/vibecomfy-h3"
+ACCEPTED_RELEASE_ROOTS = (CANONICAL_RELEASE_ROOT, DEFAULT_RELEASE_ROOT)
 DEFAULT_HANDLE_PATH = Path(
     ".otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json"
 )
@@ -76,6 +80,8 @@ DEFAULT_LIFECYCLE_POLICY = "leave_running"
 
 async def _preflight_release(pod: Any, release_root: str) -> dict[str, str]:
     """Check mounted release paths and interpreter version without GPU probes."""
+    if release_root not in ACCEPTED_RELEASE_ROOTS:
+        raise RuntimeError(f"H3 release root {release_root!r} is not an accepted install root")
     python_path = f"{release_root}/runtime/venv/bin/python"
     launcher_path = f"{release_root}/runtime/launch-comfy.sh"
     command = f"""
