@@ -85,11 +85,14 @@ def _free_loopback_port() -> int:
     ("backend", True, "missing", "update"), ("backend", True, "malformed", "update"),
     ("backend", True, "unknown", "update"),
     ("backend", False, None, "add-local"),
+    ("backend", False, "midstop-after-stop", "update"),
+    ("backend", False, "midstop-during-term", "update"),
 ], ids=["stopped-backend", "stopped-local", "running-backend", "running-local",
        "incapable-retained-runtime", "unrelated-retained-runtime",
        "incapable-candidate-runtime", "unrelated-candidate-runtime",
        "missing-stop-marker", "malformed-stop-marker", "unknown-stop-binding",
-       "add-local-two-stop-build"])
+       "add-local-two-stop-build", "midstop-crash-after-stop",
+       "midstop-crash-during-term"])
 def test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority(
         tmp_path, monkeypatch, mode, start_stopped, marker_fault, operation):
     from astrid.installer.app_update import PinokioLifecycle
@@ -336,6 +339,56 @@ def test_canonical_stop_then_fresh_update_cli_uses_retained_c1_authority(
         return subprocess.run([str(candidate.python), "-I", "-c", cli_code, str(app_root),
             str(candidate.root / "version.json"), str(manifest), str(uv)], cwd=repo, env=child_env,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+
+    if marker_fault in {"midstop-after-stop", "midstop-during-term"}:
+        # The controller dies after Runtime signalled the owner: either right
+        # after the real stop returned, or while it waits for the TERMed owner.
+        kill_body = (
+            "    r=_orig(self,*a,**k)\n"
+            if marker_fault == "midstop-after-stop" else
+            "    os.kill(int(k['pid']),signal.SIGTERM)\n"
+        )
+        crash_code = cli_code.replace(
+            "cli.validate_manifest=lambda value:value",
+            "cli.validate_manifest=lambda value:value\n"
+            "import os,signal\n"
+            "from astrid_runtime.runtime_boundary import LocalRuntimeBoundary as _B\n"
+            "_orig=_B.stop_owner\n"
+            "def _kill(self,*a,**k):\n"
+            + kill_body +
+            "    os.kill(os.getpid(),signal.SIGKILL)\n"
+            "_B.stop_owner=_kill")
+        before_lock = read_json(data_root / "runtime" / "instance.lock")
+        crashed = subprocess.run([str(candidate.python), "-I", "-c", crash_code, str(app_root),
+            str(candidate.root / "version.json"), str(manifest), str(uv)], cwd=repo, env=child_env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+        assert crashed.returncode == -9, crashed.stdout[-2000:]
+        assert read_json(app_root / "update-transaction.json").get("step") == "stopping"
+        crashed_lock = read_json(data_root / "runtime" / "instance.lock")
+        assert crashed_lock["state"] == "stopping"
+        assert crashed_lock["pid"] == before_lock["pid"]
+        assert crashed_lock["process_birth_id"] == before_lock["process_birth_id"]
+        # The user retries after the TERMed owner has exited on its own.
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                os.kill(int(crashed_lock["pid"]), 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+        else:
+            pytest.fail("The TERMed owner did not exit.")
+        assert not (data_root / "runtime" / "discovery.json").exists()
+        retry = run_cli()
+        assert retry.returncode == 0, retry.stdout[-3000:]
+        assert read_json(app_root / "update-transaction.json")["step"] in {"complete", "rolled_back"}
+        final_lock = read_json(data_root / "runtime" / "instance.lock")
+        final_discovery = read_json(data_root / "runtime" / "discovery.json")
+        assert "state" not in final_lock
+        assert final_lock["pid"] != before_lock["pid"]
+        assert final_lock["runtime_instance_id"] == final_discovery["runtime_instance_id"]
+        os.kill(int(final_lock["pid"]), 0)
+        return
 
     if marker_fault in {
         "incapable-runtime", "unrelated-runtime",
