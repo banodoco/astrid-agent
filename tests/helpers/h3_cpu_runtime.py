@@ -581,6 +581,25 @@ class Handler(BaseHTTPRequestHandler):
                     if (hashlib.sha256(staged.read_bytes()).hexdigest() != record["sha256"]
                             or staged.stat().st_size != record["size"]):
                         raise ValueError(f"staged Character Swap {modality} differs from the input bundle")
+            elif expected.get("native_masked_edit") is True:
+                by_class: dict[str, list[dict]] = {}
+                for node in prompt.values():
+                    by_class.setdefault(node.get("class_type"), []).append(node)
+                for class_type in ("VHS_LoadVideoFFmpeg", "LoadImageMask", "H3V2VGranularFractionalDenoise"):
+                    if len(by_class.get(class_type, [])) != 1:
+                        raise ValueError(f"native masked edit fixture requires exactly one {class_type}")
+                v2v = by_class["H3V2VGranularFractionalDenoise"][0]["inputs"]
+                if v2v.get("mode") != "spatial" or v2v.get("crop") != "disabled" or v2v.get("audio_strength") != 0:
+                    raise ValueError("native masked edit node must be spatial, crop disabled, audio_strength 0")
+                for key in ("source_frames", "source_audio", "source_mask", "latent", "model"):
+                    if not isinstance(v2v.get(key), list):
+                        raise ValueError(f"native masked edit node input {key} is not connected")
+                for class_type, key in (("VHS_LoadVideoFFmpeg", "video"), ("LoadImageMask", "image")):
+                    member = by_class[class_type][0]["inputs"].get(key)
+                    if member not in expected["asset_files"] or Path(member).name != member:
+                        raise ValueError(f"native masked edit {class_type} is not bound to a managed member")
+                if any(n.get("class_type") == "LanPaint_KSampler" for n in prompt.values()):
+                    raise ValueError("native masked edit must not use LanPaint")
             else:
                 loader = prompt["99"]
                 basename = loader["inputs"]["video"]

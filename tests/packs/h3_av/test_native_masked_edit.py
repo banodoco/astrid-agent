@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
+from astrid.packs.h3_av.shared.request import normalize_request
+
+PILL = {
+    "version": 2, "duration": 5,
+    "prompt": "The pill in the open palm is deep blue, not red; keep hand, lighting and motion identical.",
+    "media": [
+        {"id": "src", "asset": "matrix-clip", "role": "timeline", "modality": "video",
+         "at": {"frame": 0}, "range": [90, 95],
+         "edit": [{"stream": "video", "during": [1.5, 3.5], "mask": {"asset": "pill-mask"}, "guides": ["blue"]}]},
+        {"id": "blue", "asset": "blue-pill-ref", "role": "reference", "modality": "image"}],
+}
+WATERMARK = {
+    "version": 2, "duration": 12,
+    "prompt": "Clean background in the lower-left corner, no logo or text.",
+    "media": [{"id": "src", "asset": "clip", "role": "timeline", "modality": "video",
+               "at": {"frame": 0}, "range": [0, 12],
+               "edit": [{"stream": "video", "during": [0, 12], "mask": {"asset": "wm-mask"}}]}],
+}
+
+
+def _prepare(raw: dict, tmp_path: Path) -> dict:
+    request = normalize_request(raw)
+    assets = []
+    for asset in {m["asset"] for m in raw["media"]} | {
+        e["mask"]["asset"] for m in raw["media"] for e in m.get("edit", []) if "asset" in e["mask"]
+    }:
+        path = tmp_path / f"{asset}.bin"
+        path.write_bytes(f"fixture {asset}".encode())
+        assets.append({"asset": asset, "status": "resolved", "path": str(path), "size": path.stat().st_size,
+                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return {"kind": "h3_av_preparation", "status": "prepared", "runtime_submission": "eligible",
+            "request": request.value, "request_digest": request.digest, "assets": assets}
+
+
+def _graph(manifest: dict) -> str:
+    return "\n".join(Path(row["path"]).read_text() for name, row in manifest["workflow"].items()
+                     if name.endswith((".py", ".json")))
+
+
+@pytest.mark.parametrize("raw", [PILL, WATERMARK], ids=["pill_recolour", "watermark"])
+def test_doc_examples_compile_to_native_nodes(raw, tmp_path):
+    manifest = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    assert manifest["status"] == "compiled"
+    text = _graph(manifest)
+    for needed in ("H3V2VGranularFractionalDenoise", "LoadImageMask", "VHS_LoadVideoFFmpeg"):
+        assert needed in text
+    assert "LanPaint" not in text
+
+
+def _v2v_block(manifest: dict) -> str:
+    text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
+    start = text.index("raw_call('H3V2VGranularFractionalDenoise'")
+    return text[start:text.index(")\n", text.index("source_mask=", start))]
+
+
+def test_mask_node_is_spatial_crop_disabled_audio_untouched(tmp_path):
+    manifest = compile_preparation(_prepare(PILL, tmp_path), out_dir=tmp_path / "out")
+    block = _v2v_block(manifest)
+    for fragment in ("mode='spatial'", "crop='disabled'", "audio_strength=0,",
+                     "inside_strength=1,", "outside_strength=0,",
+                     "source_audio=vhs_loadvideoffmpeg.out('AUDIO')", "source_mask=loadimagemask.out("):
+        assert fragment in block, fragment
+    text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
+    assert "LoadImageMask(channel='red'" in text
+    # The sampler and scheduler take the V2V node's model and latent.
+    assert "latent_image=h3v2vgranularfractionaldenoise.out('latent')" in text
+    assert "model=h3v2vgranularfractionaldenoise.out('model')" in text
+
+
+def test_source_window_comes_from_range(tmp_path):
+    manifest = compile_preparation(_prepare(PILL, tmp_path), out_dir=tmp_path / "out")
+    text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
+    assert "start_time=90.0" in text and "frame_load_cap=120" in text
+
+
+def test_rectangle_masks_still_fail_closed(tmp_path):
+    raw = json.loads(json.dumps(WATERMARK))
+    raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 10, 10]}
+    with pytest.raises(Exception):
+        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
