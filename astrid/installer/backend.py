@@ -486,8 +486,9 @@ class Backend:
             owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
             if type(owner_pid) is not int or owner_pid <= 0:
                 owner_pid = None
+            launchd_identity = None
             if self.managed_by != "pinokio":
-                self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
             def stop_selected_manager():
                 current_record = self.service.recorded()
                 if current_record and (current_record.get("owner") != LABEL
@@ -503,7 +504,16 @@ class Backend:
                             raise ValueError("No selected service record authorizes this stop.")
                     else:
                         if (current_record or {}).get("foreground") is None:
-                            self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                            if self.service.system == "darwin":
+                                checked_identity = self.service.validate_stop_target(
+                                    version, data, owner_pid=owner_pid,
+                                    expected_identity=launchd_identity, require_stopped=True)
+                                if launchd_identity is None and checked_identity is not None:
+                                    self.service._validated_launchd_stop = None
+                                    self.service._validated_launchd_stop_checked = False
+                                    raise ValueError("A launchd service appeared after the C1 stop admission.")
+                            else:
+                                self.service.validate_stop_target(version, data, owner_pid=owner_pid)
                             self.service.disable()
                             self.service.stop()
                 if stop_manager is not None:

@@ -132,7 +132,7 @@ def test_legacy_service_foreground_entry_cannot_signal(tmp_path, monkeypatch):
 @pytest.mark.parametrize('related', [True, False])
 def test_manager_target_readback_matches_selected_owner(tmp_path, monkeypatch, system, related):
     import json
-    from astrid.installer.service import Service, command
+    from astrid.installer.service import LABEL, Service, command, render
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, system=system, blocker=None)
     publish(paths, realm)
     queries = []
@@ -142,7 +142,12 @@ def test_manager_target_readback_matches_selected_owner(tmp_path, monkeypatch, s
         if system == 'linux':
             return 'MainPID=' + ('123' if related else '456') + '\nFragmentPath=' + str(backend.service.path) + '\nLoadState=loaded'
         if system == 'darwin':
-            return 'service = {\n pid = ' + ('123' if related else '456') + '\n}'
+            backend.service.path.write_text(render('darwin', old, data, backend.log), encoding='utf-8')
+            action = command(old, data)
+            return (f'gui/{platform.current_user()}/{LABEL} = {{\n\tpath = ' + str(backend.service.path)
+                    + '\n\tstate = running\n\tprogram = ' + action[0]
+                    + '\n\targuments = {\n' + '\n'.join('\t\t' + part for part in action)
+                    + '\n\t}\n\tpid = ' + ('123' if related else '456') + '\n}')
         argv = command(old, data, windows=True, log=backend.log, env_file=backend.service.env_file)
         return json.dumps([{'Execute': argv[0] if related else 'unrelated.exe',
                             'Arguments': subprocess.list2cmdline(argv[1:])}])
