@@ -1674,3 +1674,38 @@ def test_c1_unknown_result_sends_no_report(installed, monkeypatch, unknown):
         _bare_lifecycle(installed, stop).stop(installed.old, installed.data)
     assert _Refused.posts == [] and observed == [] and sent == []
     assert record.exists()
+
+
+def test_pinokio_validate_refuses_runtime_without_installed_distribution(installed, tmp_path, monkeypatch):
+    # Older installs have .pth-only Versions with no installed astrid-runtime. The
+    # qualification must refuse them with the explained message, not stop_unproven.
+    env = installed
+    scripts = env.root.parent.parent / "pinokio"
+    scripts.mkdir()
+    (scripts / "session.mjs").touch()
+    (scripts / "lifecycle.mjs").touch()
+    (env.root / "run").touch()
+    bare = tmp_path / "bare-venv"
+    venv.EnvBuilder(with_pip=False).create(bare)
+    bare_python = bare / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    candidate = SimpleNamespace(root=env.candidate.root, python=bare_python, profile=env.candidate.profile)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[1:2] == ["-I"]:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                raise RuntimeError(result.stderr)
+            return result.stdout
+        return ""
+
+    monkeypatch.setattr(env.backend, "run", run)
+    lifecycle = update.PinokioLifecycle(env.root, env.backend)
+    monkeypatch.setattr(lifecycle, "node", lambda version: env.root / "node")
+    with pytest.raises(RuntimeError) as refused:
+        lifecycle.validate(candidate)
+    message = str(refused.value)
+    assert "qualified release first" in message
+    assert "stop_unproven" not in message
+    assert calls[-1][1:2] == ["-I"]
