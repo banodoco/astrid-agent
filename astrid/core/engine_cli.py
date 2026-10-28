@@ -47,7 +47,7 @@ def _parser():
 
 def _default_backend(*, engine, platform, placement, root, deadline):
     if placement == 'runpod':
-        raise UnsupportedPlacement('RunPod execution awaits P2-SELF orchestration')
+        raise UnsupportedPlacement('RunPod execution awaits W1 (runpod wrapper)')
     from .generation.engine_execution import create_local_backend
     return create_local_backend(engine=engine, platform=platform, placement=placement,
                                 root=root, deadline=deadline)
@@ -106,7 +106,7 @@ def main(argv=None, *, backend_factory=None):
             handle = None
         messages = {
             'unsupported_platform': 'Target platform or local execution is unavailable; A2/A7 integration is pending.',
-            'unsupported_placement': 'RunPod execution awaits P2-SELF orchestration.',
+            'unsupported_placement': 'RunPod execution awaits W1 (runpod wrapper).',
         }
         print(json.dumps({'error': {'code': exc.code, 'step': step,
                                     'retryable': exc.retryable, 'recovery_handle': handle,
