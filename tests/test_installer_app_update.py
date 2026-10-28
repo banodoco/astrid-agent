@@ -1394,162 +1394,48 @@ def test_cli_requires_explicit_pinokio_mode():
 
 
 @pytest.fixture
-def manager_controller(installed):
+def stop_controller(installed):
+    """A real loopback controller that records each authenticated request."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
 
-    calls = []
+    requests = []
+    reply = {"status": 200, "body": {"ok": True}}
     record = installed.root / "pinokio-control.json"
     token = "a" * 64
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
-        def respond(self):
+
+        def do_POST(self):
             assert self.headers["Authorization"] == "Bearer " + token
-            calls.append(self.command)
-            if self.command == "POST":
+            assert self.headers["Host"] == f"127.0.0.1:{self.server.server_port}"
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            requests.append((self.path, json.loads(body or b"null")))
+            if reply["status"] == 200:
                 record.unlink()
-            self.send_response(200)
+            self.send_response(reply["status"])
             self.end_headers()
-            self.wfile.write(b'{"ok":true}')
-        do_OPTIONS = respond
-        do_POST = respond
+            self.wfile.write(json.dumps(reply["body"]).encode())
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     write_json(record, {"schema": 1, "pid": os.getpid(), "port": server.server_port, "token": token})
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield calls, record
+        yield requests, record, reply
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
 
 
-@pytest.mark.parametrize("failure", [None, "busy", "timeout", "identity"])
-def test_runtime_handoff_precedes_controller_cleanup(installed, manager_controller, failure):
-    calls, record = manager_controller
+def _bare_lifecycle(installed, stop):
     lifecycle = object.__new__(update.PinokioLifecycle)
     lifecycle.root = installed.root
-    def runtime_handoff(version, data, *, stop_manager):
-        assert calls == ["OPTIONS"]
-        if failure:
-            details = ({"safe": False, "kind": "busy"} if failure == "busy"
-                       else {"kind": failure, "reason": failure})
-            raise RuntimeOperationError(f"Runtime stop {failure}", details=details)
-        stop_manager()
-    lifecycle.backend = SimpleNamespace(stop=runtime_handoff)
-    if failure:
-        with pytest.raises(RuntimeOperationError, match=f"Runtime stop {failure}"):
-            lifecycle.stop(installed.old, installed.data)
-        assert calls == ["OPTIONS"]
-        assert record.exists()
-    else:
-        lifecycle.stop(installed.old, installed.data)
-        assert calls == ["OPTIONS", "POST"]
-        assert not record.exists()
-
-
-def test_pinokio_controller_failure_reports_completed_runtime_stop(installed, manager_controller):
-    calls, record = manager_controller
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    def runtime_handoff(_version, _data, *, stop_manager):
-        # Change the bound record after the capability query.
-        write_json(record, {"schema": 1, "pid": 456, "port": 1, "token": "b" * 64})
-        stop_manager()
-    lifecycle.backend = SimpleNamespace(stop=runtime_handoff)
-    with pytest.raises(RuntimeOperationError) as raised:
-        lifecycle.stop(installed.old, installed.data)
-    from astrid.installer.core import is_lifecycle_refusal
-    assert not is_lifecycle_refusal(raised.value)
-    assert raised.value.details == {"cause_details": None}
-    assert calls == ["OPTIONS"]
-
-
-def test_controller_exit_during_authenticated_stop_preserves_other_owners(installed, manager_controller, monkeypatch):
-    calls, record = manager_controller
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    def runtime_handoff(_version, _data, *, stop_manager):
-        record.unlink()
-        monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda *_args: None)
-        stop_manager()
-    lifecycle.backend = SimpleNamespace(stop=runtime_handoff)
-    lifecycle.stop(installed.old, installed.data)
-    assert calls == ["OPTIONS"]
-    assert not record.exists()
-
-
-def test_unsupported_controller_refuses_before_c1(installed, manager_controller, monkeypatch):
-    calls, record = manager_controller
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    lifecycle.backend = SimpleNamespace(stop=lambda *_args, **_kw: pytest.fail('C1 must not run'))
-    class Unsupported:
-        status = 404
-        def read(self, *_args):
-            return b'{"ok":false}'
-    class Connection:
-        def __init__(self, *_args, **_kwargs): pass
-        def request(self, *_args, **_kwargs): pass
-        def getresponse(self): return Unsupported()
-        def close(self): pass
-    monkeypatch.setattr(update.http.client, 'HTTPConnection', Connection)
-    with pytest.raises(ValueError, match='stopped and started'):
-        lifecycle.stop(installed.old, installed.data)
-    assert record.exists()
-    assert calls == []
-
-
-def test_absent_controller_replacement_refuses_inside_callback(installed):
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    record = installed.root / 'pinokio-control.json'
-    def stop(_version, _data, *, stop_manager):
-        write_json(record, {'schema': 1, 'pid': os.getpid(), 'port': 1, 'token': 'b' * 64})
-        stop_manager()
     lifecycle.backend = SimpleNamespace(stop=stop)
-    with pytest.raises(RuntimeOperationError, match='controller changed'):
-        lifecycle.stop(installed.old, installed.data)
-    assert record.exists()
-
-
-def test_dead_bound_controller_requires_fresh_c1(installed, monkeypatch):
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    record = installed.root / 'pinokio-control.json'
-    write_json(record, {'schema': 1, 'pid': 123, 'port': 1, 'token': 'b' * 64})
-    monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda *_args: None)
-    calls = []
-    def stop(_version, _data, *, stop_manager):
-        calls.append('C1')
-        stop_manager()
-    lifecycle.backend = SimpleNamespace(stop=stop)
-    lifecycle.stop(installed.old, installed.data)
-    assert calls == ['C1']
-    assert record.exists()
-
-
-def test_disappeared_controller_is_verified_after_c1_returns(installed, manager_controller, monkeypatch):
-    calls, record = manager_controller
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    events = []
-    def observe(_pid):
-        events.append('pid check')
-        return None if len(events) >= 4 else {'pid': _pid}
-    def stop(_version, _data, *, stop_manager):
-        events.append('C1 entered')
-        record.unlink()
-        stop_manager()
-        events.append('C1 returned')
-    monkeypatch.setattr(update.runtime_platform, 'process_identity', observe)
-    monkeypatch.setattr(update.time, 'sleep', lambda _delay: None)
-    lifecycle.backend = SimpleNamespace(stop=stop)
-    lifecycle.stop(installed.old, installed.data)
-    assert events == ['pid check', 'C1 entered', 'C1 returned', 'pid check']
-    assert calls == ['OPTIONS']
+    return lifecycle
 
 
 def _no_signal(monkeypatch):
@@ -1560,13 +1446,129 @@ def _no_signal(monkeypatch):
     return sent
 
 
+class _Refused:
+    """Connection whose POST transport fails, as when a controller just exited."""
+    posts = []
+
+    def __init__(self, *_a, **_k): pass
+    def request(self, method, path, *_a, **_k): _Refused.posts.append((method, path))
+    def getresponse(self): raise ConnectionRefusedError('refused')
+    def close(self): pass
+
+
+@pytest.mark.parametrize("failure", [None, "busy", "timeout", "identity"])
+def test_runtime_handoff_precedes_controller_cleanup(installed, stop_controller, failure):
+    requests, record, _reply = stop_controller
+    calls = []
+
+    def c1(version, data):
+        # C1 runs with no controller request (or probe) before it.
+        assert requests == []
+        assert (version, data) == (installed.old, installed.data)
+        calls.append("C1")
+        if failure:
+            details = ({"safe": False, "kind": "busy"} if failure == "busy"
+                       else {"kind": failure, "reason": failure})
+            raise RuntimeOperationError(f"Runtime stop {failure}", details=details)
+
+    lifecycle = _bare_lifecycle(installed, c1)
+    if failure:
+        with pytest.raises(RuntimeOperationError, match=f"Runtime stop {failure}") as raised:
+            lifecycle.stop(installed.old, installed.data)
+        from astrid.installer.core import is_lifecycle_refusal
+        assert is_lifecycle_refusal(raised.value) is (failure == "busy")
+        if failure != "busy":
+            assert raised.value.details == {"kind": failure, "reason": failure}
+        assert requests == []
+        assert record.exists()
+    else:
+        lifecycle.stop(installed.old, installed.data)
+        # C1's result is reported as data on the ordinary /stop route.
+        assert requests == [("/stop", {"c1": "stopped"})]
+        assert not record.exists()
+    assert calls == ["C1"]
+
+
+def test_pinokio_controller_failure_reports_completed_runtime_stop(installed, stop_controller):
+    requests, record, reply = stop_controller
+    reply.update(status=500, body={"ok": False, "errors": ["controller cleanup failed"],
+                                   "details": {"safe": False, "blockers": ["late"]}})
+    lifecycle = _bare_lifecycle(installed, lambda _version, _data: None)
+    with pytest.raises(RuntimeOperationError, match="controller cleanup failed") as raised:
+        lifecycle.stop(installed.old, installed.data)
+    from astrid.installer.core import is_lifecycle_refusal
+    assert not is_lifecycle_refusal(raised.value)
+    assert raised.value.details == {"cause_details": {"safe": False, "blockers": ["late"]}}
+    assert requests == [("/stop", {"c1": "stopped"})]
+    assert record.exists()
+
+
+@pytest.mark.parametrize("controller", ["exited", "remaining", "replacement"])
+def test_controller_exit_during_authenticated_stop_preserves_other_owners(installed, monkeypatch, controller):
+    sent = _no_signal(monkeypatch)
+    record = installed.root / "pinokio-control.json"
+    write_json(record, {"schema": 1, "pid": 4321, "port": 1, "token": "b" * 64})
+    monkeypatch.setattr(update.runtime_platform, "process_identity", lambda pid: {"pid": pid, "birth_id": "live"})
+    _Refused.posts = []
+
+    class Connection(_Refused):
+        def getresponse(self):
+            if controller == "exited":
+                record.unlink()
+            elif controller == "replacement":
+                write_json(record, {"schema": 1, "pid": 4322, "port": 2, "token": "c" * 64})
+            raise ConnectionRefusedError("refused")
+
+    monkeypatch.setattr(update.http.client, "HTTPConnection", Connection)
+    lifecycle = _bare_lifecycle(installed, lambda _version, _data: None)
+    if controller == "exited":
+        lifecycle.stop(installed.old, installed.data)
+        assert not record.exists()
+    else:
+        with pytest.raises(RuntimeOperationError):
+            lifecycle.stop(installed.old, installed.data)
+        assert record.exists()
+    assert _Refused.posts == [("POST", "/stop")]
+    assert sent == []
+
+
+def test_absent_controller_replacement_refuses_after_c1(installed, monkeypatch):
+    sent = _no_signal(monkeypatch)
+    record = installed.root / 'pinokio-control.json'
+    _Refused.posts = []
+    monkeypatch.setattr(update.http.client, "HTTPConnection", _Refused)
+
+    def c1(_version, _data):
+        write_json(record, {'schema': 1, 'pid': os.getpid(), 'port': 1, 'token': 'b' * 64})
+
+    with pytest.raises(RuntimeOperationError, match='controller changed'):
+        _bare_lifecycle(installed, c1).stop(installed.old, installed.data)
+    assert record.exists()
+    assert _Refused.posts == [] and sent == []
+
+
+def test_dead_bound_controller_needs_only_c1(installed, monkeypatch):
+    sent = _no_signal(monkeypatch)
+    record = installed.root / 'pinokio-control.json'
+    write_json(record, {'schema': 1, 'pid': 123, 'port': 1, 'token': 'b' * 64})
+    monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda *_args: None)
+    _Refused.posts = []
+    monkeypatch.setattr(update.http.client, "HTTPConnection", _Refused)
+    calls = []
+    _bare_lifecycle(installed, lambda *_a: calls.append('C1')).stop(installed.old, installed.data)
+    assert calls == ['C1']
+    assert sent == []
+    assert record.exists()  # The canonical launcher removes a dead controller's record.
+
+
 @pytest.mark.parametrize("observation", ["live", "absent", "unknown", "reappearing"])
-def test_pre_c1_controller_probe_is_read_only_and_fail_closed(installed, monkeypatch, observation):
-    """Windows-style observer injected; no signal/terminate primitive may run."""
+def test_controller_observation_is_read_only_after_c1_and_fail_closed(installed, monkeypatch, observation):
+    """Windows-style observer injected: nothing observes or signals before C1."""
     sent = _no_signal(monkeypatch)
     record = installed.root / 'pinokio-control.json'
     write_json(record, {'schema': 1, 'pid': 4321, 'port': 1, 'token': 'b' * 64})
     seen = []
+
     def observer(pid):
         seen.append(pid)
         if observation == 'live':
@@ -1576,57 +1578,51 @@ def test_pre_c1_controller_probe_is_read_only_and_fail_closed(installed, monkeyp
         if observation == 'reappearing':
             return None if len(seen) == 1 else {'pid': pid, 'birth_id': 'win:2'}
         return None
+
+    clock = iter(range(0, 10_000))
     monkeypatch.setattr(update.runtime_platform, 'process_identity', observer)
     monkeypatch.setattr(update.time, 'sleep', lambda _d: None)
-    posts = []
-    class Connection:
-        def __init__(self, *_a, **_k): pass
-        def request(self, method, *_a, **_k): posts.append(method)
-        def getresponse(self): raise OSError('refused')
-        def close(self): pass
-    monkeypatch.setattr(update.http.client, 'HTTPConnection', Connection)
+    monkeypatch.setattr(update.time, 'monotonic', lambda: float(next(clock)))
+    _Refused.posts = []
+    monkeypatch.setattr(update.http.client, 'HTTPConnection', _Refused)
     c1 = []
-    def stop(_version, _data, *, stop_manager):
+
+    def stop(_version, _data):
+        assert seen == [] and _Refused.posts == [] and sent == []
         c1.append('C1')
-        stop_manager()
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    lifecycle.backend = SimpleNamespace(stop=stop)
+
+    lifecycle = _bare_lifecycle(installed, stop)
     if observation == 'absent':
-        lifecycle.stop(installed.old, installed.data)  # fresh C1 only; no POST
-        assert c1 == ['C1'] and posts == []
+        lifecycle.stop(installed.old, installed.data)
     else:
-        with pytest.raises((ValueError, RuntimeOperationError)):
+        # Live and reappearing never finish; unknown is not dead.
+        with pytest.raises(RuntimeOperationError):
             lifecycle.stop(installed.old, installed.data)
+    assert c1 == ['C1']
     assert sent == []
-    assert seen and set(seen) == {4321}
-    if observation in {'live', 'unknown'}:
-        assert c1 == []  # refused before C1; unknown is not dead
-    if observation in {'live', 'unknown', 'reappearing'}:
-        assert 'POST' not in posts
+    assert set(seen) == {4321}
+    assert _Refused.posts == [('POST', '/stop')]
     assert record.exists()
 
 
-def test_c1_refusal_causes_no_manager_post_or_signal(installed, monkeypatch):
+@pytest.mark.parametrize("refusal", ["busy", "replacement", "unknown"])
+def test_c1_refusal_causes_no_controller_request_or_signal(installed, monkeypatch, refusal):
     sent = _no_signal(monkeypatch)
     record = installed.root / 'pinokio-control.json'
     write_json(record, {'schema': 1, 'pid': 4321, 'port': 1, 'token': 'b' * 64})
-    monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda pid: {'pid': pid, 'birth_id': 'w'})
-    methods = []
-    class Connection:
-        def __init__(self, *_a, **_k): pass
-        def request(self, method, *_a, **_k): methods.append(method)
-        def getresponse(self):
-            return SimpleNamespace(status=200, read=lambda *_a: b'{"ok":true}')
-        def close(self): pass
-    monkeypatch.setattr(update.http.client, 'HTTPConnection', Connection)
+    observed = []
+    monkeypatch.setattr(update.runtime_platform, 'process_identity', lambda pid: observed.append(pid))
+    _Refused.posts = []
+    monkeypatch.setattr(update.http.client, 'HTTPConnection', _Refused)
+
     def stop(*_a, **_k):
-        raise RuntimeOperationError('busy', details={'safe': False, 'kind': 'busy'})
-    lifecycle = object.__new__(update.PinokioLifecycle)
-    lifecycle.root = installed.root
-    lifecycle.backend = SimpleNamespace(stop=stop)
-    with pytest.raises(RuntimeOperationError, match='busy'):
-        lifecycle.stop(installed.old, installed.data)
-    assert methods == ['OPTIONS']
+        if refusal == "unknown":
+            raise RuntimeOperationError('Runtime stop outcome is unknown', details={'kind': 'unknown'})
+        raise RuntimeOperationError(refusal, details={'safe': False, 'kind': refusal})
+
+    with pytest.raises(RuntimeOperationError):
+        _bare_lifecycle(installed, stop).stop(installed.old, installed.data)
+    assert _Refused.posts == []
+    assert observed == []
     assert sent == []
     assert record.exists()

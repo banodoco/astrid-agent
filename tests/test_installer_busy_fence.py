@@ -499,7 +499,7 @@ def test_service_record_must_belong_to_selected_install(tmp_path, monkeypatch, k
 
 
 @pytest.mark.parametrize('outcome', ['busy', 'late_busy', 'replacement', 'unknown', 'timeout', 'malformed', 'success'])
-def test_pinokio_real_c1_only_admits_bound_manager_after_stop(tmp_path, monkeypatch, outcome):
+def test_pinokio_real_c1_reports_stop_to_bound_controller_only_after_success(tmp_path, monkeypatch, outcome):
     import os
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -534,19 +534,15 @@ def test_pinokio_real_c1_only_admits_bound_manager_after_stop(tmp_path, monkeypa
     requests = []
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args): pass
-        def respond(self):
-            requests.append(self.command)
-            if self.command == 'POST':
-                assert calls == ['prepare', 'runtime-stop']
-                with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
-                    with pytest.raises(sqlite3.OperationalError, match='locked'):
-                        db.execute("INSERT INTO tasks VALUES ('race','render','running',NULL)")
-                control.unlink()
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+            requests.append((self.path, json.loads(body)))
+            # C1 completed and released its fence before the report arrives.
+            assert calls == ['prepare', 'runtime-stop']
+            control.unlink()
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
-        do_OPTIONS = respond
-        do_POST = respond
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     write_json(control, {'schema': 1, 'pid': os.getpid(), 'port': server.server_port, 'token': 'a' * 64})
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -556,19 +552,19 @@ def test_pinokio_real_c1_only_admits_bound_manager_after_stop(tmp_path, monkeypa
     try:
         if outcome == 'success':
             lifecycle.stop(old, data)
-            assert requests == ['OPTIONS', 'POST']
+            assert requests == [('/stop', {'c1': 'stopped'})]
             assert calls == ['prepare', 'runtime-stop']
             assert not control.exists()
         else:
             with pytest.raises(RuntimeOperationError):
                 lifecycle.stop(old, data)
-            assert requests == ['OPTIONS']
+            assert requests == []
             assert control.exists()
             if outcome == 'busy':
                 with sqlite3.connect(realm / 'realm.sqlite3') as db:
                     db.execute("DELETE FROM tasks")
                 lifecycle.stop(old, data)
-                assert requests == ['OPTIONS', 'OPTIONS', 'POST']
+                assert requests == [('/stop', {'c1': 'stopped'})]
                 assert not control.exists()
     finally:
         server.shutdown()
@@ -577,7 +573,7 @@ def test_pinokio_real_c1_only_admits_bound_manager_after_stop(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("failure", ["drain", "timeout"])
-def test_pinokio_manager_failure_retries_ownerless_through_fresh_c1(tmp_path, monkeypatch, failure):
+def test_pinokio_controller_failure_retries_ownerless_through_fresh_c1(tmp_path, monkeypatch, failure):
     import os
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -598,22 +594,17 @@ def test_pinokio_manager_failure_retries_ownerless_through_fresh_c1(tmp_path, mo
     requests = []
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args): pass
-        def respond(self):
-            requests.append(self.command)
-            if self.command == 'POST':
-                with sqlite3.connect(realm / 'realm.sqlite3', timeout=0) as db:
-                    with pytest.raises(sqlite3.OperationalError, match='locked'):
-                        db.execute("INSERT INTO tasks VALUES ('race','render','running',NULL)")
-                if failure == 'drain' and requests.count('POST') == 1:
-                    self.send_response(500); self.end_headers(); self.wfile.write(b'{"ok":false,"errors":["drain failed"]}'); return
-                if failure == 'timeout' and requests.count('POST') == 1:
-                    import time
-                    time.sleep(0.4)
-                    return
-                control.unlink()
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+            requests.append(json.loads(body))
+            if failure == 'drain' and len(requests) == 1:
+                self.send_response(500); self.end_headers(); self.wfile.write(b'{"ok":false,"errors":["drain failed"]}'); return
+            if failure == 'timeout' and len(requests) == 1:
+                import time
+                time.sleep(0.4)
+                return
+            control.unlink()
             self.send_response(200); self.end_headers(); self.wfile.write(b'{"ok":true}')
-        do_OPTIONS = respond
-        do_POST = respond
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     write_json(control, {'schema': 1, 'pid': os.getpid(), 'port': server.server_port, 'token': 'a' * 64})
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -641,10 +632,11 @@ def test_pinokio_manager_failure_retries_ownerless_through_fresh_c1(tmp_path, mo
         with pytest.raises(RuntimeOperationError, match='drain failed|timed out'):
             lifecycle(backend).stop(old, data)
         assert control.exists() and not paths.discovery_path.exists()
+        # A retry never replays the earlier report: it needs a fresh C1 first.
         fresh = Backend(backend.root, tmp_path / 'fresh.log', tmp_path / 'uv', managed_by='pinokio')
         fresh.service.selection = backend.service.selection
         lifecycle(fresh).stop(old, data)
-        assert requests == ['OPTIONS', 'POST', 'OPTIONS', 'POST']
+        assert requests == [{'c1': 'stopped'}, {'c1': 'stopped'}]
         assert calls == ['prepare', 'runtime-stop']
         assert not control.exists()
     finally:

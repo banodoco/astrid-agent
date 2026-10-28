@@ -181,6 +181,11 @@ class PinokioLifecycle:
                          timeout=30, clean_bun_env=True)
 
     def stop(self, version: Version, data: Path) -> None:
+        # C1 (Backend.stop) is the only Runtime stop. Before it, this adapter
+        # only reads the controller record file: no signal, liveness probe or
+        # controller request may precede C1 admission (Windows os.kill(pid, 0)
+        # is CTRL_C_EVENT/TerminateProcess). A C1 refusal or unknown outcome
+        # raises here and leaves the controller, session and children untouched.
         control = self.root / "pinokio-control.json"
 
         def snapshot():
@@ -198,79 +203,75 @@ class PinokioLifecycle:
             return raw, record
 
         bound = snapshot()
+        self.backend.stop(version, data)
 
         def dead(record):
-            # Read-only observation only: os.kill(pid, 0) is CTRL_C_EVENT or
-            # TerminateProcess on Windows. Unknown observations never mean dead.
+            # Read-only observation (after C1). Unknown never means dead.
             try:
                 return runtime_platform.process_identity(record["pid"]) is None
             except OSError as exc:
                 raise ValueError("The Pinokio controller process could not be observed.") from exc
 
-        stale = bound is not None and dead(bound[1])
-
-        def request(method):
+        def report_c1_stopped():
+            # The session's controller receives C1's result as data. It skips
+            # its own Runtime down only for exactly this result; anything else
+            # (or an older controller ignoring the body) keeps today's
+            # down-gated shutdown.
             if snapshot() != bound:
                 raise ValueError("The Pinokio controller changed during stop.")
             if bound is None:
                 return
             record = bound[1]
-            if stale:
-                if not dead(record):
-                    raise ValueError("The Pinokio controller process changed during stop.")
-                return
-            conn = http.client.HTTPConnection("127.0.0.1", record["port"], timeout=30)
+            body = json.dumps({"c1": "stopped"}).encode()
+            conn = http.client.HTTPConnection("127.0.0.1", record["port"], timeout=50)
             try:
-                conn.request(method, "/manager-stop", headers={
-                    "Authorization": "Bearer " + record["token"],
-                    "Host": f"127.0.0.1:{record['port']}",
-                })
-                response = conn.getresponse()
-                body = response.read(65537)
-                if len(body) > 65536:
-                    raise ValueError("Pinokio controller response is too large.")
-                result = json.loads(body)
-                if response.status != 200 or result.get("ok") is not True:
-                    raise ValueError(" ".join(result.get("errors") or ["Pinokio manager stop failed."]))
+                try:
+                    conn.request("POST", "/stop", body=body, headers={
+                        "Authorization": "Bearer " + record["token"],
+                        "Host": f"127.0.0.1:{record['port']}",
+                        "Content-Type": "application/json",
+                    })
+                    response = conn.getresponse()
+                    raw = response.read(65537)
+                except OSError:
+                    # The session may finish (its own exit finalizer) and close
+                    # between the read and the POST. Only a vanished record or
+                    # a positively absent controller process admits that race.
+                    current_record = snapshot()
+                    if current_record is None or (current_record == bound and dead(record)):
+                        return
+                    raise
             finally:
                 conn.close()
+            if len(raw) > 65536:
+                raise ValueError("Pinokio controller response is too large.")
+            result = json.loads(raw or b"{}")
+            if response.status != 200 or not isinstance(result, dict) or result.get("ok") is not True:
+                error = ValueError(" ".join((result.get("errors") if isinstance(result, dict) else None)
+                                            or ["Pinokio controller stop failed."]))
+                error.details = result.get("details") if isinstance(result, dict) else None
+                raise error
 
-        if bound is not None and not stale:
-            try:
-                request("OPTIONS")
-            except Exception as exc:
-                raise ValueError("The Pinokio launcher must be stopped and started before updating.") from exc
-
-        vanished_during_request = False
-
-        def stop_controller():
-            nonlocal vanished_during_request
-            try:
-                request("POST")
-            except Exception as exc:
-                # Verify a vanished process after C1 releases its locks: its
-                # finalizer may be waiting for those locks itself.
-                if bound is None or control.exists():
-                    raise RuntimeOperationError(str(exc), details={"cause_details": getattr(exc, "details", None)}) from exc
-                vanished_during_request = True
-
-        self.backend.stop(version, data, stop_manager=stop_controller)
         try:
+            report_c1_stopped()
             deadline = time.monotonic() + 30
             while True:
-                current_control = snapshot()
-                if current_control is None:
-                    if not vanished_during_request or dead(bound[1]):
-                        break
-                elif current_control != bound:
-                    raise ValueError("The Pinokio controller changed during finalization.")
-                if current_control is not None and stale and dead(bound[1]):
+                current_record = snapshot()
+                if current_record is None:
                     break
+                if current_record != bound:
+                    raise ValueError("The Pinokio controller changed during finalization.")
+                if dead(bound[1]):
+                    break  # The canonical launcher removes a dead controller record.
                 if time.monotonic() >= deadline:
                     raise ValueError("The Pinokio supervisor has not finished stopping.")
                 time.sleep(0.1)
         except (Exception, KeyboardInterrupt) as exc:
-            raise RuntimeOperationError(str(exc), details={"cause_details": getattr(exc, "details", None)}) from exc
+            # C1 has already completed. Preserve the controller failure as
+            # downstream context so it cannot masquerade as a lifecycle refusal.
+            raise RuntimeOperationError(str(exc), details={
+                "cause_details": getattr(exc, "details", None),
+            }) from exc
 
     def start(self, version: Version, data: Path, realm_id: str) -> None:
         # The existing session selects current/version.json and passes its exact
