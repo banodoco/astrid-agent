@@ -23,7 +23,7 @@ from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
 from astrid.core.generation.engine_runner import _json, _sha, helper_manifest
 
 PLATFORM = "linux-x86_64-cu130"
-pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux native owner")
+pytestmark = pytest.mark.linux_native
 
 _SERVER = r'''
 import json,os,sys,time
