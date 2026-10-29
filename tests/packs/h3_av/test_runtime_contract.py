@@ -385,7 +385,7 @@ def test_composition_carries_provenance_and_decoded_protected_samples(tmp_path: 
     source = tmp_path / "source.mp4"
     generated = tmp_path / "generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
@@ -410,7 +410,7 @@ def test_full_replacement_composition_trims_generated_av_to_request_duration(tmp
     source = tmp_path / "silent-source.mp4"
     generated = tmp_path / "overlong-generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)],
         check=True,
     )
     subprocess.run(
@@ -455,7 +455,7 @@ def test_protected_audio_witness_tolerates_aac_to_pcm_roundtrip(tmp_path: Path) 
     source = tmp_path / "source-32k-aac.mp4"
     generated = tmp_path / "generated-32k-aac.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=32x32:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
@@ -482,7 +482,7 @@ def test_composition_normalizes_generated_working_resolution_to_source(tmp_path:
     source = tmp_path / "source.mp4"
     generated = tmp_path / "generated.mp4"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)],
         check=True,
     )
     subprocess.run(
@@ -505,7 +505,7 @@ def test_composition_normalizes_generated_working_resolution_to_source(tmp_path:
         ).stdout
     )
     stream = probe["streams"][0]
-    assert (stream["width"], stream["height"]) == (64, 64)
+    assert (stream["width"], stream["height"]) == (1024, 576)
 
 
 def test_input_bundle_contains_only_declared_source_refs_and_masks(tmp_path: Path):
@@ -668,10 +668,10 @@ def test_input_bundle_rejects_tampering_before_materialization(tmp_path: Path, m
     assert not (tmp_path / "attempt").exists()
 
 
-def _synthetic_av(path: Path, duration: float, *, color: str, muxed=True):
+def _synthetic_av(path: Path, duration: float, *, color: str, muxed=True, size: str = "32x32"):
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+        "-f", "lavfi", "-i", f"color=c={color}:s={size}:r=24",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
         "-t", str(duration), "-c:v", "libx264", "-pix_fmt", "yuv420p",
         *(["-c:a", "aac"] if muxed else ["-an"]), str(path),
@@ -743,7 +743,7 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     caller = tmp_path / "caller"
     caller.mkdir()
     source = caller / "source.mp4"
-    _synthetic_av(source, 2 if operation == "edit" else 1, color="blue")
+    _synthetic_av(source, 2 if operation == "edit" else 1, color="blue", size="1024x576")
     source_bytes = source.read_bytes()
     raw = _request().value
     raw["operation"] = operation
@@ -753,14 +753,14 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     if verification_fault == "mask":
         from PIL import Image
         mask = caller / "region.png"
-        Image.new("L", (32, 32), 255).save(mask)
+        Image.new("L", (1024, 576), 255).save(mask)
         raw["changes"]["video"][0].update(
-            area={"rectangle": [0, 0, 32, 32]}, mask_asset=mask.name,
+            area={"rectangle": [0, 0, 1024, 576]}, mask_asset=mask.name,
         )
         asset_map[mask.name] = str(mask)
     if operation == "character":
         from PIL import Image
-        _synthetic_av(source, 15, color="blue")
+        _synthetic_av(source, 15, color="blue", size="1024x576")
         source_bytes = source.read_bytes()
         performance = caller / "performance.mp4"
         _synthetic_av(performance, 15, color="green")

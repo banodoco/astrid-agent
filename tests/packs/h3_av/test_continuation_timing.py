@@ -51,7 +51,7 @@ def _run(command: list[str]) -> None:
     subprocess.run(command, check=True, capture_output=True, text=True)
 
 
-def _av(path: Path, *, frames: int, color: str, frequency: int) -> None:
+def _av(path: Path, *, frames: int, color: str, frequency: int, size: str = "64x48") -> None:
     duration = frames / 24
     _run(
         [
@@ -63,7 +63,7 @@ def _av(path: Path, *, frames: int, color: str, frequency: int) -> None:
             "-f",
             "lavfi",
             "-i",
-            f"color=c={color}:s=64x48:r=24",
+            f"color=c={color}:s={size}:r=24",
             "-f",
             "lavfi",
             "-i",
@@ -166,7 +166,7 @@ def test_compiler_exports_raw_h3_duration_not_requested_suffix_duration(tmp_path
 def test_muxed_continuation_composes_real_suffix_and_rejects_prior_noop(tmp_path: Path) -> None:
     source = tmp_path / "source.mkv"
     generated = tmp_path / "generated-full-timeline.mkv"
-    _av(source, frames=120, color="blue", frequency=440)
+    _av(source, frames=120, color="blue", frequency=440, size="1024x576")
     _av(generated, frames=154, color="red", frequency=880)
     preparation = prepare_request(_request(), asset_map={"source": str(source)})
 
@@ -207,7 +207,7 @@ def test_separate_video_audio_outputs_remain_supported_for_continuation(tmp_path
     source = tmp_path / "source.mkv"
     video = tmp_path / "generated-video.mkv"
     audio = tmp_path / "generated-audio.flac"
-    _av(source, frames=120, color="blue", frequency=440)
+    _av(source, frames=120, color="blue", frequency=440, size="1024x576")
     _video(video, frames=154, color="red")
     _audio(audio, frames=154, frequency=880)
     preparation = prepare_request(_request(), asset_map={"source": str(source)})

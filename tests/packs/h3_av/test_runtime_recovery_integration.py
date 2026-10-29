@@ -39,13 +39,13 @@ ASTRID_ROOT = Path(__file__).resolve().parents[3]
 pytestmark = pytest.mark.integration  # needs the Runtime from a second checkout (real_runtime fixture)
 
 
-def _synthetic_av(path: Path, *, color: str) -> None:
+def _synthetic_av(path: Path, *, color: str, size: str = "32x32") -> None:
     import subprocess
 
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+            "-f", "lavfi", "-i", f"color=c={color}:s={size}:r=24",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-c:a", "aac", str(path),
@@ -113,7 +113,7 @@ def test_runtime_response_loss_resumes_canonical_run_into_h3_verified_receipt(tm
 
         source = tmp_path / "source.mp4"
         generated = tmp_path / "generated.mp4"
-        _synthetic_av(source, color="blue")
+        _synthetic_av(source, color="blue", size="1024x576")
         _synthetic_av(generated, color="red")
         raw_request = {
             "version": 1,

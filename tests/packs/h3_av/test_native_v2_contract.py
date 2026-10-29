@@ -29,6 +29,7 @@ from astrid.packs.h3_av.shared.request_v2 import branch_for
 from astrid.packs.h3_av.actions.verify.verify import VerificationError, verify_candidate
 
 PACK = Path(__file__).resolve().parents[3] / "astrid/packs/h3_av"
+W, H = 1024, 576
 
 
 def _case(branch: str) -> dict[str, object]:
@@ -45,11 +46,11 @@ def _case(branch: str) -> dict[str, object]:
     return {"version": 2, "prompt": f"Exercise {branch}.", "duration": 5, "continuation": branch == "extension_context", "media": media, "settings": {}}
 
 
-def _av(path: Path, *, frames: int, color: str, frequency: int) -> None:
+def _av(path: Path, *, frames: int, color: str, frequency: int, size: str = "1024x576") -> None:
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=64x48:r=24",
+            "-f", "lavfi", "-i", f"color=c={color}:s={size}:r=24",
             "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000",
             "-frames:v", str(frames), "-t", str(frames / 24),
             "-c:v", "ffv1", "-c:a", "pcm_s16le", str(path),
@@ -203,7 +204,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=24",
+            "-f", "lavfi", "-i", f"testsrc2=size={W}x{H}:rate=24",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-frames:v", "24", "-t", "1", "-c:v", "ffv1", "-pix_fmt", "yuv420p",
             "-c:a", "pcm_s16le", str(source),
@@ -212,11 +213,11 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
         capture_output=True,
     )
     _av(generated, frames=24, color="red", frequency=880)
-    mask_image = Image.new("L", (64, 48), color=0)
+    mask_image = Image.new("L", (W, H), color=0)
     # Odd boundaries cross 4:2:0 chroma blocks; nonuniform source pixels
     # prove the lossless full-resolution output preserves the RGB complement.
-    for y in range(11, 35):
-        for x in range(17, 47):
+    for y in range(133, 421):
+        for x in range(273, 751):
             mask_image.putpixel((x, y), 255)
     mask_image.save(mask)
     request = normalize_request({
@@ -228,7 +229,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
         "changes": {
             "video": [{
                 "during": [0, 0.5],
-                "area": {"rectangle": [0, 0, 32, 48]},
+                "area": {"rectangle": [0, 0, W // 2, H]},
                 "mask_asset": "mask.png",
                 "action": "generate",
             }],
@@ -258,7 +259,7 @@ def test_regional_video_mask_restores_and_verifies_pixels_outside_edit_area(
     assert verification["preservation"]["status"] == "protected_sample_evidence"
     evidence = verification["preservation"]["spatial_complement"][0]
     assert evidence["frame_count"] == 12
-    assert evidence["protected_pixel_count_per_frame"] == 64 * 48 - 30 * 24
+    assert evidence["protected_pixel_count_per_frame"] == W * H - 478 * 288
     assert evidence["max_abs_channel_difference"] == 0
     assert verification["preservation"]["status"] == "protected_sample_evidence"
 
@@ -290,10 +291,8 @@ def test_masked_composition_keeps_temporal_yuv420p_witnesses_exact(tmp_path: Pat
     mask = tmp_path / "mask.png"
     _av(source, frames=48, color="blue", frequency=440)
     _av(generated, frames=48, color="red", frequency=880)
-    mask_image = Image.new("L", (64, 48), color=0)
-    for y in range(48):
-        for x in range(32):
-            mask_image.putpixel((x, y), 255)
+    mask_image = Image.new("L", (W, H), color=0)
+    mask_image.paste(255, (0, 0, W // 2, H))
     mask_image.save(mask)
     request = normalize_request({
         "version": 2,
@@ -372,7 +371,7 @@ def test_canonical_v2_source_free_reaches_real_compose_and_verify_boundary(
 
     generated = tmp_path / "generated.mkv"
     timing = generation_timing(1)
-    _av(generated, frames=timing["raw_frames"], color="red", frequency=880)
+    _av(generated, frames=timing["raw_frames"], color="red", frequency=880, size="64x48")
     composition = compose_candidate(
         preparation=preparation,
         generated=generated,

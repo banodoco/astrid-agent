@@ -11,6 +11,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping
 
+from astrid.core.contracts.errors import AstridValueError
 from astrid.packs.h3_av.actions.prepare.masks import (
     MaskScheduleError,
     build_mask_schedule,
@@ -146,11 +147,18 @@ def _mask_dimensions(path: Path, mask_id: str) -> tuple[int, int]:
 
 
 SOURCE_AV_RATE_CODE = "H3_SOURCE_AV_RATE"
-SOURCE_AV_CONFORM_HINT = "conform with: ffmpeg -i IN -vf fps=24 -c:v libx264 -crf 12 -c:a aac OUT"
+SOURCE_AV_DIMENSIONS_CODE = "H3_SOURCE_DIMENSIONS"
+SOURCE_AV_RATE_COMMAND = "ffmpeg -i IN -vf fps=24 -c:v libx264 -crf 12 -c:a aac OUT"
+SOURCE_AV_CONFORM_HINT = f"conform with: {SOURCE_AV_RATE_COMMAND}"
+SOURCE_AV_DIMENSIONS_COMMAND = "ffmpeg -i IN -vf scale=1024:576,fps=24 -c:v libx264 -crf 12 -c:a aac OUT"
 _SOURCE_AV_RATE = Fraction(24, 1)
 # One output frame at 24 fps, the same bound compose.py applies to continuation audio coverage.
 _SOURCE_AV_TOLERANCE_SECONDS = 1.0 / 24.0
 _SOURCE_AV_BRANCHES = frozenset({"source_backed_v2v", "extension_context"})
+
+
+class _SourcePreflightError(AstridValueError, PreparationError):
+    """A structured G21 error that remains catchable as a preparation error."""
 
 
 def _rate_fraction(text: Any) -> Fraction | None:
@@ -174,15 +182,18 @@ def _fps_text(rate: Fraction | None) -> str:
 
 
 def _check_source_av_rate(asset_id: str, path: Path) -> None:
-    """Reject a source-backed video that is not exactly 24/1 CFR or whose audio and video diverge."""
+    """Require 1024×576 at 24/1 CFR and matching audio/video durations."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
-        raise PreparationError(f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rate check requires ffprobe")
+        raise _SourcePreflightError(
+            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rate check requires ffprobe",
+            code=SOURCE_AV_RATE_CODE, field="source", fix="Install ffprobe and retry.",
+        )
     try:
         result = subprocess.run(
             [
                 ffprobe, "-v", "error", "-show_entries",
-                "stream=codec_type,codec_name,r_frame_rate,avg_frame_rate,duration:format=duration",
+                "stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration:format=duration",
                 "-of", "json", str(path),
             ],
             check=False,
@@ -192,7 +203,10 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         )
         payload = json.loads(result.stdout) if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PreparationError(f"{SOURCE_AV_RATE_CODE}: cannot probe source {asset_id!r}: {exc}") from exc
+        raise _SourcePreflightError(
+            f"{SOURCE_AV_RATE_CODE}: cannot probe source {asset_id!r}: {exc}",
+            code=SOURCE_AV_RATE_CODE, field="source", fix="Check the source and ffprobe, then retry.",
+        ) from exc
     except json.JSONDecodeError:
         payload = None
     streams = payload.get("streams") if isinstance(payload, Mapping) else None
@@ -203,8 +217,9 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     video = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "video"), None)
     audio = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "audio"), None)
     if video is None:
-        raise PreparationError(
-            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}"
+        raise _SourcePreflightError(
+            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
+            code=SOURCE_AV_RATE_CODE, field="source", fix=SOURCE_AV_RATE_COMMAND,
         )
     container = payload.get("format")
     container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
@@ -228,24 +243,35 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         problems.append(
             f"audio and video durations differ by more than {_SOURCE_AV_TOLERANCE_SECONDS:.6f}s"
         )
-    if not problems:
-        return
+    width, height = video.get("width"), video.get("height")
+    if problems:
+        audio_text = f"{audio_duration:.6f}s" if audio_duration is not None else "none"
+        video_text = f"{video_duration:.6f}s" if video_duration is not None else "unknown"
+        measured = (
+            f"video r_frame_rate={video.get('r_frame_rate')} ({_fps_text(r_rate)}), "
+            f"avg_frame_rate={video.get('avg_frame_rate')} ({_fps_text(avg_rate)}); "
+            f"video duration {video_text}, audio duration {audio_text}"
+        )
+        if (width, height) != (1024, 576):
+            measured += f"; video dimensions {width}x{height} (expected 1024x576)"
+        command = SOURCE_AV_RATE_COMMAND if (width, height) == (1024, 576) else SOURCE_AV_DIMENSIONS_COMMAND
+        hint = f"conform with: {command}"
+        codec = audio.get("codec_name") if audio is not None else None
+        if audio is not None and codec != "aac":
+            hint += f" (audio codec is {codec}: the audio must be re-encoded to aac, as the command does)"
+        raise _SourcePreflightError(
+            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rejected before any pod is held: "
+            f"{'; '.join(problems)}. Measured {measured}. {hint}",
+            code=SOURCE_AV_RATE_CODE, field="source", fix=command,
+        )
 
-    audio_text = f"{audio_duration:.6f}s" if audio_duration is not None else "none"
-    video_text = f"{video_duration:.6f}s" if video_duration is not None else "unknown"
-    measured = (
-        f"video r_frame_rate={video.get('r_frame_rate')} ({_fps_text(r_rate)}), "
-        f"avg_frame_rate={video.get('avg_frame_rate')} ({_fps_text(avg_rate)}); "
-        f"video duration {video_text}, audio duration {audio_text}"
-    )
-    hint = SOURCE_AV_CONFORM_HINT
-    codec = audio.get("codec_name") if audio is not None else None
-    if audio is not None and codec != "aac":
-        hint += f" (audio codec is {codec}: the audio must be re-encoded to aac, as the command does)"
-    raise PreparationError(
-        f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rejected before any pod is held: "
-        f"{'; '.join(problems)}. Measured {measured}. {hint}"
-    )
+    if (width, height) != (1024, 576):
+        raise _SourcePreflightError(
+            f"{SOURCE_AV_DIMENSIONS_CODE}: source {asset_id!r} rejected before any pod is held: "
+            f"video dimensions are {width}x{height}, expected 1024x576. "
+            f"conform with: {SOURCE_AV_DIMENSIONS_COMMAND}",
+            code=SOURCE_AV_DIMENSIONS_CODE, field="source", fix=SOURCE_AV_DIMENSIONS_COMMAND,
+        )
 
 
 def _check_source_av_rates(request: H3Request, assets: list[dict[str, Any]]) -> None:

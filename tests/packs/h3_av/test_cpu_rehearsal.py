@@ -123,7 +123,7 @@ def fake_comfy(tmp_path):
     source = tmp_path / "source.mp4"
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=24:d=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-f", "lavfi", "-i", "color=c=blue:s=1024x576:r=24:d=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(source),
     ], check=True, capture_output=True, timeout=60)
     graph, compilation = _generate_graph(tmp_path, source)

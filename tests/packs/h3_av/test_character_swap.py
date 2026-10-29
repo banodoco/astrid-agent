@@ -391,11 +391,14 @@ def test_character_swap_preserve_only_publishes_authoritative_source_bytes(tmp_p
     source = tmp_path / "source.mkv"
     files["baseline.mp4"] = source
     generated = tmp_path / "model-output.mkv"
-    for path, color, tone in ((source, "blue", 440), (generated, "red", 880)):
+    for path, color, tone, size in (
+        (source, "blue", 440, "1024x576"),
+        (generated, "red", 880, "64x48"),
+    ):
         subprocess.run(
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "lavfi", "-i", f"color=c={color}:s=64x48:r=24:d=1",
+                "-f", "lavfi", "-i", f"color=c={color}:s={size}:r=24:d=1",
                 "-f", "lavfi", "-i", f"sine=frequency={tone}:sample_rate=48000:duration=1",
                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "ffv1", "-pix_fmt", "yuv420p",
                 "-c:a", "pcm_s16le", "-shortest", str(path),
