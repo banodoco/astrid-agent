@@ -116,10 +116,19 @@ def test_run_path_uses_the_recorded_install_root_without_an_env_var(tmp_path, no
     assert default_engine_root(ENGINE) == str(installed)
 
 
-def test_env_override_wins_over_the_recorded_root(tmp_path, monkeypatch):
+def test_recorded_root_wins_over_the_environment_fallback(tmp_path, monkeypatch):
     recorded = _engine_at(tmp_path / "recorded")
     override = _engine_at(tmp_path / "override")
     record_engine_root(ENGINE, str(recorded))
+    monkeypatch.setenv(ENGINE_ROOT_ENV, str(override))
+    stub = _status_for(str(recorded))
+    local_engine_endpoint(ENGINE, platform=PLATFORM, context=object(), status=stub)
+    assert stub.calls[0][1]["root"] == str(recorded)
+    assert default_engine_root(ENGINE) == str(recorded)
+
+
+def test_env_fallback_is_used_without_a_record(tmp_path, monkeypatch):
+    override = _engine_at(tmp_path / "override")
     monkeypatch.setenv(ENGINE_ROOT_ENV, str(override))
     stub = _status_for(str(override))
     local_engine_endpoint(ENGINE, platform=PLATFORM, context=object(), status=stub)

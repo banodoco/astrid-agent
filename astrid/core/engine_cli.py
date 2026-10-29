@@ -38,7 +38,7 @@ def _parser():
                              help='Target platform (default: linux-x86_64-cu130)')
         command.add_argument('--placement', choices=('local', 'runpod'), default='local',
                              help='Target placement (default: local)')
-        command.add_argument('--root', help='Absolute target-native root (local default: ASTRID_ENGINE_ROOT, registered root, or ~/.astrid-data/engines/ENGINE; RunPod default: /workspace/astrid/engines/ENGINE; required for Windows)')
+        command.add_argument('--root', help='Absolute target-native root (local default: registered root, ASTRID_ENGINE_ROOT, or ~/.astrid-data/engines/ENGINE; RunPod default: /workspace/astrid/engines/ENGINE; required for Windows)')
         command.add_argument('--deadline', type=float, default=3600.0, metavar='SECONDS',
                              help='Operation time limit in seconds (default: 3600)')
         if name == 'install':
@@ -113,7 +113,7 @@ def main(argv=None, *, backend_factory=None):
                                    placement=args.placement, root=plan.root, deadline=deadline)
         if args.command == 'install':
             result = install_engine(plan, context=context, adapter=adapter, deadline=deadline)
-            if args.placement == 'local' and result.status == 'installed':
+            if args.placement == 'local' and args.root is not None and result.status == 'installed':
                 # Run-path resolution (action run, the pack host) finds this install without an env var.
                 from .generation.engine_local_endpoint import record_engine_root
                 record_engine_root(args.engine, plan.root)

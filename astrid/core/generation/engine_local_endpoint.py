@@ -29,7 +29,7 @@ DEFAULT_PLATFORM = "linux-x86_64-cu130"
 RECEIPT_RELATIVE_PATH = ".astrid-engine/install.json"
 # Set (to the engine id) in the environment of a pack host that serves the local placement.
 LOCAL_ENGINE_HOST_ENV = "ASTRID_HOST_LOCAL_ENGINE"
-# Explicit override of the engine root for run-path resolution; it wins over the recorded install root.
+# Environment fallback for run-path resolution when no install root is recorded.
 ENGINE_ROOT_ENV = "ASTRID_ENGINE_ROOT"
 # Per-user record of the root the last successful local install wrote to: <engines dir>/<engine>.root.json
 ENGINE_ROOT_RECORD_SCHEMA = "astrid.engine-root.v1"
@@ -125,15 +125,16 @@ def recorded_engine_root(engine: str) -> str | None:
 def default_engine_root(engine: str) -> str:
     """The engine root used when a caller gives none.
 
-    Order: the ``ASTRID_ENGINE_ROOT`` override, then the root the last successful local install recorded,
-    then ``~/.astrid-data/engines/<engine>``.  Callers still verify the install receipt at the chosen root.
+    Order: the root the last successful explicit local install recorded, then the
+    ``ASTRID_ENGINE_ROOT`` fallback, then ``~/.astrid-data/engines/<engine>``.
+    Callers still verify the install receipt at the chosen root.
     """
-    override = os.environ.get(ENGINE_ROOT_ENV, "")
-    if override:
-        return override
     recorded = recorded_engine_root(engine)
     if recorded is not None:
         return recorded
+    override = os.environ.get(ENGINE_ROOT_ENV, "")
+    if override:
+        return override
     return str(_engines_dir() / engine)
 
 

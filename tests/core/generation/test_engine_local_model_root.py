@@ -93,8 +93,8 @@ def test_valid_receipt_yields_the_binding_of_the_installed_model_lock(tmp_path):
     assert validate_model_root_binding(document, verify_files=True).inventory_digest == binding.inventory_digest
 
 
-def test_binding_follows_the_recorded_install_root_without_an_env_var(tmp_path, monkeypatch):
-    monkeypatch.delenv(ENGINE_ROOT_ENV, raising=False)
+def test_binding_follows_the_recorded_install_root_over_the_env_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENGINE_ROOT_ENV, str(tmp_path / "other"))
     root, models = _install(tmp_path)
     record_engine_root("vibecomfy-h3", str(root))
     stub = _status(_receipt(models))
