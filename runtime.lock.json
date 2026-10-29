@@ -60,5 +60,5 @@
   "manifest": "contract/artifacts.json",
   "producer": "astrid-runtime",
   "producer_version": "sha256:360800da9f4cd08cacf15afbb3b49386df295501473de7c024e1a2636559c083",
-  "source_commit": "92e0114a302b0b0810891367f1fec7d5196d74d6"
+  "source_commit": "df3d4ddac7bf73cd858106cc51a802521a4d3552"
 }
