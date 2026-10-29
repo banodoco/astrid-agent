@@ -26,7 +26,9 @@ if discovery.exists():
 # still refer to the same process if the PID was reused.
 before = output / 'before-stop-processes.json'
 if label == 'after-stop' and before.exists():
-    roots.update(json.loads(before.read_text())['root_pids'])
+    prior = json.loads(before.read_text())
+    roots.update(prior['root_pids'])
+    roots.update(row['pid'] for row in prior['processes'])
 p = subprocess.run(['ps', '-axo', 'pid=,ppid=,etime=,comm='], check=True, capture_output=True, text=True)
 rows = []
 for line in p.stdout.splitlines():
