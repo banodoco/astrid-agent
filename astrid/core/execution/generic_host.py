@@ -2654,6 +2654,7 @@ class _AttemptLifetime:
     collection_deadline: float | None = None
     collection_seconds: float | None = None
     review: _ReviewIntervalAccounting | None = None
+    absolute_deadline: float | None = None
 
     def deadline(self) -> float | None:
         ordinary = self.started_at + self.policy.deadline_seconds
@@ -2670,6 +2671,8 @@ class _AttemptLifetime:
             deadline = absolute if deadline is None else min(deadline, absolute)
         if self.collection_deadline is not None:
             deadline = self.collection_deadline if deadline is None else min(deadline, self.collection_deadline)
+        if self.absolute_deadline is not None:
+            deadline = self.absolute_deadline if deadline is None else min(deadline, self.absolute_deadline)
         return deadline
 
     def assert_authority(self) -> None:
@@ -4831,22 +4834,27 @@ class RuntimeProtocolClient:
         # replay of the first pulse.  Reusing one idempotency key here makes a
         # long render appear healthy to the host while the runtime repeatedly
         # returns the original receipt and lets the lease expire.
-        with self._heartbeat_lock:
+        # Delegated admission holds this same lock across its fenced RPCs.
+        # Waiting for it must not strand the attempt's deadline observer.
+        if not self._heartbeat_lock.acquire(timeout=2.0):
+            raise HostError("runtime heartbeat authority is busy")
+        try:
             self._heartbeat_sequence += 1
             heartbeat_sequence = self._heartbeat_sequence
-        payload = {
-            "lease_id": lease_token,
-            "fence": int(fence),
-            "idempotency_key": (
-                f"heartbeat-{attempt_id}-{fence}-{runtime_epoch}-"
-                f"{self._heartbeat_session}-{heartbeat_sequence}"
-            ),
-            "runtime_epoch": runtime_epoch,
-        }
-        if progress is not None:
-            payload["progress"] = dict(progress)
-        with self._heartbeat_lock:
+            payload = {
+                "lease_id": lease_token,
+                "fence": int(fence),
+                "idempotency_key": (
+                    f"heartbeat-{attempt_id}-{fence}-{runtime_epoch}-"
+                    f"{self._heartbeat_session}-{heartbeat_sequence}"
+                ),
+                "runtime_epoch": runtime_epoch,
+            }
+            if progress is not None:
+                payload["progress"] = dict(progress)
             return self._lifecycle_client().heartbeat_attempt(attempt_id, **payload)
+        finally:
+            self._heartbeat_lock.release()
 
     def claim(self, task_id: str, worker_id: str, lease_token: str):
         raise HostError("per-task claim is not a canonical operation; use claim_task")
@@ -9405,6 +9413,7 @@ class GenericPackHost:
         fence: int | None = None,
         keep_attempt: bool = False,
         provider_route_grant: str | None = None,
+        _setup_error: BaseException | None = None,
     ) -> Mapping[str, Any]:
         owns_attempt = False
         busy_published = False
@@ -9443,21 +9452,33 @@ class GenericPackHost:
                 current = current.get("task", current)
             def value(name, default=None):
                 return current.get(name, default) if isinstance(current, Mapping) else getattr(current, name, default)
+            lease_deadline_present = ("lease_expires_at" in current if isinstance(current, Mapping)
+                                      else hasattr(current, "lease_expires_at"))
             return {"status": value("state", value("status")),
                     "attempt_id": value("attempt_id", exact_attempt),
-                    "fence": value("fence", value("lease_fence", exact_fence))}
+                    "fence": value("fence", value("lease_fence", exact_fence)),
+                    "lease_deadline_present": lease_deadline_present,
+                    "lease_expires_at": value("lease_expires_at")}
 
         def ensure_failure(error):
             if terminal.get("recorded") or self.client is None or not exact_attempt or exact_fence is None:
                 return
-            normalized = coerce_astrid_error(error)
+            try:
+                normalized = coerce_astrid_error(error)
+                message = normalized.message or type(error).__name__
+                structured_error = {"code": normalized.code or "executor_failed",
+                                    "field": normalized.field, "fix": normalized.fix}
+            except BaseException:
+                # Error properties and __str__ belong to executor code too.
+                # Their failure cannot suppress the original fenced mutation.
+                message = type(error).__name__
+                structured_error = {"code": "executor_failed", "field": None, "fix": ""}
             try:
                 completion_call(
                     self.client.fail, str(data["id"]), lease_token,
-                    normalized.message or type(error).__name__, retryable=False,
+                    message, retryable=False,
                     attempt_id=exact_attempt, fence=exact_fence,
-                    structured_error={"code": normalized.code or "executor_failed",
-                                      "field": normalized.field, "fix": normalized.fix},
+                    structured_error=structured_error,
                 )
             except Exception:
                 # Observe cancellation only after attempting the original
@@ -9536,6 +9557,11 @@ class GenericPackHost:
                         force_abort("cancelled")
                         return
                     state = current["status"]
+                    if current["lease_deadline_present"]:
+                        expiry = datetime.fromisoformat(current["lease_expires_at"].replace("Z", "+00:00"))
+                        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+                            force_abort("lease_lost")
+                            return
                     if (state not in {None, "running"}
                             or current.get("attempt_id", exact_attempt) != exact_attempt
                             or current.get("fence", exact_fence) != exact_fence):
@@ -9546,7 +9572,7 @@ class GenericPackHost:
                     # available if those authority reads themselves stall.
                     renew_progress()
                 except BaseException:
-                    force_abort("lease_lost")
+                    force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
@@ -9556,6 +9582,24 @@ class GenericPackHost:
             owns_attempt = self._handoff_begin_direct_attempt()
             if exact_attempt and exact_fence is not None:
                 terminal["root"] = self._allocate_attempt_root(str(data["id"]), str(exact_attempt))
+            deadline_at = data.get("deadline_at")
+            if deadline_at is not None:
+                try:
+                    parsed_deadline = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+                    if parsed_deadline.tzinfo is None:
+                        raise ValueError("deadline must include timezone")
+                    lifetime.absolute_deadline = time.monotonic() + (
+                        parsed_deadline - datetime.now(timezone.utc)).total_seconds()
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise HostError("invalid claimed task deadline_at") from exc
+            terminal["record"] = self.capabilities.get(str(data.get("capability", "")))
+            pump_thread = threading.Thread(target=pump_lease, name=f"astrid-heartbeat-{data.get('id')}", daemon=True)
+            terminal["pump_thread"] = pump_thread
+            # Root ownership is established before the observer may publish.
+            # All later setup is under the same deadline as child execution.
+            pump_thread.start()
+            if _setup_error is not None:
+                raise _setup_error
             _publish_busy(busy_path, +1)
             busy_published = True
             # This is pure admission validation. Tighten the same absolute
@@ -9564,12 +9608,6 @@ class GenericPackHost:
             contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             terminal["execution_contract"] = contract
             lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
-            terminal["record"] = self.capabilities.get(str(data.get("capability", "")))
-            pump_thread = threading.Thread(target=pump_lease, name=f"astrid-heartbeat-{data.get('id')}", daemon=True)
-            terminal["pump_thread"] = pump_thread
-            # All observer/receipt/fencing state is installed before any setup,
-            # initial heartbeat, admission hook, or executor can throw or stall.
-            pump_thread.start()
             return self._run_task_impl(
                 task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
                 keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
@@ -9578,7 +9616,9 @@ class GenericPackHost:
         except BaseException as exc:
             terminal.setdefault("error", exc)
             try:
-                if isinstance(exc, HostCancelled):
+                if lifetime.expired():
+                    force_abort("timeout")
+                elif isinstance(exc, HostCancelled):
                     force_abort("cancelled")
                 else:
                     ensure_failure(terminal["error"])
@@ -11117,6 +11157,7 @@ class GenericPackHost:
             "queued_at": getattr(claim, "queued_at", None),
             "admitted_at": getattr(claim, "admitted_at", None),
             "created_at": getattr(claim, "created_at", None),
+            "deadline_at": getattr(claim, "deadline_at", None),
         }
         if not claim_data.get("task_id"):
             raise HostError("generated claim operation returned no task_id")
@@ -11126,144 +11167,146 @@ class GenericPackHost:
         fence = claim_data.get("fence")
         if not lease_id or not attempt_id or fence is None:
             raise HostError("generated claim operation returned incomplete lease identity")
-        # Claim ownership immediately.  All subsequent task decoding and
-        # provider preparation runs under this attempt's lease; a preparation
-        # error must reach run_task's fenced failure path rather than escaping
-        # claim_once and waiting for the lease to expire.
-        self.client.heartbeat(
-            task_id,
-            lease_id,
-            attempt_id=attempt_id,
-            fence=int(fence),
-        )
-        task = self._client_operation("task")(task_id)
-        if isinstance(task, Mapping):
-            task_data = dict(task.get("task", task))
-        else:
-            task_data = {
-                "id": getattr(task, "task_id", task_id),
-                "run_id": getattr(task, "run_id", None),
-                "attempt_id": getattr(task, "attempt_id", None),
-                "capability": getattr(task, "capability_id", ""),
-                "capability_id": getattr(task, "capability_id", None),
-                "capability_digest": getattr(task, "capability_digest", None),
-                "project_id": getattr(task, "project_id", None),
-                "runtime_epoch": getattr(task, "runtime_epoch", claim_data.get("runtime_epoch")),
-                "input_object_ids": getattr(task, "input_object_ids", None),
-                "spec": getattr(task, "spec", None),
-                "expected_effect": getattr(task, "expected_effect", claim_data.get("expected_effect")),
-                "generation_intent": getattr(task, "generation_intent", claim_data.get("generation_intent")),
-                "execution_request": getattr(task, "execution_request", None),
-                "execution_binding": getattr(task, "execution_binding", claim_data.get("execution_binding")),
-                "storage_estimate": getattr(task, "storage_estimate", claim_data.get("storage_estimate")),
-                "required_facts": getattr(task, "required_facts", claim_data.get("required_facts")),
-                "queued_at": getattr(task, "queued_at", None),
-                "admitted_at": getattr(task, "admitted_at", None),
-                "created_at": getattr(task, "created_at", None),
-            }
-        def fail_claim_handoff(reason: str) -> None:
-            try:
-                self._handoff_settlement_call(self.client.fail,
-                    task_id, lease_id, reason, retryable=False,
-                    attempt_id=attempt_id, fence=int(fence),
-                )
-            except Exception as exc:
-                raise HostError("claim handoff failure could not be recorded") from exc
-            raise HostError(reason)
-
-        if task_data.get("id") not in (None, task_id):
-            fail_claim_handoff("claimed task_id disagrees with task read")
-        # Validate both envelopes independently before retaining the claim.
-        # Falsy malformed requests are present-invalid, never a fallback.
         try:
-            claim_request = _execution_contract(
-                claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
-            read_request = _execution_contract(
-                task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
-        except Exception as exc:
-            fail_claim_handoff(str(exc))
-        if _canonical_digest(claim_request) != _canonical_digest(read_request):
-            fail_claim_handoff("claim and task read disagree on execution_request")
-        if claim_request is not None:
-            claim_ids = claim_data.get("input_object_ids")
-            read_ids = task_data.get("input_object_ids")
-            if claim_ids != read_ids:
-                fail_claim_handoff("claim and task read disagree on input_object_ids")
-        claim_binding = claim_data.get("execution_binding") or claim_data.get("placement_binding") or claim_data.get("binding")
-        read_binding = task_data.get("execution_binding") or task_data.get("placement_binding") or task_data.get("binding")
-        if claim_binding is not None and read_binding is not None and claim_binding != read_binding:
-            fail_claim_handoff("claim and task read disagree on execution binding")
-        task_data.update(
-            {
-                "id": task_id,
-                "capability": task_data.get("capability", task_data.get("capability_id")),
-                "attempt_id": claim_data.get("attempt_id"),
-                "lease_id": claim_data.get("lease_id"),
-                "executor_id": claim_data.get("executor_id") or getattr(self, "executor_id", None),
-                "fence": claim_data.get("fence"),
-            }
-        )
-        if claim_data.get("project_id") is not None:
-            task_data["project_id"] = claim_data["project_id"]
-        if claim_data.get("runtime_epoch") is not None:
-            task_data["runtime_epoch"] = claim_data["runtime_epoch"]
-        if claim_binding is not None:
-            task_data["execution_binding"] = claim_binding
-        for timestamp_key in ("queued_at", "admitted_at", "created_at"):
-            if claim_data.get(timestamp_key) is not None:
-                task_data[timestamp_key] = claim_data[timestamp_key]
-        if claim_data.get("input_object_ids") is not None:
-            task_data["input_object_ids"] = claim_data["input_object_ids"]
-        # The claim response is the execution snapshot.  Preserve it over
-        # the convenience task read so a worker cannot accidentally execute a
-        # later/forked spec (and so claim-to-execute is a single immutable
-        # handoff).
-        if claim_data.get("spec") is not None:
-            task_data["spec"] = claim_data["spec"]
-        if claim_request is not None:
-            task_data["execution_request"] = claim_request
-        if claim_data.get("expected_effect") is not None:
-            task_data["expected_effect"] = claim_data["expected_effect"]
-        if claim_data.get("generation_intent") is not None:
-            task_data["generation_intent"] = claim_data["generation_intent"]
-        provider_route_grant = (
-            task_data.get("provider_route_grant")
-            or (
-                task_data.get("spec", {}).get("provider_route_grant")
-                if isinstance(task_data.get("spec"), Mapping)
-                else None
+            # Claim ownership immediately.  All subsequent task decoding and
+            # provider preparation runs under this attempt's lease; a preparation
+            # error must reach run_task's fenced failure path rather than escaping
+            # claim_once and waiting for the lease to expire.
+            self.client.heartbeat(
+                task_id,
+                lease_id,
+                attempt_id=attempt_id,
+                fence=int(fence),
             )
-            or self._pending_provider_grants.pop(task_id, None)
-        )
-        capability_record = self.capabilities.get(str(task_data.get("capability")))
-        if (
-            provider_route_grant is None
-            and capability_record is not None
-            and capability_record.adapter.family == "provider"
-            and capability_record.definition.isolation.network
-        ):
+            task = self._client_operation("task")(task_id)
+            if isinstance(task, Mapping):
+                task_data = dict(task.get("task", task))
+            else:
+                task_data = {
+                    "id": getattr(task, "task_id", task_id),
+                    "run_id": getattr(task, "run_id", None),
+                    "attempt_id": getattr(task, "attempt_id", None),
+                    "capability": getattr(task, "capability_id", ""),
+                    "capability_id": getattr(task, "capability_id", None),
+                    "capability_digest": getattr(task, "capability_digest", None),
+                    "project_id": getattr(task, "project_id", None),
+                    "runtime_epoch": getattr(task, "runtime_epoch", claim_data.get("runtime_epoch")),
+                    "input_object_ids": getattr(task, "input_object_ids", None),
+                    "spec": getattr(task, "spec", None),
+                    "expected_effect": getattr(task, "expected_effect", claim_data.get("expected_effect")),
+                    "generation_intent": getattr(task, "generation_intent", claim_data.get("generation_intent")),
+                    "execution_request": getattr(task, "execution_request", None),
+                    "execution_binding": getattr(task, "execution_binding", claim_data.get("execution_binding")),
+                    "storage_estimate": getattr(task, "storage_estimate", claim_data.get("storage_estimate")),
+                    "required_facts": getattr(task, "required_facts", claim_data.get("required_facts")),
+                    "queued_at": getattr(task, "queued_at", None),
+                    "admitted_at": getattr(task, "admitted_at", None),
+                    "created_at": getattr(task, "created_at", None),
+                }
+            def fail_claim_handoff(reason: str) -> None:
+                raise HostError(reason)
+
+            if task_data.get("id") not in (None, task_id):
+                fail_claim_handoff("claimed task_id disagrees with task read")
+            # Validate both envelopes independently before retaining the claim.
+            # Falsy malformed requests are present-invalid, never a fallback.
             try:
-                provider_route_grant = self.request_provider_route_grant({"task": task_data})
+                claim_request = _execution_contract(
+                    claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+                read_request = _execution_contract(
+                    task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             except Exception as exc:
+                fail_claim_handoff(str(exc))
+            if _canonical_digest(claim_request) != _canonical_digest(read_request):
+                fail_claim_handoff("claim and task read disagree on execution_request")
+            if claim_request is not None:
+                claim_ids = claim_data.get("input_object_ids")
+                read_ids = task_data.get("input_object_ids")
+                if claim_ids != read_ids:
+                    fail_claim_handoff("claim and task read disagree on input_object_ids")
+            claim_binding = claim_data.get("execution_binding") or claim_data.get("placement_binding") or claim_data.get("binding")
+            read_binding = task_data.get("execution_binding") or task_data.get("placement_binding") or task_data.get("binding")
+            if claim_binding is not None and read_binding is not None and claim_binding != read_binding:
+                fail_claim_handoff("claim and task read disagree on execution binding")
+            task_data.update(
+                {
+                    "id": task_id,
+                    "capability": task_data.get("capability", task_data.get("capability_id")),
+                    "attempt_id": claim_data.get("attempt_id"),
+                    "lease_id": claim_data.get("lease_id"),
+                    "executor_id": claim_data.get("executor_id") or getattr(self, "executor_id", None),
+                    "fence": claim_data.get("fence"),
+                }
+            )
+            if claim_data.get("project_id") is not None:
+                task_data["project_id"] = claim_data["project_id"]
+            if claim_data.get("runtime_epoch") is not None:
+                task_data["runtime_epoch"] = claim_data["runtime_epoch"]
+            if claim_binding is not None:
+                task_data["execution_binding"] = claim_binding
+            for timestamp_key in ("queued_at", "admitted_at", "created_at", "deadline_at"):
+                if claim_data.get(timestamp_key) is not None:
+                    task_data[timestamp_key] = claim_data[timestamp_key]
+            if claim_data.get("input_object_ids") is not None:
+                task_data["input_object_ids"] = claim_data["input_object_ids"]
+            # The claim response is the execution snapshot.  Preserve it over
+            # the convenience task read so a worker cannot accidentally execute a
+            # later/forked spec (and so claim-to-execute is a single immutable
+            # handoff).
+            if claim_data.get("spec") is not None:
+                task_data["spec"] = claim_data["spec"]
+            if claim_request is not None:
+                task_data["execution_request"] = claim_request
+            if claim_data.get("expected_effect") is not None:
+                task_data["expected_effect"] = claim_data["expected_effect"]
+            if claim_data.get("generation_intent") is not None:
+                task_data["generation_intent"] = claim_data["generation_intent"]
+            provider_route_grant = (
+                task_data.get("provider_route_grant")
+                or (
+                    task_data.get("spec", {}).get("provider_route_grant")
+                    if isinstance(task_data.get("spec"), Mapping)
+                    else None
+                )
+                or self._pending_provider_grants.pop(task_id, None)
+            )
+            capability_record = self.capabilities.get(str(task_data.get("capability")))
+            if (
+                provider_route_grant is None
+                and capability_record is not None
+                and capability_record.adapter.family == "provider"
+                and capability_record.definition.isolation.network
+            ):
                 try:
-                    self._handoff_settlement_call(self.client.fail,
-                        task_id,
-                        lease_id,
-                        str(exc) + recovery_suffix(exc),
-                        retryable=False,
-                        attempt_id=attempt_id,
-                        fence=int(fence),
-                        **_structured_failure_kwargs(exc),
-                    )
-                except Exception as runtime_exc:
-                    raise HostError(
-                        "provider route preparation failed and could not be recorded"
-                    ) from runtime_exc
-                raise HostError(f"provider route preparation failed: {exc}") from exc
+                    provider_route_grant = self.request_provider_route_grant({"task": task_data})
+                except Exception as exc:
+                    error = HostError(f"provider route preparation failed: {exc}")
+                    for key, value in _structured_failure_kwargs(exc).get("structured_error", {}).items():
+                        setattr(error, key, value)
+                    raise error from exc
+        except BaseException as exc:
+            # The lease is already ours, but the task read is not yet trusted.
+            # Reuse run_task's fenced failure/receipt boundary with only the
+            # original claim identity; never execute the failed preparation.
+            claim_spec = claim_data.get("spec")
+            claimed_task = {
+                **claim_data, "id": task_id,
+                "capability": claim_data.get("capability") or claim_data.get("capability_id")
+                or (claim_spec.get("capability_id") if isinstance(claim_spec, Mapping) else ""),
+            }
+            return self.run_task(
+                {"task": claimed_task}, lease_token=lease_id,
+                attempt_id=attempt_id, fence=int(fence), _setup_error=exc,
+            )
         if self._shutdown.is_set():
-            self.client.fail(task_id, lease_id, "host shutdown before execution",
-                             retryable=False, attempt_id=attempt_id, fence=int(fence))
-            return None
+            try:
+                return self.run_task(
+                    {"task": task_data}, lease_token=lease_id,
+                    attempt_id=attempt_id, fence=int(fence),
+                    _setup_error=HostCancelled("host shutdown before execution"),
+                )
+            except HostCancelled:
+                return None
         return self.run_task(
             {"task": task_data},
             lease_token=lease_id,

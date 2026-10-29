@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -55,8 +56,18 @@ def assert_failed(case, started, *, code="executor_failed"):
                    for t in threading.enumerate())
 
 
-@pytest.mark.parametrize("fault", ["executor", "failure_handler", "system_exit", "allocate", "heartbeat", "pump_start"])
+@pytest.mark.parametrize("fault", ["executor", "failure_handler", "system_exit", "allocate", "heartbeat", "pump_start",
+                                 "error_string", "error_properties", "error_normalizer", "normalized_attributes", "failure_rpc"])
 def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
+    class BrokenString(Exception):
+        def __str__(self):
+            raise OSError("error string failed")
+
+    class BrokenProperties(Exception):
+        @property
+        def code(self):
+            raise OSError("error code failed")
+
     def broken(*args, **kwargs):
         if fault == "failure_handler":
             # A failing decorator used to escape from the exception handler
@@ -64,8 +75,25 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
             monkeypatch.setattr(generic_host, "recovery_suffix", lambda *_: (_ for _ in ()).throw(OSError("recovery failed")))
         if fault == "system_exit":
             raise SystemExit(17)
+        if fault == "error_string":
+            raise BrokenString()
+        if fault == "error_properties":
+            raise BrokenProperties("executor failed")
+        if fault == "error_normalizer":
+            monkeypatch.setattr(generic_host, "coerce_astrid_error", lambda *_: (_ for _ in ()).throw(OSError("normalization failed")))
+        if fault == "normalized_attributes":
+            monkeypatch.setattr(generic_host, "coerce_astrid_error", lambda *_: object())
         raise OSError("executor boundary failed")
 
+    if fault == "failure_rpc":
+        original_fail = case.runtime.fail
+        failures = []
+        def fail(*args, **kwargs):
+            failures.append(None)
+            if len(failures) == 1:
+                raise OSError("first failure write lost")
+            return original_fail(*args, **kwargs)
+        monkeypatch.setattr(case.runtime, "fail", fail)
     if fault == "allocate":
         monkeypatch.setattr(case.host, "_allocate_attempt_root", broken)
     elif fault == "heartbeat":
@@ -75,7 +103,7 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
     else:
         monkeypatch.setattr(case.host, "_run_command_definition", broken)
     started = time.monotonic()
-    with pytest.raises((OSError, HostError)):
+    with pytest.raises(AttributeError if fault == "normalized_attributes" else (OSError, HostError)):
         case.host.run_task(case.task, lease_token="lease-result")
     assert_failed(case, started)
     assert len(case.runtime.failures) == 1
@@ -83,9 +111,13 @@ def test_fault_reaches_terminal_state_and_receipt(case, monkeypatch, fault):
     assert binding["attempt_id"] == "attempt-result" and binding["fence"] == 3
 
 
-@pytest.mark.parametrize("stage", ["preflight", "contract_preflight", "materialize", "harvest", "settlement", "authority"])
+@pytest.mark.parametrize("stage", ["preflight", "contract_preflight", "materialize", "harvest", "settlement", "authority",
+                                 "contract", "busy", "claim_deadline"])
 def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch, stage):
     case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.3)
+    if stage == "claim_deadline":
+        case.task["task"]["deadline_at"] = (datetime.now(timezone.utc) + timedelta(seconds=0.3)).isoformat()
+        case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=30)
     if stage == "contract_preflight":
         from tests.core.execution.test_generic_host_contract import _task
         case.task = _task(limits={"max_runtime_seconds": 1})
@@ -101,8 +133,12 @@ def test_stalled_stage_deadline_publishes_before_stage_returns(case, monkeypatch
         monkeypatch.setattr(case.runtime, "fail", fail)
     entered, release = threading.Event(), threading.Event()
     returned = []
-    if stage in {"preflight", "contract_preflight"}:
+    if stage in {"preflight", "contract_preflight", "claim_deadline"}:
         owner, name = case.host, "preflight"
+    elif stage == "contract":
+        owner, name = generic_host, "_execution_contract"
+    elif stage == "busy":
+        owner, name = generic_host, "_publish_busy"
     elif stage == "materialize":
         owner, name = case.host, "_materialize_inputs"
     elif stage == "harvest":
@@ -173,7 +209,8 @@ def test_cancellation_records_terminal_state_and_receipt(case, monkeypatch, sour
     assert not case.runtime.failures
 
 
-@pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "heartbeat"])
+@pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "heartbeat", "expired", "resource_expired",
+                                "null_expiry", "invalid_expiry", "naive_expiry"])
 def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
     def execute(*args, **kwargs):
         if loss == "task_read":
@@ -182,9 +219,18 @@ def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
             case.task["task"]["status"] = "queued"
         elif loss == "successor":
             case.task["task"]["attempt_id"] = "successor"
-        else:
+        elif loss == "heartbeat":
             monkeypatch.setattr(case.runtime, "heartbeat", lambda *_a, **_k: (_ for _ in ()).throw(OSError("lease renewal lost")))
             (case.root / ".astrid-progress.json").write_text('{"phase":"changed","percent":30}')
+        else:
+            expiry = {"null_expiry": None, "invalid_expiry": "invalid", "naive_expiry": "2000-01-01T00:00:00"}.get(
+                loss, "2000-01-01T00:00:00+00:00")
+            if loss == "resource_expired":
+                monkeypatch.setattr(case.runtime, "task", lambda *_a: SimpleNamespace(
+                    state=case.task["task"]["status"], attempt_id="attempt-result", lease_fence=3,
+                    lease_expires_at=expiry))
+            else:
+                case.task["task"]["lease_expires_at"] = expiry
         expiry = time.monotonic() + 2
         while case.task["task"]["status"] != "failed" and time.monotonic() < expiry:
             time.sleep(0.01)
@@ -254,7 +300,7 @@ def test_failure_rpc_uses_claimed_epoch_and_private_bounded_transport():
     assert payload["runtime_epoch"] == 7 and payload["error"]["code"] == "executor_failed"
 
 
-@pytest.mark.parametrize("outcome", ["executor", "cancelled", "lease_lost"])
+@pytest.mark.parametrize("outcome", ["executor", "cancelled", "lease_lost", "lease_expired"])
 def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_path, outcome):
     """Protocol adapter -> RuntimeService -> real attempt/reservation tables."""
     from runtime_protocol.service import RuntimeService
@@ -304,7 +350,7 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
         def execute(*args, **kwargs):
             if outcome == "cancelled":
                 raise HostCancelled("cancel this local attempt")
-            if outcome == "lease_lost":
+            if outcome in {"lease_lost", "lease_expired"}:
                 # Keep exact attempt/fence, expire only the lease. Failing
                 # cedes ownership; it must not require renewing expired work.
                 with service.store._mutex:
@@ -313,8 +359,17 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
                     service.store.conn.commit()
                 # Exercise the host's lost-transport containment without a
                 # read that could reap/reassign the just-expired lease first.
-                monkeypatch.setattr(case.runtime, "task", lambda *_: (_ for _ in ()).throw(OSError("lease lost")))
-                assert kwargs["cancelled"]()
+                if outcome == "lease_lost":
+                    monkeypatch.setattr(case.runtime, "task", lambda *_: (_ for _ in ()).throw(OSError("lease lost")))
+                    assert kwargs["cancelled"]()
+                else:
+                    # Runtime retains this attempt's custody after ordinary
+                    # expiry; unchanged running state/fence is not authority.
+                    assert service.task(data["id"])["task"]["status"] == "running"
+                    expiry = time.monotonic() + 2
+                    while not (case.root / "result.json").exists() and time.monotonic() < expiry:
+                        time.sleep(0.01)
+                    assert receipt(case)["error"]["code"] == "lease_lost"
                 raise HostCancelled("lost lease")
             raise OSError("executor failed")
 
@@ -330,7 +385,7 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
         expected = "cancelled" if outcome == "cancelled" else "failed"
         assert stored["status"] == expected
         assert receipt(case)["status"] == expected
-        assert receipt(case)["error"]["code"] == {"executor": "executor_failed", "cancelled": "cancelled", "lease_lost": "lease_lost"}[outcome]
+        assert receipt(case)["error"]["code"] == {"executor": "executor_failed", "cancelled": "cancelled", "lease_lost": "lease_lost", "lease_expired": "lease_lost"}[outcome]
         assert stored["lease_expires_at"] is None
         reservation = service.store.conn.execute("SELECT released_at FROM reservations WHERE task_id=?", (data["id"],)).fetchone()
         assert reservation[0] is not None
@@ -374,3 +429,169 @@ def test_failure_receipt_exists_before_optional_output_harvest_returns(case, mon
         worker.join(timeout=3)
     assert not worker.is_alive() and returned
     assert_failed(case, started)
+
+
+def test_heartbeat_contention_cannot_wait_past_the_deadline(case, monkeypatch):
+    """Use the real adapter lock shared with delegated child admission."""
+    calls = []
+    class Generated:
+        timeout = 30
+        def heartbeat_attempt(self, *_args, **_kwargs):
+            calls.append(time.monotonic())
+
+    client = object.__new__(RuntimeProtocolClient)
+    client.generated = Generated()
+    client._attempt_runtime_epochs = {"attempt-result": 7}
+    client._heartbeat_lock = threading.RLock()
+    client._heartbeat_sequence = 0
+    client._heartbeat_session = "g28"
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_admission():
+        with client._heartbeat_lock:
+            entered.set()
+            assert release.wait(3)
+
+    holder = threading.Thread(target=hold_admission)
+    holder.start()
+    try:
+        assert entered.wait(1)
+        case.host.execution_policy = replace(case.host.execution_policy, deadline_seconds=0.3)
+        monkeypatch.setattr(case.runtime, "heartbeat", client.heartbeat)
+        started = time.monotonic()
+        with pytest.raises(HostError, match="heartbeat authority is busy"):
+            case.host.run_task(case.task, lease_token="lease-result")
+        assert time.monotonic() - started < 3
+        assert_failed(case, started, code="timeout")
+        # Releasing the lock after expiry must never send the queued heartbeat.
+        time.sleep(0.35)
+        assert not calls
+    finally:
+        release.set()
+        holder.join(timeout=1)
+    assert not holder.is_alive()
+
+
+def test_heartbeat_short_contention_preserves_normal_serialization():
+    calls = []
+    class Generated:
+        timeout = 30
+        def heartbeat_attempt(self, *_args, **_kwargs):
+            calls.append(self.timeout)
+
+    client = object.__new__(RuntimeProtocolClient)
+    client.generated = Generated()
+    client._attempt_runtime_epochs = {"attempt-result": 7}
+    client._heartbeat_lock = threading.RLock()
+    client._heartbeat_sequence = 0
+    client._heartbeat_session = "g28"
+    errors = []
+    entered = threading.Event()
+
+    def heartbeat():
+        entered.set()
+        try:
+            client.heartbeat("task-result", "lease-result", attempt_id="attempt-result", fence=3)
+        except BaseException as exc:
+            errors.append(exc)
+
+    with client._heartbeat_lock:
+        worker = threading.Thread(target=heartbeat)
+        worker.start()
+        assert entered.wait(1)
+        time.sleep(0.05)
+        assert not calls
+    worker.join(timeout=1)
+    assert not worker.is_alive() and not errors
+    assert calls == [2.0]
+
+
+@pytest.mark.parametrize("fault", ["heartbeat", "task_read", "contract", "handoff_identity", "shutdown"])
+def test_claim_setup_failure_uses_same_terminal_receipt_boundary(case, monkeypatch, fault):
+    claim = {"task_id": "task-result", "attempt_id": "attempt-result", "lease_id": "lease-result",
+             "fence": 3, "capability_id": "test.echo", "spec": case.task["task"]["spec"]}
+    monkeypatch.setattr(case.runtime, "claim_next", lambda **_kwargs: claim)
+    if fault == "heartbeat":
+        monkeypatch.setattr(case.runtime, "heartbeat", lambda *_a, **_k: (_ for _ in ()).throw(OSError("claim heartbeat failed")))
+    elif fault == "task_read":
+        monkeypatch.setattr(case.runtime, "task", lambda *_a: (_ for _ in ()).throw(OSError("claim task read failed")))
+    elif fault == "contract":
+        claim["execution_request"] = {"malformed": True}
+    elif fault == "handoff_identity":
+        monkeypatch.setattr(case.runtime, "task", lambda *_a: {"task": {**case.task["task"], "id": "foreign-task"}})
+    else:
+        original_task = case.runtime.task
+        def read_and_shutdown(task_id):
+            result = original_task(task_id)
+            case.host._shutdown.set()
+            return result
+        monkeypatch.setattr(case.runtime, "task", read_and_shutdown)
+    started = time.monotonic()
+    if fault == "shutdown":
+        assert case.host.claim_once() is None
+        assert time.monotonic() - started < 10
+        assert case.task["task"]["status"] == "cancelled"
+        assert receipt(case)["status"] == "cancelled"
+        assert receipt(case)["error"]["code"] == "cancelled"
+        assert not case.runtime.settlements
+        return
+    with pytest.raises((HostError, OSError)):
+        case.host.claim_once()
+    assert_failed(case, started)
+    assert len(case.runtime.failures) == 1
+    assert not case.runtime.settlements
+    assert receipt(case)["task_id"] == "task-result"
+
+
+@pytest.mark.parametrize("claim_model", ["mapping", "resource"])
+def test_claim_forwards_immutable_deadline_to_existing_attempt(case, monkeypatch, claim_model):
+    deadline = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+    claim = {"task_id": "task-result", "attempt_id": "attempt-result", "lease_id": "lease-result",
+             "fence": 3, "spec": case.task["task"]["spec"], "deadline_at": deadline}
+    monkeypatch.setattr(case.runtime, "claim_next", lambda **_kwargs: claim if claim_model == "mapping" else SimpleNamespace(**claim))
+    captured = []
+    monkeypatch.setattr(case.host, "run_task", lambda task, **_kwargs: captured.append(task))
+    case.host.claim_once()
+    assert captured[0]["task"]["deadline_at"] == deadline
+
+
+@pytest.mark.parametrize("phase", ["setup", "execution", "collection"])
+def test_absolute_deadline_bounds_all_existing_lifetime_phases(case, phase):
+    lifetime = generic_host._AttemptLifetime(case.host.execution_policy, time.monotonic(), None,
+                                            authority=lambda: None, phase=phase,
+                                            absolute_deadline=time.monotonic())
+    assert lifetime.expired()
+
+
+@pytest.mark.parametrize("deadline", ["not-a-timestamp", "2026-10-29T12:00:00", 42])
+def test_malformed_claim_deadline_fails_with_terminal_receipt(case, deadline):
+    case.task["task"]["deadline_at"] = deadline
+    started = time.monotonic()
+    with pytest.raises(HostError, match="invalid claimed task deadline_at"):
+        case.host.run_task(case.task, lease_token="lease-result")
+    assert_failed(case, started)
+
+
+def test_provider_setup_failure_preserves_g21_error_metadata(case, monkeypatch):
+    from astrid.core.contracts.errors import AstridError
+
+    record = case.host.capabilities["test.echo"]
+    record = replace(record, ready=True)
+    monkeypatch.setattr(case.host, "_preflight", lambda **_kwargs: [record])
+    case.host.capabilities["test.echo"] = SimpleNamespace(
+        adapter=SimpleNamespace(family="provider"),
+        definition=replace(record.definition, isolation=replace(record.definition.isolation, network=True)),
+    )
+    claim = {"task_id": "task-result", "attempt_id": "attempt-result", "lease_id": "lease-result",
+             "fence": 3, "capability_id": "test.echo", "spec": case.task["task"]["spec"]}
+    monkeypatch.setattr(case.runtime, "claim_next", lambda **_kwargs: claim)
+    error = AstridError("route refused", code="provider_denied", field="target", fix="select an admitted route")
+    monkeypatch.setattr(case.host, "request_provider_route_grant", lambda *_args: (_ for _ in ()).throw(error))
+    started = time.monotonic()
+    with pytest.raises(HostError, match="provider route preparation failed"):
+        case.host.claim_once()
+    assert_failed(case, started, code="provider_denied")
+    assert receipt(case)["error"]["field"] == "target"
+    assert receipt(case)["error"]["fix"] == "select an admitted route"
+    assert case.runtime.failures[0][3]["structured_error"] == {
+        "code": "provider_denied", "field": "target", "fix": "select an admitted route"}
