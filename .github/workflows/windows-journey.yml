@@ -62,7 +62,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11.13'
+          # The product installer pins its own Python 3.11.13. This workflow
+          # Python is only a harness dependency and setup-python does not ship
+          # every historical patch build on windows-2022.
+          python-version: '3.11'
 
       - name: Verify refs and freeze identical served installer inputs
         shell: pwsh
@@ -87,10 +90,12 @@ jobs:
           if ((Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'served-before.json')).Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest differs from both exact App refs.' }
           $pins = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $evidence 'manifest-template.json') | ConvertFrom-Json
           if ($pins.tools.uv.version -cne '0.11.32' -or $pins.tools.python.version -cne '3.11.13') { throw 'Installer tool versions differ from the shared reviewed tuple.' }
+          $harnessPython = (& python --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $harnessPython -notmatch '^Python 3\.11\.') { throw "Expected workflow harness Python 3.11, got $harnessPython" }
           $pins.agent.sha = $env:PRODUCT_AGENT_SHA
           $pins.runtime.sha = $env:PRODUCT_RUNTIME_SHA
           $pins | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $manifest
-          @{role=$env:ROLE; agent_driver=$env:AGENT_SHA; app_driver=$env:APP_SHA; product_app=$env:PRODUCT_APP_SHA; product_agent=$pins.agent.sha; product_runtime=$pins.runtime.sha; manifest_template_sha=(Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'manifest-template.json')).Hash.ToLowerInvariant(); manifest_sha=(Get-FileHash -Algorithm SHA256 $manifest).Hash.ToLowerInvariant(); tools=@{uv=$pins.tools.uv.version; python=$pins.tools.python.version}; runner=$env:ImageOS; image_version=$env:ImageVersion; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; hashes=$hashes} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $evidence 'inputs.json')
+          @{role=$env:ROLE; agent_driver=$env:AGENT_SHA; app_driver=$env:APP_SHA; product_app=$env:PRODUCT_APP_SHA; product_agent=$pins.agent.sha; product_runtime=$pins.runtime.sha; manifest_template_sha=(Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'manifest-template.json')).Hash.ToLowerInvariant(); manifest_sha=(Get-FileHash -Algorithm SHA256 $manifest).Hash.ToLowerInvariant(); tools=@{uv=$pins.tools.uv.version; productPython=$pins.tools.python.version; harnessPython=$harnessPython}; runner=$env:ImageOS; image_version=$env:ImageVersion; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; hashes=$hashes} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $evidence 'inputs.json')
 
       - name: Run native PowerShell 5.1 lifecycle with path and writer diagnostics
         shell: pwsh
