@@ -62,6 +62,9 @@ def _resolve_local_engine() -> Any:
     try:
         return local_engine_endpoint("vibecomfy-h3")
     except EngineError as exc:
+        if exc.code == "endpoint_ownership":
+            raise AstridError(f"local H3 engine endpoint ownership error ({exc.code}): {exc}",
+                              code=exc.code) from exc
         raise AstridError(
             f"local H3 engine is not ready ({exc.code}): "
             f"run `{LOCAL_ENGINE_INSTALL_ACTION}` first",

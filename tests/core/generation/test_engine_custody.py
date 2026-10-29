@@ -5,6 +5,7 @@ from dataclasses import replace
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import socket
 import subprocess
@@ -32,6 +33,12 @@ port=int(sys.argv[1]); mode=Path(sys.argv[2]); started=Path(sys.argv[3])
 with started.open('a') as f: f.write(str(os.getpid())+'\n')
 if mode.read_text()=='exit': raise SystemExit(3)
 class Handler(BaseHTTPRequestHandler):
+ def do_POST(self):
+  request=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))
+  prompt_id=request['client_id']
+  with (started.parent/'prompts').open('a') as f: f.write(prompt_id+'\n')
+  data=json.dumps({'prompt_id':prompt_id,'number':1,'node_errors':{}}).encode()
+  self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def log_message(self,*args): pass
  def do_GET(self):
   setting=mode.read_text()
@@ -39,6 +46,9 @@ class Handler(BaseHTTPRequestHandler):
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
   value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  if self.path.startswith('/history/'):
+   prompt_id=self.path.rsplit('/',1)[1]
+   value={prompt_id:{'status':{'completed':True,'status_str':'success'},'outputs':{}}}
   if setting=='missing' and self.path=='/object_info': value={}
   data=b'{"bad":NaN}' if setting=='nan' else json.dumps(value).encode()
   self.send_response(200)
@@ -344,6 +354,411 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     nodes = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
     assert first["object_info_sha256"] == _sha(nodes)
     assert len(list(Path(client.control).glob("*.json"))) == 1
+
+
+@pytest.fixture
+def cpu_h3_install(session, monkeypatch, request):
+    """CPU inventory for the real receipt/preflight path, without GPU downloads.
+
+    Only recipe inputs and the finite helper's recipe bootstrap are substituted.
+    Git verification, lock validation, the isolated environment probe, real uv
+    pip check, model hashing, service RPC and native custody remain production.
+    This is not an H3 model qualification. The optional outer profile supplies
+    H3's schema/media protocol while retaining this same native install boundary.
+    """
+    import importlib.metadata
+    import venv
+    from astrid.core.generation import engine_recipe
+    from astrid.core.generation.engine_contracts import DownloadResult, HealthEvidence, InstallReceipt, StepReceipt
+    from astrid.core.generation.engine_runner import _plain, plan_install
+
+    _, _, original, root, mode, started = session
+    uv = shutil.which("uv")
+    if uv is None and Path(sys.executable).with_name("uv").is_file():
+        uv = str(Path(sys.executable).with_name("uv"))
+    assert uv is not None, "native CPU inventory requires the real uv executable"
+    uv_version = subprocess.check_output([uv, "--version"], text=True, timeout=5).split()[1]
+    bootstrap_uv = root / "runtime/bootstrap/bin/uv"
+    bootstrap_uv.parent.mkdir(parents=True)
+    shutil.copy2(uv, bootstrap_uv)
+    environment_root = root / "runtime/cpu-venv"
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(environment_root)
+    site = environment_root / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    packaging = importlib.metadata.distribution("packaging")
+    # Copy the small installed dependency and its real metadata to an otherwise
+    # empty venv. The probe and uv inspect those files, not this interpreter's
+    # unrelated application dependencies.
+    for member in packaging.files:
+        if member.parts[0] == "packaging" or member.parts[0].startswith("packaging-"):
+            target = site.joinpath(*member.parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(packaging.locate_file(member), target)
+    fixture = root / "cpu-fixture"
+    fixture.mkdir()
+    lock = f"packaging=={packaging.version} --hash=sha256:{hashlib.sha256(packaging.read_text('METADATA').encode()).hexdigest()}\n".encode()
+    (fixture / "requirements.lock").write_bytes(lock)
+    model = b"CPU model inventory witness\n"
+    model_path = root / "models/diffusion_models/cpu.bin"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(model)
+    model_lock = {"schema": "astrid.models-lock.v1", "models": [{
+        "name": "cpu-model", "repository": None, "revision": None, "path": None,
+        "url": "https://example.invalid/cpu-model", "destination": "diffusion_models/cpu.bin",
+        "bytes": len(model), "sha256": hashlib.sha256(model).hexdigest(),
+    }]}
+    model_results = [DownloadResult("cpu-model", str(model_path), "skipped", len(model), hashlib.sha256(model).hexdigest(), True, 0)]
+    if getattr(request, "param", None) == "outer":
+        from tests.helpers.h3_native_engine import prepare_outer_service
+
+        # The outer profile replaces this one-model resolver inventory with
+        # H3's complete inventory; attested model roots reject unlisted files.
+        model_path.unlink()
+        original, model_lock, model_results = prepare_outer_service(original, root, started)
+    model_bytes = _json(model_lock).encode()
+    (fixture / "models.json").write_bytes(model_bytes)
+    source = root / "runtime/vibecomfy"
+    comfy = root / "runtime/ComfyUI"
+    shutil.copytree(source / ".git", comfy / ".git")
+    shutil.copy2(source / "tiny.py", comfy / "tiny.py")
+    if getattr(request, "param", None) == "outer":
+        # ComfyUI's real source excludes its mutable media directories. Give
+        # this tiny Git witness the same boundary before the first upload.
+        with (comfy / ".git/info/exclude").open("a") as excluded:
+            excluded.write("\n/input/\n/output/\n")
+    revision = next(s.pin.revision for s in original.sources if s.name == "vibecomfy")
+    for spec in original.sources:
+        if spec.name in {"comfyui", "vibecomfy"}:
+            subprocess.run(["git", "remote", "add", "origin", spec.pin.repository],
+                           cwd=root / spec.relative_path, check=True, capture_output=True, timeout=5)
+    program_path = fixture / "bootstrap.py"
+    # Real helper dispatch independently recomputes identities against these
+    # hash-checked CPU inputs. No service/status/health result is fabricated.
+    program = f'''
+import hashlib,json,sys
+from pathlib import Path
+from dataclasses import replace
+from astrid.core.generation import engine_recipe as recipes
+from astrid.core.generation.engine_contracts import DataRef,RequirementsSpec,StartSpec
+from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+base=recipes.load_recipe('vibecomfy-h3',{PLATFORM!r})
+recipe=replace(base,
+ sources=tuple(replace(s,pin=replace(s.pin,revision={revision!r})) for s in base.sources if s.name in {{'comfyui','vibecomfy'}}),
+ environments=(replace(base.environments[0],name='cpu',relative_path='runtime/cpu-venv',python_version={sys.version.split()[0]!r},uv_version={uv_version!r},requirements=RequirementsSpec('packaged',DataRef('cpu-fixture/requirements.lock',{hashlib.sha256(lock).hexdigest()!r}),(),(),None),final_wheels=(),node_lock=None,source_installs=()),),
+ primary_environment='cpu',models_lock=DataRef('cpu-fixture/models.json',{hashlib.sha256(model_bytes).hexdigest()!r}),
+ start=StartSpec({original.start.argv!r},{str(comfy)!r},{{'VIBECOMFY_HEADLESS':'1'}},'127.0.0.1',{original.start.port}),
+ health=replace(base.health,timeout_seconds=4,poll_interval_seconds=0.02))
+original_read_ref=recipes._read_ref
+def read_ref(ref):
+ if ref.path.startswith('cpu-fixture/'):
+  path=Path({str(root)!r})/ref.path
+  payload=path.read_bytes()
+  assert hashlib.sha256(payload).hexdigest()==ref.sha256
+  return path,payload
+ return original_read_ref(ref)
+recipes._read_ref=read_ref
+recipes.load_recipe=lambda engine,platform:recipe
+original_run=LocalLinuxExecutionContext.run
+def run(self,request):
+ if request.argv[:4]==('python3','-I','-m','astrid.core.generation.engine_runner_target'):
+  code=Path({str(program_path)!r}).read_text()+'\\nfrom astrid.core.generation.engine_runner_target import main\\nraise SystemExit(main())'
+  request=replace(request,argv=(sys.executable,'-c',code,*request.argv[4:]))
+ return original_run(self,request)
+LocalLinuxExecutionContext.run=run
+'''
+    program_path.write_text(program)
+    from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+    previous_loader, previous_ref = engine_recipe.load_recipe, engine_recipe._read_ref
+    previous_run = LocalLinuxExecutionContext.run
+    namespace = {}
+    exec(compile(program, str(program_path), "exec"), namespace)
+    recipe = namespace["recipe"]
+    engine_recipe.load_recipe, engine_recipe._read_ref = previous_loader, previous_ref
+    LocalLinuxExecutionContext.run = previous_run
+    # Undo bootstrap's interpreter-local patches via pytest's normal teardown.
+    monkeypatch.setattr(engine_recipe, "load_recipe", lambda engine, platform: recipe)
+    monkeypatch.setattr(engine_recipe, "_read_ref", namespace["read_ref"])
+    monkeypatch.setattr(LocalLinuxExecutionContext, "run", namespace["run"])
+    supervisor = program + "\nfrom astrid.core.generation.engine_custody import _serve\n_serve(json.loads(sys.argv[1]),recipe,int(sys.argv[2]),sys.argv[4])"
+    monkeypatch.setattr(custody, "_supervisor_argv", lambda identity, lock_fd, token:
+                        [sys.executable, "-c", supervisor, _json(identity), str(lock_fd), "--launch-token", token])
+    client = _client(_identity(root, recipe))
+    payload = _payload(client.identity, recipe, {"argv": list(recipe.start.argv),
+                                               "cwd": recipe.start.cwd, "env": dict(recipe.start.env)})
+    digest = client.identity["helper_sha256"]
+    (root / ".astrid-engine").mkdir(mode=0o700)
+    state = root / ".astrid-engine/environments/cpu"
+    state.mkdir(parents=True)
+    lock_digest = hashlib.sha256(lock).hexdigest()
+    (state / "requirements.lock").write_bytes(lock)
+    lock_identity = {"schema": "astrid.requirements-lock.v1", "environment": "cpu",
+                     "recipe_sha256": client.identity["recipe_sha256"], "helper_sha256": digest,
+                     "requirements_lock_sha256": lock_digest}
+    (state / "lock.json").write_text(_json(lock_identity))
+    (state / "receipt.json").write_text(_json({k: v for k, v in lock_identity.items() if k != "schema"}))
+    from astrid.core.generation.engine_runner_target import dispatch
+    helper = {**client.identity, "schema": "astrid.engine-runner-helper.v1"}
+    assert dispatch("models-config", helper)["facts"] == {"written": True}
+    try:
+        # Installation's finite caller exits before either H3 consumer runs.
+        facts = json.loads(_finite_client(client.identity, payload, "start", bootstrap=supervisor).stdout)
+        plan = plan_install(recipe, root=str(root), placement="local")
+        stamp = "2026-10-29T00:00:00+00:00"
+        receipt = InstallReceipt(
+            "astrid.engine-install.v1", "native-cpu-receipt", recipe.engine, recipe.platform,
+            "local", str(root), "installed", False, plan.recipe_sha256, plan.models_lock_sha256,
+            {"cpu": lock_digest}, {s.name: s.pin.revision for s in recipe.sources},
+            tuple(model_results),
+            tuple(StepReceipt(s.id, s.kind, "executed", "passed", {"owner_id": facts["owner_id"],
+                "launch_sha256": facts["launch_sha256"]} if s.kind == "start" else {}) for s in plan.steps),
+            HealthEvidence("healthy", stamp, facts["object_info_sha256"], True), stamp, stamp, None)
+        (root / ".astrid-engine/install.json").write_text(_json(_plain(receipt)))
+        yield client, payload, recipe, root, started, program_path
+    finally:
+        client.stop_owned(deadline=time.monotonic() + 15)
+
+
+def _finite_h3_cpu_run(program_path, root, identity):
+    # Use the H3 action's actual local resolver and complete a synthetic CPU
+    # prompt on its resulting endpoint. This tests preflight and attach reuse;
+    # it intentionally does not qualify a GPU workflow or full H3 action.
+    program = '''
+import json,os,sys
+from pathlib import Path
+exec(Path(sys.argv[1]).read_text())
+os.environ['ASTRID_ENGINE_ROOT']=sys.argv[2]
+from astrid.core.generation import engine_custody as custody
+operations=[]
+original_request=custody.LinuxEngineServiceClient._request
+def observe(self,operation,payload,deadline,*,start=True):
+ if operation in {'probe','start','health','stop'}:
+  operations.append('service:'+operation)
+ return original_request(self,operation,payload,deadline,start=start)
+custody.LinuxEngineServiceClient._request=observe
+from astrid.packs.h3_av.actions.transform.run import _resolve_local_engine
+from astrid.core.generation.backends.vibecomfy_local_server import _request
+engine=_resolve_local_engine()
+response=_request(engine.endpoint.url,'/prompt',{'client_id':sys.argv[3],'prompt':{'1':{'class_type':'MiniMaxH3ReferenceToVideo','inputs':{}}}})
+history=_request(engine.endpoint.url,'/history/'+response['prompt_id'])
+assert history[response['prompt_id']]['status']['completed'] is True
+print(json.dumps({'url':engine.endpoint.url,'operations':operations,'prompt_id':response['prompt_id']}))
+'''
+    completed = subprocess.run([sys.executable, "-c", program, str(program_path), str(root), identity],
+                               capture_output=True, text=True, timeout=45)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_two_finite_h3_cpu_preflights_reuse_owned_native_service(cpu_h3_install):
+    client, payload, recipe, root, started, program_path = cpu_h3_install
+    marker_path = root / "runtime/out/sessions/vibecomfy-h3/launch.json"
+    marker = marker_path.read_bytes()
+    supervisor = json.loads(marker)["pid"]
+    first = _finite_h3_cpu_run(program_path, root, "cpu-h3-run-1")
+    assert _alive(supervisor) and _alive(int(started.read_text().strip()))
+    second = _finite_h3_cpu_run(program_path, root, "cpu-h3-run-2")
+    assert _alive(supervisor) and _alive(int(started.read_text().strip()))
+    assert first["url"] == second["url"] == f"http://127.0.0.1:{recipe.start.port}"
+    assert recipe.start.bind_host == "127.0.0.1"
+    for run in (first, second):
+        assert run["operations"] == ["service:probe", "service:health"]
+    assert len(started.read_text().splitlines()) == 1
+    assert (root / "prompts").read_text().splitlines() == ["cpu-h3-run-1", "cpu-h3-run-2"]
+    assert marker_path.read_bytes() == marker
+    assert _call(client, payload, "health")["owner_id"] == json.loads(marker)["launch_token"]
+
+
+@pytest.mark.integration
+@pytest.mark.ffmpeg
+@pytest.mark.timeout(1200)
+@pytest.mark.parametrize("cpu_h3_install", ["outer"], indirect=True)
+def test_two_full_h3_runtime_runs_reuse_owned_native_service(cpu_h3_install, tmp_path, monkeypatch, capfd):
+    """An installation starts the service; two complete outer consumers reuse it.
+
+    H3's status gate is deliberately read-only, so its supported prerequisite
+    is the healthy service left by install. The fixture's finite installation
+    caller has exited before either action starts. Each action starts/stops its
+    own real Runtime and pack host, using the same native custody supervisor.
+    """
+    from PIL import Image
+    from contextlib import contextmanager
+    from astrid.core import action_cli
+    from tests.core.test_action_cli_clip_rehearsal import _last_json_document, _probe
+    from tests.helpers.h3_native_engine import install_hook, observe_requests
+
+    client, payload, recipe, root, started, bootstrap = cpu_h3_install
+    monkeypatch.setenv("ASTRID_ENGINE_ROOT", str(root))
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (32, 32), (32, 64, 128)).save(reference)
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({
+        "version": 2, "prompt": "Animate <Picture 1> with synchronized sound.",
+        "duration": 1,
+        "media": [{"id": "look", "asset": "reference.png", "role": "reference", "modality": "image"}],
+        "settings": {},
+    }))
+    assets = tmp_path / "asset-map.json"
+    assets.write_text(json.dumps({"reference.png": str(reference)}))
+    operations = tmp_path / "native-service-operations.jsonl"
+    monkeypatch.setattr(custody.LinuxEngineServiceClient, "_request",
+                        observe_requests(custody.LinuxEngineServiceClient._request, operations))
+    registry = root / "runtime/out/sessions/vibecomfy-h3"
+    marker = json.loads((registry / "launch.json").read_text())
+    supervisor = marker["pid"]
+    child = int(started.read_text().strip())
+    expected = {name: (registry / name).read_bytes() for name in (
+        "launch.json", "pid", "comfy_pid", "comfy_process_start_identity", "url",
+        "config.json", "source_revision", "source_content_digest")}
+    install_receipt = (root / ".astrid-engine/install.json").read_bytes()
+
+    def healthy_identity():
+        assert _alive(supervisor) and _alive(child)
+        facts = _call(client, payload, "health")
+        assert facts["healthy"] is True and facts["owner_id"] == marker["launch_token"]
+        assert {name: (registry / name).read_bytes() for name in expected} == expected
+        assert (root / ".astrid-engine/install.json").read_bytes() == install_receipt
+        assert started.read_text().splitlines() == [str(child)]
+        stat = Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()
+        assert int(stat[1]) == supervisor
+        return {"supervisor_pid": supervisor, "child_pid": child, "child_parent_pid": int(stat[1]),
+                "child_start_ticks": stat[19], "supervisor_start_ticks":
+                Path(f"/proc/{supervisor}/stat").read_text().rsplit(")", 1)[1].split()[19],
+                "marker": marker, "health": facts}
+
+    baseline = healthy_identity()
+    assert recipe.start.bind_host == "127.0.0.1"
+    assert (registry / "url").read_text().strip() == f"http://127.0.0.1:{recipe.start.port}"
+    hook = install_hook(bootstrap, operations)
+    runs = []
+    real_runtime = action_cli.ephemeral_runtime
+
+    @contextmanager
+    def observed_runtime(workspace):
+        # Keep ordinary startup diagnostics before the real CLI removes its
+        # temporary workspace. This observer delegates all lifecycle behavior.
+        with real_runtime(workspace) as environment:
+            try:
+                yield environment
+            except BaseException as exc:
+                (tmp_path / "outer-runtime-error.json").write_text(json.dumps({
+                    "type": type(exc).__name__, "message": str(exc),
+                    "code": getattr(exc, "code", None), "details": getattr(exc, "details", None),
+                }, indent=2, default=str))
+                raise
+            finally:
+                diagnostic = tmp_path / f"outer-runtime-{len(runs) + 1}"
+                diagnostic.mkdir(exist_ok=True)
+                for name in ("generic-host.log", "generic-host.ready.json", "generic-host.progress.json"):
+                    path = workspace / "support/runtime" / name
+                    if path.is_file():
+                        shutil.copy2(path, diagnostic / name)
+
+    monkeypatch.setattr(action_cli, "ephemeral_runtime", observed_runtime)
+    from astrid.sdk import host_bootstrap
+    read_host_object = host_bootstrap._read_object
+
+    def observe_host_object(path):
+        value = read_host_object(path)
+        # The launcher removes a terminal ready marker while retiring a failed
+        # host, before ephemeral_runtime's finally can copy ordinary logs.
+        if Path(path).name == "generic-host.ready.json" and value and value.get("status") == "failed":
+            (tmp_path / "outer-host-registration-failure.json").write_text(json.dumps(value, indent=2))
+        return value
+
+    monkeypatch.setattr(host_bootstrap, "_read_object", observe_host_object)
+    try:
+        for number in (1, 2):
+            before = healthy_identity()
+            assert before == baseline
+            offset = operations.stat().st_size
+            out = tmp_path / f"outer-run-{number}"
+            try:
+                code = action_cli.main([
+                    "run", "h3_av.transform", "--request", str(request), "--asset-map", str(assets),
+                    "--placement", "local", "--out", str(out), "--timeout", "600",
+                ])
+            finally:
+                captured = capfd.readouterr()
+                (tmp_path / f"outer-run-{number}.stdout.txt").write_text(captured.out)
+                (tmp_path / f"outer-run-{number}.stderr.txt").write_text(captured.err)
+            assert code == 0, f"exit {code}\n{captured.out}\n{captured.err[-6000:]}"
+            summary = _last_json_document(captured.out)
+            assert summary["ok"] is True and summary["receipt"]
+            receipt = json.loads(Path(summary["receipt"]).read_text())
+            publication = receipt["states"]["final_composition_publication"]
+            assert receipt["publication_contract"]["final_composition_publication"] == "verified"
+            assert publication["status"] == "passed"
+            assert publication["evidence"]["published_scope"] == "final_composition"
+            # The local command orchestrator has no Runtime run ID of its own.
+            # Its receipt and journal retain both admitted child task identities.
+            runtime = receipt["states"]["task_succeeded"]["evidence"]
+            finalizer = publication["evidence"]["task"]
+            journal = json.loads((out / "operation-state.json").read_text())
+            for task in (runtime, finalizer):
+                fields = ("run_id", "task_id", "attempt_id")
+                assert all(isinstance(task.get(field), str) and task[field] for field in fields)
+                assert any(event.get("status") == "completed" and
+                           all(event.get(field) == task[field] for field in fields)
+                           for event in journal["events"])
+            assert runtime["run_id"] != finalizer["run_id"]
+            assert receipt["placement"] == "local"
+            assert receipt["local_attestation"]["kind"] == "local-engine.v1"
+            final = out / "07-finalizer/retrieved/verified-candidate.media"
+            assert "sha256:" + hashlib.sha256(final.read_bytes()).hexdigest() == publication["evidence"]["publication"]["object_id"]
+            stream = _probe(final)
+            assert stream["r_frame_rate"] == "24/1" and int(stream["nb_read_frames"]) == 24
+            observed = [json.loads(line) for line in operations.read_bytes()[offset:].splitlines()]
+            names = [row["operation"] for row in observed]
+            assert "service:probe" in names and "service:health" in names
+            assert not {"service:start", "service:stop"}.intersection(names), names
+            assert all(row["identity"] == client.identity for row in observed)
+            after = healthy_identity()
+            assert after == baseline
+            runs.append({"summary": summary, "publication": publication,
+                         "runtime_run_id": runtime["run_id"], "finalizer_run_id": finalizer["run_id"],
+                         "local_attestation": receipt["local_attestation"], "stream": stream,
+                         "before": before, "after": after, "operations": observed})
+        assert runs[0]["runtime_run_id"] != runs[1]["runtime_run_id"]
+        assert runs[0]["finalizer_run_id"] != runs[1]["finalizer_run_id"]
+        assert json.loads((root / "cpu-fixture/http-evidence.json").read_text())["prompt_id"] == "h3-c11-fixture-0002"
+        (tmp_path / "native-two-run.json").write_text(json.dumps({
+            "synthetic_inference_only": True,
+            "installation_service_starts": len(started.read_text().splitlines()),
+            "bind_host": recipe.start.bind_host, "identity": client.identity, "baseline": baseline,
+            "runs": runs,
+        }, indent=2, sort_keys=True))
+    finally:
+        hook.unlink(missing_ok=True)
+
+
+def test_foreign_listener_is_coded_at_native_h3_receipt_gate(cpu_h3_install):
+    client, payload, recipe, root, started, program_path = cpu_h3_install
+    client.stop_owned(deadline=time.monotonic() + 15)
+    with socket.socket() as foreign:
+        foreign.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        foreign.bind(("127.0.0.1", recipe.start.port))
+        foreign.listen()
+        program = '''
+import os,sys
+from pathlib import Path
+exec(Path(sys.argv[1]).read_text())
+os.environ['ASTRID_ENGINE_ROOT']=sys.argv[2]
+from astrid.packs.h3_av.actions.transform.run import _resolve_local_engine
+try:
+ _resolve_local_engine()
+except Exception as exc:
+ assert exc.code=='endpoint_ownership', str(exc)
+ print(exc.code)
+else:
+ raise AssertionError('foreign listener was accepted')
+'''
+        # A new supervisor is allowed; the foreign process is never adopted.
+        _call(client, payload, "probe")
+        completed = subprocess.run([sys.executable, "-c", program, str(program_path), str(root)],
+                                   capture_output=True, text=True, timeout=45)
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "endpoint_ownership"
+        assert foreign.getsockname() == ("127.0.0.1", recipe.start.port)
+        assert len(started.read_text().splitlines()) == 1
 
 
 def test_timeout_drains_only_owned_descendants_then_healthy_rerun(session):

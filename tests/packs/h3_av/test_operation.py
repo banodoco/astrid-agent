@@ -645,6 +645,23 @@ def test_local_placement_fails_fast_when_engine_not_installed(tmp_path: Path, mo
         assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
 
 
+def test_local_placement_reports_endpoint_ownership(tmp_path: Path, monkeypatch) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.engine_contracts import EndpointOwnershipError
+    from astrid.packs.h3_av.actions.transform import run as transform
+
+    def unowned(*args, **kwargs):
+        raise EndpointOwnershipError("engine port is occupied by an unowned service")
+
+    monkeypatch.setattr("astrid.core.generation.engine_local_endpoint.local_engine_endpoint", unowned)
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected before engine check"))
+    with pytest.raises(AstridError) as caught:
+        transform.run_transform(_transform_args(tmp_path, "--placement", "local"))
+    assert caught.value.code == "endpoint_ownership"
+    assert "unowned" in str(caught.value)
+    assert not caught.value.recovery_command
+
+
 def test_runpod_placement_without_prepared_worker_uses_the_remote_wrapper(tmp_path: Path, monkeypatch) -> None:
     from astrid.packs.h3_av.actions.transform import run as transform
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected"))

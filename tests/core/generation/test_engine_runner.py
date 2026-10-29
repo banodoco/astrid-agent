@@ -466,6 +466,44 @@ def test_clean_rerun_skips_every_step_but_reads_sha_and_current_health(setup):
     assert not [e for e in context.events if e[0] == "argv" and ("fetch" in e[1] or "install" in e[1] or "sync" in e[1])]
 
 
+def test_run_two_reuses_the_instance_run_one_left_running(setup):
+    from astrid.core.generation.engine_local_endpoint import _installed_receipt
+
+    install(setup)
+    plan, context, _, _ = setup
+    def run():
+        return _installed_receipt(plan.engine, platform=plan.platform, root=plan.root,
+                                  deadline_seconds=30, context=context, status=None)
+
+    first = run()
+    owner = context.server
+    assert owner is not None
+    assert len([event for event in context.events if event[0] == "service:start"]) == 1
+    context.events.clear()
+    second = run()
+    assert first.status == second.status == "installed"
+    assert context.server == owner
+    assert any(event[0] == "service:health" for event in context.events)
+    assert not [event for event in context.events if event[0] in {"service:start", "service:stop"}]
+
+
+def test_run_two_with_a_listener_no_supervisor_owns_is_coded_ownership_not_not_installed(setup):
+    from astrid.core.generation.engine_local_endpoint import _installed_receipt
+
+    install(setup)
+    plan, context, _, _ = setup
+    first = _installed_receipt(plan.engine, platform=plan.platform, root=plan.root,
+                               deadline_seconds=30, context=context, status=None)
+    assert first.status == "installed"
+    context.server = "alien"
+    context.events.clear()
+    with pytest.raises(EndpointOwnershipError) as caught:
+        _installed_receipt(plan.engine, platform=plan.platform, root=plan.root,
+                           deadline_seconds=30, context=context, status=None)
+    assert caught.value.code == "endpoint_ownership"
+    assert not [event for event in context.events if event[0] in {"service:start", "service:stop"}]
+
+
 def test_target_paths_never_touch_controller_filesystem_or_processes(setup, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: pytest.fail("controller subprocess"))
     original_open = Path.open
