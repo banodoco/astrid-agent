@@ -325,6 +325,7 @@ class GenerationFacade:
         execution: str | None,
         inputs: dict[str, Any],
         dry_run: bool,
+        workflow_entry: dict[str, Any] | None = None,
         **controls: Any,
     ) -> Any:
         """Bind a catalog template and admit it through the workflow facade.
@@ -357,57 +358,110 @@ class GenerationFacade:
             raise CapabilityValidationError(
                 "shot_generation_recipe requires the generation image action"
             )
+        from astrid.core.generation import entries as workflow_entries
+        from astrid.packs.vibecomfy.production_engine import ProductionEngineError
+
         target_client = select_generation_target(target)
-        if model is not None:
-            try:
-                candidates = [registry.get(model)]
-            except KeyError as exc:
-                raise CapabilityValidationError(str(exc)) from exc
+        # Catalog priority is explicit, stable and per modality/mode. Unknown
+        # catalog entries and user entries remain eligible in lexical order.
+        preferred = {
+            ("image", "t2i"): ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512"),
+            ("image", "edit"): ("qwen-image-2.1-turbo-edit", "z-image", "qwen-image-2512"),
+        }.get((modality, mode), ())
+        def rank(candidate: Any) -> tuple[int, str]:
+            identifier = candidate[1].id if candidate[0] == "catalog" else candidate[1]["id"]
+            return (preferred.index(identifier) if identifier in preferred else len(preferred), identifier)
+
+        if workflow_entry is not None:
+            candidates = [("workflow", workflow_entry)]
+        elif model is not None:
+            manifest = workflow_entries.find_entry(model)
+            if manifest is not None:
+                candidates = [("workflow", manifest)]
+            else:
+                try:
+                    candidates = [("catalog", registry.get(model))]
+                except KeyError as exc:
+                    raise CapabilityValidationError(str(exc)) from exc
         else:
-            candidates = [
-                entry for entry in registry.list_by_modality(modality)
-                if mode in entry.modes
-                and getattr(entry.modes[mode].backends.get("local"), "template", "")
-            ]
+            candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
+                          if mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
+            candidates += [("workflow", entry) for entry in
+                           [*workflow_entries.user_entries(), *workflow_entries.ready_entries()]
+                           if entry["kind"] == modality and mode in entry["modes"]
+                           and not entry.get("registry_id")]
+            candidates.sort(key=rank)
         backend = VibeComfyBackend(target_client=target_client)
         selected = None
         failures: list[str] = []
-        if candidates:
-            # Every default candidate has a local template. The remaining
-            # package/runtime prerequisites are shared across all candidates.
-            require_generation_target_readiness(candidates[0], mode, target_client)
-        for entry in candidates:
+        for source, candidate in candidates:
+            identifier = candidate.id if source == "catalog" else candidate["id"]
             try:
-                validate_generation_request(
-                    registry, model=entry.id, mode=mode, execution="local",
-                    inputs=inputs, modality=modality,
-                )
-                workflow, plan, schema = backend.prepare_catalog_workflow(
-                    entry, mode, inputs, resolve_target=target_client is not None,
-                )
+                assets = {}
+                if source == "catalog":
+                    require_generation_target_readiness(candidate, mode, target_client)
+                    validate_generation_request(registry, model=candidate.id, mode=mode,
+                                                execution="local", inputs=inputs, modality=modality)
+                    workflow, plan, schema = backend.prepare_catalog_workflow(
+                        candidate, mode, inputs, resolve_target=target_client is not None)
+                else:
+                    from types import SimpleNamespace
+                    prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
+                        backends={"local": SimpleNamespace(template=str(candidate["bundle"]))})})
+                    require_generation_target_readiness(prerequisite, mode, target_client)
+                    if candidate["kind"] != modality or mode not in candidate["modes"]:
+                        raise ValueError(f"entry {identifier!r} does not support {modality}/{mode}")
+                    registry_id = candidate.get("registry_id")
+                    if registry_id:
+                        catalog_entry = registry.get(registry_id)
+                        require_generation_target_readiness(catalog_entry, mode, target_client)
+                        validate_generation_request(registry, model=registry_id, mode=mode,
+                                                    execution="local", inputs=inputs, modality=modality)
+                        workflow, plan, schema = backend.prepare_catalog_workflow(
+                            catalog_entry, mode, inputs, resolve_target=target_client is not None)
+                    else:
+                        workflow, plan, assets = workflow_entries.prepare(
+                            workflow_entries.bundle_path(candidate), target_client=target_client, mode=mode,
+                            binds=candidate.get("binds"), defaults=candidate.get("defaults"), values=inputs)
+                        if plan["kind"] != modality:
+                            raise ValueError("entry kind does not match workflow output")
+                        if plan["unbound"]:
+                            raise ValueError("workflow has no binding for requested controls: " + ", ".join(plan["unbound"]))
+                        schema = workflow_entries.target_schema(candidate, workflow, target_client)
                 from vibecomfy.workflow_bundle import load_bundle
-
-                bundle = load_bundle(workflow)
-                bundle.require_canonical_authority("generate on target")
-                approval = bundle.compile(schema_provider=schema) if schema is not None else None
-            except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError) as exc:
-                if model is not None:
+                if source == "workflow" and not candidate.get("registry_id"):
+                    # Re-emit the edited canonical workflow before approval so
+                    # the input bindings are represented by a fresh revision.
+                    from vibecomfy.workflow_bundle import emit_bundle
+                    with TemporaryDirectory(prefix="astrid-entry-approval-") as scratch:
+                        bundle = emit_bundle(workflow, Path(scratch) / "workflow.py", {"operation": "authored"})
+                        bundle.require_canonical_authority("generate on target")
+                        approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
+                else:
+                    bundle = load_bundle(workflow)
+                    bundle.require_canonical_authority("generate on target")
+                    approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
+            except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
+                if (model is not None or workflow_entry is not None
+                        or getattr(exc, "code", None) == "COMFY_TARGET_NOT_READY"):
+                    # Package/runtime prerequisites apply to every local
+                    # candidate; retain their existing error and guidance.
                     raise
-                failures.append(f"{entry.id}: {exc}")
+                failures.append(f"{identifier}: {exc}")
                 continue
-            selected = (entry, workflow, bundle, plan, schema, approval)
+            selected = (identifier, workflow, bundle, plan, schema, approval, assets)
             break
         if selected is None:
             raise AstridError(
                 f"No ready local {modality} model supports mode {mode!r} on the selected target"
                 + (": " + "; ".join(failures) if failures else ""),
                 code="COMFY_TARGET_NO_MODEL", field="model",
-                fix=("Use --target http://127.0.0.1:8188 with a ComfyUI server containing "
-                     "a catalog model, or --target managed with an installed runtime"),
+                fix="Use an attached ComfyUI with the required nodes and models, or an installed managed runtime",
             )
-        entry, workflow, bundle, plan, schema, approval = selected
+        entry_id, workflow, bundle, plan, schema, approval, assets = selected
         if dry_run:
-            preview = dict(plan or {"model": entry.id, "mode": mode})
+            preview = dict(plan or {"model": entry_id, "mode": mode})
+            preview.update(entry=entry_id, mode=mode, reason=("explicitly selected workflow entry" if model is not None or workflow_entry is not None else "highest-ranked ready local entry for the requested kind and mode on the selected target"))
             preview["target"] = target_client.target.url if target_client is not None else "managed"
             if approval is not None:
                 preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
@@ -457,6 +511,17 @@ class GenerationFacade:
             emitted = emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
             source = root / "source.json"
             source.write_text(json.dumps(emitted.materialize_ui(schema_provider=schema)), encoding="utf-8")
+            asset_arguments: dict[str, Any] = {}
+            if assets:
+                import zipfile
+                from astrid.packs.vibecomfy.asset_manifest import build_asset_manifest
+                manifest = build_asset_manifest(assets)
+                archive = root / "assets.zip"
+                with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+                    zipped.writestr("manifest.json", json.dumps(manifest))
+                    for record in manifest["assets"]:
+                        zipped.write(assets[record["binding"]], record["member"])
+                asset_arguments["managed_assets"] = import_member(archive)
             result = self.workflow(
                 python=import_member(root / "workflow.py"),
                 companion=import_member(root / "workflow.vibe.json"),
@@ -468,16 +533,38 @@ class GenerationFacade:
                         "selector": "main-0", "ordinal": 0,
                         "variant_key": "original", "required": True,
                     }]}],
-                    "metadata": {"model": entry.id, "mode": mode},
+                    "metadata": {"model": entry_id, "mode": mode},
                 },
-                **controls,
+                **asset_arguments, **controls,
             )
         return _reconstruct_generation_result(result)
+
+    @staticmethod
+    def _resolve_public_entry(*, entry: str, model: str | None,
+                              mode: str | None, modality: str,
+                              inputs: Mapping[str, Any], registry: Any):
+        from astrid.core.generation.entries import resolve_entry_inputs
+
+        if model is not None and model != entry:
+            raise CapabilityValidationError("model and entry select different generation entries")
+        try:
+            description, values = resolve_entry_inputs(
+                entry, dict(inputs), mode=mode, kind=modality, registry=registry,
+            )
+        except (ValueError, KeyError) as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+        if description.get("action"):
+            raise CapabilityPreconditionError(
+                "action-backed generation requires a Runtime-admitted parent; "
+                "the tracked parent interface is not yet available"
+            )
+        return description, values
 
     def image(
         self,
         *,
         model: str | None = None,
+        entry: str | None = None,
         target: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
@@ -505,11 +592,29 @@ class GenerationFacade:
             )
 
         sdk_module = importlib.import_module(self.sdk_module_name)
+        registry = None
+        if entry is not None:
+            registry = sdk_module._load_model_registry(
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+            )
+            description, inputs = self._resolve_public_entry(
+                entry=entry, model=model, mode=mode, modality="image",
+                inputs=inputs, registry=registry,
+            )
+            model, mode = entry, description["mode"]
+            if description["source"] == "workflow" and target is None:
+                target = "auto"
         resolved_mode = sdk_module._infer_image_mode(mode, inputs)
-        registry = sdk_module._load_model_registry(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-        )
+        if model is not None and mode is None and inputs.get("image_ref"):
+            from astrid.core.generation.entries import find_entry
+            manifest = find_entry(model)
+            if manifest is not None and "edit" in manifest["modes"] and "i2i" not in manifest["modes"]:
+                resolved_mode = "edit"
+        if registry is None:
+            registry = sdk_module._load_model_registry(
+                project_root=project_root,
+                extra_pack_roots=extra_pack_roots,
+            )
         if target is not None:
             return self._generate_on_target(
                 registry=registry, model=model, mode=resolved_mode, modality="image",
@@ -617,13 +722,30 @@ class GenerationFacade:
             return result
         return _reconstruct_generation_result(result)
 
+    @staticmethod
+    def _validate_action_entry(entry: dict[str, Any], *, modality: str,
+                               mode: str | None, inputs: Mapping[str, Any]) -> None:
+        """Check declared bindings without initiating the untracked action route."""
+        if entry["kind"] != modality or (mode is not None and mode not in entry["modes"]):
+            raise CapabilityValidationError(f"entry {entry['id']!r} does not support {modality}/{mode}")
+        if mode is None and len(entry["modes"]) != 1:
+            raise CapabilityValidationError(f"entry {entry['id']!r} requires an explicit mode")
+        from astrid.core.generation.entries import validate_inputs
+        try:
+            validate_inputs({**entry, "source": "action"}, dict(inputs))
+        except ValueError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+
     def video(
         self,
         *,
         model: str | None = None,
+        entry: str | None = None,
         target: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
+        request: str | Mapping[str, Any] | None = None,
+        asset_map: str | Mapping[str, Any] | None = None,
         out: Path | str | None = None,
         project: str | None = None,
         client: Any | None = None,
@@ -641,12 +763,36 @@ class GenerationFacade:
         **inputs: Any,
     ) -> Any:
         _reject_retired_generation_inputs(inputs)
+        inputs.update({name: value for name, value in
+                       (("request", request), ("asset_map", asset_map)) if value is not None})
         sdk_module = importlib.import_module(self.sdk_module_name)
+        registry = None
+        if entry is not None:
+            registry = sdk_module._load_model_registry(
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+            )
+            description, inputs = self._resolve_public_entry(
+                entry=entry, model=model, mode=mode, modality="video",
+                inputs=inputs, registry=registry,
+            )
+            model, mode = entry, description["mode"]
+            if description["source"] == "workflow" and target is None:
+                target = "auto"
+        elif model is not None:
+            from astrid.core.generation.entries import find_entry
+            manifest = find_entry(model)
+            if manifest is not None and "action" in manifest:
+                self._validate_action_entry(manifest, modality="video", mode=mode, inputs=inputs)
+                raise CapabilityPreconditionError(
+                    "action-backed generation requires a Runtime-admitted parent; "
+                    "the tracked parent interface is not yet available"
+                )
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)
-        registry = sdk_module._load_model_registry(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-        )
+        if registry is None:
+            registry = sdk_module._load_model_registry(
+                project_root=project_root,
+                extra_pack_roots=extra_pack_roots,
+            )
         if target is not None:
             return self._generate_on_target(
                 registry=registry, model=model, mode=resolved_mode, modality="video",

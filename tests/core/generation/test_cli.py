@@ -42,6 +42,16 @@ def test_bare_prompt_uses_auto_target_and_sdk_default_model(monkeypatch, capsys)
 @pytest.mark.parametrize(("modality", "dimension_input"), [("image", "size"), ("video", "resolution")])
 def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, capsys, modality, dimension_input):
     calls = _facade(monkeypatch)
+    from astrid.core.generation import entries
+
+    def resolve(entry_id, values, *, mode, kind):
+        assert entry_id == "flux-schnell" and mode == "edit" and kind == modality
+        values = dict(values)
+        width, height = values.pop("width"), values.pop("height")
+        values[dimension_input] = f"{width}x{height}"
+        return {"source": "catalog", "mode": mode}, values
+
+    monkeypatch.setattr(entries, "resolve_entry_inputs", resolve)
     target = "http://127.0.0.1:8188"
     assert cli.main([
         modality, "a dog", "--entry", "flux-schnell", "--mode", "edit",
@@ -50,7 +60,7 @@ def test_entry_edit_and_settings_reach_the_existing_facade_once(monkeypatch, cap
         "--steps", "8", "--seed", "41", "--cfg", "1.5", "--json",
     ]) == 0
     assert calls == [{
-        "model": "flux-schnell", "mode": "edit", "target": target,
+        "entry": "flux-schnell", "mode": "edit", "target": target,
         "dry_run": False, "prompt": "a dog", "project": "demo", "out": "export",
         "image_ref": "reference.png", dimension_input: "768x512",
         "steps": 8, "seed": 41, "guidance_scale": 1.5,

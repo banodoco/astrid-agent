@@ -46,7 +46,8 @@ def catalog_rows() -> list[dict[str, Any]]:
             add(spec.model_id, "image", spec.mode, "local", spec.template_id, "direct-image")
     declaration = availability_declaration()
     actions = declaration.get("actions", {})
-    for capability in discover().actions:
+    discovery = discover()
+    for capability in discovery.actions:
         if not capability.id.startswith("generation.") and capability.id not in actions:
             continue
         name = capability.id.lower()
@@ -62,6 +63,23 @@ def catalog_rows() -> list[dict[str, Any]]:
     for route, fixture in declaration.get("fixture_only_routes", {}).items():
         if fixture:
             add(route, "fixture", source="fixture", availability="fixture-only", reason="fixture-only route")
+    from astrid.core.generation.entries import action_entries, user_entries, ready_entries
+    for entry in action_entries(discovery):
+        for mode in entry["modes"]:
+            add(entry["id"], entry["kind"], mode, "action", entry["action"], "action-entry")
+            rows[-1]["requirements"] = entry["requirements"]
+            rows[-1]["isolation_requirements"] = entry["isolation_requirements"]
+    for entry in user_entries():
+        for mode in entry["modes"] or [""]:
+            ambiguity = next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), "")
+            add(entry["id"], entry["kind"], mode, "local", entry["bundle"], "user-entry",
+                reason="entry mode requires review" if not mode else ambiguity)
+    for entry in ready_entries():
+        for mode in entry["modes"] or [""]:
+            add(entry["id"], entry["kind"] or "generation", mode, "local", entry["bundle"], "ready-template",
+                reason=entry["ambiguity"] or next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), ""))
+            if entry.get("registry_id"):
+                rows[-1]["registry_id"] = entry["registry_id"]
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
 
 
@@ -100,9 +118,38 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
                      target: ComfyTarget | None, schema: dict[str, Any] | None) -> dict[str, Any]:
     result = {"target": target.url if target else "attached", "target_kind": "attached",
               "ready": False, "readiness_scope": "target_inventory", "models_present": []}
+    if row["source"] in {"user-entry", "ready-template"} and row.get("reason"):
+        return {**result, "reason": row["reason"], "fix": "Review the entry's kind, mode, and requirements."}
     if target is None or schema is None:
         return {**result, "reason": "no attached ComfyUI target or model probe unavailable",
                 "fix": "Start ComfyUI on loopback and make /object_info available."}
+    if row["source"] in {"user-entry", "ready-template"}:
+        from tempfile import TemporaryDirectory
+        from astrid.core.generation import entries
+        from astrid.packs.vibecomfy.production_engine import ProductionEngineError, load_workflow_path
+
+        if row["source"] == "ready-template" and row.get("registry_id"):
+            try:
+                plan = resolve_comfy_models(_InventoryClient(target, schema), registry, row["registry_id"], row["mode"])
+            except (ComfyModelMissing, KeyError, ValueError):
+                return {**result, "reason": "required models missing or ambiguous",
+                        "fix": "Provide the catalog-declared model roles on the attached ComfyUI."}
+            return {**result, "ready": True, "reason": "required model roles present (model bytes unverified)",
+                    "fix": "", "models_present": sorted(plan["roles"].values()),
+                    "model_roles": plan["roles"], "model_bytes": plan["model_bytes"]}
+        candidates = entries.user_entries() if row["source"] == "user-entry" else entries.ready_entries()
+        entry = next((item for item in candidates if item["id"] == row["id"]), None)
+        if entry is None:
+            return {**result, "reason": "workflow entry unavailable", "fix": "Import the entry again."}
+        try:
+            with TemporaryDirectory(prefix="astrid-entry-list-") as scratch:
+                loaded = load_workflow_path(entries.bundle_path(entry), scratch, comfy_url=target.url)
+                entries.target_schema(entry, loaded.resolved.workflow, _InventoryClient(target, schema))
+        except (OSError, ValueError, KeyError, ProductionEngineError) as exc:
+            return {**result, "reason": str(exc), "fix": "Provide the workflow's required nodes and models on the attached ComfyUI."}
+        return {**result, "ready": True, "reason": "workflow nodes and model references present (model bytes unverified)",
+                "fix": "", "models_present": sorted({need["value"] for need in entry["needs"] if need.get("value")}),
+                "model_bytes": "unverified_target_inventory"}
     try:
         model_id = row.get("registry_id", row["id"])
         _, mode = registry.get_by_mode(model_id, row["mode"])
@@ -136,6 +183,12 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
         base = dict(row)
         if row["availability"] != "available":
             output.append({**base, "target": "declaration", "ready": False, "reason": row["reason"], "fix": "Use an implemented generation route; see the availability declaration.", "models_present": []})
+        elif row["source"] == "action-entry":
+            output.append({**base, "target": "action", "ready": False,
+                           "readiness_scope": "requirements_unverified",
+                           "reason": "request-specific action requirements and tracked parent are not verified",
+                           "fix": "Inspect the action requirements and use a tracked Runtime parent when available.",
+                           "models_present": []})
         elif row["backend"] == "local":
             assert registry is not None
             for target, schema in targets or [(None, None)]:
@@ -156,6 +209,9 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv and argv[0] in {"workflow", "describe"}:
+        from astrid.core.generation.cli import main as workflow_main
+        return workflow_main(argv)
     parser = argparse.ArgumentParser(prog="astrid generate", description="Discover generation capabilities and readiness.")
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="list generation capabilities")

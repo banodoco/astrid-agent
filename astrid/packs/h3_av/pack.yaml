@@ -536,6 +536,14 @@ actions:
       - vibecomfy
     metadata:
       local_orchestrator: true
+      generation_entry:
+        id: h3
+        kind: video
+        modes: [transform]
+        inputs: [request, asset_map]
+        requirements:
+        - profiles/native-v1.yaml
+        - profiles/native-v2.yaml
       runtime_entrypoint: main
       runtime_file: actions/transform/run.py
       runtime_module: astrid.packs.h3_av.actions.transform.run
