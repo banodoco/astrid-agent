@@ -127,13 +127,11 @@ def run_pack_main(
         exc.state_snapshot = {**snapshot, **exc.state_snapshot}
         return render_astrid_error(exc)
     except (ValueError, RuntimeError) as exc:
-        return render_astrid_error(
-            AstridError(
-                str(exc),
-                recovery_command=recovery_command or f"python3 -m astrid executors run {capability_id} --help",
-                state_snapshot=snapshot,
-            )
-        )
+        error = coerce_astrid_error(exc, state_snapshot=snapshot)
+        if not error.recovery_command:
+            error.recovery_command = recovery_command or f"python3 -m astrid executors run {capability_id} --help"
+            error.recovery = error.recovery_command
+        return render_astrid_error(error)
     except Exception as exc:  # noqa: BLE001
         return render_astrid_error(
             coerce_astrid_error(

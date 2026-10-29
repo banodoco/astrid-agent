@@ -106,7 +106,7 @@ from astrid.core.contracts.binding import (
     assert_provided_inputs_bound,
     expand_command,
 )
-from astrid.core.contracts.errors import AstridError, recovery_suffix
+from astrid.core.contracts.errors import AstridError, coerce_astrid_error, recovery_suffix
 from astrid.core.env_vars import (
     ASTRID_INTERNAL_INVOCATION,
     ASTRID_PACKS_PATH,
@@ -197,6 +197,20 @@ def _managed_input_staging_name(port: str, digest: str, original_name: str | Non
 
 if TYPE_CHECKING:
     from astrid.core.execution.executor.schema import ExecutorDefinition
+
+
+def _structured_failure_kwargs(error: object) -> dict[str, Any]:
+    """Carry coded error metadata through the existing failure boundary."""
+    normalized = coerce_astrid_error(error)
+    if not (normalized.code or normalized.field or normalized.fix):
+        return {}
+    return {
+        "structured_error": {
+            "code": normalized.code,
+            "field": normalized.field,
+            "fix": normalized.fix,
+        }
+    }
 
 
 class HostError(RuntimeError):
@@ -4936,16 +4950,28 @@ class RuntimeProtocolClient:
         self,
         task_id: str,
         lease_token: str,
-        error: str,
+        error: object,
         *,
         retryable: bool = False,
         attempt_id: str | None = None,
         fence: int | None = None,
         failure_diagnostic: Mapping[str, Any] | None = None,
+        structured_error: Mapping[str, Any] | None = None,
     ):
         if not attempt_id or fence is None:
             raise HostError("generated failure requires attempt_id and fence")
-        payload: Any = {"message": str(error), "retryable": bool(retryable)}
+        # Host callers may already have decorated a string with recovery or
+        # guard context. Preserve it, while also accepting typed error objects.
+        if isinstance(error, str):
+            payload: dict[str, Any] = {"message": error, "retryable": bool(retryable)}
+        else:
+            normalized = coerce_astrid_error(error)
+            payload = {"message": normalized.message, "retryable": bool(retryable)}
+            payload.update(_structured_failure_kwargs(normalized).get("structured_error", {}))
+        if structured_error:
+            payload.update(
+                {key: structured_error[key] for key in ("code", "field", "fix") if key in structured_error}
+            )
         if failure_diagnostic:
             payload["diagnostic"] = dict(failure_diagnostic)
         return self.generated.fail_attempt(
@@ -9280,6 +9306,7 @@ class GenericPackHost:
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
+                    **_structured_failure_kwargs(error),
                 )
             except Exception as runtime_exc:
                 raise HostError(
@@ -9375,6 +9402,7 @@ class GenericPackHost:
                 attempt_id=attempt_id,
                 fence=fence,
                 failure_diagnostic=evidence_failure_diagnostic(exc),
+                **_structured_failure_kwargs(exc),
             )
             raise HostError(str(exc)) from exc
         spec = task_data.get("spec", {})
@@ -10423,6 +10451,7 @@ class GenericPackHost:
                 attempt_id=attempt_id,
                 fence=fence,
                 failure_diagnostic=storage_failure_receipt or evidence_failure_receipt,
+                **_structured_failure_kwargs(original_error),
             )
             raise
         finally:
@@ -10888,6 +10917,7 @@ class GenericPackHost:
                         retryable=False,
                         attempt_id=attempt_id,
                         fence=int(fence),
+                        **_structured_failure_kwargs(exc),
                     )
                 except Exception as runtime_exc:
                     raise HostError(

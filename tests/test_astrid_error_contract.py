@@ -286,11 +286,14 @@ def test_astrid_error_minimal_constructor() -> None:
     assert err.recovery == ""
 
 
-def test_to_envelope_omits_code_and_source_type_when_none() -> None:
+def test_to_envelope_includes_optional_coded_fields_and_omits_source_type_when_none() -> None:
     err = AstridError("no extras")
     envelope = err.to_envelope()
 
-    assert "code" not in envelope
+    assert envelope["code"] is None
+    assert envelope["message"] == "no extras"
+    assert envelope["field"] is None
+    assert envelope["fix"] == ""
     assert "source_type" not in envelope
 
 
@@ -412,3 +415,83 @@ def test_recovery_suffix_does_not_repeat_command_already_in_message() -> None:
     )
 
     assert recovery_suffix(err) == ""
+
+
+def test_coded_error_fields_survive_snapshot_merge() -> None:
+    inner = AstridError(
+        "bad input", code="invalid_input", field="prompt", fix="supply a prompt",
+        recovery_command="astrid doctor", state_snapshot={"a": 1},
+    )
+    outer = coerce_astrid_error(inner, state_snapshot={"b": 2})
+    envelope = outer.to_envelope()
+    assert {key: envelope[key] for key in ("code", "message", "field", "fix")} == {
+        "code": "invalid_input", "message": "bad input", "field": "prompt",
+        "fix": "supply a prompt",
+    }
+    assert envelope["recovery_command"] == "astrid doctor"
+    assert envelope["state_snapshot"] == {"a": 1, "b": 2}
+
+
+def test_exec_error_coded_envelope_and_coercion() -> None:
+    original = ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg")
+    for envelope in (original.to_envelope(), coerce_astrid_error(original).to_envelope()):
+        assert {key: envelope[key] for key in ("code", "message", "field", "fix")} == {
+            "code": "missing_binaries", "message": "ffmpeg missing", "field": None,
+            "fix": "install ffmpeg",
+        }
+
+
+def test_sdk_exception_details_map_into_coded_envelope() -> None:
+    from astrid.sdk.exceptions import CapabilityValidationError, ServiceValidationError
+
+    for error, code in (
+        (CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}), "validation"),
+        (ServiceValidationError("bad mode", details={"field": "mode", "recovery": "choose fast"}), "validation_error"),
+    ):
+        envelope = coerce_astrid_error(error).to_envelope()
+        assert {key: envelope[key] for key in ("code", "message", "field", "fix")} == {
+            "code": code, "message": "bad mode", "field": "mode", "fix": "choose fast",
+        }
+
+
+def test_sdk_error_code_precedence_and_recovery_fallback() -> None:
+    from astrid.sdk.exceptions import CapabilityValidationError, ServiceValidationError
+
+    details = {"code": "specific_validation", "field": "mode", "recovery_command": "choose fast"}
+    legacy = coerce_astrid_error(CapabilityValidationError("bad mode", details=details))
+    service = coerce_astrid_error(ServiceValidationError("bad mode", details=details))
+
+    assert legacy.code == "specific_validation"
+    assert service.code == "validation_error"
+    for error in (legacy, service):
+        assert error.field == "mode"
+        assert error.fix == error.recovery_command == error.recovery == "choose fast"
+        assert error.degraded is False
+
+
+def test_degraded_sdk_error_retains_coded_fields_and_snapshot() -> None:
+    from astrid.sdk.exceptions import CapabilityValidationError
+
+    original = CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"})
+    error = wrap_degraded_error(original, state_snapshot={"entrypoint": "test"})
+
+    assert error.degraded is True
+    assert error.code == "validation"
+    assert error.field == "mode"
+    assert error.fix == "choose fast"
+    assert error.source_type == "CapabilityValidationError"
+    assert error.state_snapshot == {"entrypoint": "test", "original_type": "CapabilityValidationError"}
+    assert "report this bug" in error.recovery_command
+
+
+def test_sdk_error_without_category_and_invalid_details_is_still_coded() -> None:
+    from astrid.sdk.exceptions import CapabilityInvocationError
+
+    original = CapabilityInvocationError("cannot invoke")
+    original.details = None
+    error = coerce_astrid_error(original)
+
+    assert error.code == "sdk_error"
+    assert error.field is None
+    assert error.fix == ""
+    assert error.message == "cannot invoke"

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from astrid.core.contracts.errors import AstridError
-from astrid.core.pack.entrypoint import guard_canonical_entrypoint
+from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
 
 guard_canonical_entrypoint('fal.fal_foley')
 import argparse
@@ -52,7 +52,12 @@ def _save_audio(
     if not audio and isinstance(result.get("video"), dict):
         audio = result["video"]
     if not audio or not audio.get("url"):
-        raise SystemExit(f"fal foley result had no audio url: {str(result)[:400]}")
+        raise AstridError(
+            f"fal foley result had no audio url: {str(result)[:400]}",
+            code="FAL_FOLEY_MISSING_AUDIO_URL",
+            field="audio.url",
+            fix="Retry the Foley request; if it recurs, inspect the fal response and report the missing audio URL.",
+        )
     url = audio["url"]
     dest, raw = download_output(
         client, url, dest, timeout=300, max_bytes=DEFAULT_OUTPUT_MAX_BYTES,
@@ -178,4 +183,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_pack_main("fal.fal_foley", main))

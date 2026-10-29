@@ -4812,3 +4812,150 @@ def test_attempt_cleanup_failure_fails_that_task_and_next_task_runs(tmp_path, mo
     assert any("injected attempt cleanup failure" in note for note in host._unresolved_task_scopes)
     # The host keeps accepting work; only the affected task failed.
     assert host.run_task(task(2), lease_token="lease-2")["task"]["status"] == "completed"
+
+
+def test_runtime_failure_preserves_coded_error_and_guard_diagnostic() -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.execution.generic_host import _structured_failure_kwargs
+
+    class Generated:
+        def health(self):
+            return {"runtime_epoch": 7}
+
+        def fail_attempt(self, attempt_id, **kwargs):
+            self.error = kwargs["error"]
+
+    generated = Generated()
+    client = object.__new__(RuntimeProtocolClient)
+    client.generated = generated
+    client._runtime_epoch = None
+    client._attempt_runtime_epochs = {"attempt-1": 7}
+    error = AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt")
+    client.fail(
+        "task-1", "lease-1", str(error), attempt_id="attempt-1", fence=3,
+        retryable=True, failure_diagnostic={"guard": "test"},
+        **_structured_failure_kwargs(error),
+    )
+    assert generated.error == {
+        "code": "invalid_input", "message": "bad input", "field": "prompt",
+        "fix": "supply a prompt", "retryable": True, "diagnostic": {"guard": "test"},
+    }
+
+
+def test_host_carries_coded_admission_failure_to_client(tmp_path, monkeypatch) -> None:
+    from astrid.core.contracts.errors import AstridError
+
+    _write_manifest(tmp_path / "echo")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host.discover()
+    task = {"task": {
+        "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+        "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["task-coded"] = task
+
+    def reject(_metadata):
+        raise AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt")
+
+    monkeypatch.setattr(generic_host, "_storage_input_limits", reject)
+    with pytest.raises(HostError, match="bad input"):
+        host.run_task(task, lease_token="lease-coded")
+    assert not runtime.settlements
+    assert runtime.failures[0][2] == "bad input"
+    assert runtime.failures[0][3]["structured_error"] == {
+        "code": "invalid_input", "field": "prompt", "fix": "supply a prompt",
+    }
+
+
+@pytest.mark.parametrize("kind", ["astrid", "exec", "sdk", "service", "unknown"])
+def test_runtime_failure_coerces_error_objects_without_changing_fencing(kind) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.contracts.exec_error import ExecError
+    from astrid.sdk.exceptions import CapabilityValidationError, ServiceValidationError
+
+    errors = {
+        "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt"),
+        "exec": ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg"),
+        "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        "service": ServiceValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+        "unknown": RuntimeError("unexpected"),
+    }
+    expected = {
+        "astrid": {"code": "invalid_input", "message": "bad input", "field": "prompt", "fix": "supply a prompt"},
+        "exec": {"code": "missing_binaries", "message": "ffmpeg missing", "field": None, "fix": "install ffmpeg"},
+        "sdk": {"code": "validation", "message": "bad mode", "field": "mode", "fix": "choose fast"},
+        "service": {"code": "validation_error", "message": "bad mode", "field": "mode", "fix": "choose fast"},
+        "unknown": {"message": "unexpected"},
+    }
+
+    class Generated:
+        def health(self):
+            return {"runtime_epoch": 7}
+
+        def fail_attempt(self, attempt_id, **kwargs):
+            self.attempt_id = attempt_id
+            self.kwargs = kwargs
+            return {"status": "failed"}
+
+    generated = Generated()
+    client = object.__new__(RuntimeProtocolClient)
+    client.generated = generated
+    client._runtime_epoch = None
+    client._attempt_runtime_epochs = {"attempt-1": 7}
+
+    assert client.fail("task-1", "lease-1", errors[kind], attempt_id="attempt-1", fence=3) == {"status": "failed"}
+    assert generated.attempt_id == "attempt-1"
+    assert generated.kwargs == {
+        "lease_id": "lease-1", "fence": 3, "runtime_epoch": 7,
+        "idempotency_key": "fail-attempt-1-3", "error": {**expected[kind], "retryable": False},
+    }
+
+
+@pytest.mark.parametrize("kind", ["astrid", "exec", "sdk"])
+def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkeypatch, kind) -> None:
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.contracts.exec_error import ExecAstridError, ExecError
+    from astrid.sdk.exceptions import CapabilityValidationError
+
+    _write_manifest(tmp_path / "echo")
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host.discover()
+    task = {"task": {
+        "id": "task-coded", "capability": "test.echo", "project_id": "demo",
+        "attempt_id": "attempt-coded", "fence": 1, "spec": {"spec": {"inputs": {}}},
+    }}
+    runtime.tasks["task-coded"] = task
+    errors = {
+        "astrid": AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt", recovery_command="astrid doctor"),
+        "exec": ExecAstridError("ffmpeg missing", exec_error=ExecError("missing_binaries", "precondition", "ffmpeg missing", "install ffmpeg")),
+        "sdk": CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"}),
+    }
+    expected = {
+        "astrid": {"code": "invalid_input", "field": "prompt", "fix": "supply a prompt"},
+        "exec": {"code": "missing_binaries", "field": None, "fix": "install ffmpeg"},
+        "sdk": {"code": "validation", "field": "mode", "fix": "choose fast"},
+    }
+
+    def reject(*args, **kwargs):
+        raise errors[kind]
+
+    # This boundary test stops before child launch; host identity is fixture data.
+    monkeypatch.setattr(generic_host, "process_birth_identity", lambda: "fixture-host-birth")
+    monkeypatch.setattr(host, "_materialize_inputs", reject)
+    with pytest.raises(type(errors[kind])) as raised:
+        host.run_task(task, lease_token="lease-coded")
+
+    assert raised.value is errors[kind]
+    assert not runtime.settlements
+    assert len(runtime.failures) == 1
+    task_id, lease_id, message, kwargs = runtime.failures[0]
+    assert (task_id, lease_id) == ("task-coded", "lease-coded")
+    assert message.startswith(str(errors[kind]))
+    if kind == "astrid":
+        assert message.endswith(" Next: astrid doctor")
+    assert kwargs == {
+        "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
+        "failure_diagnostic": None, "structured_error": expected[kind],
+    }

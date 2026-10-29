@@ -45,6 +45,16 @@ class ExecError:
     # (pickle / json / asdict) remains byte-identical to the existing contract.
 
     @property
+    def field(self) -> None:
+        """Execution errors do not identify a specific input field."""
+        return None
+
+    @property
+    def fix(self) -> str:
+        """Expose the existing recovery hint as the actionable fix."""
+        return self.recovery
+
+    @property
     def cause(self) -> str:
         """Canonical envelope cause — mirrors ``message``."""
         return self.message
@@ -80,6 +90,8 @@ class ExecError:
             "degraded": self.degraded,
             # Legacy mirrored keys retained for existing callers/tests.
             "message": self.message,
+            "field": self.field,
+            "fix": self.fix,
             "reason": self.message,
             "recovery": self.recovery,
             "code": self.code,
@@ -112,6 +124,8 @@ class ExecAstridError(AstridError):
             code = code or exec_error.code
             type = type or exec_error.type
             recovery = recovery or exec_error.recovery
+        if recovery and not kwargs.get("fix") and not kwargs.get("recovery_command"):
+            kwargs["fix"] = recovery
         super().__init__(
             cause,
             code=code,

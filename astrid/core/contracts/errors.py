@@ -2,6 +2,9 @@
 
 This module introduces the canonical Astrid recoverability envelope:
 
+* ``code`` / ``message`` — stable identifier and human-readable cause
+* ``field`` — affected input or response field, when known
+* ``fix`` — actionable advice, falling back to the recovery command
 * ``cause`` — what went wrong
 * ``valid_options`` — recovery-safe alternatives, when known
 * ``recovery_command`` — the next command the caller should run
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -123,6 +127,8 @@ class AstridError(RuntimeError):
         recovery_command: str | None = None,
         state_snapshot: object | None = None,
         code: str | None = None,
+        field: str | None = None,
+        fix: str | None = None,
         degraded: bool = False,
         source_type: str | None = None,
     ) -> None:
@@ -132,12 +138,19 @@ class AstridError(RuntimeError):
         self.recovery_command = recovery_command or ""
         self.state_snapshot = build_state_snapshot(state_snapshot)
         self.code = code
+        self.field = field
+        self._fix = fix
         self.degraded = degraded
         self.source_type = source_type
         # Legacy field mappings retained for existing callers/tests.
         self.message = cause
         self.reason = cause
         self.recovery = self.recovery_command
+
+    @property
+    def fix(self) -> str:
+        """Actionable fix, falling back to the existing recovery command."""
+        return self._fix or self.recovery_command
 
     def to_envelope(self) -> dict[str, Any]:
         payload = {
@@ -148,12 +161,13 @@ class AstridError(RuntimeError):
             "state_snapshot": build_state_snapshot(self.state_snapshot),
             "degraded": self.degraded,
             # Legacy mirrored keys.
+            "code": self.code,
             "message": self.message,
+            "field": self.field,
+            "fix": self.fix,
             "reason": self.reason,
             "recovery": self.recovery,
         }
-        if self.code:
-            payload["code"] = self.code
         if self.source_type:
             payload["source_type"] = self.source_type
         return payload
@@ -197,6 +211,8 @@ def coerce_astrid_error(
             recovery_command=value.recovery_command,
             state_snapshot=_merge_state_snapshots(value.state_snapshot, state_snapshot),
             code=value.code,
+            field=value.field,
+            fix=value._fix,
             degraded=value.degraded or degraded,
             source_type=value.source_type,
         )
@@ -214,9 +230,22 @@ def coerce_astrid_error(
     cause = _first_text_attr(value, "cause", "message", "reason")
     if cause is None:
         cause = str(value)
-    recovery_command = _first_text_attr(value, "recovery_command", "recovery") or ""
+    details = getattr(value, "details", None)
+    details = details if isinstance(details, Mapping) else {}
+    recovery_command = (
+        _first_text_attr(value, "recovery_command", "recovery")
+        or _first_text_mapping(details, "recovery_command", "recovery")
+        or ""
+    )
+    field = _first_text_attr(value, "field") or _first_text_mapping(details, "field")
+    fix = _first_text_attr(value, "fix") or _first_text_mapping(details, "fix")
     options = normalize_valid_options(getattr(value, "valid_options", ()))
-    code = _first_text_attr(value, "code")
+    code = _first_text_attr(value, "code") or _first_text_mapping(details, "code")
+    if code is None and any(
+        cls.__name__ == "AstridSDKError" and cls.__module__ == "astrid.sdk.exceptions"
+        for cls in type(value).__mro__
+    ):
+        code = _first_text_attr(value, "category") or "sdk_error"
     source_type = type(value).__name__
     snapshot = build_state_snapshot(getattr(value, "state_snapshot", None))
     if state_snapshot is not None:
@@ -229,6 +258,8 @@ def coerce_astrid_error(
         recovery_command=recovery_command,
         state_snapshot=snapshot,
         code=code,
+        field=field,
+        fix=fix,
         degraded=degraded,
         source_type=source_type,
     )
@@ -270,6 +301,12 @@ def render_astrid_error(error: AstridError) -> int:
     if error.degraded:
         print("unstructured - this is a bug.", file=sys.stderr)
     print(error.cause, file=sys.stderr)
+    if error.code:
+        print(f"code: {error.code}", file=sys.stderr)
+    if error.field:
+        print(f"field: {error.field}", file=sys.stderr)
+    if error.fix:
+        print(f"fix: {error.fix}", file=sys.stderr)
     if error.valid_options:
         print(f"valid options: {', '.join(error.valid_options)}", file=sys.stderr)
     if error.recovery_command:
@@ -280,6 +317,14 @@ def render_astrid_error(error: AstridError) -> int:
             file=sys.stderr,
         )
     return 1 if error.degraded else 2
+
+
+def _first_text_mapping(value: Mapping[str, Any], *names: str) -> str | None:
+    for name in names:
+        candidate = value.get(name)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
 
 
 def _first_text_attr(value: object, *names: str) -> str | None:

@@ -359,7 +359,8 @@ def test_exec_astrid_error_to_envelope_shape() -> None:
 
     Note: ``recovery`` is intentionally stored on ``exec_recovery`` and is
     *not* propagated into the base ``AstridError.recovery_command``.  The
-    envelope therefore reflects the base class default (empty string).
+    legacy recovery fields therefore retain their base class default; the
+    new fix field exposes the execution recovery.
     """
     ee = ExecError(
         code="missing_binaries",
@@ -373,6 +374,8 @@ def test_exec_astrid_error_to_envelope_shape() -> None:
     assert envelope["cause"] == "execution failed"
     assert envelope["source_type"] == "ExecAstridError"
     assert envelope["code"] == "missing_binaries"
+    assert envelope["field"] is None
+    assert envelope["fix"] == "install ffmpeg"
     # Legacy fields — message/reason mirror cause, recovery is empty
     # (the exec-level recovery lives on .exec_recovery, not in the envelope)
     assert envelope["message"] == "execution failed"
