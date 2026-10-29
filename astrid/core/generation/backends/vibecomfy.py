@@ -17,26 +17,40 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib import error as urllib_error
-from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from runtime_protocol import platform
 
-from astrid.core.path_utils import has_url_scheme, is_native_absolute_path
 from astrid.core.generation.backends.base import (
     BackendAdapter,
     GenerationResult,
     derive_frames_from_duration,
     parse_dimension_pair,
     split_feature_support,
+)
+from astrid.core.generation.backends.comfy_target import (
+    ComfyTarget,
+    ComfyTargetClient,
+    open_comfy_http,
+)
+from astrid.core.generation.backends.comfy_target import (
+    extract_output_descriptors as _extract_output_descriptors,
+)
+from astrid.core.generation.backends.comfy_target import (
+    validate_managed_url as _validate_checkout_server_url,
+)
+from astrid.core.generation.backends.comfy_target import (
+    validate_output_descriptor as _validate_output_descriptor,
+)
+from astrid.core.generation.backends.comfy_target import (
+    validate_output_field as _validate_output_field,
 )
 from astrid.core.generation.model_root import (
     MODEL_ROOT_ENV,
@@ -224,22 +238,9 @@ def _observed_source_identity(
         return None, None
 
 
-class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
-    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
-        raise ValueError("checkout_server remote request redirected unexpectedly")
-
-
 def _open_checkout_http(request: urllib_request.Request, *, timeout: float) -> Any:
-    """Open one checkout-server request without following redirects."""
-    handlers: list[Any] = [_NoRedirectHandler]
-    host = urllib_parse.urlsplit(request.full_url).hostname or ""
-    if host == "localhost" or host.startswith("127.") or host == "::1":
-        # A loopback server (including the route-local endpoint gateway) is
-        # never reached through an environment proxy.
-        handlers.append(urllib_request.ProxyHandler({}))
-    return urllib_request.build_opener(*handlers).open(
-        request, timeout=timeout
-    )
+    """Compatibility seam for the shared checked HTTP opener."""
+    return open_comfy_http(request, timeout=timeout)
 
 
 def _endpoint_session_input_directory(session_config: Mapping[str, Any], recipe: Any) -> str:
@@ -283,138 +284,6 @@ def _endpoint_session_input_directory(session_config: Mapping[str, Any], recipe:
             "checkout_server session launch does not select the pinned default input directory"
         )
     return launch.cwd + "/input"
-
-
-def _validate_checkout_server_url(server_url: str) -> str:
-    """Return a canonical, origin-only HTTP(S) endpoint."""
-    if not isinstance(server_url, str) or not server_url:
-        raise ValueError("checkout_server requires an explicit server_url")
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in server_url):
-        raise ValueError("checkout_server server_url must not contain whitespace or control characters")
-    if "\\" in server_url:
-        raise ValueError("checkout_server server_url must not contain backslashes")
-    if "?" in server_url or "#" in server_url:
-        raise ValueError("checkout_server server_url must not contain query or fragment")
-    parsed = urllib_parse.urlsplit(server_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("checkout_server server_url must be an HTTP(S) URL")
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("checkout_server server_url must not contain credentials")
-    if parsed.netloc.endswith(":"):
-        raise ValueError("checkout_server server_url has an invalid port")
-    if parsed.query or parsed.fragment:
-        raise ValueError("checkout_server server_url must not contain query or fragment")
-    if parsed.path not in {"", "/"}:
-        raise ValueError("checkout_server server_url must contain only an origin")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("checkout_server server_url has an invalid port") from exc
-    if port is not None and not 1 <= port <= 65535:
-        raise ValueError("checkout_server server_url has an invalid port")
-
-    host = parsed.hostname
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in host):
-        raise ValueError("checkout_server server_url has an invalid host")
-    if ":" in host:
-        # IPv6 literals must use the bracketed URL spelling.
-        try:
-            import ipaddress
-
-            ipaddress.IPv6Address(host)
-        except ValueError as exc:
-            raise ValueError("checkout_server server_url has an invalid host") from exc
-        host_part = f"[{host.lower()}]"
-    else:
-        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", host):
-            raise ValueError("checkout_server server_url has an invalid host")
-        if ".." in host or any(
-            not label or label.startswith("-") or label.endswith("-")
-            for label in host.split(".")
-        ):
-            raise ValueError("checkout_server server_url has an invalid host")
-        host_part = host.lower()
-    return f"{parsed.scheme}://{host_part}{f':{port}' if port is not None else ''}"
-
-
-def _validate_output_field(
-    value: object,
-    *,
-    field: str,
-    allow_empty: bool = False,
-    reject_slash: bool = False,
-) -> str:
-    if not isinstance(value, str) or (not value and not allow_empty):
-        raise ValueError(f"checkout_server output descriptor has invalid {field}")
-    if any(
-        char.isspace() or ord(char) < 32 or ord(char) == 127 or char == "\\"
-        for char in value
-    ):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
-    if is_native_absolute_path(value) or value.startswith("~") or has_url_scheme(value):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
-    if ".." in value or (reject_slash and "/" in value):
-        raise ValueError(f"checkout_server output descriptor has unsafe {field}")
-    if not allow_empty and not value:
-        raise ValueError(f"checkout_server output descriptor has invalid {field}")
-    return value
-
-
-def _validate_output_descriptor(descriptor: object) -> tuple[str, str, str]:
-    if not isinstance(descriptor, dict):
-        raise ValueError("checkout_server output descriptor must be an object")
-    if not {"filename", "subfolder", "type"}.issubset(descriptor):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
-    # Comfy/VHS may attach routing metadata to a descriptor, but accepting an
-    # arbitrary key set would make the custody contract ambiguous.  Keep the
-    # required routing fields plus the documented metadata emitted by Comfy;
-    # reject unknown fields so malformed or attacker-controlled descriptors do
-    # not silently pass through settlement.
-    allowed_metadata = {
-        "filename",
-        "subfolder",
-        "type",
-        "format",
-        "frame_rate",
-        "workflow",
-        "fullpath",
-        "prompt_id",
-        "node_id",
-    }
-    if set(descriptor).difference(allowed_metadata):
-        raise ValueError("checkout_server output descriptor has an invalid schema")
-    filename = _validate_output_field(
-        descriptor.get("filename"), field="filename", reject_slash=True
-    )
-    subfolder = _validate_output_field(
-        descriptor.get("subfolder"), field="subfolder", allow_empty=True
-    )
-    output_type = _validate_output_field(descriptor.get("type"), field="type")
-    if output_type not in {"output", "temp"}:
-        raise ValueError("checkout_server output descriptor has invalid type")
-    return filename, subfolder, output_type
-
-
-def _extract_output_descriptors(value: object) -> list[object]:
-    "Find Comfy output descriptors nested in node/output containers."
-    if isinstance(value, list):
-        descriptors: list[object] = []
-        for item in value:
-            descriptors.extend(_extract_output_descriptors(item))
-        return descriptors
-    if isinstance(value, dict):
-        # Comfy's output descriptors include the required routing fields plus
-        # optional metadata (format, frame rate, workflow, fullpath, ...).
-        # Treat the required subset as a descriptor instead of requiring an
-        # exact three-key shape, otherwise valid VHS video outputs disappear
-        # at settlement time.
-        if {"filename", "subfolder", "type"}.issubset(value):
-            return [value]
-        descriptors = []
-        for item in value.values():
-            descriptors.extend(_extract_output_descriptors(item))
-        return descriptors
-    return []
 
 
 def _canonical_sha256(value: object) -> str:
@@ -1267,33 +1136,15 @@ class VibeComfyEngine:
         )
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        request = urllib_request.Request(
-            f"{self._http_origin}{path}",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        # Lifecycle policy stays with this managed owner; the client owns only
+        # the bounded, checked HTTP exchange.
+        target = ComfyTarget(
+            self._origin if self._endpoint_transport is None else self._endpoint_transport.endpoint.url,
+            "managed" if self._endpoint_transport is None else "pod",
         )
-        try:
-            with _open_checkout_http(request, timeout=10.0) as response:
-                status = getattr(response, "status", 200)
-                if not 200 <= status < 300:
-                    raise ValueError(f"checkout_server {path} returned a non-2xx status")
-                raw = response.read(64 * 1024 + 1)
-                if len(raw) > 64 * 1024:
-                    raise ValueError(f"checkout_server {path} response is too large")
-                if not raw:
-                    # ComfyUI's control endpoints commonly acknowledge a
-                    # successful POST with an empty 2xx body. Preserve that
-                    # transport-level completion evidence so managed release
-                    # can distinguish it from an unknown payload.
-                    return {"acknowledged": True}
-                try:
-                    return json.loads(raw.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    return {"acknowledged": True}
-        except (OSError, urllib_error.URLError) as exc:
-            raise ValueError(f"checkout_server {path} request failed") from exc
+        return ComfyTargetClient(
+            target, endpoint_transport=self._endpoint_transport, opener=_open_checkout_http
+        ).request_json(path, payload)
 
     def run(
         self,
@@ -1452,6 +1303,10 @@ class _EndpointArtifacts:
         observation_path(output_directory)
         self.transport = transport
         self.output_directory = Path(output_directory)
+        self.client = ComfyTargetClient(
+            ComfyTarget(transport.endpoint.url, "pod", {"output_directory": str(output_directory)}),
+            endpoint_transport=transport,
+        )
 
     def describe(self):
         return {"transport": "https-json-chunks", "endpoint_id": self.transport.endpoint.endpoint_id,
@@ -1476,14 +1331,13 @@ class _EndpointArtifacts:
             filename, subfolder, kind = _validate_output_descriptor(descriptor)
             if kind != "output":
                 raise ValueError("remote final artifact must belong to the configured output root")
-            remote = self.output_directory / subfolder / filename
             relative = Path(subfolder) / filename
             if relative in seen:
                 raise ValueError("accepted output descriptors are ambiguous")
             seen.add(relative)
             destination = local_root / "output" / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            self.transport.get(str(remote), destination)
+            self.client.download_output(descriptor, destination)
         return {"status": "retrieved", "local_root": str(local_root), **self.describe()}
 
 
@@ -2547,15 +2401,10 @@ class CheckoutServerAdapter(VibeComfyBackend):
         if not descriptors:
             raise ValueError("checkout_server result metadata has no comfy_outputs")
 
+        client = ComfyTargetClient(ComfyTarget(self._origin, "managed"), opener=_open_checkout_http)
         image_paths: list[Path] = []
         for descriptor in descriptors:
             filename, subfolder, output_type = _validate_output_descriptor(descriptor)
-            query = urllib_parse.urlencode(
-                {"filename": filename, "subfolder": subfolder, "type": output_type}
-            )
-            request = urllib_request.Request(
-                f"{self._http_origin}/view?{query}", method="GET"
-            )
             destination = out_dir / filename
             if destination.exists():
                 stem = destination.stem
@@ -2577,42 +2426,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
                             "checkout_server output descriptor escaped the host-owned output directory"
                         ) from exc
                     expected_shared_digest = _file_sha256(shared_path)
-            temporary_path: Path | None = None
-            try:
-                with _open_checkout_http(request, timeout=30.0) as response:
-                    status = getattr(response, "status", 200)
-                    if status != 200:
-                        raise ValueError("checkout_server /view returned a non-200 status")
-                    with tempfile.NamedTemporaryFile(
-                        mode="wb",
-                        dir=out_dir,
-                        prefix=".checkout-download-",
-                        delete=False,
-                    ) as temporary:
-                        temporary_path = Path(temporary.name)
-                        shutil.copyfileobj(response, temporary)
-                        temporary.flush()
-                        os.fsync(temporary.fileno())
-                os.replace(temporary_path, destination)
-                temporary_path = None
-                if (
-                    expected_shared_digest is not None
-                    and _file_sha256(destination) != expected_shared_digest
-                ):
-                    destination.unlink(missing_ok=True)
-                    raise ValueError(
-                        f"checkout_server downloaded output {filename!r} changed during custody"
-                    )
-            except (OSError, urllib_error.URLError) as exc:
-                raise ValueError(
-                    f"checkout_server could not download output {filename!r}"
-                ) from exc
-            finally:
-                if temporary_path is not None:
-                    try:
-                        temporary_path.unlink()
-                    except FileNotFoundError:
-                        pass
+            client.download_output(descriptor, destination, expected_sha256=expected_shared_digest)
             image_paths.append(destination)
         return image_paths
 
