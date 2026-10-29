@@ -206,6 +206,16 @@ class ComfyTargetClient:
         except (OSError, urllib_error.URLError) as exc:
             raise ValueError(f"checkout_server {path} request failed") from exc
 
+    def object_info(self) -> dict[str, Any]:
+        """Capture schema through this target's existing attested transport."""
+        if self.endpoint_transport is not None:
+            payload = self.endpoint_transport.object_info(deadline=time.monotonic() + 30)
+        else:
+            payload = self.request_json("/object_info", timeout=30, response_limit=MAX_JSON_BYTES)
+        if not isinstance(payload, dict):
+            raise ValueError("Comfy object_info response is not an object")
+        return payload
+
     def submit_prompt(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, Mapping):
             raise ValueError("Comfy prompt payload must be an object")
@@ -529,3 +539,113 @@ def extract_output_descriptors(value: object) -> list[object]:
             descriptors.extend(extract_output_descriptors(item))
         return descriptors
     return []
+
+
+class ComfyModelMissing(ValueError):
+    """Required roles have zero or multiple exact target filename matches."""
+
+    code = "COMFY_MODEL_MISSING"
+
+    def __init__(self, model: str, mode: str, failures: dict[str, list[str]],
+                 alternatives: list[str]):
+        self.model = model
+        self.mode = mode
+        self.failures = failures
+        self.alternatives = alternatives
+        super().__init__(
+            f"{self.code}: {model}/{mode}: unresolved roles {failures}; "
+            f"compatible catalog entries: {', '.join(alternatives) or 'none'}"
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"code": self.code, "model": self.model, "mode": self.mode,
+                "roles": self.failures, "alternatives": self.alternatives}
+
+
+def _resolve_roles(spec: Any, object_info: dict[str, Any]) -> tuple[dict[str, str], dict[str, list[str]]]:
+    resolved, failures = {}, {}
+    for role, declaration in spec.model_roles.items():
+        node = object_info.get(declaration.node_class, {})
+        inputs = node.get("input", {}) if isinstance(node, dict) else {}
+        choices = None
+        for group in ("required", "optional"):
+            fields = inputs.get(group, {}) if isinstance(inputs, dict) else {}
+            if isinstance(fields, dict) and declaration.input in fields:
+                field = fields[declaration.input]
+                choices = field[0] if isinstance(field, (tuple, list)) and field else None
+                break
+        names = choices if isinstance(choices, (tuple, list)) else ()
+        matches = [name for name in declaration.names if name in names]
+        if len(matches) == 1:
+            resolved[role] = matches[0]
+        else:
+            failures[role] = matches
+    return resolved, failures
+
+
+def _capture_model_resolution(client: ComfyTargetClient, registry: Any,
+                              model_id: str, mode: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep the observed inventory internal; a returned plan grants no authority."""
+    entry, mode_spec = registry.get_by_mode(model_id, mode)
+    spec = mode_spec.backends.get("local")
+    object_info = client.object_info()
+    resolved, failures = (_resolve_roles(spec, object_info) if spec and spec.model_roles
+                          else ({}, {"catalog_roles": []}))
+    if failures:
+        alternatives = []
+        for candidate in registry.list_all():
+            candidate_mode = candidate.modes.get(mode)
+            candidate_spec = candidate_mode.backends.get("local") if candidate_mode else None
+            if (candidate.id != model_id and candidate.modality == entry.modality
+                    and candidate_spec and candidate_spec.model_roles
+                    and set(mode_spec.requires).issubset(candidate_mode.supports)
+                    and set(candidate_mode.requires).issubset(mode_spec.requires)
+                    and not _resolve_roles(candidate_spec, object_info)[1]):
+                from .vibecomfy import _catalog_alternative_is_executable
+
+                candidate_roles = _resolve_roles(candidate_spec, object_info)[0]
+                if _catalog_alternative_is_executable(
+                    candidate_spec, candidate_roles, object_info, client.http_origin,
+                ):
+                    alternatives.append(candidate.id)
+        raise ComfyModelMissing(model_id, mode, failures, sorted(alternatives))
+    plan = {"model": model_id, "mode": mode, "template": spec.template,
+            "target": {"url": client.target.url, "kind": client.target.kind},
+            "roles": resolved, "model_bytes": "unverified_target_inventory"}
+    return plan, object_info
+
+
+def resolve_comfy_models(client: ComfyTargetClient, registry: Any,
+                         model_id: str, mode: str) -> dict[str, Any]:
+    """Resolve exact declared roles without submitting or approving a prompt."""
+    return _capture_model_resolution(client, registry, model_id, mode)[0]
+
+
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
+    import sys
+    from astrid.core.model_catalog.registry import ModelRegistry
+
+    parser = argparse.ArgumentParser(description="Resolve catalog roles on an attached Comfy target")
+    parser.add_argument("model")
+    parser.add_argument("mode")
+    parser.add_argument("--comfy-url", required=True)
+    parser.add_argument("--dry-run", action="store_true", required=True)
+    args = parser.parse_args(argv)
+    try:
+        from .vibecomfy import VibeComfyBackend
+
+        plan = VibeComfyBackend(target_client=ComfyTargetClient(
+            ComfyTarget(args.comfy_url, "attached"),
+        )).generate(
+            ModelRegistry.load_default().get(args.model), args.mode, {}, Path("."), dry_run=True,
+        )
+    except ComfyModelMissing as exc:
+        print(json.dumps(exc.as_dict(), ensure_ascii=False, sort_keys=True), file=sys.stderr)
+        return 1
+    print(json.dumps(plan, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

@@ -51,11 +51,9 @@ models:
   # z-image — Z Image Turbo (text-to-image + image-to-image)
   #
   # Local templates (vibecomfy):
-  #   t2i: image/z_image — bind_input: prompt, negative_prompt, seed, steps,
-  #        width, height.  No count bind_input (adapter handles via loop).
-  #   i2i: image/z_image_img2img — NO bind_input calls (bare template).
-  #        Adapter uses wf.inputs name-matching fallback with logged warning
-  #        (FLAG-003).
+  #   t2i: image/z_image_turbo — public prompt, seed, sampling and size inputs.
+  #   i2i: image/z_image_img2img — public image, prompt and strength inputs.
+  #   image/z_image remains the distinct Z-Image Base template.
   #
   # Cloud endpoints (fal):
   #   t2i: fal-ai/z-image/turbo — confirmed via web search (T1 prep).
@@ -84,8 +82,12 @@ models:
           - prompt
         backends:
           local:
-            template: image/z_image
-            template_hash: "sha256:074ef3e2219d2a4ea3c9e1508d96a76ff578883d770b1ffd03ad1b5dd47dc6fc"
+            template: image/z_image_turbo
+            template_hash: "sha256:16302edf435877823f169b730d1f16f31a695fec5474e80a9dbec4db04c95647"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['z_image_turbo_bf16.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen_3_4b.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['ae.safetensors', 'FLUX1\ae.safetensors']}
           cloud:
             endpoint: fal-ai/z-image/turbo
             lora_endpoint: fal-ai/z-image/turbo/lora
@@ -115,7 +117,19 @@ models:
         backends:
           local:
             template: image/z_image_img2img
-            template_hash: "sha256:d3bb0b6c563d7f30874ace1e1181001444663ae3952b76adfcaa82017ab562a5"
+            template_hash: "sha256:1d82ec20255a47a5a57637eb0a06eb3342da66abde405b5dffa45bb17750e555"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['z_image_turbo_bf16.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen_3_4b.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['ae.safetensors', 'FLUX1\ae.safetensors']}
+            param_map:
+              prompt: prompt
+              seed: seed
+              image_ref: image
+              size: size
+              strength: strength
+              guidance_scale: guidance
+              steps: steps
           cloud:
             endpoint: fal-ai/z-image/turbo/image-to-image
           codex:

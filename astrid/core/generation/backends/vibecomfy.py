@@ -38,6 +38,7 @@ from astrid.core.generation.backends.base import (
 from astrid.core.generation.backends.comfy_target import (
     ComfyTarget,
     ComfyTargetClient,
+    _capture_model_resolution,
     open_comfy_http,
 )
 from astrid.core.generation.backends.comfy_target import (
@@ -401,12 +402,120 @@ if TYPE_CHECKING:
     from astrid.packs.vibecomfy.production_engine import ProductionRunResult
 
 
+def _bind_target_model_roles(workflow: Any, spec: BackendSpec, roles: Mapping[str, str]) -> None:
+    """Bind declared public picker inputs without reusing stale asset provenance."""
+    replacements: dict[str, str] = {}
+    for role, declaration in spec.model_roles.items():
+        public_input = workflow.inputs.get(declaration.binding)
+        node = workflow.nodes.get(public_input.node_id) if public_input is not None else None
+        if (node is None or node.class_type != declaration.node_class
+                or public_input.field != declaration.input):
+            raise ValueError(f"catalog role {role!r} does not match its pinned template input")
+        previous = public_input.value
+        selected = roles[role]
+        workflow.set_input(declaration.binding, selected)
+        if isinstance(previous, str) and previous != selected:
+            replacements[previous] = selected
+    if not replacements:
+        return
+    # Changing a picker does not establish byte/hash/download provenance for
+    # the new target filename. Drop only the superseded picker declarations;
+    # unrelated authored model requirements remain subject to approval.
+    def name(item: Any) -> Any:
+        return item.get("name", item.get("filename")) if isinstance(item, Mapping) else item
+
+    workflow.requirements.models = [
+        replacements[name(item)] if name(item) in replacements else item
+        for item in workflow.requirements.models
+    ]
+    assets = workflow.metadata.get("model_assets")
+    if isinstance(assets, list):
+        workflow.metadata["model_assets"] = [item for item in assets if name(item) not in replacements]
+
+
+def _load_pinned_catalog_workflow(spec: BackendSpec) -> Any:
+    """Use the canonical repository template loader and catalog source pin."""
+    from vibecomfy.registry.ready import (
+        repo_ready_template_discovery, resolve_ready_template, workflow_from_ready,
+    )
+
+    template_id = spec.template
+    discovery = repo_ready_template_discovery()
+    record = resolve_ready_template(template_id, discovery)
+
+    # The catalog value and resolved record must both be canonical
+    # ``category/template_id`` identifiers from the repository corpus.
+    requested_id = str(template_id)
+    requested_parts = requested_id.split("/")
+    canonical_id = str(getattr(record, "template_id", ""))
+    id_parts = canonical_id.split("/")
+    if (
+        requested_id != canonical_id
+        or len(requested_parts) != 2
+        or len(id_parts) != 2
+        or any(not part or part in {".", ".."} for part in requested_parts)
+        or any(not part or part in {".", ".."} for part in id_parts)
+        or getattr(record, "source_scope", None) != "repo"
+    ):
+        raise ValueError(
+            f"VibeComfy template {template_id!r} is not a canonical repo template"
+        )
+    template_path = Path(getattr(record, "path", ""))
+    template_root = Path(getattr(record, "root", ""))
+    try:
+        template_path_resolved = template_path.resolve(strict=True)
+        template_root_resolved = template_root.resolve(strict=True)
+        template_path_resolved.relative_to(template_root_resolved)
+    except (OSError, ValueError) as exc:
+        raise ValueError(
+            f"VibeComfy template {canonical_id!r} is outside its repo root"
+        ) from exc
+    expected_hash = str(spec.template_hash)
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", expected_hash):
+        raise ValueError(
+            f"VibeComfy template {canonical_id!r} has no valid sha256 pin"
+        )
+    actual_hash = hashlib.sha256(template_path_resolved.read_bytes()).hexdigest()
+    if actual_hash.lower() != expected_hash[7:].lower():
+        raise ValueError(
+            f"VibeComfy template {canonical_id!r} failed its sha256 pin"
+        )
+    return workflow_from_ready(canonical_id, _discovery=discovery)
+
+
+def _catalog_alternative_is_executable(spec: BackendSpec, roles: Mapping[str, str],
+                                       object_info: dict[str, Any], server_url: str) -> bool:
+    """Only advertise a role match whose pinned graph crosses canonical approval."""
+    try:
+        from vibecomfy.schema.provider import TargetSchemaProvider
+        from vibecomfy.workflow_bundle import load_bundle
+
+        workflow = _load_pinned_catalog_workflow(spec)
+        _bind_target_model_roles(workflow, spec, roles)
+        bundle = load_bundle(workflow)
+        bundle.require_canonical_authority("catalog model alternative")
+        bundle.compile(schema_provider=TargetSchemaProvider.from_object_info(
+            object_info, server_url=server_url, model_availability="target",
+        ))
+    except Exception:
+        # Missing template, bad pin/binding, absent nodes and approval failures
+        # cannot be presented as executable model alternatives.
+        return False
+    return True
+
+
 class VibeComfyBackend(BackendAdapter):
     """Local generation backend via pinned VibeComfy ready templates.
 
     The base adapter has no transport endpoint.  ``CheckoutServerAdapter`` is
     the explicit remote-only subclass and owns all remote HTTP behavior.
     """
+
+    def __init__(self, *, target_client: ComfyTargetClient | None = None) -> None:
+        self._target_client = target_client
+
+    def _model_resolution_client(self) -> ComfyTargetClient | None:
+        return getattr(self, "_target_client", None)
 
     def workflow(
         self, workflow_path: Path, out_dir: Path, *, task_identity: str,
@@ -435,8 +544,10 @@ class VibeComfyBackend(BackendAdapter):
             kwargs["comfy_output_dir"] = comfy_output_dir
         return run_workflow_result_path(workflow_path, out_dir, **kwargs)
 
-    def _run_workflow(self, workflow: Any) -> Any:
+    def _run_workflow(self, workflow: Any, *, schema_provider: Any | None = None) -> Any:
         """Run a workflow through the local embedded VibeComfy runtime."""
+        if schema_provider is not None:
+            raise ValueError("target-backed execution requires the selected checkout adapter and output custody")
         from vibecomfy.runtime.run import run_sync
 
         # Production VibeComfy runtime admission is typed: it accepts the
@@ -455,7 +566,8 @@ class VibeComfyBackend(BackendAdapter):
                 raise RuntimeError("VibeComfy canonical workflow bundle support is unavailable")
             bundle = load_bundle(workflow)
             bundle.require_canonical_authority("runtime execution")
-            return run_sync(bundle.compile(), bundle)
+            kwargs = {"schema_provider": schema_provider} if schema_provider is not None else {}
+            return run_sync(bundle.compile(**kwargs), bundle)
         return run_sync(workflow)
 
     def _collect_outputs(self, result: Any, out_dir: Path) -> list[Path]:
@@ -547,19 +659,36 @@ class VibeComfyBackend(BackendAdapter):
         mode: str,
         params: dict[str, Any],
         out_dir: Path,
-    ) -> GenerationResult:
+        *,
+        dry_run: bool = False,
+    ) -> GenerationResult | dict[str, Any]:
         # Lazy-import VibeComfy, and snapshot only its repository
         # template corpus.  Dynamic/user template discovery is forbidden.
         import vibecomfy  # noqa: F401
-        from vibecomfy.registry.ready import (
-            repo_ready_template_discovery,
-            resolve_ready_template,
-            workflow_from_ready,
-        )
 
         mode_spec = entry.modes[mode]
         backend_spec: BackendSpec = mode_spec.backends["local"]
         template_id = backend_spec.template
+        plan, target_schema = None, None
+        if backend_spec.model_roles or dry_run:
+            from astrid.core.model_catalog.registry import ModelRegistry
+            from vibecomfy.schema.provider import TargetSchemaProvider
+
+            client = self._model_resolution_client()
+            if client is None:
+                raise ValueError("catalog model role resolution requires a selected Comfy target")
+            registry = ModelRegistry.load_default()
+            # Keep caller-provided typed entries usable, as on the historical
+            # checkout path. Resolution is always captured afresh by the bound
+            # client; no caller-provided plan or resolved filename is trusted.
+            entries = [candidate for candidate in registry.list_all(include_closed=True)
+                       if candidate.id != entry.id]
+            registry = ModelRegistry([entry, *entries])
+            plan, observed = _capture_model_resolution(client, registry, entry.id, mode)
+            target_schema = TargetSchemaProvider.from_object_info(
+                observed, server_url=client.http_origin, model_availability="target",
+                refresh_object_info=client.object_info,
+            )
 
         # --- resolve seed (or generate one) ----------------------------------
         seed_used: int = params.get("seed", 0)
@@ -579,48 +708,8 @@ class VibeComfyBackend(BackendAdapter):
         applied_features, dropped_features = split_feature_support(
             params, mode_spec.supports
         )
-        discovery = repo_ready_template_discovery()
-        record = resolve_ready_template(template_id, discovery)
-
-        # The catalog value and resolved record must both be canonical
-        # ``category/template_id`` identifiers from the repository corpus.
-        requested_id = str(template_id)
-        requested_parts = requested_id.split("/")
-        canonical_id = str(getattr(record, "template_id", ""))
-        id_parts = canonical_id.split("/")
-        if (
-            requested_id != canonical_id
-            or len(requested_parts) != 2
-            or len(id_parts) != 2
-            or any(not part or part in {".", ".."} for part in requested_parts)
-            or any(not part or part in {".", ".."} for part in id_parts)
-            or getattr(record, "source_scope", None) != "repo"
-        ):
-            raise ValueError(
-                f"VibeComfy template {template_id!r} is not a canonical repo template"
-            )
-        template_path = Path(getattr(record, "path", ""))
-        template_root = Path(getattr(record, "root", ""))
-        try:
-            template_path_resolved = template_path.resolve(strict=True)
-            template_root_resolved = template_root.resolve(strict=True)
-            template_path_resolved.relative_to(template_root_resolved)
-        except (OSError, ValueError) as exc:
-            raise ValueError(
-                f"VibeComfy template {canonical_id!r} is outside its repo root"
-            ) from exc
-        expected_hash = str(backend_spec.template_hash)
-        if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", expected_hash):
-            raise ValueError(
-                f"VibeComfy template {canonical_id!r} has no valid sha256 pin"
-            )
-        actual_hash = hashlib.sha256(template_path_resolved.read_bytes()).hexdigest()
-        if actual_hash.lower() != expected_hash[7:].lower():
-            raise ValueError(
-                f"VibeComfy template {canonical_id!r} failed its sha256 pin"
-            )
         t0 = time.monotonic()
-        wf = workflow_from_ready(canonical_id, _discovery=discovery)
+        wf = _load_pinned_catalog_workflow(backend_spec)
         # Features whose param_map key is in the feature list get mapped.
         # Count is not set on the workflow — the caller loops externally.
         for canon, tmpl_param in param_map.items():
@@ -647,6 +736,9 @@ class VibeComfyBackend(BackendAdapter):
                 continue
             wf.set_input(tmpl_param, value)
 
+        if plan is not None:
+            _bind_target_model_roles(wf, backend_spec, plan["roles"])
+
         unbound_inputs = getattr(wf, "metadata", {}).get("unbound_inputs", {})
         if isinstance(unbound_inputs, dict):
             requested_unbound = sorted(
@@ -663,7 +755,18 @@ class VibeComfyBackend(BackendAdapter):
                     + ", ".join(requested_unbound)
                 )
 
-        result = self._run_workflow(wf)
+        if dry_run:
+            from vibecomfy.workflow_bundle import load_bundle
+
+            bundle = load_bundle(wf)
+            bundle.require_canonical_authority("catalog target resolution dry-run")
+            approved = bundle.compile(schema_provider=target_schema)
+            plan["approval"] = {"status": "approved", "api_digest": approved.api_digest}
+            return plan
+        if target_schema is None:
+            result = self._run_workflow(wf)
+        else:
+            result = self._run_workflow(wf, schema_provider=target_schema)
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # --- collect outputs -------------------------------------------------
@@ -1152,8 +1255,11 @@ class VibeComfyEngine:
         *,
         runtime_instance_id: str | None = None,
         config: Any | None = None,
+        schema_provider: Any | None = None,
     ) -> Any:
         """Run one workflow without allowing poisoned lifecycle reuse."""
+        if schema_provider is not None and getattr(schema_provider, "server_url", None) != self._http_origin:
+            raise ValueError("checkout_server schema provider differs from the selected Comfy target")
         with self._lock:
             if self._operation is not None:
                 raise RuntimeError(
@@ -1206,6 +1312,8 @@ class VibeComfyEngine:
                 else:
                     runtime_args = (workflow,)
             runtime_kwargs: dict[str, Any] = {"server_url": self._http_origin}
+            if schema_provider is not None:
+                runtime_kwargs["schema_provider"] = schema_provider
             if config is not None:
                 runtime_kwargs["config"] = config
             if self._endpoint_transport is not None:
@@ -1375,6 +1483,13 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self._bound_fingerprint: str | None = None
         self._bound_warmth_identity: str | None = None
         self._last_run_result: Any | None = None
+
+    def _model_resolution_client(self) -> ComfyTargetClient:
+        target = ComfyTarget(
+            self._origin if self._endpoint_transport is None else self._endpoint_transport.endpoint.url,
+            "managed" if self._endpoint_transport is None else "pod",
+        )
+        return ComfyTargetClient(target, endpoint_transport=self._endpoint_transport, opener=_open_checkout_http)
 
     @classmethod
     def from_host_session(
@@ -1965,8 +2080,11 @@ class CheckoutServerAdapter(VibeComfyBackend):
         model_digest: str | None = None,
         artifact_sha256: str | None = None,
         runtime_instance_id: str | None = None,
-    ) -> GenerationResult:
+        dry_run: bool = False,
+    ) -> GenerationResult | dict[str, Any]:
         """Generate with disposable warm reuse and host-compatible identities."""
+        if dry_run:
+            return super().generate(entry, mode, params, out_dir, dry_run=True)
         backend_spec = entry.modes[mode].backends["local"]
         # Ready-template/workflow identity is per invocation.  Keep the
         # resident-session identity at the model level so compatible workflow
@@ -2369,7 +2487,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self._probe_system_stats()
 
     def _run_workflow(
-        self, workflow: Any, *, config: Any | None = None
+        self, workflow: Any, *, config: Any | None = None, schema_provider: Any | None = None
     ) -> Any:
         """Probe version and submit with the canonical runtime identity."""
         self._origin = _validate_checkout_server_url(self._origin)
@@ -2381,9 +2499,14 @@ class CheckoutServerAdapter(VibeComfyBackend):
             raise ValueError(
                 "checkout_server runtime_instance_id is required from canonical health/bootstrap"
             )
-        return self._engine.run(
-            workflow, runtime_instance_id=instance_id, config=config
-        )
+        if schema_provider is not None:
+            from vibecomfy.workflow_bundle import load_bundle
+
+            bundle = load_bundle(workflow)
+            bundle.require_canonical_authority("catalog target execution")
+            workflow = (bundle.compile(schema_provider=schema_provider), bundle)
+        runtime_kwargs = {"schema_provider": schema_provider} if schema_provider is not None else {}
+        return self._engine.run(workflow, runtime_instance_id=instance_id, config=config, **runtime_kwargs)
 
     def _collect_outputs(self, result: Any, out_dir: Path) -> list[Path]:
         """Custody remote outputs through validated Comfy ``/view`` downloads."""

@@ -47,6 +47,19 @@ class Price:
 
 
 @dataclass(frozen=True)
+class ModelRole:
+    """Exact target filenames for a loader field bound by a public input.
+
+    Names are opaque ComfyUI values, not local paths or content identities.
+    """
+
+    node_class: str
+    input: str
+    names: tuple[str, ...]
+    binding: str
+
+
+@dataclass(frozen=True)
 class BackendSpec:
     """Specification for a single execution backend (local or cloud).
 
@@ -86,6 +99,10 @@ class BackendSpec:
     #: Hints are model×mode×backend configuration, not per-request
     #: caller parameters.
     hints: dict[str, Any] = field(default_factory=dict)
+
+    #: Optional target inventory contract. Entries without roles retain the
+    #: existing managed/local approval path.
+    model_roles: dict[str, ModelRole] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -428,6 +445,29 @@ def _validate_backend_spec(
             raise ValueError(f"{path}.hints: keys must be non-empty strings")
         hints[k.strip()] = v
 
+    roles_raw = raw.get("model_roles", {})
+    if not isinstance(roles_raw, dict):
+        raise ValueError(f"{path}.model_roles: must be a dict")
+    if roles_raw and backend_id != LOCAL_BACKEND_ID:
+        raise ValueError(f"{path}.model_roles: only local ComfyUI backends declare roles")
+    model_roles: dict[str, ModelRole] = {}
+    for name, declaration in roles_raw.items():
+        role_path = f"{path}.model_roles[{name!r}]"
+        if not isinstance(name, str) or not name.strip() or not isinstance(declaration, dict):
+            raise ValueError(f"{role_path}: invalid role declaration")
+        if set(declaration) != {"node_class", "input", "names", "binding"}:
+            raise ValueError(f"{role_path}: requires node_class, input, names and binding")
+        node_class = _require_str(declaration, "node_class", role_path)
+        input_name = _require_str(declaration, "input", role_path)
+        binding = _require_str(declaration, "binding", role_path)
+        names = declaration["names"]
+        if (not isinstance(names, list) or not names
+                or any(not isinstance(value, str) or not value for value in names)
+                or len(set(names)) != len(names)):
+            raise ValueError(f"{role_path}.names: requires distinct non-empty exact filenames")
+        # Preserve filename characters exactly, including backslashes.
+        model_roles[name] = ModelRole(node_class, input_name, tuple(names), binding)
+
     return BackendSpec(
         template=str(template),
         template_hash=str(template_hash),
@@ -436,6 +476,7 @@ def _validate_backend_spec(
         param_map=param_map,
         price=price,
         hints=hints,
+        model_roles=model_roles,
     )
 
 
