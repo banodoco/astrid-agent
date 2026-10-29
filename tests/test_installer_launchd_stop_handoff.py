@@ -350,4 +350,3 @@ def test_cached_retained_action_survives_canonical_plist_publication(
     assert boundary.stop_calls == 1
     assert bootouts == [("launchctl", "bootout", target)]
     assert events.index("c1-stop-owner") < events.index("launchctl-bootout")
-
