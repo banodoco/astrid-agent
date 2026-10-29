@@ -134,12 +134,36 @@ def _element_rows() -> list[tuple[str, str]]:
     ]
 
 
+def _generation_section() -> list[str]:
+    # This is the static registry view shared with `astrid generate list`.
+    # Local probes and credentials are deliberately excluded from committed docs.
+    from astrid.core.generation.listing import catalog_rows
+
+    def cell(value: object) -> str:
+        return str(value or "—").replace("|", "\\|").replace("\n", " ")
+
+    lines = [
+        "### Generation catalog", "",
+        "This catalog describes declared entries. Run `astrid generate list` "
+        "for current target readiness and fixes.", "",
+        "| id | kind | mode | backend | availability | reason |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for row in catalog_rows():
+        lines.append("| " + " | ".join(
+            cell(row.get(key)) for key in ("id", "kind", "mode", "backend", "availability", "reason")
+        ) + " |")
+    lines.append("")
+    return lines
+
+
 def render_block() -> str:
     lines = [BEGIN_MARKER, ""]
     with _in_repo_packs_only():
         lines.extend(_section("Executors", _executor_rows()))
         lines.extend(_section("Orchestrators", _orchestrator_rows()))
         lines.extend(_section("Elements", _element_rows()))
+        lines.extend(_generation_section())
     lines.append(END_MARKER)
     return "\n".join(lines)
 

@@ -169,4 +169,85 @@
 | `transitions/cross-fade` | Cross fade transition. |
 | `transitions/fade` | Fade-through-black transition. |
 
+### Generation catalog
+
+This catalog describes declared entries. Run `astrid generate list` for current target readiness and fixes.
+
+| id | kind | mode | backend | availability | reason |
+| --- | --- | --- | --- | --- | --- |
+| ace-step | audio | music | cloud | available | — |
+| astrid_motion:preview/make_art.py | fixture | — | — | fixture-only | fixture-only route |
+| astrid_motion:preview/render.mjs | fixture | — | — | fixture-only | fixture-only route |
+| astrid_motion:preview/scenes.json | fixture | — | — | fixture-only | fixture-only route |
+| astrid_motion:preview/src/Preview.tsx | fixture | — | — | fixture-only | fixture-only route |
+| astrid_motion:preview/src/Root.tsx | fixture | — | — | fixture-only | fixture-only route |
+| astrid_motion:preview/src/index.ts | fixture | — | — | fixture-only | fixture-only route |
+| flux-dev | image | i2i | cloud | available | — |
+| flux-dev | image | i2i | codex | available | — |
+| flux-dev | image | t2i | cloud | available | — |
+| flux-dev | image | t2i | codex | available | — |
+| flux-klein-4b-edit | image | edit | local | available | — |
+| flux-schnell | image | t2i | cloud | available | — |
+| flux-schnell | image | t2i | codex | available | — |
+| flux2-klein-4b | image | edit | cloud | available | — |
+| flux2-klein-4b | image | t2i | cloud | available | — |
+| flux2-klein-4b | image | t2i | codex | available | — |
+| flux2-klein-9b | image | edit | cloud | available | — |
+| flux2-klein-9b | image | t2i | cloud | available | — |
+| flux2-klein-9b | image | t2i | codex | available | — |
+| generation.generate_audio | audio | — | — | available | — |
+| generation.generate_image | image | — | — | available | — |
+| generation.generate_image_cloud_i2i | image | — | — | available | — |
+| generation.generate_image_codex | image | — | — | available | — |
+| generation.generate_image_edit | image | — | — | available | — |
+| generation.generate_image_openai | image | — | — | available | — |
+| generation.generate_image_upscale | image | — | — | available | — |
+| generation.generate_speech | audio | — | — | available | — |
+| generation.generate_video | video | — | — | available | — |
+| ideogram-v4 | image | t2i | cloud | available | — |
+| ideogram-v4 | image | t2i | codex | available | — |
+| ltx-2.3 | video | flf | local | available | — |
+| ltx-2.3 | video | i2v | cloud | available | — |
+| ltx-2.3 | video | i2v | local | available | — |
+| ltx-2.3 | video | t2v | cloud | available | — |
+| ltx-2.3 | video | t2v | local | available | — |
+| ltx-2.3-pro | video | i2v | cloud | available | — |
+| ltx-2.3-pro | video | t2v | cloud | available | — |
+| minimax-music-3 | audio | music | cloud | available | — |
+| minimax-music-3.0 | audio | music | wavespeed | available | — |
+| minimax-music-v2.6 | audio | music | cloud | available | — |
+| qwen-image | image | t2i | local | available | — |
+| qwen-image-2512 | image | t2i | cloud | available | — |
+| qwen-image-2512 | image | t2i | codex | available | — |
+| qwen-image-2512 | image | t2i | local | available | — |
+| qwen-image-2512 | image | t2i | local | available | — |
+| qwen-image-annotated-edit | image | mask_edit | local | available | — |
+| qwen-image-edit | image | edit | cloud | available | — |
+| qwen-image-edit | image | edit | codex | available | — |
+| qwen-image-edit | image | edit | local | available | — |
+| qwen-image-edit | image | edit | local | available | — |
+| qwen-image-edit-2511 | image | edit | cloud | available | — |
+| qwen-image-edit-inpaint | image | inpaint | cloud | available | — |
+| qwen-image-inpaint | image | inpaint | local | available | — |
+| qwen-image-style | image | style | local | available | — |
+| scail-2 | video | v2v | cloud | available | — |
+| seedream-v5-pro | image | edit | cloud | available | — |
+| seedvr2-upscaler | image | upscale | cloud | available | — |
+| seedvr2-upscaler | image | upscale | local | available | — |
+| stable-audio-3-medium | audio | music | cloud | available | — |
+| training.checkpoint_review_sampler | image | — | — | unavailable | training checkpoint review sample generation is not implemented |
+| video_editing.thumbnail_maker | image | — | — | unavailable | video_editing.thumbnail_maker generation is not implemented |
+| wan-2.2 | video | flf | cloud | available | — |
+| wan-2.2 | video | i2v | cloud | available | — |
+| wan-2.2 | video | i2v | local | available | — |
+| wan-2.2 | video | t2v | cloud | available | — |
+| z-image | image | i2i | cloud | available | — |
+| z-image | image | i2i | codex | available | — |
+| z-image | image | i2i | local | available | — |
+| z-image | image | t2i | cloud | available | — |
+| z-image | image | t2i | codex | available | — |
+| z-image | image | t2i | local | available | — |
+| z-image-turbo | image | i2i | local | available | — |
+| z-image-turbo | image | t2i | local | available | — |
+
 <!-- END CAPABILITY INDEX -->

@@ -60,6 +60,10 @@ command succeeds.
 
 ## Creative work
 
+Before choosing a generator, run `astrid generate list --json` (optionally
+`--kind image`, `--kind video`, or `--kind audio`) to inspect current target
+readiness and any required fixes. Use the selected pack guide for execution.
+
 For generation, rendering, and media work in Astrid App, use the `astrid_invoke`
 tool with the selected project from the editor context and the capability's
 documented inputs. It admits a real Runtime task and returns immediately;
