@@ -126,6 +126,19 @@ def _corrupt_observation(backend, data, version, *, state, pid, corruption):
     return value
 
 
+@pytest.mark.parametrize("corruption", ["missing", "duplicate"])
+def test_nested_coalition_state_cannot_supply_or_hide_top_level_state(tmp_path, monkeypatch, corruption):
+    backend, data, _paths, _boundary, version, *_ = _prepared(tmp_path, monkeypatch)
+    output = _print_output(backend, data, version)
+    if corruption == "missing":
+        output = output.replace("\tstate = running\n", "", 1)
+    else:
+        output = output.replace("\tstate = running\n", "\tstate = running\n\tstate = running\n", 1)
+    output = output[:-1] + "\tresource coalition = {\n\t\tstate = active\n\t}\n}"
+    with pytest.raises(ValueError, match="launchd service identity is malformed"):
+        backend.service._launchd_stop_identity(output, data)
+
+
 @pytest.mark.parametrize("case", [
     "unrelated_loaded_identity", "changed_action", "changed_path", "replacement_pid_before_exit",
 ])
