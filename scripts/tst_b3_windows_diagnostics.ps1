@@ -282,15 +282,17 @@ if ($ExpectedAgentSha -notmatch '^[0-9a-f]{40}$' -or $ExpectedRuntimeSha -notmat
 $envCapture = @'
 $DiagnosticEnvironment = [ordered]@{}
 foreach ($DiagnosticName in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH')) { $DiagnosticEnvironment[$DiagnosticName] = [Environment]::GetEnvironmentVariable($DiagnosticName) }
-@{ timestampUtc=[DateTime]::UtcNow.ToString('o'); pid=$PID; stage='lifecycle-environment'; env=$DiagnosticEnvironment } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'lifecycle-environment.json') -Encoding UTF8
+@{ timestampUtc=[DateTime]::UtcNow.ToString('o'); pid=$PID; stage='lifecycle-environment'; env=$DiagnosticEnvironment } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $TstEvidenceRoot 'lifecycle-environment.json') -Encoding UTF8
 '@
 $launchCapture = @'
 $DiagnosticInstallArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$Installer) + @($Extra) + @('--manifest',$FrozenManifest,'--root',$ProgramRoot,'--data-root',$DataRoot)
 $DiagnosticInstallEnv = [ordered]@{}
 foreach ($DiagnosticName in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH')) { $DiagnosticInstallEnv[$DiagnosticName] = [Environment]::GetEnvironmentVariable($DiagnosticName) }
-@{ timestampUtc=[DateTime]::UtcNow.ToString('o'); pid=$PID; stage='installer-launch'; executable=$Shell; arguments=$DiagnosticInstallArgs; env=$DiagnosticInstallEnv } | ConvertTo-Json -Depth 5 | Add-Content -LiteralPath (Join-Path $EvidenceRoot 'installer-invocations.jsonl') -Encoding UTF8
+@{ timestampUtc=[DateTime]::UtcNow.ToString('o'); pid=$PID; stage='installer-launch'; executable=$Shell; arguments=$DiagnosticInstallArgs; env=$DiagnosticInstallEnv } | ConvertTo-Json -Depth 5 | Add-Content -LiteralPath (Join-Path $TstEvidenceRoot 'installer-invocations.jsonl') -Encoding UTF8
 '@
-$driverText = $driverText.Replace($environmentMarker, $environmentMarker + [Environment]::NewLine + $envCapture.Trim())
+$evidenceLiteral = "'" + $EvidenceRoot.Replace("'", "''") + "'"
+$evidenceRootCapture = '$TstEvidenceRoot = ' + $evidenceLiteral
+$driverText = $driverText.Replace($environmentMarker, $environmentMarker + [Environment]::NewLine + $evidenceRootCapture + [Environment]::NewLine + $envCapture.Trim())
 $driverText = $driverText.Replace($installMarker, $launchCapture.Trim() + [Environment]::NewLine + $installMarker)
 $driverText = $driverText.Replace($agentPin, $ExpectedAgentSha).Replace($runtimePin, $ExpectedRuntimeSha)
 Set-Content -LiteralPath $driverCopy -Value $driverText -Encoding UTF8BOM
