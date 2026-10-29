@@ -36,13 +36,13 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: banodoco/astrid-app
+          repository: banodoco/reigh-app
           ref: ${{ inputs.driver_app_sha }}
           path: driver-app
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          repository: banodoco/astrid-app
+          repository: banodoco/reigh-app
           ref: f8c26f95d5cf913db4e85d11360d3961b3d203f7
           path: product-app
           persist-credentials: false

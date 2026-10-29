@@ -54,24 +54,33 @@ def sdk_invocation(argv, task_id="task-1"):
     })
 
 
-def test_journey_runs_for_main_windows_branches_and_main_pull_requests():
+def test_windows_b3_journey_is_manual_and_secret_free():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'branches: [main, "windows/**"]' in workflow
-    assert "pull_request:\n    branches: [main]" in workflow
-    assert "name: Windows task host journey (${{ matrix.installer-shell }})" in workflow
-    assert "exploratory" not in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "runs-on: windows-2022" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "secrets." not in workflow
+    assert "push:" not in workflow and "pull_request:" not in workflow
+    assert "driver_agent_sha" in workflow and "driver_app_sha" in workflow
+    assert "repository: banodoco/reigh-app" in workflow
+    assert "product_agent='3204bb00135bec8ee2d2d3fb21eed5abfceca649'" in workflow
+    assert "product_runtime='6d53a19070faf63fc15ae1f81417722edc2c8a5f'" in workflow
+    assert "powershell.exe" in workflow and "windows-ps51-lifecycle.ps1" in workflow
 
 
-def test_journey_resolves_companion_refs_from_durable_defaults():
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    lock = json.loads((WORKFLOW.parents[2] / "runtime.lock.json").read_text(encoding="utf-8"))
-    assert len(lock["source_commit"]) == 40
-    assert "$runtimeRef = $lock.source_commit" in workflow
-    assert "ref: ${{ steps.runtime-ref.outputs.ref }}" in workflow
-    assert "runtime_ref:" not in workflow
-    assert "ref: ${{ inputs.app_ref || 'main' }}" in workflow
-    assert "default: windows/task-host" not in workflow
-    assert "Run an installed-profile SDK invocation through settlement" in workflow
+def test_journey_uses_frozen_candidate_and_pinned_runners():
+    workflow = (WORKFLOW.parent / "journey.yml").read_text(encoding="utf-8")
+    assert "repository: banodoco/astrid-agent" in workflow
+    assert "repository: banodoco/reigh-app" in workflow
+    assert "ref: ${{ needs.config.outputs.driver_agent_ref }}" in workflow
+    assert "DRIVER_AGENT_REF: ${{ job.workflow_sha }}" in workflow
+    assert "WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}" in workflow
+    assert "fromJSON(needs.config.outputs.candidate).app" in workflow
+    assert "windows-2022" in workflow and "ubuntu-24.04" in workflow and "macos-14" in workflow
+    assert "--expected-runner '${{ matrix.runner }}'" in workflow
+    assert "--expected-shell '${{ matrix.shell }}'" in workflow
+    assert "-latest" not in workflow
+    assert "TST_READ_TOKEN" not in workflow
 
 
 def test_manifest_replaces_released_sources_and_keeps_app_tools(tmp_path, monkeypatch):

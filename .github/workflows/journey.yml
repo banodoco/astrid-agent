@@ -1,0 +1,134 @@
+name: Installed product journeys
+
+on:
+  workflow_call:
+    inputs:
+      candidate:
+        description: Frozen candidate JSON (see docs/testing-support-gaps.md)
+        required: true
+        type: string
+      cadence:
+        required: false
+        type: string
+        default: release-candidate
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Frozen candidate JSON
+        required: true
+        type: string
+      cadence:
+        type: choice
+        options: [release-candidate, weekly]
+        default: release-candidate
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      candidate: ${{ steps.config.outputs.candidate }}
+      driver_agent_ref: ${{ steps.config.outputs.driver_agent_ref }}
+      cadence: ${{ steps.config.outputs.cadence }}
+      matrix: ${{ steps.config.outputs.matrix }}
+    steps:
+      - id: config
+        env:
+          CANDIDATE: ${{ inputs.candidate || vars.TST_CANDIDATE_JSON }}
+          DRIVER_AGENT_REF: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          CADENCE: ${{ github.event_name == 'schedule' && 'weekly' || inputs.cadence || 'release-candidate' }}
+        run: |
+          python - <<'PY'
+          import json, os, re
+          candidate = json.loads(os.environ['CANDIDATE'])
+          if not isinstance(candidate, dict) or any(not re.fullmatch(r'[0-9a-f]{40}', str(candidate.get(k, ''))) for k in ('app', 'agent', 'runtime', 'pinokio')):
+              raise SystemExit('A frozen candidate with four full commit SHAs is required')
+          driver_agent_ref = os.environ['DRIVER_AGENT_REF']
+          if not re.fullmatch(r'[0-9a-f]{40}', driver_agent_ref) or os.environ['WORKFLOW_REPOSITORY'] != 'banodoco/astrid-agent':
+              raise SystemExit('The Agent TST harness must use the exact workflow repository and source commit')
+          cadence = os.environ['CADENCE']
+          if cadence not in ('release-candidate', 'weekly'):
+              raise SystemExit('Invalid cadence')
+          matrix = [{'runner': 'ubuntu-24.04', 'shell': 'sh'}, {'runner': 'windows-2022', 'shell': 'powershell.exe'}, {'runner': 'macos-14', 'shell': 'sh'}]
+          if cadence == 'weekly':
+              matrix.append({'runner': 'ubuntu-22.04', 'shell': 'sh'})
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for key, value in [('candidate', json.dumps(candidate, separators=(',', ':'))), ('driver_agent_ref', driver_agent_ref), ('cadence', cadence), ('matrix', json.dumps({'include': matrix}, separators=(',', ':')))]:
+                  print(f'{key}={value}', file=output)
+          PY
+
+  journey:
+    needs: config
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the reviewed Agent TST harness
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Check out the frozen App candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/reigh-app
+          ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Freeze inputs and check manifest and bootstrap hashes
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          python -c "import os,pathlib; pathlib.Path(os.environ['RUNNER_TEMP'], 'candidate.json').write_text(os.environ['CANDIDATE'], encoding='utf-8')"
+          python agent/scripts/check_journey_evidence.py --candidate "$env:RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run the available fresh installer journey
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          $runRoot = python -c "import os,pathlib; print((pathlib.Path(os.environ['RUNNER_TEMP']) / 'astrid-tst-journey').resolve())"
+          python -u agent/scripts/ci_journey.py --leg fresh-install --app-checkout "$pwd/app" --run-root "$runRoot" --root "$runRoot/program" --data-root "$runRoot/data" --shell '${{ matrix.shell }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check required evidence
+        if: always()
+        run: |
+          python agent/scripts/check_journey_evidence.py --candidate "$env:RUNNER_TEMP/candidate.json" --app-checkout app --results "$env:RUNNER_TEMP/astrid-tst-journey/evidence" --cadence '${{ needs.config.outputs.cadence }}' --expected-runner '${{ matrix.runner }}' --expected-shell '${{ matrix.shell }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journey-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/candidate.json
+            ${{ runner.temp }}/astrid-tst-journey/evidence
+          if-no-files-found: error
+
+  gate:
+    if: always()
+    needs: [config, journey]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject failed, skipped or cancelled dependencies
+        env:
+          CONFIG_RESULT: ${{ needs.config.result }}
+          JOURNEY_RESULT: ${{ needs.journey.result }}
+        run: |
+          test "$CONFIG_RESULT" = success && test "$JOURNEY_RESULT" = success
