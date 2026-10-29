@@ -8,6 +8,7 @@ local application. Runtime discovery and credentials are resolved by
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -39,8 +40,13 @@ _HEALTH_KEYS = frozenset(
         "runtime_instance_id",
         "runtime_session_id",
         "schema_digest",
+        "identity",
     }
 )
+_HEALTH_INSTALLED_IDENTITY_KEYS = frozenset({"release", "managed_by"})
+_HEALTH_SOURCE_IDENTITY_KEYS = _HEALTH_INSTALLED_IDENTITY_KEYS | {
+    "runtime_head", "agent_head", "dirty", "dirty_hash",
+}
 _HEALTH_SERVICE_KEYS = frozenset({"name", "state", "last_exit", "restart_count"})
 _HANDSHAKE_KEYS = frozenset(
     {
@@ -116,6 +122,34 @@ def _require_mapping(value: Any, *, field: str) -> Mapping[str, Any]:
     return value
 
 
+def _validate_health_identity(value: Any) -> None:
+    # A raw RuntimeService has no daemon owner. Daemon identities use one of
+    # the two exact shapes declared by the Runtime health contract.
+    if value is None:
+        return
+    identity = _require_mapping(value, field="health.identity")
+    source = identity.get("managed_by") == "source"
+    expected_keys = _HEALTH_SOURCE_IDENTITY_KEYS if source else _HEALTH_INSTALLED_IDENTITY_KEYS
+    if frozenset(identity) != expected_keys:
+        raise _protocol_error("health.identity", "runtime health identity has an unexpected schema")
+    release = identity["release"]
+    if isinstance(release, bool) or not isinstance(release, int) or release < 0 or (source and release != 0):
+        raise _protocol_error("health.identity.release", "runtime health identity release is invalid")
+    if not source:
+        if identity["managed_by"] not in (None, "pinokio"):
+            raise _protocol_error("health.identity.managed_by", "runtime health identity managed_by is invalid")
+        return
+    for field in ("runtime_head", "agent_head"):
+        head = identity[field]
+        if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", head) is None:
+            raise _protocol_error(f"health.identity.{field}", f"runtime health identity {field} is invalid")
+    if not isinstance(identity["dirty"], bool):
+        raise _protocol_error("health.identity.dirty", "runtime health identity dirty is invalid")
+    dirty_hash = identity["dirty_hash"]
+    if not isinstance(dirty_hash, str) or re.fullmatch(r"[0-9a-f]{64}", dirty_hash) is None:
+        raise _protocol_error("health.identity.dirty_hash", "runtime health identity dirty_hash is invalid")
+
+
 def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str) -> None:
     health = _require_mapping(value, field="health")
     keys = frozenset(health)
@@ -134,6 +168,7 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
         identity = health.get(field)
         if not isinstance(identity, str) or not identity.strip():
             raise _protocol_error(f"health.{field}", f"runtime health {field} is invalid")
+    _validate_health_identity(health["identity"])
     if "services" in health:
         services = health["services"]
         if not isinstance(services, list):
