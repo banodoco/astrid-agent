@@ -149,7 +149,9 @@ def _assert_exact_loaded_identity(output, service, version, data, target, *, run
     assert ("pid = 777" in output) is running
 
 
-def test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("nested_coalition_states", [False, True])
+def test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes(
+        tmp_path, monkeypatch, nested_coalition_states):
     backend, data, paths, _realm, boundary, _manager_calls = _installer_runtime(tmp_path, monkeypatch)
     old, candidate = _version(backend, "old", 17), _version(backend, "candidate", 18)
     core.switch(backend.root, old)
@@ -166,6 +168,24 @@ def test_shared_update_bootouts_exact_loaded_job_after_real_c1_and_completes(tmp
     loaded, observations, bootouts, target, _crash = _launchd_harness(
         backend, data, old, boundary, events,
     )
+
+    if nested_coalition_states:
+        # Shape captured from macOS 26.6.2 `launchctl print`: nested resource
+        # and jetsam coalitions have states independent of the top-level job.
+        real_run = backend.service.run
+
+        def macos_26_print(argv):
+            value = real_run(argv)
+            if argv[:2] == ["launchctl", "print"]:
+                value = value[:-1] + (
+                    "\tresource coalition = {\n\t\tID = 902\n\t\ttype = resource\n"
+                    "\t\tstate = active\n\t}\n"
+                    "\tjetsam coalition = {\n\t\tID = 903\n\t\ttype = jetsam\n"
+                    "\t\tstate = active\n\t}\n}"
+                )
+            return value
+
+        backend.service.run = macos_26_print
 
     core.Installer(backend.root, data, backend, say=lambda _line: None).run("update", {})
 

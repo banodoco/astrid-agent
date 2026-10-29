@@ -301,7 +301,11 @@ class Service:
         # Parse only fields outside arguments; the Python command contains
         # ordinary source lines that can have the same names as print fields.
         metadata = value[:starts[0].start()] + tail[closing.end():]
-        states = re.findall(r"^[ \t]*state = ([^\r\n]+)[ \t]*$", metadata, re.MULTILINE)
+        # launchctl also prints nested coalition state fields. Only the
+        # service-level state, at the same indentation as arguments, is an
+        # observation of the owned job.
+        states = re.findall(r"^" + re.escape(opening_indent) + r"state = ([^\r\n]+)[ \t]*$",
+                            metadata, re.MULTILINE)
         pids = re.findall(r"^[ \t]*pid = (\d+)[ \t]*$", metadata, re.MULTILINE)
         if len(re.findall(r"^[ \t]*pid[ \t]*=", metadata, re.MULTILINE)) != len(pids):
             raise ValueError("The launchd service PID is malformed.")
