@@ -192,7 +192,11 @@ def test_generate_core_returns_enriched_generation_result(
     assert result.ok is True
     assert result.path == out / "images" / "generated_001.png"
     assert result.image_paths == [out / "images" / "generated_001.png"]
-    assert result.seed_used == 7
+    # A scalar request echo from a legacy adapter is not output attestation.
+    assert result.seed_used is None
+    assert result.output_seeds == {}
+    assert manifest["seed"] == manifest["request"]["seed"] == 7
+    assert manifest["outputs"][0]["seed_used"] is None
     assert result.model_actual == "fal-ai/flux/dev"
     assert result.cost_usd == 0.42
     assert result.duration_ms == 321

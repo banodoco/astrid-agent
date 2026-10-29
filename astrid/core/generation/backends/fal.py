@@ -45,6 +45,23 @@ from astrid.core.util.http import (
 logger = logging.getLogger(__name__)
 
 
+# These endpoint output schemas define ``seed`` as the seed actually used:
+# https://fal.ai/models/fal-ai/flux/dev/api
+# https://fal.ai/models/fal-ai/flux/schnell/api
+# https://fal.ai/models/fal-ai/flux/dev/image-to-image/api
+# https://fal.ai/models/fal-ai/z-image/turbo/api
+# https://fal.ai/models/fal-ai/z-image/turbo/image-to-image/api
+# They expose one response-level seed, without per-image seed associations.
+# Accept it only for the documented images shape containing exactly one image.
+_ACTUAL_IMAGE_SEED_ENDPOINTS = frozenset({
+    "fal-ai/flux/dev",
+    "fal-ai/flux/schnell",
+    "fal-ai/flux/dev/image-to-image",
+    "fal-ai/z-image/turbo",
+    "fal-ai/z-image/turbo/image-to-image",
+})
+
+
 def _parse_size(size: str) -> str | None:
     """Normalize a size string for fal endpoints.
 
@@ -506,7 +523,7 @@ class FalBackend(BackendAdapter):
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # --- extract metadata ------------------------------------------------
-        seed_used: int = params.get("seed", 0)
+        seed_used: int | None = None
         cost_usd: float | None = None
         request_id: str | None = result.get("request_id")
         source_urls: list[str] | None = None
@@ -576,9 +593,31 @@ class FalBackend(BackendAdapter):
                 ) from exc
             image_paths.append(dst)
 
+        # Never promote request/default seeds to output evidence. A scalar
+        # response seed cannot identify individual seeds in a multi-image call.
+        images = result.get("images")
+        response_seed = result.get("seed")
+        output_seeds: dict[Path, int] = {}
+        if (
+            endpoint in _ACTUAL_IMAGE_SEED_ENDPOINTS
+            and entry.modality == "image"
+            and mode in {"t2i", "i2i"}
+            and isinstance(images, list)
+            and len(images) == 1
+            and isinstance(images[0], dict)
+            and isinstance(images[0].get("url"), str)
+            and images[0]["url"]
+            and len(image_paths) == 1
+            and type(response_seed) is int
+            and response_seed >= 0
+        ):
+            seed_used = response_seed
+            output_seeds[image_paths[0]] = response_seed
+
         return GenerationResult(
             image_paths=image_paths,
             seed_used=seed_used,
+            output_seeds=output_seeds,
             model_actual=endpoint,
             cost_usd=cost_usd,
             duration_ms=duration_ms,

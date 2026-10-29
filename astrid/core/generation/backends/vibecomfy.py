@@ -762,7 +762,6 @@ class VibeComfyBackend(BackendAdapter):
         wf, plan, target_schema = self.prepare_catalog_workflow(
             entry, mode, params, resolve_target=dry_run,
         )
-        seed_used: int = params.get("seed", 0)
         applied_features, dropped_features = split_feature_support(params, entry.modes[mode].supports)
         if dry_run:
             from vibecomfy.workflow_bundle import load_bundle
@@ -785,7 +784,6 @@ class VibeComfyBackend(BackendAdapter):
 
         return GenerationResult(
             image_paths=image_paths,
-            seed_used=seed_used,
             model_actual=entry.modes[mode].backends["local"].template,
             cost_usd=None,  # local backends have no cost
             duration_ms=duration_ms,

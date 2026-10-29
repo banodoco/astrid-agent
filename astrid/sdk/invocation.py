@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -3809,6 +3810,7 @@ def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_s
 def _invoke_bridge_child(
     capability: Any, *, registries: Any, inputs: dict[str, Any], bridge: Any,
     child_key: str | None, wait: bool, timeout_seconds: float, poll_seconds: float,
+    generation_preflight: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
     from types import SimpleNamespace
@@ -3820,7 +3822,8 @@ def _invoke_bridge_child(
 
     digest = executor_definition_digest(registries[0].get(capability.id))
     request = _child_request(capability, inputs, digest="sha256:" + digest, child_key=child_key,
-                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+                             generation_preflight=generation_preflight)
     try:
         data = bridge.submit(request)
     except _BridgeRejected as exc:
@@ -3948,6 +3951,201 @@ def _speech_inputs_from_audio_request(inputs: Mapping[str, Any] | None) -> dict[
     return speech
 
 
+def _generation_port_default(port: Any) -> Any:
+    """Convert manifest scalar defaults without coercing caller input values."""
+    value = port.default
+    kind = str(port.type).lower()
+    if kind == "file" and isinstance(value, str) and not value.strip():
+        return None
+    if not isinstance(value, str) or kind not in {"integer", "number", "boolean"}:
+        return value
+    if not value.strip():
+        return None
+    if kind == "integer" and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value)
+    if kind == "number":
+        try:
+            number = float(value)
+        except ValueError:
+            return value
+        return number if math.isfinite(number) else value
+    if kind == "boolean" and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    return value
+
+
+@dataclass(frozen=True)
+class GenerationPreflight:
+    """Validated generation inputs and the exact prompt snapshot supplied by custody."""
+
+    inputs: dict[str, Any]
+    prompt_bytes: bytes | None
+    prompt_rows: tuple[dict[str, Any], ...]
+    warnings: tuple[dict[str, str], ...]
+
+
+def preflight_generation_inputs(
+    *, registry: Any, modality: str, inputs: Mapping[str, Any],
+    explicit_inputs: Mapping[str, Any], prompt_bytes: bytes | None = None,
+    allow_dropped: bool = False,
+) -> GenerationPreflight:
+    """Validate options and prompt rows against the selected model registry.
+
+    ``prompt_bytes`` is an immutable authenticated snapshot supplied by the
+    caller; this function does no file reads. The custody layer must bind these
+    exact bytes to the managed input used by the executor.
+    """
+    from astrid.core.generation.preflight import validate_generation_request
+    from astrid.core.model_catalog.taxonomy import IMAGE_FEATURES, VIDEO_FEATURES, AUDIO_FEATURES
+    from astrid.packs.generation.shared._common import _drop_unsupported, _parse_prompts_bytes
+
+    if type(allow_dropped) is not bool:
+        raise CapabilityValidationError("allow_dropped must be a boolean")
+    if prompt_bytes is not None and type(prompt_bytes) is not bytes:
+        raise CapabilityValidationError("prompt bytes must be immutable bytes")
+    resolved = dict(inputs)
+    model, mode, execution = (resolved.get(k) for k in ("model", "mode", "execution"))
+    has_file = bool(resolved.get("prompts_file"))
+    if has_file != (prompt_bytes is not None):
+        raise CapabilityPreconditionError(
+            "prompts_file requires an authenticated immutable prompt-byte snapshot before admission"
+        )
+    entry, mode_spec = validate_generation_request(
+        registry, model=model, mode=mode, execution=execution, inputs=resolved,
+        modality=modality, required_features=() if has_file else None,
+    )
+    controls = {"model", "mode", "execution", "prompts_file", "shot_generation_recipe", "env_file"}
+    codex_controls = {"quality", "background", "timeout", "style_ref", "brand_ref"}
+    if modality == "image":
+        controls.add("loras")  # image executor applies LoRAs after feature filtering
+        if execution == "codex":
+            controls.update(codex_controls)
+        else:
+            unsupported_controls = [k for k in codex_controls if explicit_inputs.get(k) not in (None, "")]
+            if unsupported_controls:
+                raise CapabilityValidationError(
+                    f"Codex-only generation options require execution='codex': {', '.join(sorted(unsupported_controls))}"
+                )
+            controls.update(codex_controls)
+    known = set(IMAGE_FEATURES) | set(VIDEO_FEATURES) | set(AUDIO_FEATURES)
+    known.update(mode_spec.supports)
+    # Custom feature ids are valid when declared by any selected-registry model.
+    if hasattr(registry, "list_all"):
+        for item in registry.list_all(include_closed=True):
+            for spec in item.modes.values():
+                known.update(spec.supports)
+    explicit = {k: v for k, v in explicit_inputs.items() if k not in controls and k != "allow_dropped"}
+    unknown = set(explicit) - known
+    if unknown:
+        raise CapabilityValidationError(f"unknown generation options: {', '.join(sorted(unknown))}")
+    warnings: list[dict[str, str]] = []
+
+    def check_options(spec: Any, model_id: str, values: dict[str, Any]) -> None:
+        _, dropped_warnings, dropped = _drop_unsupported(spec, mode, model_id, values)
+        if dropped and not allow_dropped:
+            raise CapabilityValidationError(
+                f"unsupported generation options for model {model_id!r} mode {mode!r}: {', '.join(sorted(dropped))}"
+            )
+        warnings.extend(dropped_warnings)
+
+    if not has_file:
+        check_options(mode_spec, model, explicit)
+        return GenerationPreflight(resolved, None, (), tuple(warnings))
+    try:
+        rows = _parse_prompts_bytes(prompt_bytes, model, mode)
+    except (SystemExit, UnicodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise CapabilityValidationError(f"invalid prompts file: {exc}") from exc
+    if not rows:
+        raise CapabilityValidationError("invalid prompts file: no valid entries found")
+    for row in rows:
+        row_model = row.get("model", model)
+        merged = dict(resolved)
+        merged.update(row)
+        _, row_spec = validate_generation_request(
+            registry, model=row_model, mode=mode, execution=execution,
+            inputs=merged, modality=modality,
+        )
+        row_features = {k: v for k, v in row.items() if k not in {"model", "mode"}}
+        unknown = set(row_features) - known - set(row_spec.supports)
+        if unknown and not allow_dropped:
+            raise CapabilityValidationError(f"unknown generation options: {', '.join(sorted(unknown))}")
+        check_options(row_spec, row_model, {**explicit, **row_features})
+    return GenerationPreflight(resolved, prompt_bytes, tuple(rows), tuple(warnings))
+
+
+@dataclass(frozen=True)
+class _GenerationPromptContinuation:
+    """Host-only continuation of one authenticated submit, never wire authority."""
+
+    capability: Any
+    registry: Any
+    inputs: Mapping[str, Any]
+    explicit_inputs: Mapping[str, Any]
+    prompt_bytes: bytes
+    allow_dropped: bool
+    token: object
+
+
+def _preflight_generation_invocation(*, capability, registry, modality, inputs,
+                                     explicit_inputs, allow_dropped, prompt_bytes=None):
+    generation_preflight = preflight_generation_inputs(
+        registry=registry, modality=modality,
+        inputs=inputs, explicit_inputs=explicit_inputs,
+        allow_dropped=allow_dropped, prompt_bytes=prompt_bytes,
+    )
+    declared = {str(port.name) for port in capability.inputs}
+    # Only declared features that the executor's CLI parameter builder
+    # passes to its existing drop/warning logic can use allow_dropped.
+    # Undeclared and cross-modality values may otherwise disappear at the
+    # command binder without reaching that logic.
+    from astrid.core.model_catalog.taxonomy import IMAGE_FEATURES, VIDEO_FEATURES, AUDIO_FEATURES
+    warning_features = {
+        "image": set(IMAGE_FEATURES),
+        "video": set(VIDEO_FEATURES) - {
+            "size", "strength", "upscale_mode", "upscale_factor",
+            "target_resolution", "noise_scale",
+        },
+        "audio": set(AUDIO_FEATURES),
+    }[modality]
+    unrecordable = {
+        warning["feature"] for warning in generation_preflight.warnings
+        if warning["feature"] not in declared or warning["feature"] not in warning_features
+    }
+    if unrecordable:
+        raise CapabilityValidationError(
+            "cannot record dropped generation options through this executor: "
+            + ", ".join(sorted(unrecordable))
+        )
+    return generation_preflight
+
+
+def _authenticated_generation_prompt_bytes(client: Any, value: Any) -> bytes:
+    """Read a managed object once; paths never confer prompt-byte authority."""
+    from astrid.core.execution.managed_inputs import managed_file_digest
+
+    try:
+        digest = managed_file_digest(value, "prompts_file")
+    except ValueError as exc:
+        raise CapabilityPreconditionError(
+            "prompts_file requires an authenticated immutable prompt-byte snapshot before admission"
+        ) from exc
+    remote = getattr(client, "_remote", client)
+    transport = getattr(remote, "_transport", remote)
+    if not callable(getattr(transport, "get_object", None)):
+        raise CapabilityPreconditionError(
+            "prompts_file requires an authenticated immutable prompt-byte snapshot before admission"
+        )
+    data = transport.get_object(digest.removeprefix("sha256:"))
+    if not isinstance(data, (bytes, bytearray)):
+        data = getattr(data, "data", None)
+    if not isinstance(data, (bytes, bytearray)):
+        raise CapabilityValidationError("prompt object returned no authenticated bytes")
+    content = bytes(data)
+    if "sha256:" + hashlib.sha256(content).hexdigest() != digest:
+        raise CapabilityValidationError("prompt object bytes failed digest verification")
+    return content
+
+
 def invoke(
     capability_id: str,
     *,
@@ -3985,6 +4183,7 @@ def invoke(
     resume: bool = False,
     read_managed_outputs: bool = False,
     _recovery: Any | None = None,
+    _generation_prompt_continuation: _GenerationPromptContinuation | None = None,
 ) -> InvocationResult:
     """Invoke a selected capability through Runtime or the installed host bridge.
 
@@ -3994,6 +4193,22 @@ def invoke(
     omitting it uses a stable key derived from exact capability and inputs.
     """
     from . import _child_bridge
+
+    if _generation_prompt_continuation is not None:
+        continuation = _generation_prompt_continuation
+        if (type(continuation) is not _GenerationPromptContinuation
+                or continuation.token is not _INTERNAL_DISPATCH_TOKEN
+                or capability_id != continuation.capability.id):
+            raise TypeError("generation prompt continuation requires host authority")
+        modality = {"generation.generate_image": "image", "generation.generate_image_codex": "image",
+                    "generation.generate_video": "video", "generation.generate_audio": "audio"}.get(capability_id)
+        if modality is None:
+            raise TypeError("prompt continuation requires a generation capability")
+        return _preflight_generation_invocation(
+            capability=continuation.capability, registry=continuation.registry, modality=modality,
+            inputs=continuation.inputs, explicit_inputs=continuation.explicit_inputs,
+            allow_dropped=continuation.allow_dropped, prompt_bytes=continuation.prompt_bytes,
+        )
 
     if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
         raise CapabilityValidationError("idempotency_key must be a non-empty string")
@@ -4080,6 +4295,31 @@ def invoke(
 
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
+    generation_modality = {
+        "generation.generate_image": "image",
+        "generation.generate_image_codex": "image",
+        "generation.generate_video": "video",
+        "generation.generate_audio": "audio",
+    }.get(str(capability.id))
+    if generation_modality is not None:
+        from copy import deepcopy
+
+        # Retain the caller's exact control/descriptor values before any
+        # object-reader or preflight callback can mutate the caller mapping.
+        request_inputs = deepcopy(request_inputs)
+        # The kernel merges frozen managed-input descriptors into task inputs.
+        # Validate that same view here, before either admission path, so an
+        # execution_request cannot introduce an unchecked prompt or feature.
+        try:
+            request_inputs = merge_execution_request_inputs(
+                normalized_execution_request, {"inputs": request_inputs}
+            )["inputs"]
+        except ExecutionRequestError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+    generation_allow_dropped = (
+        request_inputs.pop("allow_dropped", False)
+        if generation_modality is not None else False
+    )
     if capability.id == "rendering.render":
         # Apply caller/mode checks before delegated child dispatch as well as
         # top-level preflight. Child file custody still belongs to the bridge.
@@ -4143,8 +4383,34 @@ def invoke(
     effective_inputs = dict(request_inputs)
     for port in capability.inputs if hasattr(capability, "inputs") else ():
         if port.name not in effective_inputs and port.default is not None:
-            effective_inputs[port.name] = port.default
+            effective_inputs[port.name] = (
+                _generation_port_default(port)
+                if generation_modality is not None else port.default
+            )
     validate_action_inputs(capability, effective_inputs)
+
+    if generation_modality is not None:
+        declared = {str(port.name) for port in capability.inputs}
+        undeclared = set(request_inputs) - declared
+        if undeclared:
+            raise CapabilityValidationError(
+                f"undeclared generation inputs: {', '.join(sorted(undeclared))}"
+            )
+        model_registry = sdk_module._load_model_registry(
+            project_root=project_root, extra_pack_roots=extra_pack_roots,
+        )
+        prompt_bytes = None
+        deferred_generation_preflight = child_mode and bool(effective_inputs.get("prompts_file"))
+        if not deferred_generation_preflight:
+            if effective_inputs.get("prompts_file"):
+                prompt_bytes = _authenticated_generation_prompt_bytes(_client, effective_inputs["prompts_file"])
+            generation_preflight = _preflight_generation_invocation(
+                capability=capability, registry=model_registry, modality=generation_modality,
+                inputs=effective_inputs, explicit_inputs=request_inputs,
+                allow_dropped=generation_allow_dropped, prompt_bytes=prompt_bytes,
+            )
+            effective_inputs = generation_preflight.inputs
+            request_inputs = {key: effective_inputs[key] for key in request_inputs}
 
     if child_mode:
         if dry_run or capability.capability_type != "executor" or argv or orchestrator_args:
@@ -4182,6 +4448,9 @@ def invoke(
             capability, registries=registries, inputs=effective_inputs,
             bridge=_child_bridge._bridge, child_key=child_key,
             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+            generation_preflight={"explicit_inputs": request_inputs,
+                                  "allow_dropped": generation_allow_dropped}
+                if generation_modality is not None and deferred_generation_preflight else None,
         )
 
     if isinstance(project, str) and not project.strip():
@@ -4358,21 +4627,8 @@ def invoke(
     # and live invocation.  This keeps generic ``sdk.invoke`` from accepting
     # an impossible model/mode/backend cell (or FLF request missing its end
     # frame) and discovering the problem only after kernel admission.
-    modality = {
-        "generation.generate_image": "image",
-        "generation.generate_image_codex": "image",
-        "generation.generate_video": "video",
-        "generation.generate_audio": "audio",
-    }.get(str(capability.id))
-    if modality is not None:
-        model_registry = sdk_module._load_model_registry(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-        )
-        from astrid.core.generation.preflight import (
-            require_local_generation_readiness,
-            validate_generation_request,
-        )
+    if generation_modality is not None:
+        from astrid.core.generation.preflight import require_local_generation_readiness
 
         if capability.id == "generation.generate_image":
             recipe = request_inputs.get("shot_generation_recipe")
@@ -4393,13 +4649,8 @@ def invoke(
                 except GenerateImageAdapterError as exc:
                     raise CapabilityValidationError(str(exc)) from exc
 
-        model_entry, _mode_spec = validate_generation_request(
-            model_registry,
-            model=request_inputs.get("model"),
-            mode=request_inputs.get("mode"),
-            execution=request_inputs.get("execution"),
-            inputs=request_inputs,
-            modality=modality,
+        model_entry, _mode_spec = model_registry.get_by_mode(
+            effective_inputs["model"], effective_inputs["mode"]
         )
         if request_inputs.get("execution") == "local":
             require_local_generation_readiness(

@@ -571,6 +571,7 @@ def generate_core(
     loras_parsed = _parse_loras_arg(args.loras)
     all_outputs: list[dict[str, Any]] = []
     generated_paths: list[Path] = []
+    output_seeds: dict[Path, int] = {}
     raw_count = args.count
     if (
         selected_storage_policy is not None
@@ -736,6 +737,7 @@ def generate_core(
             # Convert GenerationResult to manifest output dicts
             for img_path in result.image_paths:
                 rel = str(img_path.relative_to(out))
+                attested_seed = result.output_seeds.get(img_path)
                 # Embed Astrid metadata as astrid_* tEXt chunks (PR-017).
                 _embed_fields: dict[str, str] = {
                     "prompt": prompt_text or getattr(args, "prompt", ""),
@@ -772,10 +774,19 @@ def generate_core(
                     "is_primary": not all_outputs,
                     "content_hash": content_hash,
                     "bytes": img_path.stat().st_size,
+                    "seed_used": (
+                        attested_seed
+                        if isinstance(attested_seed, int)
+                        and not isinstance(attested_seed, bool)
+                        and attested_seed >= 0
+                        else None
+                    ),
                 }
                 all_outputs.append(output_entry)
+                if output_entry["seed_used"] is not None:
+                    output_seeds[img_path] = output_entry["seed_used"]
 
-            final_seed = result.seed_used
+            final_seed = seed
             model_actual = result.model_actual
             cost_usd = result.cost_usd
             duration_ms = result.duration_ms
@@ -881,7 +892,8 @@ def generate_core(
 
     generation_result = GenerationResult(
         image_paths=generated_paths,
-        seed_used=final_seed,
+        seed_used=manifest["seed_used"],
+        output_seeds=output_seeds,
         model_actual=model_actual,
         cost_usd=cost_usd,
         duration_ms=duration_ms,

@@ -388,6 +388,7 @@ class HostChildBridge:
         uploads = []
         snapshot_bytes = 0
         child_bytes = 0
+        prompt_snapshot: bytes | None = None
         for binding in bindings:
             name = binding["name"]
             if binding.get("kind") == "producer_file":
@@ -402,6 +403,8 @@ class HostChildBridge:
                 data = _snapshot(self.output_root, binding["filename"], maximum, attempt_fd=self._attempt_fd)
                 if prepared is not None and name in prepared:
                     self._verify_prepared_snapshot(prepared[name], binding, data)
+                if name == "prompts_file":
+                    prompt_snapshot = data
                 snapshot_bytes += len(data)
                 child_bytes += len(data)
                 if snapshot_bytes > min(self.policy["limits"]["max_child_bytes"], self.policy["limits"]["max_derived_bytes"]):
@@ -426,8 +429,10 @@ class HostChildBridge:
                         or value.get("digest", oid) != oid):
                     raise ChildBridgeError("object binding disagrees with input")
                 data = self.client.get_object(oid.removeprefix("sha256:"))
-                if len(data) > _MAX_OBJECT or "sha256:" + hashlib.sha256(data).hexdigest() != oid:
+                if type(data) is not bytes or len(data) > _MAX_OBJECT or "sha256:" + hashlib.sha256(data).hexdigest() != oid:
                     raise ChildBridgeError("object bytes failed verification")
+                if name == "prompts_file":
+                    prompt_snapshot = data
                 child_bytes += len(data)
                 filename = _filename(value.get("filename", name) if isinstance(value, dict) else name)
                 ordered.append({"name": name, "object_id": oid, "filename": filename,
@@ -445,7 +450,55 @@ class HostChildBridge:
                 raise ChildBridgeError("prepared child media budget exceeded")
         if len({ref["filename"] for ref in ordered}) != len(ordered):
             raise ChildBridgeError("child input registration filenames collide")
+        generation_context = request.get("generation_preflight")
+        generation_id = record.id in {
+            "generation.generate_image", "generation.generate_image_codex",
+            "generation.generate_video", "generation.generate_audio",
+        }
+        if generation_id and inputs.get("prompts_file"):
+            from astrid.sdk.invocation import (
+                _GenerationPromptContinuation, _INTERNAL_DISPATCH_TOKEN,
+                _generation_port_default, invoke,
+            )
+            from astrid.sdk._module import _sdk_module
+            from astrid.sdk.exceptions import AstridSDKError
+
+            if (type(generation_context) is not dict
+                    or set(generation_context) != {"explicit_inputs", "allow_dropped"}
+                    or type(generation_context["explicit_inputs"]) is not dict
+                    or type(generation_context["allow_dropped"]) is not bool):
+                raise ChildBridgeError("generation prompts require original explicit controls")
+            explicit = generation_context["explicit_inputs"]
+            declared = {port.name for port in record.definition.inputs}
+            expected = dict(explicit)
+            for port in record.definition.inputs:
+                if port.name not in expected and port.default is not None:
+                    expected[port.name] = _generation_port_default(port)
+            if set(explicit) - declared or expected != inputs:
+                raise ChildBridgeError("generation explicit controls disagree with submitted inputs")
+            roots = tuple(self.host.pack_roots)
+            registry = _sdk_module()._load_model_registry(
+                project_root=roots[0] if roots else None,
+                extra_pack_roots=tuple(str(root) for root in roots),
+            )
+            continuation = _GenerationPromptContinuation(
+                capability=record.definition, registry=registry, inputs=inputs,
+                explicit_inputs=explicit, prompt_bytes=prompt_snapshot,
+                allow_dropped=generation_context["allow_dropped"], token=_INTERNAL_DISPATCH_TOKEN,
+            )
+            try:
+                validated = invoke(record.id, kind="executor", _generation_prompt_continuation=continuation)
+            except AstridSDKError as exc:
+                raise ChildBridgeError(str(exc)) from exc
+            if (validated.prompt_bytes is not prompt_snapshot
+                    or validated.inputs != inputs):
+                raise ChildBridgeError("generation continuation changed authenticated input binding")
+            inputs = validated.inputs
+        elif generation_context is not None:
+            raise ChildBridgeError("unexpected generation prompt continuation")
         identity_values = {"child": child, "inputs": inputs, "ordered": ordered}
+        if generation_context is not None:
+            identity_values["generation_preflight"] = generation_context
         if prepared is not None:
             identity_values["discovery_provenance"] = dict(prepared)
         identity = hashlib.sha256(_strict_json(identity_values)).hexdigest()
@@ -933,6 +986,8 @@ class HostChildBridge:
                              {"child_key", "child", "inputs", "input_descriptors", "wait", "timeout_seconds", "poll_seconds"}
                              if op == "submit" else {"child_key", "task_id", "association_id"}
                              if op == "materialize_output" else {"child_key", "task_id"})
+        if op == "submit" and "generation_preflight" in request:
+            expected.add("generation_preflight")
         if (set(request) != expected or request.get("v") != 1 or type(request.get("v")) is not int
                 or type(request.get("request_id")) is not int or request["request_id"] <= self._sequence
                 or op not in {"submit", "status", "outputs", "publish_snapshot", "materialize_output"}

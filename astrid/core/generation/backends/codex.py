@@ -143,7 +143,6 @@ class CodexBackend(BackendAdapter):
         applied, dropped = split_feature_support(params, mode_spec.supports)
         return GenerationResult(
             image_paths=image_paths,
-            seed_used=int(params.get("seed") or 0),
             model_actual=endpoint,
             duration_ms=duration_ms,
             applied_features=applied,

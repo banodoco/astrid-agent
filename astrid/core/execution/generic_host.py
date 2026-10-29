@@ -6944,7 +6944,9 @@ class GenericPackHost:
             return normalized
 
         input_spec = _admitted_spec_envelope(spec)
-        values = dict(input_spec.get("inputs", {})) if isinstance(input_spec.get("inputs", {}), Mapping) else {}
+        from ._prompt_snapshot import _PromptSnapshot, _PromptSnapshotInputs
+
+        values = _PromptSnapshotInputs(input_spec.get("inputs", {})) if isinstance(input_spec.get("inputs", {}), Mapping) else _PromptSnapshotInputs()
         params = input_spec.get("params")
         bounded_policy = None
         if storage_policy_version in {
@@ -7306,8 +7308,10 @@ class GenericPackHost:
                             "astrid.cloud-edit.unified.v1",
                         }
                         and isinstance(value, str)
-                        and len(value) == 64
-                        and all(character in "0123456789abcdef" for character in value)
+                        and (len(value) == 64 or name == "prompts_file"
+                             and value.startswith("sha256:") and len(value) == 71)
+                        and all(character in "0123456789abcdef"
+                                for character in value.removeprefix("sha256:"))
                     )
                     else None
                 )
@@ -7374,8 +7378,11 @@ class GenericPackHost:
                     data = getattr(data, "data", None)
                 if not isinstance(data, (bytes, bytearray)) or hashlib.sha256(bytes(data)).hexdigest() != normalized:
                     raise HostError(f"input object hash mismatch for {name}")
-                write_scratch(path, bytes(data), name=str(name))
+                payload = bytes(data)
+                write_scratch(path, payload, name=str(name))
                 values[name] = str(path)
+                if name == "prompts_file" and name in file_input_names:
+                    values._prompt_snapshot = _PromptSnapshot(str(path), "sha256:" + normalized, payload)
 
             if name not in registry_input_names:
                 continue
@@ -8530,12 +8537,25 @@ class GenericPackHost:
                 flags = ["-X", "utf8", *flags]
             argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
                     "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+        from ._prompt_snapshot import _prompt_snapshot_transport
+        prompt_transport = None
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
                 raise HostError("renderer command requires the admitted Python interpreter")
             remotion_lease = self._renderer_task_lease(env, attempt)
         try:
+            prompt_transport = _prompt_snapshot_transport(inputs)
+            if (record.id in {"generation.generate_image", "generation.generate_image_codex",
+                              "generation.generate_video", "generation.generate_audio"}
+                    and inputs.get("prompts_file") and prompt_transport is None):
+                raise HostError("generation prompt execution requires retained authenticated bytes")
+            if prompt_transport is not None:
+                if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                    raise HostError("generation prompts require the admitted Python interpreter")
+                inherited_fds += (prompt_transport.fileno(),)
+                argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                        "--prompt-command", str(prompt_transport.fileno()), json.dumps(argv[1:])]
             if remotion_lease is not None:
                 inherited_fds += (remotion_lease.inherited_fd(),)
                 argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
@@ -8562,6 +8582,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        finally:
+            if prompt_transport is not None:
+                prompt_transport.close()
         self._track_process(process)
         stream_secrets = dict(secrets)
         stream_secrets.update({
@@ -8815,10 +8838,21 @@ class GenericPackHost:
         broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
         argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
         inherited_fds = ()
+        from ._prompt_snapshot import _prompt_snapshot_transport
+        prompt_inputs = request.get("inputs")
+        prompt_transport = _prompt_snapshot_transport(prompt_inputs)
+        if (capability_id in {"generation.generate_image", "generation.generate_image_codex",
+                              "generation.generate_video", "generation.generate_audio"}
+                and isinstance(prompt_inputs, Mapping) and prompt_inputs.get("prompts_file")
+                and prompt_transport is None):
+            raise HostError("generation prompt execution requires retained authenticated bytes")
+        if prompt_transport is not None:
+            inherited_fds += (prompt_transport.fileno(),)
+            payload["prompt_snapshot_fd"] = prompt_transport.fileno()
         try:
             if capability_kind == "executor" and capability_id == "rendering.timeline_visualize":
                 remotion_lease = self._renderer_task_lease(env, attempt_path)
-                inherited_fds = (remotion_lease.inherited_fd(),)
+                inherited_fds += (remotion_lease.inherited_fd(),)
                 payload["remotion_host_fd"] = remotion_lease.inherited_fd()
             request_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             if child_bridge is not None:
@@ -8844,6 +8878,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        finally:
+            if prompt_transport is not None:
+                prompt_transport.close()
         self._track_process(process)
         output_capture = _TaskOutputCapture(attempt_path, secret_values, self._scrub_secret_text)
         output_capture.start(process)

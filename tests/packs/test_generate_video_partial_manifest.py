@@ -83,7 +83,7 @@ class TestPartialOutputManifestOnVideoLoopFailure:
         args.out = out
         args.prompts_file = None
         args.env_file = None
-        args.seed = None
+        args.seed = 42
         args.image_ref = None
         args.image_end_ref = None
         args.video_ref = None
@@ -129,6 +129,7 @@ class TestPartialOutputManifestOnVideoLoopFailure:
             assert manifest_data["outputs"][0]["path"].startswith("videos/")
             assert manifest_data["model_actual"] == "test-model-actual"
             assert manifest_data["seed"] == 42
+            assert manifest_data["outputs"][0]["seed_used"] is None
 
     def test_no_manifest_written_when_no_outputs_produced(
         self, tmp_path: Path,

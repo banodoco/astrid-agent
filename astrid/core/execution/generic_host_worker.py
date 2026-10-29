@@ -28,7 +28,7 @@ def _install_inherited_bridge(fd: str):
     return _install_child_bridge(channel)
 
 
-def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
+def _run_child_command(fd: str, encoded: str, *, renderer: bool = False, prompt: bool = False) -> int:
     """Install before Python command code, preserving its argv and entry point."""
     args = json.loads(encoded)
     if not isinstance(args, list) or not args or any(not isinstance(arg, str) for arg in args):
@@ -44,7 +44,11 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
     if (not args or args[0].startswith("-") and args[0] not in {"-c", "-m"}
             or args[0] in {"-c", "-m"} and len(args) < 2):
         raise ValueError("unsupported delegating Python command flags")
-    if renderer:
+    if prompt:
+        from ._prompt_snapshot import _install_prompt_snapshot
+        _install_prompt_snapshot(fd)
+        bridge = None
+    elif renderer:
         from .remotion_host_session import install_host_remotion_client
         bridge = install_host_remotion_client(fd)
     else:
@@ -70,7 +74,8 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
             runpy.run_path(args[0], run_name="__main__")
         return 0
     finally:
-        bridge.close()
+        if bridge is not None:
+            bridge.close()
 
 
 def _json_value(value: Any) -> Any:
@@ -135,6 +140,12 @@ def run(payload_path: str | Path) -> int:
         roots = ()
     if roots and expected_source and _source_digest_for_roots(roots) != expected_source:
         raise ValueError("admitted capability source digest changed")
+    prompt_fd = payload.get("prompt_snapshot_fd")
+    if prompt_fd is not None:
+        if kind != "executor" or type(prompt_fd) is not int:
+            raise ValueError("invalid inherited generation prompt snapshot")
+        from ._prompt_snapshot import _install_prompt_snapshot
+        _install_prompt_snapshot(prompt_fd)
     remotion_fd = payload.get("remotion_host_fd")
     if remotion_fd is not None:
         if kind != "executor" or capability_id != "rendering.timeline_visualize" or type(remotion_fd) is not int:
@@ -178,8 +189,9 @@ def run(payload_path: str | Path) -> int:
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) == 4 and sys.argv[1] in {"--child-command", "--renderer-command"}:
-            raise SystemExit(_run_child_command(sys.argv[2], sys.argv[3], renderer=sys.argv[1] == "--renderer-command"))
+        if len(sys.argv) == 4 and sys.argv[1] in {"--child-command", "--renderer-command", "--prompt-command"}:
+            raise SystemExit(_run_child_command(sys.argv[2], sys.argv[3],
+                renderer=sys.argv[1] == "--renderer-command", prompt=sys.argv[1] == "--prompt-command"))
         bridge = None
         if len(sys.argv) == 4 and sys.argv[2] == "--child-bridge":
             bridge = _install_inherited_bridge(sys.argv[3])

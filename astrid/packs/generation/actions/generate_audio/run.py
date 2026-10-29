@@ -361,6 +361,7 @@ def generate_core(
     # --- sequential N=1 generation loop -------------------------------------
     all_outputs: list[dict[str, Any]] = []
     generated_paths: list[Path] = []
+    output_seeds: dict[Path, int] = {}
     count = max(1, args.count or 1)
     prompt_text: str | None = None
     final_seed: int = 0
@@ -471,6 +472,7 @@ def generate_core(
 
                 # ffprobe best-effort metadata
                 probe = ffprobe_metadata(audio_path)
+                attested_seed = result.output_seeds.get(audio_path)
 
                 output_entry: dict[str, Any] = {
                     "path": rel,
@@ -481,10 +483,19 @@ def generate_core(
                     "content_hash": content_hash,
                     "bytes": audio_path.stat().st_size,
                     "duration_seconds": probe.duration_seconds,
+                    "seed_used": (
+                        attested_seed
+                        if isinstance(attested_seed, int)
+                        and not isinstance(attested_seed, bool)
+                        and attested_seed >= 0
+                        else None
+                    ),
                 }
                 all_outputs.append(output_entry)
+                if output_entry["seed_used"] is not None:
+                    output_seeds[audio_path] = output_entry["seed_used"]
 
-            final_seed = result.seed_used
+            final_seed = seed
             model_actual = result.model_actual
             cost_usd = result.cost_usd
             duration_ms = result.duration_ms
@@ -562,7 +573,8 @@ def generate_core(
 
     return GenerationResult(
         image_paths=generated_paths,
-        seed_used=final_seed,
+        seed_used=manifest["seed_used"],
+        output_seeds=output_seeds,
         model_actual=model_actual,
         cost_usd=cost_usd,
         duration_ms=duration_ms,

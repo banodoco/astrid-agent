@@ -125,7 +125,6 @@ class WavespeedBackend(BackendAdapter):
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # --- extract metadata ------------------------------------------------
-        seed_used: int = params.get("seed", 0)
         cost_usd: float | None = None
         request_id: str | None = result.get("request_id")
 
@@ -161,7 +160,6 @@ class WavespeedBackend(BackendAdapter):
 
         return GenerationResult(
             image_paths=image_paths,
-            seed_used=seed_used,
             model_actual=endpoint,
             cost_usd=cost_usd,
             duration_ms=duration_ms,

@@ -82,7 +82,7 @@ class TestPartialOutputManifestOnLoopFailure:
         args.out = out
         args.prompts_file = None
         args.env_file = None
-        args.seed = None
+        args.seed = 42
         args.negative_prompt = None
         args.duration = None
         args.guidance_scale = None
@@ -117,6 +117,7 @@ class TestPartialOutputManifestOnLoopFailure:
             assert manifest_data["outputs"][0]["path"].startswith("audio/")
             assert manifest_data["model_actual"] == "test-model-actual"
             assert manifest_data["seed"] == 42
+            assert manifest_data["outputs"][0]["seed_used"] is None
             assert manifest_data["modality"] == "audio"
             assert manifest_data["mode_used"] == "music"
 

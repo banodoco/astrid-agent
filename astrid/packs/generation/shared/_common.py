@@ -50,7 +50,9 @@ def build_generation_manifest(
     """Build a generation manifest via the shared contract (schema v2).
 
     Wraps :func:`build_manifest` with ``schema_version=2`` and generation-
-    specific fields passed through as ``**extras``.
+    specific fields passed through as ``**extras``.  The top-level ``seed``
+    remains the submitted request summary; ``seed_used`` is derived only from
+    per-output attestation fields.
     """
     extras: dict[str, Any] = {
         "modality": modality,
@@ -60,6 +62,7 @@ def build_generation_manifest(
         "execution": execution,
         "request": request,
         "seed": seed,
+        "seed_used": _attested_seed_summary(outputs),
     }
     if dropped_features:
         extras["dropped_features"] = dropped_features
@@ -83,6 +86,17 @@ def build_generation_manifest(
         warnings=warnings,
         **extras,
     )
+
+
+def _attested_seed_summary(outputs: list[dict[str, Any]]) -> int | None:
+    """Summarize output seed attestations when they all agree."""
+    if not outputs:
+        return None
+    seeds = [output.get("seed_used") for output in outputs]
+    if any(type(value) is not int or value < 0 for value in seeds):
+        return None
+    first = seeds[0]
+    return first if all(value == first for value in seeds[1:]) else None
 
 
 # ---------------------------------------------------------------------------
@@ -182,12 +196,26 @@ def _load_prompts(path: Path, model: str, mode: str) -> list[dict[str, Any]]:
     Per-entry ``model`` overrides must include an explicit ``mode`` field
     matching CLI ``--mode`` or be rejected.
     """
-    text = path.read_text(encoding="utf-8").strip()
+    from astrid.core.execution._prompt_snapshot import _retained_prompt_bytes
+
+    content = _retained_prompt_bytes(path)
+    if content is None:
+        content = path.read_bytes()
+    return _parse_prompts_bytes(content, model, mode, source=str(path))
+
+
+def _parse_prompts_bytes(
+    content: bytes, model: str, mode: str, *, source: str = "prompts file"
+) -> list[dict[str, Any]]:
+    """Parse the exact immutable bytes of a JSON/JSONL prompt snapshot."""
+    if type(content) is not bytes:
+        raise TypeError("prompt content must be immutable bytes")
+    text = content.decode("utf-8").strip()
     if text.startswith("["):
         data = json.loads(text)
         if isinstance(data, list):
             return _normalise_prompts(data, model, mode)
-        raise SystemExit(f"{path}: top-level JSON must be an array or JSONL")
+        raise SystemExit(f"{source}: top-level JSON must be an array or JSONL")
 
     entries: list[dict[str, Any]] = []
     for line in text.splitlines():
@@ -196,7 +224,7 @@ def _load_prompts(path: Path, model: str, mode: str) -> list[dict[str, Any]]:
             continue
         entries.append(json.loads(line))
     if not entries:
-        raise SystemExit(f"{path}: no valid entries found")
+        raise SystemExit(f"{source}: no valid entries found")
     return _normalise_prompts(entries, model, mode)
 
 

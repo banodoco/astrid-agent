@@ -122,7 +122,11 @@ def test_generate_core_returns_enriched_generation_result(
     assert result.path == out / "videos" / "generated_001.mp4"
     assert result.image_paths == [out / "videos" / "generated_001.mp4"]
     assert result.video_paths == [out / "videos" / "generated_001.mp4"]
-    assert result.seed_used == 7
+    # A scalar request echo from a legacy adapter is not output attestation.
+    assert result.seed_used is None
+    assert result.output_seeds == {}
+    assert manifest["seed"] == manifest["request"]["seed"] == 7
+    assert manifest["outputs"][0]["seed_used"] is None
     assert result.model_actual == "fal-ai/wan/v2.2/i2v"
     assert result.cost_usd == 0.84
     assert result.duration_ms == 654
