@@ -8,6 +8,10 @@ from astrid.core.execution.generic_host import GenericPackHost
 
 
 def test_beta_matrix_covers_every_discovered_capability_and_declaration():
+    import yaml
+
+    from astrid.core.execution.executor.actions import action_is_local_orchestrator
+
     host = GenericPackHost(pack_roots=[Path("astrid/packs")])
     records = host.discover()
     uninstalled_external_contracts = {
@@ -15,15 +19,20 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         for capability_id in host.matrix
         if capability_id.startswith("hivemind.")
     }
-    # h3_av.transform declares metadata.local_orchestrator, so the action
-    # loader rejects it as a host executor; it is owned by the orchestrator
-    # registry and its stale matrix row is reported, not discovered.
-    local_orchestrators = {"h3_av.transform"}
+    h3_pack = yaml.safe_load(Path("astrid/packs/h3_av/pack.yaml").read_text(encoding="utf-8"))
+    local_orchestrators = {
+        f"h3_av.{local_id}"
+        for local_id, declaration in h3_pack["actions"].items()
+        if action_is_local_orchestrator(declaration)
+    }
+    assert "h3_av.transform" in local_orchestrators
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
     assert {record.id for record in records} == (
         set(host.matrix) - uninstalled_external_contracts - local_orchestrators
     )
+    assert not (set(host.stale_matrix_entries) & local_orchestrators)
+    assert "h3_av.transform" not in host.stale_matrix_entries
     assert {record.matrix["disposition"] for record in records} <= {"required", "optional", "unsupported", "retired"}
     for record in records:
         assert record.matrix["evidence_reason"]
@@ -32,6 +41,14 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         assert record.capability_digest and record.source_digest
         assert isinstance(record.manifest()["inputs"], list)
         assert isinstance(record.manifest()["outputs"], list)
+
+
+def test_music_duck_matrix_declares_its_runtime_dependencies():
+    matrix = json.loads(Path("config/astrid-beta-capabilities.json").read_text(encoding="utf-8"))
+    row = next(item for item in matrix["capabilities"] if item["id"] == "music.duck")
+
+    assert row["required_binaries"] == ["ffmpeg", "ffprobe"]
+    assert row["required_packages"] == ["numpy"]
 
 
 def test_beta_reference_family_preflight_is_truthful_on_this_machine():

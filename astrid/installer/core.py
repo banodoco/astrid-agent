@@ -214,6 +214,8 @@ class Installer:
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
             realm = self.backend.workspace(old, self.data)
+            repair_chat_command = getattr(self.backend, "repair_chat_command", None)
+            chat_changed = bool(repair_chat_command and repair_chat_command(old))
             if self.managed_by == "pinokio":
                 self.backend.register(old, self.data)
                 try:
@@ -229,7 +231,7 @@ class Installer:
             except VerificationError:
                 pass
             else:
-                if not self.backend.restart_required():
+                if not chat_changed and not self.backend.restart_required():
                     self.say("Open https://astrid.haus")
                     self.backend.open()
                     return

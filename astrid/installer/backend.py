@@ -228,10 +228,58 @@ class Backend:
             chat_cwd = Path(os.environ.get("ASTRID_ACP_CWD") or data / "chat")
         return chat_cwd, chat_options
 
+    def _external_chat_command(self, command: str) -> bool:
+        try:
+            path = Path(command)
+            resolved = path.resolve(strict=True)
+            versions = (self.root / "versions").resolve()
+            if sys.platform == "win32":
+                # Node launches exe/com directly; cmd/bat go through cmd.exe.
+                suffix = path.suffix.lower()
+                launchable = suffix in {".exe", ".com", ".cmd", ".bat"}
+                if suffix in {".cmd", ".bat"} and any(c in command for c in '\r\n"%'):
+                    launchable = False
+            else:
+                launchable = os.access(resolved, os.X_OK)
+            return (path.is_absolute() and resolved.is_file()
+                    and launchable
+                    and not resolved.is_relative_to(versions)
+                    and not Path(os.path.abspath(path)).is_relative_to(Path(os.path.abspath(self.root / "versions"))))
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    def repair_chat_command(self, version: Version) -> bool:
+        """Repair a stale command in the installed service declaration."""
+        profile = read_json(version.profile)
+        declaration_path = profile.get("service_declaration")
+        if not isinstance(declaration_path, str) or not Path(declaration_path).is_absolute():
+            return False
+        path = Path(declaration_path)
+        declaration = read_json(path)
+        chat = next((row for row in declaration.get("services", [])
+                       if isinstance(row, dict) and row.get("name") == "chat"), None)
+        if not isinstance(chat, dict) or not isinstance(chat.get("env"), dict):
+            return False
+        env = chat["env"]
+        default = str(version.python.with_name("astrid.exe")) if sys.platform == "win32" else "astrid"
+        command = env.get("ASTRID_ACP_COMMAND")
+        if command == default or (isinstance(command, str) and self._external_chat_command(command)):
+            return False
+        env["ASTRID_ACP_COMMAND"] = default
+        write_json(path, declaration)
+        self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+        return True
+
     def _declare_services(self, *, folder: Path, agent: Path, data: Path, python: Path,
                           bun: str, env: dict[str, str], old: Version | None) -> Path:
         """Run the candidate package's declaration API and write its profile input."""
         chat_cwd, chat_options = self._selected_chat_settings(old, data)
+        command = chat_options.get("ASTRID_ACP_COMMAND")
+        if command and not self._external_chat_command(command):
+            self.say("Previous chat command is unavailable or belongs to a versioned install; using the selected version's default.")
+            chat_options.pop("ASTRID_ACP_COMMAND", None)
+        # Mask inherited commands so the selected package chooses its default.
+        chat_options.setdefault("ASTRID_ACP_COMMAND", "")
         services_path = folder / "services.json"
         script = (
             "import json,sys; from pathlib import Path; "
