@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One command for a whole GPU pod session, fail closed at every step.
 
-Usage: pod_session.py --datacenters EUR-NO-1,EU-RO-1 --sources-dir DIR --request job/request.json
+Usage: pod_session.py --datacenters EUR-NO-1 --storage-name storage --sources-dir DIR --request job/request.json
                       --asset-map job/asset-map.json --workdir DIR [--token-dir DIR]
 
 Steps, in order: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
@@ -44,6 +44,8 @@ from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS  # n
 STEPS = ("claim", "bundle", "bootstrap", "install", "rerun", "s0", "clip", "download", "release")
 JOB_LIMIT = 100
 DEFAULT_GPUS = ("RTX 5090", "RTX PRO 4500")
+STORAGE_NAME = "storage"
+DATACENTER = "EUR-NO-1"
 CUDA_VERSIONS = ",".join(DEFAULT_ALLOWED_CUDA_VERSIONS)
 ENGINE = "vibecomfy-h3"
 PLATFORM = "linux-x86_64-cu130"
@@ -389,7 +391,8 @@ class Session:
         self.released = False
         self.records: list[dict] = []
         self.state: dict[str, Any] = {}
-        self.cli_env = {k: v for k, v in os.environ.items() if k not in ("RUNPOD_STORAGE_NAME", "RUNPOD_STORAGE_VOLUMES")}
+        self.cli_env = {k: v for k, v in os.environ.items()
+                        if k not in ("RUNPOD_STORAGE_NAME", "RUNPOD_STORAGE_VOLUMES", "RUNPOD_ATTACH_ONLY")}
 
     # -- agent jobs ---------------------------------------------------------------------------
     def start_job(self, label: str, command: str) -> dict:
@@ -452,6 +455,11 @@ class Session:
     def claim(self) -> dict:
         from runpod_lifecycle.https import read_token_file, write_token_file
 
+        if self.args.datacenters != [DATACENTER]:
+            raise SessionError(f"claim: C0 requires exactly one datacenter: {DATACENTER}")
+        if self.args.storage_name != STORAGE_NAME:
+            raise SessionError(f"claim: C0 requires the existing storage volume named {STORAGE_NAME!r}")
+
         footprint = recipe_footprint_gb()
         disk = container_disk_gb(self.args.container_disk_gb, footprint)
         image = self.args.image or recipe_image()
@@ -459,28 +467,31 @@ class Session:
         token_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.token_path = token_dir / f"pod-session-{self.sid}.token"
         write_token_file(self.token_path, secrets.token_urlsafe(48))  # fresh per claim, O_EXCL, 0600
-        env = dict(self.cli_env, RUNPOD_HTTPS_TOKEN_FILE=str(self.token_path))
+        env = dict(self.cli_env, RUNPOD_HTTPS_TOKEN_FILE=str(self.token_path),
+                   RUNPOD_STORAGE_NAME=self.args.storage_name, RUNPOD_STORAGE_VOLUMES="",
+                   RUNPOD_ATTACH_ONLY="true")
         self.cli_env = env
         tried = []
         for gpu in self.args.gpus:
-            for dc in self.args.datacenters:
-                argv = ["launch", "--detach", "--name", self.name, "--gpu-type", gpu, "--image", image,
-                        "--datacenter-id", dc, "--allowed-cuda-versions", CUDA_VERSIONS,
-                        "--container-disk-gb", str(disk), "--disk-size-gb", str(self.args.volume_gb)]
-                if self.args.wait_capacity:
-                    argv += ["--wait-capacity", str(self.args.wait_capacity)]
-                code, out, err = self.cli(argv, env)
-                tried.append(f"{gpu}@{dc}")
-                if code == 0:
-                    pod_id = parse_json_object(out).get("pod_id")
-                    if not isinstance(pod_id, str) or not re.fullmatch(r"[a-z0-9]+", pod_id):
-                        raise SessionError("launch succeeded but printed no valid pod id")
-                    self.pod_id = pod_id
-                    self.transport = self.transport_factory(pod_id, read_token_file(self.token_path))
-                    self.transport.wait_ready(timeout=600)
-                    return {"pod_id": pod_id, "gpu": gpu, "datacenter": dc, "container_disk_gb": disk,
-                            "volume_gb": self.args.volume_gb, "image": image}
-                self.say(f"[claim] {gpu} @ {dc}: no pod (exit {code}) {safe_tail(err, 300)}")
+            dc = DATACENTER
+            argv = ["launch", "--detach", "--name", self.name, "--gpu-type", gpu, "--image", image,
+                    "--datacenter-id", dc, "--allowed-cuda-versions", CUDA_VERSIONS,
+                    "--container-disk-gb", str(disk), "--disk-size-gb", str(self.args.volume_gb),
+                    "--storage-name", self.args.storage_name]
+            if self.args.wait_capacity:
+                argv += ["--wait-capacity", str(self.args.wait_capacity)]
+            code, out, err = self.cli(argv, env)
+            tried.append(f"{gpu}@{dc}")
+            if code == 0:
+                pod_id = parse_json_object(out).get("pod_id")
+                if not isinstance(pod_id, str) or not re.fullmatch(r"[a-z0-9]+", pod_id):
+                    raise SessionError("launch succeeded but printed no valid pod id")
+                self.pod_id = pod_id
+                self.transport = self.transport_factory(pod_id, read_token_file(self.token_path))
+                self.transport.wait_ready(timeout=600)
+                return {"pod_id": pod_id, "gpu": gpu, "datacenter": dc, "container_disk_gb": disk,
+                        "volume_gb": self.args.volume_gb, "image": image}
+            self.say(f"[claim] {gpu} @ {dc}: no pod (exit {code}) {safe_tail(err, 300)}")
         raise SessionError("claim: no pod from any of: " + ", ".join(tried))
 
     def put(self, local: Path, remote: str) -> None:
@@ -703,7 +714,9 @@ class Session:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--datacenters", required=True, type=lambda s: [d.strip() for d in s.split(",") if d.strip()],
-                   help="comma-separated datacenter ids, tried in order for each GPU")
+                   help=f"the single C0 datacenter (must be {DATACENTER})")
+    p.add_argument("--storage-name", default=STORAGE_NAME,
+                   help=f"existing RunPod network volume (must be {STORAGE_NAME})")
     p.add_argument("--gpus", default=",".join(DEFAULT_GPUS), type=lambda s: [g.strip() for g in s.split(",") if g.strip()],
                    help="GPU names in order of preference (default: %(default)s)")
     p.add_argument("--sources-dir", required=True, help="directory holding runpod-python astrid-runtime runpod-lifecycle VibeComfy")

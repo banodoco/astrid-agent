@@ -46,7 +46,7 @@ class FakePod:
         self.video, self.fail, self.fail_gpus = video_bytes, fail, set(fail_gpus)
         self.events, self.files, self.jobs, self.puts = [], {}, {}, {}
         self.starts = self.executes = 0
-        self.terminated, self.launches = False, []
+        self.terminated, self.launches, self.launch_storage_env = False, [], []
         self.pod = "abc123podid"
 
     # -- CLI -------------------------------------------------------------------------------
@@ -54,9 +54,11 @@ class FakePod:
         cmd = argv[0]
         if cmd == "launch":
             self.launches.append(argv)
+            self.launch_storage_env.append({key: env.get(key) for key in
+                                            ("RUNPOD_STORAGE_NAME", "RUNPOD_STORAGE_VOLUMES", "RUNPOD_ATTACH_ONLY")})
             self.events.append("launch")
             gpu = argv[argv.index("--gpu-type") + 1]
-            if self.fail == "claim" or gpu in self.fail_gpus:
+            if self.fail in ("claim", "missing_storage") or gpu in self.fail_gpus:
                 return 1, "", "no capacity"
             return 0, json.dumps({"pod_id": self.pod, "name": "n", "https": "x"}), ""
         if cmd == "terminate":
@@ -194,7 +196,8 @@ def make_args(tmp_path, extra=()):
         (assets / f"{n}.png").write_bytes(n.encode())
     (tmp_path / "request.json").write_text(json.dumps(REQUEST, indent=2))
     (tmp_path / "asset-map.json").write_text(json.dumps({n: str(assets / f"{n}.png") for n in ("img1", "img2")}))
-    argv = ["--datacenters", "EUR-NO-1,EU-RO-1", "--sources-dir", str(sources), "--request", str(tmp_path / "request.json"),
+    argv = ["--datacenters", ps.DATACENTER, "--storage-name", ps.STORAGE_NAME,
+            "--sources-dir", str(sources), "--request", str(tmp_path / "request.json"),
             "--asset-map", str(tmp_path / "asset-map.json"), "--workdir", str(tmp_path / "work"),
             "--token-dir", str(tmp_path / "tokens"), "--poll-interval", "0", *extra]
     return ps.build_parser().parse_args(argv), agent
@@ -255,13 +258,58 @@ def test_claim_arguments_and_gpu_fallback(tmp_path, video):
     assert code == 0
     gpus = [a[a.index("--gpu-type") + 1] for a in pod.launches]
     dcs = [a[a.index("--datacenter-id") + 1] for a in pod.launches]
-    assert gpus == ["RTX 5090", "RTX 5090", "RTX PRO 4500"] and dcs == ["EUR-NO-1", "EU-RO-1", "EUR-NO-1"]
+    assert gpus == ["RTX 5090", "RTX PRO 4500"] and dcs == [ps.DATACENTER, ps.DATACENTER]
     argv = pod.launches[-1]
     assert argv[argv.index("--allowed-cuda-versions") + 1] == "13.0,13.1,13.2,13.3"
     assert argv[argv.index("--container-disk-gb") + 1] == "120"
     assert argv[argv.index("--disk-size-gb") + 1] == "10"
     assert argv[argv.index("--image") + 1] == ps.recipe_image() and "--detach" in argv
-    assert "--storage-name" not in argv
+    assert argv[argv.index("--storage-name") + 1] == ps.STORAGE_NAME
+    assert pod.launch_storage_env == [
+        {"RUNPOD_STORAGE_NAME": ps.STORAGE_NAME, "RUNPOD_STORAGE_VOLUMES": "", "RUNPOD_ATTACH_ONLY": "true"}
+    ] * 2
+    assert all("--storage-volumes" not in a for a in pod.launches)
+
+
+@pytest.mark.parametrize("datacenters", [["EU-RO-1"], [ps.DATACENTER, "EU-RO-1"], [ps.DATACENTER, ps.DATACENTER]])
+def test_invalid_datacenter_selection_fails_before_claim(tmp_path, video, datacenters):
+    args, agent = make_args(tmp_path)
+    args.datacenters = datacenters
+    pod = FakePod(video)
+    session = ps.Session(args, cli=pod.cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         sleep=lambda s: None, say=lambda message: None, agent_root=agent)
+
+    assert session.run() == 1
+    assert pod.launches == [] and pod.events == ["list"] and pod.starts == 0 and pod.executes == 0
+    assert not list((tmp_path / "tokens").glob("*.token"))
+
+
+def test_missing_storage_fails_closed_without_pod_or_fallback(tmp_path, video):
+    args, agent = make_args(tmp_path)
+    pod = FakePod(video, fail="missing_storage")
+    session = ps.Session(args, cli=pod.cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         sleep=lambda s: None, say=lambda message: None, agent_root=agent)
+
+    assert session.run() == 1
+    assert len(pod.launches) == len(ps.DEFAULT_GPUS)
+    assert all(a[a.index("--storage-name") + 1] == ps.STORAGE_NAME for a in pod.launches)
+    assert all(a[a.index("--datacenter-id") + 1] == ps.DATACENTER for a in pod.launches)
+    assert all("--storage-volumes" not in a for a in pod.launches)
+    assert all(env["RUNPOD_ATTACH_ONLY"] == "true" and env["RUNPOD_STORAGE_VOLUMES"] == ""
+               for env in pod.launch_storage_env)
+    assert not pod.terminated and "ready" not in pod.events and pod.starts == 0 and pod.executes == 0
+
+
+def test_missing_storage_name_fails_before_claim(tmp_path, video):
+    args, agent = make_args(tmp_path)
+    args.storage_name = ""
+    pod = FakePod(video)
+    session = ps.Session(args, cli=pod.cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         sleep=lambda s: None, say=lambda message: None, agent_root=agent)
+
+    assert session.run() == 1
+    assert pod.launches == [] and pod.events == ["list"] and pod.starts == 0 and pod.executes == 0
+    assert not list((tmp_path / "tokens").glob("*.token"))
 
 
 def test_container_disk_is_sized_from_the_recipe():
