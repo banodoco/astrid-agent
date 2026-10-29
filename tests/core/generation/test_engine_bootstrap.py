@@ -248,3 +248,14 @@ def test_stale_or_missing_local_metadata_refused(monkeypatch, tmp_path):
     metadata.write_text(metadata.read_text().replace('Version: 0.1.0', 'Version: 9.9.9'))
     with pytest.raises(IntegrityError):
         bootstrap.build_cli_bootstrap(ARGV)
+
+
+def test_implicit_local_root_planning_in_bootstrap(tmp_path):
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
+
+    root = str(tmp_path / 'registered')
+    record_engine_root('vibecomfy-h3', root)
+    bundle = bootstrap.build_cli_bootstrap(('engines', 'install', 'vibecomfy-h3', '--dry-run'))
+    result = run(bundle, env={**bundle.env, 'HOME': str(Path.home())})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)['plan']['root'] == root

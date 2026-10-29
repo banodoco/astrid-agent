@@ -6,12 +6,19 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
+from dataclasses import dataclass
 
 import pytest
 
 from astrid.core import engine_cli
 from astrid.core.generation.engine_contracts import CommandFailed, CustodyUnresolved
 from astrid.core.generation.engine_local_endpoint import recorded_engine_root
+
+@dataclass
+class InstallResult:
+    status: str
+
 
 ROOT = '/TARGET_ONLY/engine'
 BASE = ['vibecomfy-h3', '--root', ROOT]
@@ -210,3 +217,69 @@ def test_fuse_workspace_custody_owner_only_directory_passes_the_preflight(tmp_pa
     _, _, err = invoke(['install', 'vibecomfy-h3', '--root', str(root)], capsys, backend_factory=backend)
     assert reached == [str(root)] and 'custody_not_owner_only' not in err
 
+
+
+def test_last_explicit_install_drives_implicit_install_status_and_run(tmp_path, monkeypatch, capsys):
+    from astrid.core.generation.engine_contracts import HealthEvidence
+    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+
+    monkeypatch.delenv('ASTRID_ENGINE_ROOT', raising=False)
+    roots = [str(tmp_path / 'first'), str(tmp_path / 'second')]
+    seen = []
+    def backend(**kwargs):
+        seen.append(kwargs['root'])
+        return object(), object()
+    monkeypatch.setattr(engine_cli, 'install_engine', lambda *args, **kwargs: InstallResult(status='installed'))
+    monkeypatch.setattr(engine_cli, 'engine_status', lambda *args, **kwargs: None)
+    for root in roots:
+        rc, _, err = invoke(['install', 'vibecomfy-h3', '--root', root], capsys, backend_factory=backend)
+        assert rc == 0, err
+    assert recorded_engine_root('vibecomfy-h3') == roots[-1]
+    for command in ('status', 'install'):
+        rc, _, err = invoke([command, 'vibecomfy-h3'], capsys, backend_factory=backend)
+        assert rc == 0, err
+    assert seen == roots + [roots[-1], roots[-1]]
+
+    receipt = Path(roots[-1]) / '.astrid-engine' / 'install.json'
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text('{}')
+    run_roots = []
+    def status(engine, **kwargs):
+        run_roots.append(kwargs['root'])
+        return SimpleNamespace(status='installed', health=HealthEvidence('healthy', '2026-10-28T00:00:00Z', 'ab' * 32, True))
+    local = local_engine_endpoint(context=object(), status=status)
+    assert run_roots == [roots[-1]]
+    assert local.endpoint.attestation.install_receipt_path == str(receipt)
+
+
+def test_implicit_local_root_without_registration_uses_default(monkeypatch, capsys):
+    from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
+
+    monkeypatch.delenv('ASTRID_ENGINE_ROOT', raising=False)
+    expected = str(Path.home() / '.astrid-data' / 'engines' / 'vibecomfy-h3')
+    seen = []
+    def backend(**kwargs):
+        seen.append(kwargs['root'])
+        return object(), object()
+    monkeypatch.setattr(engine_cli, 'install_engine', lambda *args, **kwargs: InstallResult(status='failed'))
+    monkeypatch.setattr(engine_cli, 'engine_status', lambda *args, **kwargs: None)
+    for command in ('status', 'install'):
+        rc, _, err = invoke([command, 'vibecomfy-h3'], capsys, backend_factory=backend)
+        assert rc == 0, err
+    def status(engine, **kwargs):
+        seen.append(kwargs['root'])
+        return None
+    with pytest.raises(EngineNotInstalled):
+        local_engine_endpoint(context=object(), status=status)
+    assert seen == [expected, expected, expected]
+
+
+def test_implicit_cli_root_honors_environment_override(monkeypatch, tmp_path, capsys):
+    from astrid.core.generation.engine_local_endpoint import record_engine_root
+
+    record_engine_root('vibecomfy-h3', str(tmp_path / 'registered'))
+    override = str(tmp_path / 'override')
+    monkeypatch.setenv('ASTRID_ENGINE_ROOT', override)
+    rc, out, err = invoke(['install', 'vibecomfy-h3', '--dry-run'], capsys)
+    assert rc == 0, err
+    assert json.loads(out)['plan']['root'] == override

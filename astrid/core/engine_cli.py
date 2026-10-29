@@ -14,7 +14,6 @@ import sys
 import time
 from dataclasses import fields, is_dataclass
 from collections.abc import Mapping
-from pathlib import Path
 
 from astrid.core.generation.engine_contracts import (
     EngineError, RecipeValidationError, UnsafePathError, UnsupportedPlacement, UnsupportedPlatform,
@@ -39,7 +38,7 @@ def _parser():
                              help='Target platform (default: linux-x86_64-cu130)')
         command.add_argument('--placement', choices=('local', 'runpod'), default='local',
                              help='Target placement (default: local)')
-        command.add_argument('--root', help='Absolute target-native root (default: ~/.astrid-data/engines/ENGINE locally, /workspace/astrid/engines/ENGINE on RunPod; required for Windows)')
+        command.add_argument('--root', help='Absolute target-native root (local default: ASTRID_ENGINE_ROOT, registered root, or ~/.astrid-data/engines/ENGINE; RunPod default: /workspace/astrid/engines/ENGINE; required for Windows)')
         command.add_argument('--deadline', type=float, default=3600.0, metavar='SECONDS',
                              help='Operation time limit in seconds (default: 3600)')
         if name == 'install':
@@ -62,7 +61,8 @@ def _root(args):
         raise RecipeValidationError('A target-native --root is required for Windows')
     if args.placement == 'runpod':
         return '/workspace/astrid/engines/' + args.engine
-    return str(Path.home() / '.astrid-data' / 'engines' / args.engine)
+    from .generation.engine_local_endpoint import default_engine_root
+    return default_engine_root(args.engine)
 
 
 class CustodyNotOwnerOnly(UnsafePathError):

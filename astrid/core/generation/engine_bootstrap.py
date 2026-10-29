@@ -29,6 +29,7 @@ _FILES = (
     'astrid/core/__init__.py', 'astrid/core/engine_cli.py',
     'astrid/core/generation/__init__.py', 'astrid/core/generation/engine_contracts.py',
     'astrid/core/generation/engine_recipe.py', 'astrid/core/generation/engine_runner.py',
+    'astrid/core/generation/engine_local_endpoint.py',
     'astrid/core/generation/engine_runner_target.py', 'astrid/core/generation/model_downloader.py',
     'astrid/packs/engine-index.json',
     'astrid/packs/runpod/recipe.linux-cu130.json', 'astrid/packs/runpod/pins.json',
