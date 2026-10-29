@@ -9334,7 +9334,7 @@ class GenericPackHost:
             if isinstance(source, Mapping):
                 options.update(source)
         cost = payload.get("cost", manifest.get("cost"))
-        receipt = InvocationResult(
+        result = InvocationResult(
             capability_id=str(task.get("capability") or ""), capability_type="executor",
             native_kind=record.definition.kind if record is not None else "executor",
             ok=status == "succeeded", error=error,
@@ -9344,17 +9344,7 @@ class GenericPackHost:
             executor_version=record.definition.version if record is not None else None,
             kernel_run_id=task.get("run_id"), kernel_task_id=task["id"],
             kernel_attempt_id=terminal["attempt_id"],
-        ).to_dict()
-        receipt.update({
-            "status": status, "task_id": task["id"], "attempt_id": terminal["attempt_id"],
-            "parent_task_id": task.get("parent_task_id", parent.get("parent_task_id")),
-            "parent_attempt_id": task.get("parent_attempt_id", parent.get("parent_attempt_id")),
-            "request_digest": "sha256:" + _canonical_digest(request),
-            "resolved_options": options, "cost": cost if cost is not None else "unknown",
-            "warnings": warnings,
-            "publication": {"status": "settled" if terminal.get("settled") else "not_settled",
-                            "receipt": terminal.get("settlement"), "effect": terminal.get("effect")},
-        })
+        )
         with terminal.get("completion_lock", threading.RLock()):
             # A slow harvest may have started before the observer's timeout.
             # Recheck at publication, without holding this lock over harvesting.
@@ -9362,7 +9352,17 @@ class GenericPackHost:
                     or (terminal.get("forced") and not minimal)):
                 return
             root.mkdir(parents=True, exist_ok=True)
-            write_json_atomic(root / "result.json", receipt)
+            from astrid.core.execution.terminal_result import write_terminal_result
+
+            write_terminal_result(
+                root, result, status=status,
+                parent_task_id=task.get("parent_task_id", parent.get("parent_task_id")),
+                parent_attempt_id=task.get("parent_attempt_id", parent.get("parent_attempt_id")),
+                request_digest="sha256:" + _canonical_digest(request),
+                resolved_options=options, cost=cost, warnings=warnings,
+                publication={"status": "settled" if terminal.get("settled") else "not_settled",
+                             "receipt": terminal.get("settlement"), "effect": terminal.get("effect")},
+            )
             if terminal.get("forced"):
                 terminal["receipt_final"] = True
 
