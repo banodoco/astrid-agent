@@ -7873,6 +7873,7 @@ class GenericPackHost:
                 "artifact_type": "image/jpeg",
                 "media_type": "image/jpeg",
                 "size": result.path.stat().st_size,
+                "digest": thumbnail_digest,
                 "role": "thumbnail",
                 "durability": "durable",
                 "provenance": {
