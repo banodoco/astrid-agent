@@ -1,97 +1,96 @@
-name: Windows task host journey
+name: TST B3 PowerShell 5.1 lifecycle
 
 on:
   workflow_dispatch:
     inputs:
-      app_ref:
-        description: Optional banodoco/astrid-app ref; defaults to main
-        required: false
+      driver_agent_sha:
+        description: Full SHA of this reviewed TST Agent workflow and verifier
+        required: true
         type: string
-  push:
-    branches: [main, "windows/**"]
-  pull_request:
-    branches: [main]
+      driver_app_sha:
+        description: Full SHA of the reviewed TST App B3 driver
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  windows-journey:
-    name: Windows task host journey (${{ matrix.installer-shell }})
-    runs-on: windows-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        installer-shell: [powershell.exe, pwsh.exe]
+  b3:
+    runs-on: windows-2022
+    timeout-minutes: 150
     steps:
-      - name: Check out this Agent commit
-        uses: actions/checkout@v4
-
-      - name: Set up the journey driver (not the installed Python)
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Resolve the pinned Runtime commit from the Agent lock
-        id: runtime-ref
+      - name: Validate exact driver inputs
         shell: pwsh
+        env:
+          AGENT_SHA: ${{ inputs.driver_agent_sha }}
+          APP_SHA: ${{ inputs.driver_app_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
-          $lock = Get-Content runtime.lock.json -Raw | ConvertFrom-Json
-          $runtimeRef = $lock.source_commit
-          if ($runtimeRef -notmatch '^[0-9a-f]{40}$') {
-            throw "runtime.lock.json source_commit is not a full commit SHA"
-          }
-          "ref=$runtimeRef" >> $env:GITHUB_OUTPUT
-
-      - name: Check out the selected Runtime
-        uses: actions/checkout@v4
+          if ($env:AGENT_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:APP_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:AGENT_SHA -cne $env:WORKFLOW_SHA) { throw 'Full driver SHAs are required; Agent must match workflow commit.' }
+      - uses: actions/checkout@v4
         with:
-          repository: banodoco/astrid-runtime
-          ref: ${{ steps.runtime-ref.outputs.ref }}
-          path: journey-runtime
-
-      - name: Check out the selected App installer
-        uses: actions/checkout@v4
+          repository: banodoco/astrid-agent
+          ref: ${{ inputs.driver_agent_sha }}
+          path: driver-agent
+          persist-credentials: false
+      - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-app
-          ref: ${{ inputs.app_ref || 'main' }}
-          path: journey-app
-
-      - name: Install py-spy in the journey driver environment
-        run: python -m pip install py-spy==0.4.2
-
-      - name: Install with the real App install.ps1 / ${{ matrix.installer-shell }}
-        run: python -u scripts/ci_windows_journey.py install --installer-shell ${{ matrix.installer-shell }}
-
-      - name: Start Runtime through its installed Scheduled Task
-        run: python -u scripts/ci_windows_journey.py start
-
-      - name: Wait for health on 127.0.0.1:17340
-        run: python -u scripts/ci_windows_journey.py health
-
-      - name: Wait for pack-host running and its ready file
-        run: python -u scripts/ci_windows_journey.py host
-
-      - name: Run an installed-profile SDK invocation through settlement
-        run: python -u scripts/ci_windows_journey.py task
-
-      - name: Disable Scheduled Task restarts and run Runtime down
+          ref: ${{ inputs.driver_app_sha }}
+          path: driver-app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: f8c26f95d5cf913db4e85d11360d3961b3d203f7
+          path: product-app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify sources and freeze served manifest
+        shell: pwsh
+        env:
+          AGENT_SHA: ${{ inputs.driver_agent_sha }}
+          APP_SHA: ${{ inputs.driver_app_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git -C driver-agent rev-parse HEAD) -cne $env:AGENT_SHA -or (git -C driver-app rev-parse HEAD) -cne $env:APP_SHA -or (git -C product-app rev-parse HEAD) -cne 'f8c26f95d5cf913db4e85d11360d3961b3d203f7') { throw 'Checkout SHA mismatch.' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'tst-b3-evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $hashes = @{'install-manifest.json'='fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e'; 'install'='100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d'; 'install.sh'='591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285'; 'install.ps1'='bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258'}
+          foreach ($name in $hashes.Keys) { if ((Get-FileHash -Algorithm SHA256 "product-app/public/$name").Hash.ToLowerInvariant() -cne $hashes[$name]) { throw "Product hash mismatch: $name" } }
+          Invoke-WebRequest -Uri 'https://astrid.haus/install-manifest.json' -OutFile "$evidence/served-before.json"
+          if ((Get-FileHash -Algorithm SHA256 "$evidence/served-before.json").Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest differs from reviewed product.' }
+          Copy-Item "$evidence/served-before.json" "$evidence/frozen-manifest.json"
+          @{agent_driver=$env:AGENT_SHA; app_driver=$env:APP_SHA; product_app='f8c26f95d5cf913db4e85d11360d3961b3d203f7'; product_agent='3204bb00135bec8ee2d2d3fb21eed5abfceca649'; product_runtime='6d53a19070faf63fc15ae1f81417722edc2c8a5f'; runner=$env:ImageOS; image_version=$env:ImageVersion; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; hashes=$hashes} | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$evidence/inputs.json"
+      - name: Run native PowerShell 5.1 lifecycle
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'tst-b3-evidence'
+          $runRoot = Join-Path $env:RUNNER_TEMP 'tst-b3-run'
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$pwd/driver-app/scripts/installer/windows-ps51-lifecycle.ps1" -RunRoot $runRoot -Verifier "$pwd/driver-agent/scripts/verify_installed.py" -ProductApp "$pwd/product-app" -FrozenManifest "$evidence/frozen-manifest.json" 2>&1 | Tee-Object -FilePath "$evidence/lifecycle.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Recheck frozen inputs and served manifest
         if: always()
-        run: python -u scripts/ci_windows_journey.py down
-
-      - name: Verify no Astrid or Runtime processes remain
-        if: always()
-        run: python -u scripts/ci_windows_journey.py stopped
-
-      - name: Collect install logs, Runtime logs, health and process lists
-        if: always()
-        run: python -u scripts/ci_windows_journey.py collect
-
-      - name: Upload Windows task host journey evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'tst-b3-evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $hashes = @{'install-manifest.json'='fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e'; 'install'='100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d'; 'install.sh'='591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285'; 'install.ps1'='bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258'}
+          foreach ($name in $hashes.Keys) { if ((Get-FileHash -Algorithm SHA256 "product-app/public/$name").Hash.ToLowerInvariant() -cne $hashes[$name]) { throw "Product hash changed: $name" } }
+          if ((Get-FileHash -Algorithm SHA256 "$evidence/frozen-manifest.json").Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Frozen manifest changed.' }
+          Invoke-WebRequest -Uri 'https://astrid.haus/install-manifest.json' -OutFile "$evidence/served-after.json"
+          if ((Get-FileHash -Algorithm SHA256 "$evidence/served-after.json").Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest changed during run.' }
+      - name: Retain evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Windows-task-host-journey-${{ matrix.installer-shell }}
-          path: ${{ runner.temp }}/X5-windows-journey/
-          if-no-files-found: error
+          name: tst-b3-windows-2022-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/tst-b3-evidence
+            ${{ runner.temp }}/tst-b3-run/receipts
+            ${{ runner.temp }}/tst-b3-run/local-appdata/Astrid Runtime/logs
+          if-no-files-found: warn
