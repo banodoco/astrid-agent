@@ -12042,6 +12042,10 @@ def _validate_local_engine_profile(profile: Mapping[str, Any]) -> dict[str, Any]
     return json.loads(json.dumps(dict(profile), sort_keys=True, allow_nan=False))
 
 
+_PRODUCER_PREPARATION_VERSION = "runtime.local-image-recipe/v1"
+_PRODUCER_FRAME_LIMIT = 1024 * 1024
+
+
 class LocalExecutionPreparation:
     """Private preparation state; no client, claims or credential consumption."""
 
@@ -12069,6 +12073,8 @@ class LocalExecutionPreparation:
         self._claim_host: GenericPackHost | None = None
         self._activation_grant: dict[str, Any] | None = None
         self._retained_relay_actor: Any | None = None
+        self._producer_profile_json: bytes | None = None
+        self._producer_source_closure: str | None = None
         self._handoff_binding: dict[str, Any] | None = None
         self._handoff_binding_digest: str | None = None
         self._handoff_phase = "owned"
@@ -12147,6 +12153,192 @@ class LocalExecutionPreparation:
             if self._activation_grant is not None and self._activation_grant != accepted:
                 raise HostError("retained activation grant changed")
             self._activation_grant = accepted
+
+    def _retain_producer_profile(self, profile: Mapping[str, Any], *, source_closure_digest: str) -> None:
+        """Snapshot startup-selected facts, never fields from a recipe request.
+
+        The existing verified launcher owns source selection. This method does
+        not certify a launch; Runtime must retain/verify its exact child and use
+        that child's existing private control descriptor for this operation.
+        """
+        encoded = _handoff_canonical(profile)
+        if len(encoded) > _PRODUCER_FRAME_LIMIT or not re.fullmatch(r"[0-9a-f]{64}", source_closure_digest):
+            raise HostError("producer startup binding is invalid")
+        with self._lock:
+            if (self._producer_profile_json not in (None, encoded)
+                    or self._producer_source_closure not in (None, source_closure_digest)):
+                raise HostError("producer startup binding changed")
+            self._producer_profile_json = encoded
+            self._producer_source_closure = source_closure_digest
+
+    def _producer_binding(self) -> dict[str, Any]:
+        """Reject unsupported search paths before any recipe production."""
+        from astrid.core.generation.engine_endpoint import read_private_endpoint_file
+
+        retained = self._request
+        if (retained is None or self._aborted or self.error is not None or self.control_error is not None
+                or not self._prepare_done.is_set() or self.result is None or self.result.get("status") != "prepared"
+                or self.graph is None or self._claim_host is None or self._activation_grant is None
+                or self._producer_profile_json is None or self._retained_relay_actor is None):
+            raise HostError("producer has no retained active host preparation")
+        peer = self._retained_relay_actor.verify()
+        if any(peer.get(k) != retained["runtime_owner"].get(k) for k in ("pid", "uid", "birth_id")):
+            raise HostError("producer Runtime peer changed")
+        profile = _validate_local_engine_profile(retained["profile"])
+        protocol = profile.get("host_protocol")
+        if protocol != {"version": CURRENT_ROLES_VERSION, "module": "astrid.core.execution.generic_host",
+                        "source_closure_digest": self._producer_source_closure}:
+            raise HostError("producer requires the retained verified host protocol")
+        readiness = json.loads(self._producer_profile_json)
+        root = model_root_binding_from_profile(readiness, verify_files=True)
+        session = readiness.get("vibecomfy_session")
+        launch = profile["engine_launch"]
+        config = launch["config"]
+        if (not isinstance(session, dict) or not session.get("launch_token")
+                or session.get("session_dir") != launch["session_root"]
+                or session.get("server_url") != profile["engine_endpoint"]
+                or session.get("config_digest") != profile["session_config_digest"]
+                or session.get("source_revision") != launch["source_revision"]
+                or session.get("source_content_digest") != launch["source_content_digest"]
+                or session != (self.graph.readiness_profile or {}).get("vibecomfy_session")):
+            raise HostError("producer session differs from retained owner selection")
+        observed = self.graph.report()  # Existing owned-process/socket/config observation.
+        expected_processes = self.result.get("processes")
+        if (not isinstance(expected_processes, Mapping)
+                or observed.get("processes") != expected_processes
+                or observed.get("session_config_digest") != profile["session_config_digest"]
+                or expected_processes.get("host") != {"pid": os.getpid(), "birth_id": process_birth_identity()}
+                or expected_processes.get("engine") != {"pid": session.get("pid"), "birth_id": session.get("process_birth_id")}
+                or expected_processes.get("engine_listener") != {"pid": session.get("comfy_pid"), "birth_id": session.get("comfy_process_birth_id")}):
+            raise HostError("producer session incarnation changed")
+        # First supported configuration: one default model directory, with
+        # custom nodes disabled and no additional model-path configuration.
+        # A matching filename inventory alone is never model-root authority.
+        base = root.path.parent
+        allowed_config = {"memory_profile", "vram_policy", "reserve_vram_gb", "cache_policy", "disable_smart_memory",
+                          "warm_policy", "auto_flush_vram_threshold_gb", "port", "strict_drift", "runtime_root", "cwd",
+                          "models_root", "models_root_normalized", "base_directory", "launch_flags", "input_directory",
+                          "output_directory", "temp_directory", "server_log_path", "ready_timeout_sec", "locality",
+                          "extra_model_paths_config", "extra"}
+        if (root.path.name != "models" or config.get("base_directory") != str(base)
+                or set(config) - allowed_config
+                or config.get("models_root") != str(root.path)
+                or config.get("models_root_normalized") != str(root.path)
+                or config.get("extra_model_paths_config") not in (None, [])
+                or config.get("launch_flags") != ["--disable-all-custom-nodes"]
+                or config.get("extra") not in (None, {})):
+            raise HostError("producer model search root is not uniquely bound")
+        for directory in (base, Path(config["cwd"])):
+            extra = directory / "extra_model_paths.yaml"
+            if extra.exists() or extra.is_symlink():
+                raise HostError("producer additional model search paths are unsupported")
+        def read(path: Path) -> bytes:
+            return read_private_endpoint_file(str(path), deadline=time.monotonic() + 20, private=False)
+        session_dir = Path(launch["session_root"])
+        config_bytes = read(session_dir / "config.json")
+        if ("sha256:" + hashlib.sha256(config_bytes).hexdigest() != profile["session_config_digest"]
+                or json.loads(config_bytes) != config):
+            raise HostError("producer actual session configuration changed")
+        argv_bytes = read(session_dir / "server_argv.json")
+        argv = json.loads(argv_bytes)
+        if (not isinstance(argv, list) or argv != launch["listener_argv"]
+                or any(not isinstance(arg, str) for arg in argv)
+                or argv.count("--base-directory") != 1 or argv.count("--disable-all-custom-nodes") != 1
+                or "--extra-model-paths-config" in argv
+                or argv[argv.index("--base-directory") + 1:argv.index("--base-directory") + 2] != [str(base)]
+                or any(arg.startswith(("--base-directory=", "--extra-model-paths-config=", "--enable-custom-nodes")) for arg in argv)):
+            raise HostError("producer actual model search arguments differ")
+        return {"owner_epoch": retained["owner_epoch"], "profile_id": profile["profile_id"],
+                "profile_digest": profile["profile_digest"], "profile_binding_digest": _handoff_digest(profile),
+                "release_digest": profile["release_digest"], "source_closure_digest": self._producer_source_closure,
+                "readiness_profile_digest": "sha256:" + hashlib.sha256(self._producer_profile_json).hexdigest(),
+                "session_config_digest": profile["session_config_digest"],
+                "session_config_base64": base64.b64encode(config_bytes).decode("ascii"),
+                "server_argv_base64": base64.b64encode(argv_bytes).decode("ascii"),
+                "processes": expected_processes, "session": session, "model_root": root.as_dict()}
+
+    def _prepare_image_recipe(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Fixed private socket operation; contains no client/admission route.
+
+        v1 accepts exactly one managed UTF-8 prompt and image/t2i scalar
+        controls. Authority fields and file/code/template selection are absent.
+        Runtime must validate associations/bytes and retain this result before
+        ordinary admission; receiving it grants no execution authorization.
+        """
+        from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+        from astrid.core.generation.model_root import validate_model_root_binding
+        from astrid.sdk.generation import _prepare_verified_image_recipe
+
+        encoded_request = _handoff_canonical(request)
+        fields = {"version", "command", "operation_id", "channel_id", "owner_epoch", "request_id", "inputs", "controls"}
+        if (len(encoded_request) > _PRODUCER_FRAME_LIMIT or set(request) != fields
+                or request.get("version") != _PRODUCER_PREPARATION_VERSION or request.get("command") != "prepare_image_recipe"
+                or request.get("operation_id") != self.operation_id or request.get("channel_id") != self.channel_id
+                or self._request is None or request.get("owner_epoch") != self._request["owner_epoch"]
+                or not isinstance(request.get("request_id"), str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request["request_id"])):
+            raise HostError("producer request private binding is invalid")
+        # Detach before use: no mutable caller object survives preparation.
+        request = json.loads(encoded_request)
+        inputs, controls = request["inputs"], request["controls"]
+        if (not isinstance(inputs, list) or len(inputs) != 1 or not isinstance(inputs[0], dict)
+                or set(inputs[0]) != {"name", "object_id", "digest", "filename", "bytes_base64"}
+                or inputs[0].get("name") != "prompt" or inputs[0].get("filename") != "prompt.txt"
+                or not isinstance(controls, dict)
+                or set(controls) - {"seed", "size", "steps", "guidance_scale", "negative_prompt"}):
+            raise HostError("producer managed inputs or controls are invalid")
+        try:
+            prompt_bytes = base64.b64decode(inputs[0]["bytes_base64"], validate=True)
+            prompt = prompt_bytes.decode("utf-8")
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise HostError("producer prompt bytes are invalid") from exc
+        digest = "sha256:" + hashlib.sha256(prompt_bytes).hexdigest()
+        if (not 0 < len(prompt_bytes) <= 65536 or not prompt.strip() or "\0" in prompt
+                or inputs[0]["digest"] != digest or inputs[0]["object_id"] != digest
+                or base64.b64encode(prompt_bytes).decode("ascii") != inputs[0]["bytes_base64"]):
+            raise HostError("producer managed prompt byte identity differs")
+        for name, value in controls.items():
+            if name == "negative_prompt":
+                valid = isinstance(value, str) and len(value.encode("utf-8")) <= 65536 and "\0" not in value
+            elif name == "size":
+                valid = isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,3}x[1-9][0-9]{0,3}", value) is not None
+            elif name == "guidance_scale":
+                valid = type(value) in (int, float) and 0 <= value <= 100
+            else:
+                bound = (1 << 64) - 1 if name == "seed" else 1000
+                valid = type(value) is int and (0 if name == "seed" else 1) <= value <= bound
+            if not valid:
+                raise HostError("producer scalar control is invalid")
+        # Serialize with existing abort ownership; never hold the replay lock
+        # over schema/compile I/O. No new ledger or public readiness assertion.
+        if not self._abort_dispatch_lock.acquire(blocking=False):
+            raise HostError("producer host preparation is busy")
+        try:
+            binding = self._producer_binding()
+            model_root = validate_model_root_binding(binding["model_root"], verify_files=False)
+            recipe = _prepare_verified_image_recipe(
+                inputs={"prompt": prompt, **controls},
+                target_client=ComfyTargetClient(ComfyTarget(binding["session"]["server_url"], "attached")),
+                model_root=model_root,
+            )
+            if type(recipe) is not bytes or _handoff_canonical(json.loads(recipe)) != recipe:
+                raise HostError("producer returned an invalid frozen recipe")
+            if self._producer_binding() != binding:
+                raise HostError("producer authority changed during preparation")
+            result = {"version": _PRODUCER_PREPARATION_VERSION, "status": "prepared",
+                      "operation_id": self.operation_id, "channel_id": self.channel_id,
+                      "owner_epoch": request["owner_epoch"], "request_id": request["request_id"],
+                      "request_digest": "sha256:" + hashlib.sha256(encoded_request).hexdigest(),
+                      "inputs": inputs, "binding": binding,
+                      "recipe_digest": "sha256:" + hashlib.sha256(recipe).hexdigest(),
+                      "recipe_base64": base64.b64encode(recipe).decode("ascii")}
+            frozen = _handoff_canonical(result)
+            # Match the existing wire encoder (ASCII escapes may be larger).
+            if len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")) >= _PRODUCER_FRAME_LIMIT:
+                raise HostError("producer frozen result exceeds the private frame bound")
+            return json.loads(frozen)
+        finally:
+            self._abort_dispatch_lock.release()
 
     def _validate_retained_binding(self, binding: Mapping[str, Any]) -> bool:
         request = self._request
@@ -13488,6 +13680,8 @@ class LocalExecutionPreparation:
             self._abort_dispatch_lock.release()
 
     def _dispatch_bound(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if request.get("command") == "prepare_image_recipe":
+            return self._prepare_image_recipe(request)
         if (self._request or {}).get("profile", {}).get("execution_mode") == "host_only_cpu":
             if request.get("command") == "prepare_local_execution":
                 return self.prepare_local_execution(request)
@@ -13578,6 +13772,15 @@ class LocalExecutionPreparation:
                     except BaseException as exc:
                         self.control_error = exc
                         command = frame.get("command")
+                        if command == "prepare_image_recipe":
+                            # No recipe or caller data is returned on failure.
+                            # Preserve the ordinary lifecycle channel for abort.
+                            reply = {"version": _PRODUCER_PREPARATION_VERSION, "status": "unresolved",
+                                     "operation_id": self.operation_id, "channel_id": self.channel_id,
+                                     "owner_epoch": (self._request or {}).get("owner_epoch"),
+                                     "error_code": "recipe_preparation_unresolved"}
+                            _send_activation_frame(control, reply)
+                            continue
                         if command not in {"prepare_local_execution", "report_local_execution"}:
                             raise
                         reply = {"version": _LOCAL_PREPARATION_VERSION, "status": "unresolved",
@@ -14504,6 +14707,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         args.readiness_profile_path = str(generated)
         args.readiness_profile_hash = "sha256:" + hashlib.sha256(generated.read_bytes()).hexdigest()
     verified_model_root: ModelRootBinding | None = None
+    producer_profile: dict[str, Any] | None = None
     if args.readiness_profile_path is not None:
         readiness_path = Path(args.readiness_profile_path).expanduser()
         if (
@@ -14549,6 +14753,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
             )
         except ModelRootBindingError as exc:
             parser.error(f"readiness profile model-root binding is invalid: {exc}")
+        producer_profile = profile
         os.environ[MODEL_ROOT_ENV] = str(verified_model_root.path)
         os.environ[MODEL_ROOT_BINDING_ENV] = json.dumps(
             verified_model_root.as_dict(), sort_keys=True, separators=(",", ":")
@@ -14707,6 +14912,9 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
     host._native_engine_graph = preparation.graph if preparation is not None else None
     if preparation is not None:
         preparation.attach_claim_host(host)
+        closure = identity_attestation["source"].get("closure_digest")
+        if producer_profile is not None and isinstance(closure, str) and re.fullmatch(r"[0-9a-f]{64}", closure):
+            preparation._retain_producer_profile(producer_profile, source_closure_digest=closure)
     if support_root is not None:
         host.cleanup_latch_path = support_root / CLEANUP_LATCH_NAME
         host.busy_path = support_root / BUSY_NAME

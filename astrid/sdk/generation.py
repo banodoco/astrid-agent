@@ -199,6 +199,155 @@ def _resolve_invoke_destination(
     return out, selected
 
 
+def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str,
+                                     modality: str, inputs: dict[str, Any],
+                                     target_client: Any, backend: Any):
+    """Shared installed-catalog resolution and binding, without admission."""
+    from astrid.core.generation.preflight import (
+        require_generation_target_readiness, validate_generation_request,
+    )
+
+    require_generation_target_readiness(candidate, mode, target_client)
+    validate_generation_request(registry, model=candidate.id, mode=mode,
+                                execution="local", inputs=inputs, modality=modality)
+    return backend.prepare_catalog_workflow(
+        candidate, mode, inputs, resolve_target=target_client is not None,
+    )
+
+
+def _prepare_verified_image_recipe(*, inputs: dict[str, Any], target_client: Any,
+                                   model_root: Any) -> bytes:
+    """Freeze the installed image producer for its host's private control receiver.
+
+    This is an implementation helper, not an authority entrypoint. Its target
+    client and model root must come from the receiving host's retained state;
+    neither is decoded from creative inputs. It never invokes the facade.
+    """
+    import base64
+    import hashlib
+    import json
+    import math
+    import secrets
+    from tempfile import TemporaryDirectory
+
+    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
+    from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+    from astrid.core.generation.model_root import (
+        ModelRootBinding, validate_model_root_binding,
+    )
+    from astrid.core.model_catalog import registry as catalog
+    from astrid.core.model_catalog.schema import validate_registry
+    from vibecomfy.model_assets import _referenced_model_values
+    from vibecomfy.workflow_bundle import emit_bundle
+
+    def canonical(value: Any) -> bytes:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+    allowed = {"prompt", "negative_prompt", "seed", "count", "size", "steps", "guidance_scale"}
+    if type(inputs) is not dict or set(inputs) - allowed:
+        raise CapabilityValidationError("private image preparation accepts only creative scalar controls")
+    if not isinstance(inputs.get("prompt"), str) or not inputs["prompt"].strip():
+        raise CapabilityValidationError("private image preparation requires a nonblank prompt")
+    if any(not isinstance(inputs[key], str) for key in ("prompt", "negative_prompt", "size") if key in inputs):
+        raise CapabilityValidationError("private image text controls must be strings")
+    if any(len(inputs[key].encode("utf-8")) > 65536 for key in ("prompt", "negative_prompt", "size") if key in inputs):
+        raise CapabilityValidationError("private image text control exceeds its bound")
+    if "size" in inputs:
+        import re
+        if re.fullmatch(r"[1-9][0-9]{0,4}x[1-9][0-9]{0,4}", inputs["size"]) is None:
+            raise CapabilityValidationError("private image size must be an explicit positive WxH")
+    for key in ("seed", "count", "steps"):
+        if key in inputs and type(inputs[key]) is not int:
+            raise CapabilityValidationError(f"private image {key} must be an integer")
+    if inputs.get("count", 1) != 1 or not 1 <= inputs.get("steps", 1) <= 1000:
+        raise CapabilityValidationError("private image preparation requires count=1 and bounded positive steps")
+    if "guidance_scale" in inputs and (
+        type(inputs["guidance_scale"]) not in (int, float)
+        or not math.isfinite(inputs["guidance_scale"])
+        or not 0 <= inputs["guidance_scale"] <= 1000
+    ):
+        raise CapabilityValidationError("private image guidance must be finite and bounded")
+    seed = inputs.get("seed", -1)
+    if seed < -1 or seed >= 2**64:
+        raise CapabilityValidationError("private image seed must be -1 or an unsigned 64-bit integer")
+    effective = dict(inputs, seed=secrets.randbits(64) if seed == -1 else seed, count=1)
+    if type(target_client) is not ComfyTargetClient or type(model_root) is not ModelRootBinding:
+        raise CapabilityValidationError("private image preparation requires retained host target and model root")
+    bound_root = validate_model_root_binding(model_root.as_dict(), verify_files=True)
+    # Read only the shipped catalog; do not assemble user/project pack metadata.
+    registry = catalog.ModelRegistry(validate_registry(catalog._load_yaml(
+        Path(catalog.__file__).with_name("models.yaml"),
+    )))
+    preferred = ("qwen-image-2.1-turbo", "z-image", "qwen-image-2512")
+    candidates = [entry for entry in registry.list_by_modality("image")
+                  if "t2i" in entry.modes and getattr(entry.modes["t2i"].backends.get("local"), "template", "")]
+    candidates.sort(key=lambda entry: (preferred.index(entry.id) if entry.id in preferred else len(preferred), entry.id))
+    if not candidates:
+        raise CapabilityValidationError("installed catalog has no local image producer")
+    selected = candidates[0]  # Preparation errors never select another candidate.
+    workflow, plan, schema = _prepare_catalog_target_workflow(
+        registry=registry, candidate=selected, mode="t2i", modality="image",
+        inputs=effective, target_client=target_client,
+        backend=VibeComfyBackend(target_client=target_client),
+    )
+    if schema is None or not isinstance(plan, dict) or not plan.get("roles"):
+        raise CapabilityValidationError("private image producer has no resolved target model authority")
+    metadata = getattr(workflow, "metadata", {})
+    declared_root = metadata.get("models_root")
+    if declared_root is not None and str(declared_root) != str(bound_root.path):
+        raise CapabilityValidationError("producer workflow redirects the retained model root")
+    inventory = {(item["subdir"], item["name"]): item for item in bound_root.inventory}
+    model_references = []
+    for reference in _referenced_model_values(workflow):
+        value, subdir = reference["value"], reference["subdir"]
+        path = Path(subdir) / value
+        if ("\\" in value or "\\" in subdir or path.is_absolute()
+                or path.as_posix() != (subdir + "/" if subdir else "") + value
+                or any(part in {".", ".."} for part in path.parts)):
+            raise CapabilityValidationError("producer model reference is not an exact relative inventory path")
+        record = inventory.get((path.parent.as_posix() if path.parent != Path(".") else "", path.name))
+        if record is None:
+            raise CapabilityValidationError("producer model reference is absent from the retained model-root inventory")
+        model_references.append({**reference, "inventory": dict(record)})
+    if not model_references:
+        raise CapabilityValidationError("producer has no verifiable model references")
+    spec = selected.modes["t2i"].backends["local"]
+    for role, declaration in spec.model_roles.items():
+        matches = [ref for ref in model_references if ref["class_type"] == declaration.node_class
+                   and ref["field"] == declaration.input and ref["value"] == plan["roles"].get(role)]
+        if len(matches) != 1:
+            raise CapabilityValidationError("resolved producer role is absent or ambiguous in the frozen workflow")
+    workflow_inputs = {name: {"node_id": item.node_id, "field": item.field, "value": item.value}
+                       for name, item in sorted(workflow.inputs.items())}
+    param_map = dict(spec.param_map or VibeComfyBackend.DEFAULT_PARAM_MAP["t2i"])
+    control_bindings = {key: (["width", "height"] if key == "size" else [param_map[key]])
+                        for key in effective if key != "count" and key in param_map}
+    with TemporaryDirectory(prefix="astrid-private-image-recipe-") as scratch:
+        root = Path(scratch)
+        bundle = emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+        bundle.require_canonical_authority("private verified image preparation")
+        approval = bundle.compile(schema_provider=schema, models_root=bound_root.path)
+        detached = approval.to_dict()
+        member_bytes = {"workflow.py": (root / "workflow.py").read_bytes(),
+                        "workflow.vibe.json": (root / "workflow.vibe.json").read_bytes(),
+                        "source.json": canonical(detached["ui_projection"])}
+        result = {"version": "astrid.private-image-recipe/v1", "entry": selected.id,
+                  "modality": "image", "mode": "t2i", "template": spec.template,
+                  "template_hash": spec.template_hash,
+                  "effective_inputs": effective, "workflow_inputs": workflow_inputs,
+                  "control_bindings": control_bindings, "resolved_randomness": {"seed": effective["seed"]},
+                  "resolution": plan, "model_root": bound_root.as_dict(),
+                  "model_references": model_references, "approval": detached,
+                  "members": {name: {"sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+                                      "size": len(data), "bytes_base64": base64.b64encode(data).decode("ascii")}
+                              for name, data in member_bytes.items()}}
+        frozen = canonical(result)
+    if len(frozen) > 768 * 1024:
+        raise CapabilityValidationError("private image recipe exceeds its response bound")
+    return frozen
+
+
 @dataclass(frozen=True)
 class GenerationFacade:
     """Public typed entrypoint for generation executors."""
@@ -399,11 +548,9 @@ class GenerationFacade:
             try:
                 assets = {}
                 if source == "catalog":
-                    require_generation_target_readiness(candidate, mode, target_client)
-                    validate_generation_request(registry, model=candidate.id, mode=mode,
-                                                execution="local", inputs=inputs, modality=modality)
-                    workflow, plan, schema = backend.prepare_catalog_workflow(
-                        candidate, mode, inputs, resolve_target=target_client is not None)
+                    workflow, plan, schema = _prepare_catalog_target_workflow(
+                        registry=registry, candidate=candidate, mode=mode, modality=modality,
+                        inputs=inputs, target_client=target_client, backend=backend)
                 else:
                     from types import SimpleNamespace
                     prerequisite = SimpleNamespace(id=identifier, modes={mode: SimpleNamespace(
