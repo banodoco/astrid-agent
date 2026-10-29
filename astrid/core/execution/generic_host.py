@@ -100,6 +100,8 @@ from astrid.core._shared.result_manifest import (
     HarvestError,
     harvest_staged_outputs,
     outputs_required,
+    validate_result_manifest,
+    write_json_atomic,
 )
 from astrid.core.contracts.binding import (
     BindingError,
@@ -9221,6 +9223,108 @@ class GenericPackHost:
                 return
             manager.open(capability=capability, binding=binding, adapter=adapter)
 
+    def _write_task_result(self, terminal: dict[str, Any]) -> None:
+        """Write the host receipt without changing the pack artifact manifest.
+
+        Only verified staged files are described. A failed/cancelled attempt's
+        files are local evidence, not a second Runtime publication operation.
+        """
+        from astrid.sdk.results import InvocationResult
+
+        terminal["write_attempted"] = True
+        root = terminal["root"]
+        task = terminal["task"]
+        record = terminal.get("record")
+        output_root = terminal.get("output_root", root / "outputs")
+        payload = terminal.get("payload") or {}
+        warnings = list(payload.get("warnings") or [])
+        manifest: dict[str, Any] = {}
+        manifest_path = output_root / "manifest.json"
+        if manifest_path.is_file() and not manifest_path.is_symlink() and manifest_path.resolve().is_relative_to(root):
+            try:
+                candidate = json.loads(manifest_path.read_text(encoding="utf-8"))
+                validate_result_manifest(candidate, staging_root=output_root)
+                manifest = candidate
+            except (OSError, ValueError, AstridError) as exc:
+                warnings.append(f"artifact manifest unavailable: {exc}")
+        warnings.extend(manifest.get("warnings") or [])
+        staged = terminal.get("outputs") or []
+        if not staged and record is not None and output_root.is_dir():
+            try:
+                values = {**terminal.get("inputs", {}), "out": str(output_root),
+                          "run_root": str(root), "python_exec": sys.executable}
+                if record.definition.command is not None:
+                    _, values = _bind_host_owned_command_outputs(record, values, output_root=output_root)
+                harvested = harvest_staged_outputs(
+                    output_root, definition=record.definition, values=values, require=False)
+                staged = self._typed_outputs(
+                    record, harvested, root,
+                    generation_intent=task.get("generation_intent")
+                    if isinstance(task.get("generation_intent"), Mapping) else None)
+            except (OSError, ValueError, AstridError, HostError) as exc:
+                warnings.append(f"terminal output collection unavailable: {exc}")
+        outputs = []
+        for row in staged:
+            outputs.append({
+                "id": row.get("association_id") or row.get("object_id") or f"{row['name']}#{row.get('ordinal', 0)}",
+                "name": row["name"], "ordinal": row.get("ordinal", 0),
+                "digest": row["digest"], "media_type": _settlement_media_type(row),
+                "size": row["size"], "path": row.get("path"), "role": row.get("role", "result"),
+            })
+        status = terminal.get("status") or (
+            "cancelled" if isinstance(terminal.get("error"), HostCancelled) else "failed")
+        if status == "failed" and any(row["role"] == "result" for row in outputs):
+            status = "partial"
+        error = terminal.get("error")
+        if status == "timeout":
+            error = AstridError("execution deadline exceeded", code="timeout")
+        elif status == "cancelled":
+            error = AstridError("execution cancelled", code="cancelled")
+        if isinstance(error, CommandCleanupUnresolved):
+            error = error.execution_error or error
+        if error is not None:
+            normalized = coerce_astrid_error(error)
+            error = {"code": normalized.code, "message": normalized.message,
+                     "field": normalized.field, "fix": normalized.fix}
+        spec = task.get("spec") or {}
+        parent = spec.get("delegated_parent", {}) if isinstance(spec, Mapping) else {}
+        parent = parent if isinstance(parent, Mapping) else {}
+        # Hash the admitted request, never attempt-local materialization paths.
+        request = {"capability_id": task.get("capability"), "spec": spec,
+                   "execution_request": task.get("execution_request")}
+        options = {port.name: port.default for port in record.definition.inputs
+                   if port.default is not None} if record is not None else {}
+        try:
+            admitted = _admitted_task_spec(task)
+        except HostError:
+            admitted = {}
+        for source in (admitted.get("inputs"), admitted.get("params"), terminal.get("inputs")):
+            if isinstance(source, Mapping):
+                options.update(source)
+        cost = payload.get("cost", manifest.get("cost"))
+        receipt = InvocationResult(
+            capability_id=str(task.get("capability") or ""), capability_type="executor",
+            native_kind=record.definition.kind if record is not None else "executor",
+            ok=status == "succeeded", error=error,
+            manifest_path=str(manifest_path) if manifest else None,
+            raw_result=payload, run_id=task.get("run_id"), run_root=str(root),
+            outputs={"artifacts": outputs},
+            executor_version=record.definition.version if record is not None else None,
+            kernel_run_id=task.get("run_id"), kernel_task_id=task["id"],
+            kernel_attempt_id=terminal["attempt_id"],
+        ).to_dict()
+        receipt.update({
+            "status": status, "task_id": task["id"], "attempt_id": terminal["attempt_id"],
+            "parent_task_id": task.get("parent_task_id", parent.get("parent_task_id")),
+            "parent_attempt_id": task.get("parent_attempt_id", parent.get("parent_attempt_id")),
+            "request_digest": "sha256:" + _canonical_digest(request),
+            "resolved_options": options, "cost": cost if cost is not None else "unknown",
+            "warnings": warnings,
+            "publication": {"status": "settled" if terminal.get("settled") else "not_settled",
+                            "receipt": terminal.get("settlement"), "effect": terminal.get("effect")},
+        })
+        write_json_atomic(root / "result.json", receipt)
+
     def run_task(
         self,
         task: Mapping[str, Any],
@@ -9235,15 +9339,28 @@ class GenericPackHost:
         thread_id = threading.get_ident()
         busy_path = getattr(self, "busy_path", None)
         _publish_busy(busy_path, +1)
+        terminal: dict[str, Any] = {}
         try:
             return self._run_task_impl(
                 task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
                 keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+                _terminal=terminal,
             )
+        except BaseException as exc:
+            terminal.setdefault("error", exc)
+            raise
         finally:
-            _publish_busy(busy_path, -1)
-            if owns_attempt:
-                self._handoff_leave_attempt(thread_id)
+            try:
+                # Admission and initial setup can fail before the execution
+                # try/finally. They still belong to this same fenced attempt.
+                if terminal.get("root") is not None and not terminal.get("write_attempted"):
+                    self._write_task_result(terminal)
+                    if self.attempt_root is None and not keep_attempt:
+                        self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
+            finally:
+                _publish_busy(busy_path, -1)
+                if owns_attempt:
+                    self._handoff_leave_attempt(thread_id)
 
     def _run_task_impl(
         self,
@@ -9254,11 +9371,10 @@ class GenericPackHost:
         fence: int | None = None,
         keep_attempt: bool = False,
         provider_route_grant: str | None = None,
+        _terminal: dict[str, Any],
     ) -> Mapping[str, Any]:
         if self.client is None:
             raise HostError("runtime client is required to execute a task")
-        if self._shutdown.is_set():
-            raise HostCancelled("generic host is shutting down")
         for operation in ("heartbeat", "task", "settle", "fail", "upload_object"):
             if not callable(getattr(self.client, operation, None)):
                 raise HostError(
@@ -9271,12 +9387,18 @@ class GenericPackHost:
         fence = fence if fence is not None else (int(task_data["fence"]) if task_data.get("fence") is not None else None)
         if not attempt_id or fence is None:
             raise HostError("runtime task execution requires attempt_id and fence")
+        root = self._allocate_attempt_root(task_id, attempt_id)
+        _terminal.update(root=root, task=task_data, attempt_id=attempt_id)
+        if self._shutdown.is_set():
+            raise HostCancelled("generic host is shutting down")
         record = self.capabilities.get(capability_id)
         if record is None:
             self.discover()
             record = self.capabilities.get(capability_id)
         if record is None:
             raise HostError(f"capability not discovered: {capability_id}")
+
+        _terminal["record"] = record
 
         def evidence_failure_diagnostic(error: BaseException) -> dict[str, Any] | None:
             if not isinstance(error, EvidenceCapError):
@@ -9298,6 +9420,7 @@ class GenericPackHost:
 
         def fail_admission(error: Exception) -> None:
             """Fence deterministic admission failures as terminal attempts."""
+            _terminal["error"] = error
             try:
                 self._handoff_settlement_call(self.client.fail,
                     task_id,
@@ -9330,6 +9453,7 @@ class GenericPackHost:
         try:
             self.preflight(capability_id)
             record = self.capabilities[capability_id]
+            _terminal["record"] = record
             if not record.ready:
                 raise HostError(
                     f"capability {capability_id!r} is unavailable: "
@@ -9394,6 +9518,7 @@ class GenericPackHost:
         try:
             self.execution_policy.assert_budget_available()
         except ExecutionGuardError as exc:
+            _terminal["error"] = exc
             self._handoff_settlement_call(self.client.fail,
                 task_id,
                 lease_token,
@@ -9413,7 +9538,8 @@ class GenericPackHost:
         # ``attempt_root`` is intentionally an exact caller-owned spool for
         # debug/single-attempt callers. Long-lived hosts use ``attempt_base``
         # so sequential tasks get isolated namespaces.
-        root = self._allocate_attempt_root(task_id, attempt_id)
+        # The fenced run root was allocated before admission so even a
+        # deterministic refusal has a host receipt.
         # Render media capacity is guarded by disk_usage, not the evidence cap.
         # Other packs retain their finite, explicitly admitted storage caps.
         attempt_evidence_cap = self.execution_policy.evidence_cap_bytes
@@ -9732,6 +9858,7 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            _terminal["inputs"] = inputs
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
                 from astrid.core.generation.backends.vibecomfy_local_server import (
                     validate_comfy_url,
@@ -10053,6 +10180,7 @@ class GenericPackHost:
                                                         private_runtime_context=private_runtime_context)
             output_root = root / "outputs"
             output_root.mkdir(parents=True, exist_ok=True)
+            _terminal["output_root"] = output_root
             lifetime.assert_deadline()
             try:
                 # Setup/attestation may be slow, but a lost claim must never
@@ -10154,6 +10282,8 @@ class GenericPackHost:
                 # cleanup; this boundary only preserves child env cleanup.
                 pass
             render_child_pending = False
+            _terminal["output_root"] = output_root
+            _terminal["payload"] = getattr(result, "payload", {}) or {}
             lifetime.begin_collection(collection_limit)
             if child_bridge is not None:
                 child_bridge.finish()
@@ -10223,6 +10353,7 @@ class GenericPackHost:
                     else None
                 ),
             )
+            _terminal["outputs"] = typed_outputs
             thumbnail_outputs, thumbnail_diagnostics = self._generation_thumbnail_outputs(
                 typed_outputs,
                 attempt_root=root,
@@ -10314,6 +10445,7 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            _terminal["payload"] = payload
             if renderer_selection is not None:
                 payload["renderer_selection"] = dict(renderer_selection)
             if "gpu" in record.preflight:
@@ -10405,6 +10537,7 @@ class GenericPackHost:
                 fence=fence,
             )
             settled = True
+            _terminal.update(settled=True, settlement=settlement, effect=effect)
             if capability_id == "vibecomfy.run" and self._vibecomfy_current_warmth_hint:
                 # The hint becomes reusable only after the Runtime settlement
                 # and managed-session observation both succeeded.
@@ -10430,6 +10563,7 @@ class GenericPackHost:
             original_error = exc.execution_error if isinstance(exc, CommandCleanupUnresolved) else exc
             if isinstance(original_error, StorageEnvelopeError):
                 storage_failure_receipt = dict(original_error.diagnostic)
+            _terminal["error"] = original_error
             failure_message = str(exc)
             if (render_child_pending and renderer_selection is not None
                     and renderer_selection["chosen_by"] == "host" and not renderer_selection["remotion_ok"]):
@@ -10466,6 +10600,11 @@ class GenericPackHost:
             if pump_thread is not None:
                 pump_thread.join(timeout=2)
             cleanup_errors: list[str] = []
+            _terminal.update(
+                status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
+                else "cancelled" if cancelled_attempt else "failed",
+            )
+            _terminal.setdefault("error", sys.exc_info()[1])
             retain_for_unresolved_scope = command_cleanup_error is not None
             if retain_for_unresolved_scope:
                 # The task-scope supervisor has evidence of a child writer
@@ -10554,6 +10693,10 @@ class GenericPackHost:
                 except OSError as exc:
                     cleanup_errors.append(
                         f"Codex credential copy not removed, remove it by hand: {root / 'codex-home' / 'auth.json'}: {exc}")
+            try:
+                self._write_task_result(_terminal)
+            except Exception as exc:
+                cleanup_errors.append(f"terminal result: {exc}")
             # An unverified session release may still own a writer: fail this
             # task and keep its attempt below; the host keeps accepting work.
             if keep_attempt or retain_for_unresolved_scope:

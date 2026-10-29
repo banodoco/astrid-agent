@@ -310,7 +310,7 @@ def execute(
             request_id=result.get("request_id"),
         )
         write_json_atomic(
-            out / "result.json",
+            out / "h3_video_receipt.json",
             {
                 "schema_version": 1,
                 "status": "completed",
@@ -336,7 +336,7 @@ def execute(
             error=message,
         )
         write_json_atomic(
-            out / "result.json",
+            out / "h3_video_receipt.json",
             {
                 "schema_version": 1,
                 "status": "failed",
@@ -381,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             raise AstridError(
                 manifest.get("error", "MiniMax H3 fal.ai request failed"),
                 recovery_command=(
-                    "inspect result.json and manifest.json; do not alter an exact "
+                    "inspect h3_video_receipt.json and manifest.json; do not alter an exact "
                     "prompt or submit a paid approximation without explicit intent"
                 ),
                 state_snapshot={
