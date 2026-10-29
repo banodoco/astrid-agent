@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "actions": {
+    "video_editing.thumbnail_maker": {
+      "available": false,
+      "error": {
+        "code": "generation_action_unavailable",
+        "message": "video_editing.thumbnail_maker generation is not implemented"
+      }
+    },
+    "training.checkpoint_review_sampler": {
+      "available": false,
+      "public_action": "training.training_run",
+      "error": {
+        "code": "generation_action_unavailable",
+        "message": "training checkpoint review sample generation is not implemented"
+      }
+    }
+  },
+  "fixture_only_routes": {
+    "astrid_motion:preview/scenes.json": true,
+    "astrid_motion:preview/render.mjs": true,
+    "astrid_motion:preview/make_art.py": true,
+    "astrid_motion:preview/src/Preview.tsx": true,
+    "astrid_motion:preview/src/Root.tsx": true,
+    "astrid_motion:preview/src/index.ts": true
+  }
+}
