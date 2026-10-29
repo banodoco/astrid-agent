@@ -562,6 +562,8 @@ class Installer:
         # Repair never provisions tools, installs code, migrates or rewrites data.
         if old and mode != "update":
             realm = self.backend.workspace(old, self.data)
+            repair_chat_command = getattr(self.backend, "repair_chat_command", None)
+            chat_changed = bool(repair_chat_command and repair_chat_command(old))
             if self.managed_by == "pinokio":
                 self.backend.register(old, self.data)
                 install_launcher(self.root)
@@ -578,7 +580,7 @@ class Installer:
             except VerificationError:
                 pass
             else:
-                if not self.backend.restart_required():
+                if not chat_changed and not self.backend.restart_required():
                     # The only repair path without registration still stamps
                     # legacy records, after recovery and healthy verification.
                     persist = getattr(self.backend, "persist_identity", None)

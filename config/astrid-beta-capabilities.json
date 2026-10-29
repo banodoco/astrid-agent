@@ -766,6 +766,23 @@
    ]
   },
   {
+   "id": "music.duck",
+   "disposition": "optional",
+   "evidence_reason": "Local ffmpeg loudness analysis and speech-keyed gain shaping for a pinned music snapshot; writes a managed ducked WAV and analysis report.",
+   "adapter_family": "cpu",
+   "resource_keys": [
+    "cpu"
+   ],
+   "required_env": [],
+   "required_binaries": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "required_packages": [
+    "numpy"
+   ]
+  },
+  {
    "id": "moirae.moirae",
    "disposition": "optional",
    "evidence_reason": "Optional terminal-video capability; retained with truthful binary preflight.",
