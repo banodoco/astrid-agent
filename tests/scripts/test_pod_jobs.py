@@ -223,7 +223,7 @@ def test_release_verification_failure_keeps_session_failed(tmp_path, monkeypatch
     session, pod, code, messages, _manifest, _document = run_jobs(
         tmp_path, monkeypatch, mixed=False, failure="command", release_status=200)
     assert code == 1 and pod.terminated and not session.released
-    assert pod.events.count("terminate") == 1 and pod.events.count("list") == 12
+    assert pod.events.count("terminate") == 1 and pod.events.count("list") == 13
     assert session.records[-1]["step"] == "release" and session.records[-1]["result"] == "failed"
     assert "not gone" in session.records[-1]["detail"]["error"]
     assert any("RELEASE FAILED" in message for message in messages)

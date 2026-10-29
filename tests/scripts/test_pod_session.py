@@ -1,6 +1,12 @@
 """CPU tests for scripts/pod_session.py with a stub runpod CLI and a stub pod transport."""
 import base64
+import asyncio
 import hashlib
+import contextlib
+import io
+import shlex
+import stat
+from types import SimpleNamespace
 import importlib.util
 import json
 import os
@@ -65,9 +71,11 @@ class FakePod:
             self.events.append("terminate")
             self.terminated = True
             return 0, "terminated", ""
+        if cmd == "volumes":
+            return 0, json.dumps([{"name": ps.STORAGE_NAME, "dataCenterId": ps.DATACENTER, "id": "vol187"}]), ""
         if cmd == "list":
             self.events.append("list")
-            return 0, "[]", ""
+            return 0, json.dumps([] if self.terminated or "ready" not in self.events else [{"id": self.pod, "network_volume_id": "vol187"}]), ""
         raise AssertionError(argv)
 
     def http_status(self, pod_id):
@@ -98,6 +106,10 @@ class FakePod:
 
     def execute_command(self, command, timeout=600):
         self.executes += 1
+        if "def storage_probe(" in command:
+            request = json.loads(base64.b64decode(shlex.split(command)[-1]))
+            self.events.append("exec:storage")
+            return 0, json.dumps(request | {"free_bytes": 10**15, "total_bytes": 10**15, "local_free_bytes": 10**15}), ""
         if "stat -c %s" in command:
             data = self.files[ps.BUNDLE_REMOTE]
             size = len(data) + (1 if self.fail == "bundle" else 0)
@@ -419,10 +431,10 @@ def test_budget_refuses_the_record_that_reaches_100():
 
 
 def test_session_aborts_before_100_and_releases(tmp_path, video):
-    budget = ps.JobBudget(count=96)
+    budget = ps.JobBudget(count=95)
     session, pod, code, messages = run_session(tmp_path, video, budget=budget)
     assert code == 1 and budget.count <= 99
-    assert pod.starts + pod.executes == budget.count - 96
+    assert pod.starts + pod.executes == budget.count - 95
     assert "job:install" not in pod.events and pod.terminated
     failed = [r for r in session.records if r["result"] == "failed"][0]
     assert "job budget" in failed["detail"]["error"] and "100" in failed["detail"]["error"]
@@ -508,3 +520,258 @@ def test_parse_json_object_takes_the_last_object():
     assert ps.parse_json_object('log line\n{"a": 1}\nmore\n{"b": 2}\n') == {"b": 2}
     with pytest.raises(ps.SessionError):
         ps.parse_json_object("null\n")
+
+
+@pytest.mark.parametrize("case,stage,reason,identity", [
+    ("match", "complete", "verified", True),
+    ("mismatch", "identity", "mismatch", False),
+    ("malformed", "mountinfo", "malformed", None),
+    ("capacity", "capacity", "insufficient", True),
+    ("local", "local", "insufficient", True),
+])
+def test_transported_storage_diagnostic_is_bounded_and_persisted(tmp_path, video, monkeypatch, case, stage, reason, identity):
+    args, agent = make_args(tmp_path)
+    pod = FakePod(video)
+    original_execute = pod.execute_command
+    raw_source = "mfs#vol187/PRIVATE_RAW_SOURCE" if case != "mismatch" else "mfs#opaque/PRIVATE_RAW_SOURCE"
+    row = f"102 93 0:47 / /workspace rw,PRIVATE_MOUNT_OPTION shared:30 - fuse.mfs {raw_source} rw,PRIVATE_SUPER_OPTION\n"
+    if case == "malformed":
+        row = "102 93 0:47 / /workspace rw - fuse.mfs\n"
+
+    def execute(command, timeout=600):
+        if "def storage_probe(" not in command:
+            return original_execute(command, timeout=timeout)
+        pod.executes += 1
+        pod.events.append("exec:storage")
+        _, _, source, blob = shlex.split(command)
+        namespace = {"__name__": "transported_storage_probe"}
+        exec(compile(source, "transported_storage_probe.py", "exec"), namespace)
+        original_read, original_lstat, original_stat, original_exists = Path.read_text, Path.lstat, Path.stat, Path.exists
+        device = os.makedev(0, 47)
+        def read(path, *a, **kw):
+            return row if path == Path("/proc/self/mountinfo") else original_read(path, *a, **kw)
+        def lstat(path, *a, **kw):
+            if path == Path("/workspace"):
+                return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=device)
+            if str(path).startswith("/workspace/"):
+                raise FileNotFoundError(str(path))
+            return original_lstat(path, *a, **kw)
+        def exists(path):
+            if path == Path("/root"):
+                return True
+            if path == Path("/root/astrid") or Path("/root/astrid") in path.parents:
+                return False
+            return original_exists(path)
+        def path_stat(path, *a, **kw):
+            return SimpleNamespace(st_dev=os.makedev(0, 48)) if path == Path("/root") else original_stat(path, *a, **kw)
+        def statvfs(path):
+            short = case == "capacity" and path == Path("/workspace") or case == "local" and path == Path("/root")
+            return SimpleNamespace(f_bavail=1 if short else 10**15, f_frsize=1, f_blocks=10**15)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "read_text", read)
+            patch.setattr(Path, "lstat", lstat)
+            patch.setattr(Path, "is_symlink", lambda path: False)
+            patch.setattr(Path, "exists", exists)
+            patch.setattr(Path, "stat", path_stat)
+            patch.setattr(os, "statvfs", statvfs)
+            patch.setattr(sys, "argv", ["-c", blob])
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = namespace["main"]()
+        assert raw_source not in stdout.getvalue() + stderr.getvalue()
+        assert "PRIVATE_" not in stdout.getvalue() + stderr.getvalue()
+        return code, stdout.getvalue(), stderr.getvalue() + "PRIVATE_UNSTRUCTURED_OUTPUT\n"
+
+    monkeypatch.setattr(pod, "execute_command", execute)
+    session = ps.Session(args, cli=pod.cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, sleep=lambda _: None, say=lambda _: None)
+    code = session.run()
+    assert code == (0 if case == "match" else 1) and pod.terminated and session.released
+    if case != "match":
+        assert ps.BUNDLE_REMOTE not in pod.puts
+        assert "job:bootstrap" not in pod.events and "job:install" not in pod.events
+    path = session.workdir / "storage-mount-observation.json"
+    diagnostic = json.loads(path.read_text())
+    assert diagnostic == {"schema": "astrid.pod-storage-diagnostic.v1", "stage": stage, "reason": reason,
+                          "identity_matches": identity}
+    assert path.stat().st_mode & 0o777 == 0o600
+    progress = (session.workdir / "pod-session-progress.json").read_text()
+    assert json.loads(progress)["storage_diagnostic"] == diagnostic
+    retained = path.read_text() + progress + json.dumps(session.state)
+    assert raw_source not in retained and "PRIVATE_" not in retained
+
+
+@pytest.mark.parametrize("case", ["malformed", "duplicate", "oversize", "extra", "stage", "reason", "identity", "list"])
+def test_storage_diagnostic_parser_rejects_unallowlisted_records(case):
+    value = {"schema": "astrid.pod-storage-diagnostic.v1", "stage": "identity", "reason": "mismatch", "identity_matches": False}
+    if case == "extra": value["source"] = "PRIVATE_RAW_SOURCE"
+    if case == "stage": value["stage"] = "PRIVATE_RAW_SOURCE"
+    if case == "reason": value["reason"] = "PRIVATE_RAW_SOURCE"
+    if case == "identity": value["identity_matches"] = 1
+    if case == "list": value = []
+    line = "ASTRID_STORAGE_DIAGNOSTIC " + json.dumps(value)
+    if case == "malformed": line = "ASTRID_STORAGE_DIAGNOSTIC {"
+    if case == "duplicate": line += "\n" + line
+    if case == "oversize": line += " " * 513
+    assert ps.parse_storage_diagnostic(line) is None
+
+
+@pytest.mark.parametrize("case", ["missing-volume", "duplicate-volume", "wrong-attachment", "missing-attachment", "duplicate-pod"])
+def test_storage_attachment_refuses_before_probe_and_upload(tmp_path, video, case):
+    args, agent = make_args(tmp_path)
+    pod = FakePod(video)
+    original_cli = pod.cli
+    def cli(argv, env):
+        if argv == ["volumes", "ls", "--json"]:
+            volumes = [{"name": ps.STORAGE_NAME, "dataCenterId": ps.DATACENTER, "id": "vol187"}]
+            if case == "missing-volume": volumes = []
+            if case == "duplicate-volume": volumes *= 2
+            return 0, json.dumps(volumes), ""
+        if argv == ["list", "--json"] and not pod.terminated and "ready" in pod.events:
+            pods = [{"id": pod.pod, "network_volume_id": "wrong" if case == "wrong-attachment" else "vol187"}]
+            if case == "missing-attachment": del pods[0]["network_volume_id"]
+            if case == "duplicate-pod": pods *= 2
+            return 0, json.dumps(pods), ""
+        return original_cli(argv, env)
+    session = ps.Session(args, cli=cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, sleep=lambda _: None, say=lambda _: None)
+    assert session.run() == 1 and session.released and pod.terminated
+    assert "exec:storage" not in pod.events and ps.BUNDLE_REMOTE not in pod.puts
+    assert "job:bootstrap" not in pod.events and "job:install" not in pod.events
+
+
+def test_storage_diagnostic_parser_accepts_bounded_stage_errors():
+    for stage in ("mountinfo", "paths", "mount", "cache", "capacity", "local", "unknown"):
+        value = {"schema": "astrid.pod-storage-diagnostic.v1", "stage": stage, "reason": "error", "identity_matches": True}
+        assert ps.parse_storage_diagnostic("ASTRID_STORAGE_DIAGNOSTIC " + json.dumps(value)) == value
+
+
+def test_storage_receipt_rejects_private_total_bytes(tmp_path, video, monkeypatch):
+    args, agent = make_args(tmp_path)
+    pod = FakePod(video)
+    original_execute = pod.execute_command
+    def execute(command, timeout=600):
+        code, out, err = original_execute(command, timeout=timeout)
+        if "def storage_probe(" in command:
+            receipt = json.loads(out)
+            receipt["total_bytes"] = "PRIVATE_RAW_SOURCE"
+            out = json.dumps(receipt)
+        return code, out, err
+    monkeypatch.setattr(pod, "execute_command", execute)
+    session = ps.Session(args, cli=pod.cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, sleep=lambda _: None, say=lambda _: None)
+    assert session.run() == 1 and session.released
+    assert "exec:storage" in pod.events and ps.BUNDLE_REMOTE not in pod.puts
+    assert "PRIVATE_RAW_SOURCE" not in (session.workdir / "pod-session-progress.json").read_text()
+    assert "PRIVATE_RAW_SOURCE" not in json.dumps(session.state)
+
+
+def test_reused_workdir_cannot_retain_stale_storage_observation(tmp_path, video, monkeypatch):
+    args, agent = make_args(tmp_path)
+    workdir = Path(args.workdir)
+    workdir.mkdir()
+    artifact = workdir / "storage-mount-observation.json"
+    artifact.write_text('{"stage": "complete", "identity_matches": true}')
+    pod = FakePod(video)
+    original_execute = pod.execute_command
+
+    def execute(command, timeout=600):
+        if "def storage_probe(" in command:
+            return 1, "", "ASTRID_STORAGE_DIAGNOSTIC {invalid"
+        return original_execute(command, timeout=timeout)
+
+    monkeypatch.setattr(pod, "execute_command", execute)
+    session = ps.Session(args, cli=pod.cli, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, sleep=lambda _: None, say=lambda _: None)
+    assert not artifact.exists()
+    assert session.run() == 1 and session.released
+    assert not artifact.exists()
+    assert json.loads((workdir / "pod-session-progress.json").read_text())["storage_diagnostic"] is None
+    assert ps.BUNDLE_REMOTE not in pod.puts
+
+
+@pytest.mark.parametrize("case", [
+    "exact", "missing", "null", "wrong", "empty-id", "numeric-id",
+    "list-id", "missing-id", "string-volume", "multiple-volumes", "absent-pod", "wrong-pod",
+    "duplicate-rest-pod", "duplicate-sdk-pod", "malformed-collection", "malformed-row",
+    "malformed-json", "unavailable", "timeout",
+])
+def test_provider_attachment_through_real_lifecycle_json_guards_probe_bundle_install(
+    tmp_path, monkeypatch, video, case,
+):
+    from runpod_lifecycle import api, cli
+    import runpod
+    from runpod.api import ctl_commands
+
+    args, agent = make_args(tmp_path)
+    pod = FakePod(video, fail="capacity" if case == "capacity" else None)
+    # Execute the pinned SDK's real QUERY_POD/get_pods projection. Only its
+    # GraphQL transport is synthetic; the projection omits attachment fields.
+    projected = {"id": pod.pod, "name": "projected", "runtime": {"ports": []}}
+    graphql_calls = []
+    def graphql(query, api_key=None):
+        graphql_calls.append(query)
+        assert query == ctl_commands.pod_queries.QUERY_POD
+        assert "networkVolumeId" not in query and "networkVolume" not in query
+        assert runpod.api_key == "synthetic"
+        return {"data": {"myself": {"pods": [projected] * (2 if case == "duplicate-sdk-pod" else 1)}}}
+    monkeypatch.setattr(runpod, "api_key", "synthetic")
+    monkeypatch.setattr(ctl_commands, "run_graphql_query", graphql)
+    monkeypatch.setattr(api, "runpod", runpod)
+    monkeypatch.setattr(cli, "_resolve_api_key", lambda _: "synthetic")
+    observed = {"id": pod.pod, "networkVolume": {"id": "vol187"}}
+    if case == "missing": observed.pop("networkVolume")
+    if case == "null": observed["networkVolume"] = None
+    if case == "wrong": observed["networkVolume"]["id"] = "wrong"
+    if case == "empty-id": observed["networkVolume"]["id"] = ""
+    if case == "numeric-id": observed["networkVolume"]["id"] = 187
+    if case == "list-id": observed["networkVolume"]["id"] = ["vol187"]
+    if case == "missing-id": observed["networkVolume"] = {}
+    if case == "string-volume": observed["networkVolume"] = "vol187"
+    if case == "multiple-volumes": observed["networkVolume"] = [{"id": "vol187"}, {"id": "other"}]
+    if case == "wrong-pod": observed["id"] = "other-pod"
+    payload = [observed]
+    if case == "absent-pod": payload = []
+    if case == "duplicate-rest-pod": payload *= 2
+    if case == "malformed-collection": payload = {"unexpected": [observed]}
+    if case == "malformed-row": payload = [observed, "bad-row"]
+    rest_calls = []
+
+    def get(url, **kwargs):
+        rest_calls.append((url, kwargs))
+        assert url == api.PODS_URL
+        assert kwargs["params"] == {"includeNetworkVolume": "true"}
+        if case == "timeout": raise TimeoutError("synthetic timeout")
+        def json_payload():
+            if case == "malformed-json": raise ValueError("synthetic JSON error")
+            return payload
+        return SimpleNamespace(status_code=503 if case == "unavailable" else 200,
+                               text="synthetic unavailable", json=json_payload)
+
+    monkeypatch.setattr(api.httpx, "get", get)
+    def runner(argv, env, **kwargs):
+        if argv == ["list", "--json"] and not pod.terminated and "ready" in pod.events:
+            pod.events.append("attachment")
+            stdout = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(stdout):
+                    code = asyncio.run(cli._cmd_list(cli.build_parser().parse_args(argv)))
+                return code, stdout.getvalue(), ""
+            except Exception as exc:
+                return 1, "", str(exc)
+        return pod.cli(argv, env, **kwargs)
+
+    session = ps.Session(args, cli=runner, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, sleep=lambda _: None, say=lambda _: None)
+    code = session.run()
+    assert len(pod.launches) == 1 and len(graphql_calls) == 1 and len(rest_calls) == 1
+    assert pod.terminated and session.released
+    if case == "exact":
+        assert code == 0 and session.state["storage"]["volume_id"] == "vol187"
+        assert pod.events.index("attachment") < pod.events.index("exec:storage") < pod.events.index("job:install")
+    else:
+        assert code == 1
+        assert "job:bootstrap" not in pod.events and "job:install" not in pod.events
+        assert ps.BUNDLE_REMOTE not in pod.puts
+        assert all(job["label"] == "progress" for job in pod.jobs.values())
+        assert "exec:storage" not in pod.events and not pod.executes

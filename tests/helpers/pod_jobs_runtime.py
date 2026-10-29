@@ -223,7 +223,10 @@ class LoopbackPod:
             assert argv[1] == "fakepod134"
             self.terminated = True
             return 0, "{}", ""
-        if operation == "list": return 0, "[]" if self.terminated else '[{"id":"fakepod134"}]', ""
+        if operation == "volumes":
+            return 0, json.dumps([{"id": "vol187", "name": self.module.STORAGE_NAME,
+                                   "dataCenterId": self.module.DATACENTER}]), ""
+        if operation == "list": return 0, "[]" if self.terminated else '[{"id":"fakepod134","network_volume_id":"vol187"}]', ""
         raise AssertionError(argv)
 
     def http_status(self, pod_id):
@@ -238,6 +241,17 @@ class LoopbackPod:
         self.agent_thread.start()
 
         class LocalTransport(HttpsPodTransport):
+            def execute_command(self, command, timeout=600):
+                if "def storage_probe(" in command:
+                    # This runner fixture isolates job behavior; real probe transport
+                    # and mount decisions are exercised in test_pod_session.
+                    blob = shlex.split(command)[-1]
+                    source = ("import base64,json,sys; r=json.loads(base64.b64decode(sys.argv[1])); "
+                              "print(json.dumps(r | {'free_bytes':10**15,'total_bytes':10**15,"
+                              "'local_free_bytes':10**15}))")
+                    command = shlex.join([sys.executable, "-c", source, blob])
+                return super().execute_command(command, timeout=timeout)
+
             def _request(self, method, path, **kwargs):
                 owner.requests.append((method, path))
                 return super()._request(method, path, **kwargs)

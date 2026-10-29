@@ -73,6 +73,8 @@ STEPS = ("claim", "bundle", "bootstrap", "install", "rerun", "s0", "clip", "down
 JOB_LIMIT = 100
 DEFAULT_GPUS = ("RTX 5090", "RTX PRO 4500")
 STORAGE_NAME = "storage"
+CACHE_MOUNT = "/workspace"
+MODEL_CACHE_ROOT = CACHE_MOUNT + "/astrid/engines/vibecomfy-h3/models"
 DATACENTER = "EUR-NO-1"
 CUDA_VERSIONS = ",".join(DEFAULT_ALLOWED_CUDA_VERSIONS)
 ENGINE = "vibecomfy-h3"
@@ -209,6 +211,39 @@ def now() -> str:
 def safe_tail(text: str, limit: int = 1500) -> str:
     lines = [ln for ln in (text or "").splitlines() if not _SECRET_LINE.search(ln)]
     return "\n".join(lines)[-limit:]
+
+
+_STORAGE_DIAGNOSTIC_REASONS = {
+    "mountinfo": {"malformed", "error"},
+    "paths": {"invalid", "symlink", "not_separate", "error"},
+    "mount": {"not_directory", "absent_or_ambiguous", "device_mismatch", "error"},
+    "identity": {"mismatch", "invalid_request"},
+    "cache": {"nested_mount", "unsafe", "error"},
+    "capacity": {"invalid_requirement", "insufficient", "error"},
+    "local": {"same_filesystem", "invalid_requirement", "insufficient", "error"},
+    "complete": {"verified"},
+    "unknown": {"error"},
+}
+
+
+def parse_storage_diagnostic(stderr: str) -> dict | None:
+    """Accept only one bounded record with enumerated, non-sensitive fields."""
+    prefix = "ASTRID_STORAGE_DIAGNOSTIC "
+    records = [line[len(prefix):] for line in stderr.splitlines() if line.startswith(prefix)]
+    if len(records) != 1 or len(records[0]) > 512:
+        return None
+    try:
+        value = json.loads(records[0])
+        if (not isinstance(value, dict)
+                or set(value) != {"schema", "stage", "reason", "identity_matches"}
+                or value["schema"] != "astrid.pod-storage-diagnostic.v1"
+                or not isinstance(value["stage"], str) or not isinstance(value["reason"], str)
+                or value["reason"] not in _STORAGE_DIAGNOSTIC_REASONS.get(value["stage"], set())
+                or (value["identity_matches"] is not None and type(value["identity_matches"]) is not bool)):
+            return None
+        return value
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 class JobBudget:
@@ -512,6 +547,9 @@ class Session:
         self.name = f"astrid-pod-session-{self.sid}"
         self.workdir = Path(args.workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
+        # A reused work directory must never present a prior session's mount
+        # observation as evidence for this session, even if claim fails early.
+        (self.workdir / "storage-mount-observation.json").unlink(missing_ok=True)
         self.pod_id: str | None = None
         self.transport = None
         self.token_path: Path | None = None
@@ -624,10 +662,62 @@ class Session:
                 self.pod_id = pod_id
                 self.transport = self.transport_factory(pod_id, read_token_file(self.token_path))
                 self.transport.wait_ready(timeout=600)
+                storage = self.verify_storage(footprint)
                 return {"pod_id": pod_id, "gpu": gpu, "datacenter": dc, "container_disk_gb": disk,
-                        "volume_gb": self.args.volume_gb, "image": image}
+                        "volume_gb": self.args.volume_gb, "image": image, "storage": storage}
             self.say(f"[claim] {gpu} @ {dc}: no pod (exit {code}) {safe_tail(err, 300)}")
         raise SessionError("claim: no pod from any of: " + ", ".join(tried))
+
+    def verify_storage(self, footprint: int) -> dict:
+        """Corroborate exact account attachment with live mount source and statvfs."""
+        def listing(argv):
+            code, out, _ = self.cli(argv, self.cli_env)
+            try:
+                result = json.loads(out)
+            except (ValueError, TypeError):
+                result = None
+            if code or not isinstance(result, list) or any(not isinstance(v, dict) for v in result):
+                raise SessionError("claim: storage observation is missing or ambiguous")
+            return result
+        volumes = [v for v in listing(["volumes", "ls", "--json"])
+                   if v.get("name") == STORAGE_NAME and v.get("dataCenterId") == DATACENTER]
+        if len(volumes) != 1 or not isinstance(volumes[0].get("id"), str) or not volumes[0]["id"]:
+            raise SessionError("claim: requested existing volume identity is missing or ambiguous")
+        volume_id = volumes[0]["id"]
+        pods = [v for v in listing(["list", "--json"]) if v.get("id") == self.pod_id]
+        if len(pods) != 1 or pods[0].get("network_volume_id") != volume_id:
+            raise SessionError("claim: pod did not report the exact requested volume attachment")
+        request = {"pod_id": self.pod_id, "volume_id": volume_id, "nonce": secrets.token_hex(16),
+                   "mount": CACHE_MOUNT, "model_cache_root": MODEL_CACHE_ROOT, "engine_root": ENGINE_ROOT,
+                   "required_volume_bytes": self.args.volume_gb * 10**9,
+                   "required_local_bytes": (footprint + 20) * 10**9}
+        source = (REPO / "scripts/pod_storage_probe.py").read_text()
+        blob = base64.b64encode(json.dumps(request).encode()).decode()
+        command = "python3 -c " + shlex.quote(source) + " " + shlex.quote(blob)
+        code, out, err = self.execute("storage mount verification", command)
+        diagnostic = parse_storage_diagnostic(err)
+        if diagnostic is not None:
+            self.state["storage_diagnostic"] = diagnostic
+            path = self.workdir / "storage-mount-observation.json"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                json.dump(diagnostic, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+        if code:
+            raise SessionError("claim: mounted storage verification failed")
+        receipt = parse_json_object(out)
+        if (set(receipt) != set(request) | {"free_bytes", "total_bytes", "local_free_bytes"}
+                or any(type(receipt.get(k)) is not type(v) or receipt.get(k) != v for k, v in request.items())
+                or type(receipt.get("total_bytes")) is not int
+                or type(receipt.get("free_bytes")) is not int
+                or receipt["free_bytes"] < request["required_volume_bytes"]
+                or receipt["total_bytes"] < receipt["free_bytes"]
+                or type(receipt.get("local_free_bytes")) is not int
+                or receipt["local_free_bytes"] < request["required_local_bytes"]):
+            raise SessionError("claim: storage evidence differs from the requested mount/capacity")
+        self.state["storage"] = receipt
+        return receipt
 
     def put(self, local: Path, remote: str) -> None:
         for attempt in range(3):
@@ -799,7 +889,8 @@ class Session:
     # -- progress -----------------------------------------------------------------------------
     def progress_document(self) -> bytes:
         return (json.dumps({"schema": "astrid.pod-session-progress.v1", "session": self.sid, "pod_id": self.pod_id,
-                            "jobs": self.budget.count, "steps": self.records}, indent=2, sort_keys=True) + "\n").encode()
+                            "jobs": self.budget.count, "steps": self.records,
+                            "storage_diagnostic": self.state.get("storage_diagnostic")}, indent=2, sort_keys=True) + "\n").encode()
 
     def write_progress(self, *, strict: bool) -> None:
         local = self.workdir / "pod-session-progress.json"
