@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import re
 
+import pytest
+
 from astrid.core.generation.engine_recipe import load_recipe_model_lock
 from astrid.packs.h3_av.shared.generation import _required_locked_url
 
@@ -40,6 +42,41 @@ def _declared_model_urls(value, inside_models=False):
             yield from _declared_model_urls(child, inside_models)
 
 
+def _python_model_urls(text, path):
+    tree = ast.parse(text, filename=str(path))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and
+                ((isinstance(node.func, ast.Name) and node.func.id == "ModelAsset") or
+                 (isinstance(node.func, ast.Attribute) and node.func.attr == "ModelAsset"))):
+            continue
+        # ModelAsset(filename, url, subdir) also accepts its URL positionally.
+        # Unpacking makes the URL impossible to inspect statically, so reject it.
+        assert not any(isinstance(arg, ast.Starred) for arg in node.args), str(path)
+        assert not any(keyword.arg is None for keyword in node.keywords), str(path)
+        url_nodes = ([node.args[1]] if len(node.args) > 1 else []) + [
+            keyword.value for keyword in node.keywords if keyword.arg == "url"
+        ]
+        for url_node in url_nodes:
+            assert isinstance(url_node, ast.Constant) and isinstance(url_node.value, str), str(path)
+            yield url_node.value
+
+
+@pytest.mark.parametrize("source", [
+    'ModelAsset("model", dynamic_url, "models")',
+    'ModelAsset(url=dynamic_url, subdir="models")',
+    'ModelAsset(*args)',
+    'ModelAsset(**kwargs)',
+])
+def test_python_model_url_discovery_rejects_uninspectable_arguments(source):
+    with pytest.raises(AssertionError):
+        list(_python_model_urls(source, "workflow.py"))
+
+
+def test_python_model_url_discovery_includes_positional_url():
+    source = 'ModelAsset("model", "https://example.com/download", "models")'
+    assert list(_python_model_urls(source, "workflow.py")) == ["https://example.com/download"]
+
+
 def test_character_swap_revision_remains_pinned():
     from astrid.packs.h3_av.shared import generation
 
@@ -65,15 +102,7 @@ def test_h3_workflow_model_urls_match_lock():
         if path.suffix == ".py":
             # Also catch a new ModelAsset URL on an unrelated host or without
             # a model-file extension, and reject dynamic URLs in the payload.
-            tree = ast.parse(text, filename=str(path))
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.Call) and
-                    ((isinstance(node.func, ast.Name) and node.func.id == "ModelAsset") or
-                     (isinstance(node.func, ast.Attribute) and node.func.attr == "ModelAsset"))):
-                    for keyword in node.keywords:
-                        if keyword.arg == "url":
-                            assert isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str), str(path)
-                            model_urls.add(keyword.value.value)
+            model_urls.update(_python_model_urls(text, path))
         else:
             model_urls.update(_declared_model_urls(json.loads(text)))
         assert model_urls <= allowed, f"{path}: unexpected model URLs {model_urls - allowed}"
