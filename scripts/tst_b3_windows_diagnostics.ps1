@@ -308,11 +308,23 @@ $start.FileName = $shell
 $start.Arguments = $quoted -join ' '
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $false
+# The workflow's outer `pwsh` sets PSModulePath to PowerShell 7 modules. Pass
+# the native Windows PowerShell module roots explicitly so PS 5.1 can load its
+# inbox Microsoft.PowerShell.Security module (including Get-Acl).
+$nativePsHome = Split-Path -Parent $nativeShell
+$nativeModulePaths = @(
+    (Join-Path $nativePsHome 'Modules'),
+    (Join-Path $env:ProgramFiles 'WindowsPowerShell/Modules'),
+    (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell/Modules')
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique
+$nativePsModulePath = $nativeModulePaths -join ';'
+if (-not $nativePsModulePath) { throw "Native Windows PowerShell module roots were not found under $nativePsHome." }
+$start.EnvironmentVariables['PSModulePath'] = $nativePsModulePath
 $child = New-Object Diagnostics.Process
 $child.StartInfo = $start
 $child.Start() | Out-Null
 $driverPid = $child.Id
-@{ pid=$driverPid; executable=$shell; commandLine=$start.Arguments; timestampUtc=[DateTime]::UtcNow.ToString('o') } |
+@{ pid=$driverPid; executable=$shell; commandLine=$start.Arguments; psModulePath=$nativePsModulePath; timestampUtc=[DateTime]::UtcNow.ToString('o') } |
     ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'driver-process.json') -Encoding UTF8
 
 try {
