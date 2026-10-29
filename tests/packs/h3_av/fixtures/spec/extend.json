@@ -1,0 +1,176 @@
+{
+  "v1": {
+    "version": 1,
+    "operation": "continue",
+    "source": {
+      "asset": "source.mp4",
+      "range": [
+        0,
+        4
+      ]
+    },
+    "output": {
+      "duration": 8
+    },
+    "content": {
+      "prompt": "Continue the scene."
+    },
+    "changes": {
+      "video": [
+        {
+          "during": [
+            4,
+            8
+          ],
+          "area": {
+            "full_frame": true
+          },
+          "action": "generate"
+        }
+      ],
+      "audio": [
+        {
+          "during": [
+            4,
+            8
+          ],
+          "action": "generate"
+        }
+      ]
+    },
+    "references": [],
+    "overrides": {}
+  },
+  "v2": {
+    "version": 2,
+    "prompt": "Continue the scene.",
+    "duration": 8,
+    "settings": {},
+    "media": [
+      {
+        "id": "source",
+        "asset": "source.mp4",
+        "role": "timeline",
+        "modality": "video",
+        "at": {
+          "frame": 0
+        },
+        "range": [
+          0,
+          4
+        ],
+        "edit": []
+      }
+    ],
+    "continuation": true
+  },
+  "spec": {
+    "spec_version": 1,
+    "source": {
+      "asset": "source.mp4",
+      "range": [
+        0,
+        4
+      ]
+    },
+    "prompt": "Continue the scene.",
+    "duration": 8,
+    "operations": [
+      {
+        "op": "extend"
+      }
+    ]
+  },
+  "v1_digest": "c758f829126529243c7f85c23163b36d559e265a17951e84967108a19986a396",
+  "v1_normalized": {
+    "version": 1,
+    "operation": "continue",
+    "source": {
+      "asset": "source.mp4",
+      "range": [
+        0.0,
+        4.0
+      ]
+    },
+    "output": {
+      "duration": 8.0
+    },
+    "content": {
+      "prompt": "Continue the scene."
+    },
+    "changes": {
+      "video": [
+        {
+          "during": [
+            4.0,
+            8.0
+          ],
+          "area": {
+            "full_frame": true
+          },
+          "action": "generate"
+        }
+      ],
+      "audio": [
+        {
+          "during": [
+            4.0,
+            8.0
+          ],
+          "action": "generate"
+        }
+      ]
+    },
+    "references": [],
+    "overrides": {}
+  },
+  "v1_schema_sha256": "3eb17c74f0c9788f4077896603c7918918aa62cf321dc26e394c31e4aca65403",
+  "v2_digest": "f391cc777d0e75731cb37e59673a5eb37b7da9e185c51731c9c5a123497c854d",
+  "v2_normalized": {
+    "version": 2,
+    "prompt": "Continue the scene.",
+    "duration": 8,
+    "media": [
+      {
+        "occurrence_id": "source",
+        "asset": "source.mp4",
+        "role": "timeline",
+        "id": "source",
+        "modality": "video",
+        "at": {
+          "frame": 0
+        },
+        "resolved_at": {
+          "unit": "frames",
+          "value": 0
+        },
+        "hard": false,
+        "edit": [],
+        "range": [
+          0,
+          4
+        ],
+        "resolved_range": [
+          0,
+          96
+        ]
+      }
+    ],
+    "settings": {
+      "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "steps": 8,
+      "sampler": "res_multistep",
+      "scheduler": "simple",
+      "seed": 123456789,
+      "turbo": {
+        "enabled": true,
+        "strength": 0.95
+      }
+    },
+    "continuation": true,
+    "profile": "h3_av.native.v2",
+    "output_count": 1,
+    "model_tags": {}
+  },
+  "v2_schema_sha256": "e80527ff806dacf2430b6663f01038febacba528d1a76487a4ae8859fe779605"
+}

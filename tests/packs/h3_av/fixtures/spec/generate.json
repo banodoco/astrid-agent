@@ -1,0 +1,112 @@
+{
+  "v1": {
+    "version": 1,
+    "operation": "generate",
+    "source": null,
+    "output": {
+      "duration": 4
+    },
+    "content": {
+      "prompt": "A quiet mountain scene."
+    },
+    "changes": {
+      "video": [],
+      "audio": []
+    },
+    "references": [
+      {
+        "asset": "look.png",
+        "purpose": "appearance"
+      }
+    ],
+    "overrides": {}
+  },
+  "v2": {
+    "version": 2,
+    "prompt": "A quiet mountain scene.",
+    "duration": 4,
+    "settings": {},
+    "media": [
+      {
+        "id": "look",
+        "asset": "look.png",
+        "role": "reference",
+        "modality": "image"
+      }
+    ]
+  },
+  "spec": {
+    "spec_version": 1,
+    "prompt": "A quiet mountain scene.",
+    "duration": 4,
+    "refs": {
+      "look": {
+        "asset": "look.png",
+        "modality": "image"
+      }
+    },
+    "operations": [
+      {
+        "op": "generate"
+      }
+    ]
+  },
+  "v1_digest": "74db048dd2dd337501c9fabcfa0aae9b06064e84e04323a381d661b06c4d0182",
+  "v1_normalized": {
+    "version": 1,
+    "operation": "generate",
+    "source": null,
+    "output": {
+      "duration": 4.0
+    },
+    "content": {
+      "prompt": "A quiet mountain scene."
+    },
+    "changes": {
+      "video": [],
+      "audio": []
+    },
+    "references": [
+      {
+        "asset": "look.png",
+        "purpose": "appearance"
+      }
+    ],
+    "overrides": {}
+  },
+  "v1_schema_sha256": "3eb17c74f0c9788f4077896603c7918918aa62cf321dc26e394c31e4aca65403",
+  "v2_digest": "5b814e72c11f089796b1f218e3a5af271848d7069c3518862edd7c42148a7314",
+  "v2_normalized": {
+    "version": 2,
+    "prompt": "A quiet mountain scene.",
+    "duration": 4,
+    "media": [
+      {
+        "occurrence_id": "look",
+        "asset": "look.png",
+        "role": "reference",
+        "id": "look",
+        "modality": "image",
+        "model_tag": "<Picture 1>"
+      }
+    ],
+    "settings": {
+      "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "steps": 8,
+      "sampler": "res_multistep",
+      "scheduler": "simple",
+      "seed": 123456789,
+      "turbo": {
+        "enabled": true,
+        "strength": 0.95
+      }
+    },
+    "continuation": false,
+    "profile": "h3_av.native.v2",
+    "output_count": 1,
+    "model_tags": {
+      "look": "<Picture 1>"
+    }
+  },
+  "v2_schema_sha256": "e80527ff806dacf2430b6663f01038febacba528d1a76487a4ae8859fe779605"
+}
