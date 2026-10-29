@@ -134,13 +134,16 @@ echo "pod_bootstrap: for the engine install run: export ASTRID_ENGINE_SANITY_CMD
 if [ -f "$marker" ]; then
   echo "pod_bootstrap: already done ($marker)"
   run_gpu_sanity
-  verify_astrid_install
-  setup_runtime
-  exit 0
+  if "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1; then
+    verify_astrid_install
+    setup_runtime
+    exit 0
+  fi
+  echo "pod_bootstrap: runpod_lifecycle is missing or broken; repairing packages"
+else
+  # Fresh claim: no engine venv yet, so this says so and skips.
+  run_gpu_sanity
 fi
-
-# Fresh claim: no engine venv yet, so this says so and skips.
-run_gpu_sanity
 
 # uv is never fetched here (no piping a download into a shell): use the one on PATH or stop.
 if ! command -v uv >/dev/null 2>&1; then
@@ -157,24 +160,35 @@ have_all() {
   installed="$(uv pip list --python "$VENV" --format freeze 2>/dev/null)" || return 1
   local p
   for p in "${PACKAGES[@]}"; do
-    printf '%s\n' "$installed" | grep -qiE "^${p//-/[-_]}==" || return 1
+    grep -qiE "^${p//-/[-_]}==" <<< "$installed" || return 1
   done
+  "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1
 }
 
 if have_all; then
   echo "pod_bootstrap: $VENV already has the packages; skipping install"
 else
-  uv python install "$PY_VERSION"
-  [ -x "$VENV/bin/python" ] || uv venv --python "$PY_VERSION" "$VENV"
+  repair=()
+  if [ -x "$VENV/bin/python" ] && ! "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1; then
+    repair=(--reinstall-package runpod-lifecycle)
+  fi
+  if [ ! -x "$VENV/bin/python" ]; then
+    uv python install "$PY_VERSION"
+    uv venv --python "$PY_VERSION" "$VENV"
+  fi
   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
-    uv pip install --python "$VENV" "${SRC_DIRS[@]}"
+    uv pip install --python "$VENV" "${SRC_DIRS[@]}" ${repair[@]+"${repair[@]}"}
 fi
 
 # pip in the venv. The engine install's helper runs `python3 -m pip` for its uv bootstrap, and a
 # venv made by `uv venv` has no pip. This sits outside the if above, so a venv that already holds
-# the packages gets it too. uv leaves an installed pip alone, so this is idempotent.
-uv pip install --python "$VENV" pip
+# the packages gets it too. Avoid an installer invocation when pip is already present.
+installed="$(uv pip list --python "$VENV" --format freeze 2>/dev/null || true)"
+if ! grep -qiE '^pip==' <<< "$installed"; then
+  uv pip install --python "$VENV" pip
+fi
 verify_astrid_install
+"$VENV/bin/python" -c 'import runpod_lifecycle'
 
 setup_runtime
 

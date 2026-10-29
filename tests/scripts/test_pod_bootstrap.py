@@ -133,7 +133,7 @@ def test_vibecomfy_is_in_noneditable_package_step_before_marker():
     assert all(not re.search(r"(?:^|\s)(?:-e|--editable)(?:[=\s]|$)", line) for line in install_lines)
 
 
-TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln"]
+TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln", "cp"]
 PROBE_MODULES = ("engine_runner.py", "engine_runner_target.py")
 PROBE_TEXT = {name: f"# {name} from src/astrid-agent\n" for name in PROBE_MODULES}
 
@@ -162,6 +162,9 @@ def _fake_venv(tmp_path: Path, copies: dict | None) -> Path:
         "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --realm-root ] && { mkdir -p \"$2\"; : > \"$2/realm.sqlite3\"; }; shift; done\n"
     )
     stub.chmod(0o755)
+    lifecycle = _site(venv) / "runpod_lifecycle"
+    lifecycle.mkdir(parents=True, exist_ok=True)
+    (lifecycle / "__init__.py").write_text("# fixture lifecycle\n")
     if copies is not None:
         gen = _site(venv) / "astrid" / "core" / "generation"
         gen.mkdir(parents=True, exist_ok=True)
@@ -200,7 +203,11 @@ def _tool_bin(tmp_path: Path, with_uv: bool) -> Path:
             '  "pip list") if [ -n "${FAKE_UV_FREEZE:-}" ]; then cat "$FAKE_UV_FREEZE"; else exit 1; fi;;\n'
             '  "venv "*) for a; do v="$a"; done; mkdir -p "$v/bin"; ln -sf "$PY" "$v/bin/python"\n'
             '    printf \'#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = --realm-root ] && { mkdir -p "$2"; : > "$2/realm.sqlite3"; }; shift; done\\n\' > "$v/bin/astrid-runtime"\n'
-            '    chmod +x "$v/bin/astrid-runtime";;\n'
+            '    chmod +x "$v/bin/astrid-runtime"; printf "home = /tmp\\n" > "$v/pyvenv.cfg";;\n'
+            '  "pip install") if [[ " $* " == *" src/runpod-python "* ]]; then\n'
+            "    site=\"$(\"$ASTRID_VENV/bin/python\" -c 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])')\"\n"
+            '    mkdir -p "$site/astrid/core/generation"; cp src/astrid-agent/astrid/core/generation/*.py "$site/astrid/core/generation/"\n'
+            '    cp -R src/runpod-lifecycle/src/runpod_lifecycle "$site/"; fi;;\n'
             "esac\nexit 0\n"
         )
         uv.chmod(0o755)
@@ -213,6 +220,10 @@ def _boot(tmp_path: Path, extra: dict, with_uv=True) -> subprocess.CompletedProc
         (src / d).mkdir(parents=True, exist_ok=True)
         (src / d / "f.txt").write_text(d)
     _identity_stub(src)
+    lifecycle = src / "runpod-lifecycle" / "src" / "runpod_lifecycle"
+    lifecycle.mkdir(parents=True, exist_ok=True)
+    if not (lifecycle / "__init__.py").exists():
+        (lifecycle / "__init__.py").write_text("# fixture lifecycle\n")
     gen = src / "astrid-agent" / "astrid" / "core" / "generation"
     gen.mkdir(parents=True, exist_ok=True)
     for name in PROBE_MODULES:
@@ -301,10 +312,10 @@ def _probe_function_body(text: str) -> str:
     return text[start : text.index("\n}\n", start) + 3]
 
 
-def test_pip_step_is_unindented_after_package_install_and_before_marker():
+def test_pip_check_is_after_package_install_and_before_marker():
     text = SCRIPT.read_text()
-    # Unindented means it runs whether or not the packages were already installed (the if/else above).
-    pip_line = re.compile(r'^uv pip install --python "\$VENV" pip$', re.M)
+    # Pip is checked on both paths and installed only when absent.
+    pip_line = re.compile(r'^  uv pip install --python "\$VENV" pip$', re.M)
     assert len(pip_line.findall(text)) == 1
     package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
     assert text.index(package_step) < pip_line.search(text).start() < text.index('mkdir -p "$marker_dir"')
@@ -317,7 +328,7 @@ def test_probe_check_runs_on_rerun_and_after_package_install_and_never_cleans_en
     assert len(calls) == 2
     rerun, full = calls
     package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
-    assert text.index('if [ -f "$marker" ]') < rerun < text.index("  setup_runtime\n  exit 0")
+    assert text.index('if [ -f "$marker" ]') < rerun < text.index("    setup_runtime\n    exit 0")
     assert text.index(package_step) < full < text.index('mkdir -p "$marker_dir"')
     body = _probe_function_body(text)
     assert "sha256sum" in body and "--reinstall-package astrid" in body
@@ -333,14 +344,14 @@ def test_fresh_boot_orders_noneditable_package_pip_and_probe_check(tmp_path):
     venv = tmp_path / "venv"
     pkg = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
     pip = _line_index(calls, f"pip install --python {venv} pip")
-    probe = _line_index(calls, f"pip install --python {venv} --reinstall-package astrid ")
     assert shlex.split(calls[pkg]) == [
         "pip", "install", "--python", str(venv), "src/runpod-python", "src/astrid-runtime",
         "src/runpod-lifecycle", "src/astrid-agent", "src/VibeComfy",
     ]
     assert all(not any(arg == "-e" or arg == "--editable" or arg.startswith("--editable=")
                        for arg in shlex.split(call)) for call in calls)
-    assert pkg < pip < probe
+    assert pkg < pip
+    assert not any("--reinstall-package astrid" in c for c in calls)
 
 
 def test_existing_packages_skip_install_but_still_get_pip_and_a_matching_probe_check(tmp_path):
@@ -363,7 +374,9 @@ def test_probe_check_reinstalls_astrid_when_installed_module_differs(tmp_path):
     copies["engine_runner_target.py"] = "# older probe\n"
     venv = _fake_venv(tmp_path, copies)
     log = tmp_path / "uv.log"
-    r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log)})
+    freeze = tmp_path / "freeze.txt"
+    freeze.write_text("runpod==1.0\nastrid-runtime==1.0\nrunpod-lifecycle==1.0\nastrid==1.0\nvibecomfy==1.0\n")
+    r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log), "FAKE_UV_FREEZE": str(freeze)})
     assert r.returncode == 0, r.stderr + r.stdout
     assert "installed astrid differs from src/astrid-agent (engine_runner_target.py)" in r.stdout
     _line_index(_uv_calls(log), f"pip install --python {venv} --reinstall-package astrid ")
@@ -432,5 +445,57 @@ def test_gpu_sanity_failure_exits_2_and_names_the_venv(tmp_path):
 def test_bootstrap_wires_sanity_before_engine_side_work_and_into_install():
     text = SCRIPT.read_text()
     assert 'ENGINE_ROOT="${ASTRID_ENGINE_ROOT:-' in text and "/root" not in text
-    assert text.index('[ -f "$marker" ]') < text.index("  run_gpu_sanity\n") < text.index("verify_astrid_install\n  setup_runtime")
+    assert text.index('[ -f "$marker" ]') < text.index("  run_gpu_sanity\n") < text.index("verify_astrid_install\n    setup_runtime")
     assert "ASTRID_ENGINE_SANITY_CMD" in text and "cap 128" in text.split("set -euo")[0]
+
+
+def test_large_freeze_and_present_pip_skip_all_install_commands(tmp_path):
+    venv = _fake_venv(tmp_path, dict(PROBE_TEXT))
+    pip = _site(venv) / "pip"
+    pip.mkdir(parents=True)
+    (pip / "__init__.py").write_text("")
+    (pip / "__main__.py").write_text("print('pip fixture')\n")
+    freeze = tmp_path / "freeze.txt"
+    freeze.write_text("runpod==1.0\nastrid_runtime==1.0\nrunpod_lifecycle==1.0\nastrid==1.0\nvibecomfy==1.0\npip==1.0\n" + "".join(f"other-{i}==1.0\n" for i in range(10000)))
+    log = tmp_path / "uv.log"
+    r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log), "FAKE_UV_FREEZE": str(freeze)})
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert "skipping install" in r.stdout
+    assert not any(call.startswith(("pip install", "python install", "venv ")) for call in _uv_calls(log))
+
+
+def test_missing_lifecycle_is_installed_into_existing_managed_environment(tmp_path):
+    venv = _fake_venv(tmp_path, dict(PROBE_TEXT))
+    (_site(venv) / "runpod_lifecycle" / "__init__.py").unlink()
+    (_site(venv) / "runpod_lifecycle").rmdir()
+    freeze = tmp_path / "freeze.txt"
+    freeze.write_text("runpod==1.0\nastrid-runtime==1.0\nrunpod-lifecycle==1.0\nastrid==1.0\nvibecomfy==1.0\n")
+    log = tmp_path / "uv.log"
+    r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log), "FAKE_UV_FREEZE": str(freeze)})
+    assert r.returncode == 0, r.stderr + r.stdout
+    calls = _uv_calls(log)
+    install = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
+    assert shlex.split(calls[install])[-2:] == ["--reinstall-package", "runpod-lifecycle"]
+    assert not any(c.startswith(("python install", "venv ")) for c in calls)
+    check = subprocess.run([str(venv / "bin/python"), "-c", "import runpod_lifecycle; print(runpod_lifecycle.__file__)"] , check=True, capture_output=True, text=True, cwd=tmp_path)
+    assert str(_site(venv) / "runpod_lifecycle") in check.stdout
+
+
+def test_marker_with_missing_lifecycle_repairs_install(tmp_path):
+    log = tmp_path / "uv.log"
+    env = {**_overrides(tmp_path), "UV_LOG": str(log)}
+    first = _boot(tmp_path, env)
+    assert first.returncode == 0, first.stderr + first.stdout
+    lifecycle = _site(tmp_path / "venv") / "runpod_lifecycle" / "__init__.py"
+    import shutil
+    shutil.rmtree(lifecycle.parent)
+    before = len(_uv_calls(log))
+    second = _boot(tmp_path, env)
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "repairing packages" in second.stdout
+    new_calls = _uv_calls(log)[before:]
+    install = _line_index(new_calls, f"pip install --python {tmp_path / 'venv'} src/runpod-python ")
+    assert shlex.split(new_calls[install])[-2:] == ["--reinstall-package", "runpod-lifecycle"]
+    assert not any(c.startswith(("python install", "venv ")) for c in new_calls)
+    check = subprocess.run([str(tmp_path / "venv/bin/python"), "-c", "import runpod_lifecycle; print(runpod_lifecycle.__file__)"] , check=True, capture_output=True, text=True, cwd=tmp_path)
+    assert str(_site(tmp_path / "venv") / "runpod_lifecycle") in check.stdout
