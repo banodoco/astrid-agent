@@ -7,22 +7,25 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import os
 import re
 import signal
 import shutil
 import socket
 import sqlite3
-import subprocess
 import sys
 import time
 import uuid
+from urllib.request import urlopen
 import venv
 from pathlib import Path
 
 import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.linux_native]  # SIGKILL crash evidence; needs the Runtime
+
+from tests.helpers.crash import crash, crashed, run_owned
 
 from astrid_runtime.bootstrap import BootstrapConfig, SourceProfile
 from astrid_runtime.paths import RuntimePaths
@@ -64,14 +67,18 @@ def _tree_snapshot(root):
 
 def _kill(point, wanted):
     if point == wanted:
-        os.kill(os.getpid(), signal.SIGKILL)
+        crash()
 
 
 def _version(root, name, release=0, managed_by=None):
     folder = root / "versions" / name
     folder.mkdir(parents=True)
-    version = Version(folder, Path(sys.executable), folder / "profile.json", {}, release, managed_by)
+    python = Path(sys.executable)
+    # Normalize directory aliases without escaping a virtualenv via its Python symlink.
+    python = python.parent.resolve() / python.name
+    version = Version(folder, python, folder / "profile.json", {}, release, managed_by)
     write_json(folder / "version.json", version.document())
+    write_json(folder / "manifest.json", {"release": release})
     return version
 
 
@@ -186,11 +193,10 @@ class _Backend(Backend):
         pass
 
     def upgrade(self, _version, _data):
-        result = subprocess.run([sys.executable, __file__, "runtime", str(self.base), self.kill_at],
-                                capture_output=True, text=True, timeout=30)
-        if result.returncode == -signal.SIGKILL:
+        result = run_owned([sys.executable, __file__, "runtime", str(self.base), self.kill_at], timeout=30)
+        if crashed(result.returncode):
             # A machine/process-group crash cannot enter core's exception path.
-            os.kill(os.getpid(), signal.SIGKILL)
+            crash()
         assert result.returncode == 0, result.stderr
 
     def restore(self, old, data, realm, backup):
@@ -207,9 +213,13 @@ class _Backend(Backend):
         write_json(self.service.selection, {**record, "identity": {
             "release": version.release, "managed_by": version.managed_by}})
         _event(self.base, "register")
+        if version.root.name == "old":
+            _kill("rollback-register", self.kill_at)
 
     def start(self, _version, _data):
         _event(self.base, "start")
+        if _version.root.name == "old":
+            _kill("rollback-start", self.kill_at)
         if getattr(self, "real_runtime_proof", False) and _version.root.name == "old":
             context = getattr(self, "_update_transaction", None)
             self._update_transaction = None
@@ -221,6 +231,11 @@ class _Backend(Backend):
             _kill("start-return", self.kill_at)
 
     def verify(self, _version, data, realm_id, **_kwargs):
+        if _version.root.name.startswith("new-") and (self.base / "reject-candidate").exists():
+            _event(self.base, "candidate-failed")
+            raise core.VerificationError("injected candidate readiness failure")
+        if _version.root.name == "old":
+            _kill("rollback-verify", self.kill_at)
         if getattr(self, "real_runtime_proof", False) and _version.root.name == "old":
             context = getattr(self, "_update_transaction", None)
             self._update_transaction = None
@@ -258,6 +273,10 @@ class _Backend(Backend):
         _event(self.base, "verify-" + _version.root.name)
         _event(self.base, "verify")
 
+    def sync_skills(self, _version):
+        # This crash fixture owns no harness profile or installed skills.
+        pass
+
     def open(self):
         _event(self.base, "open")
 
@@ -266,14 +285,16 @@ def _run(base, kill_at="", mode="update"):
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([
         str(Path(__file__).resolve().parents[1]), os.environ.get("PYTHONPATH", ""),
     ])}
-    if mode == "cli-update":
-        env.update({
-            "HOME": str(Path(base) / "home"),
-            "XDG_DATA_HOME": str(Path(base) / "home/xdg-data"),
-            "XDG_CONFIG_HOME": str(Path(base) / "home/xdg-config"),
-        })
-    result = subprocess.run([sys.executable, __file__, mode, str(base), kill_at],
-                            env=env, capture_output=True, text=True, timeout=45)
+    env.update({
+        "HOME": str(Path(base) / "home"),
+        "XDG_DATA_HOME": str(Path(base) / "home/xdg-data"),
+        "XDG_CONFIG_HOME": str(Path(base) / "home/xdg-config"),
+        "XDG_STATE_HOME": str(Path(base) / "home/xdg-state"),
+        "USERPROFILE": str(Path(base) / "home"),
+        "APPDATA": str(Path(base) / "home/appdata"),
+        "LOCALAPPDATA": str(Path(base) / "home/localappdata"),
+    })
+    result = run_owned([sys.executable, __file__, mode, str(base), kill_at], env=env, timeout=45)
     return result
 
 
@@ -358,7 +379,38 @@ def _historical_backend_restore(self, old, data, realm, backup):
     namespace["restore"](self, old, data, realm, backup)
 
 
-def _assert_retry(base, *, restore_expected):
+def _assert_one_runtime(base, real_runtime):
+    """Own one real loopback Runtime after replay and refuse a second owner."""
+    from runtime_protocol.errors import OwnerBusyError
+
+    realm = base / "data/runtime/realms/realm-1"
+    support = base / "runtime-owner-proof"
+    options = {"support_root": support, "owner_lock": support / "instance.lock",
+               "log_directory": support / "logs"}
+    daemon = real_runtime(realm, **options)
+    endpoint, instance = daemon.endpoint, daemon.startup_identity_instance_id
+    assert endpoint.startswith("http://127.0.0.1:")
+    assert daemon.thread.is_alive()
+    discovery = read_json(support / "discovery.json")
+    lock = read_json(support / "instance.lock")
+    assert discovery["active_realm"] == lock["realm_id"] == "realm-1"
+    assert discovery["runtime_instance_id"] == lock["runtime_instance_id"] == instance
+    assert discovery["endpoint"] == endpoint
+    assert discovery["pid"] == lock["pid"] == os.getpid()
+    with urlopen(endpoint + "/v1/health", timeout=5) as response:
+        assert json.load(response)["status"] == "ok"
+    assert daemon.service.doctor()["ok"] is True
+    before = (support / "discovery.json").read_bytes()
+    with pytest.raises(OwnerBusyError, match="another runtime daemon owns this realm"):
+        real_runtime(realm, **options)
+    assert (support / "discovery.json").read_bytes() == before
+    assert daemon.start() is daemon
+    assert daemon.endpoint == endpoint
+    assert daemon.startup_identity_instance_id == instance
+    assert (base / "data/retained.txt").read_text() == "original user data"
+
+
+def _assert_retry(base, *, restore_expected, real_runtime=None):
     events = base / "events"
     before = events.read_text().splitlines() if events.exists() else []
     for attempt in range(3):
@@ -381,6 +433,10 @@ def _assert_retry(base, *, restore_expected):
         assert after.index("restore") < after.index("backup")
     else:
         assert "restore" not in after
+    selected = current(base / "program")
+    assert read_json(base / "install-selection.json")["identity"] == selected.document()["identity"]
+    if real_runtime is not None:
+        _assert_one_runtime(base, real_runtime)
 
 
 @pytest.mark.parametrize("step", [
@@ -389,7 +445,7 @@ def _assert_retry(base, *, restore_expected):
     "runtime:activated", "runtime:restarted", "migrated", "pointer-publish", "switched",
     "start-return", "verified", "complete",
 ])
-def test_sigkill_each_installer_durable_step_then_three_successful_updates(tmp_path, step):
+def test_sigkill_each_installer_durable_step_then_three_successful_updates(tmp_path, real_runtime, step):
     _setup(tmp_path)
     result = _run(tmp_path, step)
     assert result.returncode == -signal.SIGKILL, result.stderr
@@ -398,7 +454,36 @@ def test_sigkill_each_installer_durable_step_then_three_successful_updates(tmp_p
         "runtime:activated", "runtime:restarted", "migrated", "pointer-publish", "switched",
         "start-return", "verified",
     }
-    _assert_retry(tmp_path, restore_expected=restore_expected)
+    _assert_retry(tmp_path, restore_expected=restore_expected, real_runtime=real_runtime)
+
+
+@pytest.mark.parametrize("point", [
+    "recovering", "restore-realm-removed", "restore-support-removed", "restore-return",
+    "rollback-pointer", "rollback_selected", "rollback-register", "rollback-start",
+    "rollback-verify", "rolled_back",
+])
+def test_sigkill_during_failed_candidate_rollback_then_retry(tmp_path, real_runtime, point):
+    """Crash inside the original exception path, rather than a later recovery."""
+    _setup(tmp_path)
+    (tmp_path / "reject-candidate").touch()
+    interrupted = _run(tmp_path, point)
+    assert interrupted.returncode == -signal.SIGKILL, interrupted.stderr
+    transaction = read_json(tmp_path / "program/update-transaction.json")
+    assert "candidate-failed" in (tmp_path / "events").read_text().splitlines()
+    assert transaction["backup"]["root"]
+    assert transaction["step"] in {"recovering", "rollback_selected", "rolled_back"}
+    retained = _tree_snapshot(Path(transaction["backup"]["root"]))
+    # Repair recovers the same retained image and old identity, then a fresh
+    # update proves that the interruption did not poison the next transaction.
+    (tmp_path / "reject-candidate").unlink()
+    repaired = _run(tmp_path, mode="install")
+    assert repaired.returncode == 0, repaired.stderr
+    old = current(tmp_path / "program")
+    assert old.root.name == "old"
+    assert read_json(tmp_path / "install-selection.json")["identity"] == old.document()["identity"]
+    assert (tmp_path / "data/retained.txt").read_text() == "original user data"
+    assert _tree_snapshot(Path(transaction["backup"]["root"])) == retained
+    _assert_retry(tmp_path, restore_expected=False, real_runtime=real_runtime)
 
 
 def test_candidate_validation_failure_keeps_owner_pointer_and_workspace(tmp_path):
@@ -447,7 +532,7 @@ def test_recovery_stop_refusal_keeps_durable_transaction_unchanged(tmp_path):
 @pytest.mark.parametrize("state", [
     "planned", "stopping", "stopped", "migration-committed", "activated", "restarted", "complete",
 ])
-def test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup(tmp_path, state):
+def test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup(tmp_path, real_runtime, state):
     _setup(tmp_path)
     result = _run(tmp_path, "runtime:" + state)
     assert result.returncode == -signal.SIGKILL, result.stderr
@@ -459,11 +544,11 @@ def test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup(tmp_path,
     if state == "migration-committed":
         assert inspect_canonical_schema(transaction["realm"]["realm_root"])["version"] == SCHEMA_VERSION
         assert inspect_canonical_schema(Path(transaction["backup"]["root"]) / "realm")["version"] == 29
-    _assert_retry(tmp_path, restore_expected=True)
+    _assert_retry(tmp_path, restore_expected=True, real_runtime=real_runtime)
 
 
 @pytest.mark.parametrize("point", ["restore-realm-removed", "restore-support-removed", "restore-return"])
-def test_sigkill_during_recovery_replays_same_retained_backup(tmp_path, point):
+def test_sigkill_during_recovery_replays_same_retained_backup(tmp_path, real_runtime, point):
     _setup(tmp_path)
     assert _run(tmp_path, "runtime:stopped").returncode == -signal.SIGKILL
     original = read_json(tmp_path / "program/update-transaction.json")
@@ -473,7 +558,7 @@ def test_sigkill_during_recovery_replays_same_retained_backup(tmp_path, point):
     assert interrupted["operation_id"] == original["operation_id"]
     assert interrupted["backup"] == original["backup"]
     assert interrupted["step"] == "recovering"
-    _assert_retry(tmp_path, restore_expected=True)
+    _assert_retry(tmp_path, restore_expected=True, real_runtime=real_runtime)
 
 
 @pytest.mark.parametrize("point", [
@@ -488,6 +573,8 @@ def test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real
     # This integration case launches the retained old service through its real
     # isolated command. Give the synthetic version a private environment with
     # the checked out Agent package installed, as a prepared release would have.
+    import astrid_runtime
+    checkout = str(Path(astrid_runtime.__file__).resolve().parents[1])
     environment = old.root / "test-venv"
     venv.EnvBuilder(system_site_packages=True, with_pip=False).create(environment)
     site_packages = environment / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
@@ -497,7 +584,8 @@ def test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real
     host_site_packages = Path(sys.prefix) / "lib" / \
         f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     (site_packages / "prepared-agent-environment.pth").write_text(
-        str(host_site_packages) + "\n", encoding="utf-8")
+        str(host_site_packages) + "\n" + checkout + "\n"
+        + str(Path(checkout) / "packages/python") + "\n", encoding="utf-8")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         door_port = listener.getsockname()[1]
@@ -521,7 +609,8 @@ def test_baseline_restore_catalog_gap_recovers_through_public_installer_and_real
     (candidate_site_packages / "pyproject.toml").write_bytes(
         (Path(__file__).resolve().parents[1] / "pyproject.toml").read_bytes())
     (candidate_site_packages / "prepared-agent-environment.pth").write_text(
-        str(host_site_packages) + "\n", encoding="utf-8")
+        str(host_site_packages) + "\n" + checkout + "\n"
+        + str(Path(checkout) / "packages/python") + "\n", encoding="utf-8")
     candidate = Version(candidate.root, candidate_environment / "bin" / "python",
                         candidate.profile, candidate.env, candidate.release, candidate.managed_by)
     write_json(candidate.root / "version.json", candidate.document())
@@ -653,7 +742,7 @@ def test_repair_recovers_each_installer_boundary_to_old_identity_and_data(tmp_pa
 
 
 @pytest.mark.parametrize("point", ["restore-realm-removed", "restore-key-removed", "restore-return"])
-def test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed(tmp_path, point):
+def test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed(tmp_path, real_runtime, point):
     _setup(tmp_path, previous_schema=False)
     (tmp_path / "authenticated").touch()
     assert _run(tmp_path, "runtime:stopped").returncode == -signal.SIGKILL
@@ -662,7 +751,7 @@ def test_authenticated_runtime_backup_recovers_even_if_live_key_was_removed(tmp_
     assert result.returncode == -signal.SIGKILL, result.stderr
     if point == "restore-key-removed":
         assert not (tmp_path / "data/runtime/backup-auth.key").exists()
-    _assert_retry(tmp_path, restore_expected=True)
+    _assert_retry(tmp_path, restore_expected=True, real_runtime=real_runtime)
 
 
 @pytest.mark.parametrize("step", ["staged", "started"])
@@ -764,10 +853,16 @@ def test_legacy_staged_migration_journal_with_backup_restores_workspace(tmp_path
     assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
 
 
-def _runtime(base, kill_at):
+def _runtime(base, kill_at, *, historical=False):
     from types import SimpleNamespace
 
     from astrid_runtime import operator_upgrade
+
+    if historical:
+        from tests.helpers.historical_journal import RUNTIME_COMMIT, RUNTIME_HASH, load
+        from tests.helpers.runtime import runtime_checkout
+        operator_upgrade = load(runtime_checkout(), RUNTIME_COMMIT, "astrid_runtime/operator_upgrade.py",
+                                RUNTIME_HASH, "astrid_runtime._pre_updater_operator_upgrade")
 
     paths = RuntimePaths.current(data_root=base / "data")
     realm = paths.realms_dir / "realm-1"
@@ -836,6 +931,8 @@ def _installer(base, kill_at, mode):
     def switch_and_kill(*args):
         publish(*args)
         _kill("pointer-publish", kill_at)
+        if args[1].root.name == "old":
+            _kill("rollback-pointer", kill_at)
 
     def replace_and_kill(source, target, *args, **kwargs):
         replace(source, target, *args, **kwargs)
@@ -913,16 +1010,37 @@ def _installer(base, kill_at, mode):
             raise RuntimeError(f"public installer Update exited with status {result}")
     else:
         transaction = read_json(root / "update-transaction.json")
-        old_identity = transaction.get("old", {}).get("identity") if isinstance(transaction, dict) else None
-        old_release = old_identity.get("release") if isinstance(old_identity, dict) else None
+        old_release = Version.load(transaction["old"]).release if transaction.get("old") else None
         manifest = ({"release": old_release if isinstance(old_release, int) else current(root).release}
                     if mode == "install" else {})
         Installer(root, data, backend, say=print).run(mode, manifest)
 
 
+def _historical_installer(base, kill_at):
+    from tests.helpers.historical_journal import AGENT_COMMIT, AGENT_HASH, load
+
+    previous = load(Path(__file__).resolve().parents[1], AGENT_COMMIT,
+                    "astrid/installer/core.py", AGENT_HASH, "astrid.installer._pre_updater_core")
+    backend = _Backend(base, "")
+    original = previous.Installer._save_update
+
+    def save_and_crash(self, transaction, step, **details):
+        original(self, transaction, step, **details)
+        _kill(step, kill_at)
+
+    def historical_upgrade(_version, _data):
+        _runtime(base, kill_at if kill_at.startswith("runtime:") else "", historical=True)
+
+    previous.Installer._save_update = save_and_crash
+    backend.upgrade = historical_upgrade
+    previous.Installer(base / "program", base / "data", backend).run("update", {})
+
+
 if __name__ == "__main__":
     mode, base, kill_at = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
-    if mode == "runtime":
+    if mode == "historical":
+        _historical_installer(base, kill_at)
+    elif mode == "runtime":
         _runtime(base, kill_at)
     else:
         _installer(base, kill_at, mode)

@@ -302,5 +302,6 @@ norecursedirs = [
 # The lane markers (integration, darwin_native, opt_in, ...) are registered by
 # tests/lanes.py, the single source for them.
 markers = [
+    "crash_matrix: sampled native installer crash recovery boundaries",
     "timeout: per-test timeout marker used when pytest-timeout is installed",
 ]
