@@ -1,0 +1,22 @@
+name: Modern updater macOS qualification
+on:
+  push:
+    branches: [codex/modern-updater-macos-ci-20261029]
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    runs-on: macos-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run synthetic modern release transition
+        run: bash scripts/qualification/modern-updater/run-macos.sh
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modern-updater-macos-evidence
+          path: modern-updater-evidence/
+          if-no-files-found: warn
+          retention-days: 14
