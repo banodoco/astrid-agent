@@ -30,7 +30,7 @@ jobs:
             product_runtime_sha: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
           - role: exact-main
             product_app_sha: ff0e21eadf92f914eb9ee7c43c2561aadbc23d0f
-            product_agent_sha: aadd0ff711e3fc0fb0ebc9c9ebe17a6cdb677f7c
+            product_agent_sha: 120035dd13f4449381199f686dcf14fcefdd1fea
             product_runtime_sha: 8340fefcbbda818c35cbefb73c43bc31e7c3f20c
     steps:
       - name: Validate exact driver inputs
