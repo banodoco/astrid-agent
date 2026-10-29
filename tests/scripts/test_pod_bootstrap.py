@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -120,15 +121,14 @@ def test_setup_runtime_with_real_runtime_creates_workspace_once(tmp_path):
     assert "configured_create" not in second.stdout
 
 
-def test_vibecomfy_editable_install_after_package_step_before_marker():
+def test_vibecomfy_is_in_noneditable_package_step_before_marker():
     text = SCRIPT.read_text()
-    editable = 'uv pip install --python "$VENV" --no-deps -e src/VibeComfy'
-    assert text.count(editable) == 1
+    assert "SRC_DIRS=(src/runpod-python src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)" in text
     package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
     assert text.count(package_step) == 1
-    # Rerun skip (marker check) < package install < editable install < marker write.
-    assert text.index('[ -f "$marker" ]') < text.index(package_step)
-    assert text.index(package_step) < text.index(editable) < text.index('mkdir -p "$marker_dir"')
+    assert text.index('[ -f "$marker" ]') < text.index(package_step) < text.index('mkdir -p "$marker_dir"')
+    install_lines = re.findall(r"^\s*uv pip install[^\n]*", text, re.M)
+    assert all(not re.search(r"(?:^|\s)(?:-e|--editable)(?:[=\s]|$)", line) for line in install_lines)
 
 
 TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln"]
@@ -294,16 +294,15 @@ def test_probe_check_runs_on_rerun_and_after_package_install_and_never_cleans_en
     assert len(calls) == 2
     rerun, full = calls
     package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
-    editable = 'uv pip install --python "$VENV" --no-deps -e src/VibeComfy'
     assert text.index('if [ -f "$marker" ]') < rerun < text.index("  setup_runtime\n  exit 0")
-    assert text.index(package_step) < full < text.index(editable) < text.index('mkdir -p "$marker_dir"')
+    assert text.index(package_step) < full < text.index('mkdir -p "$marker_dir"')
     body = _probe_function_body(text)
     assert "sha256sum" in body and "--reinstall-package astrid" in body
     # The bootstrap never deletes engine state; stale state is documented in SETUP.md instead.
     assert "rm -" not in text and ".astrid-engine" not in text
 
 
-def test_fresh_boot_orders_package_pip_probe_check_then_editable(tmp_path):
+def test_fresh_boot_orders_noneditable_package_pip_and_probe_check(tmp_path):
     log = tmp_path / "uv.log"
     r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log)})
     assert r.returncode == 0, r.stderr + r.stdout
@@ -312,8 +311,13 @@ def test_fresh_boot_orders_package_pip_probe_check_then_editable(tmp_path):
     pkg = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
     pip = _line_index(calls, f"pip install --python {venv} pip")
     probe = _line_index(calls, f"pip install --python {venv} --reinstall-package astrid ")
-    editable = _line_index(calls, f"pip install --python {venv} --no-deps -e src/VibeComfy")
-    assert pkg < pip < probe < editable
+    assert shlex.split(calls[pkg]) == [
+        "pip", "install", "--python", str(venv), "src/runpod-python", "src/astrid-runtime",
+        "src/runpod-lifecycle", "src/astrid-agent", "src/VibeComfy",
+    ]
+    assert all(not any(arg == "-e" or arg == "--editable" or arg.startswith("--editable=")
+                       for arg in shlex.split(call)) for call in calls)
+    assert pkg < pip < probe
 
 
 def test_existing_packages_skip_install_but_still_get_pip_and_a_matching_probe_check(tmp_path):

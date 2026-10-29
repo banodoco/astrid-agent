@@ -173,11 +173,6 @@ fi
 uv pip install --python "$VENV" pip
 verify_astrid_install
 
-# VibeComfy stays editable: find_repo_root() looks for pyproject.toml beside the imported
-# package, which a site-packages copy lacks. --no-deps keeps the dependency set unchanged.
-# Runs before the marker is written, so a failed run is retried and a rerun still skips.
-uv pip install --python "$VENV" --no-deps -e src/VibeComfy
-
 setup_runtime
 
 mkdir -p "$marker_dir"
