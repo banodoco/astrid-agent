@@ -7,8 +7,21 @@ description: >
 
 # fal
 
-The fal pack provides two focused actions for Hunyuan-Video Foley and MiniMax
-H3 generation.
+Choose fal only when the user explicitly selects the hosted fal.ai service.
+It is never an automatic default provider. Its declared Foley and H3 actions
+are shown as Generate entries only when registered by shared discovery.
+
+## Generate discovery
+
+```sh
+astrid generate list --json
+astrid generate describe --entry fal.h3_video --json
+astrid generate run --entry fal.h3_video --inputs-json FILE
+```
+
+Use the selected entry's `describe` output to prepare `FILE`, including its
+fal credential context. The SDK routes below remain available as compatibility
+conveniences for existing callers.
 
 ## Actions
 

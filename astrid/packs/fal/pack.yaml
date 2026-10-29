@@ -20,8 +20,14 @@ description: fal.ai integration for clip Foley and MiniMax H3 video generation.
 keywords: [fal, foley, audio, hunyuan, minimax, h3, video, api, integration]
 capabilities: [generate_clip_foley, generate_h3_video]
 agent:
-  purpose: "Use for fal.ai Hunyuan Foley or MiniMax H3 text/reference video generation (requires FAL_KEY)."
-  do_not_use_for: "Full spatial-Foley orchestration (use foley.foley_map) or general image/video generation already covered by the generation pack."
+  purpose: Choose fal only when the hosted fal.ai service is explicitly selected
+    for fal.fal_foley or fal.h3_video. These declared hosted actions require fal
+    credential context; fal is never an automatic default provider.
+  do_not_use_for: Do not use fal as an automatic/default provider. Do not use it for
+    full spatial-Foley orchestration (use foley.foley_map) or general image/video
+    generation when the user has not explicitly selected fal.
+  required_context:
+    - docs/SKILL.md
   normal_entrypoints: [fal.fal_foley, fal.h3_video]
 documentation:
   kind: skill

@@ -25,8 +25,14 @@ capabilities:
   - generate_video
   - validate_settings
 agent:
-  purpose: Choose this pack to generate video via the native Wan2GP engine (Wan2GP, not fal/cloud). GenericPackHost admits the explicitly provided upstream session and maps native jobs through ManagedToolSession; this pack does not claim model residency or warm reuse.
+  purpose: Choose this pack only when the native Wan2GP video engine is explicitly
+    selected. Its Generate action is wan2gp.generate_video; validate_settings is a
+    related settings check, not a video-generation entry. GenericPackHost admits the
+    explicitly provided upstream session and maps native jobs through
+    ManagedToolSession; this pack does not claim model residency or warm reuse.
   do_not_use_for: Do not use for VibeComfy/ComfyUI workflows (use vibecomfy) or fal/cloud video (use generation); this is the native Wan2GP engine seam only.
+  required_context:
+    - docs/SKILL.md
   normal_entrypoints:
     - wan2gp.generate_video
     - wan2gp.validate_settings
