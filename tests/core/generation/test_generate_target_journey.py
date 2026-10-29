@@ -220,7 +220,11 @@ def test_public_image_command_registers_view_bytes_and_canonical_receipt(
         assert by_class["UNETLoader"]["unet_name"] == "z_image_turbo_bf16.safetensors"
         assert by_class["CLIPLoader"]["clip_name"] == "qwen_3_4b.safetensors"
         assert by_class["VAELoader"]["vae_name"] in {"ae.safetensors", "FLUX1\\ae.safetensors"}
-        assert any(node.get("text") == "A tiny blue lighthouse." for node in by_class.values())
+        assert any(
+            node["class_type"] == "CLIPTextEncode"
+            and node["inputs"].get("text") == "A tiny blue lighthouse."
+            for node in comfy.prompts[0].values()
+        )
         assert any(path.startswith("/view?") for _, path, _ in comfy.calls)
         posts = [(path, body) for method, path, body in comfy.calls if method == "POST"]
         assert [path for path, _ in posts if path != "/queue"] == ["/prompt"]
