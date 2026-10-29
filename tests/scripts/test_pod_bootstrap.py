@@ -47,6 +47,7 @@ def _run_setup(tmp_path: Path, runtime_bin: Path, venv: Path) -> subprocess.Comp
     src = tmp_path / "src"
     (src / "astrid-runtime").mkdir(parents=True, exist_ok=True)
     (src / "astrid-agent").mkdir(parents=True, exist_ok=True)
+    _identity_stub(src)
     env = {
         "PATH": os.environ["PATH"],
         "HOME": str(tmp_path / "home"),
@@ -71,6 +72,7 @@ def test_setup_runtime_is_called_after_install_and_never_starts_a_runtime():
     assert text.index("uv pip install") < text.rindex("setup_runtime\n\nmkdir")
     body = _setup_runtime_function()
     assert "workspace create" in body
+    assert body.index("pod_source_identity.py") < body.index("workspace create")
     assert not re.search(r"astrid-runtime\"? +up\b", body)
 
 
@@ -134,6 +136,15 @@ def test_vibecomfy_is_in_noneditable_package_step_before_marker():
 TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln"]
 PROBE_MODULES = ("engine_runner.py", "engine_runner_target.py")
 PROBE_TEXT = {name: f"# {name} from src/astrid-agent\n" for name in PROBE_MODULES}
+
+
+def _identity_stub(src: Path):
+    # Existing setup tests isolate workspace/profile behavior; the real identity
+    # implementation is exercised by test_pod_source_identity.py.
+    stub = src / "astrid-agent" / "scripts" / "pod_source_identity.py"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    if not stub.exists():
+        stub.write_text("print('fixture source identity verified')\n")
 
 
 def _site(venv: Path) -> Path:
@@ -201,6 +212,7 @@ def _boot(tmp_path: Path, extra: dict, with_uv=True) -> subprocess.CompletedProc
     for d in ("runpod-python", "astrid-runtime", "runpod-lifecycle", "astrid-agent", "VibeComfy"):
         (src / d).mkdir(parents=True, exist_ok=True)
         (src / d / "f.txt").write_text(d)
+    _identity_stub(src)
     gen = src / "astrid-agent" / "astrid" / "core" / "generation"
     gen.mkdir(parents=True, exist_ok=True)
     for name in PROBE_MODULES:
@@ -238,6 +250,17 @@ def test_bootstrap_root_override_writes_marker_and_avoids_workspace(tmp_path):
     again = _boot(tmp_path, _overrides(tmp_path))
     assert again.returncode == 0 and "already done" in again.stdout
     assert _workspace_snapshot() == before
+
+
+def test_identity_refusal_prevents_workspace_and_success_marker(tmp_path):
+    _identity_stub(tmp_path / "src")
+    (tmp_path / "src/astrid-agent/scripts/pod_source_identity.py").write_text(
+        "raise SystemExit('fixture source identity refused')\n")
+    result = _boot(tmp_path, _overrides(tmp_path))
+    assert result.returncode != 0
+    assert "fixture source identity refused" in result.stderr
+    assert not (tmp_path / "realm/realm.sqlite3").exists()
+    assert not list((tmp_path / "boot").glob("*/ok"))
 
 
 def test_realm_and_venv_overrides_are_honoured(tmp_path):

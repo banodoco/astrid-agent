@@ -21,6 +21,7 @@ import argparse
 import base64
 import copy
 import hashlib
+import io
 import json
 import math
 import os
@@ -30,6 +31,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -156,27 +158,81 @@ def recipe_image() -> str:
     return image
 
 
-def build_bundle(agent_root: Path, sources_dir: Path, dest: Path) -> tuple[int, str]:
-    """Tar the patched trees: astrid-agent without .git and tests, plus the four sibling trees."""
-    def keep(root_name: str):
-        def filt(info: tarfile.TarInfo):
-            parts = info.name.split("/")
-            if ".git" in parts or "__pycache__" in parts or ".pytest_cache" in parts:
-                return None
-            if info.name.endswith((".pyc", ".coverage")):
-                return None
-            if root_name == "astrid-agent" and len(parts) >= 2 and parts[1] == "tests":
-                return None
-            return info
-        return filt
+def _bundle_git(root: Path, *args: str, input: bytes | None = None, **extra_env: str) -> bytes:
+    # Never inherit a controller's redirected Git directory/index or export its
+    # configuration, remotes, hooks, credentials, alternates or linked-worktree pointer.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, **extra_env)
+    try:
+        return subprocess.run(["git", "-C", str(root), *args], input=input, env=env,
+                              capture_output=True, check=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SessionError(f"bundle: cannot verify source checkout {root.name} ({args[0]})") from exc
 
+
+def build_bundle(agent_root: Path, sources_dir: Path, dest: Path) -> tuple[int, str]:
+    """Ship clean committed snapshots as portable, detached shallow Git checkouts.
+
+    Only the selected commit and its tree/blob objects travel; no ancestry or
+    machine-local Git metadata is copied. All tracked files (including tests)
+    are required by Runtime's content-sensitive source identity.
+    """
     trees = {"astrid-agent": Path(agent_root)} | {n: Path(sources_dir) / n for n in BUNDLE_TREES[1:]}
+    heads, paths = {}, {}
     for name, path in trees.items():
-        if not path.is_dir():
-            raise SessionError(f"bundle source tree is missing: {name} ({path})")
-    with tarfile.open(dest, "w:gz") as tar:
-        for name, path in trees.items():
-            tar.add(path, arcname=name, filter=keep(name))
+        if (not path.is_dir() or not (path / ".git").exists()
+                or _bundle_git(path, "rev-parse", "--show-prefix") != b"\n"):
+            raise SessionError(f"bundle: source must be an exact Git checkout root: {name}")
+        if _bundle_git(path, "status", "--porcelain", "--untracked-files=all"):
+            raise SessionError(f"bundle: source checkout is dirty: {name}")
+        head = _bundle_git(path, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise SessionError(f"bundle: unsupported commit identity: {name}")
+        heads[name] = head
+        entries = _bundle_git(path, "ls-tree", "-rz", "--full-tree", head).split(b"\0")
+        paths[name] = []
+        for row in filter(None, entries):
+            metadata, relative = row.split(b"\t", 1)
+            if metadata.split()[0] not in (b"100644", b"100755", b"120000"):
+                raise SessionError(f"bundle: unsupported tracked entry in {name}")
+            paths[name].append(os.fsdecode(relative))
+    lock = trees["astrid-agent"] / "runtime.lock.json"
+    manifest = {"heads": heads, "runtime_lock_sha256": _file_sha256(lock)}
+    if json.loads(lock.read_text())["source_commit"] != heads["astrid-runtime"]:
+        raise SessionError("bundle: Runtime HEAD differs from Agent runtime.lock.json")
+
+    def add_bytes(tar: tarfile.TarFile, name: str, data: bytes):
+        info = tarfile.TarInfo(name)
+        info.size, info.mode = len(data), 0o644
+        tar.addfile(info, io.BytesIO(data))
+
+    with tempfile.TemporaryDirectory(prefix="pod-source-", dir=Path(dest).parent) as staging:
+        with tarfile.open(dest, "w:gz", dereference=False) as tar:
+            for name, path in trees.items():
+                head = heads[name]
+                for relative in paths[name]:
+                    tar.add(path / relative, arcname=f"{name}/{relative}", recursive=False)
+                # pack-objects without --revs takes exactly the enumerated objects.
+                # --no-walk includes HEAD's complete tree, but no parent commits.
+                objects = _bundle_git(path, "rev-list", "--objects", "--no-walk", "--no-object-names", head)
+                pack = Path(staging) / name
+                pack_hash = _bundle_git(path, "pack-objects", str(pack), input=objects).decode().strip()
+                for suffix in ("pack", "idx"):
+                    tar.add(f"{pack}-{pack_hash}.{suffix}",
+                            arcname=f"{name}/.git/objects/pack/pack-{pack_hash}.{suffix}")
+                index = Path(staging) / f"{name}.index"
+                _bundle_git(path, "read-tree", head, GIT_INDEX_FILE=str(index))
+                tar.add(index, arcname=f"{name}/.git/index")
+                add_bytes(tar, f"{name}/.git/HEAD", (head + "\n").encode())
+                add_bytes(tar, f"{name}/.git/shallow", (head + "\n").encode())
+                add_bytes(tar, f"{name}/.git/config", b"[core]\nrepositoryformatversion = 0\nbare = false\nfilemode = true\n")
+                refs = tarfile.TarInfo(f"{name}/.git/refs")
+                refs.type, refs.mode = tarfile.DIRTYPE, 0o755
+                tar.addfile(refs)
+                if (_bundle_git(path, "rev-parse", "HEAD").decode().strip() != head
+                        or _bundle_git(path, "status", "--porcelain", "--untracked-files=all")):
+                    raise SessionError(f"bundle: source checkout changed during packaging: {name}")
+            add_bytes(tar, ".pod-source.json", (json.dumps(manifest, sort_keys=True) + "\n").encode())
     return Path(dest).stat().st_size, _file_sha256(Path(dest))
 
 

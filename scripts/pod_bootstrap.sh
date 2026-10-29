@@ -77,6 +77,9 @@ os.replace(tmp, path)
 PY
     echo "pod_bootstrap: wrote source profile ($profile)"
   fi
+  # Fail before workspace admission and, in pod_session, before engine downloads.
+  # Use the same source-profile identity and producer-lock checks as the launcher.
+  "$VENV/bin/python" src/astrid-agent/scripts/pod_source_identity.py "$(cd src && pwd)" "$profile"
   if [ -e "$REALM_ROOT/realm.sqlite3" ]; then
     echo "pod_bootstrap: workspace already exists ($REALM_ROOT)"
   else

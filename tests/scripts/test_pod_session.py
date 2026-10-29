@@ -3,6 +3,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -170,14 +171,23 @@ def make_args(tmp_path, extra=()):
     for name in ps.BUNDLE_TREES[1:]:
         (sources / name).mkdir(parents=True, exist_ok=True)
         (sources / name / "file.txt").write_text(name)
-        (sources / name / ".git").write_text("gitdir")
     agent = tmp_path / "agent"
     (agent / "scripts").mkdir(parents=True, exist_ok=True)
     (agent / "scripts" / "gpu_sanity.py").write_text("print('x')")
     (agent / "tests").mkdir(exist_ok=True)
     (agent / "tests" / "t.py").write_text("t")
-    (agent / ".git").mkdir(exist_ok=True)
-    (agent / ".git" / "HEAD").write_text("h")
+    git_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    git_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    def git(root, *args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True,
+                              capture_output=True, text=True, env=git_env).stdout.strip()
+    for root in [*(sources / name for name in ps.BUNDLE_TREES[1:]), agent]:
+        if root == agent:
+            (agent / "runtime.lock.json").write_text(json.dumps({
+                "source_commit": git(sources / "astrid-runtime", "rev-parse", "HEAD")}))
+        git(root, "init", "-q")
+        git(root, "add", ".")
+        git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
     assets = tmp_path / "assets"
     assets.mkdir(exist_ok=True)
     for n in ("img1", "img2"):
@@ -268,9 +278,11 @@ def test_bundle_contents_and_size_check(tmp_path, video):
     assert code == 0
     with tarfile.open(tmp_path / "work" / "pod-src.tgz") as tar:
         names = tar.getnames()
-    assert {n.split("/")[0] for n in names} == set(ps.BUNDLE_TREES)
+    assert {n.split("/")[0] for n in names} == set(ps.BUNDLE_TREES) | {".pod-source.json"}
     assert "astrid-agent/scripts/gpu_sanity.py" in names
-    assert not [n for n in names if "/.git" in n or n.startswith("astrid-agent/tests")]
+    assert "astrid-agent/tests/t.py" in names
+    assert all(f"{name}/.git/HEAD" in names for name in ps.BUNDLE_TREES)
+    assert not any("/.git/config.worktree" in n or "/.git/hooks/" in n for n in names)
     assert len(pod.puts[ps.BUNDLE_REMOTE]) == (tmp_path / "work" / "pod-src.tgz").stat().st_size
 
 
