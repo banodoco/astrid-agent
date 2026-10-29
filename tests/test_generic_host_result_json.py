@@ -258,7 +258,7 @@ def test_run_task_initial_heartbeat_failure_writes_result_before_child_launch(ho
         case.host.run_task(case.task, lease_token="lease-result")
 
     receipt = _read_result(case, "failed")
-    assert receipt["error"] == {"code": None, "message": "lease heartbeat unavailable", "field": None, "fix": ""}
+    assert receipt["error"] == {"code": "executor_failed", "message": "lease heartbeat unavailable", "field": None, "fix": ""}
     assert receipt["outputs"]["artifacts"] == []
     assert receipt["cost"] == "unknown"
     assert not case.runtime.settlements

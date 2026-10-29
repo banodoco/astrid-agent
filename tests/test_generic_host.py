@@ -4886,7 +4886,7 @@ def test_runtime_failure_coerces_error_objects_without_changing_fencing(kind) ->
         "exec": {"code": "missing_binaries", "message": "ffmpeg missing", "field": None, "fix": "install ffmpeg"},
         "sdk": {"code": "validation", "message": "bad mode", "field": "mode", "fix": "choose fast"},
         "service": {"code": "validation_error", "message": "bad mode", "field": "mode", "fix": "choose fast"},
-        "unknown": {"message": "unexpected"},
+        "unknown": {"code": "executor_failed", "message": "unexpected"},
     }
 
     class Generated:

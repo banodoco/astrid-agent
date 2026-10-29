@@ -231,6 +231,9 @@ class CommandCleanupUnresolved(HostError):
         self.execution_error = execution_error
 
 
+_LEASE_POLL_SECONDS = 5.0
+
+
 class HostCancelled(HostError):
     """The runtime cancelled the attempt while the subprocess was running."""
 
@@ -4808,10 +4811,21 @@ class RuntimeProtocolClient:
             idempotency_key=f"capability-withdraw-{capability_id}-{digest}",
         )
 
+    def _lifecycle_client(self):
+        """Bound lifecycle reads/writes without mutating concurrent RPC options."""
+        if not hasattr(self.generated, "timeout"):
+            return self.generated
+        client = copy.copy(self.generated)
+        client.timeout = min(float(client.timeout), 2.0)
+        return client
+
     def heartbeat(self, task_id: str, lease_token: str, *, attempt_id: str | None = None, fence: int | None = None, progress: Mapping[str, Any] | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated heartbeat requires attempt_id and fence")
-        runtime_epoch = self._claimed_runtime_epoch(attempt_id)
+        runtime_epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if runtime_epoch is None:
+            raise HostError("attempt runtime epoch was not captured at claim")
+        # Runtime atomically validates the captured epoch with the lease fence.
         # A heartbeat extends the lease and is therefore a new mutation, not a
         # replay of the first pulse.  Reusing one idempotency key here makes a
         # long render appear healthy to the host while the runtime repeatedly
@@ -4831,7 +4845,7 @@ class RuntimeProtocolClient:
         if progress is not None:
             payload["progress"] = dict(progress)
         with self._heartbeat_lock:
-            return self.generated.heartbeat_attempt(attempt_id, **payload)
+            return self._lifecycle_client().heartbeat_attempt(attempt_id, **payload)
 
     def claim(self, task_id: str, worker_id: str, lease_token: str):
         raise HostError("per-task claim is not a canonical operation; use claim_task")
@@ -4852,7 +4866,7 @@ class RuntimeProtocolClient:
         return claim
 
     def task(self, task_id: str):
-        return self.generated.get_task(task_id)
+        return self._lifecycle_client().get_task(task_id)
 
     def upload_child_input(self, data: bytes, *, descriptor: Mapping[str, Any],
                            project_id: str | None, run_id: str, task_id: str,
@@ -4933,6 +4947,9 @@ class RuntimeProtocolClient:
     def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated settlement requires attempt_id and fence")
+        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if epoch is None:
+            raise HostError("attempt runtime epoch was not captured at claim")
         settlement = {
             "attempt_id": attempt_id,
             "lease_id": lease_token,
@@ -4940,7 +4957,7 @@ class RuntimeProtocolClient:
             "outputs": outputs,
             "effect": effect,
             "result": dict(result),
-            "runtime_epoch": self._claimed_runtime_epoch(attempt_id),
+            "runtime_epoch": epoch,
         }
         return self.generated.settle_attempt(
             attempt_id,
@@ -4965,10 +4982,10 @@ class RuntimeProtocolClient:
         # Host callers may already have decorated a string with recovery or
         # guard context. Preserve it, while also accepting typed error objects.
         if isinstance(error, str):
-            payload: dict[str, Any] = {"message": error, "retryable": bool(retryable)}
+            payload: dict[str, Any] = {"code": "executor_failed", "message": error, "retryable": bool(retryable)}
         else:
             normalized = coerce_astrid_error(error)
-            payload = {"message": normalized.message, "retryable": bool(retryable)}
+            payload = {"code": "executor_failed", "message": normalized.message, "retryable": bool(retryable)}
             payload.update(_structured_failure_kwargs(normalized).get("structured_error", {}))
         if structured_error:
             payload.update(
@@ -4976,12 +4993,17 @@ class RuntimeProtocolClient:
             )
         if failure_diagnostic:
             payload["diagnostic"] = dict(failure_diagnostic)
-        return self.generated.fail_attempt(
+        completion_client = self._lifecycle_client()
+        # Failure must not depend on a fresh health read before its fenced write.
+        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if epoch is None:
+            raise HostError("attempt runtime epoch was not captured at claim")
+        return completion_client.fail_attempt(
             attempt_id,
             lease_id=lease_token,
             fence=int(fence),
             error=payload,
-            runtime_epoch=self._claimed_runtime_epoch(attempt_id),
+            runtime_epoch=epoch,
             idempotency_key=f"fail-{attempt_id}-{fence}",
         )
 
@@ -4994,8 +5016,8 @@ class RuntimeProtocolClient:
         lease_id: str | None = None,
     ):
         if attempt_id is None or fence is None:
-            return self.generated.cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
-        task = self.generated.get_task(task_id)
+            return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
+        task = self._lifecycle_client().get_task(task_id)
         current_attempt = (
             task.get("attempt_id")
             if isinstance(task, Mapping)
@@ -5006,7 +5028,7 @@ class RuntimeProtocolClient:
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
             raise HostError("runtime cancellation target has no version fence")
-        return self.generated.cancel_task(
+        return self._lifecycle_client().cancel_task(
             task_id,
             expected_version=version,
             idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
@@ -9223,7 +9245,7 @@ class GenericPackHost:
                 return
             manager.open(capability=capability, binding=binding, adapter=adapter)
 
-    def _write_task_result(self, terminal: dict[str, Any]) -> None:
+    def _write_task_result(self, terminal: dict[str, Any], *, _minimal: bool = False) -> None:
         """Write the host receipt without changing the pack artifact manifest.
 
         Only verified staged files are described. A failed/cancelled attempt's
@@ -9231,16 +9253,26 @@ class GenericPackHost:
         """
         from astrid.sdk.results import InvocationResult
 
+        if terminal.get("receipt_final"):
+            return
         terminal["write_attempted"] = True
+        minimal = _minimal or terminal.get("minimal", False)
+        forced_at_start = terminal.get("forced")
+        if not minimal:
+            # Terminal evidence must exist before optional manifest validation
+            # or output harvesting can block or throw inside failure handling.
+            self._write_task_result(terminal, _minimal=True)
+            if terminal.get("receipt_final"):
+                return
         root = terminal["root"]
         task = terminal["task"]
         record = terminal.get("record")
         output_root = terminal.get("output_root", root / "outputs")
-        payload = terminal.get("payload") or {}
+        payload = {} if minimal else terminal.get("payload") or {}
         warnings = list(payload.get("warnings") or [])
         manifest: dict[str, Any] = {}
         manifest_path = output_root / "manifest.json"
-        if manifest_path.is_file() and not manifest_path.is_symlink() and manifest_path.resolve().is_relative_to(root):
+        if not minimal and manifest_path.is_file() and not manifest_path.is_symlink() and manifest_path.resolve().is_relative_to(root):
             try:
                 candidate = json.loads(manifest_path.read_text(encoding="utf-8"))
                 validate_result_manifest(candidate, staging_root=output_root)
@@ -9248,8 +9280,8 @@ class GenericPackHost:
             except (OSError, ValueError, AstridError) as exc:
                 warnings.append(f"artifact manifest unavailable: {exc}")
         warnings.extend(manifest.get("warnings") or [])
-        staged = terminal.get("outputs") or []
-        if not staged and record is not None and output_root.is_dir():
+        staged = [] if minimal else terminal.get("outputs") or []
+        if not minimal and not staged and record is not None and output_root.is_dir():
             try:
                 values = {**terminal.get("inputs", {}), "out": str(output_root),
                           "run_root": str(root), "python_exec": sys.executable}
@@ -9284,7 +9316,7 @@ class GenericPackHost:
             error = error.execution_error or error
         if error is not None:
             normalized = coerce_astrid_error(error)
-            error = {"code": normalized.code, "message": normalized.message,
+            error = {"code": normalized.code or "executor_failed", "message": normalized.message,
                      "field": normalized.field, "fix": normalized.fix}
         spec = task.get("spec") or {}
         parent = spec.get("delegated_parent", {}) if isinstance(spec, Mapping) else {}
@@ -9323,7 +9355,16 @@ class GenericPackHost:
             "publication": {"status": "settled" if terminal.get("settled") else "not_settled",
                             "receipt": terminal.get("settlement"), "effect": terminal.get("effect")},
         })
-        write_json_atomic(root / "result.json", receipt)
+        with terminal.get("completion_lock", threading.RLock()):
+            # A slow harvest may have started before the observer's timeout.
+            # Recheck at publication, without holding this lock over harvesting.
+            if (terminal.get("receipt_final") or terminal.get("forced") != forced_at_start
+                    or (terminal.get("forced") and not minimal)):
+                return
+            root.mkdir(parents=True, exist_ok=True)
+            write_json_atomic(root / "result.json", receipt)
+            if terminal.get("forced"):
+                terminal["receipt_final"] = True
 
     def run_task(
         self,
@@ -9335,12 +9376,170 @@ class GenericPackHost:
         keep_attempt: bool = False,
         provider_route_grant: str | None = None,
     ) -> Mapping[str, Any]:
-        owns_attempt = self._handoff_begin_direct_attempt()
+        owns_attempt = False
+        busy_published = False
         thread_id = threading.get_ident()
         busy_path = getattr(self, "busy_path", None)
-        _publish_busy(busy_path, +1)
-        terminal: dict[str, Any] = {}
+        data = task.get("task", task)
+        exact_attempt = attempt_id or data.get("attempt_id")
+        exact_fence = fence if fence is not None else data.get("fence")
+        lifetime = _AttemptLifetime(self.execution_policy, time.monotonic(), None)
+        stop, abort = threading.Event(), threading.Event()
+        completion_lock = threading.RLock()
+        terminal: dict[str, Any] = {
+            "task": dict(data), "attempt_id": exact_attempt, "lifetime": lifetime,
+            "pump_stop": stop, "cancel_signal": abort, "stage": "admission",
+            "completion_lock": completion_lock,
+        }
+        if self.attempt_root is not None:
+            terminal["root"] = self.attempt_root
+
+        def completion_call(operation, *args, **kwargs):
+            with completion_lock:
+                if terminal.get("forced") and operation == self.client.settle:
+                    raise HostCancelled("attempt already terminated by its lifecycle guard")
+                if terminal.get("recorded"):
+                    return terminal.get("completion")
+            result = self._handoff_settlement_call(operation, *args, **kwargs)
+            with completion_lock:
+                if terminal.get("forced") and operation == self.client.settle:
+                    raise HostCancelled("settlement returned after the attempt was terminated")
+                terminal.update(recorded=True, completion=result)
+            return result
+
+        def task_snapshot():
+            current = self.client.task(str(data["id"]))
+            if isinstance(current, Mapping):
+                current = current.get("task", current)
+            def value(name, default=None):
+                return current.get(name, default) if isinstance(current, Mapping) else getattr(current, name, default)
+            return {"status": value("state", value("status")),
+                    "attempt_id": value("attempt_id", exact_attempt),
+                    "fence": value("fence", value("lease_fence", exact_fence))}
+
+        def ensure_failure(error):
+            if terminal.get("recorded") or self.client is None or not exact_attempt or exact_fence is None:
+                return
+            normalized = coerce_astrid_error(error)
+            try:
+                completion_call(
+                    self.client.fail, str(data["id"]), lease_token,
+                    normalized.message or type(error).__name__, retryable=False,
+                    attempt_id=exact_attempt, fence=exact_fence,
+                    structured_error={"code": normalized.code or "executor_failed",
+                                      "field": normalized.field, "fix": normalized.fix},
+                )
+            except Exception:
+                # Observe cancellation only after attempting the original
+                # failure mutation; a broken read cannot suppress that write.
+                if task_snapshot()["status"] != "cancelled":
+                    raise
+                terminal.update(recorded=True, status="cancelled", forced="cancelled", minimal=True,
+                                error=AstridError("execution cancelled", code="cancelled"))
+
+        def read_progress():
+            root = terminal.get("root")
+            if root is not None:
+                try:
+                    payload = json.loads((root / ".astrid-progress.json").read_text(encoding="utf-8"))
+                    if isinstance(payload, Mapping):
+                        terminal["progress"] = {str(k): v for k, v in payload.items()
+                                                if str(k) in {"phase", "percent", "current", "total"}}
+                except (OSError, ValueError):
+                    pass
+            return terminal.get("progress")
+
+        def renew_progress():
+            # A timer is not evidence of progress. Host stage advances and
+            # changed semantic child checkpoints are the only renewal credits.
+            progress = read_progress()
+            token = (terminal["stage"], _canonical_digest(progress))
+            with completion_lock:
+                if stop.is_set() or terminal.get("recorded") or terminal.get("forced") or lifetime.expired():
+                    return
+                if token == terminal.get("renewed_progress"):
+                    return
+                terminal["renewed_progress"] = token
+            kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
+            if progress is not None:
+                kwargs["progress"] = progress
+            self.client.heartbeat(str(data["id"]), lease_token, **kwargs)
+
+        def force_abort(code):
+            with completion_lock:
+                if terminal.get("recorded") or terminal.get("forced"):
+                    return
+                error = AstridError("execution deadline exceeded" if code == "timeout" else
+                                    "execution lease lost" if code == "lease_lost" else "execution cancelled", code=code)
+                terminal.update(forced=code, error=error, status="timeout" if code == "timeout" else
+                                "cancelled" if code == "cancelled" else "failed", minimal=True)
+                abort.set()
+            try:
+                if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
+                    completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
+                                    fence=exact_fence, lease_id=lease_token)
+                else:
+                    ensure_failure(error)
+            except BaseException as reporting_error:
+                terminal["reporting_error"] = reporting_error
+            finally:
+                if terminal.get("root") is not None:
+                    self._write_task_result(terminal)
+
+        def pump_lease():
+            next_poll = time.monotonic() + _LEASE_POLL_SECONDS
+            while not stop.wait(0.05):
+                if lifetime.expired():
+                    force_abort("timeout")
+                    return
+                if terminal.get("recorded"):
+                    return
+                if self._shutdown.is_set():
+                    force_abort("cancelled")
+                    return
+                if time.monotonic() < next_poll or self.client is None:
+                    continue
+                next_poll = time.monotonic() + _LEASE_POLL_SECONDS
+                try:
+                    current = task_snapshot()
+                    if current["status"] in {"cancel_requested", "cancelled"}:
+                        force_abort("cancelled")
+                        return
+                    state = current["status"]
+                    if (state not in {None, "running"}
+                            or current.get("attempt_id", exact_attempt) != exact_attempt
+                            or current.get("fence", exact_fence) != exact_fence):
+                        force_abort("lease_lost")
+                        return
+                    # Main execution/child guards validate full interactive
+                    # authority. The observer must keep its deadline clock
+                    # available if those authority reads themselves stall.
+                    renew_progress()
+                except BaseException:
+                    force_abort("lease_lost")
+                    return
+
+        terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
+                        read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort)
+        pump_thread = None
         try:
+            owns_attempt = self._handoff_begin_direct_attempt()
+            if exact_attempt and exact_fence is not None:
+                terminal["root"] = self._allocate_attempt_root(str(data["id"]), str(exact_attempt))
+            _publish_busy(busy_path, +1)
+            busy_published = True
+            # This is pure admission validation. Tighten the same absolute
+            # lifetime before discovery/preflight can block, without resetting
+            # its start when execution or collection begins.
+            contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+            terminal["execution_contract"] = contract
+            lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
+            terminal["record"] = self.capabilities.get(str(data.get("capability", "")))
+            pump_thread = threading.Thread(target=pump_lease, name=f"astrid-heartbeat-{data.get('id')}", daemon=True)
+            terminal["pump_thread"] = pump_thread
+            # All observer/receipt/fencing state is installed before any setup,
+            # initial heartbeat, admission hook, or executor can throw or stall.
+            pump_thread.start()
             return self._run_task_impl(
                 task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
                 keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
@@ -9348,17 +9547,28 @@ class GenericPackHost:
             )
         except BaseException as exc:
             terminal.setdefault("error", exc)
+            try:
+                if isinstance(exc, HostCancelled):
+                    force_abort("cancelled")
+                else:
+                    ensure_failure(terminal["error"])
+            except BaseException as reporting_error:
+                terminal["reporting_error"] = reporting_error
+            if isinstance(exc, SystemExit):
+                raise HostError("executor exited without completing its task") from exc
             raise
         finally:
             try:
-                # Admission and initial setup can fail before the execution
-                # try/finally. They still belong to this same fenced attempt.
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
                     if self.attempt_root is None and not keep_attempt:
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             finally:
-                _publish_busy(busy_path, -1)
+                stop.set()
+                if pump_thread is not None and pump_thread.ident is not None:
+                    pump_thread.join(timeout=2)
+                if busy_published:
+                    _publish_busy(busy_path, -1)
                 if owns_attempt:
                     self._handoff_leave_attempt(thread_id)
 
@@ -9373,6 +9583,7 @@ class GenericPackHost:
         provider_route_grant: str | None = None,
         _terminal: dict[str, Any],
     ) -> Mapping[str, Any]:
+        completion_call = _terminal["completion_call"]
         if self.client is None:
             raise HostError("runtime client is required to execute a task")
         for operation in ("heartbeat", "task", "settle", "fail", "upload_object"):
@@ -9387,8 +9598,8 @@ class GenericPackHost:
         fence = fence if fence is not None else (int(task_data["fence"]) if task_data.get("fence") is not None else None)
         if not attempt_id or fence is None:
             raise HostError("runtime task execution requires attempt_id and fence")
-        root = self._allocate_attempt_root(task_id, attempt_id)
-        _terminal.update(root=root, task=task_data, attempt_id=attempt_id)
+        root = _terminal["root"]
+        _terminal.update(task=task_data, attempt_id=attempt_id)
         if self._shutdown.is_set():
             raise HostCancelled("generic host is shutting down")
         record = self.capabilities.get(capability_id)
@@ -9422,7 +9633,7 @@ class GenericPackHost:
             """Fence deterministic admission failures as terminal attempts."""
             _terminal["error"] = error
             try:
-                self._handoff_settlement_call(self.client.fail,
+                completion_call(self.client.fail,
                     task_id,
                     lease_token,
                     str(error) + recovery_suffix(error),
@@ -9468,10 +9679,7 @@ class GenericPackHost:
 
         try:
             _assert_fixed_request_scope(record, task_data)
-            execution_contract = _execution_contract(
-                task_data,
-                runtime_session_id=self.runtime_state.get("runtime_session_id"),
-            )
+            execution_contract = _terminal["execution_contract"]
             workflow_endpoint = None
             workflow_policy = None
             if capability_id == "vibecomfy.run":
@@ -9519,7 +9727,7 @@ class GenericPackHost:
             self.execution_policy.assert_budget_available()
         except ExecutionGuardError as exc:
             _terminal["error"] = exc
-            self._handoff_settlement_call(self.client.fail,
+            completion_call(self.client.fail,
                 task_id,
                 lease_token,
                 str(exc) + recovery_suffix(exc),
@@ -9546,7 +9754,8 @@ class GenericPackHost:
         if storage_estimate is not None:
             attempt_evidence_cap = max(attempt_evidence_cap, sum(storage_estimate.values()))
         runtime_limit = contract_limits.get("max_runtime_seconds")
-        lifetime = _AttemptLifetime(self.execution_policy, time.monotonic(), runtime_limit)
+        lifetime = _terminal["lifetime"]
+        lifetime.runtime_limit = runtime_limit
         # Noninteractive native sessions still need their finite submission bound.
         execution_deadline = lifetime.deadline()
         collection_limit = contract_limits.get("collection_seconds")
@@ -9556,8 +9765,8 @@ class GenericPackHost:
         settled = False
         cancelled_attempt = False
         network_broker: _NetworkBrokerContext | None = None
-        pump_stop: threading.Event | None = None
-        pump_thread: threading.Thread | None = None
+        pump_stop = _terminal["pump_stop"]
+        pump_thread = _terminal["pump_thread"]
         evidence_root: Path | None = None
         output_capture_paths = tuple(root / name for name in _TASK_OUTPUT_DIAGNOSTIC_NAMES)
         immutable_input_baseline: dict[str, tuple[int, str]] = {}
@@ -9588,7 +9797,7 @@ class GenericPackHost:
         if workflow_policy is not None:
             network_admission["allowed_routes"] = list(workflow_policy["allowed_destinations"])
         endpoint_transport = None
-        cancel_signal = threading.Event()
+        cancel_signal = _terminal["cancel_signal"]
         managed_adapter = _ManagedTaskAdapter(
             cancel_signal,
             process_census=lambda: bool(self._active_processes),
@@ -9693,8 +9902,7 @@ class GenericPackHost:
             try:
                 state = current_task_state()
             except Exception:
-                # Lost lease/transport is cancellation containment, not a
-                # reason to publish output or issue a second fail attempt.
+                _terminal["force_abort"]("lease_lost")
                 return True
             # A request contains this owned invocation; it is not a Runtime
             # terminal acknowledgement or proof of provider/session cleanup.
@@ -9704,10 +9912,11 @@ class GenericPackHost:
             """Fence a deadline expiry at Runtime before returning to the worker."""
             nonlocal deadline_failed
             try:
-                self._handoff_settlement_call(self.client.fail,
+                completion_call(self.client.fail,
                     task_id,
                     lease_token,
                     "execution deadline exceeded",
+                    structured_error={"code": "timeout"},
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
@@ -9723,8 +9932,13 @@ class GenericPackHost:
                 deadline_failed = state == "failed"
 
         def handle_guard_abort() -> None:
+            if _terminal.get("forced") == "lease_lost":
+                raise HostError("execution lease lost")
+            if _terminal.get("forced") == "timeout":
+                nonlocal deadline_exceeded
+                deadline_exceeded = True
             if evidence_cap_exceeded:
-                self._handoff_settlement_call(self.client.fail,
+                completion_call(self.client.fail,
                     task_id,
                     lease_token,
                     _evidence_cap_message(evidence_failure_message),
@@ -9736,67 +9950,12 @@ class GenericPackHost:
                 raise HostError(_evidence_cap_message(evidence_failure_message))
             if deadline_exceeded:
                 terminalize_deadline()
+            elif callable(getattr(self.client, "cancel", None)):
+                completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
+                                fence=fence, lease_id=lease_token)
 
-        # Lease renewal must cover the complete claimed-attempt lifecycle,
-        # including input materialization, canonical identity/attestation,
-        # managed-session setup, output harvesting, upload, and settlement.
-        # Those steps can be expensive on a cold GPU release (for example,
-        # source-integrity attestation may hash thousands of files), and a
-        # pump started only immediately before child launch can let an otherwise
-        # healthy claim expire before the first heartbeat.
-        pump_stop = threading.Event()
-        progress_path = root / ".astrid-progress.json"
-        latest_progress: Mapping[str, Any] | None = None
-
-        def read_progress() -> Mapping[str, Any] | None:
-            nonlocal latest_progress
-            try:
-                payload = json.loads(progress_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                return latest_progress
-            if isinstance(payload, Mapping):
-                latest_progress = {
-                    str(key): value
-                    for key, value in payload.items()
-                    if str(key) in {"phase", "percent", "current", "total"}
-                }
-            return latest_progress
-
-        initial_progress = read_progress()
-        heartbeat_kwargs = {
-            "attempt_id": attempt_id,
-            "fence": fence,
-        }
-        if initial_progress is not None:
-            heartbeat_kwargs["progress"] = initial_progress
-        self.client.heartbeat(task_id, lease_token, **heartbeat_kwargs)
-
-        def pump_lease():
-            while not pump_stop.wait(5.0):
-                try:
-                    heartbeat_progress = read_progress()
-                    heartbeat_kwargs = {
-                        "attempt_id": attempt_id,
-                        "fence": fence,
-                    }
-                    if heartbeat_progress is not None:
-                        heartbeat_kwargs["progress"] = heartbeat_progress
-                    self.client.heartbeat(task_id, lease_token, **heartbeat_kwargs)
-                    lifetime.assert_authority()
-                    state = current_task_state()
-                    if state in {"cancel_requested", "cancelled"}:
-                        cancel_signal.set()
-                except Exception:
-                    # The daemon fences settlement if a heartbeat is lost; the
-                    # subprocess is still cleaned up here.
-                    cancel_signal.set()
-
-        pump_thread = threading.Thread(
-            target=pump_lease,
-            name=f"astrid-heartbeat-{task_id}",
-            daemon=True,
-        )
-        pump_thread.start()
+        read_progress = _terminal["read_progress"]
+        _terminal["renew_progress"]()
         child_bridge = None
         session_hold = None
         try:
@@ -9837,6 +9996,7 @@ class GenericPackHost:
                 if isinstance(raw_optional_cas_param_ports, (list, tuple))
                 else None
             )
+            _terminal["stage"] = "materialize_inputs"
             inputs = self._materialize_inputs(
                 spec,
                 root,
@@ -10190,6 +10350,7 @@ class GenericPackHost:
                     cancelled_attempt = True
                     return {"task_id": task_id, "status": "cancelled", "cancelled": True}
                 lifetime.begin_execution()
+                _terminal["stage"] = "execution"
                 render_child_pending = True
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
@@ -10285,6 +10446,7 @@ class GenericPackHost:
             _terminal["output_root"] = output_root
             _terminal["payload"] = getattr(result, "payload", {}) or {}
             lifetime.begin_collection(collection_limit)
+            _terminal["stage"] = "collection"
             if child_bridge is not None:
                 child_bridge.finish()
             # The periodic lease pump may not get another turn after a fast
@@ -10294,15 +10456,9 @@ class GenericPackHost:
             final_progress = read_progress()
             if final_progress is not None and not cancelled():
                 try:
-                    self.client.heartbeat(
-                        task_id,
-                        lease_token,
-                        attempt_id=attempt_id,
-                        fence=fence,
-                        progress=final_progress,
-                    )
+                    _terminal["renew_progress"]()
                 except Exception:
-                    cancel_signal.set()
+                    _terminal["force_abort"]("lease_lost")
             if cancelled():
                 handle_guard_abort()
                 if deadline_failed:
@@ -10527,7 +10683,9 @@ class GenericPackHost:
             )
             managed_settled = True
             payload["managed_tool_session"] = managed_envelope.to_dict()
-            settlement = self._handoff_settlement_call(self.client.settle,
+            lifetime.assert_deadline()
+            _terminal["stage"] = "settlement"
+            settlement = completion_call(self.client.settle,
                 task_id,
                 lease_token,
                 result=payload,
@@ -10549,17 +10707,10 @@ class GenericPackHost:
                 return {"task_id": task_id, "status": "failed", "deadline_exceeded": True}
             cancelled_attempt = True
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
-        except Exception as exc:
+        except BaseException as exc:
+            _terminal.setdefault("error", exc)
             if isinstance(exc, CommandCleanupUnresolved):
                 command_cleanup_error = exc
-            # A cancellation/lease-loss race must not be turned into a second
-            # runtime failure after child work has been contained.
-            if cancelled():
-                handle_guard_abort()
-                if deadline_failed:
-                    return {"task_id": task_id, "status": "failed", "deadline_exceeded": True}
-                cancelled_attempt = True
-                return {"task_id": task_id, "status": "cancelled", "cancelled": True}
             original_error = exc.execution_error if isinstance(exc, CommandCleanupUnresolved) else exc
             if isinstance(original_error, StorageEnvelopeError):
                 storage_failure_receipt = dict(original_error.diagnostic)
@@ -10577,7 +10728,7 @@ class GenericPackHost:
             if isinstance(gpu, Mapping) and (gpu.get("warning") or not gpu.get("qualified")):
                 failure_message += " " + str(gpu.get("warning") or gpu["reason"])
             failure_message += recovery_suffix(original_error)
-            self._handoff_settlement_call(self.client.fail,
+            completion_call(self.client.fail,
                 task_id,
                 lease_token,
                 failure_message,
@@ -10591,20 +10742,32 @@ class GenericPackHost:
         finally:
             # Keep the lease pump alive through harvesting, upload, and
             # settlement; only stop it once the claimed attempt is terminal.
+            cleanup_errors: list[str] = []
+            if not _terminal.get("forced"):
+                _terminal.update(
+                    status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
+                    else "cancelled" if cancelled_attempt else "failed",
+                )
+            _terminal.setdefault("error", sys.exc_info()[1])
+            # Failure-path exceptions cannot bypass the original fenced fail.
+            if not _terminal.get("recorded") and _terminal.get("error") is not None and not cancelled_attempt:
+                try:
+                    _terminal["ensure_failure"](_terminal["error"])
+                except BaseException as reporting_error:
+                    _terminal["reporting_error"] = reporting_error
+            # Publish terminal evidence before any release/cleanup can stall.
+            try:
+                self._write_task_result(_terminal)
+            except BaseException as receipt_error:
+                _terminal.update(minimal=True, write_attempted=False)
+                self._write_task_result(_terminal)
+            if _terminal.get("recorded"):
+                pump_stop.set()
+                pump_thread.join(timeout=2)
             if child_bridge is not None:
                 child_bridge.revoke()
                 with self._process_lock:
                     self._child_bridges.discard(child_bridge)
-            if pump_stop is not None:
-                pump_stop.set()
-            if pump_thread is not None:
-                pump_thread.join(timeout=2)
-            cleanup_errors: list[str] = []
-            _terminal.update(
-                status="succeeded" if settled else "timeout" if deadline_exceeded or deadline_failed
-                else "cancelled" if cancelled_attempt else "failed",
-            )
-            _terminal.setdefault("error", sys.exc_info()[1])
             retain_for_unresolved_scope = command_cleanup_error is not None
             if retain_for_unresolved_scope:
                 # The task-scope supervisor has evidence of a child writer
