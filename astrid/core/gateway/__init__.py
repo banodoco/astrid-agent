@@ -97,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main_impl(raw: list[str]) -> int:
     first_arg = next(iter(raw), None)
+    if first_arg == "generate":
+        from astrid.core.generation.listing import main as generate_main
+
+        return generate_main(raw[1:])
     if first_arg == "engines":
         from astrid.core.engine_cli import main as engines_main
 
