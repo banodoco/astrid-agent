@@ -1,9 +1,15 @@
 """Focused validation for generation verbs in pack extensions."""
 
-import pytest
+import sys
+import types
+from pathlib import Path
 
-from astrid.core.pack import PackValidationError
+import pytest
+import yaml
+
+from astrid.core.pack import PackValidationError, discover_packs, load_pack_manifest
 from astrid.core.pack.permissions import _normalize_generation_extensions
+from astrid.core.generation import verbs as generation_verbs
 
 
 VERBS = [
@@ -89,3 +95,113 @@ def test_generation_extensions_still_reject_unknown_keys() -> None:
             {"verbs": VERBS, "unknown": []},
             path="pack.extensions.generation",
         )
+
+
+def _write_v3_pack(root: Path, pack_id: str, verbs: list[dict[str, str]]) -> Path:
+    pack_root = root / pack_id
+    pack_root.mkdir(parents=True)
+    (pack_root / "pack.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 3,
+                "id": pack_id,
+                "name": pack_id,
+                "version": "1.0.0",
+                "documents": {},
+                "extensions": {"generation": {"verbs": verbs}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return pack_root
+
+
+def test_v3_pack_discovery_preserves_generation_verb_extensions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packs_root = tmp_path / "astrid" / "packs"
+    packs_root.mkdir(parents=True)
+    declarations = {
+        "wan2gp": [
+            {"name": "generate_video", "module": "fixture_generation_handlers", "handler": "wan"}
+        ],
+        "vibecomfy": [
+            {
+                "name": "video_enhance",
+                "module": "fixture_generation_handlers",
+                "handler": "enhance",
+            },
+            {
+                "name": "character_animation",
+                "module": "fixture_generation_handlers",
+                "handler": "animate",
+            },
+        ],
+    }
+    for pack_id, pack_verbs in declarations.items():
+        _write_v3_pack(packs_root, pack_id, pack_verbs)
+
+    discovered = discover_packs(packs_root)
+    assert {pack.id: pack.extensions["generation"]["verbs"] for pack in discovered} == declarations
+    assert all(
+        load_pack_manifest(packs_root / pack_id / "pack.yaml").extensions["generation"]["verbs"]
+        == pack_verbs
+        for pack_id, pack_verbs in declarations.items()
+    )
+
+    handlers = types.ModuleType("fixture_generation_handlers")
+    handlers.wan = lambda **kwargs: kwargs
+    handlers.enhance = lambda **kwargs: kwargs
+    handlers.animate = lambda **kwargs: kwargs
+    monkeypatch.setitem(sys.modules, "fixture_generation_handlers", handlers)
+    monkeypatch.setattr("astrid.core.foundation.paths.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "astrid.core.pack.discover_packs",
+        lambda root=None: discover_packs(packs_root if root is None else root),
+    )
+    monkeypatch.setattr(
+        "astrid.core.pack.source_setup.active_source_inventory",
+        lambda: types.SimpleNamespace(sources=()),
+    )
+    monkeypatch.setattr(generation_verbs, "_plugins_loaded", False)
+    monkeypatch.setattr(generation_verbs, "_verbs", {})
+
+    generation_verbs.load_generation_verb_plugins()
+
+    assert generation_verbs.get_verb("generate_video") is handlers.wan
+    assert generation_verbs.get_verb("video_enhance") is handlers.enhance
+    assert generation_verbs.get_verb("character_animation") is handlers.animate
+
+
+@pytest.mark.parametrize(
+    ("extensions", "error_path"),
+    [
+        ({"unknown": {}}, "pack.extensions has unknown field"),
+        ({"generation": {"unknown": []}}, "pack.extensions.generation has unknown field"),
+        ({"generation": {"verbs": [{"name": "video", "module": "x", "handler": "run"}]}},
+         r"pack.extensions.generation.verbs\[0\].name is reserved"),
+        ({"generation": {"verbs": [{"name": "broken", "module": "x"}]}},
+         r"pack.extensions.generation.verbs\[0\].handler"),
+    ],
+)
+def test_v3_loader_keeps_generation_extension_validation(
+    tmp_path: Path, extensions: dict, error_path: str
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    (root / "pack.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 3,
+                "id": "demo",
+                "name": "Demo",
+                "version": "1.0.0",
+                "documents": {},
+                "extensions": extensions,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PackValidationError, match=error_path):
+        load_pack_manifest(root / "pack.yaml")
