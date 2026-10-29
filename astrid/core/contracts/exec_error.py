@@ -14,13 +14,13 @@ execution-failure metadata.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any
 
 from astrid.core.contracts.errors import AstridError
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False, eq=False)
 class ExecError:
     """Why a capability run did not succeed.
 
@@ -31,28 +31,54 @@ class ExecError:
             ``"process"``, ``"gate"``).
         message: Human-readable description of the failure.
         recovery: Optional hint describing how to recover.
+        field: Optional affected input or response field.
+        fix: Optional actionable fix, defaulting to recovery.
     """
 
     code: str
     type: str
     message: str
     recovery: str = ""
+    field: InitVar[str | None] = None
+    fix: InitVar[str | None] = None
+
+    def __init__(
+        self, code: str, type: str, message: str, recovery: str = "", *,
+        field: str | None = None, fix: str | None = None,
+    ) -> None:
+        # Keep the four historical dataclass fields (and asdict shape) intact.
+        object.__setattr__(self, "code", code)
+        object.__setattr__(self, "type", type)
+        object.__setattr__(self, "message", message)
+        object.__setattr__(self, "recovery", recovery)
+        object.__setattr__(self, "_field", field)
+        object.__setattr__(self, "_fix", fix)
+
+    def __eq__(self, other: object) -> bool:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return (self.code, self.type, self.message, self.recovery, self.field, self.fix) == (
+            other.code, other.type, other.message, other.recovery, other.field, other.fix
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.code, self.type, self.message, self.recovery, self.field, self.fix))
 
     # -- AstridErrorEnvelope protocol compatibility ---------------------------
     # These properties allow ExecError-bearing result dataclasses to render
     # through the shared envelope pipeline without being an Exception subclass.
-    # They deliberately do NOT add dataclass fields so that serialization
-    # (pickle / json / asdict) remains byte-identical to the existing contract.
+    # The extra values are not dataclass fields, keeping the existing
+    # asdict/JSON shape unchanged.
 
     @property
-    def field(self) -> None:
-        """Execution errors do not identify a specific input field."""
-        return None
+    def field(self) -> str | None:
+        """Affected field, when supplied."""
+        return getattr(self, "_field", None)
 
     @property
     def fix(self) -> str:
-        """Expose the existing recovery hint as the actionable fix."""
-        return self.recovery
+        """Expose an explicit fix or the existing recovery hint."""
+        return getattr(self, "_fix", None) or self.recovery
 
     @property
     def cause(self) -> str:
@@ -120,10 +146,15 @@ class ExecAstridError(AstridError):
         recovery: str | None = None,
         **kwargs: Any,
     ) -> None:
+        explicit_recovery = recovery
         if exec_error is not None:
             code = code or exec_error.code
             type = type or exec_error.type
             recovery = recovery or exec_error.recovery
+            if exec_error.field and not kwargs.get("field"):
+                kwargs["field"] = exec_error.field
+            if exec_error.fix and not explicit_recovery and not kwargs.get("fix"):
+                kwargs["fix"] = exec_error.fix
         if recovery and not kwargs.get("fix") and not kwargs.get("recovery_command"):
             kwargs["fix"] = recovery
         super().__init__(

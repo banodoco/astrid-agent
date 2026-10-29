@@ -18,11 +18,38 @@ objects such as ``ExecError``-bearing dataclasses.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from astrid.core.audit.util import SECRET_VALUE_RE, redact
+
+
+_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"""(?i)(\b(?:(?:[a-z0-9]+[_-])*api[_-]?key|[a-z0-9]+[_-]key|token|secret|password|authorization|credential)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:bearer\s+)?[^\s,;&}]+)"""
+)
+
+
+def _redact_credentials(text: str) -> str:
+    """Remove credential-shaped values from text without changing ordinary messages."""
+    text = SECRET_VALUE_RE.sub("<redacted>", text)
+    text = _CREDENTIAL_ASSIGNMENT.sub(r"\1<redacted>", text)
+    return re.sub(r"(?i)(\bbearer\s+)[^\s,;\"\'&}]+", r"\1<redacted>", text)
+
+
+_CREDENTIAL_KEY = re.compile(r"(?i)(?:api[_-]?key|(?:^|[_-])key$|token|secret|password|authorization|credential)")
+
+
+def _redact_credential_data(value: Any) -> Any:
+    value = redact(value)
+    if isinstance(value, dict):
+        return {key: "<redacted>" if _CREDENTIAL_KEY.search(str(key)) else _redact_credential_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_credential_data(item) for item in value]
+    return _redact_credentials(value) if isinstance(value, str) else value
 
 
 def _json_safe(value: Any) -> Any:
@@ -227,9 +254,14 @@ def coerce_astrid_error(
             degraded=degraded,
         )
 
-    cause = _first_text_attr(value, "cause", "message", "reason")
+    is_sdk_error = any(
+        cls.__name__ == "AstridSDKError" and cls.__module__ == "astrid.sdk.exceptions"
+        for cls in type(value).__mro__
+    )
+    # SDK reason can be a machine state, not the human exception message.
+    cause = _first_text_attr(value, "cause", "message")
     if cause is None:
-        cause = str(value)
+        cause = str(value) if is_sdk_error else _first_text_attr(value, "reason") or str(value)
     details = getattr(value, "details", None)
     details = details if isinstance(details, Mapping) else {}
     recovery_command = (
@@ -241,15 +273,21 @@ def coerce_astrid_error(
     fix = _first_text_attr(value, "fix") or _first_text_mapping(details, "fix")
     options = normalize_valid_options(getattr(value, "valid_options", ()))
     code = _first_text_attr(value, "code") or _first_text_mapping(details, "code")
-    if code is None and any(
-        cls.__name__ == "AstridSDKError" and cls.__module__ == "astrid.sdk.exceptions"
-        for cls in type(value).__mro__
-    ):
-        code = _first_text_attr(value, "category") or "sdk_error"
+    if is_sdk_error:
+        if code is None:
+            code = _first_text_attr(value, "category") or "sdk_error"
+        code = _redact_credentials(code) if code else code
+        cause = _redact_credentials(cause)
+        recovery_command = _redact_credentials(recovery_command)
+        field = _redact_credentials(field) if field else field
+        fix = _redact_credentials(fix) if fix else fix
+        options = tuple(_redact_credentials(option) for option in options)
     source_type = type(value).__name__
     snapshot = build_state_snapshot(getattr(value, "state_snapshot", None))
     if state_snapshot is not None:
         snapshot.update(build_state_snapshot(state_snapshot))
+    if is_sdk_error:
+        snapshot = _redact_credential_data(snapshot)
     if degraded and "bug" not in recovery_command.lower():
         recovery_command = recovery_command or "retry the command; if it repeats, report this bug"
     return AstridError(

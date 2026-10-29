@@ -495,3 +495,42 @@ def test_sdk_error_without_category_and_invalid_details_is_still_coded() -> None
     assert error.field is None
     assert error.fix == ""
     assert error.message == "cannot invoke"
+
+
+def test_sdk_message_and_rendered_fields_redact_credentials(capsys) -> None:
+    from astrid.core.contracts.errors import render_astrid_error
+    from astrid.sdk.exceptions import CapabilityUnavailableError
+
+    error = CapabilityUnavailableError(
+        "pack unavailable: api_key=private-value",
+        details={"field": "mode", "fix": "replace token=another-private-value"},
+    )
+    envelope = coerce_astrid_error(
+        error, state_snapshot={"authorization": "private-header", "argv": ["password=private-pass"]}
+    )
+    assert envelope.message == "pack unavailable: api_key=<redacted>"
+    assert envelope.code == "sdk_error"
+    assert envelope.field == "mode"
+    assert envelope.fix == "replace token=<redacted>"
+    assert render_astrid_error(envelope) == 2
+    stderr = capsys.readouterr().err
+    assert "code: sdk_error" in stderr
+    assert "fix: replace token=<redacted>" in stderr
+    assert all(secret not in stderr for secret in ("private-value", "another-private-value", "private-header", "private-pass"))
+
+
+def test_sdk_redacts_provider_keys_and_quoted_values_in_all_coded_fields() -> None:
+    from astrid.sdk.exceptions import CapabilityValidationError
+
+    original = CapabilityValidationError(
+        "FAL_KEY='a value with spaces'", details={
+            "code": "token=private-code", "field": 'password="private field"',
+            "fix": 'OPENAI_API_KEY="private fix"', "recovery": "Authorization: Bearer private-header",
+        },
+    )
+    envelope = coerce_astrid_error(original).to_envelope()
+    assert envelope["message"] == "FAL_KEY=<redacted>"
+    assert envelope["code"] == "token=<redacted>"
+    assert envelope["field"] == "password=<redacted>"
+    assert envelope["fix"] == "OPENAI_API_KEY=<redacted>"
+    assert envelope["recovery"] == "Authorization: <redacted>"

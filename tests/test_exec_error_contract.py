@@ -387,3 +387,40 @@ def test_exec_astrid_error_is_astrid_error_envelope() -> None:
     """ExecAstridError satisfies the AstridErrorEnvelope protocol."""
     err = ExecAstridError("failure")
     assert isinstance(err, AstridErrorEnvelope)
+
+
+def test_exec_error_explicit_coded_fields_survive_coercion_and_raise() -> None:
+    from astrid.core.contracts.errors import coerce_astrid_error
+
+    error = ExecError("invalid_input", "precondition", "bad prompt", "retry", field="prompt", fix="supply text")
+    expected = {"code": "invalid_input", "message": "bad prompt", "field": "prompt", "fix": "supply text"}
+    for envelope in (error.to_envelope(), coerce_astrid_error(error).to_envelope()):
+        assert {key: envelope[key] for key in expected} == expected
+    raised = ExecAstridError("bad prompt", exec_error=error)
+    assert {key: raised.to_envelope()[key] for key in expected} == expected
+    assert asdict(error) == {"code": "invalid_input", "type": "precondition", "message": "bad prompt", "recovery": "retry"}
+
+
+def test_exec_error_metadata_survives_replace_and_distinguishes_values() -> None:
+    from dataclasses import replace
+
+    original = ExecError("bad", "precondition", "invalid", "retry", field="prompt", fix="supply text")
+    changed = replace(original, message="invalid prompt")
+    assert changed.field == "prompt"
+    assert changed.fix == "supply text"
+    assert replace(original, field="mode") != original
+    assert len({original, replace(original, fix="try again")}) == 2
+    assert set(asdict(original)) == {"code", "type", "message", "recovery"}
+
+
+def test_exec_error_old_pickle_state_has_metadata_defaults() -> None:
+    import pickle
+
+    error = ExecError("bad", "precondition", "invalid", "retry")
+    # Old pickles contain only the four historical instance attributes.
+    object.__delattr__(error, "_field")
+    object.__delattr__(error, "_fix")
+    restored = pickle.loads(pickle.dumps(error))
+    assert restored.field is None
+    assert restored.fix == "retry"
+    assert restored.to_envelope()["fix"] == "retry"

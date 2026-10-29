@@ -168,3 +168,20 @@ def test_foley_host_contract_declares_inputs_outputs_and_typed_manifest(
         "--out",
         "{out}/audio.wav",
     ]
+
+
+def test_foley_missing_audio_response_redacts_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ASTRID_INTERNAL_INVOCATION", "1")
+    from astrid.packs.fal.actions.fal_foley import run
+
+    with pytest.raises(AstridError) as raised:
+        run._save_audio(
+            _FakeClient(),
+            {"request_id": "request-1", "api_key": "provider-secret", "FAL_KEY": "fal-secret", "detail": "token=another-secret"},
+            tmp_path / "audio.wav",
+        )
+    assert "request-1" in raised.value.message
+    assert "provider-secret" not in raised.value.message
+    assert "fal-secret" not in raised.value.message
+    assert "another-secret" not in raised.value.message
+    assert raised.value.code == "FAL_FOLEY_MISSING_AUDIO_URL"
