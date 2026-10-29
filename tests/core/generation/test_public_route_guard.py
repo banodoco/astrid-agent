@@ -65,10 +65,11 @@ def _route_guard_errors(facade: ast.ClassDef) -> list[str]:
         else:
             route_calls = _calls(method, "_invoke")
         routed_ids = {
-            arg.value
+            call.args[0].value
             for call in route_calls
-            for arg in call.args
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            if call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
         }
         if not route_ids.issubset(routed_ids):
             errors.append(
@@ -108,3 +109,19 @@ def test_route_guard_rejects_a_planted_public_bypass() -> None:
     errors = _route_guard_errors(facade)
     assert len(errors) == 1
     assert "added=['image_cloud']" in errors[0]
+
+
+def test_route_guard_rejects_a_registered_method_that_skips_its_route() -> None:
+    source_path = Path(__file__).resolve().parents[3] / "astrid" / "sdk" / "generation.py"
+    facade = copy.deepcopy(_facade_node(source_path.read_text(encoding="utf-8")))
+    image_method = _public_methods(facade)["image"]
+    route_call = _calls(image_method, "_invoke")[0]
+    route_call.func = ast.Attribute(
+        value=ast.Name(id="sdk", ctx=ast.Load()),
+        attr="invoke",
+        ctx=ast.Load(),
+    )
+
+    errors = _route_guard_errors(facade)
+    assert len(errors) == 1
+    assert "image does not use its registered central route" in errors[0]
