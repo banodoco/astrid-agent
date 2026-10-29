@@ -325,6 +325,8 @@ def test_real_runtime_fenced_terminal_state_and_result(case, monkeypatch, tmp_pa
 
         class Generated:
             timeout = 30
+            def health(self):
+                return service.health()
             def get_task(self, task_id):
                 raw = service.task(task_id)["task"]
                 return {**raw, "version": int(raw["attempt"]) + 1}
@@ -436,6 +438,9 @@ def test_heartbeat_contention_cannot_wait_past_the_deadline(case, monkeypatch):
     calls = []
     class Generated:
         timeout = 30
+        def health(self):
+            assert self.timeout == 2.0
+            return {"runtime_epoch": 7}
         def heartbeat_attempt(self, *_args, **_kwargs):
             calls.append(time.monotonic())
 
@@ -476,6 +481,9 @@ def test_heartbeat_short_contention_preserves_normal_serialization():
     calls = []
     class Generated:
         timeout = 30
+        def health(self):
+            assert self.timeout == 2.0
+            return {"runtime_epoch": 7}
         def heartbeat_attempt(self, *_args, **_kwargs):
             calls.append(self.timeout)
 

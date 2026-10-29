@@ -4693,7 +4693,7 @@ class RuntimeProtocolClient:
 
     def health(self):
         """Read protocol/schema/runtime epoch through the generated client."""
-        value = self.generated.health()
+        value = self._lifecycle_client().health()
         epoch = value.get("runtime_epoch") if isinstance(value, Mapping) else getattr(value, "runtime_epoch", None)
         if epoch is not None:
             self._runtime_epoch = int(epoch)
@@ -4826,10 +4826,7 @@ class RuntimeProtocolClient:
     def heartbeat(self, task_id: str, lease_token: str, *, attempt_id: str | None = None, fence: int | None = None, progress: Mapping[str, Any] | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated heartbeat requires attempt_id and fence")
-        runtime_epoch = self._attempt_runtime_epochs.get(str(attempt_id))
-        if runtime_epoch is None:
-            raise HostError("attempt runtime epoch was not captured at claim")
-        # Runtime atomically validates the captured epoch with the lease fence.
+        runtime_epoch = self._claimed_runtime_epoch(attempt_id)
         # A heartbeat extends the lease and is therefore a new mutation, not a
         # replay of the first pulse.  Reusing one idempotency key here makes a
         # long render appear healthy to the host while the runtime repeatedly
@@ -4956,9 +4953,7 @@ class RuntimeProtocolClient:
     def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated settlement requires attempt_id and fence")
-        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
-        if epoch is None:
-            raise HostError("attempt runtime epoch was not captured at claim")
+        epoch = self._claimed_runtime_epoch(attempt_id)
         settlement = {
             "attempt_id": attempt_id,
             "lease_id": lease_token,
