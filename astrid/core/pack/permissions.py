@@ -223,7 +223,7 @@ def _normalize_rendering_manifest_paths(value: Any, *, path: str) -> list[str]:
 
 def _normalize_generation_extensions(value: Any, *, path: str) -> dict[str, Any]:
     data = _require_mapping(value, path)
-    allowed_keys = {"backends", "features", "modes"}
+    allowed_keys = {"backends", "features", "modes", "verbs"}
     unknown_keys = sorted(set(data) - allowed_keys)
     if unknown_keys:
         raise PackValidationError(f"{path} has unknown field(s): {', '.join(unknown_keys)}")
@@ -233,6 +233,11 @@ def _normalize_generation_extensions(value: Any, *, path: str) -> dict[str, Any]
         normalized["backends"] = _normalize_generation_backends(
             data["backends"],
             path=f"{path}.backends",
+        )
+    if "verbs" in data:
+        normalized["verbs"] = _normalize_generation_verbs(
+            data["verbs"],
+            path=f"{path}.verbs",
         )
     if "features" in data:
         normalized["features"] = _normalize_named_extension_list(
@@ -244,6 +249,34 @@ def _normalize_generation_extensions(value: Any, *, path: str) -> dict[str, Any]
             data["modes"],
             path=f"{path}.modes",
         )
+    return normalized
+
+
+def _normalize_generation_verbs(value: Any, *, path: str) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise PackValidationError(f"{path} must be an array")
+
+    normalized: list[dict[str, str]] = []
+    allowed_keys = {"name", "module", "handler"}
+    for index, raw_verb in enumerate(value):
+        verb_path = f"{path}[{index}]"
+        verb = _require_mapping(raw_verb, verb_path)
+        unknown_keys = sorted(
+            (key for key in verb if key not in allowed_keys),
+            key=repr,
+        )
+        if unknown_keys:
+            raise PackValidationError(
+                f"{verb_path} has unknown field(s): "
+                f"{', '.join(repr(key) for key in unknown_keys)}"
+            )
+        normalized_verb = {
+            key: _require_string(verb, key, f"{verb_path}.{key}")
+            for key in ("name", "module", "handler")
+        }
+        if normalized_verb["name"].strip() in {"image", "video"}:
+            raise PackValidationError(f"{verb_path}.name is reserved for built-in generation methods")
+        normalized.append(normalized_verb)
     return normalized
 
 
