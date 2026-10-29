@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,73 @@ from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
 from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
 from astrid.packs.h3_av.shared.generation import generation_timing
 from astrid.packs.h3_av.actions.transform.run import _generation_intent
+
+
+def _locked_model_workflow(**kwargs):
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+
+    return build_generation_workflow(
+        references=["reference.png"], prompt="A scene.", frames=24,
+        model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
+        **kwargs,
+    )
+
+
+def test_generation_assets_use_recipe_lock_revisions():
+    from astrid.core.generation.engine_recipe import load_recipe_model_lock
+    from astrid.packs.h3_av.shared import generation
+
+    lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    workflow = _locked_model_workflow(adapter_strength=0.7)
+    assets = {f'{row["subdir"]}/{row["name"]}': row for row in workflow.metadata["model_assets"]}
+    assert len(lock.models) == 5
+    assert set(assets) == {model.destination for model in lock.models} | {
+        f"loras/{generation.CHARACTER_SWAP_FILENAME}"
+    }
+    for model in lock.models:
+        assert assets[model.destination]["url"] == (
+            f"https://huggingface.co/{model.repository}/resolve/{model.revision}/{model.path}"
+        )
+    character = assets[f"loras/{generation.CHARACTER_SWAP_FILENAME}"]
+    assert character["url"] == (
+        f"https://huggingface.co/{generation.CHARACTER_SWAP_REPOSITORY}/resolve/"
+        f"{generation.CHARACTER_SWAP_REVISION}/{generation.CHARACTER_SWAP_FILENAME}"
+    )
+    assert character["hf_revision"] == generation.CHARACTER_SWAP_REVISION
+    assert f"loras/{generation.TURBO_FILENAME}" not in {
+        f'{row["subdir"]}/{row["name"]}'
+        for row in _locked_model_workflow(turbo_enabled=False).metadata["model_assets"]
+    }
+
+
+@pytest.mark.parametrize("invalid", [
+    {"revision": None}, {"revision": "main"}, {"repository": None},
+    {"path": None}, {"url": "https://huggingface.co/owner/repo/resolve/main/model"},
+])
+def test_generation_rejects_incomplete_or_unpinned_lock_entry(monkeypatch, invalid):
+    from astrid.packs.h3_av.shared import generation
+
+    lock = generation.load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    broken = replace(lock.models[0], **invalid)
+    monkeypatch.setattr(generation, "load_recipe_model_lock", lambda *_: replace(
+        lock, models=(broken, *lock.models[1:]),
+    ))
+    with pytest.raises(ValueError, match="pinned Hugging Face source"):
+        _locked_model_workflow()
+
+
+@pytest.mark.parametrize("index", range(5))
+def test_generation_rejects_missing_required_lock_destination(monkeypatch, index):
+    from astrid.packs.h3_av.shared import generation
+
+    lock = generation.load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    missing = lock.models[index]
+    monkeypatch.setattr(generation, "load_recipe_model_lock", lambda *_: replace(
+        lock, models=tuple(model for model in lock.models if model is not missing),
+    ))
+    with pytest.raises(ValueError, match="missing destination") as error:
+        _locked_model_workflow()
+    assert missing.destination in str(error.value)
 
 
 def request(count=4, **updates):

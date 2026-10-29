@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from astrid.core.generation.engine_recipe import engine_source_revision
+from astrid.core.generation.engine_recipe import engine_source_revision, load_recipe_model_lock
 
 from .timing import frame_index, smallest_h3_run_at_least
 
@@ -170,6 +170,23 @@ def character_swap_asset_sha256() -> str:
     return actual_digest.removeprefix("sha256:")
 
 
+def _h3_locked_urls() -> dict[str, Any]:
+    lock = load_recipe_model_lock("vibecomfy-h3", "linux-x86_64-cu130")
+    return {model.destination: model for model in lock.models}
+
+
+def _required_locked_url(models: Mapping[str, Any], destination: str) -> str:
+    model = models.get(destination)
+    if model is None:
+        raise ValueError(f"H3 model lock is missing destination: {destination}")
+    if (model.url is not None or not isinstance(model.repository, str) or not model.repository
+            or not isinstance(model.path, str) or not model.path
+            or not isinstance(model.revision, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", model.revision)):
+        raise ValueError(f"H3 model lock entry must have a pinned Hugging Face source: {destination}")
+    return f"https://huggingface.co/{model.repository}/resolve/{model.revision}/{model.path}"
+
+
 def generation_timing(duration: float) -> dict[str, Any]:
     frames = frame_index(duration, "output.duration")
     raw = smallest_h3_run_at_least(frames)
@@ -210,7 +227,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     video_references = list(video_references or [])
     if len(video_references) > VIDEO_REFERENCE_CAPACITY:
         raise ValueError("this adapter requires at most three video references")
-    base = "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main"
+    locked_models = _h3_locked_urls()
     names = {
         "model": ("diffusion_models", "minimax_h3_ref2va_pruned_int8_convrot.safetensors"),
         "clip": ("text_encoders", "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"),
@@ -218,13 +235,13 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         "audio_vae": ("vae", "minimax_h3_audio_vae_fp32.safetensors"),
     }
     model_assets = {
-        key: ModelAsset(url=f"{base}/{subdir}/{name}", subdir=subdir)
+        key: ModelAsset(url=_required_locked_url(locked_models, f"{subdir}/{name}"), subdir=subdir)
         for key, (subdir, name) in names.items()
     }
     if turbo_enabled:
         model_assets["turbo_lora"] = ModelAsset(
             filename=TURBO_FILENAME,
-            url=f"{base}/loras/{TURBO_FILENAME}",
+            url=_required_locked_url(locked_models, f"loras/{TURBO_FILENAME}"),
             subdir="loras",
         )
     if adapter_strength is not None:
