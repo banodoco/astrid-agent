@@ -7,7 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from astrid.installer import cli
-from astrid.installer.core import Installer, Version, read_json, write_json
+from astrid.installer.core import (
+    Installer,
+    RuntimeOperationError,
+    Version,
+    read_json,
+    switch,
+    write_json,
+)
 from astrid.installer.service import LABEL, default_program_root, install_selection
 
 
@@ -40,6 +47,9 @@ class PinokioBackend:
     def workspace(self, _version, data):
         self.calls.append(("workspace", data))
         return {"realm_id": "test-realm", "realm_root": str(data / "realm")}
+
+    def validate_candidate(self, candidate, data, realm):
+        self.calls.append(("validate_candidate", candidate, data, realm))
 
     def create(self, *_args):
         self.calls.append(("create",))
@@ -144,7 +154,8 @@ def test_pinokio_update_never_registers_or_starts_login_service(tmp_path):
 
     names = [call[0] for call in backend.calls]
     assert names.count("stop") >= 1
-    assert names.index("backup") < names.index("upgrade")
+    assert names.index("stage") < names.index("validate_candidate") < names.index("stop")
+    assert names.index("stop") < names.index("backup") < names.index("upgrade")
     assert names.count("register") == 1
     assert "start" not in names
     assert "verify" not in names
@@ -163,6 +174,7 @@ def test_pinokio_update_rollback_keeps_login_service_unmodified(tmp_path):
 
     names = [call[0] for call in backend.calls]
     assert "restore" in names
+    assert names.index("stage") < names.index("validate_candidate") < names.index("stop")
     assert names.count("register") >= 1
     assert "start" not in names
     assert "verify" not in names
@@ -201,6 +213,9 @@ def test_pinokio_uninstall_keeps_workspace_and_skips_service_removal(tmp_path):
 @pytest.mark.parametrize("system", ["darwin", "linux", "win32"])
 @pytest.mark.parametrize("temporary_daemon", [False, True])
 def test_managed_backend_stop_and_register_do_not_touch_login_service(tmp_path, monkeypatch, system, temporary_daemon):
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol.store import RealmStore
+
     from astrid.installer.backend import Backend
 
     root, data = tmp_path / "app", tmp_path / "workspace"
@@ -214,37 +229,84 @@ def test_managed_backend_stop_and_register_do_not_touch_login_service(tmp_path, 
     backend = Backend(root, tmp_path / "install.log", tmp_path / "uv", managed_by="pinokio")
     from astrid.installer.service import Service
     backend.service = Service(root, tmp_path / "install.log", backend.run, home=home, system=system)
+    # Runtime's C1 reader follows the host platform's canonical selection
+    # location; only the service backend is parameterized across OS formats.
+    from astrid_runtime.paths import _install_record_path
+    backend.service.selection = _install_record_path(home)
     calls = []
     for name in ("disable", "stop", "stop_foreground", "register", "unregister"):
         monkeypatch.setattr(backend.service, name, lambda *args, _name=name, **kwargs: calls.append(_name))
     monkeypatch.setattr(backend, "workspace", lambda *_args: {
-        "realm_id": "realm", "realm_root": str(data / "realm")
+        "realm_id": "selected", "realm_root": str(paths.realms_dir / "selected")
     })
     monkeypatch.setattr(backend, "_prior_chat_settings", lambda _version: (None, {}))
+    paths = RuntimePaths.current(data_root=data)
+    paths.ensure_support_dirs()
+    realm_root = paths.realms_dir / "selected"
+    RealmStore.initialize(realm_root, realm_id="selected").close()
+    write_json(paths.catalog_path, {
+        "version": 1, "selected_realm_id": "selected",
+        "realms": [{"realm_id": "selected", "display_name": "Realm", "data_root": str(realm_root)}],
+        "source_profiles": {},
+    })
     version_root = root / "versions" / "v1"
     version_root.mkdir(parents=True)
     version = _version(version_root)
-    runtime_calls = []
-    discovery = data / "runtime" / "discovery.json"
     if temporary_daemon:
-        write_json(discovery, {"pid": 42, "process_birth_id": "migration-owner"})
+        import astrid_runtime
+        runtime_checkout = Path(astrid_runtime.__file__).resolve().parents[1]
+        source_checkout = Path(__file__).resolve().parents[1]
+        environment = version.python.parent.parent
+        declaration = version_root / "services.json"
+        write_json(declaration, {"services": []})
+        profile = {
+            "profile": "astrid", "runtime_checkout": str(runtime_checkout),
+            "source_checkout": str(source_checkout), "runtime_environment": str(environment),
+            "source_digest": "", "service_declaration": str(declaration),
+        }
+        write_json(version.profile, profile)
+        write_json(paths.source_profiles_dir / "astrid.json", profile)
+        catalog = read_json(paths.catalog_path)
+        catalog["source_profiles"] = {"astrid": profile}
+        write_json(paths.catalog_path, catalog)
+        version = Version(version.root, version.python, version.profile, {}, 1, "pinokio")
+        write_json(version_root / "version.json", version.document())
+        switch(root, version)
+    runtime_calls = []
+    c1_calls = []
+    if temporary_daemon:
+        from astrid_runtime.bootstrap import BootstrapConfig
+
+        from tests.test_installer_busy_fence import Boundary, publish
+
+        publish(paths, realm_root)
+        monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary",
+                            lambda: Boundary(paths, c1_calls))
+        monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_args: object())
         monkeypatch.setattr(backend, "_discovery_owner_state", lambda _path: "live")
 
         def runtime(_version, _data, *args, **kwargs):
             runtime_calls.append((args, kwargs))
-            discovery.unlink()
-            return {}
+            pytest.fail("Pinokio stop must use C1's Runtime fence, not a second down command")
 
         monkeypatch.setattr(backend, "runtime", runtime)
 
     backend.register(version, data)
-    backend.stop(version, data)
-    backend.unregister()
+    if temporary_daemon:
+        backend.stop(version, data)
+        backend.unregister()
+    else:
+        # Pinokio selection without a live owner or a completed C1 stop is
+        # not sufficient authority to clean up the manager-owned Runtime.
+        with pytest.raises(RuntimeOperationError) as raised:
+            backend.stop(version, data)
+        assert raised.value.details == {"safe": False, "code": "stop_unproven"}
 
     assert calls == []
     assert backend.service.recorded()["managed_by"] == "pinokio"
     assert backend.service.recorded()["program_root"] == str(root)
-    assert runtime_calls == ([(('down',), {"profile": True})] if temporary_daemon else [])
+    assert runtime_calls == []
+    assert c1_calls == (["prepare", "runtime-stop"] if temporary_daemon else [])
 
 
 def _cli_home(tmp_path, monkeypatch):
@@ -291,7 +353,7 @@ def test_ordinary_cli_refuses_active_pinokio_pointer(tmp_path, monkeypatch, caps
     })
 
     assert cli.main(mode) == 1
-    assert "Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it." in capsys.readouterr().out
+    assert "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button." in capsys.readouterr().out
 
 
 def test_second_pinokio_root_is_refused_while_first_install_record_exists(tmp_path, monkeypatch, capsys):
@@ -327,6 +389,9 @@ def _stub_cli_install(tmp_path, monkeypatch, home):
         def existing(self, _data):
             return None
 
+        def source_checkout_ownership(self, *_args, **_kwargs):
+            return False
+
     class InstallerStub:
         def __init__(self, _root, data, _backend, **kwargs):
             captured["data"] = data
@@ -335,7 +400,11 @@ def _stub_cli_install(tmp_path, monkeypatch, home):
         def run(self, mode, *_args, **_kwargs):
             captured["mode"] = mode
 
-    monkeypatch.setattr(cli, "Backend", BackendStub)
+    class BackendWithReadOnlyPreflight(BackendStub):
+        def preflight_stop(self, _data):
+            pass
+
+    monkeypatch.setattr(cli, "Backend", BackendWithReadOnlyPreflight)
     monkeypatch.setattr(cli, "Installer", InstallerStub)
     monkeypatch.setattr(cli, "current", lambda _root: SimpleNamespace(python=python))
     return selection, captured
@@ -414,12 +483,27 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
                                        "data_root": str(tmp_path / "workspace")})
     selection = tmp_path / "selection.json"
     captured = {}
+    data = tmp_path / "workspace"
+    record = {"owner": LABEL, "managed_by": "pinokio", "program_root": str(root),
+              "data_root": str(data)}
+    if mode == ["--update"]:
+        old_root = root / "versions" / "old"
+        old_root.mkdir(parents=True)
+        python, profile = old_root / "python", old_root / "profile.json"
+        python.write_text("placeholder", encoding="utf-8")
+        profile.write_text("{}", encoding="utf-8")
+        old = Version(old_root, python, profile, {}, release=4, managed_by="pinokio")
+        write_json(old_root / "version.json", old.document())
+        switch(root, old)
 
     class BackendStub:
         def __init__(self, *_args, **_kwargs):
             self.managed_by = None
-            self.service = SimpleNamespace(selection=selection, recorded=lambda: {},
+            self.service = SimpleNamespace(selection=selection, recorded=lambda: record.copy(),
                                            login_service_exists=lambda: False)
+
+        def preflight_stop(self, _data):
+            captured["preflight"] = True
 
         def existing(self, _data):
             return None
@@ -433,7 +517,8 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
 
     monkeypatch.setattr(cli, "Backend", BackendStub)
     monkeypatch.setattr(cli, "Installer", InstallerStub)
-    monkeypatch.setattr(cli, "current", lambda _root: None)
+    if mode == ["--uninstall"]:
+        monkeypatch.setattr(cli, "current", lambda _root: None)
     monkeypatch.setattr(cli, "default_doctor_bundle", lambda: tmp_path / "doctor.zip")
 
     argv = [*mode, "--root", str(root)]
@@ -442,10 +527,21 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
         manifest.write_text("{}", encoding="utf-8")
         uv.write_text("", encoding="utf-8")
         monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
+        from astrid.installer import app_update
+
+        monkeypatch.setattr(app_update, "update_pinokio", lambda *args, **kwargs: captured.update(
+            managed_by="pinokio", run="update", adapter=(args, kwargs)))
         argv += ["--manifest", str(manifest), "--uv", str(uv)]
 
     assert cli.main(argv) == 0
-    assert captured == {"managed_by": "pinokio", "run": "update" if mode == ["--update"] else "uninstall"}
+    if mode == ["--update"]:
+        assert captured["managed_by"] == "pinokio"
+        assert captured["run"] == "update"
+        assert captured["preflight"] is True
+        assert captured["adapter"][0][0] == root
+        assert captured["adapter"][1]["force"] is True
+    else:
+        assert captured == {"managed_by": "pinokio", "run": "uninstall", "preflight": True}
 
 
 def test_pinokio_doctor_without_root_follows_per_user_pointer(tmp_path, monkeypatch):

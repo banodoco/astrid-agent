@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import venv
@@ -15,7 +16,12 @@ import pytest
 
 from astrid.installer import cli, foreground
 from astrid.installer.core import Version, read_json, switch, write_json
-from astrid.installer.service import LABEL, default_program_root, install_selection, installer_lock_path
+from astrid.installer.service import (
+    LABEL,
+    default_program_root,
+    install_selection,
+    installer_lock_path,
+)
 
 
 def _set_home(tmp_path, monkeypatch):
@@ -51,12 +57,26 @@ def test_foreground_run_is_refused_while_an_installer_holds_the_lock(tmp_path, m
     from runtime_protocol import platform
 
     home = _set_home(tmp_path, monkeypatch)
+    root = default_program_root(home, sys.platform)
+    data = tmp_path / "workspace"
+    folder = root / "versions" / "old"
+    folder.mkdir(parents=True)
+    python, profile = folder / "bin" / "python", folder / "profile.json"
+    python.parent.mkdir(parents=True)
+    python.write_text("placeholder", encoding="utf-8")
+    profile.write_text("{}\n", encoding="utf-8")
+    version = Version(folder, python, profile, {"PATH": os.defpath}, managed_by="pinokio")
+    write_json(folder / "version.json", version.document())
+    switch(root, version)
+    write_json(root / "install.json", {
+        "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
+    })
     path = installer_lock_path(home, sys.platform)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as held:
         platform.lock_file(held.fileno(), blocking=False)
         with pytest.raises(ValueError, match="already running or being installed"):
-            foreground.launch(tmp_path / "not-an-install", [], system=sys.platform)
+            foreground.launch(root, [], system=sys.platform)
         platform.unlock_file(held.fileno())
 
 
@@ -75,6 +95,22 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
             "owner": LABEL, "managed_by": "pinokio", "program_root": str(root),
             "data_root": str(data),
         })
+    if mode == "update":
+        folder = root / "versions" / "old"
+        folder.mkdir(parents=True)
+        python, profile = folder / "bin" / "python", folder / "profile.json"
+        python.parent.mkdir()
+        python.write_text("placeholder", encoding="utf-8")
+        profile.write_text("{}\n", encoding="utf-8")
+        old = Version(folder, python, profile, {}, release=1, managed_by="pinokio")
+        write_json(folder / "version.json", old.document())
+        switch(root, old)
+        from astrid.installer.backend import Backend
+
+        def fenced_preflight(_backend, _data):
+            raise ValueError("Astrid is busy; the C1 preflight refused this update.")
+
+        monkeypatch.setattr(Backend, "preflight_stop", fenced_preflight)
     marker_before = marker_path.read_bytes() if marker_path.exists() else None
     selection_before = selection_path.read_bytes() if selection_path.exists() else None
     lock_path = installer_lock_path(home, sys.platform)
@@ -82,7 +118,10 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
     lock = lock_path.open("a+b")
     platform.lock_file(lock.fileno(), blocking=False)
     current_calls = []
-    monkeypatch.setattr(cli, "current", lambda _root: current_calls.append(_root))
+    if mode != "update":
+        monkeypatch.setattr(cli, "current", lambda _root: current_calls.append(_root))
+    monkeypatch.setattr("astrid.installer.backend.Backend.source_checkout_ownership",
+                        lambda *_args, **_kwargs: pytest.fail("source guard ran before Pinokio lock refusal"))
 
     try:
         if mode == "install":
@@ -90,8 +129,14 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
         else:
             argv = ["--root", str(root), "--update" if mode == "update" else "--uninstall"]
         assert cli.main(argv) == 1
-        assert "Astrid is still running. Stop it in Pinokio, then try again." in capsys.readouterr().out
-        assert current_calls == []
+        output = capsys.readouterr().out
+        if mode == "update":
+            assert "Astrid is busy; the C1 preflight refused this update." in output
+            assert (root / "current").read_text().strip() == "old"
+            assert not (root / "update-transaction.json").exists()
+        else:
+            assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in output
+            assert current_calls == []
         assert (marker_path.read_bytes() if marker_path.exists() else None) == marker_before
         assert (selection_path.read_bytes() if selection_path.exists() else None) == selection_before
     finally:
@@ -127,14 +172,27 @@ def test_doctor_remains_read_only_while_foreground_holds_lock(tmp_path, monkeypa
         platform.unlock_file(held.fileno())
 
 
-def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
+def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recovered_owner(
     tmp_path, monkeypatch, capsys,
 ):
-    """A stopped-step retry must run its managed Runtime down path before touching support."""
+    """A stopped-step recovery restores the old owner without fresh update inputs."""
+    from astrid_runtime.bootstrap import BootstrapConfig
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol.store import RealmStore
+
     from astrid.installer.backend import Backend
+
     home = _set_home(tmp_path, monkeypatch)
-    root, data = tmp_path / "program", tmp_path / "workspace"
+    root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
     data.mkdir()
+    paths = RuntimePaths.current(data_root=data)
+    realm_root = data / "realm"
+    RealmStore.initialize(realm_root, realm_id="selected").close()
+    write_json(paths.catalog_path, {
+        "version": 1, "selected_realm_id": "selected",
+        "realms": [{"realm_id": "selected", "display_name": "Selected", "data_root": str(realm_root)}],
+        "source_profiles": {},
+    })
     folder = root / "versions" / "old"
     folder.mkdir(parents=True)
     python = folder / "bin" / "python"
@@ -145,6 +203,15 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
     old = Version(folder, python, profile, {"PATH": os.defpath})
     write_json(folder / "version.json", old.document())
     switch(root, old)
+    candidate_folder = root / "versions" / "candidate"
+    candidate_python = candidate_folder / "py" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("placeholder", encoding="utf-8")
+    candidate_profile = candidate_folder / "profile.json"
+    candidate_profile.write_text("{}\n", encoding="utf-8")
+    candidate = Version(candidate_folder, candidate_python, candidate_profile,
+                        {"PATH": os.defpath}, release=old.release + 1, managed_by="pinokio")
+    write_json(candidate_folder / "version.json", candidate.document())
     write_json(root / "install.json", {
         "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
     })
@@ -152,24 +219,59 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
         "owner": LABEL, "managed_by": "pinokio", "program_root": str(root),
         "data_root": str(data),
     })
-    realm = {"realm_id": "recovery-realm", "realm_root": str(data / "realm")}
-    discovery = data / "runtime" / "discovery.json"
-    write_json(discovery, {"pid": 998877, "process_birth_id": "test-live-owner"})
+    realm = {"realm_id": "selected", "realm_root": str(realm_root)}
+    discovery = paths.discovery_path
+    from tests.test_installer_busy_fence import publish
+    publish(paths, realm_root)
     write_json(root / "update-transaction.json", {
         "format": "astrid-install-update/v1", "operation_id": "a" * 32,
-        "step": "stopped", "data_root": str(data), "old": old.document(),
-        "candidate": None, "realm": realm, "backup": None,
+        "transaction_kind": "migration", "step": "stopped", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(), "realm": realm, "backup": None,
     })
-    manifest = tmp_path / "manifest.json"
-    write_json(manifest, {})
-    uv = tmp_path / "uv"
-    uv.write_text("placeholder", encoding="utf-8")
     events = []
     from runtime_protocol import platform
 
     monkeypatch.setattr(platform, "process_identity", lambda pid: {
-        "pid": pid, "birth_id": "test-live-owner",
+        "pid": pid, "birth_id": "birth",
     })
+    boundary_calls = []
+
+    class RecoveryBoundary:
+        stopped = False
+
+        def prepare_restart(self, **_kwargs):
+            return None
+
+        def is_pid_alive(self, _pid):
+            return not self.stopped
+
+        def process_birth_identity(self, _pid):
+            return None if self.stopped else "birth"
+
+        def validate_owner(self, **_kwargs):
+            return True
+
+        def endpoint_metadata(self, **_kwargs):
+            return {"runtime_instance_id": "instance", "realm_id": "selected"}
+
+        def stop_owner(self, **_kwargs):
+            # This is the actual destructive stop seam. The shared transaction
+            # lock must remain held while recovery stops and inspects Runtime.
+            boundary_calls.append("stop")
+            lock_path = root / ".app-update.lock"
+            with lock_path.open("a+b") as contender:
+                with pytest.raises(BlockingIOError):
+                    platform.lock_file(contender.fileno(), blocking=False)
+            discovery.unlink(missing_ok=True)
+            paths.instance_lock_path.unlink(missing_ok=True)
+            self.stopped = True
+            events.append("down")
+            return {"status": "stopped"}
+
+    # Recovery uses the same fenced C1 stop as an ordinary down, with no
+    # serialized stop receipt or launch tag in the durable journal.
+    monkeypatch.setattr("astrid_runtime.runtime_boundary.LocalRuntimeBoundary", RecoveryBoundary)
+    monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
 
     class RecoveryBackend(Backend):
         def __init__(self, backend_root, log, executable, *, process_control=None):
@@ -183,14 +285,6 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
             pytest.fail("Recovery test attempted an external command")
 
         def runtime(self, _version, _data, *args, **_kwargs):
-            if args == ("down",):
-                events.append("down")
-                lock_path = installer_lock_path(home, sys.platform)
-                with lock_path.open("a+b") as contender:
-                    with pytest.raises(BlockingIOError):
-                        platform.lock_file(contender.fileno(), blocking=False)
-                discovery.unlink()
-                return {"ok": True}
             if args == ("workspace", "inspect"):
                 events.append("workspace")
                 return realm
@@ -230,21 +324,155 @@ def test_cli_recovery_releases_live_runtime_before_workspace_or_backup(
         def restore(self, *_args):
             events.append("restore")
 
+    from astrid.installer import app_update
+
+    monkeypatch.setattr(app_update, "PinokioLifecycle", lambda _root, backend: SimpleNamespace(
+        validate=lambda _version: None,
+        stop=backend.stop,
+        start=lambda version, _data, _realm: events.append("session_ready:" + version.root.name),
+    ))
+
     monkeypatch.setattr(cli, "Backend", RecoveryBackend)
     monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
     assert cli.main([
         "--root", str(root), "--managed-by", "pinokio", "--update",
-        "--manifest", str(manifest), "--uv", str(uv),
+        "--manifest", str(tmp_path / "unavailable-manifest"),
+        "--uv", str(tmp_path / "unavailable-uv"),
     ]) == 0
     capsys.readouterr()
     assert events[0] == "down"
-    assert events.index("down") < events.index("workspace") < events.index("backup")
-    assert events.index("backup") < events.index("stage") < events.index("upgrade") < events.index("sync_skills")
-    assert "sync_skills" in events
-    assert "start" not in events
+    assert "workspace" not in events  # Recovery uses the journal's retained realm identity.
+    assert not any(event in events for event in ("backup", "stage", "upgrade", "sync_skills"))
+    assert "session_ready:old" in events
     assert "verify" not in events
-    assert read_json(root / "update-transaction.json")["step"] == "complete"
-    assert (root / "current").read_text().strip() == "recovered"
+    assert boundary_calls == ["stop"]
+    assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
+    assert "stop_authority" not in read_json(root / "update-transaction.json")
+    assert (root / "current").read_text().strip() == "old"
+
+
+def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
+    tmp_path, monkeypatch, capsys,
+):
+    """A blocker discovered by Runtime prevents recovery mutations in this caller lane."""
+    from astrid_runtime.bootstrap import BootstrapConfig
+    from astrid_runtime.paths import RuntimePaths
+    from runtime_protocol import platform
+    from runtime_protocol.store import RealmStore
+
+    from astrid.installer.backend import Backend
+
+    home = _set_home(tmp_path, monkeypatch)
+    root, data = tmp_path / "app" / "astrid", tmp_path / "workspace"
+    data.mkdir()
+    paths = RuntimePaths.current(data_root=data)
+    realm_root = data / "realm"
+    RealmStore.initialize(realm_root, realm_id="selected").close()
+    write_json(paths.catalog_path, {
+        "version": 1, "selected_realm_id": "selected",
+        "realms": [{"realm_id": "selected", "display_name": "Selected", "data_root": str(realm_root)}],
+        "source_profiles": {},
+    })
+    with sqlite3.connect(realm_root / "realm.sqlite3") as db:
+        db.execute(
+            "INSERT INTO runs(id, capability, status, created_at, updated_at) "
+            "VALUES ('run-busy', 'render', 'running', '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z')"
+        )
+        db.execute(
+            "INSERT INTO tasks(id, run_id, capability, status, created_at, updated_at) "
+            "VALUES ('task-busy', 'run-busy', 'render', 'running', '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z')"
+        )
+    folder = root / "versions" / "old"
+    folder.mkdir(parents=True)
+    python = folder / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("placeholder", encoding="utf-8")
+    profile = folder / "profile.json"
+    profile.write_text("{}\n", encoding="utf-8")
+    old = Version(folder, python, profile, {"PATH": os.defpath})
+    write_json(folder / "version.json", old.document())
+    switch(root, old)
+    candidate_folder = root / "versions" / "candidate"
+    candidate_python = candidate_folder / "py" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("placeholder", encoding="utf-8")
+    candidate_profile = candidate_folder / "profile.json"
+    candidate_profile.write_text("{}\n", encoding="utf-8")
+    candidate = Version(candidate_folder, candidate_python, candidate_profile,
+                        {"PATH": os.defpath}, release=old.release + 1, managed_by="pinokio")
+    write_json(candidate_folder / "version.json", candidate.document())
+    write_json(root / "install.json", {
+        "owner": LABEL, "managed_by": "pinokio", "data_root": str(data),
+    })
+    write_json(install_selection(home, sys.platform), {
+        "owner": LABEL, "managed_by": "pinokio", "program_root": str(root),
+        "data_root": str(data),
+    })
+    from tests.test_installer_busy_fence import publish
+    publish(paths, realm_root)
+    write_json(root / "update-transaction.json", {
+        "format": "astrid-install-update/v1", "operation_id": "b" * 32,
+        "transaction_kind": "migration", "step": "stopped", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": {"realm_id": "selected", "realm_root": str(realm_root)},
+        "backup": None,
+    })
+    manifest = tmp_path / "manifest.json"
+    write_json(manifest, {})
+    uv = tmp_path / "uv"
+    uv.write_text("placeholder", encoding="utf-8")
+    events = []
+
+    class RefusalBackend(Backend):
+        def __init__(self, backend_root, log, executable, *, process_control=None):
+            super().__init__(backend_root, log, executable, process_control=process_control)
+            self.managed_by = "pinokio"
+
+        def existing(self, _data):
+            return old
+
+        def runtime(self, _version, _data, *args, **_kwargs):
+            events.append(args)
+            pytest.fail("Busy recovery reached a Runtime operation after stop refusal")
+
+        def backup(self, *_args):
+            events.append("backup")
+            pytest.fail("Busy recovery backed up workspace after stop refusal")
+
+        def stage(self, *_args):
+            pytest.fail("Busy recovery staged a version after stop refusal")
+
+        def restore(self, *_args):
+            pytest.fail("Busy recovery restored state after stop refusal")
+
+        def start(self, *_args):
+            pytest.fail("Busy recovery started Runtime after stop refusal")
+
+    from astrid.installer import app_update
+
+    monkeypatch.setattr(app_update, "PinokioLifecycle", lambda _root, backend: SimpleNamespace(
+        validate=lambda _version: None,
+        stop=backend.stop,
+        start=lambda *_args: pytest.fail("Busy recovery activated a session after refusal"),
+    ))
+
+    monkeypatch.setattr(cli, "Backend", RefusalBackend)
+    monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
+    monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
+    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+        "pid": pid, "birth_id": "birth",
+    })
+
+    assert cli.main([
+        "--root", str(root), "--managed-by", "pinokio", "--update",
+        "--manifest", str(manifest), "--uv", str(uv),
+    ]) == 1
+    output = capsys.readouterr().out
+    assert "Astrid is busy (1 tasks running). Try again when they finish." in output
+    assert "task-busy" in output
+    assert events == []
+    assert read_json(root / "update-transaction.json")["step"] == "stopped"
+    assert (root / "current").read_text().strip() == "old"
 
 
 def test_windows_foreground_keeps_lock_open_through_inline_runtime(tmp_path, monkeypatch):
@@ -314,7 +542,7 @@ def _foreground_fixture(tmp_path, monkeypatch):
     import runtime_protocol
 
     home = _set_home(tmp_path, monkeypatch)
-    app_root = tmp_path / "app"
+    app_root = tmp_path / "app" / "astrid"
     version_root = app_root / "versions" / "fixture"
     environment = version_root / "py"
     venv.EnvBuilder(with_pip=False).create(environment)
@@ -333,6 +561,10 @@ def _foreground_fixture(tmp_path, monkeypatch):
         "owner": LABEL, "managed_by": "pinokio", "data_root": str(tmp_path / "workspace"),
     })
     switch(app_root, version)
+    write_json(install_selection(home, sys.platform), {
+        "owner": LABEL, "managed_by": "pinokio", "program_root": str(app_root),
+        "data_root": str(tmp_path / "workspace"), "identity": version.document()["identity"],
+    })
     from astrid.installer.launcher import install as install_launcher
 
     install_launcher(app_root)
@@ -421,8 +653,14 @@ def test_posix_run_lock_is_not_inherited_by_child_and_crash_releases_it(tmp_path
         assert record["lock_fd_inheritable"] is False
         assert record["lock_held"] is True
         assert child_record == {"lock_fd_inherited": False}
+        from astrid.installer.backend import Backend
+
+        def refuse_unpublished_test_owner(_backend, _data):
+            raise ValueError("C1 preflight refused: test owner has no Runtime custody report.")
+
+        monkeypatch.setattr(Backend, "preflight_stop", refuse_unpublished_test_owner)
         assert cli.main(["--update", "--root", str(app_root)]) == 1
-        assert "Astrid is still running. Stop it in Pinokio" in capsys.readouterr().out
+        assert "C1 preflight refused: test owner has no Runtime custody report." in capsys.readouterr().out
         assert not (app_root / "update-transaction.json").exists()
 
         process.send_signal(signal.SIGKILL)

@@ -13,6 +13,7 @@ import time
 import urllib.request
 import uuid
 import webbrowser
+from dataclasses import replace
 from pathlib import Path
 
 from runtime_protocol import platform
@@ -21,17 +22,21 @@ from runtime_protocol.door import DEFAULT_DOOR_PORT
 from ..core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from .core import (
     BackupSpaceError,
+    RuntimeOperationError,
     VerificationError,
     Version,
     absolute,
     current,
+    install_identity,
+    install_release,
     linked,
     new_version_id,
+    persist_install_identity,
     read_json,
     write_json,
 )
 from .launcher import install_shim, owned_shim, remove_shim
-from .service import Service, bootstrap_root, platform_target, venv_python
+from .service import LABEL, Service, bootstrap_root, platform_target, venv_python
 from .support import reveal_bundle
 from .tools import binary, install_tools, source
 
@@ -110,7 +115,7 @@ class Backend:
         env = {k: v for k, v in os.environ.items() if k not in {
             "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
             "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
-            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH"}
+            "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH", "ASTRID_INSTALLER_OPERATION_ID"}
                and not (clean_bun_env and (k.startswith("BUN_") or k == "NODE_OPTIONS"))}
         env.update({"PYTHONIOENCODING": "utf-8"})
         env.update(extra_env or {})
@@ -118,6 +123,7 @@ class Backend:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 encoding="utf-8", errors="replace", timeout=timeout)
         with self.log.open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
             # Do not log inherited environments or credentials.
             stream.write(result.stdout + "\n")
         if result.returncode:
@@ -163,10 +169,39 @@ class Backend:
         argv = [python, "-X", "utf8", "-I", "-m", "astrid_runtime", *args, "--data-root", str(data), "--json"]
         if profile and version:
             argv += ["--source-manifest", str(version.profile)]
-        result = _runtime_json(self.run(argv, extra_env=version.env if version else None, timeout=timeout))
-        if result.get("ok") is False:
-            raise RuntimeError(str(result.get("error") or result))
+        launch_env = dict(version.env) if version else {}
+        launch_env.pop("ASTRID_INSTALLER_OPERATION_ID", None)
+        try:
+            output = self.run(argv, extra_env=launch_env or None, timeout=timeout)
+        except subprocess.CalledProcessError as exc:
+            # Runtime deliberately returns nonzero for a structured refusal.
+            # Retain that result instead of losing it in subprocess's summary.
+            try:
+                result = _runtime_json(exc.output or "")
+            except (TypeError, ValueError):
+                raise RuntimeOperationError("Runtime command failed without a valid result.") from exc
+            self._raise_runtime_error(result)
+            raise RuntimeOperationError("Runtime command exited unsuccessfully.") from exc
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeOperationError(f"Runtime command failed: {self._command_failure(exc)}") from exc
+        try:
+            result = _runtime_json(output)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeOperationError("Runtime command returned an invalid result.") from exc
+        self._raise_runtime_error(result)
         return result
+
+    @staticmethod
+    def _raise_runtime_error(result: dict) -> None:
+        if not isinstance(result, dict):
+            raise RuntimeOperationError("Runtime command returned an invalid result.")
+        if result.get("ok") is False:
+            error = result.get("error")
+            if isinstance(error, dict):
+                details = error.get("details")
+                raise RuntimeOperationError(str(error.get("message") or "Runtime command failed."),
+                                            details=details)
+            raise RuntimeOperationError(str(error or "Runtime command failed."))
 
     def existing(self, data: Path) -> Version | None:
         record = self.service.recorded()
@@ -184,7 +219,8 @@ class Backend:
         if not python.is_file():
             return None  # The bootstrap Runtime can inspect a retained workspace.
         return Version(environment.parent, python, profile,
-                       {"PATH": str(python.parent) + os.pathsep + os.defpath})
+                       {"PATH": str(python.parent) + os.pathsep + os.defpath},
+                       managed_by=self.managed_by)
 
     def has_workspace(self, data: Path) -> bool:
         # A nonempty selected root is never mistaken for a fresh installation.
@@ -351,14 +387,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         return value
 
     @staticmethod
-    def _discovery_owner_state(path: Path) -> str:
-        """Classify the recorded Runtime owner without signaling or editing it."""
-        try:
-            discovery = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return "stopped"  # It disappeared after the caller observed it.
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("Runtime discovery owner identity cannot be read; refusing to change it.") from exc
+    def _discovery_owner_state(discovery: dict) -> str:
+        """Classify one discovery snapshot without signaling or editing it."""
         if not isinstance(discovery, dict):
             raise RuntimeError("Runtime discovery owner identity is incomplete; refusing to change it.")
         pid = discovery.get("pid")
@@ -375,35 +405,251 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
-    def stop(self, version: Version | None, data: Path) -> None:
-        if self.managed_by != "pinokio":
-            self.service.disable()
-        if version is not None and not version.python.is_file():
-            version = None
-        if self.process_control == "sandbox":
-            # An install from before sandbox mode cannot signal inside the
-            # sandbox, so it cannot stop itself. Record the mode now and stop
-            # with this installer's own Runtime, which reads it.
-            self._write_process_control(data)
-            version = None
-        discovery = data / "runtime" / "discovery.json"
-        owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
-        if owner_state == "live":
-            self.runtime(version, data, "down", profile=True)
-        elif owner_state in {"stopped", "stale"} and self.managed_by != "pinokio":
-            # A candidate can fail before its foreground owner publishes fresh
-            # discovery. Old absent-owner records remain Runtime's to reconcile.
-            self.service.stop_foreground()
-        if self.managed_by != "pinokio":
-            self.service.stop()
-        if discovery.exists():
-            # A manager may still be draining after its stop operation.
-            owner_state = self._discovery_owner_state(discovery)
-            if owner_state == "live" and version:
-                self.runtime(version, data, "down", profile=True)
-                owner_state = self._discovery_owner_state(discovery) if discovery.exists() else "stopped"
-            if owner_state == "live":
-                raise RuntimeError("Astrid did not release its recorded Runtime owner.")
+    def source_checkout_ownership(self, data: Path, installed: Version | None = None) -> bool:
+        """Resolve whether the selected workspace belongs to source checkouts.
+
+        A live owner's captured identity is authoritative. When stopped, the
+        retained Runtime source profile is admitted through Runtime's normal
+        validator and its two paths must be Git checkout roots. A managed
+        profile names the venv's installed product tree (``source_checkout``)
+        and an unpacked Runtime archive (``runtime_checkout``); neither is a
+        Git checkout root, so it cannot pass that check.
+        """
+        from astrid_runtime.bootstrap import SourceProfile
+        from astrid_runtime.identity import validate_live_owner_identity
+        from astrid_runtime.paths import RuntimePaths
+        from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+        from runtime_protocol.source_identity import validate_checkout_root
+
+        paths = RuntimePaths.current(data_root=data)
+        try:
+            discovery_bytes = paths.discovery_path.read_bytes()
+            discovery = json.loads(discovery_bytes)
+        except FileNotFoundError:
+            discovery = None
+            state = "stopped"
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Runtime discovery owner identity cannot be read; refusing to change it.") from exc
+        else:
+            state = self._discovery_owner_state(discovery)
+        live_identity = None
+        if state == "live":
+            try:
+                instance_id = discovery.get("runtime_instance_id")
+                endpoint = discovery.get("endpoint")
+                if not isinstance(instance_id, str) or not instance_id or not isinstance(endpoint, str) or not endpoint:
+                    raise ValueError("Runtime discovery owner identity is incomplete; refusing to change it.")
+                boundary = LocalRuntimeBoundary()
+                health = boundary.owner_startup_identity(endpoint=endpoint, instance_id=instance_id)
+                live_identity = validate_live_owner_identity(health, instance_id=instance_id)
+                # Bind the OS and HTTP observations to the same advertisement.
+                if paths.discovery_path.read_bytes() != discovery_bytes:
+                    raise ValueError("Runtime discovery owner identity changed; refusing to change it.")
+            except Exception as exc:
+                raise RuntimeError("Live Runtime startup identity cannot be verified; refusing to change it.") from exc
+            if live_identity.get("managed_by") == "source":
+                if installed is not None:
+                    raise RuntimeError("Live Runtime source identity conflicts with the selected managed version; refusing to change it.")
+                return True
+
+        # A selected managed version is explicit evidence that this workspace
+        # is an installed release. Its profile names the venv's installed
+        # product tree (source_checkout) and an unpacked Runtime archive
+        # (runtime_checkout); neither is a Git checkout root.
+        if installed is not None:
+            return False
+
+        profile_path = paths.source_profiles_dir / "astrid.json"
+        if not os.path.lexists(profile_path):
+            if state == "stale" and installed is None:
+                raise RuntimeError("Stale Runtime discovery has no retained configuration to verify; refusing to change it.")
+            return False
+        try:
+            profile = SourceProfile.load(profile_path, expected_profile="astrid")
+            for raw in (profile.runtime_checkout, profile.source_checkout):
+                validate_checkout_root(absolute(raw))
+        except Exception as exc:
+            raise ValueError(f"Retained Runtime source configuration cannot be verified: {exc}") from exc
+        if live_identity is not None:
+            raise RuntimeError("Live Runtime identity conflicts with retained source checkout configuration; refusing to change it.")
+        return True
+
+    @staticmethod
+    def _stop_failure(exc: Exception) -> RuntimeOperationError:
+        details = getattr(exc, "details", None)
+        return RuntimeOperationError(str(exc), details=details)
+
+    @staticmethod
+    def _downstream_stop_failure(exc: Exception) -> RuntimeOperationError:
+        """Keep post-C1 failures as context, never as a lifecycle refusal."""
+        details = getattr(exc, "details", None)
+        return RuntimeOperationError(str(exc), details={"cause_details": details})
+
+    def _pending_restore_selection(self, data: Path):
+        """Supply Runtime's narrow context for replaying an interrupted restore."""
+        journal_path = self.root / "update-transaction.json"
+        active = getattr(self, "_update_transaction", None)
+        transaction = active[0] if isinstance(active, tuple) and len(active) == 2 else None
+        recovering = bool(isinstance(active, tuple) and len(active) == 2 and active[1])
+        if not os.path.lexists(journal_path):
+            if recovering:
+                raise ValueError("The pending restore journal disappeared before stop admission.")
+            return None
+        if linked(journal_path) or not journal_path.is_file():
+            raise ValueError("The pending restore journal must be a regular, unlinked file.")
+        try:
+            on_disk = read_json(journal_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError("The pending restore journal is unreadable or malformed.") from exc
+        if recovering and on_disk != transaction:
+            raise ValueError("The on-disk restore journal changed before stop admission.")
+        if not recovering or on_disk.get("step") != "recovering":
+            return None
+        if (not isinstance(on_disk, dict)
+                or on_disk.get("format") != "astrid-install-update/v1"
+                or on_disk.get("step") != "recovering"
+                or absolute(on_disk.get("data_root", "")) != absolute(data)):
+            raise ValueError("The pending restore journal does not match this recovery.")
+        if on_disk.get("transaction_kind") not in (None, "migration"):
+            return None
+        backup = on_disk.get("backup")
+        if backup is None:
+            return None
+        realm = on_disk.get("realm")
+        if (not isinstance(backup, dict) or not backup.get("root")
+                or not isinstance(realm, dict) or not isinstance(realm.get("realm_root"), str)
+                or not isinstance(realm.get("realm_id"), str)
+                ):
+            raise ValueError("The pending restore journal has incomplete recovery identity.")
+        from astrid_runtime.bootstrap import RestoreSelection
+
+        return RestoreSelection(journal_path=journal_path, selection_path=self.service.selection)
+
+    def preflight_stop(self, data: Path) -> None:
+        """Read-only C1 admission before installer preparation or writes."""
+        try:
+            from astrid_runtime.bootstrap import preflight_stop
+            from astrid_runtime.paths import RuntimePaths
+
+            paths = RuntimePaths.current(data_root=data)
+            restore_selection = self._pending_restore_selection(data)
+            if restore_selection is not None and (self.service.recorded() or {}).get("foreground") is not None:
+                raise ValueError("Restore recovery refuses a retained foreground process record.")
+            if restore_selection is None and not paths.runtime_support.exists():
+                return
+            preflight_stop(paths, restore_selection=restore_selection)
+        except Exception as exc:
+            raise self._stop_failure(exc) from exc
+
+    def publish_launch_admission(self, version: Version, data: Path) -> None:
+        """Refresh the selected install's launch action before its first C1 stop."""
+        if self.managed_by == "pinokio":
+            return
+        self.service.publish_launch_admission(version, data)
+
+    def stop(self, version: Version | None, data: Path, *, stop_manager=None) -> dict | None:
+        """Run Runtime's single fenced stop and validated manager handoff.
+
+        Returns C1's result; callers that ignore it are unaffected.
+        """
+        try:
+            from astrid_runtime.bootstrap import down
+            from astrid_runtime.paths import RuntimePaths
+            from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+            from runtime_protocol import process_control
+
+            record = self.service.recorded()
+            if record and (record.get("owner") != LABEL
+                           or record.get("program_root") != str(self.root)
+                           or record.get("data_root") != str(data)):
+                raise ValueError("The service record does not match the selected installation.")
+            paths = RuntimePaths.current(data_root=data)
+            prior_control = process_control.read_setting(paths.runtime_support)
+            platform.configure_process_control(self.process_control or prior_control)
+            boundary = getattr(self, "_stop_boundary", None)
+            if boundary is None:
+                boundary = self._stop_boundary = LocalRuntimeBoundary()
+            restore_selection = self._pending_restore_selection(data)
+            foreground = (record or {}).get("foreground")
+            if foreground is not None and not isinstance(foreground, dict):
+                raise ValueError("The selected foreground process record is malformed.")
+            if restore_selection is not None and foreground is not None:
+                raise ValueError("Restore recovery refuses a retained foreground process record.")
+            # CLI entry already preflighted; down takes fresh C1 admission for
+            # every stop, including recovery and rollback.
+            discovery = read_json(paths.discovery_path)
+            owner_pid = discovery.get("pid") if isinstance(discovery, dict) else None
+            if type(owner_pid) is not int or owner_pid <= 0:
+                owner_pid = None
+            # Read-only OS-manager probe. It stays ahead of C1 on every platform:
+            # the in-callback recheck runs after Runtime's owner stop and its
+            # refusals are downstream-classified. C1 busy admission runs later in
+            # down(), so a probe refusal can be reported before the busy message.
+            launchd_identity = None
+            if self.managed_by != "pinokio":
+                launchd_identity = self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+            def stop_selected_manager():
+                current_record = self.service.recorded()
+                if current_record and (current_record.get("owner") != LABEL
+                                       or current_record.get("program_root") != str(self.root)
+                                       or current_record.get("data_root") != str(data)):
+                    raise ValueError("The service record changed before manager stop.")
+                if ((current_record or {}).get("foreground") != foreground
+                        or (record and not current_record)):
+                    raise ValueError("The selected service owner changed before manager stop.")
+                if self.managed_by != "pinokio":
+                    if not current_record:
+                        if self.service.login_service_exists():
+                            raise ValueError("No selected service record authorizes this stop.")
+                    else:
+                        if (current_record or {}).get("foreground") is None:
+                            if self.service.system == "darwin":
+                                checked_identity = self.service.validate_stop_target(
+                                    version, data, owner_pid=owner_pid,
+                                    expected_identity=launchd_identity, require_stopped=True)
+                                if launchd_identity is None and checked_identity is not None:
+                                    self.service._validated_launchd_stop = None
+                                    self.service._validated_launchd_stop_checked = False
+                                    raise ValueError("A launchd service appeared after the C1 stop admission.")
+                            else:
+                                self.service.validate_stop_target(version, data, owner_pid=owner_pid)
+                            self.service.disable()
+                            self.service.stop()
+                if stop_manager is not None:
+                    stop_manager()
+
+            def stop_selected_foreground():
+                current_record = self.service.recorded()
+                if ((current_record or {}).get("owner") != LABEL
+                        or (current_record or {}).get("program_root") != str(self.root)
+                        or (current_record or {}).get("data_root") != str(data)
+                        or (current_record or {}).get("foreground") != foreground):
+                    raise ValueError("The foreground selection changed before signal; refusing to stop it.")
+                self.service.stop_foreground(expected=foreground)
+
+            result = down(paths, boundary, stop_manager=stop_selected_manager,
+                          stop_foreground=(stop_selected_foreground
+                                           if restore_selection is None and isinstance(foreground, dict) else None),
+                          restore_selection=restore_selection)
+        except Exception as exc:
+            raise self._stop_failure(exc) from exc
+
+        # The Runtime fence has been released and C1 succeeded. Keep failures
+        # from local bookkeeping downstream of the original lifecycle report.
+        try:
+            if self.process_control:
+                self._write_process_control(data)
+            # Retire only the unchanged foreground record after C1 completed.
+            foreground = (record or {}).get("foreground")
+            if isinstance(foreground, dict):
+                selected = self.service.recorded()
+                if selected.get("foreground") == foreground:
+                    selected.pop("foreground")
+                    write_json(self.service.selection, selected)
+                    self.service._foreground_process = None
+        except Exception as exc:
+            raise self._downstream_stop_failure(exc) from exc
+        return result
 
     @staticmethod
     def _backup_ignored(source: Path, parent: Path, names, *, support: bool) -> set[str]:
@@ -503,12 +749,12 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # renames. In that state the original is already absent and restoring
         # the retained backup is the required idempotent continuation.
         if realm_root.exists():
-            os.replace(realm_root, failed)
+            platform.replace_path(realm_root, failed)
         try:
-            os.replace(restored, realm_root)
+            platform.replace_path(restored, realm_root)
         except BaseException:
             if failed.exists() and not realm_root.exists():
-                os.replace(failed, realm_root)
+                platform.replace_path(failed, realm_root)
             raise
         for failed_copy in sorted(path for path in realm_root.parent.glob(realm_root.name + ".failed-*")
                                   if path.is_dir() and not path.is_symlink()):
@@ -522,9 +768,39 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     copy_support(entry, target / entry.name)
                 shutil.copystat(source, target)
             else:
-                shutil.copy2(source, target)
-                if platform.sys.platform == "win32":
-                    platform.owner_only(target)
+                # A killed support restore must leave each file absent or
+                # complete. A truncated catalog would block Runtime admission
+                # before the retained realm could be restored on the next run.
+                if source.name == "catalog.json" and target.parent.name == "runtime":
+                    from astrid_runtime.bootstrap import _read_catalog
+                    from astrid_runtime.io import atomic_write_json
+                    from astrid_runtime.paths import RuntimePaths
+
+                    support_root = source.parent.parent
+                    retained_paths = RuntimePaths.current(data_root=support_root)
+                    catalog = _read_catalog(replace(retained_paths, catalog_path=source))
+                    realm_id = str(catalog.get("selected_realm_id") or "")
+                    selected = next((row for row in catalog.get("realms", [])
+                                     if str(row.get("realm_id")) == realm_id), None)
+                    expected_realm = str(realm.get("realm_id") or "")
+                    expected_root = absolute(realm.get("realm_root", ""))
+                    if (selected is None or realm_id != expected_realm
+                            or absolute(selected.get("data_root", "")) != expected_root):
+                        raise ValueError("The retained Runtime catalog does not match the restore realm.")
+                    atomic_write_json(target, catalog)
+                    return
+                descriptor, temporary_name = platform.private_temporary(target.parent, ".restore-")
+                os.close(descriptor)
+                temporary = Path(temporary_name)
+                try:
+                    shutil.copy2(source, temporary)
+                    if platform.sys.platform == "win32":
+                        platform.owner_only(temporary)
+                    with temporary.open("rb") as stream:
+                        os.fsync(stream.fileno())
+                    platform.durable_replace(temporary, target)
+                finally:
+                    temporary.unlink(missing_ok=True)
 
         snapshot = destination / "support"
         for item in snapshot.iterdir():
@@ -534,7 +810,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             if item.name == "runtime":
                 platform.private_directory(target)
                 for entry in target.iterdir():
-                    if entry.name != "realms":
+                    # Keep a readable selected catalog until the retained
+                    # snapshot replaces it atomically below. A process kill
+                    # during restore must not recreate the legacy gap.
+                    if entry.name not in {"realms", "catalog.json"}:
                         if entry.is_dir():
                             shutil.rmtree(entry)
                         else:
@@ -548,6 +827,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 copy_support(item, target)
 
     def stage(self, manifest: dict, root: Path, data: Path) -> Version:
+        install_release(manifest)
+        # Repair needs only the installed Runtime. Require bootstrap inputs
+        # only when dispatch actually prepares a fresh candidate.
+        if not self.uv.is_absolute() or not self.uv.is_file():
+            raise ValueError("Run the install line to provide the pinned user-local uv.")
         # Older release manifests omit this source. Record the effective pin
         # alongside the other sources without changing the caller's document.
         manifest = {**manifest, "vibecomfy": manifest.get("vibecomfy", {"sha": VIBECOMFY_ENGINE_REVISION})}
@@ -555,6 +839,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("The installer needs the manifest's pinned uv.")
         folder = root / "versions" / new_version_id(manifest)
         folder.mkdir(parents=True)
+        write_json(folder / "manifest.json", manifest)
         agent = source("agent", manifest["agent"]["sha"], folder / "a",
                        **({"repo": manifest["agent"]["repo"]} if "repo" in manifest["agent"] else {}))
         runtime = source("runtime", manifest["runtime"]["sha"], folder / "r",
@@ -575,6 +860,9 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                         "ASTRID_RUNTIME_DOOR_PORT",
                         prior.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)) if prior else str(DEFAULT_DOOR_PORT)),
                     "PATH": str(python.parent) + os.pathsep + env["PATH"]})
+        profile = folder / "profile.json"
+        version = Version(folder, python, profile, env, **install_identity(folder))
+        env = version.env
         npm = binary(folder / "tools" / "node", "npm-cli.js")
         npm_installed = self.install_remotion_dependencies(agent, env, npm)
         # The lockfile's transitive @banodoco/timeline-schema package is the
@@ -602,17 +890,77 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             folder=folder, agent=product_root, data=data, python=python,
             bun=env["ASTRID_BUN_EXECUTABLE"], env=env, old=prior,
         )
-        profile = folder / "profile.json"
         # Compute the admitted source identity in the installed environment.
         digest = self.run([python, "-X", "utf8", "-I", "-c", "from astrid.core.execution.generic_host import source_checkout_digest; import pathlib,sys; print(source_checkout_digest(pathlib.Path(sys.argv[1])))", product_root], extra_env=env)
         write_json(profile, {"profile": "astrid", "runtime_checkout": str(runtime),
                              "source_checkout": str(product_root),
                              "runtime_environment": str(environment),
                              "source_digest": digest, "service_declaration": str(services_path)})
-        version = Version(folder, python, profile, env)
-        write_json(folder / "version.json", version.document())
-        write_json(folder / "manifest.json", manifest)
+        persist_install_identity(version, root)
         return version
+
+    def validate_candidate(self, version: Version, data: Path, realm: dict) -> None:
+        """Admit the staged package against the live workspace without changing it."""
+        from .core import inspect_schema
+
+        folder = absolute(version.root)
+        if folder.parent != absolute(self.root / "versions"):
+            raise ValueError("The candidate is outside the managed versions directory.")
+        # The installed profile and the install identity markers describe the same
+        # release; refuse a candidate whose environment disagrees with itself.
+        if version.env.get("ASTRID_HOST_EXECUTION_PROFILE") == "installed":
+            if (version.env.get("ASTRID_INSTALL_RELEASE") != str(version.release)
+                    or version.env.get("ASTRID_INSTALL_MANAGED_BY") != (version.managed_by or "")):
+                raise ValueError("The installed profile and install identity markers disagree.")
+        # Venv interpreters may themselves be links on POSIX; their directory
+        # and the source manifest must remain inside the candidate.
+        if (not absolute(version.python.parent).is_relative_to(folder)
+                or not version.python.is_file()
+                or not absolute(version.profile).is_relative_to(folder)
+                or not version.profile.is_file()):
+            raise ValueError("The staged candidate is incomplete or outside its version directory.")
+        profile = read_json(version.profile)
+        for key in ("runtime_checkout", "source_checkout", "runtime_environment", "service_declaration"):
+            if not profile.get(key) or not absolute(profile[key]).is_relative_to(folder):
+                raise ValueError("The staged source profile is incomplete or outside its version directory.")
+        # Admission must use the same Runtime owners that will load this profile
+        # during upgrade and startup. Path containment alone admits syntactically
+        # invalid profiles and service declarations, allowing the old owner to be
+        # stopped before those errors are discovered.
+        required_directories = ("runtime_checkout", "source_checkout", "runtime_environment")
+        for key in required_directories:
+            if not absolute(profile[key]).is_dir():
+                raise ValueError(f"The staged source profile {key} is missing or is not a directory.")
+        declaration = absolute(profile["service_declaration"])
+        if not declaration.is_file():
+            raise ValueError("The staged service declaration is missing or is not a file.")
+        validate_script = "\n".join((
+            "import sys",
+            "from pathlib import Path",
+            "from astrid_runtime.bootstrap import SourceProfile, _validate_source_profile",
+            "from astrid_runtime.runtime_boundary import LocalRuntimeBoundary",
+            "from runtime_protocol.services import load_service_configuration",
+            "profile = SourceProfile.load(Path(sys.argv[1]), expected_profile='astrid')",
+            "_validate_source_profile(profile, expected_profile='astrid')",
+            "LocalRuntimeBoundary._validate_source(profile)",
+            "services = load_service_configuration(profile.service_declaration, "
+            "python=sys.executable, source_checkout=profile.source_checkout)",
+            "if services is None or not any(item.name == 'pack-host' for item in services.services):",
+            "    raise ValueError('Service declaration must include pack-host')",
+        ))
+        try:
+            self.run([version.python, "-X", "utf8", "-I", "-c", validate_script,
+                      str(version.profile)], extra_env=version.env, timeout=120)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            raise ValueError(f"The candidate Runtime rejected its source profile or services: {exc}") from exc
+        selected = self.workspace(version, data)
+        if (selected["realm_id"] != realm["realm_id"]
+                or absolute(selected["realm_root"]) != absolute(realm["realm_root"])):
+            raise ValueError("The selected workspace changed while preparing the update.")
+        # Use the candidate's installed Runtime to classify the exact schema
+        # read-only. Supported older layouts are allowed here: migration runs
+        # only after the journal and the lifecycle fence.
+        inspect_schema(self, version, realm, require_current=False)
 
     def create(self, version: Version, data: Path) -> dict:
         realm_id = str(uuid.uuid4())
@@ -657,11 +1005,16 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             self._write_process_control(data)
 
     def register(self, version: Version, data: Path) -> None:
+        if version.managed_by != self.managed_by:
+            # The current install context is authoritative for hand-built or
+            # legacy Version objects that predate the identity field.
+            version = replace(version, managed_by=self.managed_by)
+        self.persist_identity(version)
         chat_cwd, chat_options = self._prior_chat_settings(version)
         if chat_cwd == data / "chat":
             platform.private_directory(chat_cwd)
         if self.managed_by == "pinokio":
-            write_json(self.service.selection, {
+            persist_install_identity(version, self.root, selection=self.service.selection, fields={
                 "owner": "haus.astrid.runtime", "program_root": str(self.root),
                 "data_root": str(data), "managed_by": "pinokio",
             })
@@ -670,8 +1023,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         realm = self.workspace(version, data)
         record = self.service.recorded()
         settings = {"ASTRID_ACP_CWD": str(chat_cwd), **chat_options} if chat_cwd else {}
-        write_json(self.service.selection, {**record, "realm_id": realm["realm_id"],
+        write_json(self.service.selection, {**record,
+                                           "realm_id": realm["realm_id"],
                                            "realm_root": realm["realm_root"], "chat_settings": settings})
+
+    def persist_identity(self, version: Version) -> None:
+        """Upgrade legacy version and selection records without service changes."""
+        persist_install_identity(version, self.root, selection=self.service.selection)
 
     def start(self, version: Version, data: Path) -> None:
         if self.managed_by == "pinokio":
@@ -682,9 +1040,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def restart_required(self) -> bool:
         return self.service.restart_required()
 
-    def verify(self, version: Version, data: Path, realm_id: str, *, timeout: float = 90) -> None:
+    def verify(self, version: Version, data: Path, realm_id: str, *, timeout: float = 90,
+               hosted: bool = True) -> None:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        port = int(version.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT)))
+        port = int(version.env.get("ASTRID_RUNTIME_DOOR_PORT", str(DEFAULT_DOOR_PORT))) if hosted else None
         deadline = time.monotonic() + timeout
         error = None
         identity_ok = False
@@ -693,23 +1052,50 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 status = self.runtime(version, data, "status", timeout=3)
                 discovery = read_json(data / "runtime" / "discovery.json")
                 endpoint = discovery.get("door_endpoint", "")
-                if endpoint != f"http://127.0.0.1:{port}":
+                if hosted and endpoint != f"http://127.0.0.1:{port}":
                     raise ValueError("Astrid's recorded door is not on the configured loopback port.")
 
                 def get(path):
+                    if not hosted:
+                        return self.runtime(version, data, "status", timeout=3).get("health", {})
                     request = urllib.request.Request(endpoint + path, headers={"Origin": "https://astrid.haus"})
                     with opener.open(request, timeout=2) as response:
                         return json.load(response)
 
-                health = get("/api/runtime/v1/health")
-                realm = get("/api/runtime/v1/realm")
+                if hosted:
+                    health = get("/api/runtime/v1/health")
+                else:
+                    from astrid_runtime.runtime_boundary import LocalRuntimeBoundary
+
+                    # The generated status Health model omits startup identity.
+                    # Read the existing canonical owner-health handoff directly.
+                    health = LocalRuntimeBoundary().owner_startup_identity(
+                        endpoint=str(discovery.get("endpoint") or ""),
+                        instance_id=str(discovery.get("runtime_instance_id") or ""),
+                    )
+                    if not isinstance(health, dict):
+                        raise ValueError("The local Runtime owner health is unavailable.")
+                realm = get("/api/runtime/v1/realm") if hosted else {"realm_id": discovery.get("active_realm")}
                 services = health.get("services", [])
+                managed_identity = None
+                if version.root.parent == self.root / "versions":
+                    managed_identity = {"release": version.release, "managed_by": version.managed_by}
+
+                def matches_managed_identity(value):
+                    return (isinstance(value, dict) and set(value) == {"release", "managed_by"}
+                            and type(value.get("release")) is int
+                            and value.get("managed_by") in (None, "pinokio")
+                            and value == managed_identity)
+
                 if (health.get("status") != "ok" or realm.get("realm_id") != realm_id
                         or discovery.get("active_realm") != realm_id
                         or health.get("runtime_instance_id") != discovery.get("runtime_instance_id")
                         or (status.get("discovery") or {}).get("runtime_instance_id") != discovery.get("runtime_instance_id")
+                        or (managed_identity is not None and
+                            (not matches_managed_identity(health.get("identity"))
+                             or not matches_managed_identity(discovery.get("identity"))))
                         or status.get("support", {}).get("pid_alive") is not True):
-                    raise ValueError("The browser door belongs to a different Runtime or workspace.")
+                    raise ValueError("The browser door belongs to a different Runtime, release, or workspace.")
                 identity_ok = True
                 break
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -795,6 +1181,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                 output = output.decode("utf-8", errors="replace")
             outcome = str(output) + f"\nAstrid skills sync failed ({type(exc).__name__}).\n"
         with self.log.open("a", encoding="utf-8") as stream:
+            platform.owner_only(stream.fileno())
             stream.write(outcome)
         if failed:
             self.say("Couldn't add Astrid's skill to your agents; see the log.")
@@ -820,8 +1207,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
     def unregister(self) -> None:
         record = self.service.recorded()
         if record:
-            kept = {key: record[key] for key in ("owner", "program_root", "data_root", "realm_id", "realm_root", "chat_settings", "managed_by")
-                    if key in record}
+            kept = dict(record)
             version = current(self.root)
             if "chat_settings" not in kept and version is not None:
                 chat_cwd, options = self._selected_chat_settings(version, Path(record["data_root"]))
@@ -946,6 +1332,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         def report(line):
             self.say(line)
             with self.log.open("a", encoding="utf-8") as stream:
+                platform.owner_only(stream.fileno())
                 stream.write(line + "\n")
 
         shim = hint = None

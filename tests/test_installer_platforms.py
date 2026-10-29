@@ -7,7 +7,6 @@ import sys
 import tarfile
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from unittest.mock import Mock
 from urllib.error import HTTPError
@@ -62,6 +61,15 @@ def test_bun_build_environment_scrubs_ambient_policy_but_keeps_explicit_cache_an
     assert all(captured[1][key] == value for key, value in ambient.items())
 
 
+def _runtime_argv(script):
+    # The service command is an inline `-c` launch script; its Runtime argv is the literal list it passes to main().
+    import ast
+    for node in ast.walk(ast.parse(script)):
+        if isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'main' and node.args:
+            return ast.literal_eval(node.args[0])
+    raise AssertionError('the launch script does not call main() with a Runtime argv')
+
+
 @pytest.mark.parametrize('system,fixture', [('darwin','launchd.plist'), ('linux','systemd.service'), ('win32','task.xml')])
 def test_service_definitions_match_reviewed_snapshots(system, fixture):
     version, data, log = sample(system)
@@ -70,7 +78,8 @@ def test_service_definitions_match_reviewed_snapshots(system, fixture):
         root = ET.fromstring(rendered)
         ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
         boundary = root.find('t:Triggers/t:TimeTrigger/t:StartBoundary', ns)
-        rendered = rendered.replace(boundary.text, '2000-01-01T00:00:00+00:00')
+        if boundary is not None:
+            rendered = rendered.replace(boundary.text, '2000-01-01T00:00:00+00:00')
     assert rendered == (FIXTURES / fixture).read_text(encoding='utf-8')
     assert 'npm' not in rendered and 'pack_host' not in rendered and 'chat' not in rendered
     assert 'runtime-service.log' in rendered and 'install.log' not in rendered
@@ -79,8 +88,10 @@ def test_service_definitions_match_reviewed_snapshots(system, fixture):
 def test_launchd_is_foreground_keepalive_with_explicit_environment():
     version, data, log = sample('darwin')
     value = plistlib.loads(service.render('darwin', version, data, log).encode())
-    assert value['KeepAlive'] is True and value['RunAtLoad'] is True
-    assert value['ProgramArguments'] == [str(version.python), '-X', 'utf8', '-I', '-m', 'astrid_runtime', 'run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]
+    assert value['KeepAlive'] == {'SuccessfulExit': False} and value['RunAtLoad'] is True
+    arguments = value['ProgramArguments']
+    assert arguments[:5] == [str(version.python), '-X', 'utf8', '-I', '-c']
+    assert _runtime_argv(arguments[5]) == ['run', '--profile', 'astrid', '--data-root', str(data), '--source-manifest', str(version.profile)]
     assert value['EnvironmentVariables']['PATH'] == version.env['PATH']
 
 
@@ -93,22 +104,19 @@ def test_launchd_operations_use_runtime_posix_user_identity(tmp_path, monkeypatc
     version, data, _ = sample('darwin')
     manager.register(version, data)
     assert manager.start()
-    manager.disable()
+    with pytest.raises(RuntimeError, match='C1 stop callback'):
+        manager.disable()
     target = f'gui/501/{service.LABEL}'
     assert [call.args[0] for call in runner.call_args_list] == [
         ['launchctl', 'bootstrap', 'gui/501', manager.path],
         ['launchctl', 'kickstart', target],
-        ['launchctl', 'print', target],
-        ['launchctl', 'bootout', target],
     ]
-    assert current_user.call_count == 3
+    assert current_user.call_count == 2
 
 
 def test_windows_task_settings_and_no_console_executable():
-    before = datetime.now().astimezone() - timedelta(seconds=1)
     version, data, log = sample('win32')
     root = ET.fromstring(service.render('win32', version, data, log, user='S-1-5-21-1234'))
-    after = datetime.now().astimezone() + timedelta(seconds=1)
     ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
     def field(path):
         return root.find(path, ns).text
@@ -119,18 +127,12 @@ def test_windows_task_settings_and_no_console_executable():
     assert field('t:Principals/t:Principal/t:LogonType') == 'InteractiveToken'
     assert field('t:Principals/t:Principal/t:RunLevel') == 'LeastPrivilege'
     assert field('t:Triggers/t:LogonTrigger/t:UserId') == 'S-1-5-21-1234'
-    assert field('t:Triggers/t:LogonTrigger/t:Repetition/t:Interval') == 'PT1M'
-    assert field('t:Triggers/t:LogonTrigger/t:Repetition/t:StopAtDurationEnd') == 'false'
     logon = root.find('t:Triggers/t:LogonTrigger', ns)
-    assert [child.tag.rsplit('}', 1)[-1] for child in logon] == ['Enabled', 'Repetition', 'UserId']
-    assert root.find('t:Triggers/t:LogonTrigger/t:Repetition/t:Duration', ns) is None
-    time_trigger = root.find('t:Triggers/t:TimeTrigger', ns)
-    assert time_trigger is not None
-    assert [child.tag.rsplit('}', 1)[-1] for child in time_trigger] == ['Enabled', 'StartBoundary', 'Repetition']
-    boundary = datetime.fromisoformat(time_trigger.find('t:StartBoundary', ns).text)
-    assert boundary.tzinfo is not None and before <= boundary <= after
-    assert time_trigger.find('t:Repetition/t:Interval', ns).text == 'PT1M'
-    assert time_trigger.find('t:Enabled', ns).text == 'true'
+    assert [child.tag.rsplit('}', 1)[-1] for child in logon] == ['Enabled', 'UserId']
+    assert root.find('t:Triggers/t:LogonTrigger/t:Repetition', ns) is None
+    assert root.find('t:Triggers/t:TimeTrigger', ns) is None
+    assert root.find('t:Settings/t:RestartOnFailure/t:Interval', ns).text == 'PT1M'
+    assert root.find('t:Settings/t:RestartOnFailure/t:Count', ns).text == '999'
     assert field('t:Actions/t:Exec/t:Command').endswith('pythonw.exe')
     arguments = field('t:Actions/t:Exec/t:Arguments')
     assert '-X utf8 -I -c' in arguments
@@ -147,9 +149,9 @@ def test_systemd_quotes_spaces_percent_dollar_and_supply_tool_path():
     version = Version(version.root, Path('/astrid %v $x/py/bin/python'), version.profile, version.env)
     unit = service.render('linux', version, data, log)
     assert 'ExecStart="/astrid %%v $$x/py/bin/python"' in unit
-    assert '"/astrid data"' in unit
+    assert "'--data-root', '/astrid data'" in unit
     assert 'Environment="PATH=/astrid/tools:/usr/bin:/bin"' in unit
-    assert 'Restart=always' in unit
+    assert 'Restart=on-failure' in unit
     assert 'WantedBy=default.target' in unit
 
 
@@ -298,8 +300,11 @@ def test_stage_service_declaration_uses_candidate_and_preserves_chat_settings(tm
 @pytest.mark.parametrize('prior_port,requested_port,expected_port', [
     (None, None, '17340'), ('17391', None, '17391'), ('17391', '17393', '17393'),
 ])
-def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port):
-    backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv')
+@pytest.mark.parametrize('managed_by', [None, 'pinokio'])
+def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeypatch, prior_port, requested_port, expected_port, managed_by):
+    backend = Backend(tmp_path / 'program', tmp_path / 'install.log', tmp_path / 'uv', managed_by=managed_by)
+    write_json(backend.root / 'install.json', {'owner': service.LABEL, 'managed_by': managed_by})
+    backend.uv.touch()
     prior = Version(tmp_path / 'prior', tmp_path / 'python', tmp_path / 'profile',
                     {'ASTRID_RUNTIME_DOOR_PORT': prior_port}) if prior_port else None
     monkeypatch.setattr(backend, 'existing', lambda _data: prior)
@@ -346,6 +351,7 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
 
     monkeypatch.setattr(backend, 'run', run)
     manifest = {
+        'release': 23,
         'agent': {'sha': 'a' * 40}, 'runtime': {'sha': 'b' * 40},
         'tools': {'uv': {'version': '1.0.0'}, 'python': {'version': '3.11.9'}},
     }
@@ -353,6 +359,10 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     version = backend.stage(manifest, tmp_path / 'program', tmp_path / 'workspace')
 
     assert version.env['ASTRID_RUNTIME_DOOR_PORT'] == expected_port
+    assert version.release == 23 and version.managed_by == managed_by
+    assert version.env['ASTRID_INSTALL_RELEASE'] == '23'
+    assert version.env['ASTRID_INSTALL_MANAGED_BY'] == (managed_by or '')
+    assert Version.load(read_json(version.root / 'version.json')) == version
     profile = json.loads(version.profile.read_text(encoding='utf-8'))
     assert Path(profile['source_checkout']) == installed_root(version.python, version.env)
     assert digest_roots == [Path(profile['source_checkout'])]
@@ -475,13 +485,18 @@ def test_clone_rollback_restores_workspace_and_support_without_deleting_other_re
     other.mkdir()
     (realm / 'realm.sqlite3').write_text('original')
     (other / 'unselected').write_text('keep')
-    write_json(data / 'runtime/catalog.json', {'selected': 'one'})
+    write_json(data / 'runtime/catalog.json', {
+        'version': 1, 'selected_realm_id': 'one',
+        'realms': [
+            {'realm_id': 'one', 'display_name': 'One', 'data_root': str(realm)},
+        ], 'source_profiles': {},
+    })
     write_json(data / 'runtime/source-profiles/astrid.json', {'version': 'old'})
     monkeypatch.setattr('runtime_protocol.fsclone.clone_or_copy_file', lambda src, dst: shutil.copy2(src, dst))
     backend = Backend(program, tmp_path / 'log', tmp_path / 'uv')
     backend.service.system = 'darwin'
     version = Version(program / 'versions/old', tmp_path / 'python', tmp_path / 'profile', {})
-    identity = {'realm_root': str(realm)}
+    identity = {'realm_id': 'one', 'realm_root': str(realm)}
     backup = backend.backup(version, data, identity)
     (realm / 'realm.sqlite3').write_text('migrated')
     write_json(data / 'runtime/source-profiles/astrid.json', {'version': 'new'})
@@ -501,14 +516,16 @@ def test_door_verification_requires_selected_realm_recorded_instance_and_live_ow
     program, data = tmp_path / 'program', tmp_path / 'data'
     version = Version(program / 'versions/old', tmp_path / 'python', tmp_path / 'profile',
                       {'ASTRID_RUNTIME_DOOR_PORT': str(door_port)})
+    # Runtime publishes its startup identity on discovery and on door health.
+    identity = {'release': 0, 'managed_by': None}
     discovery = {'active_realm': 'selected', 'runtime_instance_id': 'owned-instance',
-                 'door_endpoint': f'http://127.0.0.1:{door_port}'}
+                 'door_endpoint': f'http://127.0.0.1:{door_port}', 'identity': identity}
     if mismatch == 'port':
         discovery['door_endpoint'] = 'http://127.0.0.1:9999'
     write_json(data / 'runtime/discovery.json', discovery)
     (data / 'runtime/generic-host.ready.json').write_text('{}')
     health = {'status': 'ok', 'runtime_instance_id': 'foreign' if mismatch == 'instance' else 'owned-instance',
-              'services': [{'name': 'pack-host', 'state': 'running'}]}
+              'identity': identity, 'services': [{'name': 'pack-host', 'state': 'running'}]}
     realm = {'realm_id': 'other' if mismatch == 'realm' else 'selected'}
     def opening(request, timeout):
         if mismatch == 'restart-required':
@@ -536,11 +553,12 @@ def test_door_verification_retries_status_observed_before_discovery_was_publishe
 
     program, data = tmp_path / "program", tmp_path / "data"
     version = Version(program / "versions/old", tmp_path / "python", tmp_path / "profile", {})
+    identity = {"release": 0, "managed_by": None}
     discovery = {"active_realm": "selected", "runtime_instance_id": "owned-instance",
-                 "door_endpoint": "http://127.0.0.1:17340"}
+                 "door_endpoint": "http://127.0.0.1:17340", "identity": identity}
     write_json(data / "runtime/discovery.json", discovery)
     (data / "runtime/generic-host.ready.json").write_text("{}")
-    health = {"status": "ok", "runtime_instance_id": "owned-instance",
+    health = {"status": "ok", "runtime_instance_id": "owned-instance", "identity": identity,
               "services": [{"name": "pack-host", "state": "running"}]}
     realm = {"realm_id": "selected"}
     opener = Mock()
@@ -571,8 +589,9 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
     version_root = program / "versions" / "v1"
     version = Version(version_root, tmp_path / "python", version_root / "profile.json", {})
     endpoint = "http://127.0.0.1:17340"
+    identity = {"release": 0, "managed_by": None}
     discovery = {"active_realm": "selected", "runtime_instance_id": "owned-instance",
-                 "door_endpoint": endpoint}
+                 "door_endpoint": endpoint, "identity": identity}
     write_json(data / "runtime" / "discovery.json", discovery)
     timeout = 2 if scenario == "hang" else 300
     declaration = tmp_path / "services.json"
@@ -614,7 +633,7 @@ def test_pack_host_verification_uses_declared_readiness_timeout(tmp_path, monkey
             else:
                 services = host_states
             return Response({"status": "ok", "runtime_instance_id": "owned-instance",
-                             "services": services})
+                             "identity": identity, "services": services})
 
     monkeypatch.setattr(module.urllib.request, "build_opener", lambda *_: Opener())
     monkeypatch.setattr(module.time, "monotonic", lambda: clock.now)
@@ -660,6 +679,7 @@ def test_source_archives_are_flattened_to_shallow_managed_paths(tmp_path, monkey
 
 def test_source_retries_windows_sharing_violation_on_publish(tmp_path, monkeypatch):
     import os
+
     from astrid.installer import tools
 
     calls = []

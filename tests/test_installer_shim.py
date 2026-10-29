@@ -283,7 +283,7 @@ def test_scratch_install_runs_real_astrid_help_and_forwards_arguments(tmp_path, 
     python = environment / "bin/python"
     purelib = subprocess.check_output([str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip()
     (Path(purelib) / "astrid.pth").write_text(str(Path(__file__).resolve().parents[1]) + "\n")
-    write_json(version_root / "version.json", {"root": str(version_root), "python": str(python), "env": {}})
+    write_json(version_root / "version.json", Version(version_root, python, version_root / "profile.json", {}).document())
     (root / "current").write_text("v1\n")
     launcher.install(root)
     home = tmp_path / "home"
