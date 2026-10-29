@@ -54,8 +54,11 @@ except (OSError, ValueError):
     pass
 PYSNAPSHOT
   if [ -f "$case_dir/program/install.json" ]; then
+    python3 "$scripts/process-snapshot.py" "$case_dir" "$evidence" before-stop || cleanup_failed=1
     sh "$case_dir/install" --uninstall --root "$case_dir/program" --manifest "$case_dir/manifest.json" > "$evidence/uninstall.log" 2>&1
     uninstall_exit=$?
+    cp "$HOME/Library/Logs/Astrid Runtime/install.log" "$evidence/install-after-uninstall.log" 2>/dev/null
+    python3 "$scripts/process-snapshot.py" "$case_dir" "$evidence" after-stop || cleanup_failed=1
     [ "$uninstall_exit" -eq 0 ] || cleanup_failed=1
     printf 'uninstall_exit=%s\n' "$uninstall_exit" > "$evidence/cleanup.txt"
     if [ -f "$case_dir/data/qualification-sentinel.txt" ]; then shasum -a 256 "$case_dir/data/qualification-sentinel.txt" >> "$evidence/cleanup.txt"; fi

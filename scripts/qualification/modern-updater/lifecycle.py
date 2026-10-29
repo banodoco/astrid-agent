@@ -75,8 +75,12 @@ save('terminal.json', terminal)
 assert terminal.get('state') == 'terminal' and terminal.get('outcome') == 'updated', terminal
 assert terminal.get('operation_id') == op
 new = wait_health(1); selected = (program / 'current').read_text().strip(); discovery = read(data / 'runtime' / 'discovery.json')
+save('target-health.json', {'health': new, 'realm': discovery['active_realm'], 'selected_version': selected})
 assert selected != old_selected and selected.startswith('9e7032e4-ebd41219-'), selected
-assert read(program / 'versions' / selected / 'manifest.json') == read(case / 'manifest.json')
+effective = read(program / 'versions' / selected / 'manifest.json')
+save('effective-manifest.json', effective)
+assert effective.pop('vibecomfy') == {'sha': 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'}
+assert effective == read(case / 'manifest.json')
 assert new['runtime_instance_id'] != old['runtime_instance_id']
 assert new['schema_digest'] == 'sha256:5d229bf66ffaeb0b4937844a3c2b08ddd21f97cbcc305101a5cc19a95c971194'
 assert discovery['active_realm'] == realm
