@@ -26,9 +26,10 @@ foreach ($root in $protectedRoots) {
 $eventsPath = Join-Path $EvidenceRoot 'protected-path-events.jsonl'
 $processPath = Join-Path $EvidenceRoot 'process-observations.jsonl'
 $tracePath = Join-Path $EvidenceRoot 'kernel-file.etl'
-$traceXmlPath = Join-Path $EvidenceRoot 'kernel-file-events.xml'
+$traceXmlPath = Join-Path $env:RUNNER_TEMP "tst-b3-kernel-file-$Role-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.xml"
 $watchers = @()
 $watcherSources = @()
+$observedAncestorPids = @{}
 $traceStarted = $false
 $traceName = "TstB3FileIo-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$Role"
 $nativeShell = (Get-Command powershell.exe -CommandType Application -ErrorAction Stop).Source
@@ -101,7 +102,7 @@ function Get-WhitelistedProcessEnvironment([int]$ProcessId) {
             $separator = $entry.IndexOf('=')
             if ($separator -lt 1) { continue }
             $name = $entry.Substring(0, $separator)
-            if ($name -in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH')) {
+            if ($name -in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH','PSModulePath')) {
                 $values[$name] = $entry.Substring($separator + 1)
             }
         }
@@ -170,6 +171,20 @@ function Get-ProcessSnapshot([string]$Phase, [int]$RootPid) {
         }
     }
     foreach ($value in $selected.Values) { Write-JsonLine $processPath $value }
+    $ancestor = $byPid[$RootPid]
+    for ($depth=0; $depth -lt 4 -and $ancestor; $depth++) {
+        $parentPid = [int]$ancestor.ParentProcessId
+        $parent = $byPid[$parentPid]
+        if (-not $parent -or $observedAncestorPids.ContainsKey($parentPid)) { break }
+        $observedAncestorPids[$parentPid] = $true
+        Write-JsonLine $processPath ([ordered]@{
+            phase='ancestor'; processId=$parentPid; parentProcessId=[int]$parent.ParentProcessId
+            name=[string]$parent.Name; executablePath=[string]$parent.ExecutablePath
+            commandLine=[string]$parent.CommandLine; creationDate=[string]$parent.CreationDate
+            environment=(Get-WhitelistedProcessEnvironment $parentPid)
+        })
+        $ancestor = $parent
+    }
 }
 
 function Drain-PathEvents {
@@ -218,7 +233,7 @@ function Drain-ProcessStartEvents {
     }
 }
 
-$processWhitelist = @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH')
+$processWhitelist = @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH','PSModulePath')
 $envSnapshot = [ordered]@{}
 foreach ($name in $processWhitelist) { $envSnapshot[$name] = [Environment]::GetEnvironmentVariable($name) }
 @{
@@ -281,13 +296,13 @@ if ($ExpectedAgentSha -notmatch '^[0-9a-f]{40}$' -or $ExpectedRuntimeSha -notmat
 }
 $envCapture = @'
 $DiagnosticEnvironment = [ordered]@{}
-foreach ($DiagnosticName in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH')) { $DiagnosticEnvironment[$DiagnosticName] = [Environment]::GetEnvironmentVariable($DiagnosticName) }
+foreach ($DiagnosticName in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH','PSModulePath')) { $DiagnosticEnvironment[$DiagnosticName] = [Environment]::GetEnvironmentVariable($DiagnosticName) }
 @{ timestampUtc=[DateTime]::UtcNow.ToString('o'); pid=$PID; stage='lifecycle-environment'; env=$DiagnosticEnvironment } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $TstEvidenceRoot 'lifecycle-environment.json') -Encoding UTF8
 '@
 $launchCapture = @'
 $DiagnosticInstallArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$Installer) + @($Extra) + @('--manifest',$FrozenManifest,'--root',$ProgramRoot,'--data-root',$DataRoot)
 $DiagnosticInstallEnv = [ordered]@{}
-foreach ($DiagnosticName in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH')) { $DiagnosticInstallEnv[$DiagnosticName] = [Environment]::GetEnvironmentVariable($DiagnosticName) }
+foreach ($DiagnosticName in @('LOCALAPPDATA','APPDATA','TEMP','TMP','UV_CACHE_DIR','ASTRID_RUNTIME_DATA_ROOT','ASTRID_PACKS_PATH','PSModulePath')) { $DiagnosticInstallEnv[$DiagnosticName] = [Environment]::GetEnvironmentVariable($DiagnosticName) }
 @{ timestampUtc=[DateTime]::UtcNow.ToString('o'); pid=$PID; stage='installer-launch'; executable=$Shell; arguments=$DiagnosticInstallArgs; env=$DiagnosticInstallEnv } | ConvertTo-Json -Depth 5 | Add-Content -LiteralPath (Join-Path $TstEvidenceRoot 'installer-invocations.jsonl') -Encoding UTF8
 '@
 $evidenceLiteral = "'" + $EvidenceRoot.Replace("'", "''") + "'"
@@ -350,41 +365,36 @@ try {
         & tracerpt.exe $tracePath -y -of XML -o $traceXmlPath 2>&1 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'kernel-file-trace-convert.log') -Encoding UTF8
         if ($LASTEXITCODE -ne 0) { @{converted=$false; note='tracerpt conversion failed; raw ETL retained.'} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'writer-trace-conversion.json') -Encoding UTF8 }
         else {
-            @{converted=(Test-Path -LiteralPath $traceXmlPath); xml=$traceXmlPath} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'writer-trace-conversion.json') -Encoding UTF8
-            if (Test-Path -LiteralPath $traceXmlPath) {
-                [xml]$traceXml = Get-Content -Raw -LiteralPath $traceXmlPath
-                foreach ($eventNode in $traceXml.SelectNodes("//*[local-name()='Event']")) {
-                    $systemNode = $eventNode.SelectSingleNode("./*[local-name()='System']")
-                    $executionNode = $eventNode.SelectSingleNode("./*[local-name()='System']/*[local-name()='Execution']")
-                    $eventDataNode = $eventNode.SelectSingleNode("./*[local-name()='EventData']")
-                    $data = [ordered]@{}
-                    if ($eventDataNode) {
-                        foreach ($dataNode in $eventDataNode.SelectNodes("./*[local-name()='Data']")) { $data[[string]$dataNode.GetAttribute('Name')] = [string]$dataNode.InnerText }
-                    }
-                    $joined = ($data.Values -join ' ')
-                    if ($joined -match '(?i)Astrid|AppData\\Local') {
-                        $eventId = $eventNode.SelectSingleNode("./*[local-name()='System']/*[local-name()='EventID']")
-                        $timeNode = $eventNode.SelectSingleNode("./*[local-name()='System']/*[local-name()='TimeCreated']")
-                        $providerNode = $null
-                        if ($systemNode) { $providerNode = $systemNode.SelectSingleNode("./*[local-name()='Provider']") }
-                        $timestampUtc = $null
-                        if ($timeNode) { $timestampUtc = [string]$timeNode.GetAttribute('SystemTime') }
-                        $eventIdValue = $null
-                        if ($eventId) { $eventIdValue = [string]$eventId.InnerText }
-                        $providerValue = $null
-                        if ($providerNode) { $providerValue = [string]$providerNode.GetAttribute('Name') }
-                        $processIdValue = $null
-                        if ($executionNode) { $processIdValue = [int]$executionNode.GetAttribute('ProcessID') }
-                        Write-JsonLine (Join-Path $EvidenceRoot 'protected-path-writer-events.jsonl') ([ordered]@{
-                            timestampUtc=$timestampUtc
-                            eventId=$eventIdValue
-                            provider=$providerValue
-                            processId=$processIdValue
-                            data=$data
-                        })
-                    }
+            $converted = Test-Path -LiteralPath $traceXmlPath
+            $writerEventCount = 0
+            if ($converted) {
+                # Stream tracerpt output and retain only events under the
+                # protected default runtime path. Loading the full XML into
+                # PowerShell 5.1 exhausted runner memory before evidence could
+                # be written.
+                $writerMatches = Select-String -LiteralPath $traceXmlPath -SimpleMatch -Pattern '\Users\runneradmin\AppData\Local\Astrid Runtime' -Context 15,12
+                foreach ($match in $writerMatches) {
+                    $eventText = (@($match.Context.PreContext) + @($match.Line) + @($match.Context.PostContext)) -join "`n"
+                    $processMatch = [regex]::Match($eventText, '<Execution ProcessID="(\d+)"')
+                    $eventIdMatch = [regex]::Match($eventText, '<EventID>(\d+)</EventID>')
+                    $timeMatch = [regex]::Match($eventText, '<TimeCreated SystemTime="([^"]+)"')
+                    $providerMatch = [regex]::Match($eventText, '<Provider Name="([^"]+)"')
+                    $taskMatch = [regex]::Match($eventText, '<Task>([^<]+)</Task>')
+                    $fileMatch = [regex]::Match($eventText, '<Data Name="FileName">([^<]+)</Data>')
+                    Write-JsonLine (Join-Path $EvidenceRoot 'protected-path-writer-events.jsonl') ([ordered]@{
+                        timestampUtc=$(if ($timeMatch.Success) { $timeMatch.Groups[1].Value } else { $null })
+                        eventId=$(if ($eventIdMatch.Success) { $eventIdMatch.Groups[1].Value } else { $null })
+                        operation=$(if ($taskMatch.Success) { $taskMatch.Groups[1].Value } else { $null })
+                        provider=$(if ($providerMatch.Success) { $providerMatch.Groups[1].Value } else { $null })
+                        processId=$(if ($processMatch.Success) { [int]$processMatch.Groups[1].Value } else { $null })
+                        path=$(if ($fileMatch.Success) { $fileMatch.Groups[1].Value } else { $match.Line.Trim() })
+                    })
+                    $writerEventCount++
                 }
             }
+            Remove-Item -LiteralPath $traceXmlPath -Force -ErrorAction SilentlyContinue
+            @{converted=$converted; retainedXml=$false; writerEvents=$writerEventCount; source='raw ETL'; note='Extracted default Astrid Runtime path events with streaming line search.'} |
+                ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'writer-trace-conversion.json') -Encoding UTF8
         }
     }
 }
