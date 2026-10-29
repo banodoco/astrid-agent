@@ -303,9 +303,20 @@ def test_workflow_backend_local_mode_calls_local_server_with_endpoint_record(mon
 
 
 def test_workflow_backend_local_mode_requires_endpoint_fields(tmp_path):
-    with pytest.raises(engine.ProductionEngineError, match="comfy_url and comfy_output_dir"):
+    with pytest.raises(engine.ProductionEngineError, match="requires comfy_url"):
         VibeComfyWorkflowBackend().workflow(
             tmp_path / "w.py", tmp_path / "out", task_identity="t", profile_id="local_server")
+
+
+def test_workflow_backend_attached_mode_requires_no_shared_output_directory(monkeypatch, tmp_path):
+    result = engine.ProductionRunResult(outputs=(tmp_path / "image.png",))
+    produce = Mock(return_value=result)
+    monkeypatch.setattr(engine, "run_workflow_result_path", produce)
+    assert VibeComfyWorkflowBackend().workflow(
+        tmp_path / "w.py", tmp_path / "out", task_identity="t", profile_id="local_server",
+        comfy_url="http://127.0.0.1:8188",
+    ) is result
+    assert "comfy_output_dir" not in produce.call_args.kwargs
 
 
 def test_resolver_selects_h3_backend_for_engine_bound_workflows_and_refuses_stray_runpod_targets():

@@ -29,13 +29,15 @@ class VibeComfyWorkflowBackend(VibeComfyBackend):
         )
 
         if profile_id == "local_server":
-            # Local placement: the endpoint record supplies the loopback URL and
-            # the engine's ComfyUI output directory; no readiness profile applies.
+            # Attached placement needs only its loopback URL. Output custody
+            # uses the selected HTTP client, without a shared output directory.
             if self._endpoint_checkout is not None or hc03_profile is not None:
                 raise ProductionEngineError("local workflow cannot use a RunPod checkout or readiness profile")
-            if not comfy_url or not comfy_output_dir:
-                raise ProductionEngineError("local workflow requires comfy_url and comfy_output_dir from the engine endpoint")
+            if not comfy_url:
+                raise ProductionEngineError("local workflow requires comfy_url from the engine endpoint")
             kwargs: dict[str, Any] = {"task_identity": task_identity}
+            if comfy_output_dir:
+                kwargs["comfy_output_dir"] = comfy_output_dir
             if attempt_identity is not None:
                 kwargs["attempt_identity"] = attempt_identity
             if expected_execution_identity is not None:
@@ -44,7 +46,7 @@ class VibeComfyWorkflowBackend(VibeComfyBackend):
                 kwargs["workflow_input_bindings"] = workflow_input_bindings
             return run_workflow_result_path(
                 workflow_path, out_dir, profile_id="local_server",
-                comfy_url=comfy_url, comfy_output_dir=comfy_output_dir, **kwargs,
+                comfy_url=comfy_url, **kwargs,
             )
         if self._endpoint_checkout is None:
             # Local placement: embedded and host-session checkout profiles keep

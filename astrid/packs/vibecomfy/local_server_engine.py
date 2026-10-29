@@ -68,16 +68,32 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
-    from vibecomfy.schema.provider import get_target_schema_provider
+    from vibecomfy.schema.provider import TargetSchemaProvider
     from vibecomfy.schema.validate import (
         _choice_scope,
         validate_api_against_schema,
         validate_api_link_shapes,
     )
 
-    provider = _UploadedMediaSchema(
-        get_target_schema_provider(url, cache_dir=destination / ".vibecomfy-schema"),
-        _uploaded_media_targets(bundle, run_inputs),
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    targets = _uploaded_media_targets(bundle, run_inputs)
+
+    class UploadedTargetSchema(TargetSchemaProvider):
+        def get_schema(self, class_type: str) -> Any:
+            schema = super().get_schema(class_type)
+            fields = {field for kind, field in targets if kind == class_type}
+            if schema is None or not fields.intersection(schema.inputs):
+                return schema
+            inputs = dict(schema.inputs)
+            for field in fields.intersection(inputs):
+                inputs[field] = dataclasses.replace(inputs[field], choices=None, unresolved_choices=True)
+            return dataclasses.replace(schema, inputs=inputs)
+
+    provider = UploadedTargetSchema.from_object_info(
+        client.object_info(), server_url=url, model_availability="target",
+        refresh_object_info=client.object_info,
     )
     # Inspect an unapproved projection first, so a missing live class gets
     # our actionable gap report before the approval gate can reject it.
@@ -131,30 +147,9 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
 
 
 def _approve_live(bundle: Any, bindings: dict[str, Any], provider: Any) -> Any:
-    """Bind the canonical projections to the live target's inventory.
-
-    The pinned bundle.compile() also requires every model in the agent's
-    local model registry/filesystem, even with a live target provider. Those
-    files belong to the user's server. Our read-only live preflight replaces
-    that local inventory gate; VibeComfy still verifies the record against
-    the unchanged canonical bundle at its production queue boundary.
-    """
-    from vibecomfy.workflow_bundle import ApprovedProjectionRecord, canonical_digest
-
-    api = bundle.workflow.compile("api", run_inputs=bindings)
-    record = ApprovedProjectionRecord(
-        revision_id=bundle.revision_id,
-        selected_variant=bundle.workflow.default_variant,
-        input_binding=bindings,
-        api_projection=api,
-        ui_projection=bundle.materialize_ui(schema_provider=provider),
-        api_digest=canonical_digest(api),
-    )
-    record.assert_matches(
-        bundle, run_inputs=bindings, api_projection=api,
-        ui_projection=bundle.materialize_ui(schema_provider=provider),
-    )
-    return record
+    """Approve canonically against the selected target's exact model choices."""
+    bundle.require_canonical_authority("attached target execution")
+    return bundle.compile(run_inputs=bindings, schema_provider=provider)
 
 
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
@@ -247,6 +242,8 @@ def run_local_server(
     from vibecomfy.runtime.session import SessionConfig
 
     from astrid.core.generation.backends.vibecomfy_local_server import (
+        AttachedArtifacts,
+        TargetRuntimeClient,
         cleanup_prompts,
         upload_image,
         upload_media,
@@ -269,11 +266,15 @@ def run_local_server(
         "schema_warn_only": False, "prompt_timeout_sec": _LOCAL_PROMPT_TIMEOUT_SEC,
         "task_id": task_identity,
     })
-    if output_directory:
-        values["output_directory"] = output_directory
+    # An attached server owns its filesystem. Even the legacy optional output
+    # directory cannot grant local-folder access; artifacts arrive over /view.
+    values.pop("output_directory", None)
     if attempt_identity is not None:
         values["attempt_id"] = attempt_identity
     config = SessionConfig.from_dict(values)
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
     provider = _live_preflight(bundle, run_inputs, url, destination)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
@@ -307,12 +308,15 @@ def run_local_server(
     try:
         os.environ.update(pins)
         try:
-            result = run_sync(record, bundle, server_url=url, config=config, schema_provider=provider)
+            result = run_sync(
+                record, bundle, server_url=url, config=config, schema_provider=provider,
+                server_client=TargetRuntimeClient(client),
+                artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
+            )
             if not getattr(result, "managed_generation_result_path", None):
                 raise ProductionEngineError(
                     "local_server requires VibeComfy managed_generation_result_path; "
-                    "set comfy_output_dir to the server's output directory and give each "
-                    "save node a filename_prefix when the workflow has multiple outputs"
+                    "check that the selected target exposes /view and declares its final output nodes"
                 )
             result_path = Path(result.managed_generation_result_path)
             if (result_path.is_symlink() or not result_path.resolve().is_relative_to(destination.resolve())

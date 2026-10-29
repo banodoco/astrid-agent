@@ -15,6 +15,7 @@ from typing import Any, Mapping, Protocol, TYPE_CHECKING
 from ._module import _sdk_module
 from .exceptions import (
     CapabilityPreconditionError,
+    CapabilityInvocationError,
     CapabilityValidationError,
 )
 from .results import _reconstruct_generation_result
@@ -313,10 +314,171 @@ class GenerationFacade:
             python_exec=python_exec, verbose=verbose, argv=argv,
         )
 
+    def _generate_on_target(
+        self,
+        *,
+        registry: Any,
+        model: str | None,
+        mode: str,
+        modality: str,
+        target: str,
+        execution: str | None,
+        inputs: dict[str, Any],
+        dry_run: bool,
+        **controls: Any,
+    ) -> Any:
+        """Bind a catalog template and admit it through the workflow facade.
+
+        Target selection precedes package/runtime prerequisites so an attached
+        server can be used without installing or owning a managed ComfyUI.
+        """
+        import json
+        from tempfile import TemporaryDirectory
+
+        from astrid.core.contracts.errors import AstridError
+        from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
+        from astrid.core.generation.preflight import (
+            require_generation_target_readiness,
+            select_generation_target,
+            validate_generation_request,
+        )
+
+        if execution not in {None, "local"}:
+            raise CapabilityValidationError(
+                "target selects a local ComfyUI workflow; use execution='local'"
+            )
+        # This route submits one canonical workflow. Count belongs to the
+        # executor loop on the older typed action and must not be ignored here.
+        if inputs.get("count", 1) != 1:
+            raise CapabilityValidationError(
+                "generate with target currently requires count=1"
+            )
+        if inputs.get("shot_generation_recipe") is not None:
+            raise CapabilityValidationError(
+                "shot_generation_recipe requires the generation image action"
+            )
+        target_client = select_generation_target(target)
+        if model is not None:
+            try:
+                candidates = [registry.get(model)]
+            except KeyError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+        else:
+            candidates = [
+                entry for entry in registry.list_by_modality(modality)
+                if mode in entry.modes
+                and getattr(entry.modes[mode].backends.get("local"), "template", "")
+            ]
+        backend = VibeComfyBackend(target_client=target_client)
+        selected = None
+        failures: list[str] = []
+        if candidates:
+            # Every default candidate has a local template. The remaining
+            # package/runtime prerequisites are shared across all candidates.
+            require_generation_target_readiness(candidates[0], mode, target_client)
+        for entry in candidates:
+            try:
+                validate_generation_request(
+                    registry, model=entry.id, mode=mode, execution="local",
+                    inputs=inputs, modality=modality,
+                )
+                workflow, plan, schema = backend.prepare_catalog_workflow(
+                    entry, mode, inputs, resolve_target=target_client is not None,
+                )
+                from vibecomfy.workflow_bundle import load_bundle
+
+                bundle = load_bundle(workflow)
+                bundle.require_canonical_authority("generate on target")
+                approval = bundle.compile(schema_provider=schema) if schema is not None else None
+            except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError) as exc:
+                if model is not None:
+                    raise
+                failures.append(f"{entry.id}: {exc}")
+                continue
+            selected = (entry, workflow, bundle, plan, schema, approval)
+            break
+        if selected is None:
+            raise AstridError(
+                f"No ready local {modality} model supports mode {mode!r} on the selected target"
+                + (": " + "; ".join(failures) if failures else ""),
+                code="COMFY_TARGET_NO_MODEL", field="model",
+                fix=("Use --target http://127.0.0.1:8188 with a ComfyUI server containing "
+                     "a catalog model, or --target managed with an installed runtime"),
+            )
+        entry, workflow, bundle, plan, schema, approval = selected
+        if dry_run:
+            preview = dict(plan or {"model": entry.id, "mode": mode})
+            preview["target"] = target_client.target.url if target_client is not None else "managed"
+            if approval is not None:
+                preview["approval"] = {"status": "approved", "api_digest": approval.api_digest}
+            return preview
+
+        # Generated source files cross the same public managed-file boundary
+        # as authored workflow bundles. Workers never read caller-local paths.
+        client = controls.get("client")
+        importer = getattr(getattr(client, "media", None), "import_file", None)
+        if not callable(importer):
+            raise CapabilityPreconditionError(
+                "generate with target requires a connected Runtime client with "
+                "media.import_file; use astrid generate or pass client= explicitly"
+            )
+        invoke_out, invoke_project = _resolve_invoke_destination(
+            client=client, out=controls.get("out"), project=controls.get("project"),
+            project_root=controls.get("project_root"),
+        )
+        controls.update(out=invoke_out, project=invoke_project)
+        import hashlib
+
+        from astrid.core.execution.managed_inputs import managed_file_digest
+        from vibecomfy.workflow_bundle import emit_bundle
+
+        def import_member(path: Path) -> dict[str, Any]:
+            expected = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            imported = importer(project=invoke_project, path=path)
+            stored = getattr(imported, "data", None) if getattr(imported, "ok", False) else None
+            if not isinstance(stored, Mapping):
+                error = getattr(imported, "error", None)
+                raise CapabilityInvocationError(
+                    f"could not import generated {path.name}: "
+                    f"{getattr(error, 'message', None) or error or 'no result'}"
+                )
+            try:
+                actual = managed_file_digest(stored, path.name)
+            except ValueError as exc:
+                raise CapabilityInvocationError(str(exc)) from exc
+            if actual != expected:
+                raise CapabilityInvocationError(
+                    f"imported generated {path.name} does not match its digest"
+                )
+            return {"digest": actual, "filename": path.name}
+
+        with TemporaryDirectory(prefix="astrid-generate-target-") as scratch:
+            root = Path(scratch)
+            emitted = emit_bundle(workflow, root / "workflow.py", {"operation": "authored"})
+            source = root / "source.json"
+            source.write_text(json.dumps(emitted.materialize_ui(schema_provider=schema)), encoding="utf-8")
+            result = self.workflow(
+                python=import_member(root / "workflow.py"),
+                companion=import_member(root / "workflow.vibe.json"),
+                source=import_member(source),
+                comfy_url=target_client.target.url if target_client is not None else None,
+                generation_intent={
+                    "version": 1, "modality": modality, "partial_success_policy": "reject",
+                    "groups": [{"group_key": "main", "selectors": [{
+                        "selector": "main-0", "ordinal": 0,
+                        "variant_key": "original", "required": True,
+                    }]}],
+                    "metadata": {"model": entry.id, "mode": mode},
+                },
+                **controls,
+            )
+        return _reconstruct_generation_result(result)
+
     def image(
         self,
         *,
-        model: str,
+        model: str | None = None,
+        target: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         out: Path | str | None = None,
@@ -348,6 +510,18 @@ class GenerationFacade:
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
         )
+        if target is not None:
+            return self._generate_on_target(
+                registry=registry, model=model, mode=resolved_mode, modality="image",
+                target=target, execution=execution, inputs=inputs, dry_run=dry_run,
+                client=client, out=out, project=project, project_root=project_root,
+                extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
+                active_theme=active_theme, include_missing_roots=include_missing_roots,
+                brief=brief, check_binaries=check_binaries, python_exec=python_exec,
+                verbose=verbose, argv=argv,
+            )
+        if model is None:
+            raise CapabilityValidationError("model is required when target is omitted")
         try:
             model_entry = registry.get(model)
         except KeyError as exc:
@@ -446,7 +620,8 @@ class GenerationFacade:
     def video(
         self,
         *,
-        model: str,
+        model: str | None = None,
+        target: str | None = None,
         mode: str | None = None,
         execution: str | None = None,
         out: Path | str | None = None,
@@ -472,6 +647,18 @@ class GenerationFacade:
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
         )
+        if target is not None:
+            return self._generate_on_target(
+                registry=registry, model=model, mode=resolved_mode, modality="video",
+                target=target, execution=execution, inputs=inputs, dry_run=dry_run,
+                client=client, out=out, project=project, project_root=project_root,
+                extra_pack_roots=extra_pack_roots, banodoco_config=banodoco_config,
+                active_theme=active_theme, include_missing_roots=include_missing_roots,
+                brief=brief, check_binaries=check_binaries, python_exec=python_exec,
+                verbose=verbose, argv=argv,
+            )
+        if model is None:
+            raise CapabilityValidationError("model is required when target is omitted")
         try:
             model_entry = registry.get(model)
         except KeyError as exc:

@@ -653,15 +653,15 @@ class VibeComfyBackend(BackendAdapter):
         },
     }
 
-    def generate(
+    def prepare_catalog_workflow(
         self,
         entry: ModelEntry,
         mode: str,
         params: dict[str, Any],
-        out_dir: Path,
         *,
-        dry_run: bool = False,
-    ) -> GenerationResult | dict[str, Any]:
+        resolve_target: bool = False,
+    ) -> tuple[Any, dict[str, Any] | None, Any | None]:
+        """Resolve and bind a pinned graph for the existing workflow route."""
         # Lazy-import VibeComfy, and snapshot only its repository
         # template corpus.  Dynamic/user template discovery is forbidden.
         import vibecomfy  # noqa: F401
@@ -670,7 +670,7 @@ class VibeComfyBackend(BackendAdapter):
         backend_spec: BackendSpec = mode_spec.backends["local"]
         template_id = backend_spec.template
         plan, target_schema = None, None
-        if backend_spec.model_roles or dry_run:
+        if resolve_target or (backend_spec.model_roles and self._model_resolution_client() is not None):
             from astrid.core.model_catalog.registry import ModelRegistry
             from vibecomfy.schema.provider import TargetSchemaProvider
 
@@ -690,9 +690,6 @@ class VibeComfyBackend(BackendAdapter):
                 refresh_object_info=client.object_info,
             )
 
-        # --- resolve seed (or generate one) ----------------------------------
-        seed_used: int = params.get("seed", 0)
-
         # --- build param map: canonical → template parameter name ------------
         param_map: dict[str, str] = dict(backend_spec.param_map)
         if not param_map:
@@ -704,11 +701,6 @@ class VibeComfyBackend(BackendAdapter):
         if computed_frames is not None:
             logger.debug("Computed frames=%d from duration * fps", computed_frames)
 
-        # --- compute applied / dropped feature lists -------------------------
-        applied_features, dropped_features = split_feature_support(
-            params, mode_spec.supports
-        )
-        t0 = time.monotonic()
         wf = _load_pinned_catalog_workflow(backend_spec)
         # Features whose param_map key is in the feature list get mapped.
         # Count is not set on the workflow — the caller loops externally.
@@ -755,6 +747,23 @@ class VibeComfyBackend(BackendAdapter):
                     + ", ".join(requested_unbound)
                 )
 
+        return wf, plan, target_schema
+
+    def generate(
+        self,
+        entry: ModelEntry,
+        mode: str,
+        params: dict[str, Any],
+        out_dir: Path,
+        *,
+        dry_run: bool = False,
+    ) -> GenerationResult | dict[str, Any]:
+        t0 = time.monotonic()
+        wf, plan, target_schema = self.prepare_catalog_workflow(
+            entry, mode, params, resolve_target=dry_run,
+        )
+        seed_used: int = params.get("seed", 0)
+        applied_features, dropped_features = split_feature_support(params, entry.modes[mode].supports)
         if dry_run:
             from vibecomfy.workflow_bundle import load_bundle
 
@@ -777,7 +786,7 @@ class VibeComfyBackend(BackendAdapter):
         return GenerationResult(
             image_paths=image_paths,
             seed_used=seed_used,
-            model_actual=template_id,
+            model_actual=entry.modes[mode].backends["local"].template,
             cost_usd=None,  # local backends have no cost
             duration_ms=duration_ms,
             applied_features=applied_features,

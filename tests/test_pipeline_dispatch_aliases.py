@@ -80,11 +80,13 @@ class PipelineDispatchAliasTest(unittest.TestCase):
                 "media",
                 "tasks",
                 "runs",
+                "generate",
                 "documents",
                 "preferences",
                 "dev",
                 "doctor",
                 "backup",
+                "skills",
             },
         )
         # The removed handlers (run/author/orchestrate/renderers/replay/...) do

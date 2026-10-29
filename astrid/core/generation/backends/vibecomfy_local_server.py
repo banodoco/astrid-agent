@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,69 @@ from .comfy_target import (
 __all__ = [
     "cleanup_prompts", "upload_image", "upload_media", "validate_comfy_url",
     "validate_identity", "validate_output_directory",
+    "TargetRuntimeClient", "AttachedArtifacts",
 ]
+
+
+class TargetRuntimeClient:
+    """Adapt the selected G22 client to VibeComfy's existing async runner."""
+
+    def __init__(self, client: ComfyTargetClient) -> None:
+        self.client = client
+        self.server_url = client.http_origin
+
+    async def _post_prompt(self, prompt: dict[str, Any]) -> Any:
+        return await asyncio.to_thread(self.client.submit_prompt, {"prompt": prompt})
+
+    async def history(self, prompt_id: str) -> Any:
+        return await asyncio.to_thread(self.client.history, prompt_id)
+
+
+class AttachedArtifacts:
+    """Use the runner's existing attributed-artifact seam with G22 /view custody."""
+
+    def __init__(self, client: ComfyTargetClient, *, legacy_output_directory: str = "") -> None:
+        if client.target.kind != "attached":
+            raise ValueError("attached artifact custody requires an attached target")
+        self.client = client
+        self.server_url = client.http_origin
+        self.legacy_output_directory = Path(legacy_output_directory) if legacy_output_directory else None
+
+    def describe(self) -> dict[str, Any]:
+        return {"transport": "comfy-http-view", "target_kind": "attached",
+                "endpoint_url": self.client.target.url}
+
+    async def download_artifacts(self, *, local_root: Path) -> dict[str, Any]:
+        from .comfy_target import validate_output_descriptor
+
+        root = Path(local_root)
+        attempt = json.loads((root.parent / "attempt.json").read_text(encoding="utf-8"))
+        prompt_id = attempt.get("prompt_id")
+        if (not isinstance(prompt_id, str)
+                or prompt_id not in self.client._witnessed_prompts):
+            raise ValueError("artifact custody requires this attempt's witnessed prompt")
+        artifacts = attempt.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError("accepted history has no attributed artifacts")
+        root.mkdir(parents=True, exist_ok=False)
+        seen = set()
+        for artifact in artifacts:
+            descriptor = artifact.get("descriptor") if isinstance(artifact, dict) else None
+            filename, subfolder, kind = validate_output_descriptor(descriptor)
+            if self.legacy_output_directory is not None and kind == "output":
+                # Preserve the legacy caller's safety constraint, without
+                # treating its shared folder as artifact custody or reading
+                # any bytes from it. New attached callers need no folder.
+                candidate = self.legacy_output_directory / subfolder / filename
+                if (any(part.is_symlink() for part in (candidate, *candidate.parents))
+                        or not candidate.resolve().is_relative_to(self.legacy_output_directory)):
+                    raise ValueError("legacy output descriptor is an unsafe symlink or escaped path")
+            relative = Path(kind) / subfolder / filename
+            if relative in seen:
+                raise ValueError("accepted output descriptors are ambiguous")
+            seen.add(relative)
+            await asyncio.to_thread(self.client.download_output, descriptor, root / relative)
+        return {"status": "retrieved", "local_root": str(root), **self.describe()}
 
 
 def validate_output_directory(value: str, attempt_root: Path) -> str:

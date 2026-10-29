@@ -7,9 +7,9 @@ import sys
 def main(argv: list[str] | None = None) -> int:
     rest = list(sys.argv[1:] if argv is None else argv)
     if rest and rest[0] == "generate":
-        from .core.generation.listing import main as generate_main
+        from .core.gateway import main as gateway_main
 
-        return generate_main(rest[1:])
+        return gateway_main(rest)
     if rest and rest[0] == "engines":
         from .core.engine_cli import main as engines_main
 

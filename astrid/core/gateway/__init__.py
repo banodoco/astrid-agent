@@ -34,6 +34,7 @@ from astrid.core.gateway.dispatch import (
     _build_dispatch_parser,
     _dispatch_backup,
     _dispatch_doctor,
+    _dispatch_generate,
     _dispatch_product,
     _dispatch_status,
     _top_level_commands,
@@ -98,9 +99,7 @@ def main(argv: list[str] | None = None) -> int:
 def _main_impl(raw: list[str]) -> int:
     first_arg = next(iter(raw), None)
     if first_arg == "generate":
-        from astrid.core.generation.listing import main as generate_main
-
-        return generate_main(raw[1:])
+        return _dispatch_generate(raw[1:])
     if first_arg == "engines":
         from astrid.core.engine_cli import main as engines_main
 

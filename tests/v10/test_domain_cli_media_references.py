@@ -1294,8 +1294,8 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
     from astrid.core.gateway import dispatch
 
     assert "media" in dispatch._top_level_commands()
-    # Current gateway surface: eleven names (five product + operational families;
-    # skills routed by 316e3668).
+    # Current gateway surface includes the generation SDK adapter as well as
+    # the product, operational and skills routes.
     assert dispatch._top_level_commands() == frozenset(
         {
             "projects",
@@ -1309,5 +1309,6 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
             "backup",
             "dev",
             "skills",
+            "generate",
         }
     )
