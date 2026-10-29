@@ -63,10 +63,11 @@ def source(repo):
     return {"sha": sha, "repo": str(repo.resolve())}
 
 
-def install_manifest(agent, runtime, app):
+def install_manifest(agent, runtime, app, *, source_override=False):
     manifest = json.loads((app / "public" / "install-manifest.json").read_text(encoding="utf-8"))
-    # Replace the entire source records, including any released schema digest.
-    manifest.update(agent=source(agent), runtime=source(runtime))
+    if source_override:
+        # Explicit test mode replaces entire source records, including any released schema digest.
+        manifest.update(agent=source(agent), runtime=source(runtime))
     return manifest
 
 
@@ -86,9 +87,9 @@ class ManifestHandler(BaseHTTPRequestHandler):
         self.wfile.write(self.document)
 
 
-def install(shell):
+def install(shell, *, source_override=False):
     runtime, app = ROOT / "journey-runtime", ROOT / "journey-app"
-    manifest = install_manifest(ROOT, runtime, app)
+    manifest = install_manifest(ROOT, runtime, app, source_override=source_override)
     save("install-manifest.json", manifest)
     save("sources.json", {"agent": manifest["agent"], "runtime": manifest["runtime"], "app": source(app)})
     server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(
@@ -114,10 +115,14 @@ def install(shell):
 
 
 def program_root():
+    if os.environ.get("ASTRID_CI_PROGRAM_ROOT"):
+        return Path(os.environ["ASTRID_CI_PROGRAM_ROOT"])
     return Path(os.environ["LOCALAPPDATA"]) / "Astrid"
 
 
 def data_root():
+    if os.environ.get("ASTRID_CI_DATA_ROOT"):
+        return Path(os.environ["ASTRID_CI_DATA_ROOT"])
     return Path(os.environ["LOCALAPPDATA"]) / "Astrid Runtime"
 
 
@@ -223,8 +228,7 @@ def host_ready():
             ready.get("runtime_instance_id") == value["runtime_instance_id"])
 
 
-def task():
-    project = "windows-journey"
+def task(project="windows-journey"):
     # Exercise the installed SDK boundary against the profile written by the
     # real installer. This local SFX action has no external model/GPU needs.
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
@@ -591,16 +595,27 @@ def collect():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("step", choices=("install", "start", "health", "host", "task", "down", "stopped", "collect"))
+    parser.add_argument("step", choices=("journey", "install", "start", "health", "host", "task", "down", "stopped", "collect"))
     parser.add_argument("--installer-shell", choices=("powershell.exe", "pwsh.exe"))
-    args = parser.parse_args()
+    parser.add_argument("--source-override", action="store_true", help="TEST MODE: use local Agent and Runtime Git checkouts")
+    args, remaining = parser.parse_known_args()
     if sys.platform != "win32":
         parser.error("This journey must run on Windows")
+    if args.step == "journey":
+        import ci_journey
+
+        if args.installer_shell:
+            remaining.extend(["--shell", args.installer_shell])
+        if args.source_override:
+            remaining.append("--source-override")
+        return ci_journey.main(remaining)
+    if remaining:
+        parser.error(f"unrecognized arguments: {' '.join(remaining)}")
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     if args.step == "install":
         if not args.installer_shell:
             parser.error("install requires --installer-shell")
-        install(args.installer_shell)
+        install(args.installer_shell, source_override=args.source_override)
     elif args.step == "start":
         powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'", "start.log")
     elif args.step == "health":
@@ -619,4 +634,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
