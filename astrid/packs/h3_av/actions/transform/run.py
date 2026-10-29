@@ -10,6 +10,7 @@ import shutil
 import zipfile
 from contextlib import contextmanager
 from dataclasses import asdict
+from os import environ
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -18,6 +19,7 @@ from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core.contracts.errors import AstridError
+from astrid.core.env_vars import ASTRID_TASK_RUN_ID
 from astrid.core.execution.worker_qualification import (
     WorkerQualificationError,
     ensure_runpod_worker,
@@ -1833,6 +1835,15 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The runner's marker is a necessary entry precondition, not proof of
+    # admission or publication authority; those remain Runtime-owned.
+    if not environ.get(ASTRID_TASK_RUN_ID, "").strip():
+        raise AstridError(
+            "H3 transform requires a Runtime-admitted parent task "
+            f"({ASTRID_TASK_RUN_ID}); invoke through the public Astrid action with a project",
+            code="tracked_parent_required",
+            field=ASTRID_TASK_RUN_ID,
+        )
     result = run_transform(build_parser().parse_args(argv))
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

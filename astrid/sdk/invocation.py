@@ -4078,6 +4078,16 @@ def invoke(
     if kind == "action":
         kind = capability.capability_type
 
+    if (not dry_run and capability.id == "h3_av.transform"
+            and capability.capability_type == "orchestrator"):
+        # This declaration still resolves to the local launcher. Until the
+        # authenticated bundle/publication adapter is installed, starting it
+        # would create independent children without a Runtime parent.
+        raise CapabilityPreconditionError(
+            "H3 transform requires a Runtime-admitted parent; "
+            "the managed-bundle and delegated-publication adapter is not yet available"
+        )
+
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
     if capability.id == "rendering.render":

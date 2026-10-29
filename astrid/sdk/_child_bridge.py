@@ -249,7 +249,7 @@ def _validate_child_policy(value: Mapping[str, Any] | None) -> dict[str, Any] | 
         raise CapabilityValidationError("child_delegation must be an object")
     copied = dict(value)
     required = {"capabilities", "targets", "input_object_ids"}
-    if not required <= copied.keys() or copied.keys() - required - {"limits", "stages", "final_publication", "recoverable_outputs", "discovery_grant"}:
+    if not required <= copied.keys() or copied.keys() - required - {"limits", "stages", "final_publication", "publications", "recoverable_outputs", "discovery_grant"}:
         raise CapabilityValidationError("child_delegation requires a finite policy shape")
     for name, maximum, nonempty in (("capabilities", 32, True), ("targets", 32, True),
                                     ("input_object_ids", 256, False), ("stages", 32, True)):
@@ -261,6 +261,18 @@ def _validate_child_policy(value: Mapping[str, Any] | None) -> dict[str, Any] | 
     limits = copied.get("limits", {})
     if type(limits) is not dict or any(type(n) is not int or n <= 0 for n in limits.values()):
         raise CapabilityValidationError("child_delegation.limits must contain positive finite integers")
+    if "publications" in copied:
+        publications = copied["publications"]
+        if ("final_publication" in copied or "stages" not in copied
+                or type(publications) is not dict or set(publications) != {"raw", "final"}
+                or type(publications["raw"]) is not dict
+                or set(publications["raw"]) != {"stage", "output_port", "effect"}
+                or type(publications["final"]) is not dict
+                or set(publications["final"]) != {"stage", "output_port", "candidate_stage",
+                    "candidate_output_port", "verify_stage", "verify_output_port", "effect"}):
+            raise CapabilityValidationError("publications requires exact raw/final declarations and stages, without final_publication")
+        # Runtime validates stage order, effect selectors, project authority and
+        # actual publication lineage. This is only the finite transport envelope.
     if "discovery_grant" in copied:
         grant = copied["discovery_grant"]
         identities = {"project_id", "run_id", "task_id", "attempt_id", "capability_id"}

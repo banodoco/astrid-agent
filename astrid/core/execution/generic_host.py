@@ -4892,17 +4892,50 @@ class RuntimeProtocolClient:
     def admit_child(self, *, child: Mapping[str, Any], inputs: Mapping[str, Any],
                     ordered_inputs: list[Mapping[str, Any]], derived_inputs: list[Mapping[str, Any]],
                     task_id: str, attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
-                    run_id: str, project_id: str | None):
-        """Exact issuance/admission pair; signed receipt stays in this frame."""
-        from ._child_bridge import ChildBridgeError, resource
+                    run_id: str, project_id: str | None, stage: str | None = None,
+                    input_refs: list[Mapping[str, Any]] | None = None,
+                    generation_intent: Mapping[str, Any] | None = None):
+        """Fenced delegated transport; signed authority stays in this frame.
+
+        Stages and managed input refs are explicit trusted-host arguments. The
+        Runtime resolves them and injects any publication settlement effect.
+        """
+        from ._child_bridge import ChildBridgeError, _staged_child_task, resource
+        from astrid.sdk._child_bridge import _strict_json
+
+        staged = stage is not None or input_refs is not None
+        staged_task = None
+        child_id = child["child_id"]
+        if staged:
+            if stage is None or input_refs is None or derived_inputs:
+                raise ChildBridgeError("staged child requires stage/input_refs without derived inputs")
+            staged_task = _staged_child_task(
+                child=child, inputs=inputs, ordered_inputs=ordered_inputs,
+                stage=stage, input_refs=input_refs)
+        if generation_intent is not None:
+            if not isinstance(generation_intent, Mapping):
+                raise ChildBridgeError("generation_intent must be an object")
+            generation_intent = json.loads(_strict_json(dict(generation_intent)))
 
         with self._heartbeat_lock:
             self.heartbeat(task_id, lease_id, attempt_id=attempt_id, fence=fence)
             if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
                 raise HostError("child admission epoch disagrees with claim")
+            authority_args = {} if staged else {
+                "child": dict(child), "derived_inputs": [dict(ref) for ref in derived_inputs]}
             receipt = resource(self.generated.issue_child_authority(
                 attempt_id, lease_id=lease_id, fence=fence, runtime_epoch=runtime_epoch,
-                child=dict(child), derived_inputs=[dict(ref) for ref in derived_inputs]))
+                **authority_args))
+            if (receipt.get("parent_task_id") != task_id or receipt.get("parent_attempt_id") != attempt_id
+                    or not isinstance(receipt.get("authority"), str) or not receipt["authority"]):
+                raise ChildBridgeError("foreign child authority receipt")
+            if staged:
+                if "child" in receipt or "derived_inputs" in receipt:
+                    raise ChildBridgeError("staged authority cannot contain derived input grants")
+                if generation_intent is not None:
+                    staged_task["generation_intent"] = generation_intent
+                return self.generated.admit_delegated_task(
+                    authority=receipt["authority"], task=staged_task, idempotency_key=child_id)
             refs = receipt.get("derived_inputs")
             if (receipt.get("child") != child or receipt.get("parent_task_id") != task_id
                     or receipt.get("parent_attempt_id") != attempt_id or type(refs) is not list
@@ -4932,6 +4965,8 @@ class RuntimeProtocolClient:
                 task["execution_request"] = normalize_execution_request({
                     "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
                 })
+            if generation_intent is not None:
+                task["generation_intent"] = generation_intent
             return self.generated.admit_delegated_task(
                 authority=receipt["authority"], task=task, idempotency_key=child["child_id"])
 

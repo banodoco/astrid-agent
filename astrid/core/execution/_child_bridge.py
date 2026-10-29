@@ -82,6 +82,71 @@ def task_resource(value: Any) -> dict[str, Any]:
     return resource(result.get("task", result))
 
 
+def _staged_child_task(*, child: Mapping[str, Any], inputs: Mapping[str, Any],
+                       ordered_inputs: list[Mapping[str, Any]], stage: str,
+                       input_refs: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Build the typed transport; Runtime alone resolves managed lineage.
+
+    This private host seam does not accept producer filenames as input refs or
+    add Runtime-owned spec fields, publication sources or settlement effects.
+    """
+    from astrid.sdk.execution_request import normalize_execution_request
+
+    if (not isinstance(child, Mapping)
+            or set(child) != {"child_id", "capability_id", "capability_digest"}
+            or type(child["child_id"]) is not str or not _KEY.fullmatch(child["child_id"])
+            or type(child["capability_id"]) is not str or not child["capability_id"]
+            or type(child["capability_digest"]) is not str or not _DIGEST.fullmatch(child["capability_digest"])):
+        raise ChildBridgeError("staged child requires one exact pinned identity")
+    if (type(stage) is not str or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", stage) is None
+            or type(input_refs) is not list or len(input_refs) > 256
+            or type(ordered_inputs) is not list or len(ordered_inputs) != len(input_refs)
+            or not isinstance(inputs, Mapping)):
+        raise ChildBridgeError("staged child requires stage and ordered managed input refs")
+    refs = []
+    for ref in input_refs:
+        if not isinstance(ref, Mapping):
+            raise ChildBridgeError("staged input ref must be a managed root or association")
+        ref = dict(ref)
+        if (type(ref.get("name")) is not str or not ref["name"] or len(ref["name"]) > 128
+                or set(ref) not in ({"name", "root_object_id"},
+                                    {"name", "producer_task_id", "association_id", "output_port"})):
+            raise ChildBridgeError("staged input ref must be a managed root or association")
+        if "root_object_id" in ref:
+            if type(ref["root_object_id"]) is not str or not _DIGEST.fullmatch(ref["root_object_id"]):
+                raise ChildBridgeError("staged root input requires a managed object ID")
+        elif any(type(ref[key]) is not str or not ref[key]
+                 for key in ("producer_task_id", "association_id", "output_port")):
+            raise ChildBridgeError("staged producer input requires an actual managed association")
+        refs.append(ref)
+    names = [ref["name"] for ref in refs]
+    if (len(set(names)) != len(names)
+            or any(not isinstance(item, Mapping) for item in ordered_inputs)
+            or [item.get("name") for item in ordered_inputs] != names):
+        raise ChildBridgeError("staged descriptors must match managed input ref order")
+    descriptors = []
+    for original in ordered_inputs:
+        if (type(original.get("required")) is not bool
+                or not {"name", "object_id", "filename"} <= original.keys()
+                or type(original["object_id"]) is not str or not _DIGEST.fullmatch(original["object_id"])
+                or original.get("digest", original["object_id"]) != original["object_id"]):
+            raise ChildBridgeError("staged managed input descriptor is incomplete")
+        descriptors.append({key: original[key] for key in ("name", "object_id", "filename", "required")})
+    request = normalize_execution_request({
+        "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
+    })
+    child_inputs = dict(inputs)
+    for descriptor in request.pop("inputs", []):
+        child_inputs[descriptor["name"]] = {
+            key: descriptor[key] for key in ("object_id", "filename", "required")}
+    task = {"capability_id": child["capability_id"], "capability_digest": child["capability_digest"],
+            "stage": stage, "input_refs": refs,
+            "spec": {"capability_id": child["capability_id"], "kind": "action", "inputs": child_inputs},
+            "execution_request": request}
+    # Snapshot mutable producer data before authority issuance or network I/O.
+    return json.loads(_strict_json(task))
+
+
 def _snapshot_grant(task: Mapping[str, Any]) -> dict[str, Any] | None:
     """Validate only the Runtime-frozen grant retained by the trusted host."""
     spec = task.get("spec", {})
