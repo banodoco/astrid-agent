@@ -47,6 +47,15 @@ class Price:
 
 
 @dataclass(frozen=True)
+class ModelRole:
+    """Exact target choices for one explicitly bound loader input."""
+    node_class: str
+    input: str
+    names: tuple[str, ...]
+    binding: str
+
+
+@dataclass(frozen=True)
 class BackendSpec:
     """Specification for a single execution backend (local or cloud).
 
@@ -77,6 +86,11 @@ class BackendSpec:
     #: Example (cloud): ``{"prompt": "prompt", "seed": "seed", "size":
     #: "image_size"}``.
     param_map: dict[str, str] = field(default_factory=dict)
+
+    #: Target model roles and explicit template node bindings.
+    model_roles: dict[str, ModelRole] = field(default_factory=dict)
+    input_bindings: dict[str, str] = field(default_factory=dict)
+    settings: dict[str, Any] = field(default_factory=dict)
 
     #: Optional validated unit price for this backend endpoint.
     price: Price | None = None
@@ -428,7 +442,33 @@ def _validate_backend_spec(
             raise ValueError(f"{path}.hints: keys must be non-empty strings")
         hints[k.strip()] = v
 
+    roles_raw = raw.get("model_roles", {})
+    if not isinstance(roles_raw, dict):
+        raise ValueError(f"{path}.model_roles: must be a dict")
+    roles = {}
+    for name, spec in roles_raw.items():
+        if not isinstance(name, str) or not name or not isinstance(spec, dict):
+            raise ValueError(f"{path}.model_roles: invalid role")
+        node_class, input_name, binding, names = (spec.get(k) for k in ("node_class", "input", "binding", "names"))
+        if (not all(isinstance(v, str) and v for v in (node_class, input_name, binding))
+                or not isinstance(names, list) or not names
+                or any(not isinstance(v, str) or not v for v in names)
+                or len(set(names)) != len(names)):
+            raise ValueError(f"{path}.model_roles.{name}: invalid role declaration")
+        roles[name] = ModelRole(node_class, input_name, tuple(names), binding)
+    input_bindings = raw.get("input_bindings", {})
+    settings = raw.get("settings", {})
+    if not isinstance(input_bindings, dict) or not isinstance(settings, dict):
+        raise ValueError(f"{path}: input_bindings and settings must be dicts")
+    if any(k not in supports or not isinstance(v, str) or not v for k, v in input_bindings.items()):
+        raise ValueError(f"{path}.input_bindings: invalid feature binding")
+    if any(not isinstance(k, str) or not k for k in settings):
+        raise ValueError(f"{path}.settings: invalid setting binding")
+
     return BackendSpec(
+        model_roles=roles,
+        input_bindings=dict(input_bindings),
+        settings=dict(settings),
         template=str(template),
         template_hash=str(template_hash),
         endpoint=str(endpoint),

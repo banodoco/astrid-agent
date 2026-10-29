@@ -86,6 +86,22 @@ models:
           local:
             template: image/z_image
             template_hash: "sha256:074ef3e2219d2a4ea3c9e1508d96a76ff578883d770b1ffd03ad1b5dd47dc6fc"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: '3', names: ['z_image_turbo_bf16.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: '1', names: ['qwen_3_4b.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: '2', names: ['ae.safetensors', 'FLUX1\ae.safetensors']}
+            input_bindings:
+              prompt: '5.text'
+              negative_prompt: '7.text'
+              seed: '8.seed'
+              steps: '8.steps'
+              guidance_scale: '8.cfg'
+              size: '4'
+            settings:
+              '8.steps': 9
+              '8.cfg': 1.0
+              '8.sampler_name': euler
+              '8.scheduler': simple
           cloud:
             endpoint: fal-ai/z-image/turbo
             lora_endpoint: fal-ai/z-image/turbo/lora
@@ -116,6 +132,22 @@ models:
           local:
             template: image/z_image_img2img
             template_hash: "sha256:d3bb0b6c563d7f30874ace1e1181001444663ae3952b76adfcaa82017ab562a5"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: '2', names: ['z_image_turbo_bf16.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: '3', names: ['qwen_3_4b.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: '4', names: ['ae.safetensors', 'FLUX1\ae.safetensors']}
+            input_bindings:
+              prompt: '6.text'
+              image_ref: '1.image'
+              seed: '10.seed'
+              size: '8'
+              strength: '10.denoise'
+              steps: '10.steps'
+              guidance_scale: '10.cfg'
+            settings:
+              '10.steps': 9
+              '10.cfg': 1.0
+              '10.sampler_name': euler
           cloud:
             endpoint: fal-ai/z-image/turbo/image-to-image
           codex:

@@ -39,6 +39,7 @@ from astrid.core.generation.backends.comfy_target import (
     ComfyTarget,
     ComfyTargetClient,
     open_comfy_http,
+    resolve_comfy_models,
 )
 from astrid.core.generation.backends.comfy_target import (
     extract_output_descriptors as _extract_output_descriptors,
@@ -401,6 +402,24 @@ if TYPE_CHECKING:
     from astrid.packs.vibecomfy.production_engine import ProductionRunResult
 
 
+def _set_catalog_node_value(workflow: Any, binding: str, value: Any) -> None:
+    """Set only an explicitly declared field of the pinned template."""
+    node_id, separator, field = binding.rpartition(".")
+    node = workflow.nodes.get(node_id) if separator else None
+    if node is None or not field:
+        raise ValueError(f"catalog binding {binding!r} has no template node")
+    if field in node.inputs:
+        node.inputs[field] = value
+    elif field in node.widgets:
+        node.widgets[field] = value
+    else:
+        raise ValueError(f"catalog binding {binding!r} has no template field")
+    # Selection applies public input values again during compilation.
+    for public_input in workflow.inputs.values():
+        if public_input.node_id == node_id and public_input.field == field:
+            public_input.value = value
+
+
 class VibeComfyBackend(BackendAdapter):
     """Local generation backend via pinned VibeComfy ready templates.
 
@@ -547,6 +566,8 @@ class VibeComfyBackend(BackendAdapter):
         mode: str,
         params: dict[str, Any],
         out_dir: Path,
+        *,
+        resolution_plan: dict[str, Any] | None = None,
     ) -> GenerationResult:
         # Lazy-import VibeComfy, and snapshot only its repository
         # template corpus.  Dynamic/user template discovery is forbidden.
@@ -559,6 +580,8 @@ class VibeComfyBackend(BackendAdapter):
 
         mode_spec = entry.modes[mode]
         backend_spec: BackendSpec = mode_spec.backends["local"]
+        if backend_spec.model_roles and resolution_plan is None:
+            raise ValueError("catalog model roles require resolution against a selected Comfy target")
         template_id = backend_spec.template
 
         # --- resolve seed (or generate one) ----------------------------------
@@ -621,9 +644,36 @@ class VibeComfyBackend(BackendAdapter):
             )
         t0 = time.monotonic()
         wf = workflow_from_ready(canonical_id, _discovery=discovery)
+        if resolution_plan is not None:
+            if resolution_plan.get("model") != entry.id or resolution_plan.get("mode") != mode:
+                raise ValueError("Comfy resolution plan does not match catalog request")
+            for role, declaration in backend_spec.model_roles.items():
+                node = wf.nodes.get(declaration.binding)
+                if node is None or node.class_type != declaration.node_class:
+                    raise ValueError(f"catalog role {role} does not match pinned template")
+                _set_catalog_node_value(wf, f"{declaration.binding}.{declaration.input}", resolution_plan["roles"][role])
+            for binding, value in backend_spec.settings.items():
+                _set_catalog_node_value(wf, binding, value)
+            unsupported = {feature for feature, value in params.items()
+                           if value is not None and feature in mode_spec.supports
+                           and feature != "count" and feature not in backend_spec.input_bindings}
+            if unsupported:
+                raise ValueError("catalog template has no explicit bindings for: " + ", ".join(sorted(unsupported)))
+            for feature, binding in backend_spec.input_bindings.items():
+                if feature not in params or params[feature] is None:
+                    continue
+                if feature == "size":
+                    width, height = _parse_size(params[feature])
+                    _set_catalog_node_value(wf, f"{binding}.width", width)
+                    _set_catalog_node_value(wf, f"{binding}.height", height)
+                else:
+                    _set_catalog_node_value(wf, binding, params[feature])
         # Features whose param_map key is in the feature list get mapped.
         # Count is not set on the workflow — the caller loops externally.
         for canon, tmpl_param in param_map.items():
+            if resolution_plan is not None:
+                # Role-backed catalog entries use explicit, pinned graph bindings.
+                continue
             if canon == "count":
                 continue  # count is managed by the executor loop
             if canon == "size":
@@ -648,7 +698,7 @@ class VibeComfyBackend(BackendAdapter):
             wf.set_input(tmpl_param, value)
 
         unbound_inputs = getattr(wf, "metadata", {}).get("unbound_inputs", {})
-        if isinstance(unbound_inputs, dict):
+        if isinstance(unbound_inputs, dict) and resolution_plan is None:
             requested_unbound = sorted(
                 tmpl_param
                 for canon, tmpl_param in param_map.items()
@@ -1965,8 +2015,22 @@ class CheckoutServerAdapter(VibeComfyBackend):
         model_digest: str | None = None,
         artifact_sha256: str | None = None,
         runtime_instance_id: str | None = None,
-    ) -> GenerationResult:
+        dry_run: bool = False,
+    ) -> GenerationResult | dict[str, Any]:
         """Generate with disposable warm reuse and host-compatible identities."""
+        from astrid.core.model_catalog.registry import ModelRegistry
+        target = ComfyTarget(
+            self._origin if self._endpoint_transport is None else self._endpoint_transport.endpoint.url,
+            "managed" if self._endpoint_transport is None else "pod",
+        )
+        client = ComfyTargetClient(target, endpoint_transport=self._endpoint_transport, opener=_open_checkout_http)
+        registry = ModelRegistry.load_default()
+        if registry.get(entry.id) != entry:
+            raise ValueError("selected catalog entry does not match the registered entry")
+        plan = resolve_comfy_models(client, registry, entry.id, mode)
+        if dry_run:
+            print(json.dumps(plan, ensure_ascii=False, sort_keys=True))
+            return plan
         backend_spec = entry.modes[mode].backends["local"]
         # Ready-template/workflow identity is per invocation.  Keep the
         # resident-session identity at the model level so compatible workflow
@@ -2009,7 +2073,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 runtime_instance_id=instance_id,
                 model_bytes_digest=model_bytes,
             )
-            return super().generate(entry, mode, params, out_dir)
+            return super().generate(entry, mode, params, out_dir, resolution_plan=plan)
         except BaseException:
             self._engine._abort_preparation()
             raise
