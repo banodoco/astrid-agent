@@ -148,6 +148,10 @@ actions:
       mode: subprocess
       requirements: []
     metadata:
+      generation_publication:
+        version: 1
+        modality: video
+        output_port: generated_videos
       host_session: wan2gp
       output_result_manifest: true
       pack_id: wan2gp

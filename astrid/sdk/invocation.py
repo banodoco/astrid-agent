@@ -2080,10 +2080,6 @@ def _generation_capability_modality(capability: Any) -> str | None:
         return "video"
     if capability_id.startswith("generation.generate_audio"):
         return "audio"
-    if capability_id in {"wan2gp.generate_video", "fal.h3_video", "vibecomfy.character_animation", "vibecomfy.video_enhance"}:
-        return "video"
-    if capability_id == "fal.fal_foley":
-        return "audio"
     definition = getattr(capability, "definition", None)
     metadata = definition.get("metadata", {}) if isinstance(definition, Mapping) else {}
     publication = metadata.get("generation_publication") if isinstance(metadata, Mapping) else None

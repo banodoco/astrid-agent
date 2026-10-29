@@ -99,6 +99,10 @@ actions:
       mode: subprocess
       network: true
     metadata:
+      generation_publication:
+        version: 1
+        modality: audio
+        output_port: audio
       env:
         - FAL_KEY
       fal_model_id: fal-ai/hunyuan-video-foley
@@ -274,6 +278,10 @@ actions:
     scoped_configs:
       - credentials.fal
     metadata:
+      generation_publication:
+        version: 1
+        modality: video
+        output_port: generated_videos
       output_result_manifest: true
       requires_timeline: false
       runtime_entrypoint: main

@@ -830,6 +830,10 @@ actions:
       requirements:
       - vibecomfy
     metadata:
+      generation_publication:
+        version: 1
+        modality: video
+        output_port: enhanced_video
       storage_estimate_required: true
       storage_estimate_exact: true
       storage_input_max_bytes:
@@ -948,6 +952,10 @@ actions:
       requirements:
       - vibecomfy
     metadata:
+      generation_publication:
+        version: 1
+        modality: video
+        output_port: animated_video
       storage_estimate_required: true
       storage_estimate_exact: true
       storage_input_max_bytes:
