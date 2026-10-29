@@ -40,6 +40,7 @@ def _health(**overrides: object) -> dict[str, object]:
         "runtime_epoch": 1,
         "runtime_instance_id": "instance-1",
         "runtime_session_id": "runtime-session-1",
+        "identity": {"release": 0, "managed_by": None},
     }
     value.update(overrides)
     return value
@@ -134,6 +135,46 @@ def _open_with_health(monkeypatch: pytest.MonkeyPatch, response: object) -> Astr
 ])
 def test_open_accepts_declared_optional_service_health(monkeypatch: pytest.MonkeyPatch, services: object) -> None:
     assert isinstance(_open_with_health(monkeypatch, _health(services=services)), AstridClient)
+
+
+def test_open_accepts_source_startup_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    identity = {
+        "release": 0,
+        "managed_by": "source",
+        "runtime_head": "a" * 40,
+        "agent_head": "b" * 40,
+        "dirty": False,
+        "dirty_hash": "c" * 64,
+    }
+    assert isinstance(_open_with_health(monkeypatch, _health(identity=identity)), AstridClient)
+
+
+@pytest.mark.parametrize(
+    "identity,field",
+    [
+        ("installed", "health.identity"),
+        ({"release": True, "managed_by": None}, "health.identity.release"),
+        ({"release": 0, "managed_by": "other"}, "health.identity.managed_by"),
+        (
+            {
+                "release": 0,
+                "managed_by": "source",
+                "runtime_head": "a" * 40,
+                "agent_head": "b" * 40,
+                "dirty": 0,
+                "dirty_hash": "c" * 64,
+            },
+            "health.identity.dirty",
+        ),
+    ],
+)
+def test_open_rejects_malformed_startup_identity(
+    monkeypatch: pytest.MonkeyPatch, identity: object, field: str
+) -> None:
+    with pytest.raises(ServiceUnavailableError) as error:
+        _open_with_health(monkeypatch, _health(identity=identity))
+    assert error.value.details["reason"] == "protocol_error"
+    assert error.value.details["field"] == field
 
 
 @pytest.mark.parametrize("services,field", [
