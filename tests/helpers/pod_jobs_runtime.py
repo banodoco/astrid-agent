@@ -41,9 +41,13 @@ def record(value):
 def option(name): return args[args.index(name) + 1]
 if args[:2] == ["engines", "install"]:
     record("install")
+    # Installation/GPU remain fixtures; model the engine hook's venv contract.
+    primary_venv = pathlib.Path(option("--root")) / "runtime/venv"
+    primary_venv.mkdir(parents=True, exist_ok=True)
     if os.environ.get("ASTRID_ENGINE_SANITY_CMD"):
-        import subprocess
-        subprocess.run(os.environ["ASTRID_ENGINE_SANITY_CMD"], shell=True, check=True)
+        import shlex, subprocess
+        subprocess.run(shlex.split(os.environ["ASTRID_ENGINE_SANITY_CMD"]) + ["--venv", str(primary_venv)], check=True)
+    record("models")
     print(json.dumps({"status":"installed", "steps":[{"id":"cpu-fixture", "action":"skipped"}]}))
 elif args[:2] == ["engines", "status"]:
     record("status")
@@ -177,7 +181,10 @@ class LoopbackPod:
         scripts.mkdir(parents=True)
         (scripts / "pod_bootstrap.sh").write_text('set -eu\nprintf "bootstrap\\n" >> "$POD_JOBS_SETUP_LOG"\n')
         (scripts / "gpu_sanity.py").write_text(
-            'import os,pathlib,sys\nwith pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("sanity\\n")\n'
+            'import argparse,os,pathlib,sys\n'
+            'parser = argparse.ArgumentParser()\nparser.add_argument("--venv", required=True)\n'
+            'venv = pathlib.Path(parser.parse_args().venv)\nassert venv.is_dir() and venv.parts[-2:] == ("runtime", "venv")\n'
+            'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("sanity\\n")\n'
             + f'sys.exit({2 if sanity_fail else 0})\n')
         monkeypatch.setattr(module, "SANITY_CMD", f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(module.SRC_DIR) / 'astrid-agent/scripts/gpu_sanity.py'))}")
         self.sources = self.root / "sources"

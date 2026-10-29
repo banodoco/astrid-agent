@@ -91,6 +91,33 @@ def assert_release_verified(session, pod):
     assert session.records[-1]["detail"] == {"pods":["fakepod134"], "get":404, "list":[]}
 
 
+def test_job_list_constructs_install_sanity_hook_without_preinstall_probe(tmp_path, monkeypatch):
+    manifest, _document = make_manifest(tmp_path / "manifest")
+    session = ps.JobListSession(Namespace(jobs=str(manifest), workdir=str(tmp_path / "session")),
+                                cli=lambda *_args: pytest.fail("unexpected provider call"),
+                                transport_factory=lambda *_args: pytest.fail("unexpected transport"),
+                                http_status=lambda _pod: pytest.fail("unexpected provider call"))
+    commands = []
+
+    def capture(label, command, timeout, **kwargs):
+        commands.append((label, command))
+        return "", {"id": label}
+
+    monkeypatch.setattr(session, "must", capture)
+    steps = session.run_steps()
+    assert [name for name, _operation in steps][:5] == ["claim", "bundle", "bootstrap", "install", "rerun"]
+    assert "sanity" not in dict(steps)
+    dict(steps)["bootstrap"]()
+    detail = dict(steps)["install"]()
+    assert [label for label, _command in commands] == ["bootstrap", "install"]
+    assert "gpu_sanity.py" not in commands[0][1]
+    install = commands[1][1].splitlines()
+    assert install == ["set -eu", "export PATH=/opt/astrid/bin:$PATH",
+                       f"export ASTRID_ENGINE_SANITY_CMD={shlex.quote(ps.SANITY_CMD)}",
+                       f"astrid engines install {ps.ENGINE} --placement local --root {ps.ENGINE_ROOT} --deadline 14400"]
+    assert detail["sanity_cmd"] == ps.SANITY_CMD
+
+
 def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monkeypatch):
     # Model pyenv's PATH rewrite in the detached python3 launcher. The fixture
     # must bypass both this shim and the unrelated astrid it would prioritize.
@@ -112,7 +139,7 @@ def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monk
     assert not host_log.exists(), "fake pod invoked a host Python/astrid shim"
     assert_release_verified(session, pod)
     assert session.budget.count == pod.record_count < 40
-    steps = ["claim", "bundle", "bootstrap", "sanity", "install", "rerun", "h3:clip:s0",
+    steps = ["claim", "bundle", "bootstrap", "install", "rerun", "h3:clip:s0",
              "job:clip", "download:clip", "packet:clip", "job:image", "download:image", "packet:image", "release"]
     assert [record["step"] for record in session.records] == steps
     local_progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
@@ -125,7 +152,8 @@ def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monk
     assert ("POST", "/jobs") in pod.requests and ("POST", "/uploads") in pod.requests
     assert any(path == "/download-chunk" for _method, path in pod.requests)
     setup = pod.setup_log.read_text().splitlines()
-    assert setup.index("bootstrap") < setup.index("sanity") < setup.index("install") < setup.index("h3:1") < setup.index("h3:9")
+    assert setup.index("bootstrap") < setup.index("install") < setup.index("sanity") < setup.index("models") < setup.index("h3:1") < setup.index("h3:9")
+    assert setup.count("sanity") == 2  # Initial install and its idempotency rerun both keep the hook.
     assert [p["prompt"]["1"]["inputs"]["seconds"] for p in pod.comfy_prompts] == [1, 9]
 
     packets = session.workdir / "packets"
@@ -166,13 +194,16 @@ def test_failed_two_job_rehearsal_stops_and_releases(tmp_path, monkeypatch, fail
     assert session.budget.count == pod.record_count < 40
     failed = [r for r in session.records if r["result"] == "failed"]
     assert len(failed) == 1
-    assert failed[0]["step"] == ("sanity" if failure == "sanity" else "job:image" if failure == "command" else "download:image")
+    assert failed[0]["step"] == ("install" if failure == "sanity" else "job:image" if failure == "command" else "download:image")
     assert not any(record["step"].endswith(":later") for record in session.records)
     progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
     assert progress["steps"][-1]["step"] == "release"
     assert any("POD SESSION FAILED" in message for message in messages)
     if failure == "sanity":
-        assert "install" not in pod.setup_log.read_text().splitlines()
+        assert pod.setup_log.read_text().splitlines() == ["bootstrap", "install", "sanity"]
+        assert [r["step"] for r in session.records] == ["claim", "bundle", "bootstrap", "install", "release"]
+        assert "exited 1" in failed[0]["detail"]["error"]
+        assert not pod.comfy_prompts
     else:
         check = json.loads((session.workdir / "packets/image/machine-check.json").read_text())
         assert check["status"] == "failed"

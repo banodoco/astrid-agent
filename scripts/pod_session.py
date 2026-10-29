@@ -929,10 +929,6 @@ class JobListSession(Session):
                     stage(local, relative)
         return detail | {"jobs": [j["id"] for j in self.jobs]}
 
-    def sanity(self):
-        _, job = self.must("GPU sanity", SANITY_CMD, 600)
-        return {"job": job["id"], "command": SANITY_CMD}
-
     def run_manifest_job(self, job, smoke=False):
         remote, jid = job["remote"], job["id"]
         label = f"h3:{jid}:s0" if smoke else f"job:{jid}"
@@ -1048,7 +1044,8 @@ class JobListSession(Session):
                     self.packet_check(job, "failed", error=detail.get("error"), outputs=job.get("outputs", {}))
 
     def run_steps(self):
-        steps = [(step, getattr(self, step)) for step in ("claim", "bundle", "bootstrap", "sanity", "install", "rerun")]
+        # Install runs sanity after constructing the primary venv, before models.
+        steps = [(step, getattr(self, step)) for step in ("claim", "bundle", "bootstrap", "install", "rerun")]
         for job in self.jobs:
             if job["type"] == "h3":
                 steps.append((f"h3:{job['id']}:s0", lambda j=job: self.run_manifest_job(j, smoke=True)))
