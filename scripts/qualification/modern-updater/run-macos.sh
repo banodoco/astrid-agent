@@ -6,17 +6,18 @@ scripts="$GITHUB_WORKSPACE/scripts/qualification/modern-updater"
 mkdir -p "$case_dir" "$evidence"
 chmod 755 "$case_dir"
 cp "$scripts/manifest.json" "$case_dir/manifest.json"
-[ "$(shasum -a 256 "$case_dir/manifest.json" | awk '{print $1}')" = 3d51f1d3fde0a0d2ebafc102fcc5c36b0965a33a7e46d84376b90010a33245a0 ]
-curl --fail --silent --show-error --location 'https://raw.githubusercontent.com/banodoco/astrid-app/8ebd6dc725f9886a60812b9a80e8ba4c954b5dbe/public/install' -o "$case_dir/install"
+[ "$(shasum -a 256 "$case_dir/manifest.json" | awk '{print $1}')" = ed02a738def5db4552e2860e42ad60914fbb72e36f8a721f1673d718aa29baf0 ]
+curl --fail --silent --show-error --location 'https://raw.githubusercontent.com/banodoco/astrid-app/6fab4ceea6abbf93e906a31825719ee640b71717/public/install' -o "$case_dir/install"
 [ "$(shasum -a 256 "$case_dir/install" | awk '{print $1}')" = 100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d ]
 python3 - "$case_dir" <<'PY'
 import json, pathlib, sys
 case = pathlib.Path(sys.argv[1]); manifest = json.loads((case/'manifest.json').read_text())
 assert manifest['release'] == 1
-assert manifest['agent']['sha'] == '50e3dc5480ebf8fbb860ac3d37bf5d98ab58b3fc'
+assert manifest['agent']['sha'] == '9e7032e41ddf3d270fe9cff5d164fd84f30ac0b8'
 assert manifest['runtime']['sha'] == 'ebd412199a9c1e53c3a984d27d335de8b40654a1'
 assert 'repo' not in manifest['agent'] and 'repo' not in manifest['runtime']
 manifest['release'] = 0
+manifest['agent']['sha'] = '50e3dc5480ebf8fbb860ac3d37bf5d98ab58b3fc'
 (case/'baseline.json').write_text(json.dumps(manifest, indent=2) + '\n')
 PY
 shasum -a 256 "$case_dir/install" "$case_dir/manifest.json" "$case_dir/baseline.json" > "$evidence/input-sha256.txt"
@@ -38,6 +39,20 @@ cleanup() {
   cp "$HOME/Library/Logs/Astrid Runtime/install.log" "$evidence/install.log" 2>/dev/null
   cp "$HOME/Library/Logs/Astrid Runtime/runtime-service.log" "$evidence/runtime-service.log" 2>/dev/null
   if [ -d "$case_dir/program/logs" ]; then cp -R "$case_dir/program/logs" "$evidence/job-logs"; fi
+  python3 - "$case_dir/program" "$evidence" <<'PYSNAPSHOT'
+import json, pathlib, sys
+root, output = map(pathlib.Path, sys.argv[1:])
+try:
+    current = (root / 'current').read_text().strip()
+    install = json.loads((root / 'install.json').read_text())
+    job = install.get('update_job', {})
+    journal = json.loads((root / 'update-transaction.json').read_text()) if (root / 'update-transaction.json').exists() else {}
+    snapshot = {'current': current, 'job': {k: job.get(k) for k in ('operation_id','state','transaction_id','target_release','platform','launch_status','cleanup_status','result')},
+                'journal': {k: journal.get(k) for k in ('operation_id','step','update_job','transaction_kind')}}
+    (output / 'pre-cleanup-snapshot.json').write_text(json.dumps(snapshot, indent=2) + '\n')
+except (OSError, ValueError):
+    pass
+PYSNAPSHOT
   if [ -f "$case_dir/program/install.json" ]; then
     sh "$case_dir/install" --uninstall --root "$case_dir/program" --manifest "$case_dir/manifest.json" > "$evidence/uninstall.log" 2>&1
     uninstall_exit=$?

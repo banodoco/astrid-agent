@@ -46,6 +46,7 @@ def wait_health(release, timeout=180):
 
 old = wait_health(0)
 old_selected = (program / 'current').read_text().strip()
+assert old_selected.startswith('50e3dc54-ebd41219-'), old_selected
 realm = read(data / 'runtime' / 'discovery.json')['active_realm']
 sentinel = data / 'qualification-sentinel.txt'; sentinel.write_text('synthetic modern updater sentinel\n')
 sentinel_hash = hashlib.sha256(sentinel.read_bytes()).hexdigest()
@@ -74,7 +75,8 @@ save('terminal.json', terminal)
 assert terminal.get('state') == 'terminal' and terminal.get('outcome') == 'updated', terminal
 assert terminal.get('operation_id') == op
 new = wait_health(1); selected = (program / 'current').read_text().strip(); discovery = read(data / 'runtime' / 'discovery.json')
-assert selected != old_selected
+assert selected != old_selected and selected.startswith('9e7032e4-ebd41219-'), selected
+assert read(program / 'versions' / selected / 'manifest.json') == read(case / 'manifest.json')
 assert new['runtime_instance_id'] != old['runtime_instance_id']
 assert new['schema_digest'] == 'sha256:5d229bf66ffaeb0b4937844a3c2b08ddd21f97cbcc305101a5cc19a95c971194'
 assert discovery['active_realm'] == realm
@@ -82,9 +84,18 @@ assert hashlib.sha256(sentinel.read_bytes()).hexdigest() == sentinel_hash
 job = read(program / 'install.json')['update_job']; journal = read(program / 'update-transaction.json')
 assert job['operation_id'] == op and job['state'] == 'updated'
 assert job['platform']['name'] == 'astrid-update-' + op
+assert job['platform']['kind'] == 'launchd-gui-one-shot'
 assert journal['step'] == 'complete' and journal['update_job']['operation_id'] == op
 assert job['transaction_id'] == journal['operation_id']
-save('result.json', {'test': 'synthetic release transition with identical source SHAs', 'operation_id': op,
+# Allow the one-shot worker to finish its own launchd cleanup before uninstall.
+for _ in range(60):
+    check = subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/astrid-update-{op}'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if check.returncode != 0:
+        break
+    time.sleep(1)
+assert check.returncode != 0, 'launchd update worker remained registered'
+save('result.json', {'test': 'synthetic modern transition: Agent 50e3dc5 to 9e7032e, release 0 to 1', 'operation_id': op,
     'old_version': old_selected, 'new_version': selected, 'health': new, 'realm': realm,
     'sentinel_sha256': sentinel_hash, 'job_platform': job['platform'], 'launch_status': job.get('launch_status'),
     'transaction_id': journal['operation_id'], 'transaction_step': journal['step']})
