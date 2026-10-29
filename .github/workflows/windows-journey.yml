@@ -1,14 +1,14 @@
-name: TST B3 PowerShell 5.1 lifecycle
+name: TST B3 Windows candidate versus main
 
 on:
   workflow_dispatch:
     inputs:
       driver_agent_sha:
-        description: Full SHA of this reviewed TST Agent workflow and verifier
+        description: Full SHA of this reviewed TST workflow and diagnostic harness
         required: true
         type: string
       driver_app_sha:
-        description: Full SHA of the reviewed TST App B3 driver
+        description: Full SHA of the reviewed App B3 lifecycle driver
         required: true
         type: string
 
@@ -16,9 +16,22 @@ permissions:
   contents: read
 
 jobs:
-  b3:
+  b3-comparison:
+    name: B3 fresh install (${{ matrix.role }})
     runs-on: windows-2022
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: candidate
+            product_app_sha: f8c26f95d5cf913db4e85d11360d3961b3d203f7
+            product_agent_sha: 3204bb00135bec8ee2d2d3fb21eed5abfceca649
+            product_runtime_sha: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
+          - role: exact-main
+            product_app_sha: ff0e21eadf92f914eb9ee7c43c2561aadbc23d0f
+            product_agent_sha: aadd0ff711e3fc0fb0ebc9c9ebe17a6cdb677f7c
+            product_runtime_sha: 8340fefcbbda818c35cbefb73c43bc31e7c3f20c
     steps:
       - name: Validate exact driver inputs
         shell: pwsh
@@ -28,6 +41,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           if ($env:AGENT_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:APP_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:AGENT_SHA -cne $env:WORKFLOW_SHA) { throw 'Full driver SHAs are required; Agent must match workflow commit.' }
+
       - uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
@@ -43,54 +57,109 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: banodoco/reigh-app
-          ref: f8c26f95d5cf913db4e85d11360d3961b3d203f7
+          ref: ${{ matrix.product_app_sha }}
           path: product-app
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Verify sources and freeze served manifest
+          python-version: '3.11.13'
+
+      - name: Verify refs and freeze identical served installer inputs
         shell: pwsh
         env:
           AGENT_SHA: ${{ inputs.driver_agent_sha }}
           APP_SHA: ${{ inputs.driver_app_sha }}
+          PRODUCT_APP_SHA: ${{ matrix.product_app_sha }}
+          PRODUCT_AGENT_SHA: ${{ matrix.product_agent_sha }}
+          PRODUCT_RUNTIME_SHA: ${{ matrix.product_runtime_sha }}
+          ROLE: ${{ matrix.role }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ((git -C driver-agent rev-parse HEAD) -cne $env:AGENT_SHA -or (git -C driver-app rev-parse HEAD) -cne $env:APP_SHA -or (git -C product-app rev-parse HEAD) -cne 'f8c26f95d5cf913db4e85d11360d3961b3d203f7') { throw 'Checkout SHA mismatch.' }
+          if ((git -C driver-agent rev-parse HEAD) -cne $env:AGENT_SHA -or (git -C driver-app rev-parse HEAD) -cne $env:APP_SHA -or (git -C product-app rev-parse HEAD) -cne $env:PRODUCT_APP_SHA) { throw 'Checkout SHA mismatch.' }
           $evidence = Join-Path $env:RUNNER_TEMP 'tst-b3-evidence'
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           $hashes = @{'install-manifest.json'='fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e'; 'install'='100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d'; 'install.sh'='591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285'; 'install.ps1'='bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258'}
           foreach ($name in $hashes.Keys) { if ((Get-FileHash -Algorithm SHA256 "product-app/public/$name").Hash.ToLowerInvariant() -cne $hashes[$name]) { throw "Product hash mismatch: $name" } }
-          Invoke-WebRequest -Uri 'https://astrid.haus/install-manifest.json' -OutFile "$evidence/served-before.json"
-          if ((Get-FileHash -Algorithm SHA256 "$evidence/served-before.json").Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest differs from reviewed product.' }
-          Copy-Item "$evidence/served-before.json" "$evidence/frozen-manifest.json"
-          @{agent_driver=$env:AGENT_SHA; app_driver=$env:APP_SHA; product_app='f8c26f95d5cf913db4e85d11360d3961b3d203f7'; product_agent='3204bb00135bec8ee2d2d3fb21eed5abfceca649'; product_runtime='6d53a19070faf63fc15ae1f81417722edc2c8a5f'; runner=$env:ImageOS; image_version=$env:ImageVersion; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; hashes=$hashes} | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 "$evidence/inputs.json"
-      - name: Run native PowerShell 5.1 lifecycle
+          $manifest = Join-Path $evidence 'frozen-manifest.json'
+          $templateManifest = 'product-app/public/install-manifest.json'
+          Copy-Item $templateManifest (Join-Path $evidence 'manifest-template.json')
+          Invoke-WebRequest -Uri 'https://astrid.haus/install-manifest.json' -OutFile (Join-Path $evidence 'served-before.json')
+          if ((Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'served-before.json')).Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest differs from both exact App refs.' }
+          $pins = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $evidence 'manifest-template.json') | ConvertFrom-Json
+          if ($pins.tools.uv.version -cne '0.11.32' -or $pins.tools.python.version -cne '3.11.13') { throw 'Installer tool versions differ from the shared reviewed tuple.' }
+          $pins.agent.sha = $env:PRODUCT_AGENT_SHA
+          $pins.runtime.sha = $env:PRODUCT_RUNTIME_SHA
+          $pins | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $manifest
+          @{role=$env:ROLE; agent_driver=$env:AGENT_SHA; app_driver=$env:APP_SHA; product_app=$env:PRODUCT_APP_SHA; product_agent=$pins.agent.sha; product_runtime=$pins.runtime.sha; manifest_template_sha=(Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'manifest-template.json')).Hash.ToLowerInvariant(); manifest_sha=(Get-FileHash -Algorithm SHA256 $manifest).Hash.ToLowerInvariant(); tools=@{uv=$pins.tools.uv.version; python=$pins.tools.python.version}; runner=$env:ImageOS; image_version=$env:ImageVersion; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; hashes=$hashes} | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $evidence 'inputs.json')
+
+      - name: Run native PowerShell 5.1 lifecycle with path and writer diagnostics
         shell: pwsh
+        env:
+          ROLE: ${{ matrix.role }}
+          PRODUCT_AGENT_SHA: ${{ matrix.product_agent_sha }}
+          PRODUCT_RUNTIME_SHA: ${{ matrix.product_runtime_sha }}
         run: |
           $evidence = Join-Path $env:RUNNER_TEMP 'tst-b3-evidence'
           $runRoot = Join-Path $env:RUNNER_TEMP 'tst-b3-run'
-          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$pwd/driver-app/scripts/installer/windows-ps51-lifecycle.ps1" -RunRoot $runRoot -Verifier "$pwd/driver-agent/scripts/verify_installed.py" -ProductApp "$pwd/product-app" -FrozenManifest "$evidence/frozen-manifest.json" 2>&1 | Tee-Object -FilePath "$evidence/lifecycle.log"
+          & "$pwd/driver-agent/scripts/tst_b3_windows_diagnostics.ps1" -DriverApp "$pwd/driver-app" -DriverAgent "$pwd/driver-agent" -ProductApp "$pwd/product-app" -FrozenManifest "$evidence/frozen-manifest.json" -RunRoot $runRoot -EvidenceRoot $evidence -ExpectedAgentSha $env:PRODUCT_AGENT_SHA -ExpectedRuntimeSha $env:PRODUCT_RUNTIME_SHA -Role $env:ROLE
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Recheck frozen inputs and served manifest
         if: always()
         shell: pwsh
+        env:
+          PRODUCT_APP_SHA: ${{ matrix.product_app_sha }}
+          PRODUCT_AGENT_SHA: ${{ matrix.product_agent_sha }}
+          PRODUCT_RUNTIME_SHA: ${{ matrix.product_runtime_sha }}
         run: |
           $ErrorActionPreference = 'Stop'
           $evidence = Join-Path $env:RUNNER_TEMP 'tst-b3-evidence'
-          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-          $hashes = @{'install-manifest.json'='fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e'; 'install'='100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d'; 'install.sh'='591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285'; 'install.ps1'='bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258'}
+          $hashes = @{'install-manifest.json'='fe12781e4da60d441595c08f84cb8d0390d840ab7c71227b8c4eff791553795e'; 'install'='100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d'; 'install.ps1'='bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258'}
+          if ((git -C product-app rev-parse HEAD) -cne $env:PRODUCT_APP_SHA) { throw 'Product checkout changed during run.' }
           foreach ($name in $hashes.Keys) { if ((Get-FileHash -Algorithm SHA256 "product-app/public/$name").Hash.ToLowerInvariant() -cne $hashes[$name]) { throw "Product hash changed: $name" } }
-          if ((Get-FileHash -Algorithm SHA256 "$evidence/frozen-manifest.json").Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Frozen manifest changed.' }
-          Invoke-WebRequest -Uri 'https://astrid.haus/install-manifest.json' -OutFile "$evidence/served-after.json"
-          if ((Get-FileHash -Algorithm SHA256 "$evidence/served-after.json").Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest changed during run.' }
-      - name: Retain evidence
+          $frozen = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $evidence 'frozen-manifest.json') | ConvertFrom-Json
+          if ($frozen.agent.sha -cne $env:PRODUCT_AGENT_SHA -or $frozen.runtime.sha -cne $env:PRODUCT_RUNTIME_SHA -or $frozen.tools.uv.version -cne '0.11.32' -or $frozen.tools.python.version -cne '3.11.13') { throw 'Frozen comparison manifest changed.' }
+          if ((Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'manifest-template.json')).Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Manifest template changed.' }
+          Invoke-WebRequest -Uri 'https://astrid.haus/install-manifest.json' -OutFile (Join-Path $evidence 'served-after.json')
+          if ((Get-FileHash -Algorithm SHA256 (Join-Path $evidence 'served-after.json')).Hash.ToLowerInvariant() -cne $hashes['install-manifest.json']) { throw 'Served manifest changed during run.' }
+
+      - name: Retain comparison evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tst-b3-windows-2022-${{ github.run_id }}-${{ github.run_attempt }}
+          name: tst-b3-${{ matrix.role }}-windows-2022-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/tst-b3-evidence
             ${{ runner.temp }}/tst-b3-run/receipts
             ${{ runner.temp }}/tst-b3-run/local-appdata/Astrid Runtime/logs
           if-no-files-found: warn
+
+  verify-identical-inputs:
+    name: Verify comparison inputs
+    needs: b3-comparison
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download both runner receipts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tst-b3-*-windows-2022-${{ github.run_id }}-${{ github.run_attempt }}
+          path: comparison-artifacts
+      - name: Require identical runner and installer inputs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob, json
+          files = glob.glob('comparison-artifacts/**/inputs.json', recursive=True)
+          rows = [json.load(open(path, encoding='utf-8-sig')) for path in files]
+          by_role = {row['role']: row for row in rows}
+          if set(by_role) != {'candidate', 'exact-main'}:
+              raise SystemExit(f'Expected both arm receipts, found {sorted(by_role)}')
+          candidate, main = by_role['candidate'], by_role['exact-main']
+          for key in ('runner', 'image_version', 'agent_driver', 'app_driver', 'manifest_template_sha', 'tools', 'hashes'):
+              if candidate[key] != main[key]:
+                  raise SystemExit(f'Arm input mismatch for {key}: {candidate[key]!r} != {main[key]!r}')
+          if candidate['product_app'] == main['product_app']:
+              raise SystemExit('Product App refs unexpectedly match.')
+          print(json.dumps({'verified': True, 'runner': candidate['runner'], 'image_version': candidate['image_version'], 'shared_inputs': {k: candidate[k] for k in ('agent_driver', 'app_driver', 'manifest_template_sha', 'tools', 'hashes')}}))
+          PY
