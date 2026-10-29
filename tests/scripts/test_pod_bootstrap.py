@@ -475,7 +475,11 @@ def test_missing_lifecycle_is_installed_into_existing_managed_environment(tmp_pa
     assert r.returncode == 0, r.stderr + r.stdout
     calls = _uv_calls(log)
     install = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
-    assert shlex.split(calls[install])[-2:] == ["--reinstall-package", "runpod-lifecycle"]
+    assert shlex.split(calls[install]) == [
+        "pip", "install", "--python", str(venv), "src/runpod-python", "src/astrid-runtime",
+        "src/runpod-lifecycle", "src/astrid-agent", "src/VibeComfy",
+        "--reinstall-package", "runpod-lifecycle",
+    ]
     assert not any(c.startswith(("python install", "venv ")) for c in calls)
     check = subprocess.run([str(venv / "bin/python"), "-c", "import runpod_lifecycle; print(runpod_lifecycle.__file__)"] , check=True, capture_output=True, text=True, cwd=tmp_path)
     assert str(_site(venv) / "runpod_lifecycle") in check.stdout
