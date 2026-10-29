@@ -182,12 +182,21 @@ def _load_prompts(path: Path, model: str, mode: str) -> list[dict[str, Any]]:
     Per-entry ``model`` overrides must include an explicit ``mode`` field
     matching CLI ``--mode`` or be rejected.
     """
-    text = path.read_text(encoding="utf-8").strip()
+    return _parse_prompts_bytes(path.read_bytes(), model, mode, source=str(path))
+
+
+def _parse_prompts_bytes(
+    content: bytes, model: str, mode: str, *, source: str = "prompts file"
+) -> list[dict[str, Any]]:
+    """Parse the exact immutable bytes of a JSON/JSONL prompt snapshot."""
+    if type(content) is not bytes:
+        raise TypeError("prompt content must be immutable bytes")
+    text = content.decode("utf-8").strip()
     if text.startswith("["):
         data = json.loads(text)
         if isinstance(data, list):
             return _normalise_prompts(data, model, mode)
-        raise SystemExit(f"{path}: top-level JSON must be an array or JSONL")
+        raise SystemExit(f"{source}: top-level JSON must be an array or JSONL")
 
     entries: list[dict[str, Any]] = []
     for line in text.splitlines():
@@ -196,7 +205,7 @@ def _load_prompts(path: Path, model: str, mode: str) -> list[dict[str, Any]]:
             continue
         entries.append(json.loads(line))
     if not entries:
-        raise SystemExit(f"{path}: no valid entries found")
+        raise SystemExit(f"{source}: no valid entries found")
     return _normalise_prompts(entries, model, mode)
 
 
