@@ -114,6 +114,7 @@ from astrid.core.env_vars import (
     ASTRID_PACKS_PATH,
     ASTRID_VIBECOMFY_CHECKOUT,
 )
+from astrid.core.foundation.hash import sha256_file
 from astrid.core.execution import task_scope as _task_scope
 from astrid.core.execution.capability_ledger import load_capability_ledger
 from astrid.core.execution.guards import (
@@ -9270,39 +9271,63 @@ class GenericPackHost:
         output_root = terminal.get("output_root", root / "outputs")
         payload = {} if minimal else terminal.get("payload") or {}
         warnings = list(payload.get("warnings") or [])
+
+        def error_text(error: BaseException) -> str:
+            try:
+                return str(error)
+            except BaseException:
+                return type(error).__name__
+
         manifest: dict[str, Any] = {}
         manifest_path = output_root / "manifest.json"
-        if not minimal and manifest_path.is_file() and not manifest_path.is_symlink() and manifest_path.resolve().is_relative_to(root):
+        if not minimal:
             try:
-                candidate = json.loads(manifest_path.read_text(encoding="utf-8"))
-                validate_result_manifest(candidate, staging_root=output_root)
-                manifest = candidate
-            except (OSError, ValueError, AstridError) as exc:
-                warnings.append(f"artifact manifest unavailable: {exc}")
+                if (manifest_path.is_file() and not manifest_path.is_symlink()
+                        and manifest_path.resolve().is_relative_to(root.resolve())):
+                    candidate = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    validate_result_manifest(candidate, staging_root=output_root)
+                    manifest = candidate
+            except Exception as exc:
+                warnings.append(f"artifact manifest unavailable: {error_text(exc)}")
         warnings.extend(manifest.get("warnings") or [])
         staged = [] if minimal else terminal.get("outputs") or []
-        if not minimal and not staged and record is not None and output_root.is_dir():
+        if not minimal and not staged and record is not None:
             try:
-                values = {**terminal.get("inputs", {}), "out": str(output_root),
-                          "run_root": str(root), "python_exec": sys.executable}
-                if record.definition.command is not None:
-                    _, values = _bind_host_owned_command_outputs(record, values, output_root=output_root)
-                harvested = harvest_staged_outputs(
-                    output_root, definition=record.definition, values=values, require=False)
-                staged = self._typed_outputs(
-                    record, harvested, root,
-                    generation_intent=task.get("generation_intent")
-                    if isinstance(task.get("generation_intent"), Mapping) else None)
-            except (OSError, ValueError, AstridError, HostError) as exc:
-                warnings.append(f"terminal output collection unavailable: {exc}")
+                if output_root.is_dir():
+                    values = {**terminal.get("inputs", {}), "out": str(output_root),
+                              "run_root": str(root), "python_exec": sys.executable}
+                    if record.definition.command is not None:
+                        _, values = _bind_host_owned_command_outputs(record, values, output_root=output_root)
+                    harvested = harvest_staged_outputs(
+                        output_root, definition=record.definition, values=values, require=False)
+                    staged = self._typed_outputs(
+                        record, harvested, root,
+                        generation_intent=task.get("generation_intent")
+                        if isinstance(task.get("generation_intent"), Mapping) else None)
+            except Exception as exc:
+                warnings.append(f"terminal output collection unavailable: {error_text(exc)}")
         outputs = []
         for row in staged:
-            outputs.append({
-                "id": row.get("association_id") or row.get("object_id") or f"{row['name']}#{row.get('ordinal', 0)}",
-                "name": row["name"], "ordinal": row.get("ordinal", 0),
-                "digest": row["digest"], "media_type": _settlement_media_type(row),
-                "size": row["size"], "path": row.get("path"), "role": row.get("role", "result"),
-            })
+            try:
+                # Custody may have changed since collection/upload. Describe
+                # only files still verified inside this attempt's staging root.
+                staging = output_root.resolve()
+                path = Path(row["path"]).resolve(strict=True)
+                if (not staging.is_relative_to(root.resolve())
+                        or not path.is_relative_to(staging) or not path.is_file()):
+                    raise ValueError("output is not a staged regular file")
+                digest = "sha256:" + sha256_file(path)
+                size = path.stat().st_size
+                if digest != row["digest"] or size != row["size"]:
+                    raise ValueError("staged output hash or size changed after collection")
+                outputs.append({
+                    "id": row.get("association_id") or row.get("object_id") or f"{row['name']}#{row.get('ordinal', 0)}",
+                    "name": row["name"], "ordinal": row.get("ordinal", 0),
+                    "digest": digest, "media_type": _settlement_media_type(row),
+                    "size": size, "path": str(path), "role": row.get("role", "result"),
+                })
+            except Exception as exc:
+                warnings.append(f"terminal output unavailable: {error_text(exc)}")
         status = terminal.get("status") or (
             "cancelled" if isinstance(terminal.get("error"), HostCancelled) else "failed")
         if status == "failed" and any(row["role"] == "result" for row in outputs):
@@ -9315,21 +9340,26 @@ class GenericPackHost:
         if isinstance(error, CommandCleanupUnresolved):
             error = error.execution_error or error
         if error is not None:
-            normalized = coerce_astrid_error(error)
-            error = {"code": normalized.code or "executor_failed", "message": normalized.message,
-                     "field": normalized.field, "fix": normalized.fix}
+            try:
+                normalized = coerce_astrid_error(error)
+                error = {"code": normalized.code or "executor_failed", "message": normalized.message,
+                         "field": normalized.field, "fix": normalized.fix}
+            except BaseException as exc:
+                error = {"code": "executor_failed", "message": error_text(error), "field": None, "fix": ""}
+                warnings.append(f"terminal error details unavailable: {error_text(exc)}")
         spec = task.get("spec") or {}
         parent = spec.get("delegated_parent", {}) if isinstance(spec, Mapping) else {}
         parent = parent if isinstance(parent, Mapping) else {}
-        # Hash the admitted request, never attempt-local materialization paths.
-        request = {"capability_id": task.get("capability"), "spec": spec,
-                   "execution_request": task.get("execution_request")}
         options = {port.name: port.default for port in record.definition.inputs
                    if port.default is not None} if record is not None else {}
         try:
             admitted = _admitted_task_spec(task)
         except HostError:
             admitted = {}
+        # The Runtime envelope may carry attempt-local delegation/materialization
+        # context alongside spec. Only the decoded immutable request is hashed.
+        request = {"capability_id": task.get("capability"), "spec": admitted,
+                   "execution_request": task.get("execution_request")}
         for source in (admitted.get("inputs"), admitted.get("params"), terminal.get("inputs")):
             if isinstance(source, Mapping):
                 options.update(source)

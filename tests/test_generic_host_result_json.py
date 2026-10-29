@@ -311,14 +311,123 @@ def test_request_digest_does_not_depend_on_attempt_or_materialized_paths(host_ca
         return {**materialize(spec, root, **kwargs), "snapshot": str(root / "inputs" / "snapshot.json")}
 
     monkeypatch.setattr(case.host, "_materialize_inputs", materialize_with_local_path)
+    envelope = case.task["task"]["spec"]
+    envelope["delegated_parent"] = {"materialized_root": str(case.root / "parent-inputs")}
     _success_boundary(case, monkeypatch)
     case.host.run_task(case.task, lease_token="lease-result")
     first = _read_result(case, "succeeded")
     case.root = case.root.with_name("another-run")
     case.host.attempt_root = case.root
+    envelope["delegated_parent"] = {"materialized_root": str(case.root / "parent-inputs")}
 
     case.host.run_task(case.task, lease_token="lease-result")
     second = _read_result(case, "succeeded")
 
     assert first["request_digest"] == second["request_digest"]
     assert first["resolved_options"]["snapshot"] != second["resolved_options"]["snapshot"]
+
+    case.root = case.root.with_name("changed-request")
+    case.host.attempt_root = case.root
+    envelope["spec"]["inputs"]["seed"] = 18
+    case.host.run_task(case.task, lease_token="lease-result")
+    changed = json.loads((case.root / "result.json").read_text(encoding="utf-8"))
+    assert changed["request_digest"] != second["request_digest"]
+    assert changed["resolved_options"]["seed"] == 18
+
+
+@pytest.mark.parametrize("phase", ["manifest", "harvest"])
+def test_optional_terminal_evidence_errors_preserve_the_original_failure(host_case, monkeypatch, phase):
+    case = host_case
+    error = AstridError("provider failed", code="provider_failed", field="prompt", fix="retry")
+
+    class UnprintableEvidenceError(RuntimeError):
+        def __str__(self):
+            raise SystemExit("evidence error formatting failed")
+
+    def unavailable(*_args, **_kwargs):
+        raise UnprintableEvidenceError()
+
+    def execute(_record, _inputs, output_root, _attempt, **_kwargs):
+        _legacy_output(case, output_root, warnings=["manifest evidence"], cost=0)
+        raise error
+
+    monkeypatch.setattr(case.host, "_run_command_definition", execute)
+    monkeypatch.setattr(generic_host, "validate_result_manifest" if phase == "manifest"
+                        else "harvest_staged_outputs", unavailable)
+
+    with pytest.raises(AstridError) as raised:
+        case.host.run_task(case.task, lease_token="lease-result")
+
+    assert raised.value is error
+    receipt = _read_result(case, "partial" if phase == "manifest" else "failed")
+    assert receipt["error"] == {"code": "provider_failed", "message": "provider failed", "field": "prompt", "fix": "retry"}
+    assert any("UnprintableEvidenceError" in warning for warning in receipt["warnings"])
+    if phase == "manifest":
+        _assert_artifact(receipt)
+        assert receipt["cost"] == "unknown"
+    else:
+        assert receipt["outputs"]["artifacts"] == []
+        assert receipt["cost"] == 0
+        assert "manifest evidence" in receipt["warnings"]
+    assert len(case.runtime.failures) == 1
+    assert (case.root / "outputs" / "manifest.json").read_bytes() == case.legacy_bytes
+
+
+@pytest.mark.parametrize("early_admission", [False, True])
+@pytest.mark.parametrize("formatter_error", [RuntimeError, SystemExit])
+def test_error_coercion_failure_cannot_skip_terminal_result(host_case, monkeypatch, early_admission, formatter_error):
+    case = host_case
+    error = AstridError("original task error", code="invalid_input", field="source", fix="replace source")
+
+    def reject(*_args, **_kwargs):
+        raise error
+
+    def broken_formatter(*_args, **_kwargs):
+        raise formatter_error("fixture error coercion failed")
+
+    if early_admission:
+        monkeypatch.setattr(generic_host, "_storage_input_limits", reject)
+    else:
+        monkeypatch.setattr(case.host, "_run_command_definition", reject)
+    monkeypatch.setattr(generic_host, "coerce_astrid_error", broken_formatter)
+
+    with pytest.raises((HostError, RuntimeError)):
+        case.host.run_task(case.task, lease_token="lease-result")
+
+    receipt = _read_result(case, "failed")
+    assert receipt["error"] == {"code": "executor_failed", "message": "original task error", "field": None, "fix": ""}
+    assert receipt["outputs"]["artifacts"] == []
+    assert receipt["cost"] == "unknown"
+    assert any("fixture error coercion failed" in warning for warning in receipt["warnings"])
+    assert not case.runtime.settlements
+
+
+@pytest.mark.parametrize("change", ["bytes", "missing", "escaped"])
+def test_cached_output_facts_are_reverified_before_terminal_result(host_case, monkeypatch, change):
+    case = host_case
+    _success_boundary(case, monkeypatch)
+    error = AstridError("settlement rejected", code="publication_failed", fix="retry")
+
+    def reject_settlement(*_args, **_kwargs):
+        output = case.root / "outputs" / "answer.txt"
+        if change == "bytes":
+            output.write_bytes(b"changed after collection\n")
+        else:
+            output.unlink()
+            if change == "escaped":
+                outside_staging = case.root / "answer.txt"
+                outside_staging.write_bytes(b"complete output\n")
+                output.symlink_to(outside_staging)
+        raise error
+
+    monkeypatch.setattr(case.runtime, "settle", reject_settlement)
+    with pytest.raises(AstridError) as raised:
+        case.host.run_task(case.task, lease_token="lease-result")
+
+    assert raised.value is error
+    receipt = _read_result(case, "failed")
+    assert receipt["error"]["code"] == "publication_failed"
+    assert receipt["outputs"]["artifacts"] == []
+    assert receipt["publication"] == {"status": "not_settled", "receipt": None, "effect": None}
+    assert any("terminal output unavailable" in warning for warning in receipt["warnings"])
+    assert len(case.runtime.failures) == 1
