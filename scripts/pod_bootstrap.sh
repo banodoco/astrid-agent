@@ -43,6 +43,24 @@ ensure_dir "$BOOTSTRAP_ROOT"
 ensure_dir "$DATA_ROOT"
 ensure_dir "$(dirname "$REALM_ROOT")"
 
+# Build backends can write metadata into their source directories. Stage only the
+# requested sources on writable storage; the mounted originals stay untouched.
+staged_uv_install() (
+  local mode="$1" stage source
+  shift
+  # Keep the array nonempty: Bash 3.2 treats empty arrays as unset under -u.
+  local -a install_args=(--python "$VENV")
+  [ "$mode" != reinstall ] || install_args+=(--reinstall-package astrid)
+  # Callers check our status, so errexit is disabled here. Check each fallible step.
+  stage="$(mktemp -d "$BOOTSTRAP_ROOT/.install.XXXXXXXX")" || exit $?
+  trap 'rm -rf "$stage"' EXIT
+  tar --exclude=.git -cf - "$@" | tar -xf - -C "$stage" || exit $?
+  chmod -R u+w "$stage" || exit $?
+  for source in "$@"; do install_args+=("$stage/$source"); done
+  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
+    uv pip install "${install_args[@]}" || exit $?
+)
+
 # Headless Runtime setup: a source profile plus a configured workspace, so
 # `astrid action run` works with no manual step. It never runs `astrid-runtime up`:
 # a running Runtime holds the door port (17340) and `astrid action run` refuses to
@@ -98,7 +116,7 @@ verify_astrid_install() {
     got="$(sha256sum "$site/astrid/core/generation/$rel" 2>/dev/null | cut -d' ' -f1)" || got=""
     if [ "$want" != "$got" ]; then
       echo "pod_bootstrap: installed astrid differs from src/astrid-agent ($rel); reinstalling astrid"
-      uv pip install --python "$VENV" --reinstall-package astrid src/astrid-agent
+      staged_uv_install reinstall src/astrid-agent || exit $?
       return 0
     fi
   done
@@ -163,8 +181,7 @@ if have_all; then
 else
   uv python install "$PY_VERSION"
   [ -x "$VENV/bin/python" ] || uv venv --python "$PY_VERSION" "$VENV"
-  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
-    uv pip install --python "$VENV" "${SRC_DIRS[@]}"
+  staged_uv_install fresh "${SRC_DIRS[@]}" || exit $?
 fi
 
 # pip in the venv. The engine install's helper runs `python3 -m pip` for its uv bootstrap, and a
