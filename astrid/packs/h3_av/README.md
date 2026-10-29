@@ -16,9 +16,9 @@ finite in `0..2`. It uses the immutable LoRA
 `62407e0cc8089c363abd9ce4b0b27662abb237af`, file
 `h3_character_swap_pro4500_1000.safetensors`, SHA-256
 `4b2a3f420ae804c0aa3422761ff84dbd1bf52eef6900ffab6d2e66df63cb4e79`.
-The existing Ref2VA base, text encoder, VAEs, and optional Turbo LoRA retain
-their current `resolve/main` asset declarations; only the Character Swap LoRA
-has an immutable revision and checksum in this candidate.
+The Ref2VA base, text encoder, VAEs, and optional Turbo LoRA use immutable
+revisions from the RunPod model lock. Workflow bundles carry those pinned URLs
+directly so they remain portable without importing Astrid.
 The selected base remains Ref2VA (`minimax_h3_ref2va_pruned_int8_convrot.safetensors`);
 an explicit different base is rejected rather than rewritten.
 

@@ -37,27 +37,27 @@ YUV420P = 'yuv420p'
 MODEL_ASSETS = {
     'audio_vae': ModelAsset(
         filename=AUDIO_VAE_NAME,
-        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors',
+        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/vae/minimax_h3_audio_vae_fp32.safetensors',
         subdir='vae',
     ),
     'turbo_lora': ModelAsset(
         filename=LORA_NAME,
-        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
         subdir='loras',
     ),
     'ref2va': ModelAsset(
         filename=UNET_NAME,
-        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors',
+        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors',
         subdir='diffusion_models',
     ),
     'video_vae': ModelAsset(
         filename=VIDEO_VAE_NAME,
-        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors',
+        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/vae/minimax_h3_video_vae_int8_convrot.safetensors',
         subdir='vae',
     ),
     'text_encoder': ModelAsset(
         filename=CLIP_NAME,
-        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors',
+        url='https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/e5eb578a89295337b8ff433a035929ce0279e0b6/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors',
         subdir='text_encoders',
     ),
 }

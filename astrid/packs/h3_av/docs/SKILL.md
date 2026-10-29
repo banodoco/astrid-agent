@@ -107,8 +107,8 @@ strength aliases; do not combine an alias with `settings.turbo.strength`. When
 Turbo is disabled, its loader and model requirement are omitted. Effective
 configuration is recorded in the compilation, which lists only connected model
 assets. The Character Swap LoRA is pinned by immutable revision and checksum;
-the existing Ref2VA base, text encoder, VAEs, and optional Turbo LoRA retain
-their `resolve/main` declarations and are not content-pinned here. The LoRA
+the Ref2VA base, text encoder, VAEs, and optional Turbo LoRA use immutable
+revisions from the RunPod model lock. The LoRA
 weights are not downloaded by this route and this candidate makes no
 inference-quality claim.
 
