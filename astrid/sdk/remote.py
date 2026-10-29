@@ -1715,8 +1715,24 @@ class RemoteMedia(_RemoteFamily):
             if not result.ok: return result
             items.append(result.data)
         return DomainResult.success(items, idempotency_key=idempotency_key or "")
-    def list(self, project, *, cursor=None, limit=50):
-        return self._typed("list_project_objects", project, cursor=cursor, limit=limit)
+    def list(self, project, *, cursor=None, limit=50, kind=None, model=None, target=None, tag=None):
+        filters = {
+            name: value
+            for name, value in (
+                ("kind", kind),
+                ("model", model),
+                ("target", target),
+                ("tag", tag),
+            )
+            if value is not None
+        }
+        return self._typed(
+            "list_project_objects",
+            project,
+            cursor=cursor,
+            limit=limit,
+            **filters,
+        )
     def show(self, project, ref):
         rows = paged_rows(self._client.list_project_objects, str(project), limit=50)
         if rows is None:
