@@ -103,3 +103,72 @@ def test_failed_cleanup_ack_does_not_release_exit_barrier(monkeypatch):
         assert not preparation._control_cleanup_done.is_set()
     finally:
         client.close()
+
+
+def test_real_private_peer_delayed_cleanup_ack_before_exit(tmp_path):
+    """Actual kernel peer and protected role designation; no authentication doubles."""
+    from astrid.core.execution import custody_broker as custody
+
+    client, server = socket.socketpair()
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    script = textwrap.dedent('''
+        import os, sys, threading
+        from types import SimpleNamespace
+        from astrid.core.execution import generic_host as h
+        control, ready, release = map(int, sys.argv[1:4])
+        stopped = threading.Event()
+        p = h.LocalExecutionPreparation(operation_id='op', channel_id='ch')
+        p._request = {'owner_epoch': 'epoch', 'profile': {'execution_mode': 'host_only_cpu', 'profile_digest': 'digest'}, 'custody_scope': sys.argv[4]}
+        p._claim_host = SimpleNamespace(shutdown=stopped.set)
+        send = h._send_activation_frame
+        def delayed(sock, reply):
+            os.write(ready, b'1')
+            assert os.read(release, 1) == b'1'
+            send(sock, reply)
+        h._send_activation_frame = delayed
+        def run(lifecycles):
+            lifecycles.append(p)
+            p.serve_control(control)
+            assert stopped.wait(15)
+            return 0
+        h._cli_impl = run
+        sys.exit(h._cli())
+    ''')
+    process = subprocess.Popen([sys.executable, '-c', script, str(server.fileno()),
+                                str(ready_write), str(release_read), str(tmp_path)],
+                               pass_fds=(server.fileno(), ready_write, release_read))
+    server.close()
+    os.close(ready_write)
+    os.close(release_read)
+    client.settimeout(15)
+    try:
+        actor = custody.AuthenticatedCleanupActor.current()
+        target = custody.default_process_identity(process.pid)
+        assert target is not None, 'native process identity unavailable'
+        token = custody.current_process_audit_token(process.pid)
+        authority = custody.RoleCustodyAuthority(tmp_path, 'host')
+        authority.designate_pending(actor=actor, identity=target, token=token, owner_epoch='epoch')
+        reference = authority.bind_target(actor=actor, generation=1, identity=target, token=token)
+        profile = {'execution_mode': 'host_only_cpu', 'profile_digest': 'digest'}
+        request = {'version': host._LOCAL_PREPARATION_VERSION, 'command': 'abort_local_execution',
+                   'operation_id': 'op', 'channel_id': 'ch', 'owner_epoch': 'epoch',
+                   'profile_digest': 'digest', 'profile_binding_digest': host._handoff_digest(profile),
+                   'custody_scope': str(tmp_path), 'custody_capabilities': {'host': reference}}
+        host._send_activation_frame(client, request)
+        assert select.select([ready_read], [], [], 15)[0], 'authenticated cleanup did not reach ACK'
+        assert os.read(ready_read, 1) == b'1'
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.5)
+        authority.verify_reference(reference, expected_actor=actor.verify(), owner_epoch='epoch')
+        os.write(release_write, b'1')
+        reply = host._read_activation_frame(client)
+        assert reply == {key: value for key, value in {**request, 'status': 'cleaned', 'cleanup': {'host_children': 'absent'}}.items() if key != 'command'}
+        assert process.wait(timeout=10) == 0
+    finally:
+        client.close()
+        os.close(ready_read)
+        os.close(release_write)
+        if process.poll() is None:
+            process.kill()
+            process.wait()

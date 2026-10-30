@@ -703,9 +703,13 @@ class GenerationFacade:
                 # and imports them before creating the tracked Runtime parent.
                 producer_schema = {key: value for key, value in description.items() if key != "action"}
                 producer_schema["source"] = "workflow"
+                from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS
+                controls = {key: value for key, value in inputs.items() if key in PUBLIC_CONTROLS}
                 values = validate_inputs(producer_schema, {
                     key: str(value) if isinstance(value, Path) else value for key, value in inputs.items()
+                    if key not in PUBLIC_CONTROLS
                 })
+                values.update(controls)
             else:
                 description, values = resolve_entry_inputs(
                     entry, dict(inputs), mode=mode, kind=modality, registry=registry,
@@ -958,12 +962,18 @@ class GenerationFacade:
                 raise CapabilityValidationError("tracked H3 requires the default Runtime target")
             if not inputs.get("request") or not inputs.get("asset_map"):
                 raise CapabilityValidationError("H3 requires request and asset_map")
+            controls = dict(kind="action", inputs=inputs, project=project, out=out,
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+                banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
+                dry_run=dry_run, wait=True, read_managed_outputs=True,
+                recovery_path=recovery_path, resume=resume)
+            if client is None and not dry_run:
+                # Reuse the ordinary owner launcher connection; the admitted
+                # parent, including prepared custody, stays in this context.
+                with sdk_module.AstridClient.open_from_launcher(start_pack_host=False) as owner:
+                    return owner.invoke_result("h3_av.transform", **controls)
             invoke = client.invoke_result if client is not None else sdk_module.invoke_result
-            return invoke("h3_av.transform", kind="action", inputs=inputs, project=project, out=out,
-                          project_root=project_root, extra_pack_roots=extra_pack_roots,
-                          banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
-                          dry_run=dry_run, wait=True, read_managed_outputs=True,
-                          recovery_path=recovery_path, resume=resume)
+            return invoke("h3_av.transform", **controls)
         if recovery_path is not None or resume:
             raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)

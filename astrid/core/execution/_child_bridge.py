@@ -86,7 +86,8 @@ def task_resource(value: Any) -> dict[str, Any]:
 
 def _staged_child_task(*, child: Mapping[str, Any], inputs: Mapping[str, Any],
                        ordered_inputs: list[Mapping[str, Any]], stage: str,
-                       input_refs: list[Mapping[str, Any]]) -> dict[str, Any]:
+                       input_refs: list[Mapping[str, Any]],
+                       execution_request: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Build the typed transport; Runtime alone resolves managed lineage.
 
     This private host seam does not accept producer filenames as input refs or
@@ -134,8 +135,10 @@ def _staged_child_task(*, child: Mapping[str, Any], inputs: Mapping[str, Any],
                 or original.get("digest", original["object_id"]) != original["object_id"]):
             raise ChildBridgeError("staged managed input descriptor is incomplete")
         descriptors.append({key: original[key] for key in ("name", "object_id", "filename", "required")})
+    if execution_request is not None and execution_request.get("inputs"):
+        raise ChildBridgeError("staged execution controls cannot supply managed inputs")
     request = normalize_execution_request({
-        "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
+        **dict(execution_request or {"schema_version": 1, "target": {"kind": "default"}}), "inputs": descriptors,
     })
     child_inputs = dict(inputs)
     for descriptor in request.pop("inputs", []):
@@ -682,7 +685,9 @@ class HostChildBridge:
         live()
         admitted = self.client.admit_child(
             child={"child_id": wire_id, **child}, inputs=inputs, ordered_inputs=ordered,
-            derived_inputs=refs, **({"stage": request["stage"], "input_refs": stage_refs, "generation_intent": intent} if staged else {}),
+            derived_inputs=refs, **({"stage": request["stage"], "input_refs": stage_refs, "generation_intent": intent,
+                "stage_execution_request": next(item for item in self.policy["stages"]
+                    if item["name"] == request["stage"]).get("execution_request")} if staged else {}),
             **admission_extras, **self.context)
         task = task_resource(admitted)
         self._assert_lineage(task)

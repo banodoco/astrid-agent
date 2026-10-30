@@ -4895,6 +4895,7 @@ class RuntimeProtocolClient:
                     run_id: str, project_id: str | None, stage: str | None = None,
                     input_refs: list[Mapping[str, Any]] | None = None,
                     generation_intent: Mapping[str, Any] | None = None,
+                    stage_execution_request: Mapping[str, Any] | None = None,
                     storage_estimate: Mapping[str, int] | None = None):
         """Fenced delegated transport; signed authority stays in this frame.
 
@@ -4921,7 +4922,7 @@ class RuntimeProtocolClient:
                 raise ChildBridgeError("staged child requires stage/input_refs without derived inputs")
             staged_task = _staged_child_task(
                 child=child, inputs=inputs, ordered_inputs=ordered_inputs,
-                stage=stage, input_refs=input_refs)
+                stage=stage, input_refs=input_refs, execution_request=stage_execution_request)
         if generation_intent is not None:
             if not isinstance(generation_intent, Mapping):
                 raise ChildBridgeError("generation_intent must be an object")

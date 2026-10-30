@@ -504,6 +504,34 @@ actions:
       type: file
       required: false
       description: Producer-only map of declared asset IDs; removed before parent admission.
+    - name: execution_request
+      type: file
+      required: false
+      description: Producer-only target/lifecycle request frozen for the VibeComfy child.
+    - name: worker_qualification
+      type: file
+      required: false
+      description: Producer-only deployment-owned qualified-worker receipt.
+    - name: prepared_worker
+      type: file
+      required: false
+      description: Owner-only prepared RunPod deployment selection; never sent to a worker.
+    - name: cleanup_receipt
+      type: file
+      required: false
+      description: Producer-only exact owned-resource cleanup postconditions.
+    - name: require_worker_qualification
+      type: boolean
+      required: false
+      description: Require a qualified or prepared worker before parent admission.
+    - name: resume
+      type: boolean
+      required: false
+      description: Resume the same admitted parent using its ordinary SDK recovery receipt.
+    - name: dry_run
+      type: boolean
+      required: false
+      description: Preview the ordered stages and placement without admission.
     - name: input_bundle
       type: file
       required: false
@@ -549,7 +577,8 @@ actions:
         id: h3
         kind: video
         modes: [transform]
-        inputs: [request, asset_map]
+        inputs: [request, asset_map, execution_request, worker_qualification, prepared_worker,
+          cleanup_receipt, require_worker_qualification, resume, dry_run]
         requirements:
         - profiles/native-v1.yaml
         - profiles/native-v2.yaml

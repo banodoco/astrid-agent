@@ -415,6 +415,11 @@ def _reference_for_task(
             raise PreparedWorkerError("deployment profile static reference has unknown fields")
         if required_static_fields - set(profile):
             raise PreparedWorkerError("deployment profile static reference is incomplete")
+        lineage = task.get("spec", {}).get("delegated_parent")
+        if isinstance(lineage, Mapping):
+            if not lineage.get("parent_task_id") or not lineage.get("parent_attempt_id"):
+                raise PreparedWorkerError("prepared child parent binding is incomplete")
+            profile["executor_id"] = "astrid-prepared-" + hashlib.sha256(binding.admission_identity.task_id.encode()).hexdigest()[:32]
         profile["credential_ref"] = _task_credential_reference(
             str(profile["credential_ref"]), binding.admission_identity.task_id,
         )
@@ -480,6 +485,137 @@ def _reference_for_task(
         raise
     except Exception as exc:
         raise PreparedWorkerError("Runtime task or deployment profile cannot form an exact deployment reference") from exc
+
+
+def prepared_selection_digest(selection: PreparedWorkerSelection) -> str:
+    from .worker_staging import _claim_identity
+    claim_identity = _claim_identity(selection.claim_handle_path, str(selection.target["provider_account_ref"]))
+    value = {"claim_handle_path": str(selection.claim_handle_path), "claim_identity": claim_identity,
+             "deployment_profile": dict(selection.deployment_profile),
+             "staging_inputs": dict(selection.staging_inputs),
+             "journal_dir": str(selection.journal_dir), "target": dict(selection.target)}
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _task_inputs(task: Mapping[str, Any]) -> Mapping[str, Any]:
+    spec = task.get("spec", {})
+    executable = spec.get("spec") if isinstance(spec, Mapping) else None
+    inputs = executable.get("inputs") if isinstance(executable, Mapping) else None
+    if not isinstance(inputs, Mapping):
+        raise PreparedWorkerError("prepared task executable inputs are invalid")
+    return inputs
+
+
+class PreparedH3OwnerMonitor:
+    """Owner-only polling composition around the existing admitted parent receipt.
+
+    Interruption retains the exact activation for receipt-driven replay. This
+    monitor never admits, cancels, retries, or settles parent or child tasks.
+    """
+    def __init__(self, client: Any, selection_path: str | Path) -> None:
+        self.client = client
+        self.selection = load_prepared_worker_selection(selection_path)
+        self.workspace = getattr(getattr(client, "_remote", None), "_transport", None)
+        if self.workspace is None:
+            raise PreparedWorkerError("prepared H3 requires an explicit authenticated owner client")
+        self.parent_identity = None
+        self.child_id = None
+        self.runtime = None
+        self.retired = False
+        self.ensured = False
+
+    def __call__(self, parent: Mapping[str, Any]) -> None:
+        identity = tuple(parent.get(key) for key in ("task_id", "run_id", "project_id"))
+        if (any(not isinstance(value, str) or not value for value in identity)
+                or parent.get("capability_id") != "h3_av.transform"):
+            raise PreparedWorkerError("prepared custody requires one exact admitted H3 parent")
+        if self.parent_identity is None:
+            self.parent_identity = identity
+        elif self.parent_identity != identity:
+            raise PreparedWorkerError("prepared custody parent identity changed")
+        frozen = _task_inputs(parent).get("plan", {}).get("controls", {})
+        if frozen.get("prepared_selection_digest") != prepared_selection_digest(self.selection):
+            raise PreparedWorkerError("prepared owner selection differs from the admitted parent")
+        attempt = parent.get("attempt_id")
+        if not attempt:
+            return
+        children = []
+        cursor = None
+        seen = set()
+        while True:
+            from astrid.sdk.pagination import page_pair
+            page = page_pair(self.workspace.list_project_tasks(identity[2], cursor=cursor, limit=100))
+            if page is None:
+                raise PreparedWorkerError("prepared custody child listing is unavailable")
+            items, next_cursor = page
+            for child in items:
+                spec = child.get("spec", {}) if isinstance(child, Mapping) else {}
+                lineage = spec.get("delegated_parent", {})
+                if lineage.get("parent_task_id") != identity[0] or spec.get("delegated_stage") != "run":
+                    continue
+                if (lineage.get("parent_attempt_id") != attempt
+                        or lineage.get("project_id") != identity[2]
+                        or child.get("project_id") != identity[2]
+                        or lineage.get("runtime_epoch") != parent.get("runtime_epoch")
+                        or lineage.get("parent_fence") != parent.get("lease_fence")
+                        or child.get("capability_id") != "vibecomfy.run"):
+                    raise PreparedWorkerError("prepared child belongs to a stale or foreign parent attempt")
+                children.append(child)
+            cursor = next_cursor
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in seen or len(seen) >= 100:
+                raise PreparedWorkerError("prepared custody listing cursor is invalid or exceeds bound")
+            seen.add(cursor)
+        if len(children) > 1:
+            raise PreparedWorkerError("prepared parent has ambiguous run children")
+        if not children:
+            return
+        child = _read_exact_task(self.client, children[0]["task_id"], capability_id="vibecomfy.run")
+        if child.get("spec", {}).get("delegated_parent") != children[0].get("spec", {}).get("delegated_parent"):
+            raise PreparedWorkerError("prepared child lineage changed during owner readback")
+        if self.child_id is None:
+            self.child_id = child["task_id"]
+        elif self.child_id != child["task_id"]:
+            raise PreparedWorkerError("prepared custody child identity changed")
+        request = child.get("execution_request", {})
+        if (request.get("remote_activation_required") is not True
+                or request.get("target") != dict(self.selection.target)):
+            raise PreparedWorkerError("prepared child target differs from the selected owner claim")
+        if self.runtime is None:
+            inputs = _task_inputs(child)
+            bundle = self.selection.journal_dir / ("parent-" + hashlib.sha256(identity[0].encode()).hexdigest()[:20]) / "workflow"
+            bundle.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if bundle.resolve() != bundle:
+                raise PreparedWorkerError("prepared workflow owner path is aliased")
+            for port, filename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"), ("source", "source.json")):
+                binding = inputs.get(port, {})
+                oid = binding.get("object_id", binding.get("digest")) if isinstance(binding, Mapping) else None
+                if not isinstance(oid, str):
+                    raise PreparedWorkerError("prepared child canonical workflow binding is missing")
+                data = self.client.media.read_bytes(oid)
+                if type(data) is not bytes or "sha256:" + hashlib.sha256(data).hexdigest() != oid:
+                    raise PreparedWorkerError("prepared workflow managed bytes differ from admission")
+                destination = bundle / filename
+                if destination.is_symlink() or (destination.exists() and destination.read_bytes() != data):
+                    raise PreparedWorkerError("saved prepared workflow differs from admitted child")
+                destination.write_bytes(data)
+            factory = self.selection.composition_factory or _production_composition_factory
+            self.runtime = factory(client=self.client, selection=self.selection,
+                workflow_path=bundle / "workflow.py", workflow_bundle_path=bundle,
+                workflow_inputs=json.loads(inputs.get("workflow_inputs", "{}")))
+        state = str(child.get("state") or "").casefold()
+        if state in {"succeeded", "completed", "failed", "cancelled", "canceled"}:
+            if not self.retired:
+                self.runtime.retire_after_task(child)
+                self.retired = True
+        elif str(parent.get("state") or "").casefold() == "running":
+            if not self.ensured:
+                self.runtime.ensure_for_task(child)
+                self.ensured = True
+        else:
+            raise PreparedWorkerError("prepared parent ended while child custody remains outstanding")
 
 
 class _ProductionPreparedTaskRuntime:
@@ -617,6 +753,10 @@ class _ProductionPreparedTaskRuntime:
     def _relinquish_local_worker(self, preparer: Any, reference: Any) -> None:
         from astrid.sdk.workspace_client import WorkspaceClientError
 
+        if isinstance((getattr(self, "_task", None) or {}).get("spec", {}).get("delegated_parent"), Mapping):
+            # Runtime validates this stage binding on every owner control. The
+            # admitted parent retains its local launcher and outstanding work.
+            return
         try:
             observed = self.workspace.get_local_worker_generation()
         except WorkspaceClientError as exc:
@@ -761,6 +901,8 @@ class _ProductionPreparedTaskRuntime:
             ) from exc
 
     def _restore_local_worker(self) -> None:
+        if isinstance((getattr(self, "_task", None) or {}).get("spec", {}).get("delegated_parent"), Mapping):
+            return
         generation = self._local_generation
         if generation is None:
             claim = _read_mapping(self.selection.claim_handle_path, label="P1 claim")
@@ -789,6 +931,7 @@ class _ProductionPreparedTaskRuntime:
             raise PreparedWorkerError("Runtime did not restore the selected local-worker profile")
 
     def retire_after_task(self, task: Mapping[str, Any]) -> None:
+        self._task = dict(task)
         managed = _read_mapping(self.selection.claim_handle_path, label="P1 claim").get("managed_worker")
         if not isinstance(managed, Mapping):
             return

@@ -1414,7 +1414,9 @@ def _finalizer_generation_intent(
 def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    managed_client = getattr(args, "_managed_client", None)
+    execution_request = (getattr(args, "_admitted_execution_request", None) if managed_client is not None
+                         else _json_mapping(args.execution_request) if args.execution_request else None)
     requested_target = execution_request.get("target") if execution_request else None
     if isinstance(requested_target, Mapping) and requested_target.get("kind") not in (None, "default", "runpod"):
         raise AstridError(UNSUPPORTED_TARGET_MESSAGE)
@@ -1445,7 +1447,6 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
     local_engine = None
-    managed_client = getattr(args, "_managed_client", None)
     if placement == "local":
         if managed_client is None:
             local_engine = _resolve_local_engine()
@@ -1488,7 +1489,13 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
 
         prepared_selection = load_prepared_worker_selection(args.prepared_worker)
         execution_request = prepared_selection.execution_request(execution_request)
-    cleanup_receipt = _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None
+    admitted_qualification = getattr(args, "_admitted_qualification_digest", None)
+    if managed_client is not None and admitted_qualification is not None:
+        (root / "00-worker-qualification.json").write_text(json.dumps({"schema_version": 1,
+            "status": "accepted", "qualification_digest": admitted_qualification,
+            "target": requested_target}, sort_keys=True) + "\n", encoding="utf-8")
+    cleanup_receipt = (getattr(args, "_admitted_cleanup_receipt", None) if managed_client is not None
+                       else _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None)
     # The parent orchestrator is launched locally, while its child executor
     # tasks target the already-supervised Runtime/GenericPackHost. Starting a
     # second local pack host here would compete with that existing authority.
@@ -1983,6 +1990,46 @@ def _import(client, project: str, data: bytes, filename: str) -> dict[str, Any]:
     return {"object_id": oid, "digest": oid, "filename": filename}
 
 
+PUBLIC_CONTROLS = frozenset({"execution_request", "worker_qualification", "prepared_worker",
+                              "cleanup_receipt", "require_worker_qualification", "resume", "dry_run"})
+
+
+def public_controls(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve producer-local controls; no owner path crosses the worker seam."""
+    from astrid.sdk.execution_request import normalize_execution_request
+    def document(name):
+        value = inputs.get(name)
+        return _json_mapping(Path(value)) if isinstance(value, (str, Path)) else value
+    for name in ("require_worker_qualification", "resume", "dry_run"):
+        if type(inputs.get(name, False)) is not bool:
+            raise AstridError(f"H3 {name} must be an explicit boolean")
+    request = normalize_execution_request(document("execution_request"))
+    if request and request.get("inputs"):
+        raise AstridError("H3 run inputs are derived from admitted stages")
+    qualification = None
+    if inputs.get("worker_qualification") is not None:
+        qualification = load_worker_qualification(inputs["worker_qualification"])
+        request, _ = _qualified_execution_request(qualification, request)
+    prepared_digest = None
+    if inputs.get("prepared_worker") is not None:
+        from astrid.packs.runpod.prepared_task import load_prepared_worker_selection, prepared_selection_digest
+        selection = load_prepared_worker_selection(inputs["prepared_worker"])
+        request = selection.execution_request(request)
+        prepared_digest = prepared_selection_digest(selection)
+    elif inputs.get("require_worker_qualification") and qualification is None:
+        raise AstridError("worker qualification is required before targeted H3 admission")
+    if request and request["target"]["kind"] not in {"default", "runpod"}:
+        raise AstridError(UNSUPPORTED_TARGET_MESSAGE)
+    request = normalize_execution_request(request)
+    cleanup = document("cleanup_receipt")
+    if cleanup is not None and not isinstance(cleanup, Mapping):
+        raise AstridError("cleanup_receipt must contain a JSON object")
+    return {"run_execution_request": request, "cleanup_receipt": cleanup,
+            "qualification_digest": qualification_digest(qualification) if qualification else None,
+            "prepared_selection_digest": prepared_digest,
+            "require_worker_qualification": bool(inputs.get("require_worker_qualification", False))}
+
+
 def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry):
     """Freeze and import exact request/bundle/source bytes before one admission."""
     import tempfile
@@ -1999,7 +2046,8 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry)
     project = project_data.get("project_id") or project_data.get("id")
     if not isinstance(project, str) or not project:
         raise AstridError("H3 Runtime project has no canonical identity")
-    if set(inputs) - {"request", "asset_map", "project", "editorial_approved"}:
+    controls = public_controls(inputs)
+    if set(inputs) - ({"request", "asset_map", "project", "editorial_approved"} | PUBLIC_CONTROLS):
         raise AstridError("unsupported tracked H3 parent controls or caller-supplied roots")
     if type(inputs.get("editorial_approved", False)) is not bool:
         raise AstridError("H3 editorial approval must be an explicit boolean")
@@ -2057,10 +2105,14 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry)
     final_intent["metadata"] = {"h3_av": {"request_digest": request.digest, "publication_scope": "final_composition"}}
     final = _generation_publish_effect(capability("h3_av.publication_finalizer"), project=project,
                                        generation_intent=final_intent)
+    run_request = controls["run_execution_request"]
+    run_target = run_request["target"] if run_request else {"kind": "default"}
     policy = {
-        "capabilities": list(identities.values()), "targets": [{"kind": "default"}],
+        "capabilities": list(identities.values()),
+        "targets": [{"kind": "default"}] + ([run_target] if run_target != {"kind": "default"} else []),
         "input_object_ids": list(dict.fromkeys(row["object_id"] for row in roots.values())),
-        "stages": [{"name": name, **identities[name], "target": {"kind": "default"},
+        "stages": [{"name": name, **identities[name], "target": run_target if name == "run" else {"kind": "default"},
+                    **({"execution_request": run_request} if name == "run" and run_request else {}),
                     "inputs": [ref for port in registry.get(capability_id).inputs
                                for ref in bindings[name] if ref["name"] == port.name]}
                    for name, capability_id in STAGES],
@@ -2072,7 +2124,7 @@ def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry)
         },
     }
     plan = {"version": 1, "project": project, "request_digest": request.digest, "roots": roots,
-            "stages": policy["stages"], "publications": policy["publications"], **sealed}
+            "stages": policy["stages"], "publications": policy["publications"], "controls": controls, **sealed}
     return {**roots, "plan": plan, "editorial_approved": bool(inputs.get("editorial_approved", False))}, policy
 
 
@@ -2191,12 +2243,18 @@ def execute(*, request, input_bundle, plan, source=None, editorial_approved=Fals
     # Python actions load under a verified private module prefix. Use the
     # installed adapter class shared with transform.run's bounded dispatch.
     client = ManagedParentClient(plan, root)
+    controls = plan.get("controls", {})
+    admitted_request = controls.get("run_execution_request")
+    placement = "runpod" if (admitted_request or {}).get("target", {}).get("kind") == "runpod" else "local"
     args = argparse.Namespace(request=paths["request"], asset_map=None, out=root / "stages",
         project=plan["project"], execution_request=None, worker_qualification=None, prepared_worker=None,
         cleanup_receipt=None, require_worker_qualification=False, editorial_approved=editorial_approved,
         resume=(root / "stages" / "operation-state.json").is_file(),
-        dry_run=False, placement="local", _managed_client=client,
-        _managed_bundle=paths["input_bundle"], _managed_roots=roots)
+        dry_run=False, placement=placement, _managed_client=client,
+        _managed_bundle=paths["input_bundle"], _managed_roots=roots,
+        _admitted_cleanup_receipt=controls.get("cleanup_receipt"),
+        _admitted_execution_request=admitted_request,
+        _admitted_qualification_digest=controls.get("qualification_digest"))
     result = run_transform(args)
     receipt = _json_mapping(Path(result["final_receipt"]))
     if (receipt.get("overall_status") not in {"candidate_verified", "complete"}

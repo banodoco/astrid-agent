@@ -3243,6 +3243,7 @@ def _wait_for_kernel_task(
     poll_seconds: float,
     read_managed_outputs: bool = False,
     expects_outputs: bool = False,
+    owner_tick: Any | None = None,
 ) -> tuple[dict[str, Any], bool, str]:
     """Follow one admitted task until completion, failure, or requested cancellation."""
     if not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
@@ -3291,6 +3292,8 @@ def _wait_for_kernel_task(
             }, False, ""
 
         task = dict(data)
+        if owner_tick is not None:
+            owner_tick(task)
         state = str(task.get("state") or task.get("status") or "").lower()
         attempt_id = str(task.get("attempt_id") or "")
         if state in {"succeeded", "completed"}:
@@ -3397,6 +3400,7 @@ def _observe_task_invocation(
     manifest_path: Path | str | None = None,
     expects_outputs: bool = False,
     replay_info: Mapping[str, Any] | None = None,
+    owner_tick: Any | None = None,
 ) -> InvocationResult:
     """Observe a known Runtime task and build the existing SDK result shape.
 
@@ -3486,6 +3490,7 @@ def _observe_task_invocation(
             poll_seconds=poll_seconds,
             read_managed_outputs=read_managed_outputs,
             expects_outputs=expects_outputs,
+            owner_tick=owner_tick,
         )
         if waited_attempt_id:
             attempt_id = waited_attempt_id
@@ -3773,7 +3778,7 @@ def observe_task_invocation(
     return observed
 
 
-def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_seconds):
+def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_seconds, owner_tick=None):
     """Observe a frozen admission before any live manifest/preflight resolution."""
     result = receipt.recover_task()
     metadata = receipt.data["metadata"]
@@ -3806,6 +3811,7 @@ def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_s
         out=metadata.get("out"),
         project=metadata.get("project"),
         authority_context=metadata.get("authority_context"),
+        owner_tick=owner_tick,
     )
 
 
@@ -4112,8 +4118,26 @@ def invoke(
         raise TypeError("private capabilities can only be invoked through internal dispatch")
     if not isinstance(read_managed_outputs, bool):
         raise CapabilityValidationError("read_managed_outputs must be a boolean")
-    if resume and recovery_path is None:
+    if resume and recovery_path is None and capability_id != "h3_av.transform":
         raise CapabilityValidationError("resume requires recovery_path")
+    owner_tick = None
+    if capability_id == "h3_av.transform" and not child_mode:
+        public_inputs = dict(inputs or {})
+        for name in ("resume", "dry_run"):
+            if name in public_inputs and type(public_inputs[name]) is not bool:
+                raise CapabilityValidationError(f"H3 {name} must be an explicit boolean")
+        resume = public_inputs.pop("resume", resume)
+        dry_run = public_inputs.pop("dry_run", dry_run)
+        inputs = public_inputs
+        if recovery_path is None and out is not None and (resume or public_inputs.get("prepared_worker") is not None):
+            recovery_path = Path(out) / "h3-parent-recovery.json"
+        if resume and recovery_path is None:
+            raise CapabilityValidationError("resume requires recovery_path")
+        if public_inputs.get("prepared_worker") is not None and not dry_run:
+            if not wait or recovery_path is None:
+                raise CapabilityValidationError("prepared H3 requires wait=True and a parent recovery receipt")
+            from astrid.packs.runpod.prepared_task import PreparedH3OwnerMonitor
+            owner_tick = PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"])
     if recovery_path is not None and _recovery is None:
         if dry_run:
             raise CapabilityValidationError("recovery is unavailable for dry-run previews")
@@ -4132,7 +4156,7 @@ def invoke(
             with AdmissionReceipt(recovery_path, request=request, client=client, resume=resume) as receipt:
                 if resume:
                     return _resume_receipt_invocation(receipt, client=client, wait=wait,
-                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, owner_tick=owner_tick)
                 forwarded["_recovery"] = receipt
                 forwarded.pop("capability_id")
                 return invoke(capability_id, **forwarded)
@@ -4274,6 +4298,11 @@ def invoke(
                 "output cardinality is not safely inferable at admission"
             )
 
+    h3_preview_controls = None
+    if dry_run and capability.id == "h3_av.transform" and not child_mode:
+        from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS, public_controls
+        h3_preview_controls = public_controls(request_inputs)
+        request_inputs = {key: value for key, value in request_inputs.items() if key not in PUBLIC_CONTROLS}
     if not dry_run and capability.id == "h3_av.transform" and not child_mode:
         if capability.capability_type != "executor":
             raise CapabilityPreconditionError("H3 requires a Runtime-admitted executor parent")
@@ -4593,6 +4622,13 @@ def invoke(
     # already resolved manifest DTO and does not import either runner or any
     # local project/run authority.
     if dry_run:
+        if h3_preview_controls is not None:
+            from astrid.packs.h3_av.actions.transform.run import STAGES
+            return InvocationResult(capability_id=capability.id, capability_type=capability.capability_type,
+                native_kind=capability.native_kind, ok=True, outputs={}, raw_result={
+                    "status": "planned", "parent_target": {"kind": "default"},
+                    "run_execution_request": h3_preview_controls["run_execution_request"],
+                    "stages": [{"stage": name, "capability_id": child} for name, child in STAGES]})
         try:
             raw_result, preview_ok = _manifest_dry_run_result(
                 capability,
@@ -4757,6 +4793,7 @@ def invoke(
             project=project,
             authority_context=invocation_authority_context,
             manifest_path=mpath,
+            owner_tick=owner_tick,
         )
     except AstridSDKError:
         raise
