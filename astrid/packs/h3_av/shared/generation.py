@@ -347,9 +347,11 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                 frame_load_cap=int(masked_edit["frame_load_cap"]),
                 start_time=float(masked_edit["start_time"]), video="",
                 videopreview={"hidden": False, "paused": False, "params": {}, "muted": False},
-                _id=masked_edit["source_binding"],
+                # Match the existing vibecomfy.run source-node contract used
+                # by the packaged H3 continuation workflows.
+                _id="99",
             )
-            wf.register_input(masked_edit["source_binding"], masked_edit["source_binding"], "video", "",
+            wf.register_input(masked_edit["source_binding"], "99", "video", "",
                               type="CHOICE", default="", required=True, media_semantics="video")
             if masked_edit.get("mask_kind") == "video":
                 # Binary mask video: read the RED channel of the IMAGE output. The VHS MASK

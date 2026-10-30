@@ -9,6 +9,7 @@ from astrid.packs.h3_av.actions.transform.run import _generation_intent
 from astrid.packs.h3_av.actions.compile.compile import CompilationError, compile_preparation
 from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
 from astrid.packs.h3_av.shared.request import normalize_request
+from astrid.packs.vibecomfy.invocation_preflight import InvocationPreflightError, preflight_invocation
 
 
 def _assert_single_public_video(compiled: dict, *, internal_outputs: list[str]) -> None:
@@ -79,6 +80,24 @@ def test_imported_v1_regional_change_binds_native_red_mask(tmp_path: Path) -> No
     assert edit["inputs"]["crop"] == "disabled"
     assert compiled["capabilities"]["edit_binding"]["during_frames"] == [24, 72]
     _assert_single_public_video(compiled, internal_outputs=[])
+
+
+def test_native_masked_edit_source_binding_matches_worker_contract(tmp_path: Path) -> None:
+    request = _request(changes={
+        "video": [{"during": [0, 4], "area": {"rectangle": [0, 0, 100, 100]},
+                   "mask_asset": "mask.png", "action": "generate"}], "audio": [],
+    })
+    compiled = compile_preparation(_prepared(tmp_path, request, masks=True), out_dir=tmp_path / "compiled")
+    workflow_path = compiled["workflow"]["workflow.py"]["path"]
+    kwargs = {"run_inputs": compiled["workflow_inputs"], "expected_source_node": "99", "expected_source_field": "video"}
+
+    receipt = preflight_invocation(workflow_path, **kwargs)
+    assert receipt["run_inputs"]["source_video"] == compiled["workflow_inputs"]["source_video"]
+
+    with pytest.raises(InvocationPreflightError, match="SOURCE_BINDING"):
+        preflight_invocation(workflow_path, **{**kwargs, "expected_source_node": "wrong-node"})
+    with pytest.raises(InvocationPreflightError, match="SOURCE_BINDING"):
+        preflight_invocation(workflow_path, **{**kwargs, "expected_source_field": "wrong-field"})
 
 
 @pytest.mark.parametrize("count", [0, 1, 2])
