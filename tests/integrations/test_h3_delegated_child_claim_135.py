@@ -50,7 +50,7 @@ def claim_world(tmp_path, monkeypatch, real_runtime):
     client = RuntimeProtocolClient(daemon.endpoint, token, timeout=3)
     client.executor_id = "astrid-pack-host"
     project = resource(owner.create_project("Exact claim", slug="claim135", idempotency_key="project"))["project_id"]
-    pack = tmp_path / "cpu-pack"
+    pack = tmp_path / "h3_av"
     (pack / "actions").mkdir(parents=True)
     (pack / "actions/cpu.py").write_text("def run():\n    return {}\n")
     action = {"description": "CPU fixture", "invocation": {
