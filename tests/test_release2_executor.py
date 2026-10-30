@@ -10,6 +10,8 @@ import pytest
 
 from scripts import journey_release2 as release2
 from scripts import release2_executor as executor
+from scripts import check_journey_evidence, journey_matrix
+from scripts import ci_windows_journey
 
 BOUNDARY = r"""#!/usr/bin/env python3
 import json
@@ -255,6 +257,50 @@ def test_executor_runs_every_declared_os_channel_and_mode(tmp_path, row):
     assert receipt["mode"] == row["mode"]
     assert receipt["installed"]["manifest_sha256"] == release2.STAND_IN_MANIFEST_SHA256
     assert all(value == "pass" for value in receipt["checks"].values())
+
+
+def test_shared_m4_5_aggregate_rejects_disposable_receipts_duplicates_and_missing_rows(tmp_path):
+    assert tuple(row["scenario_id"] for row in journey_matrix.M4_5_MATRIX) == release2.RELEASE2_SCENARIO_IDS
+    for row in release2.RELEASE2_SCENARIOS:
+        output = tmp_path / row["scenario_id"]
+        output.mkdir()
+        run_scenario(output, row)
+    errors = check_journey_evidence.evaluate_m4_5_matrix(tmp_path)
+    assert sum("only a hosted-lifecycle pass is admissible" in error for error in errors) == 12
+
+    receipt = tmp_path / release2.RELEASE2_SCENARIOS[0]["scenario_id"] / "journey-result.json"
+    invalid_row = json.loads(receipt.read_text())
+    invalid_row.update(status="pass", evidence_kind="hosted-lifecycle", os="windows",
+                       final_cleanup="fail")
+    invalid_row["candidate"]["app"] = "0" * 40
+    receipt.write_text(json.dumps(invalid_row))
+    errors = check_journey_evidence.evaluate_m4_5_matrix(tmp_path)
+    assert any("os does not match" in error for error in errors)
+    assert any("candidate" in error for error in errors)
+    assert any("final cleanup did not pass" in error for error in errors)
+
+    duplicate = tmp_path / "duplicate" / "journey-result.json"
+    duplicate.parent.mkdir()
+    duplicate.write_bytes(receipt.read_bytes())
+    errors = check_journey_evidence.evaluate_m4_5_matrix(tmp_path)
+    assert any("duplicate M4-5 receipt" in error for error in errors)
+
+    duplicate.unlink()
+    receipt.unlink()
+    errors = check_journey_evidence.evaluate_m4_5_matrix(tmp_path)
+    assert any("missing M4-5 receipt" in error for error in errors)
+
+
+def test_windows_release2_boundary_args_are_individually_quoted_for_powershell_51():
+    command = ci_windows_journey.powershell5_command(
+        r"C:\Program Files\Astrid\boundary.exe",
+        [r"C:\Agent Work\app path", "quote'and space"],
+    )
+    assert command[:5] == ["powershell.exe", "-NoProfile", "-NonInteractive",
+                           "-ExecutionPolicy", "Bypass"]
+    assert "'C:\\Program Files\\Astrid\\boundary.exe'" in command[-1]
+    assert "'C:\\Agent Work\\app path'" in command[-1]
+    assert "'quote''and space'" in command[-1]
 
 
 def test_linux_unsaved_draft_is_a_real_zero_update_executable_control(tmp_path):

@@ -522,6 +522,50 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
     return errors
 
 
+def evaluate_m4_5_matrix(results):
+    """Require one authentic hosted receipt for each distinct Release-2 scenario."""
+    if __package__:
+        from . import journey_release2
+    else:
+        try:
+            import journey_release2
+        except ModuleNotFoundError:
+            from scripts import journey_release2
+
+    expected = set(journey_release2.RELEASE2_SCENARIO_IDS)
+    found = {}
+    errors = []
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        if row.get("receipt_kind") != "release2-installed-lifecycle":
+            continue
+        scenario_id = row.get("scenario_id")
+        if scenario_id not in expected:
+            errors.append(f"{path}: unknown M4-5 scenario_id {scenario_id!r}")
+        elif scenario_id in found:
+            errors.append(f"{scenario_id}: duplicate M4-5 receipt")
+        else:
+            found[scenario_id] = row
+    for scenario_id in journey_release2.RELEASE2_SCENARIO_IDS:
+        row = found.get(scenario_id)
+        if row is None:
+            errors.append(f"{scenario_id}: missing M4-5 receipt")
+            continue
+        try:
+            journey_release2.validate_receipt(row)
+        except ValueError as exc:
+            errors.append(f"{scenario_id}: {exc}")
+        if row.get("status") != "pass" or row.get("evidence_kind") != "hosted-lifecycle":
+            errors.append(f"{scenario_id}: only a hosted-lifecycle pass is admissible")
+        if row.get("source_override_test_mode") is not False:
+            errors.append(f"{scenario_id}: source override evidence is not admissible")
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True, type=Path)
@@ -537,12 +581,15 @@ def main():
                         help="require the exact nine Release-1 job receipts under --results")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
+    parser.add_argument("--aggregate-m4-5", action="store_true",
+                        help="require all twelve hosted Release-2 scenario receipts")
     args = parser.parse_args()
     errors = []
     try:
         candidate = read(args.candidate)
         manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if args.aggregate_release1 and args.aggregate_m4_4a:
+        aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5))
+        if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.aggregate_release1:
             if args.results is None:
@@ -554,6 +601,12 @@ def main():
             if args.allow_source_override:
                 raise ValueError("M4-4a aggregate never admits a source override")
             errors.extend(evaluate_m4_4a_backend_matrix(candidate, args.results))
+        elif args.aggregate_m4_5:
+            if args.results is None:
+                raise ValueError("--results is required with --aggregate-m4-5")
+            if args.allow_source_override:
+                raise ValueError("M4-5 aggregate never admits a source override")
+            errors.extend(evaluate_m4_5_matrix(args.results))
         elif not args.prepare_only:
             if args.cadence == "release-candidate":
                 raise ValueError("release-candidate evidence requires --aggregate-release1")

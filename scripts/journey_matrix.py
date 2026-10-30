@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from typing import Final
 
+if __package__:
+    from .journey_release2 import RELEASE2_SCENARIOS
+else:
+    try:
+        from journey_release2 import RELEASE2_SCENARIOS
+    except ModuleNotFoundError:
+        from scripts.journey_release2 import RELEASE2_SCENARIOS
+
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-14", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
@@ -58,6 +66,24 @@ M4_4A_BACKEND_MATRIX: Final = tuple(
 )
 M4_4A_BACKEND_JOB_IDS: Final = tuple(row["job_id"] for row in M4_4A_BACKEND_MATRIX)
 
+# M4-4b is executable local-process smoke coverage.  Its evidence class is
+# intentionally separate from every hosted Release-1 row.
+M4_4B_LOCAL_SMOKE: Final = {
+    "scenario_id": "m4-4b-fully-local-linux-smoke",
+    "runner": "ubuntu-24.04",
+    "shell": "sh",
+    "os": "linux-or-macos",
+    "evidence_class": "local_process",
+    "hosted": False,
+}
+
+# M4-5 rows are keyed by scenario_id because the two direct channels share a
+# job_id for each OS.  M4-6 reuses the nine Release-1 ownership/OS tuples.
+M4_5_MATRIX: Final = RELEASE2_SCENARIOS
+M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
+M4_6_MATRIX: Final = RELEASE1_MATRIX
+M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
+
 
 def m4_4a_backend_job(job_id: str) -> dict:
     for row in M4_4A_BACKEND_MATRIX:
@@ -86,3 +112,17 @@ def validate_job(job_id: str, mode: str) -> dict:
     if row["mode"] != mode:
         raise ValueError(f"Release-1 job {job_id} requires mode {row['mode']}, not {mode}")
     return row
+
+
+def validate_m4_5_scenario(scenario_id: str) -> dict:
+    for row in M4_5_MATRIX:
+        if row["scenario_id"] == scenario_id:
+            return dict(row)
+    raise ValueError(f"Unknown M4-5 scenario: {scenario_id}")
+
+
+def validate_m4_6_slot(slot_id: str) -> dict:
+    for row in M4_6_MATRIX:
+        if row["job_id"] == slot_id:
+            return dict(row)
+    raise ValueError(f"Unknown M4-6 failure-mode slot: {slot_id}")
