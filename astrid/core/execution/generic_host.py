@@ -12107,6 +12107,10 @@ class LocalExecutionPreparation:
         self._lock = threading.RLock()
         self._prepare_done = threading.Event()
         self._prepare_done.set()
+        # The claim loop may stop as soon as shutdown starts.  The private
+        # control reply must be sent before the process can exit.
+        self._control_cleanup_done = threading.Event()
+        self._control_cleanup_done.set()
         self._claim_host: GenericPackHost | None = None
         self._activation_grant: dict[str, Any] | None = None
         self._retained_relay_actor: Any | None = None
@@ -13381,6 +13385,7 @@ class LocalExecutionPreparation:
             if self._abort_ack is not None:
                 return json.loads(json.dumps(self._abort_ack))
         try:
+            self._control_cleanup_done.clear()
             if self._claim_host is not None:
                 self._claim_host.shutdown()
             # Positive acknowledgement follows actual owned-child, bridge and
@@ -13825,7 +13830,11 @@ class LocalExecutionPreparation:
                                  "owner_epoch": (self._request or frame).get("owner_epoch"),
                                  "error_code": "preparation_unresolved" if command == "prepare_local_execution" else "report_unresolved",
                                  "custody_capabilities": self.known_custody_capabilities()}
-                    _send_activation_frame(control, reply)
+                    try:
+                        _send_activation_frame(control, reply)
+                    finally:
+                        if frame.get("command") == "abort_local_execution":
+                            self._control_cleanup_done.set()
             except BaseException as exc:
                 self.control_error = exc
             finally:
@@ -13833,6 +13842,9 @@ class LocalExecutionPreparation:
         thread = threading.Thread(target=serve, name="astrid-host-control", daemon=True)
         thread.start()
         return thread
+
+    def wait_for_shutdown_cleanup(self) -> None:
+        self._control_cleanup_done.wait()
 
 
 
@@ -14604,7 +14616,7 @@ def _log_cli_exit_failure(error: BaseException) -> None:
 
 
 def _cli() -> int:
-    managed_shutdowns: list[_ManagedStdinShutdown] = []
+    managed_shutdowns: list[Any] = []
     try:
         return _cli_impl(managed_shutdowns)
     finally:
@@ -14614,7 +14626,7 @@ def _cli() -> int:
             lifecycle.wait_for_shutdown_cleanup()
 
 
-def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
+def _cli_impl(managed_shutdowns: list[Any]) -> int:
 
     parser = argparse.ArgumentParser(prog="astrid-generic-host")
     parser.add_argument("command", nargs="?", choices=("run", "supervise"), help="run the worker loop or JSONL supervisor")
@@ -14684,6 +14696,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         if not has_activation_transport or args.host_control_fd < 3 or args.host_control_fd == args.activation_fd:
             parser.error("local host-control requires a distinct parked activation transport")
         preparation = LocalExecutionPreparation(operation_id=args.activation_operation_id, channel_id=args.activation_channel_id)
+        managed_shutdowns.append(preparation)
         preparation.control_thread = preparation.serve_control(args.host_control_fd)
         def parked_shutdown(signum, _frame):
             try:
