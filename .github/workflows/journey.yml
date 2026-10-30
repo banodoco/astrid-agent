@@ -47,6 +47,20 @@ on:
         required: false
         default: "[]"
         type: string
+      m4_4b_enabled:
+        description: Run and locally aggregate the disposable POSIX M4-4b process smoke
+        required: false
+        default: false
+        type: boolean
+      m4_6_enabled:
+        description: Run all nine local-disposable M4-6 executor slots; hosted gate remains fail-closed
+        required: false
+        default: false
+        type: boolean
+      m4_6_candidate:
+        description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       candidate:
@@ -90,6 +104,20 @@ on:
         required: false
         default: "[]"
         type: string
+      m4_4b_enabled:
+        description: Run and locally aggregate the disposable POSIX M4-4b process smoke
+        required: false
+        default: false
+        type: boolean
+      m4_6_enabled:
+        description: Run all nine local-disposable M4-6 executor slots; hosted gate remains fail-closed
+        required: false
+        default: false
+        type: boolean
+      m4_6_candidate:
+        description: Explicit JSON tuple with app/agent/runtime/pinokio SHAs and manifest_sha256 for local M4-6
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -110,6 +138,10 @@ jobs:
       m4_5_boundary: ${{ steps.config.outputs.m4_5_boundary }}
       m4_5_boundary_args: ${{ steps.config.outputs.m4_5_boundary_args }}
       m4_5_matrix: ${{ steps.config.outputs.m4_5_matrix }}
+      m4_4b_enabled: ${{ steps.config.outputs.m4_4b_enabled }}
+      m4_6_enabled: ${{ steps.config.outputs.m4_6_enabled }}
+      m4_6_candidate: ${{ steps.config.outputs.m4_6_candidate }}
+      m4_6_matrix: ${{ steps.config.outputs.m4_6_matrix }}
       matrix: ${{ steps.config.outputs.matrix }}
     steps:
       - name: Check out reviewed Agent matrix contracts
@@ -133,6 +165,9 @@ jobs:
           M4_5_ONLY: ${{ inputs.m4_5_only }}
           M4_5_BOUNDARY: ${{ inputs.m4_5_boundary }}
           M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args }}
+          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled }}
+          M4_6_ENABLED: ${{ inputs.m4_6_enabled }}
+          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -140,6 +175,7 @@ jobs:
           sys.path.insert(0, "driver/scripts")
           import journey_matrix
           import journey_release2
+          import journey_failure_modes
           candidate = json.loads(os.environ["CANDIDATE"])
           if not isinstance(candidate, dict) or any(
               not re.fullmatch(r"[0-9a-f]{40}", str(candidate.get(key, "")))
@@ -191,6 +227,19 @@ jobs:
                   raise SystemExit("m4_5_boundary is required when m4_5_enabled is true")
               if any(candidate.get(key) != value for key, value in journey_release2.RELEASE1_CANDIDATE.items()):
                   raise SystemExit("M4-5 requires its exact frozen Release-1 candidate tuple")
+          m4_4b_enabled = os.environ["M4_4B_ENABLED"].lower() == "true"
+          m4_6_enabled = os.environ["M4_6_ENABLED"].lower() == "true"
+          m4_6_candidate = None
+          if m4_6_enabled:
+              try:
+                  m4_6_candidate = json.loads(os.environ["M4_6_CANDIDATE"])
+              except json.JSONDecodeError as exc:
+                  raise SystemExit("m4_6_candidate must be a JSON object when M4-6 is enabled") from exc
+              candidate_errors = journey_failure_modes.candidate_errors(m4_6_candidate)
+              if candidate_errors:
+                  raise SystemExit("invalid m4_6_candidate: " + "; ".join(candidate_errors))
+          else:
+              m4_6_candidate = {}
           matrix = [
               {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-14", "shell":"sh", "os":"macos"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh", "os":"linux"},
@@ -215,6 +264,10 @@ jobs:
                                   ("m4_5_boundary", boundary),
                                   ("m4_5_boundary_args", json.dumps(boundary_args, separators=(',', ':'))),
                                   ("m4_5_matrix", {"include": list(journey_matrix.M4_5_MATRIX)}),
+                                  ("m4_4b_enabled", str(m4_4b_enabled).lower()),
+                                  ("m4_6_enabled", str(m4_6_enabled).lower()),
+                                  ("m4_6_candidate", m4_6_candidate),
+                                  ("m4_6_matrix", {"include": list(journey_matrix.M4_6_MATRIX)}),
                                   ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
@@ -420,9 +473,142 @@ jobs:
           path: ${{ runner.temp }}/m4-5-${{ matrix.scenario_id }}/journey-result.json
           if-no-files-found: warn
 
+  m4_4b_local:
+    if: needs.config.outputs.m4_4b_enabled == 'true'
+    needs: config
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the reviewed shared driver
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build marker-attested disposable checkout and state roots
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/m4-4b-local"
+          checkout="$root/checkout"
+          state="$root/state"
+          mkdir -p "$checkout" "$state" "$RUNNER_TEMP/m4-4b-results"
+          git -C "$checkout" init --quiet --initial-branch=main
+          git -C "$checkout" config user.name "M4-4b local smoke"
+          git -C "$checkout" config user.email "m4-4b@example.invalid"
+          printf 'm4-4b-disposable\n' > "$checkout/.m4-4b-disposable"
+          printf 'disposable editor checkout\n' > "$checkout/editor.txt"
+          git -C "$checkout" add .m4-4b-disposable editor.txt
+          git -C "$checkout" commit -m 'mark disposable M4-4b checkout'
+          git init --quiet --bare "$root/origin.git"
+          git -C "$checkout" remote add origin "$root/origin.git"
+          printf 'm4-4b-disposable\n' > "$state/.m4-4b-disposable"
+      - name: Run real M4-4b local-process executor
+        shell: bash
+        run: |
+          python -u agent/scripts/ci_journey.py --shared-executor m4-4b \
+            --checkout "$RUNNER_TEMP/m4-4b-local/checkout" \
+            --state-root "$RUNNER_TEMP/m4-4b-local/state" \
+            --output "$RUNNER_TEMP/m4-4b-results/m4-4b-local-result.json"
+      - name: Retain local-only M4-4b output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-4b-local-m4-4b-fully-local-linux-smoke
+          path: ${{ runner.temp }}/m4-4b-results
+          if-no-files-found: warn
+
+  failure_modes:
+    if: needs.config.outputs.m4_6_enabled == 'true'
+    needs: config
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.config.outputs.m4_6_matrix) }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out reviewed shared driver
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Check out exact M4-6 candidate Agent history
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ fromJSON(needs.config.outputs.m4_6_candidate).agent }}
+          path: candidate-agent
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out exact M4-6 candidate Runtime history
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ fromJSON(needs.config.outputs.m4_6_candidate).runtime }}
+          path: runtime
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run local-disposable M4-6 executor slot on POSIX
+        if: matrix.os != 'windows'
+        shell: bash
+        env:
+          M4_6_CANDIDATE: ${{ needs.config.outputs.m4_6_candidate }}
+          SLOT_ID: ${{ matrix.job_id }}
+        run: |
+          root="$RUNNER_TEMP/m4-6-$SLOT_ID"
+          mkdir -p "$root/output"
+          printf '%s' "$M4_6_CANDIDATE" > "$root/candidate.json"
+          python -u agent/scripts/ci_journey.py --shared-executor m4-6 \
+            --slot-id "$SLOT_ID" --candidate "$root/candidate.json" \
+            --fixture "$GITHUB_WORKSPACE/agent/tests/fixtures/release0" \
+            --output "$root/output/m4-6-local-result.json" \
+            --work-root "$RUNNER_TEMP/$SLOT_ID-work" \
+            --agent-repo "$GITHUB_WORKSPACE/candidate-agent" \
+            --release0-runtime-repo "$GITHUB_WORKSPACE/runtime"
+      - name: Run local-disposable M4-6 executor slot on Windows PowerShell 5.1
+        if: matrix.os == 'windows'
+        shell: powershell
+        env:
+          M4_6_CANDIDATE: ${{ needs.config.outputs.m4_6_candidate }}
+          SLOT_ID: ${{ matrix.job_id }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ("m4-6-" + $env:SLOT_ID)
+          $outputRoot = Join-Path $root "output"
+          New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+          $candidatePath = Join-Path $root "candidate.json"
+          [IO.File]::WriteAllText($candidatePath, $env:M4_6_CANDIDATE, [Text.UTF8Encoding]::new($false))
+          $executorArgs = @(
+            "agent/scripts/ci_journey.py", "--shared-executor", "m4-6",
+            "--slot-id", $env:SLOT_ID, "--candidate", $candidatePath,
+            "--fixture", "$pwd/agent/tests/fixtures/release0",
+            "--output", (Join-Path $outputRoot "m4-6-local-result.json"),
+            "--work-root", (Join-Path $env:RUNNER_TEMP ($env:SLOT_ID + "-work")),
+            "--agent-repo", "$pwd/candidate-agent", "--release0-runtime-repo", "$pwd/runtime"
+          )
+          python -u @executorArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain local-disposable M4-6 output separately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-6-local-${{ matrix.job_id }}
+          path: ${{ runner.temp }}/m4-6-${{ matrix.job_id }}/output
+          if-no-files-found: warn
+
   gate:
     if: always()
-    needs: [config, journey, release2]
+    needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -433,12 +619,19 @@ jobs:
           JOURNEY_RESULT: ${{ needs.journey.result }}
           M4_5_ENABLED: ${{ needs.config.outputs.m4_5_enabled }}
           M4_5_ONLY: ${{ needs.config.outputs.m4_5_only }}
+          M4_4B_ENABLED: ${{ needs.config.outputs.m4_4b_enabled }}
+          M4_4B_RESULT: ${{ needs.m4_4b_local.result }}
+          M4_6_ENABLED: ${{ needs.config.outputs.m4_6_enabled }}
+          M4_6_RESULT: ${{ needs.failure_modes.result }}
           RELEASE2_RESULT: ${{ needs.release2.result }}
         run: |
           test "$CONFIG_RESULT" = success
           if [ "$M4_5_ONLY" != true ]; then test "$JOURNEY_RESULT" = success; fi
           if [ "$M4_5_ENABLED" = true ]; then test "$RELEASE2_RESULT" = success; fi
+          if [ "$M4_4B_ENABLED" = true ]; then test "$M4_4B_RESULT" = success; fi
+          if [ "$M4_6_ENABLED" = true ]; then test "$M4_6_RESULT" = success; fi
       - name: Check out reviewed Agent receipt harness
+        if: always()
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-agent
@@ -453,6 +646,7 @@ jobs:
           path: app
           persist-credentials: false
       - uses: actions/setup-python@v5
+        if: always()
         with:
           python-version: "3.11"
       - name: Download every per-job receipt
@@ -497,3 +691,47 @@ jobs:
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results release2-receipts --aggregate-m4-5
+      - name: Download local-only M4-4b output
+        if: always() && needs.config.outputs.m4_4b_enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: m4-4b-local-m4-4b-fully-local-linux-smoke
+          path: m4-4b-local-results
+      - name: Aggregate M4-4b only as local-process evidence
+        if: always() && needs.config.outputs.m4_4b_enabled == 'true'
+        shell: bash
+        run: python agent/scripts/check_journey_evidence.py --results m4-4b-local-results --aggregate-m4-4b-local
+      - name: Download all separately retained local M4-6 outputs
+        if: always() && needs.config.outputs.m4_6_enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: m4-6-local-*
+          path: m4-6-local-results
+      - name: Aggregate M4-6 disposable execution outputs
+        if: always() && needs.config.outputs.m4_6_enabled == 'true'
+        shell: bash
+        env:
+          M4_6_CANDIDATE: ${{ needs.config.outputs.m4_6_candidate }}
+        run: |
+          printf '%s' "$M4_6_CANDIDATE" > "$RUNNER_TEMP/m4-6-candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/m4-6-candidate.json" --results m4-6-local-results --aggregate-m4-6-local
+      - name: Fail closed on the unavailable hosted M4-6 native-service aggregate
+        if: always() && needs.config.outputs.m4_6_enabled == 'true'
+        shell: bash
+        env:
+          M4_6_CANDIDATE: ${{ needs.config.outputs.m4_6_candidate }}
+          NEEDS_PATH: ${{ runner.temp }}/m4-6-hosted-needs.json
+        run: |
+          printf '%s' "$M4_6_CANDIDATE" > "$RUNNER_TEMP/m4-6-hosted-candidate.json"
+          mkdir -p m4-6-hosted-results
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          slots = ("direct-macos", "direct-linux", "direct-windows",
+                   "pinokio-backend-macos", "pinokio-backend-linux", "pinokio-backend-windows",
+                   "pinokio-fully-local-macos", "pinokio-fully-local-linux", "pinokio-fully-local-windows")
+          Path(os.environ["NEEDS_PATH"]).write_text(
+              json.dumps({slot: {"result": "skipped"} for slot in slots}), encoding="utf-8")
+          PY
+          python agent/scripts/check_failure_receipts.py --candidate "$RUNNER_TEMP/m4-6-hosted-candidate.json" --results m4-6-hosted-results --needs "$RUNNER_TEMP/m4-6-hosted-needs.json"

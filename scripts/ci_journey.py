@@ -1236,11 +1236,12 @@ def _shared_executor_main(argv: list[str]) -> int:
             if sys.platform not in {"linux", "darwin"}:
                 raise ValueError("M4-4b local-process smoke supports POSIX hosts only")
             try:
-                from .fully_local_executor import run_execution
+                from .fully_local_executor import run_execution, validate_execution_receipt
             except ImportError:
-                from fully_local_executor import run_execution
+                from fully_local_executor import run_execution, validate_execution_receipt
             receipt = run_execution(checkout=values.checkout, state_root=values.state_root,
                                     output=values.output)
+            validate_execution_receipt(receipt)
             if receipt.get("evidence_class") != "local_process" or receipt.get("hosted_linux_receipt") is True:
                 raise ValueError("M4-4b smoke must remain local_process evidence")
             if receipt.get("hosted_linux_receipt_required") is not True:
@@ -1291,7 +1292,7 @@ def _shared_executor_main(argv: list[str]) -> int:
             print(f"M4-5 shared route failed: {exc}", file=sys.stderr)
             return 1
         return 0
-    if route == "m4-6":
+    if route in {"m4-6", "m4-6-inner"}:
         route_parser = argparse.ArgumentParser(description="Run one M4-6 local executable boundary")
         route_parser.add_argument("--slot-id", required=True)
         route_parser.add_argument("--candidate", required=True, type=Path)
@@ -1301,6 +1302,12 @@ def _shared_executor_main(argv: list[str]) -> int:
         route_parser.add_argument("--agent-repo", required=True, type=Path)
         route_parser.add_argument("--release0-runtime-repo", required=True, type=Path)
         values = route_parser.parse_args(argv[1:])
+        if route == "m4-6" and sys.platform == "win32":
+            command = windows.powershell5_command(
+                sys.executable,
+                [str(Path(__file__).resolve()), "--shared-executor", "m4-6-inner", *argv[1:]],
+            )
+            return subprocess.run(command, check=False).returncode
         try:
             try:
                 from . import failure_mode_executor, journey_failure_modes as failure
@@ -1311,21 +1318,34 @@ def _shared_executor_main(argv: list[str]) -> int:
                 from journey_matrix import validate_m4_6_slot
             slot = validate_m4_6_slot(values.slot_id)
             candidate = failure.read_json(values.candidate)
+            if failure.candidate_errors(candidate):
+                raise ValueError("M4-6 candidate tuple is incomplete")
             observation = failure_mode_executor.execute(
                 slot["job_id"], candidate, values.fixture, values.work_root,
                 agent_repo=values.agent_repo, runtime_repo=values.release0_runtime_repo,
             )
-            receipt = failure.create_receipt(slot["job_id"], candidate, observation)
-            if receipt.get("execution_scope") != "local-disposable":
+            executor_errors = failure_mode_executor.execution_observation_errors(observation)
+            if executor_errors:
+                raise ValueError("M4-6 local executor observations failed: " + "; ".join(executor_errors))
+            if observation.get("execution_scope") != "local-disposable":
                 raise ValueError("M4-6 executable boundary must remain local-disposable")
             evidence_source = values.work_root / "evidence"
+            values.output.parent.mkdir(parents=True, exist_ok=True)
             if evidence_source.is_dir():
-                shutil.copytree(evidence_source, values.output.parent / "evidence", dirs_exist_ok=True)
+                shutil.copytree(evidence_source, values.output.parent / "evidence")
+            receipt = {
+                "schema_version": 1,
+                "receipt_kind": "m4-6-local-disposable-execution",
+                "status": "exercised",
+                "slot_id": slot["job_id"],
+                "execution_scope": "local-disposable",
+                "source_override_test_mode": False,
+                "candidate": candidate,
+                "evidence_files": observation.get("evidence_files", []),
+                "observation": observation,
+            }
             failure.write_json(values.output, receipt)
-            failures = failure.validate_receipt(receipt, candidate, slot["job_id"])
-            if failures:
-                raise ValueError("M4-6 local receipt failed its contract: " + "; ".join(failures))
-            if (receipt.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable":
+            if (observation.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable":
                 raise ValueError("M4-6 local execution scope was not retained in its receipt")
         except Exception as exc:
             print(f"M4-6 shared route failed: {exc}", file=sys.stderr)
