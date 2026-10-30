@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 
 RUNTIME_DATA = Path("/root/.local/share/astrid-runtime")
 
@@ -63,6 +64,7 @@ def _owner(path):
 
 
 def runtime_probe(request, *, source_root, data_root=RUNTIME_DATA):
+    from astrid.core.action_cli import _environment, ephemeral_runtime
     from astrid.sdk.client import AstridClient
     from pod_source_identity import verify
 
@@ -102,19 +104,25 @@ def runtime_probe(request, *, source_root, data_root=RUNTIME_DATA):
 
     receipt = None
     try:
-        try:
-            # Runtime connect/up checks exact source identity; this SDK call then
-            # validates authenticated health, protocol, scopes, realm and actor.
-            with AstridClient.open_from_launcher(start_pack_host=False) as client:
-                status = lifecycle("status")
-                receipt = validate_runtime_status(
-                    status, _owner(data_root / "runtime/instance.lock"), expected, endpoint=client.endpoint)
-        finally:
-            # action run owns a separate ephemeral Runtime; free the door first.
-            stopped = lifecycle("down")
-            if (stopped.get("status") != "stopped"
-                    or (receipt is not None and stopped.get("realm_id") != receipt["realm_id"])):
-                raise ValueError("Runtime cleanup was not confirmed")
+        # Rehearse the installed action's own profile selection and workspace
+        # setup before engine/model installation, not just the bootstrap profile.
+        with tempfile.TemporaryDirectory(prefix="astrid-ready-") as temporary:
+            with ephemeral_runtime(Path(temporary).resolve()) as action_env, _environment({
+                key: action_env[key] for key in ("ASTRID_RUNTIME_DATA_ROOT", "ASTRID_RUNTIME_SOURCE_MANIFEST")
+            }):
+                data_root = Path(action_env["ASTRID_RUNTIME_DATA_ROOT"])
+                try:
+                    # The neutral launcher and SDK authenticate this action's
+                    # live owner against the exact transported identity above.
+                    with AstridClient.open_from_launcher(start_pack_host=False) as client:
+                        status = lifecycle("status")
+                        receipt = validate_runtime_status(
+                            status, _owner(data_root / "runtime/instance.lock"), expected, endpoint=client.endpoint)
+                finally:
+                    stopped = lifecycle("down")
+                    if (stopped.get("status") != "stopped"
+                            or (receipt is not None and stopped.get("realm_id") != receipt["realm_id"])):
+                        raise ValueError("Runtime cleanup was not confirmed")
     finally:
         for key, value in previous.items():
             if value is None:

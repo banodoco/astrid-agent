@@ -69,19 +69,47 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _source_manifest(path: Path) -> Path:
-    """Write the Runtime source profile for the code that is running this command."""
-    import astrid
-    from importlib.util import find_spec
+    """Carry the launcher's selected source profile into the private workspace.
 
-    spec = find_spec("astrid_runtime")
-    if spec is None or not spec.origin:
-        raise ActionRunError("the Astrid Runtime is not installed; run the Astrid install line first")
-    path.write_text(json.dumps({
-        "profile": PROFILE,
-        "source_checkout": str(Path(astrid.__file__).resolve().parents[1]),
-        "runtime_checkout": str(Path(spec.origin).resolve().parents[1]),
-        "runtime_environment": sys.prefix,
-    }), encoding="utf-8")
+    Installed modules live in site-packages, not in the transported Git
+    checkouts. Resolve the profile before selecting the ephemeral data root,
+    exactly as an ordinary launcher acquisition does. The launcher still owns
+    source/lock validation and authenticated live identity verification.
+    """
+    try:
+        from astrid_runtime.bootstrap import BootstrapConfig, BootstrapError, SourceProfile
+        from astrid_runtime.paths import RuntimePaths
+    except ImportError as exc:
+        raise ActionRunError("the Astrid Runtime is not installed; run the Astrid install line first") from exc
+
+    try:
+        configured = os.environ.get("ASTRID_RUNTIME_SOURCE_MANIFEST", "").strip()
+        paths = RuntimePaths.current()
+        persisted = paths.source_profiles_dir / f"{PROFILE}.json"
+        if configured or os.path.lexists(persisted):
+            source = BootstrapConfig(
+                profile=PROFILE, source_manifest=Path(configured) if configured else None,
+            ).resolve_source_profile(paths)
+        else:
+            # Keep direct source-checkout use working without an install. A
+            # wheel without a configured profile must refuse, never invent
+            # provenance from its package directory or an installer stamp.
+            import astrid
+            from importlib.util import find_spec
+            from runtime_protocol.source_identity import validate_checkout_root
+
+            spec = find_spec("astrid_runtime")
+            if spec is None or not spec.origin:
+                raise ValueError("Runtime source is unavailable")
+            source = SourceProfile.from_mapping({
+                "profile": PROFILE,
+                "source_checkout": str(validate_checkout_root(Path(astrid.__file__).resolve().parents[1])),
+                "runtime_checkout": str(validate_checkout_root(Path(spec.origin).resolve().parents[1])),
+                "runtime_environment": sys.prefix,
+            })
+        path.write_text(json.dumps(source.as_dict()), encoding="utf-8")
+    except (BootstrapError, OSError, ValueError) as exc:
+        raise ActionRunError("Runtime source profile is missing or invalid; run the Astrid install line again") from exc
     return path
 
 

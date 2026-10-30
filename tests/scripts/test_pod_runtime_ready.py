@@ -1,6 +1,7 @@
 """Offline strict live Runtime readiness and owner-fenced teardown fakes."""
 import base64
 import copy
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -58,7 +59,23 @@ def rig(tmp_path, monkeypatch):
     state = SimpleNamespace(root=root, data=data, request=request, owner=owner, identity=identity,
                             health=health, handshake=handshake, status=status, events=[],
                             stop={"status": "stopped", "realm_id": "realm-1"}, stop_code=0,
-                            start_error=None)
+                            start_error=None, action_roots=[])
+
+    @contextlib.contextmanager
+    def action_runtime(workspace):
+        # Unit collaborator only: the installed-wheel regression runs the real
+        # action setup/launcher. Keep these roots distinct so the live probe
+        # cannot accidentally inspect the bootstrap workspace's owner instead.
+        assert probe.os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] == str(data / "runtime/source-profiles/astrid.json")
+        action_data = workspace / "support"
+        (action_data / "runtime").mkdir(parents=True)
+        (action_data / "runtime/instance.lock").write_text(json.dumps(state.owner))
+        state.action_roots.append(workspace)
+        state.action_data, state.action_manifest = action_data, workspace / "source-profile.json"
+        yield dict(probe.os.environ, ASTRID_RUNTIME_DATA_ROOT=str(action_data),
+                   ASTRID_RUNTIME_SOURCE_MANIFEST=str(state.action_manifest))
+
+    monkeypatch.setattr("astrid.core.action_cli.ephemeral_runtime", action_runtime)
 
     def verify(source_root, profile):
         state.events.append("static")
@@ -70,8 +87,8 @@ def rig(tmp_path, monkeypatch):
     def ensure_runtime(*, start_pack_host):
         state.events.append("up")
         assert start_pack_host is False
-        assert probe.os.environ["ASTRID_RUNTIME_DATA_ROOT"] == str(data)
-        assert probe.os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] == str(data / "runtime/source-profiles/astrid.json")
+        assert probe.os.environ["ASTRID_RUNTIME_DATA_ROOT"] == str(state.action_data)
+        assert probe.os.environ["ASTRID_RUNTIME_SOURCE_MANIFEST"] == str(state.action_manifest)
         assert probe.os.environ["ASTRID_RUNTIME_LAUNCHER"] == str(Path(sys.executable).with_name("astrid-runtime"))
         if state.start_error:
             raise state.start_error
@@ -95,7 +112,7 @@ def rig(tmp_path, monkeypatch):
         verb = argv[1]
         state.events.append(verb)
         assert argv[:5] == [str(Path(sys.executable).with_name("astrid-runtime")), verb,
-                            "--data-root", str(data), "--json"]
+                            "--data-root", str(state.action_data), "--json"]
         if verb == "down":
             assert argv[5:] == ["--profile", "astrid"]
         else:
@@ -119,6 +136,8 @@ def test_live_probe_uses_strict_handshake_and_stops_before_return(rig, monkeypat
                       "realm_id": "realm-1", "ready": True, "stopped": True}
     assert probe.os.environ["ASTRID_RUNTIME_DATA_ROOT"] == "/prior-root"
     assert "ASTRID_RUNTIME_LAUNCHER" not in probe.os.environ
+    assert len(rig.action_roots) == 1
+    assert not rig.action_roots[0].exists()
 
 
 @pytest.mark.parametrize("field,value", [
