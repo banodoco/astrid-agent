@@ -196,11 +196,13 @@ def assert_release_verified(session, pod):
     assert session.records[-1]["detail"] == {"pods":["fakepod134"], "get":404, "list":[]}
 
 
-def held_control(session, pod, cli, transport_factory, *, command=None):
-    mode = ["--release-held"] if command is None else ["--resume-held", command]
+def held_control(session, pod, cli, transport_factory, *, command=None, renew=False):
+    mode = (["--renew-held"] if renew else
+            ["--release-held"] if command is None else ["--resume-held", command])
     args = ps.build_parser().parse_args([
         "--datacenters", ps.DATACENTER, "--sources-dir", str(pod.sources),
         "--workdir", str(session.workdir), "--token-dir", str(session.args.token_dir),
+        *(["--storage-volume-id", "fixture-volume"] if renew else []),
         "--poll-interval", ".01", *mode])
     messages = []
     control = ps.Session(args, cli=cli, transport_factory=transport_factory,
@@ -213,6 +215,130 @@ def held_control(session, pod, cli, transport_factory, *, command=None):
 def failure_diagnostics(session):
     return "\n".join(message for message in session.test_messages
                      if message.startswith(("STOPPED:", "RELEASE FAILED", "RELEASE UNVERIFIED")))
+
+
+def _packet_snapshot(root):
+    packets = root / "packets"
+    return {str(path.relative_to(packets)): path.read_bytes()
+            for path in packets.rglob("*") if path.is_file()}
+
+
+def test_held_renewal_changes_only_expiry_and_preserves_failure_evidence(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        before = json.loads(held_path.read_text())
+        progress_before = (session.workdir / "pod-session-progress.json").read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        launches_before, events_before = list(pod.launches), list(pod.events)
+        control = held_control(session, pod, cli, transport_factory, renew=True)
+        assert control.renew_held() == 0, failure_diagnostics(control)
+        after = json.loads(held_path.read_text())
+        assert after["expires_at"] > before["expires_at"]
+        assert {**after, "expires_at": before["expires_at"]} == before
+        assert (session.workdir / "pod-session-progress.json").read_bytes() == progress_before
+        assert _packet_snapshot(session.workdir) == packets_before
+        assert pod.launches == launches_before and pod.events == events_before and not pod.terminated
+        assert any("original row failure remains" in message for message in control.test_messages)
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+@pytest.mark.parametrize("case", ["expired", "in_use", "lock_busy"])
+def test_held_renewal_rejects_expired_in_use_or_concurrent_session(tmp_path, monkeypatch, case):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1
+        held_path = session.workdir / "held-session.json"
+        before = held_path.read_bytes()
+        lockfd = None
+        if case == "expired":
+            doc = json.loads(before)
+            doc["expires_at"] = 1
+            session._write_held(doc)
+            before = held_path.read_bytes()
+        elif case == "in_use":
+            doc = json.loads(before)
+            doc["status"] = "in_use"
+            session._write_held(doc)
+            before = held_path.read_bytes()
+        else:
+            import fcntl
+            lockfd = os.open(session.workdir / ".held-session.lock", os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        events_before, launches_before = list(pod.events), list(pod.launches)
+        control = held_control(session, pod, cli, transport_factory, renew=True)
+        try:
+            assert control.renew_held() == 1
+        finally:
+            if lockfd is not None:
+                fcntl.flock(lockfd, fcntl.LOCK_UN)
+                os.close(lockfd)
+        assert held_path.read_bytes() == before
+        assert pod.events == events_before and pod.launches == launches_before and not pod.terminated
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+@pytest.mark.parametrize("case", ["session", "pod", "source", "runtime_lock", "volume", "progress", "token_dir", "token_file"])
+def test_held_renewal_rejects_mismatched_identity_without_changing_custody(tmp_path, monkeypatch, case):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1
+        held_path = session.workdir / "held-session.json"
+        doc = json.loads(held_path.read_text())
+        if case == "session":
+            doc["session"] = "deadbeef"
+            session._write_held(doc)
+        elif case == "pod":
+            doc["pod_id"] = "fakepod135"
+            session._write_held(doc)
+        elif case == "source":
+            source = json.loads((session.workdir / "source-identity.json").read_text())
+            source["heads"]["astrid-runtime"] = "a" * 40
+            (session.workdir / "source-identity.json").write_text(json.dumps(source))
+        elif case == "runtime_lock":
+            (session.agent_root / "runtime.lock.json").write_text('{"source_commit":"wrong"}')
+        elif case == "volume":
+            doc["volume_id"] = "other-volume"
+            session._write_held(doc)
+        elif case == "progress":
+            (session.workdir / "pod-session-progress.json").write_text("{}")
+        elif case == "token_file":
+            session.token_path.write_text("invalid-token\n")
+        before = held_path.read_bytes()
+        progress_before = (session.workdir / "pod-session-progress.json").read_bytes()
+        events_before, launches_before = list(pod.events), list(pod.launches)
+        control = held_control(session, pod, cli, transport_factory, renew=True)
+        if case == "token_dir":
+            control.args.token_dir = str(session.workdir / "different-tokens")
+        assert control.renew_held() == 1
+        assert held_path.read_bytes() == before
+        assert (session.workdir / "pod-session-progress.json").read_bytes() == progress_before
+        assert pod.events == events_before and pod.launches == launches_before and not pod.terminated
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_renewal_atomic_write_failure_keeps_custody_without_release(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1
+        held_path = session.workdir / "held-session.json"
+        before = held_path.read_bytes()
+        events_before, launches_before = list(pod.events), list(pod.launches)
+        control = held_control(session, pod, cli, transport_factory, renew=True)
+        def fail_write(_doc, *, create=False):
+            assert not create
+            raise OSError("fixture atomic write interruption")
+        monkeypatch.setattr(control, "_write_held", fail_write)
+        assert control.renew_held() == 1
+        assert held_path.read_bytes() == before
+        assert json.loads(held_path.read_text())["status"] == "held"
+        assert pod.events == events_before and pod.launches == launches_before and not pod.terminated
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
 
 
 @pytest.mark.parametrize("process_boundary", [False, True])

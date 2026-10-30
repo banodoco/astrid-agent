@@ -1477,6 +1477,109 @@ class Session:
             raise SessionError("held state: malformed or incomplete")
         return doc
 
+    def _read_held_evidence(self, path: Path) -> bytes:
+        """Read one local custody input without following links or accepting devices."""
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                raise SessionError("held state: evidence file protection invalid")
+            chunks = []
+            while True:
+                chunk = os.read(fd, 1024 * 1024)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+        finally:
+            os.close(fd)
+
+    def renew_held(self) -> int:
+        """Extend only a verified held admission; never run a job or release the pod."""
+        lock = self.workdir / ".held-session.lock"
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        except OSError:
+            self.say("STOPPED: held session lock is unavailable")
+            return 1
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                self.say("STOPPED: held session is in use")
+                return 1
+            try:
+                doc = self._read_held()
+                now = time.time()
+                if (doc["status"] != "held" or doc["expires_at"] <= now
+                        or doc["expires_at"] > now + 3600
+                        or Path(self.args.token_dir).resolve() != Path(doc["token_dir"])
+                        or self.args.datacenters != [DATACENTER]
+                        or self.args.storage_name != STORAGE_NAME
+                        or self.args.volume_gb != doc["volume_gb"]
+                        or getattr(self.args, "storage_volume_id", None) != doc["volume_id"]):
+                    raise SessionError("held state: stale, incomplete or incompatible")
+
+                self.sid, self.pod_id = doc["session"], doc["pod_id"]
+                self.name = f"astrid-pod-session-{self.sid}"
+                token_path = Path(doc["token_dir"]) / f"pod-session-{self.sid}.token"
+                from runpod_lifecycle.https import read_token_file
+                # The loader enforces canonical path, ownership, mode, link count and token shape.
+                # The bearer is deliberately neither logged nor retained in session state.
+                token = read_token_file(token_path)
+                del token
+
+                progress_path = self.workdir / "pod-session-progress.json"
+                progress_bytes = self._read_held_evidence(progress_path)
+                if hashlib.sha256(progress_bytes).hexdigest() != doc["progress_sha256"]:
+                    raise SessionError("held state: progress differs")
+                progress = json.loads(progress_bytes)
+                failed = [row for row in progress.get("steps", [])
+                          if isinstance(row, dict) and row.get("result") == "failed"]
+                if (progress.get("schema") != "astrid.pod-session-progress.v1"
+                        or progress.get("session") != doc["session"]
+                        or progress.get("pod_id") != doc["pod_id"]
+                        or progress.get("jobs") != doc["jobs"]
+                        or not isinstance(progress.get("steps"), list)
+                        or len(failed) != 1 or failed[0].get("step") != doc["primary_step"]):
+                    raise SessionError("held state: progress lineage differs")
+
+                source = json.loads(self._read_held_evidence(self.workdir / "source-identity.json"))
+                if source != doc["source"]:
+                    raise SessionError("held state: source identity differs")
+                runtime_lock = self._read_held_evidence(self.agent_root / "runtime.lock.json")
+                if (hashlib.sha256(runtime_lock).hexdigest() != doc["source"]["runtime_lock_sha256"]
+                        or json.loads(runtime_lock).get("source_commit") != doc["source"]["heads"]["astrid-runtime"]):
+                    raise SessionError("held state: Runtime lock differs")
+
+                # Keep every failed-row and custody field byte-for-byte/semantically intact;
+                # only move the bounded admission expiry forward.
+                old_doc = doc.copy()
+                doc["expires_at"] = now + 3600
+                try:
+                    self._write_held(doc)
+                    if self._read_held() != doc:
+                        raise SessionError("held state: renewed document verification failed")
+                except BaseException:
+                    # If publication failed after replacement, make a best-effort durable
+                    # restoration. Never delete held custody on this path.
+                    try:
+                        if self._read_held() != old_doc:
+                            self._write_held(old_doc)
+                    except Exception:
+                        pass
+                    raise
+                self.say("HELD SESSION RENEWED; original row failure remains")
+                return 0
+            except BaseException as exc:
+                detail = str(exc) if isinstance(exc, SessionError) else type(exc).__name__
+                self.say(f"STOPPED: held session not renewed ({detail})")
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                return 1
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
     def _verify_held_identity(self) -> None:
         code, out, _ = self.cli(["list", "--name-prefix", self.name, "--json"], self.cli_env)
         try:
@@ -1879,6 +1982,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--jobs", help="version: 1 YAML job list (h3 request/assets or cmd command/input-files/expected-outputs)")
     mode.add_argument("--resume-held", metavar="COMMAND", help="run one bounded command on the recorded held pod")
     mode.add_argument("--release-held", action="store_true", help="terminate and verify the recorded held pod")
+    mode.add_argument("--renew-held", action="store_true", help="extend a verified held admission without contacting the pod")
     p.add_argument("--hold-on-row-failure", action="store_true", help="hold a single-row session only after a recoverable row failure")
     p.add_argument("--followup-timeout", type=int, default=300, help="follow-up deadline in seconds (1–600)")
     p.add_argument("--asset-map", help="JSON map of request asset ids to local files")
@@ -1919,6 +2023,8 @@ def main(argv: list[str] | None = None) -> int:
             http_status=default_http_status, say=lambda message: print(message, flush=True))
     except (SessionError, ValueError) as exc:
         parser.error(str(exc))
+    if args.renew_held:
+        return session.renew_held()
     if args.resume_held is not None or args.release_held:
         return session.run_held(args.resume_held)
     return session.run()
