@@ -109,6 +109,10 @@ class Backend:
 
             platform.configure_process_control(process_control)  # this process signals too
         self.service = Service(root, log, self.run, say=say)
+        # A no-systemd foreground stop can be retried after its owner record is
+        # retired. Keep that receipt local to this controller so an initial
+        # unvalidated service definition still requires an ownership check.
+        self._foreground_stop_retired = False
 
     def run(self, argv, *, extra_env=None, cwd=None, timeout=1800, clean_bun_env=False) -> str:
         # Never inherit a developer's Python import path or Runtime connection.
@@ -564,6 +568,13 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                            or record.get("data_root") != str(data)):
                 raise ValueError("The service record does not match the selected installation.")
             paths = RuntimePaths.current(data_root=data)
+            if (self.managed_by != "pinokio" and self.service.system == "linux"
+                    and self._foreground_stop_retired
+                    and not record.get("foreground")
+                    and not paths.discovery_path.exists()
+                    and not paths.instance_lock_path.exists()
+                    and not self.service.systemd()):
+                return None
             prior_control = process_control.read_setting(paths.runtime_support)
             platform.configure_process_control(self.process_control or prior_control)
             boundary = getattr(self, "_stop_boundary", None)
@@ -647,6 +658,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     selected.pop("foreground")
                     write_json(self.service.selection, selected)
                     self.service._foreground_process = None
+                    self._foreground_stop_retired = True
         except Exception as exc:
             raise self._downstream_stop_failure(exc) from exc
         return result

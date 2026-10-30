@@ -164,6 +164,36 @@ def test_registration_preserves_settings_and_records_selection(tmp_path, monkeyp
     assert default_program_root(tmp_path, "linux") == tmp_path / "xdg-data/astrid"
 
 
+def test_registration_kill_during_service_replacement_preserves_previous_file(tmp_path, monkeypatch):
+    from runtime_protocol import platform
+
+    root = tmp_path / "program"
+    manager = Service(root, tmp_path / "log", Mock(), home=tmp_path, system="linux")
+    manager.path.parent.mkdir(parents=True, exist_ok=True)
+    previous = b"previous service definition\n"
+    manager.path.write_bytes(previous)
+    write_json(manager.env_file, {})
+    write_json(manager.selection, {"owner": LABEL})
+    version = Version(root / "versions/one", tmp_path / "python", tmp_path / "profile", {})
+    replacement = render("linux", version, tmp_path / "data", manager.log, env_file=manager.env_file).encode()
+    observed = []
+    durable_replace = platform.durable_replace
+
+    def interrupted(source, destination):
+        if destination == manager.path:
+            observed.append(source.read_bytes())
+            raise KeyboardInterrupt("killed during service replacement")
+        return durable_replace(source, destination)
+
+    monkeypatch.setattr(platform, "durable_replace", interrupted)
+    with pytest.raises(KeyboardInterrupt, match="killed during service replacement"):
+        manager.register(version, tmp_path / "data")
+
+    assert observed == [replacement]
+    assert manager.path.read_bytes() == previous
+    assert not list(manager.path.parent.glob(f".{manager.path.name}.*.tmp"))
+
+
 def test_healthy_noop_repair_migrates_identity_without_service_registration(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))

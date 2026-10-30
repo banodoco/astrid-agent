@@ -247,6 +247,31 @@ def systemd_quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
 
 
+def _atomic_write_text(path: Path, value: str) -> None:
+    """Publish service text without exposing a partially written definition."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+            mode="w", encoding="utf-8", newline="\n", delete=False,
+        ) as pending:
+            temporary = Path(pending.name)
+            pending.write(value)
+            pending.flush()
+            if mode is not None and hasattr(os, "fchmod"):
+                os.fchmod(pending.fileno(), mode)
+            os.fsync(pending.fileno())
+        platform.durable_replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
            env_file: Path | None = None) -> str:
     log = log.with_name("runtime-service.log")
@@ -876,9 +901,9 @@ class Service:
             write_json(self.env_file, {})
         settings = self.settings()
         user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
-        self.path.write_text(render(
+        _atomic_write_text(self.path, render(
             self.system, version, data, self.log, user=user, env_file=self.env_file,
-        ), encoding="utf-8", newline="\n")
+        ))
         if self.system == "darwin":
             self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
         elif self.system == "linux":
