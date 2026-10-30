@@ -13852,11 +13852,11 @@ class LocalExecutionPreparation:
                                  "owner_epoch": (self._request or frame).get("owner_epoch"),
                                  "error_code": "preparation_unresolved" if command == "prepare_local_execution" else "report_unresolved",
                                  "custody_capabilities": self.known_custody_capabilities()}
-                    try:
-                        _send_activation_frame(control, reply)
-                    finally:
-                        if frame.get("command") == "abort_local_execution":
-                            self._control_cleanup_done.set()
+                    _send_activation_frame(control, reply)
+                    if frame.get("command") == "abort_local_execution":
+                        # A failed write is not an acknowledgement. Retain the
+                        # process until Runtime resolves the broken channel.
+                        self._control_cleanup_done.set()
             except BaseException as exc:
                 self.control_error = exc
             finally:

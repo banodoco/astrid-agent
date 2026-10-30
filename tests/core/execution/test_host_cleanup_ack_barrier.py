@@ -77,3 +77,29 @@ def test_delayed_authenticated_cleanup_ack_precedes_host_exit_and_reap(tmp_path)
         if process.poll() is None:
             process.kill()
             process.wait()
+
+
+def test_failed_cleanup_ack_does_not_release_exit_barrier(monkeypatch):
+    from types import SimpleNamespace
+    from astrid.core.execution import custody_broker as custody
+
+    client, server = socket.socketpair()
+    preparation = host.LocalExecutionPreparation(operation_id="op", channel_id="ch")
+    preparation._control_cleanup_done.clear()
+    monkeypatch.setattr(custody.AuthenticatedCleanupActor, "private_peer",
+                        staticmethod(lambda sock: SimpleNamespace()))
+    monkeypatch.setattr(preparation, "dispatch", lambda frame: {"status": "cleaned"})
+    def fail_send(sock, reply):
+        raise BrokenPipeError("closed cleanup receiver")
+    monkeypatch.setattr(host, "_send_activation_frame", fail_send)
+    thread = preparation.serve_control(server.detach())
+    try:
+        encoded = b'{"command":"abort_local_execution"}'
+        client.sendall(encoded + b"\n")
+        client.shutdown(socket.SHUT_WR)
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert isinstance(preparation.control_error, BrokenPipeError)
+        assert not preparation._control_cleanup_done.is_set()
+    finally:
+        client.close()
