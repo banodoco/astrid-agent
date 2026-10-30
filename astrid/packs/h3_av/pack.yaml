@@ -325,6 +325,18 @@ actions:
       type: file
       required: true
       description: Generated candidate media artifact.
+    - name: generated_audio
+      type: file
+      required: false
+      description: Separate generated audio association, when required by the sealed output contract.
+    - name: compilation
+      type: file
+      required: false
+      description: Compilation association used to enrich preparation inside composition.
+    - name: generation_provenance
+      type: string
+      required: false
+      description: Verified output association evidence for the actual generated inputs.
     - name: source
       type: file
       required: false
@@ -343,6 +355,10 @@ actions:
       type: file
       path_template: '{out}/composition-manifest.json'
       artifact_type: h3_av/composition
+    - name: preparation
+      type: file
+      path_template: '{out}/provenance-preparation.json'
+      artifact_type: h3_av/preparation
     cache:
       mode: none
     isolation:
@@ -366,6 +382,15 @@ actions:
         - --out
         - '{out}'
         input_args:
+        - input: generation_provenance
+          flag: --generation-provenance
+          optional: true
+        - input: generated_audio
+          flag: --generated-audio
+          optional: true
+        - input: compilation
+          flag: --compilation
+          optional: true
         - input: source
           flag: --source
           optional: true
@@ -477,53 +502,36 @@ actions:
       description: H3 audiovisual request v1 or v2, including opt-in Character Swap settings.
     - name: asset_map
       type: file
-      required: true
-      description: JSON map from request asset ids to runtime-managed local input paths.
-    - name: execution_request
+      required: false
+      description: Producer-only map of declared asset IDs; removed before parent admission.
+    - name: input_bundle
       type: file
       required: false
-      description: Optional normalized target/lifecycle request for the VibeComfy child.
+      description: Validated immutable managed bundle supplied by the H3 producer.
+    - name: source
+      type: file
+      required: false
+      description: Exact source member from the admitted immutable bundle.
+    - name: plan
+      type: json
+      required: false
+      description: Sealed producer plan checked against the staged installed compiler.
     - name: project
       type: string
       required: false
-      description: Optional project identity forwarded to child capability invocations.
-    - name: worker_qualification
-      type: file
-      required: false
-      description: Optional deployment-owned qualified-worker receipt.
-    - name: prepared_worker
-      type: file
-      required: false
-      description: Prepared RunPod deployment selection for canonical VibeComfy task admission.
-    - name: cleanup_receipt
-      type: file
-      required: false
-      description: Optional receipt containing exact owned-resource cleanup postconditions.
-    - name: require_worker_qualification
-      type: boolean
-      required: false
-      default: false
-      description: Require a valid worker qualification receipt before admission.
     - name: editorial_approved
       type: boolean
       required: false
       default: false
-      description: Record explicit editorial approval in the final receipt.
-    - name: resume
-      type: boolean
+    - name: host_output_root
+      type: string
       required: false
-      default: false
-      description: Resume delivery from a saved canonical run result without resampling.
-    - name: dry_run
-      type: boolean
-      required: false
-      default: false
-      description: Preview child dispatch without provider execution.
+      description: Reserved host-owned output spool.
     cache:
       mode: none
     isolation:
       mode: subprocess
-      network: true
+      network: false
       env_passthrough:
       - VIBECOMFY_CHECKOUT
       - PYTHONPATH
@@ -535,7 +543,8 @@ actions:
       requirements:
       - vibecomfy
     metadata:
-      local_orchestrator: true
+      tracked_h3_parent: true
+      output_result_manifest: true
       generation_entry:
         id: h3
         kind: video
@@ -544,51 +553,29 @@ actions:
         requirements:
         - profiles/native-v1.yaml
         - profiles/native-v2.yaml
-      runtime_entrypoint: main
+      runtime_entrypoint: execute
       runtime_file: actions/transform/run.py
       runtime_module: astrid.packs.h3_av.actions.transform.run
     invocation:
-      kind: command
-      command:
-        argv:
-        - '{python_exec}'
-        - -m
-        - astrid.packs.h3_av.actions.transform.run
-        - --request
-        - '{request}'
-        - --asset-map
-        - '{asset_map}'
-        - --out
-        - '{out}'
-        input_args:
-        - input: execution_request
-          flag: --execution-request
-          optional: true
-        - input: project
-          flag: --project
-          optional: true
-        - input: worker_qualification
-          flag: --worker-qualification
-          optional: true
-        - input: cleanup_receipt
-          flag: --cleanup-receipt
-          optional: true
-        - input: require_worker_qualification
-          flag: --require-worker-qualification
-          optional: true
-        - input: editorial_approved
-          flag: --editorial-approved
-          optional: true
-        - input: resume
-          flag: --resume
-          optional: true
-        - input: dry_run
-          flag: --dry-run
-          optional: true
-        - input: prepared_worker
-          flag: --prepared-worker
-          optional: true
-    outputs: []
+      kind: python
+      path: actions/transform/run.py
+      function: execute
+    outputs:
+    - name: verified_candidate
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/verified-candidate.media'
+      artifact_type: h3_av/candidate
+    - name: final_receipt
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/final-receipt.json'
+      artifact_type: h3_av/final-receipt
+    - name: manifest
+      type: file
+      mode: create_or_replace
+      path_template: '{out}/manifest.json'
+      artifact_type: metadata/result-manifest
     graph:
       child_actions:
       - h3_av.prepare

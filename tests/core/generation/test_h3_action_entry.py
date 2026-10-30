@@ -13,7 +13,7 @@ def test_h3_entry_comes_from_action_declaration_and_file_ports():
     assert entry["action"] == "h3_av.transform"
     assert entry["kind"] == "video" and entry["modes"] == ["transform"]
     assert [(port["name"], port["type"], port["required"]) for port in entry["inputs"]] == [
-        ("request", "file", True), ("asset_map", "file", True),
+        ("request", "file", True), ("asset_map", "file", False),
     ]
     assert entry["requirements"] == ["profiles/native-v1.yaml", "profiles/native-v2.yaml"]
     assert "vibecomfy" in entry["isolation_requirements"]
@@ -28,26 +28,28 @@ def test_h3_list_never_claims_unverified_requirements_ready(monkeypatch):
     assert not row["models_present"]
 
 
-def test_action_entry_requires_managed_files_and_stops_before_local_orchestrator(monkeypatch):
-    entry = entries.find_entry("h3")
+def test_action_entry_routes_producer_files_once_and_keeps_validation(monkeypatch):
+    entry = {"id": "h3", "action": "h3_av.transform", "kind": "video", "modes": ["transform"],
+             "inputs": [{"name": "request", "type": "file", "required": True},
+                        {"name": "asset_map", "type": "file", "required": False}]}
     monkeypatch.setattr(entries, "find_entry", lambda name: entry if name == "h3" else None)
+    monkeypatch.setattr(entries, "describe_entry", lambda *args, **kwargs: {
+        **entry, "source": "action", "mode": "transform"})
+    import astrid.sdk as sdk
+    monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: object())
     calls = []
-    monkeypatch.setattr(GenerationFacade, "_invoke", lambda *args, **kwargs: calls.append((args, kwargs)))
+    client = SimpleNamespace(invoke_result=lambda *args, **kwargs: calls.append((args, kwargs)) or "admitted")
     facade = GenerationFacade()
-    digest = "sha256:" + "1" * 64
-    with pytest.raises(CapabilityValidationError, match="missing required.*asset_map"):
-        facade.video(model="h3", request=digest)
-    with pytest.raises(CapabilityValidationError, match="managed Runtime object"):
-        facade.video(model="h3", request="/tmp/request.json", asset_map=digest)
+    with pytest.raises(CapabilityValidationError, match="asset_map"):
+        facade.video(model="h3", request="request.json", client=client)
     with pytest.raises(CapabilityValidationError, match="unsupported entry inputs.*prompt"):
-        facade.video(model="h3", request=digest, asset_map=digest, prompt="fake")
-    with pytest.raises(CapabilityPreconditionError, match="Runtime-admitted parent"):
-        facade.video(model="h3", request={"digest": digest}, asset_map=digest)
-    with pytest.raises(CapabilityPreconditionError, match="Runtime-admitted parent"):
-        facade.video(entry="h3", request={"digest": digest}, asset_map=digest)
+        facade.video(model="h3", request="request.json", asset_map="assets.json", prompt="fake", client=client)
     with pytest.raises(CapabilityValidationError, match="model and entry"):
-        facade.video(model="other", entry="h3", request=digest, asset_map=digest)
+        facade.video(model="other", entry="h3", request="request.json", asset_map="assets.json", client=client)
     assert calls == []
+    assert facade.video(entry="h3", request="request.json", asset_map="assets.json", project="p", client=client) == "admitted"
+    assert len(calls) == 1 and calls[0][0] == ("h3_av.transform",)
+    assert calls[0][1]["kind"] == "action" and calls[0][1]["project"] == "p"
 
 
 def test_invalid_action_entry_port_declaration_fails_closed():
