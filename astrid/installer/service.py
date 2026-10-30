@@ -58,6 +58,9 @@ def _launch_prelude_source() -> str:
         install_identity,
         Version,
         current,
+        default_program_root,
+        installer_lock_path,
+        activation_lock_held,
         launch_admission,
     )
     return (
@@ -116,6 +119,22 @@ def pinokio_owned(record: dict) -> bool:
     return record.get("owner") == LABEL and record.get("managed_by") == "pinokio"
 
 
+def activation_lock_held(root: Path, version: Version) -> bool:
+    """Return whether this unfinished update's activation lock is held."""
+    from runtime_protocol import platform
+
+    path = (root / ".app-update.lock" if version.managed_by == "pinokio"
+            else installer_lock_path(Path.home(), sys.platform))
+    platform.private_directory(path.parent)
+    with path.open("a+b") as lock:
+        try:
+            platform.lock_file(lock.fileno(), blocking=False)
+        except BlockingIOError:
+            return True
+        platform.unlock_file(lock.fileno())
+    return False
+
+
 def launch_admission(version: Version, data: Path) -> bool:
     """Validate the selected managed launch; return whether it is activating.
 
@@ -168,8 +187,12 @@ def launch_admission(version: Version, data: Path) -> bool:
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
+        if not activation_lock_held(root, version):
+            raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        if str(exc) == "Choose Update to finish":
+            raise
         action = ("Choose Pinokio's Update button to finish it."
                   if version.managed_by == "pinokio" else
                   "Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
