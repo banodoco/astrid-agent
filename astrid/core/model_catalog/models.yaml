@@ -1122,3 +1122,106 @@ models:
         backends:
           openai:
             endpoint: gpt-image-1-mini
+
+  # Existing fal pack actions share these catalog routes. These entries are
+  # hosted-only and do not change the facade's explicit local default.
+  - id: hunyuan-video-foley
+    modality: audio
+    modes:
+      sfx:
+        supports: [video_ref, prompt]
+        requires: [video_ref]
+        backends:
+          cloud:
+            endpoint: fal-ai/hunyuan-video-foley
+            param_map:
+              video_ref: video_url
+              prompt: text_prompt
+            hints:
+              video_ref_transport: inline
+              output_keys: [audio, output_audio, video]
+
+  - id: minimax-h3
+    modality: video
+    modes:
+      t2v:
+        supports: [prompt, duration, resolution, aspect_ratio]
+        requires: [prompt]
+        backends:
+          cloud:
+            endpoint: minimax/h3/text-to-video
+            hints:
+              output_keys: [video]
+            param_map:
+              prompt: prompt
+              duration: duration
+              resolution: resolution
+              aspect_ratio: aspect_ratio
+      v2v:
+        supports: [prompt, duration, resolution, aspect_ratio, image_refs, video_refs, audio_refs]
+        requires: [prompt]
+        backends:
+          cloud:
+            endpoint: minimax/h3/reference-to-video
+            hints:
+              output_keys: [video]
+            param_map:
+              prompt: prompt
+              duration: duration
+              resolution: resolution
+              aspect_ratio: aspect_ratio
+              image_refs: reference_image_urls
+              video_refs: reference_video_urls
+              audio_refs: reference_audio_urls
+
+  - id: seedance-2.0
+    modality: video
+    modes:
+      v2v:
+        supports: [prompt, resolution, duration, aspect_ratio, generate_audio, seed, image_refs, video_refs]
+        requires: [prompt]
+        backends:
+          cloud:
+            endpoint: bytedance/seedance-2.0/reference-to-video
+            param_map:
+              prompt: prompt
+              resolution: resolution
+              duration: duration
+              aspect_ratio: aspect_ratio
+              generate_audio: generate_audio
+              seed: seed
+              image_refs: image_urls
+              video_refs: video_urls
+            hints:
+              duration_as_string: true
+              output_keys: [video]
+
+  - id: lava-sr
+    modality: audio
+    modes:
+      sfx:
+        supports: [audio_ref, audio_format, bitrate]
+        requires: [audio_ref]
+        backends:
+          cloud:
+            endpoint: fal-ai/lava-sr
+            hints:
+              output_keys: [audio, audio_file]
+            param_map:
+              audio_ref: audio_url
+              audio_format: audio_format
+              bitrate: bitrate
+
+  - id: deepfilternet3
+    modality: audio
+    modes:
+      sfx:
+        supports: [audio_ref]
+        requires: [audio_ref]
+        backends:
+          cloud:
+            endpoint: fal-ai/deepfilternet3
+            hints:
+              output_keys: [audio_file, audio]
+            param_map:
+              audio_ref: audio_url
