@@ -7,12 +7,10 @@ is an explicit test mode for candidate Agent and Runtime Git commits.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 import hashlib
 import json
 import ntpath
 import os
-from pathlib import Path
 import platform
 import re
 import subprocess
@@ -21,11 +19,15 @@ import tempfile
 import time
 import urllib.request
 import uuid
+from contextlib import contextmanager
+from pathlib import Path
 
 if __package__:
     from . import ci_windows_journey as windows
+    from .journey_matrix import RELEASE1_MODES, validate_job
 else:
     import ci_windows_journey as windows
+    from journey_matrix import RELEASE1_MODES, validate_job
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -324,6 +326,124 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
         raise RuntimeError("A Runtime owner is already running on this host")
 
 
+def _manager_probe(argv: list[str], *, label: str) -> str:
+    """Return a native manager version/probe line or fail before bootstrap.
+
+    The direct Release-1 leg has no foreground substitute.  In particular, a
+    missing user systemd session is a prerequisite failure, not a reason to let
+    the product's compatibility foreground branch make the receipt look green.
+    """
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                                   check=False)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Required native service manager {label} is unavailable") from exc
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        suffix = f": {detail[0]}" if detail else ""
+        raise RuntimeError(f"Required native service manager {label} is unusable{suffix}")
+    line = next((line.strip() for line in (completed.stdout or completed.stderr).splitlines()
+                 if line.strip()), "native-manager")
+    return line
+
+
+def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> dict:
+    """Assert and record the declared owner before any lifecycle command runs."""
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        return {"required": False, "outcome": "not-required"}
+    row = validate_job(job_id, args.mode)
+    if row["mode"] != "direct":
+        checkout = getattr(args, "pinokio_checkout", None)
+        if checkout is None or not checkout.is_dir() or checkout.is_symlink():
+            raise RuntimeError("Pinokio modes require an explicit non-symlink Pinokio checkout")
+        return {"required": False, "outcome": "explicit-owner", "managed_by": "pinokio",
+                "foreground_fallback": False, "checkout": str(checkout.resolve())}
+    if sys.platform == "linux":
+        version = _manager_probe(["systemctl", "--user", "--version"], label="systemd --user")
+        _manager_probe(["systemctl", "--user", "show-environment"], label="systemd --user session")
+        manager = "systemd-user"
+    elif sys.platform == "darwin":
+        version = _manager_probe(["launchctl", "version"], label="launchd")
+        _manager_probe(["launchctl", "print", f"gui/{os.getuid()}"], label="launchd GUI domain")
+        manager = "launchd"
+    elif sys.platform == "win32":
+        # The command checks both the PowerShell service-manager module and its
+        # scheduler surface; it does not manufacture or start a task.
+        version = windows.powershell(
+            "$ErrorActionPreference='Stop'; Get-Command Get-ScheduledTask | Out-Null; "
+            "$PSVersionTable.PSVersion.ToString()", "service-manager-prerequisite.log",
+            show=False, timeout=30).strip()
+        if not version:
+            raise RuntimeError("Required native service manager Task Scheduler has no version observation")
+        manager = "task-scheduler"
+    else:
+        raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
+    return {"required": True, "outcome": "pass", "manager": manager, "version": version,
+            "foreground_fallback": False, "evidence": str(evidence / "service-manager-prerequisite.log")}
+
+
+def assert_direct_service_ownership(root: Path, data: Path) -> dict:
+    """Prove a direct leg selected a native service, never a foreground fallback."""
+    selection_path = program_root().parent / "astrid-install.json"
+    if selection_path.is_file() and read_json(selection_path).get("foreground"):
+        raise RuntimeError("Direct journey selected a forbidden foreground fallback")
+    if sys.platform == "linux":
+        unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+        if not unit.is_file() or unit.is_symlink():
+            raise RuntimeError("Direct journey did not install an owned systemd user unit")
+        completed = subprocess.run(["systemctl", "--user", "show", "astrid.service",
+                                    "--property=LoadState,FragmentPath,ActiveState"], capture_output=True,
+                                   text=True, timeout=30, check=False)
+        fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+        if (completed.returncode or fields.get("LoadState") == "not-found"
+                or fields.get("FragmentPath") != str(unit)
+                or fields.get("ActiveState") != "active"):
+            raise RuntimeError("Direct journey service is not owned by the expected systemd user unit")
+        return {"manager": "systemd-user", "service_path": str(unit), "foreground_fallback": False}
+    if sys.platform == "darwin":
+        plist = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
+        if not plist.is_file() or plist.is_symlink():
+            raise RuntimeError("Direct journey did not install an owned LaunchAgent")
+        completed = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"],
+                                   capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode:
+            raise RuntimeError("Direct journey LaunchAgent is not loaded in the GUI domain")
+        return {"manager": "launchd", "service_path": str(plist), "foreground_fallback": False}
+    if sys.platform == "win32":
+        existing = windows.powershell(
+            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop; "
+            "'present'; $t.Actions | ForEach-Object { $_.Execute }",
+            "direct-service-ownership.log", show=False, timeout=30)
+        if not windows_task_owned(existing, root):
+            raise RuntimeError("Direct journey Task Scheduler action is not owned by the run root")
+        return {"manager": "task-scheduler", "foreground_fallback": False}
+    raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
+
+
+def candidate_checkouts(args: argparse.Namespace) -> dict | None:
+    """Record and verify all four immutable candidate checkouts when supplied."""
+    candidate_path = getattr(args, "candidate", None)
+    if candidate_path is None:
+        return None
+    candidate = read_json(candidate_path)
+    if set(candidate) < {"app", "agent", "runtime", "pinokio"}:
+        raise ValueError("candidate must include app, agent, runtime and pinokio refs")
+    checkouts = {"app": args.app_checkout,
+                 "agent": getattr(args, "candidate_agent_checkout", None),
+                 "runtime": getattr(args, "candidate_runtime_checkout", None),
+                 "pinokio": getattr(args, "pinokio_checkout", None)}
+    observed = {}
+    for name, checkout in checkouts.items():
+        if checkout is None or not checkout.is_dir() or checkout.is_symlink():
+            raise ValueError(f"candidate {name} checkout is required and must not be a symlink")
+        source = git_source(checkout)
+        if source["sha"] != candidate[name]:
+            raise ValueError(f"candidate {name} checkout differs from frozen candidate")
+        observed[name] = source
+    return observed
+
+
 def installation(root: Path, expected_data: Path) -> tuple[Path, Path, dict]:
     marker_path = root / "install.json"
     if marker_path.is_symlink():
@@ -532,10 +652,14 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
             import journey_version_jumps
         return journey_version_jumps.execute_owned(args, root, data, evidence, sentinel, birth)
     evidence.mkdir(parents=True, exist_ok=True)
-    result = {"schema_version": 1, "scenario": args.leg, "status": "not-run",
+    result = {"schema_version": 2, "receipt_kind": "release1-installed-lifecycle",
+              "job_id": getattr(args, "job_id", None), "mode": getattr(args, "mode", "direct"),
+              "scenario": args.leg, "status": "not-run",
               "os_build": platform.platform(), "shell": args.shell,
               **runner_identity(),
               "sources": None,
+              "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+              "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
               "source_override_test_mode": args.source_override,
               "retained_for_next_leg": getattr(args, "retain_for_next_leg", False),
               "installed_tuple": None, "import_origins": None,
@@ -546,6 +670,11 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
     result_path = evidence / "journey-result.json"
     write_json(result_path, result)
     try:
+        if getattr(args, "job_id", None) and args.mode != "direct":
+            # M4-3a owns the fail-closed driver/receipt boundary.  The native
+            # Pinokio lifecycle adapters themselves land in M4-4a/M4-4b; do
+            # not silently substitute the direct bootstrap while they are absent.
+            raise RuntimeError(f"{args.mode} requires its dedicated Pinokio lifecycle adapter")
         app = args.app_checkout.resolve(strict=True)
         manifest_path, manifest = selected_manifest(
             app, source_override=args.source_override, agent=args.agent_checkout,
@@ -587,6 +716,8 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
         version_path, data, version = installation(root, data)
         if old_data is not None and data != old_data:
             raise RuntimeError("Installer changed the selected data root")
+        if getattr(args, "job_id", None) and args.mode == "direct":
+            result["service_manager"] = assert_direct_service_ownership(root, data)
         if sys.platform == "win32":
             windows.EVIDENCE = evidence
             windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'",
@@ -641,12 +772,32 @@ def execute(args: argparse.Namespace) -> dict:
     identity = runner_identity()
     try:
         assert_runner_identity(identity)
+        if getattr(args, "job_id", None):
+            expected = validate_job(args.job_id, args.mode)
+            if expected["runner"] != identity["runner_image"]:
+                raise RuntimeError(f"Release-1 job {args.job_id} requires {expected['runner']}, not {identity['runner_image']}")
+            if expected["shell"] != args.shell:
+                raise RuntimeError(f"Release-1 job {args.job_id} requires shell {expected['shell']}")
+            args.candidate_checkouts = candidate_checkouts(args)
+            try:
+                args.service_manager_prerequisite = release1_manager_prerequisite(args, evidence)
+            except Exception as manager_error:
+                args.service_manager_prerequisite = {
+                    "required": args.mode == "direct", "outcome": "fail",
+                    "foreground_fallback": False,
+                    "error": f"{type(manager_error).__name__}: {manager_error}",
+                }
+                raise
         assert_host_available("fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg, root, data)
     except Exception as exc:
         write_json(evidence / "journey-result.json", {
-            "schema_version": 1, "scenario": args.leg, "status": "fail",
+            "schema_version": 2, "receipt_kind": "release1-installed-lifecycle",
+            "job_id": getattr(args, "job_id", None), "mode": getattr(args, "mode", "direct"),
+            "scenario": args.leg, "status": "fail",
             "os_build": platform.platform(), "shell": args.shell, **identity,
             "run_roots": {"program": str(root), "data": str(data)},
+            "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+            "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
             "installed_tuple": None, "import_origins": None,
             "checks": {"task_settled": "not-run", "workspace_content": "not-run",
                        "one_runtime": "not-run", "unrelated_sentinel": "not-run"},
@@ -711,6 +862,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, required=True, help="RUN_ROOT/program")
     parser.add_argument("--data-root", type=Path, required=True, help="RUN_ROOT/data")
     parser.add_argument("--shell", default="powershell.exe" if sys.platform == "win32" else "sh")
+    parser.add_argument("--job-id", help="fixed Release-1 matrix job id; enables the fail-closed receipt contract")
+    parser.add_argument("--mode", choices=RELEASE1_MODES, default="direct",
+                        help="declared lifecycle owner; direct never permits foreground fallback")
+    parser.add_argument("--candidate", type=Path,
+                        help="frozen four-ref candidate JSON used to verify exact checkouts")
+    parser.add_argument("--candidate-agent-checkout", type=Path)
+    parser.add_argument("--candidate-runtime-checkout", type=Path)
+    parser.add_argument("--pinokio-checkout", type=Path)
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -719,6 +878,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.leg == "update-over-old-declaration") != (args.old_declaration is not None):
         parser.error("--old-declaration is required only for update-over-old-declaration")
+    if bool(args.job_id) != bool(args.candidate):
+        parser.error("--job-id and --candidate are required together for Release-1 receipts")
+    if args.job_id:
+        try:
+            validate_job(args.job_id, args.mode)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if not all((args.candidate_agent_checkout, args.candidate_runtime_checkout, args.pinokio_checkout)):
+            parser.error("Release-1 receipts require candidate Agent, Runtime and Pinokio checkouts")
     if sys.platform not in {"linux", "darwin", "win32"}:
         parser.error("unsupported journey operating system")
     if sys.platform == "win32" and args.shell not in {"powershell.exe", "pwsh.exe"}:

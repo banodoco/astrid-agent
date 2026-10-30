@@ -150,6 +150,31 @@ def test_tst_b1_preflight_refuses_loaded_user_unit_without_unit_file(tmp_path, m
                                       tmp_path / "run" / "data")
 
 
+def test_release1_direct_linux_records_failed_manager_prerequisite_before_bootstrap(tmp_path, monkeypatch):
+    run_root = tmp_path / "journey"
+    args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
+                              app_checkout=tmp_path, source_override=False, agent_checkout=None,
+                              runtime_checkout=None, candidate=tmp_path / "candidate.json",
+                              candidate_agent_checkout=tmp_path, candidate_runtime_checkout=tmp_path,
+                              pinokio_checkout=tmp_path, job_id="direct-linux", mode="direct",
+                              leg="fresh-install", shell="sh", retain_for_next_leg=False)
+    monkeypatch.setattr(journey, "runner_identity", lambda: {"runner_image": "ubuntu-24.04", "runner_provenance": {}})
+    monkeypatch.setattr(journey, "assert_runner_identity", lambda unused: None)
+    monkeypatch.setattr(journey, "candidate_checkouts", lambda unused: {"app": {"sha": "a" * 40}})
+    monkeypatch.setattr(journey, "release1_manager_prerequisite", lambda *unused: (_ for _ in ()).throw(
+        RuntimeError("Required native service manager systemd --user is unavailable")))
+    monkeypatch.setattr(journey, "assert_host_available", lambda *unused: (_ for _ in ()).throw(
+        AssertionError("host preflight must not run after a missing native manager")))
+    with pytest.raises(RuntimeError, match="systemd --user"):
+        journey.execute(args)
+    receipt = journey.read_json(run_root / "evidence" / "fresh-install" / "journey-result.json")
+    assert receipt["status"] == "fail"
+    assert receipt["service_manager_prerequisite"] == {
+        "required": True, "outcome": "fail", "foreground_fallback": False,
+        "error": "RuntimeError: Required native service manager systemd --user is unavailable",
+    }
+
+
 def test_tst_b1_cleanup_accepts_only_exact_uninstalled_selection_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(journey.sys, "platform", "linux")
     default = tmp_path / "default" / "astrid"

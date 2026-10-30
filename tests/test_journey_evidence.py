@@ -9,6 +9,27 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
+def release1_receipts(tmp_path):
+    candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
+    for contract in gate.RELEASE1_MATRIX:
+        service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
+                   "foreground_fallback": False}
+        row = {"receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
+               "mode": contract["mode"], "status": "pass", "runner_image": contract["runner"],
+               "shell": contract["shell"], "source_override_test_mode": False, "final_cleanup": "pass",
+               "candidate_checkouts": {name: {"sha": sha} for name, sha in candidate.items()},
+               "service_manager_prerequisite": service}
+        if contract["mode"] == "direct":
+            row["service_manager"] = {"manager": "native", "foreground_fallback": False}
+        else:
+            row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
+                                                    "managed_by": "pinokio", "foreground_fallback": False}
+        receipt = tmp_path / contract["job_id"] / "journey-result.json"
+        receipt.parent.mkdir(exist_ok=True)
+        receipt.write_text(json.dumps(row), encoding="utf-8")
+    return candidate
+
+
 def evidence(tmp_path):
     candidate = {k: ch * 40 for k, ch in zip(('app', 'agent', 'runtime', 'pinokio'), 'abcd')}
     manifest = {'agent': {'sha': candidate['agent']}, 'runtime': {'sha': candidate['runtime'], 'schema_digest': 'schema'}, 'tools': {'uv': {'version': '1'}}}
@@ -95,3 +116,36 @@ def test_hosted_image_mappings(tmp_path):
         item['runner_provenance']['ImageOS'] = 'unexpected'
         write(item)
         assert any('ImageOS' in e for e in gate.evaluate(candidate, manifest, tmp_path, ['fresh-install'], runner, shell))
+
+
+def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_path):
+    candidate = release1_receipts(tmp_path)
+    assert not gate.evaluate_release1_matrix(candidate, tmp_path)
+    (tmp_path / "direct-linux" / "journey-result.json").unlink()
+    assert any("direct-linux: missing receipt" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    skipped = tmp_path / "pinokio-backend-linux" / "journey-result.json"
+    data = json.loads(skipped.read_text())
+    data["status"] = "skipped"
+    skipped.write_text(json.dumps(data), encoding="utf-8")
+    assert any("pinokio-backend-linux: status 'skipped'" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    direct = tmp_path / "direct-macos" / "journey-result.json"
+    data = json.loads(direct.read_text())
+    data["service_manager"]["foreground_fallback"] = True
+    direct.write_text(json.dumps(data), encoding="utf-8")
+    assert any("direct-macos: direct service ownership" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+
+
+def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "journey.yml").read_text()
+    for contract in gate.RELEASE1_MATRIX:
+        assert f'"job_id":"{contract["job_id"]}"' in workflow
+        assert f'"mode":"{contract["mode"]}"' in workflow
+        assert f'"runner":"{contract["runner"]}"' in workflow
+    assert "--aggregate-release1" in workflow
+    assert "journey-receipt-${{ matrix.job_id }}" in workflow
+    assert "candidate-agent" in workflow and "pinokio" in workflow

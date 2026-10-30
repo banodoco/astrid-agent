@@ -5,16 +5,26 @@ import hashlib
 import json
 import os
 import platform
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
+
+if __package__:
+    from .journey_matrix import RELEASE1_JOB_IDS, RELEASE1_MATRIX
+else:
+    try:
+        from journey_matrix import RELEASE1_JOB_IDS, RELEASE1_MATRIX
+    except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
+        from scripts.journey_matrix import RELEASE1_JOB_IDS, RELEASE1_MATRIX
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ARTIFACTS = ("public/install", "public/install.sh", "public/install.ps1")
 REQUIRED = {
-    "release-candidate": ("fresh-install", "update-from-served", "reinstall", "pinokio", "fully-local", "source", "native-crash", "update-in-app"),
+    # Release candidates are no longer a loose list of legs.  They are the
+    # exact nine ownership/OS jobs and must use --aggregate-release1.
+    "release-candidate": RELEASE1_JOB_IDS,
     "weekly": ("fresh-install", "update-from-release:pre-updater"),
 }
 
@@ -129,6 +139,74 @@ def evaluate(candidate, manifest, results, required, expected_runner, expected_s
     return errors
 
 
+def evaluate_release1_matrix(candidate, results):
+    """Reject an incomplete, skipped, or ownership-ambiguous nine-job receipt set.
+
+    This runs after artifacts have been downloaded into one directory.  It does
+    not infer a missing row from a successful matrix dependency: each named job
+    must leave exactly one machine-readable ``journey-result.json`` receipt.
+    """
+    errors = []
+    expected = {row["job_id"]: row for row in RELEASE1_MATRIX}
+    found = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        job_id = row.get("job_id")
+        if not isinstance(job_id, str) or job_id not in expected:
+            errors.append(f"{path}: unknown or absent Release-1 job id")
+        elif job_id in found:
+            errors.append(f"{path}: duplicate receipt for {job_id}")
+        else:
+            found[job_id] = row
+    for job_id, contract in expected.items():
+        row = found.get(job_id)
+        if row is None:
+            errors.append(f"{job_id}: missing receipt")
+            continue
+        if row.get("receipt_kind") != "release1-installed-lifecycle":
+            errors.append(f"{job_id}: not a Release-1 lifecycle receipt")
+        if row.get("status") != "pass":
+            errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
+        if row.get("mode") != contract["mode"]:
+            errors.append(f"{job_id}: mode does not match the required matrix")
+        if row.get("runner_image") != contract["runner"]:
+            errors.append(f"{job_id}: runner does not match the required matrix")
+        if row.get("shell") != contract["shell"]:
+            errors.append(f"{job_id}: shell does not match the required matrix")
+        if row.get("source_override_test_mode") is not False:
+            errors.append(f"{job_id}: source override is not admissible")
+        if row.get("final_cleanup") != "pass":
+            errors.append(f"{job_id}: final cleanup did not pass")
+        observed = row.get("candidate_checkouts")
+        if not isinstance(observed, dict):
+            errors.append(f"{job_id}: exact candidate checkout receipt is absent")
+        else:
+            for name in ("app", "agent", "runtime", "pinokio"):
+                if (observed.get(name) or {}).get("sha") != candidate[name]:
+                    errors.append(f"{job_id}: {name} checkout differs from frozen candidate")
+        prerequisite = row.get("service_manager_prerequisite")
+        if not isinstance(prerequisite, dict):
+            errors.append(f"{job_id}: service-manager prerequisite receipt is absent")
+        elif contract["mode"] == "direct":
+            if (prerequisite.get("required") is not True or prerequisite.get("outcome") != "pass"
+                    or not isinstance(prerequisite.get("version"), str)
+                    or not prerequisite["version"].strip()
+                    or prerequisite.get("foreground_fallback") is not False):
+                errors.append(f"{job_id}: native service-manager prerequisite did not pass")
+            manager = row.get("service_manager")
+            if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
+                errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
+        elif (prerequisite.get("outcome") != "explicit-owner"
+              or prerequisite.get("managed_by") != "pinokio"
+              or prerequisite.get("foreground_fallback") is not False):
+            errors.append(f"{job_id}: Pinokio ownership prerequisite is not explicit")
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True, type=Path)
@@ -140,12 +218,20 @@ def main():
     parser.add_argument("--required", action="append", help="Override scenario list for focused local checks")
     parser.add_argument("--allow-source-override", action="store_true", help="Explicit test-mode evidence only")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--aggregate-release1", action="store_true",
+                        help="require the exact nine Release-1 job receipts under --results")
     args = parser.parse_args()
     errors = []
     try:
         candidate = read(args.candidate)
         manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if not args.prepare_only:
+        if args.aggregate_release1:
+            if args.results is None:
+                raise ValueError("--results is required with --aggregate-release1")
+            errors.extend(evaluate_release1_matrix(candidate, args.results))
+        elif not args.prepare_only:
+            if args.cadence == "release-candidate":
+                raise ValueError("release-candidate evidence requires --aggregate-release1")
             if args.results is None or args.expected_runner is None or args.expected_shell is None:
                 raise ValueError("--results, --expected-runner and --expected-shell are required")
             if args.expected_runner != "local" and (args.expected_runner == "windows-2022") != (args.expected_shell in ("powershell.exe", "pwsh.exe")):
