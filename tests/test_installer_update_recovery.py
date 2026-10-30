@@ -676,6 +676,11 @@ def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
     workspace.write_text('{"realm":"kept","payload":"original"}', encoding="utf-8")
     original_workspace = workspace.read_bytes()
     switch(root, candidate if step == "started" else old)
+    if step == "started":
+        workspace.write_text('{"realm":"kept","payload":"written-after-switched"}', encoding="utf-8")
+        post_switched_workspace = workspace.read_bytes()
+    else:
+        post_switched_workspace = original_workspace
     write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
     realm = {"realm_id": "realm-1", "realm_root": str(data)}
     write_json(root / "update-transaction.json", {
@@ -708,7 +713,7 @@ def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
                         switch_old=switch_old, activate_old=activate_old,
                         restore_workspace=False, say=lambda _line: None)
 
-    assert workspace.read_bytes() == original_workspace
+    assert workspace.read_bytes() == post_switched_workspace
     assert running["version"] == "old"
     if step == "staged":
         assert current(root) == old
