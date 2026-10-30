@@ -1351,7 +1351,7 @@ def _shared_executor_main(argv: list[str]) -> int:
             print(f"M4-6 shared route failed: {exc}", file=sys.stderr)
             return 1
         return 0
-    parser.error("a shared executor route is required")
+    print(f"Unknown shared executor route: {route!r}", file=sys.stderr)
     return 2
 
 

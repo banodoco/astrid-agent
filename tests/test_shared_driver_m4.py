@@ -163,6 +163,11 @@ def test_m4_6_route_fails_on_executor_observation_errors(tmp_path, monkeypatch):
     assert not (tmp_path / "result.json").exists()
 
 
+def test_unknown_shared_route_fails_closed(capsys):
+    assert ci_journey._shared_executor_main(["not-a-route"]) == 2
+    assert "Unknown shared executor route" in capsys.readouterr().err
+
+
 def test_m4_6_windows_route_uses_powershell_51_and_argv_safe_quoting(monkeypatch):
     captured = {}
 
