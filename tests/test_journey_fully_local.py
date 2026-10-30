@@ -86,6 +86,14 @@ def test_source_fake_evidence_can_never_pass_linux_gate() -> None:
         run_journey(require_linux=True)
 
 
+def test_linux_label_cannot_be_smuggled_into_source_validation() -> None:
+    receipt = _receipt()
+    receipt["evidence_class"] = "linux_receipt"
+    receipt["platform"] = {"kind": "linux", "linux_receipt": True}
+    with pytest.raises(ReceiptValidationError, match="Linux evidence requires"):
+        validate_receipt(receipt)
+
+
 def test_fake_adapter_does_not_mutate_agent_checkout() -> None:
     checkout = Path(__file__).resolve().parents[1]
     before = subprocess.run(
