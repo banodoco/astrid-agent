@@ -9,6 +9,13 @@ failed lists return 1, and both retain the held pod and its original failure evi
 Uncertain operations require a separate reconciliation turn and are never replayed.
 After a terminal list failure, --renew-held verifies the preserved list snapshot and
 failure ledger locally, then extends only admission expiry; failures and charges remain.
+Optional --h3-source-selection FILE pins every H3 row to explicit pod checkouts.
+FILE is JSON with exactly agent_root, runtime_root (absolute canonical paths),
+agent_head, runtime_head (full Git SHAs), and runtime_lock_sha256. The existing
+pod interpreter verifies both clean sources, imports and the producer lock before
+invoking the action. Selection failures never fall back to the default environment.
+Verified identities are saved in each packet's logs; held custody retains its
+original source identity. Cmd rows and lists without this option keep their defaults.
 
 Legacy steps: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
 Job lists use install-owned GPU sanity after environments and before models, then S0 for each H3 job,
@@ -77,6 +84,7 @@ from typing import Any, Callable
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS  # noqa: E402
+from scripts.pod_action_source import load_selection, validate_selection  # noqa: E402
 
 STEPS = ("claim", "bundle", "bootstrap", "install", "rerun", "s0", "clip", "download", "release")
 JOB_LIMIT = 100
@@ -444,17 +452,25 @@ def engine_script(verb: str, deadline: int, storage: dict | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def action_script(name: str, request: str, asset_map: str, out: str) -> str:
-    """The action runs with the pod's default environment; only PATH gains the venv's bin."""
+def action_script(name: str, request: str, asset_map: str, out: str, *, source: dict | None = None) -> str:
+    """Default environment unless the caller explicitly pins a verified source pair."""
     summary = f"{CLIP_DIR}/runs/{name}.summary.json"
+    action = ["action", "run", ACTION, "--request", request, "--asset-map", asset_map,
+              "--placement", "local", "--out", out]
+    invocation = "astrid " + shlex.join(action)
+    if source is not None:
+        source = validate_selection(source)
+        helper = (REPO / "scripts/pod_action_source.py").read_text()
+        blob = base64.b64encode(json.dumps(source, sort_keys=True).encode()).decode()
+        invocation = shlex.join(["/opt/astrid/bin/python", "-I", "-c", helper, blob,
+                                 summary + ".source.json", *action])
     return "\n".join([
         "export PATH=/opt/astrid/bin:$PATH",
         f"if [ -e {shlex.quote(out)} ]; then echo 'out dir already exists' >&2; exit 3; fi",
-        f"mkdir -p {CLIP_DIR}/runs",
-        f"cd {CLIP_DIR}",
+        f"mkdir -p {shlex.quote(CLIP_DIR + '/runs')}",
+        f"cd {shlex.quote(CLIP_DIR)}",
         "rc=0",
-        f"astrid action run {ACTION} --request {shlex.quote(request)} --asset-map {shlex.quote(asset_map)} "
-        f"--placement local --out {shlex.quote(out)} > {shlex.quote(summary)} || rc=$?",
+        f"{invocation} > {shlex.quote(summary)} || rc=$?",
         "exit $rc",
     ]) + "\n"
 
@@ -2043,7 +2059,16 @@ class JobListSession(Session):
 
     def __init__(self, args, **kwargs):
         held_jobs = getattr(args, "resume_held_jobs", None)
+        self.h3_source = None
+        selection = getattr(args, "h3_source_selection", None)
+        if selection is not None:
+            try:
+                self.h3_source = load_selection(Path(selection).read_text())
+            except (OSError, ValueError, TypeError):
+                raise SessionError("H3 source selection is missing or invalid") from None
         self.jobs = load_jobs(Path(held_jobs or args.jobs))
+        if selection is not None and not any(j["type"] == "h3" for j in self.jobs):
+            raise SessionError("H3 source selection requires an H3 row")
         if getattr(args, "hold_on_row_failure", False) and len(self.jobs) != 1:
             raise SessionError("held sessions require exactly one job row")
         self._failed_rows: set[str] = set()
@@ -2148,7 +2173,8 @@ class JobListSession(Session):
             name = f"{self.sid}-{jid}-{'s0' if smoke else 'clip'}"
             out = f"{remote}/{'s0' if smoke else 'out'}"
             request = "smoke-request.json" if smoke else "request.json"
-            command = action_script(name, f"{remote}/{request}", f"{remote}/asset-map.json", out)
+            command = action_script(name, f"{remote}/{request}", f"{remote}/asset-map.json", out,
+                                    source=self.h3_source)
         else:
             command = "\n".join(["set -eu", "export PATH=/opt/astrid/bin:$PATH",
                                  f"mkdir -p {shlex.quote(remote)}", f"cd {shlex.quote(remote)}", job["command"]]) + "\n"
@@ -2158,6 +2184,29 @@ class JobListSession(Session):
         phase = "s0" if smoke else "job"
         (logs / f"{phase}.stdout").write_text(stdout, encoding="utf-8")
         (logs / f"{phase}.stderr").write_text(self.fetch(handle["dir"] + "/stderr"), encoding="utf-8")
+        source_detail = {}
+        if job["type"] == "h3" and self.h3_source is not None:
+            try:
+                evidence = json.loads(self.fetch(f"{CLIP_DIR}/runs/{name}.summary.json.source.json"))
+            except (SessionError, ValueError):
+                if not code:
+                    raise SessionError("H3 selected source evidence is missing or invalid") from None
+            else:
+                identity = evidence.get("identity") if isinstance(evidence, dict) else None
+                if (not isinstance(identity, dict)
+                        or set(evidence) != {"schema", "agent_head", "runtime_head", "runtime_lock_sha256", "identity"}
+                        or evidence["schema"] != "astrid.pod-action-source.v1"
+                        or any(evidence.get(k) != self.h3_source[k]
+                               for k in ("agent_head", "runtime_head", "runtime_lock_sha256"))
+                        or set(identity) != {"release", "managed_by", "agent_head", "runtime_head", "dirty", "dirty_hash"}
+                        or identity.get("managed_by") != "source" or identity.get("dirty") is not False
+                        or type(identity.get("release")) is not int or identity["release"] != 0
+                        or any(identity.get(k) != self.h3_source[k] for k in ("agent_head", "runtime_head"))
+                        or not isinstance(identity.get("dirty_hash"), str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", identity["dirty_hash"])):
+                    raise SessionError("H3 selected source evidence differs")
+                (logs / f"{phase}.source-identity.json").write_text(json.dumps(evidence, sort_keys=True) + "\n")
+                source_detail = {"source": evidence}
         if code:
             raise JobRowError(f"{label}: job {handle['id']} exited {code}")
         if job["type"] == "h3":
@@ -2170,7 +2219,7 @@ class JobListSession(Session):
                 raise JobRowError(f"{label}: H3 action did not publish a successful output summary")
             if not smoke:
                 job["summary"] = summary
-        return {"job": handle["id"], "type": job["type"]}
+        return {"job": handle["id"], "type": job["type"], **source_detail}
 
     def verify_output(self, path, spec):
         kind = spec["kind"]
@@ -2333,6 +2382,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hold-on-row-failure", action="store_true", help="hold a single-row session only after a recoverable row failure")
     p.add_argument("--followup-timeout", type=int, default=300, help="follow-up deadline in seconds (1–600)")
     p.add_argument("--asset-map", help="JSON map of request asset ids to local files")
+    p.add_argument("--h3-source-selection", metavar="JSON",
+                   help="pin all H3 rows to explicit pod agent_root/runtime_root, agent_head/runtime_head and runtime_lock_sha256; no fallback")
     p.add_argument("--workdir", required=True, help="local directory for the bundle, downloads and progress")
     p.add_argument("--token-dir", default=str(Path.home() / ".astrid-pod-tokens"), help="directory for the per-claim token file")
     p.add_argument("--container-disk-gb", type=int, help="default: max(120, 1.5 x the engine install footprint)")
@@ -2352,6 +2403,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--request requires --asset-map")
     if (args.jobs or args.resume_held_jobs) and args.asset_map:
         parser.error("--asset-map belongs to --request; use assets/asset-map in each h3 job")
+    if args.h3_source_selection is not None and not (args.jobs or args.resume_held_jobs):
+        parser.error("--h3-source-selection requires --jobs or --resume-held-jobs")
     if args.hold_on_row_failure and not args.jobs:
         parser.error("--hold-on-row-failure requires --jobs")
     if args.resume_held is not None and not 1 <= args.followup_timeout <= 600:
