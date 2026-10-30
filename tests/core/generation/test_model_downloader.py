@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import io
+import os
 import threading
 import time
 import urllib.request
@@ -429,3 +430,594 @@ def test_windows_stream_destination_guard_without_windows_execution(tmp_path, mo
     with pytest.raises(UnsafePathError, match="alternate data stream"):
         downloader.download_model(spec(b"model", destination="nested/model.bin:stream"),
                                   models_root=str(tmp_path), deadline=time.monotonic() + 10)
+
+
+def test_verified_mounted_cache_is_copied_locally_without_network_or_cache_writes(tmp_path, monkeypatch):
+    payload = b"exact locked cache bytes"
+    cache = tmp_path / "mounted-cache"
+    cached = cache / downloader._cache_relative(spec(payload))
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(payload)
+    cached.chmod(0o444)
+    before = (cached.stat().st_ino, cached.stat().st_mtime_ns, cached.stat().st_mode)
+    root = tmp_path / "private-engine/models"
+    model = spec(payload)
+    reads = []
+    real_fdopen = downloader.os.fdopen
+
+    class ObservedRead:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.stream.close()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, count):
+            block = self.stream.read(count)
+            reads.append(block)
+            assert not (root / model.destination).exists()
+            return block
+
+    def observed_fdopen(fd, mode):
+        stream = real_fdopen(fd, mode)
+        return ObservedRead(stream) if mode == "rb" else stream
+
+    monkeypatch.setattr(downloader.os, "fdopen", observed_fdopen)
+    result = downloader.download_model(
+        model, models_root=str(root), model_cache_root=str(cache),
+        deadline=time.monotonic() + 10,
+        opener=lambda *_a, **_kw: pytest.fail("verified cache must avoid network"),
+    )
+    destination = root / model.destination
+    assert b"".join(reads) == payload
+    assert reads[-1] == b""
+    assert result.verified is True
+    assert result.path == str(destination)
+    assert result.action == "downloaded"
+    assert destination.read_bytes() == payload
+    assert destination.stat().st_ino != cached.stat().st_ino
+    assert destination.stat().st_nlink == 1
+    assert (cached.stat().st_ino, cached.stat().st_mtime_ns, cached.stat().st_mode) == before
+    assert cached.read_bytes() == payload
+    assert sorted(cache.rglob("*")) == sorted([cached.parent.parent, cached.parent, cached])
+    assert list(destination.parent.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize("state", ["missing_root", "missing_parent", "missing_entry", "wrong_size", "wrong_digest"])
+def test_missing_or_incompatible_cache_uses_existing_pinned_downloader(tmp_path, state):
+    payload = b"locked payload"
+    cache = tmp_path / "cache"
+    cached = cache / downloader._cache_relative(spec(payload))
+    if state != "missing_root":
+        cache.mkdir()
+    if state not in ("missing_root", "missing_parent"):
+        cached.parent.mkdir(parents=True)
+    if state == "wrong_size":
+        cached.write_bytes(b"short")
+    elif state == "wrong_digest":
+        cached.write_bytes(b"x" * len(payload))
+    # A matching basename at another cache path is never consulted.
+    if cache.exists():
+        (cache / "model.bin").write_bytes(payload)
+    before = {str(p.relative_to(cache)): p.read_bytes() for p in cache.rglob("*") if p.is_file()}
+    calls = []
+
+    def opener(request, timeout):
+        assert timeout > 0
+        assert request.full_url == f"https://huggingface.co/owner/model/resolve/{'a' * 40}/weights/model.bin"
+        start, end = map(int, request.headers["Range"].removeprefix("bytes=").split("-"))
+        calls.append((start, end))
+        return Response(payload[start:end + 1], start, end, len(payload))
+
+    root = tmp_path / "local-models"
+    result = downloader._download_model(
+        spec(payload), models_root=str(root), model_cache_root=str(cache),
+        deadline=time.monotonic() + 10, opener=opener, range_bytes=4,
+    )
+    assert result.verified is True
+    assert result.action == "downloaded"
+    assert calls == [(0, 3), (4, 7), (8, 11), (12, 13)]
+    assert (root / "nested/model.bin").read_bytes() == payload
+    assert cached.read_bytes() == payload
+    assert {str(p.relative_to(cache)): p.read_bytes() for p in cache.rglob("*")
+            if p.is_file() and p != cached} == {path: data for path, data in before.items()
+                                              if path != str(cached.relative_to(cache))}
+    assert list((root / "nested").iterdir()) == [root / "nested/model.bin"]
+
+
+@pytest.mark.parametrize("obstruction", [
+    "root_ancestor_symlink", "root_symlink", "root_regular", "parent_symlink",
+    "parent_regular", "leaf_symlink", "leaf_directory", "leaf_fifo", "leaf_hardlink",
+])
+def test_unsafe_mounted_cache_entries_fail_closed_without_network(tmp_path, obstruction):
+    payload = b"locked payload"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_bytes(payload)
+    cache = tmp_path / "cache"
+    if obstruction == "root_ancestor_symlink":
+        (tmp_path / "link").symlink_to(outside, target_is_directory=True)
+        cache = tmp_path / "link/cache"
+    elif obstruction == "root_symlink":
+        cache.symlink_to(outside, target_is_directory=True)
+    elif obstruction == "root_regular":
+        cache.write_bytes(payload)
+    else:
+        cache.mkdir()
+        key = cache / downloader._cache_relative(spec(payload)).parts[0]
+        key.mkdir()
+        if obstruction == "parent_symlink":
+            (key / "nested").symlink_to(outside, target_is_directory=True)
+        elif obstruction == "parent_regular":
+            (key / "nested").write_bytes(payload)
+        else:
+            (key / "nested").mkdir()
+            cached = cache / downloader._cache_relative(spec(payload))
+            if obstruction == "leaf_symlink":
+                cached.symlink_to(sentinel)
+            elif obstruction == "leaf_directory":
+                cached.mkdir()
+            elif obstruction == "leaf_fifo":
+                os.mkfifo(cached)
+            elif obstruction == "leaf_hardlink":
+                cached.hardlink_to(sentinel)
+    root = tmp_path / "local-models"
+    with pytest.raises(UnsafePathError, match="cache"):
+        downloader.download_model(
+            spec(payload), models_root=str(root), model_cache_root=str(cache),
+            deadline=time.monotonic() + 10,
+            opener=lambda *_a, **_kw: pytest.fail("unsafe cache must fail before network"),
+        )
+    assert sentinel.read_bytes() == payload
+    assert not (root / "nested/model.bin").exists()
+    assert not list(root.rglob("*.cache-*"))
+
+
+@pytest.mark.parametrize("cache_root", ["relative/cache", "", "cache\0bad", "parent_traversal"])
+def test_unsafe_cache_root_spelling_is_rejected(tmp_path, cache_root):
+    if cache_root == "parent_traversal":
+        cache_root = str(tmp_path / "cache/../outside")
+    with pytest.raises(UnsafePathError, match="model_cache_root"):
+        downloader.download_model(
+            spec(b"payload"), models_root=str(tmp_path / "models"),
+            model_cache_root=cache_root, deadline=time.monotonic() + 10,
+            opener=lambda *_a, **_kw: pytest.fail("unsafe cache root"),
+        )
+
+
+@pytest.mark.parametrize("relationship", ["same", "local_under_cache", "cache_under_local"])
+def test_cache_cannot_overlap_local_write_tree(tmp_path, relationship):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    root = cache if relationship == "same" else (
+        cache / "local-models" if relationship == "local_under_cache" else tmp_path
+    )
+    with pytest.raises(UnsafePathError, match="overlap"):
+        downloader.download_model(
+            spec(b"payload"), models_root=str(root), model_cache_root=str(cache),
+            deadline=time.monotonic() + 10,
+            opener=lambda *_a, **_kw: pytest.fail("cache must never be a local write tree"),
+        )
+    assert list(cache.iterdir()) == []
+
+
+@pytest.mark.parametrize("destination", ["../outside/model.bin", "nested/../../outside/model.bin", "/outside/model.bin"])
+def test_cache_consultation_cannot_escape_the_locked_relative_destination(tmp_path, destination):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    root = tmp_path / "models"
+    with pytest.raises(UnsafePathError):
+        downloader.download_model(
+            spec(b"payload", destination=destination), models_root=str(root),
+            model_cache_root=str(cache), deadline=time.monotonic() + 10,
+            opener=lambda *_a, **_kw: pytest.fail("escaped lock path must not download"),
+        )
+    assert not root.exists()
+    assert list(cache.iterdir()) == []
+
+
+@pytest.mark.parametrize("component", ["nested", "model.bin"])
+def test_cache_symlink_replacement_between_stat_and_open_is_rejected(tmp_path, monkeypatch, component):
+    payload = b"locked payload"
+    cache = tmp_path / "cache"
+    cached = cache / downloader._cache_relative(spec(payload))
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(payload)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "model.bin").write_bytes(payload)
+    real_open = downloader.os.open
+    replaced = False
+
+    def raced_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == component and kwargs.get("dir_fd") is not None and not replaced:
+            replaced = True
+            if component == "nested":
+                cached.parent.rename(cache / "original")
+                cached.parent.symlink_to(outside, target_is_directory=True)
+            else:
+                cached.unlink()
+                cached.symlink_to(outside / "model.bin")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(downloader.os, "open", raced_open)
+    with pytest.raises(UnsafePathError, match="cache"):
+        downloader.download_model(
+            spec(payload), models_root=str(tmp_path / "models"),
+            model_cache_root=str(cache), deadline=time.monotonic() + 10,
+            opener=lambda *_a, **_kw: pytest.fail("raced cache must not download"),
+        )
+    assert replaced
+    assert not (tmp_path / "models/nested/model.bin").exists()
+    assert (outside / "model.bin").read_bytes() == payload
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "deadline"])
+def test_interrupted_cache_copy_never_publishes_or_leaves_a_temporary(tmp_path, monkeypatch, failure):
+    payload = b"locked cache payload"
+    cache = tmp_path / "cache"
+    cached = cache / downloader._cache_relative(spec(payload))
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(payload)
+    root = tmp_path / "local/models"
+    part = root / "nested/model.bin.part"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(b"preserved prior range")
+    clock = [0.0]
+    monkeypatch.setattr(downloader.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(downloader, "_READ_SIZE", 3)
+    real_fdopen = downloader.os.fdopen
+
+    class InterruptedRead:
+        def __init__(self, stream):
+            self.stream = stream
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.stream.close()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, count):
+            self.calls += 1
+            if self.calls == 2:
+                if failure == "interrupt":
+                    raise KeyboardInterrupt("interrupted cache copy")
+                clock[0] = 11.0
+            return self.stream.read(count)
+
+    def interrupted_fdopen(fd, mode):
+        stream = real_fdopen(fd, mode)
+        return InterruptedRead(stream) if mode == "rb" else stream
+
+    monkeypatch.setattr(downloader.os, "fdopen", interrupted_fdopen)
+    with pytest.raises(KeyboardInterrupt if failure == "interrupt" else DeadlineExceeded):
+        downloader.download_model(
+            spec(payload), models_root=str(root), model_cache_root=str(cache), deadline=10.0,
+            opener=lambda *_a, **_kw: pytest.fail("interrupted copy must stop"),
+        )
+    assert not (root / "nested/model.bin").exists()
+    assert list(part.parent.iterdir()) == [part]
+    assert part.read_bytes() == b"preserved prior range"
+    assert cached.read_bytes() == payload
+
+
+def test_installed_verified_local_bytes_remain_the_first_reuse_choice(tmp_path):
+    payload = b"local verified payload"
+    root = tmp_path / "private-engine/models"
+    destination = root / "nested/model.bin"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(payload)
+    cache = tmp_path / "cache"
+    cache.symlink_to(tmp_path / "outside", target_is_directory=True)
+    result = downloader.download_model(
+        spec(payload), models_root=str(root), model_cache_root=str(cache),
+        deadline=time.monotonic() + 10,
+        opener=lambda *_a, **_kw: pytest.fail("local verified reuse must skip"),
+    )
+    assert result.action == "skipped"
+    assert result.path == str(destination)
+
+
+def _pinned_response(payload, calls):
+    def opener(request, timeout):
+        assert timeout > 0
+        start, end = map(int, request.headers['Range'].removeprefix('bytes=').split('-'))
+        calls.append((request.full_url, start, end))
+        return Response(payload[start:end + 1], start, end, len(payload))
+    return opener
+
+
+def test_first_download_publishes_verified_atomic_cache_and_second_launch_rehashes(tmp_path, monkeypatch):
+    payload = b'locked first launch bytes'
+    model, cache, calls = spec(payload), tmp_path / 'volume-cache', []
+    cached = cache / downloader._cache_relative(model)
+    real_replace = downloader.os.replace
+    publications = []
+
+    def observed_replace(source, target, **kwargs):
+        if kwargs.get('dst_dir_fd') is not None:
+            assert target == cached.name
+            directory = kwargs['dst_dir_fd']
+            assert os.fstat(directory).st_dev == cache.stat().st_dev
+            assert not cached.exists()
+            source_fd = os.open(source, os.O_RDONLY, dir_fd=directory)
+            with os.fdopen(source_fd, 'rb') as stream:
+                assert stream.read() == payload
+            publications.append(source)
+        return real_replace(source, target, **kwargs)
+
+    monkeypatch.setattr(downloader.os, 'replace', observed_replace)
+    result = downloader.download_model(model, models_root=str(tmp_path / 'first/models'),
+        model_cache_root=str(cache), deadline=time.monotonic() + 10, opener=_pinned_response(payload, calls))
+    assert result.verified and calls and len(publications) == 1
+    assert cached.read_bytes() == payload and cached.stat().st_nlink == 1
+    monkeypatch.setattr(downloader.os, 'replace', real_replace)
+    second = downloader.download_model(model, models_root=str(tmp_path / 'second/models'),
+        model_cache_root=str(cache), deadline=time.monotonic() + 10,
+        opener=lambda *a, **kw: pytest.fail('second launch must reuse hashed persistent bytes'))
+    assert second.verified and Path(second.path).read_bytes() == payload
+    assert Path(second.path).stat().st_ino != cached.stat().st_ino
+    assert len(calls) == 1 and not list(cache.rglob('*.cache-*'))
+    assert not (cache / '.astrid-engine').exists()
+
+
+@pytest.mark.parametrize('change', [
+    {'name': 'other'}, {'repository': 'other/model'}, {'revision': 'b' * 40},
+    {'path': 'other/model.bin'}, {'destination': 'other/model.bin'},
+    {'bytes': 999}, {'sha256': 'b' * 64},
+    {'url': 'https://example.test/model', 'repository': None, 'revision': None, 'path': None},
+])
+def test_cache_key_binds_every_exact_lock_entry_field(change):
+    model = spec(b'locked model')
+    assert downloader._cache_relative(model).parts[0] != downloader._cache_relative(spec(b'locked model', **change)).parts[0]
+
+
+@pytest.mark.parametrize('failure', ['interrupt', 'deadline', 'size', 'hash'])
+def test_failed_writeback_cannot_publish_a_valid_cache_entry(tmp_path, monkeypatch, failure):
+    payload = b'locked downloaded model'
+    model, cache = spec(payload), tmp_path / 'cache'
+    source = tmp_path / 'verified/model.bin'
+    source.parent.mkdir()
+    source.write_bytes(payload)
+    cached = cache / downloader._cache_relative(model)
+    binding = downloader._CacheBinding(str(cache))
+    real_fdopen = downloader.os.fdopen
+    clock = [0.0]
+    monkeypatch.setattr(downloader.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(downloader, '_READ_SIZE', 3)
+    if failure == 'size':
+        source.write_bytes(b'short')
+    elif failure == 'hash':
+        source.write_bytes(b'x' * len(payload))
+
+    class InterruptedRead:
+        def __init__(self, stream):
+            self.stream, self.calls = stream, 0
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            self.stream.close()
+        def fileno(self):
+            return self.stream.fileno()
+        def read(self, count):
+            self.calls += 1
+            if self.calls == 2:
+                if failure == 'interrupt':
+                    raise KeyboardInterrupt('interrupted writeback')
+                if failure == 'deadline':
+                    clock[0] = 11.0
+            return self.stream.read(count)
+
+    monkeypatch.setattr(downloader.os, 'fdopen', lambda fd, mode:
+        InterruptedRead(real_fdopen(fd, mode)) if mode == 'rb' else real_fdopen(fd, mode))
+    error = {'interrupt': KeyboardInterrupt, 'deadline': DeadlineExceeded,
+             'size': UnsafePathError, 'hash': IntegrityError}[failure]
+    with pytest.raises(error):
+        downloader._write_cached_model(model, binding=binding, relative=downloader._cache_relative(model),
+                                       destination=source, deadline=10.0)
+    assert not cached.exists() and not list(cache.rglob('*.cache-*'))
+
+
+@pytest.mark.parametrize('phase', ['read', 'write'])
+@pytest.mark.parametrize('change', ['mount', 'device', 'directory'])
+def test_cache_revalidates_mount_device_and_path_during_copy(tmp_path, monkeypatch, phase, change):
+    payload, cache = b'locked cache bytes', tmp_path / 'cache'
+    model = spec(payload)
+    cached = cache / downloader._cache_relative(model)
+    cached.parent.mkdir(parents=True)
+    if phase == 'read':
+        cached.write_bytes(payload)
+    source = tmp_path / 'local/model.bin'
+    source.parent.mkdir()
+    source.write_bytes(payload)
+    identity = [71, cache.stat().st_dev, '/workspace']
+    monkeypatch.setattr(downloader, '_mount_identity', lambda root: tuple(identity))
+    binding = downloader._CacheBinding(str(cache), device=identity[1], mount_id=identity[0])
+    real_fdopen = downloader.os.fdopen
+    changed = []
+
+    class ChangedRead:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            self.stream.close()
+        def fileno(self):
+            return self.stream.fileno()
+        def read(self, count):
+            block = self.stream.read(count)
+            if not changed:
+                changed.append(True)
+                if change == 'directory':
+                    cache.rename(tmp_path / 'retired-cache')
+                    cache.mkdir()
+                elif change == 'mount':
+                    identity[0] += 1
+                else:
+                    identity[1] += 1
+            return block
+
+    monkeypatch.setattr(downloader.os, 'fdopen', lambda fd, mode:
+        ChangedRead(real_fdopen(fd, mode)) if mode == 'rb' else real_fdopen(fd, mode))
+    with pytest.raises(UnsafePathError, match='binding changed'):
+        if phase == 'read':
+            downloader._copy_cached_model(model, binding=binding, relative=downloader._cache_relative(model),
+                                          destination=source.parent / 'installed.bin', deadline=time.monotonic() + 10)
+        else:
+            downloader._write_cached_model(model, binding=binding, relative=downloader._cache_relative(model),
+                                           destination=source, deadline=time.monotonic() + 10)
+    assert changed and not (source.parent / 'installed.bin').exists()
+    assert not list(tmp_path.rglob('*.cache-*'))
+
+
+@pytest.mark.parametrize('device,mount_id', [(100, 71), (99, 72), (99, None), (None, 71), (True, 71)])
+def test_authenticated_cache_binding_refuses_changed_or_incomplete_evidence_before_download(tmp_path, monkeypatch, device, mount_id):
+    cache = tmp_path / 'cache'
+    monkeypatch.setattr(downloader, '_mount_identity', lambda root: (71, 99, '/workspace'))
+    with pytest.raises(UnsafePathError):
+        downloader.download_model(spec(b'locked bytes'), models_root=str(tmp_path / 'models'),
+            model_cache_root=str(cache), model_cache_device=device, model_cache_mount_id=mount_id,
+            deadline=time.monotonic() + 10, opener=lambda *a, **kw: pytest.fail('unbound download'))
+    assert not list(tmp_path.rglob('*.cache-*'))
+
+
+@pytest.mark.parametrize('case', ['valid', 'duplicate', 'nested', 'device', 'malformed', 'missing'])
+def test_cache_mountinfo_requires_unique_live_mount_and_device(tmp_path, monkeypatch, case):
+    cache = tmp_path / 'cache'
+    cache.mkdir()
+    device = cache.stat().st_dev
+    major_minor = f'{os.major(device)}:{os.minor(device)}'
+    line = f'71 1 {major_minor} / {cache} rw - fuse opaque rw\n'
+    table = f'1 0 {major_minor} / / rw - overlay opaque rw\n' + line
+    if case == 'duplicate':
+        table += line.replace('71 ', '72 ', 1)
+    elif case == 'nested':
+        table += line.replace('71 ', '72 ', 1).replace(f' {cache} ', f' {cache}/nested ')
+    elif case == 'device':
+        table = table.replace(major_minor, '100:100')
+    elif case == 'malformed':
+        table += 'malformed mount evidence\n'
+    elif case == 'missing':
+        table = None
+    monkeypatch.setattr(downloader, '_read_mountinfo', lambda: table)
+    if case == 'valid':
+        assert downloader._mount_identity(cache) == (71, device, str(cache))
+    elif case == 'missing':
+        with pytest.raises(UnsafePathError, match='authenticated'):
+            downloader._CacheBinding(str(cache), device=device, mount_id=71)
+    else:
+        with pytest.raises(UnsafePathError, match='model cache'):
+            downloader._mount_identity(cache)
+
+
+def test_writeback_refuses_symlinked_local_source_ancestor(tmp_path):
+    payload = b'locked bytes'
+    actual = tmp_path / 'actual'
+    actual.mkdir()
+    (actual / 'model.bin').write_bytes(payload)
+    linked = tmp_path / 'linked'
+    linked.symlink_to(actual, target_is_directory=True)
+    cache = tmp_path / 'cache'
+    model = spec(payload)
+    with pytest.raises(UnsafePathError, match='symlink'):
+        downloader._write_cached_model(model, binding=downloader._CacheBinding(str(cache)),
+            relative=downloader._cache_relative(model), destination=linked / 'model.bin', deadline=time.monotonic() + 10)
+    assert not list(cache.rglob('*.cache-*'))
+    assert not (cache / downloader._cache_relative(model)).exists()
+
+
+def test_writeback_refuses_temporary_acquiring_a_hardlink(tmp_path, monkeypatch):
+    payload = b'locked model bytes'
+    model, cache = spec(payload), tmp_path / 'cache'
+    source = tmp_path / 'verified/model.bin'
+    source.parent.mkdir()
+    source.write_bytes(payload)
+    real_open = downloader.os.open
+    linked = []
+
+    def raced_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if isinstance(path, str) and '.cache-' in path and flags & os.O_CREAT:
+            directory = kwargs['dir_fd']
+            os.link(path, 'unsafe-alias', src_dir_fd=directory, dst_dir_fd=directory)
+            linked.append(True)
+        return descriptor
+
+    monkeypatch.setattr(downloader.os, 'open', raced_open)
+    with pytest.raises(UnsafePathError, match='temporary'):
+        downloader._write_cached_model(model, binding=downloader._CacheBinding(str(cache)),
+            relative=downloader._cache_relative(model), destination=source, deadline=time.monotonic() + 10)
+    assert linked and not (cache / downloader._cache_relative(model)).exists()
+    assert not list(cache.rglob('*.cache-*'))
+    assert source.read_bytes() == payload
+
+
+@pytest.mark.parametrize('state', ['missing', 'wrong_size', 'wrong_hash'])
+def test_insufficient_cache_capacity_refuses_cold_or_repair_before_pinned_download(tmp_path, monkeypatch, state):
+    payload, cache = b'locked model payload', tmp_path / 'volume-cache'
+    model = spec(payload)
+    cached = cache / downloader._cache_relative(model)
+    old = None
+    if state != 'missing':
+        cached.parent.mkdir(parents=True)
+        old = b'short' if state == 'wrong_size' else b'x' * len(payload)
+        cached.write_bytes(old)
+    monkeypatch.setattr(downloader.os, 'fstatvfs', lambda descriptor:
+                        SimpleNamespace(f_bavail=len(payload) - 1, f_frsize=1))
+    root = tmp_path / 'local/models'
+    with pytest.raises(DownloadError, match='capacity'):
+        downloader.download_model(model, models_root=str(root), model_cache_root=str(cache),
+            deadline=time.monotonic() + 10,
+            opener=lambda *a, **kw: pytest.fail('insufficient cache capacity must precede pinned network I/O'))
+    assert not (root / model.destination).exists()
+    assert not list(root.rglob('*.part')) and not list(tmp_path.rglob('*.cache-*'))
+    assert cached.read_bytes() == old if old is not None else not cached.exists()
+
+
+def test_warm_verified_cache_reuse_requires_no_new_cache_capacity(tmp_path, monkeypatch):
+    payload, cache = b'locked cached payload', tmp_path / 'volume-cache'
+    model = spec(payload)
+    cached = cache / downloader._cache_relative(model)
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(payload)
+    checked = []
+    def unavailable(descriptor):
+        checked.append(descriptor)
+        return SimpleNamespace(f_bavail=0, f_frsize=4096)
+    monkeypatch.setattr(downloader.os, 'fstatvfs', unavailable)
+    result = downloader.download_model(model, models_root=str(tmp_path / 'local/models'),
+        model_cache_root=str(cache), deadline=time.monotonic() + 10,
+        opener=lambda *a, **kw: pytest.fail('valid warm cache must avoid pinned network I/O'))
+    assert result.verified and Path(result.path).read_bytes() == payload
+    assert cached.read_bytes() == payload and checked == []
+
+
+def test_capacity_consumed_during_download_refuses_writeback_without_cache_publication(tmp_path, monkeypatch):
+    payload, cache = b'locked downloaded payload', tmp_path / 'volume-cache'
+    model, checks, downloads = spec(payload), [], []
+    def available(descriptor):
+        checks.append(descriptor)
+        return SimpleNamespace(f_bavail=len(payload) if len(checks) == 1 else 0, f_frsize=1)
+    monkeypatch.setattr(downloader.os, 'fstatvfs', available)
+    root = tmp_path / 'local/models'
+    with pytest.raises(DownloadError, match='capacity'):
+        downloader.download_model(model, models_root=str(root), model_cache_root=str(cache),
+            deadline=time.monotonic() + 10, opener=_pinned_response(payload, downloads))
+    assert downloads and len(checks) == 2
+    assert (root / model.destination).read_bytes() == payload
+    assert not (cache / downloader._cache_relative(model)).exists()
+    assert not list(tmp_path.rglob('*.cache-*'))

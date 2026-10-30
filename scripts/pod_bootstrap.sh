@@ -10,6 +10,25 @@ VENV="${ASTRID_VENV:-/opt/astrid}"
 RUNPOD_PRETEND_VERSION="1.12.0+astrid.2"
 SRC_DIRS=(src/runpod-python src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)
 PACKAGES=(runpod astrid-runtime runpod-lifecycle astrid vibecomfy)
+# Build backends can write metadata into their source directories. Stage only the
+# requested sources on writable storage; the mounted originals stay untouched.
+staged_uv_install() (
+  local mode="$1" stage source
+  shift
+  # Keep the array nonempty: Bash 3.2 treats empty arrays as unset under -u.
+  local -a install_args=(--python "$VENV")
+  [ "$mode" != reinstall ] || install_args+=(--reinstall-package astrid)
+  [ "$mode" != repair ] || install_args+=(--reinstall-package runpod-lifecycle)
+  # Callers check our status, so errexit is disabled here. Check each fallible step.
+  stage="$(mktemp -d "$BOOTSTRAP_ROOT/.install.XXXXXXXX")" || exit $?
+  trap 'rm -rf "$stage"' EXIT
+  tar --exclude=.git -cf - "$@" | tar -xf - -C "$stage" || exit $?
+  chmod -R u+w "$stage" || exit $?
+  for source in "$@"; do install_args+=("$stage/$source"); done
+  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
+    uv pip install "${install_args[@]}" || exit $?
+)
+
 # Headless Runtime setup. The data root follows astrid_runtime/paths.py on Linux.
 DATA_ROOT="${ASTRID_RUNTIME_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/astrid-runtime}"
 REALM_ROOT="${ASTRID_REALM_ROOT:-/workspace/astrid/realm}"
@@ -101,7 +120,7 @@ verify_astrid_install() {
     got="$(sha256sum "$site/astrid/core/generation/$rel" 2>/dev/null | cut -d' ' -f1)" || got=""
     if [ "$want" != "$got" ]; then
       echo "pod_bootstrap: installed astrid differs from src/astrid-agent ($rel); reinstalling astrid"
-      uv pip install --python "$VENV" --reinstall-package astrid src/astrid-agent
+      staged_uv_install reinstall src/astrid-agent || exit $?
       return 0
     fi
   done
@@ -168,16 +187,15 @@ have_all() {
 if have_all; then
   echo "pod_bootstrap: $VENV already has the packages; skipping install"
 else
-  repair=()
+  mode=fresh
   if [ -x "$VENV/bin/python" ] && ! "$VENV/bin/python" -c 'import runpod_lifecycle' >/dev/null 2>&1; then
-    repair=(--reinstall-package runpod-lifecycle)
+    mode=repair
   fi
   if [ ! -x "$VENV/bin/python" ]; then
     uv python install "$PY_VERSION"
     uv venv --python "$PY_VERSION" "$VENV"
   fi
-  SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD="$RUNPOD_PRETEND_VERSION" \
-    uv pip install --python "$VENV" "${SRC_DIRS[@]}" ${repair[@]+"${repair[@]}"}
+  staged_uv_install "$mode" "${SRC_DIRS[@]}" || exit $?
 fi
 
 # pip in the venv. The engine install's helper runs `python3 -m pip` for its uv bootstrap, and a

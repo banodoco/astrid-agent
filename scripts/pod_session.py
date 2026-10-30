@@ -5,9 +5,10 @@ Usage: pod_session.py --datacenters EUR-NO-1 --storage-name storage --sources-di
                       (--jobs jobs.yaml | --request job/request.json --asset-map job/asset-map.json)
 
 Legacy steps: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
-Job lists add explicit GPU sanity before installation, then S0 for each H3 job,
+Job lists use install-owned GPU sanity after environments and before models, then S0 for each H3 job,
 execution, verified download and review packet for each job, followed by release.
-The first failing step stops the run; release always runs (terminate, GET 404, account list []).
+The first failing step stops the run; release is attempted and reports only observed evidence.
+Known pods require terminate, GET 404 and account list []; unknown allocations need reconciliation.
 
 Example jobs.yaml (local input paths are relative to this YAML file):
     version: 1
@@ -216,7 +217,7 @@ def safe_tail(text: str, limit: int = 1500) -> str:
 _STORAGE_DIAGNOSTIC_REASONS = {
     "mountinfo": {"malformed", "error"},
     "paths": {"invalid", "symlink", "not_separate", "error"},
-    "mount": {"not_directory", "absent_or_ambiguous", "device_mismatch", "error"},
+    "mount": {"not_directory", "absent_or_ambiguous", "device_mismatch", "invalid_request", "error"},
     "identity": {"mismatch", "invalid_request"},
     "cache": {"nested_mount", "unsafe", "error"},
     "capacity": {"invalid_requirement", "insufficient", "error"},
@@ -232,8 +233,17 @@ def parse_storage_diagnostic(stderr: str) -> dict | None:
     records = [line[len(prefix):] for line in stderr.splitlines() if line.startswith(prefix)]
     if len(records) != 1 or len(records[0]) > 512:
         return None
+
+    def unique_fields(pairs):
+        value = {}
+        for key, field in pairs:
+            if key in value:
+                raise ValueError("ambiguous diagnostic field")
+            value[key] = field
+        return value
+
     try:
-        value = json.loads(records[0])
+        value = json.loads(records[0], object_pairs_hook=unique_fields)
         if (not isinstance(value, dict)
                 or set(value) != {"schema", "stage", "reason", "identity_matches"}
                 or value["schema"] != "astrid.pod-storage-diagnostic.v1"
@@ -411,11 +421,14 @@ def bootstrap_script() -> str:
     ]) + "\n"
 
 
-def engine_script(verb: str, deadline: int) -> str:
+def engine_script(verb: str, deadline: int, storage: dict | None = None) -> str:
     lines = ["set -eu", "export PATH=/opt/astrid/bin:$PATH"]
     if verb == "install":
         lines.append(f"export ASTRID_ENGINE_SANITY_CMD={shlex.quote(SANITY_CMD)}")
-    lines.append(f"astrid engines {verb} {ENGINE} --placement local --root {ENGINE_ROOT} --deadline {deadline}")
+    cache_option = f" --model-cache-root {shlex.quote(MODEL_CACHE_ROOT)}" if verb == "install" else ""
+    if verb == "install" and storage is not None:
+        cache_option += f" --model-cache-device {storage['cache_device']} --model-cache-mount-id {storage['cache_mount_id']}"
+    lines.append(f"astrid engines {verb} {ENGINE} --placement local --root {ENGINE_ROOT} --deadline {deadline}{cache_option}")
     return "\n".join(lines) + "\n"
 
 
@@ -512,10 +525,68 @@ def _file_sha256(path: Path) -> str:
 # Default collaborators (replaced by stubs in tests)
 # ---------------------------------------------------------------------------------------------
 
-def default_cli_runner(binary: str):
-    def run(argv: list[str], env: dict[str, str]) -> tuple[int, str, str]:
-        done = subprocess.run([binary, "--transport", "https", *argv], env=env, capture_output=True, text=True)
-        return done.returncode, done.stdout, done.stderr
+def controller_source_paths(sources_dir: Path) -> tuple[Path, Path]:
+    """Use the same SDK/lifecycle sources locally that this session bundles."""
+    sources = Path(sources_dir).resolve()
+    paths = (sources / "runpod-python", sources / "runpod-lifecycle" / "src")
+    for root, marker in zip(paths, ("runpod/api/mutations/pods.py", "runpod_lifecycle/cli.py")):
+        if not (root / marker).is_file():
+            raise SessionError(f"controller source is missing: {root / marker}")
+    return paths
+
+
+def capacity_wait_event(line: str, configured_wait: int) -> dict | None:
+    """Accept only the fixed lifecycle progress record, never arbitrary stderr."""
+    prefix = "RUNPOD_CAPACITY_WAIT "
+    if not line.startswith(prefix) or not configured_wait:
+        return None
+    try:
+        event = json.loads(line[len(prefix):])
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(event, dict) or set(event) != {"placement_attempt", "retry_interval", "wait_seconds"}:
+        return None
+    attempt, interval, wait = (event[k] for k in ("placement_attempt", "retry_interval", "wait_seconds"))
+    if (type(attempt) is not int or not 1 <= attempt <= 2**31 - 1
+            or type(wait) is not int or wait != configured_wait
+            or type(interval) not in (int, float) or not math.isfinite(interval)
+            or not 0 < interval <= wait):
+        return None
+    return {"placement_attempt": attempt, "retry_interval": interval, "wait_seconds": wait}
+
+
+def default_cli_runner(binary: str, source_paths: tuple[Path, ...] = ()):
+    def run(argv: list[str], env: dict[str, str], *, on_capacity_wait=None) -> tuple[int, str, str]:
+        if source_paths:
+            env = dict(env, PYTHONPATH=os.pathsep.join(
+                [*(str(p) for p in source_paths), *([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])]))
+        command = [binary, "--transport", "https", *argv]
+        if on_capacity_wait is None:
+            done = subprocess.run(command, env=env, capture_output=True, text=True)
+            return done.returncode, done.stdout, done.stderr
+        # Keep normal CLI output private while reading a dedicated hook-only pipe.
+        # Spooling both outputs also prevents a full stdout or stderr pipe blocking launch.
+        read_fd, write_fd = os.pipe()
+        with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as progress, \
+                os.fdopen(write_fd, "w", encoding="utf-8") as progress_writer, \
+                tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout, \
+                tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr:
+            proc = subprocess.Popen([*command, "--capacity-progress-fd", str(write_fd)], env=env,
+                                    stdout=stdout, stderr=stderr, pass_fds=(write_fd,))
+            progress_writer.close()
+            try:
+                for line in progress:
+                    on_capacity_wait(line)
+                code = proc.wait()
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            stdout.seek(0)
+            stderr.seek(0)
+            return code, stdout.read(), stderr.read()
+
+    run.supports_capacity_progress = True
     return run
 
 
@@ -547,8 +618,7 @@ class Session:
         self.name = f"astrid-pod-session-{self.sid}"
         self.workdir = Path(args.workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
-        # A reused work directory must never present a prior session's mount
-        # observation as evidence for this session, even if claim fails early.
+        # A reused work directory must not present a prior session observation.
         (self.workdir / "storage-mount-observation.json").unlink(missing_ok=True)
         self.pod_id: str | None = None
         self.transport = None
@@ -556,6 +626,7 @@ class Session:
         self.released = False
         self.records: list[dict] = []
         self.state: dict[str, Any] = {}
+        self._cache_binding: dict[str, int] = {}
         self.cli_env = {k: v for k, v in os.environ.items()
                         if k not in ("RUNPOD_STORAGE_NAME", "RUNPOD_STORAGE_VOLUMES", "RUNPOD_ATTACH_ONLY")}
 
@@ -625,7 +696,21 @@ class Session:
         return out, job
 
     # -- steps --------------------------------------------------------------------------------
+    def capacity_wait_progress(self, line: str) -> None:
+        if line == "RUNPOD_CAPACITY_EXHAUSTED\n":
+            self._capacity_exhausted = True
+            return
+        event = capacity_wait_event(line, self.args.wait_capacity)
+        if event is None:
+            return
+        self.state["claim_attempt"].update(event)
+        self.write_progress(strict=True)
+        self.say(f"[claim] capacity retry after attempt {event['placement_attempt']}; "
+                 f"waiting {event['retry_interval']}s (placement limit {event['wait_seconds']}s)")
+        sys.stdout.flush()
+
     def claim(self) -> dict:
+        from runpod_lifecycle import AllocationUnknown
         from runpod_lifecycle.https import read_token_file, write_token_file
 
         if self.args.datacenters != [DATACENTER]:
@@ -642,30 +727,60 @@ class Session:
         write_token_file(self.token_path, secrets.token_urlsafe(48))  # fresh per claim, O_EXCL, 0600
         env = dict(self.cli_env, RUNPOD_HTTPS_TOKEN_FILE=str(self.token_path),
                    RUNPOD_STORAGE_NAME=self.args.storage_name, RUNPOD_STORAGE_VOLUMES="",
-                   RUNPOD_ATTACH_ONLY="true")
+                   RUNPOD_ATTACH_ONLY="true", RUNPOD_VOLUME_MOUNT_PATH=CACHE_MOUNT)
         self.cli_env = env
         tried = []
         for gpu in self.args.gpus:
-            dc = DATACENTER
-            argv = ["launch", "--detach", "--name", self.name, "--gpu-type", gpu, "--image", image,
-                    "--datacenter-id", dc, "--allowed-cuda-versions", CUDA_VERSIONS,
-                    "--container-disk-gb", str(disk), "--disk-size-gb", str(self.args.volume_gb),
-                    "--storage-name", self.args.storage_name]
-            if self.args.wait_capacity:
-                argv += ["--wait-capacity", str(self.args.wait_capacity)]
-            code, out, err = self.cli(argv, env)
-            tried.append(f"{gpu}@{dc}")
-            if code == 0:
-                pod_id = parse_json_object(out).get("pod_id")
-                if not isinstance(pod_id, str) or not re.fullmatch(r"[a-z0-9]+", pod_id):
-                    raise SessionError("launch succeeded but printed no valid pod id")
-                self.pod_id = pod_id
-                self.transport = self.transport_factory(pod_id, read_token_file(self.token_path))
-                self.transport.wait_ready(timeout=600)
-                storage = self.verify_storage(footprint)
-                return {"pod_id": pod_id, "gpu": gpu, "datacenter": dc, "container_disk_gb": disk,
-                        "volume_gb": self.args.volume_gb, "image": image, "storage": storage}
-            self.say(f"[claim] {gpu} @ {dc}: no pod (exit {code}) {safe_tail(err, 300)}")
+            for dc in self.args.datacenters:
+                self.state["claim_attempt"] = {"gpu": gpu, "datacenter": dc, "state": "launching",
+                                                "wait_capacity_sec": self.args.wait_capacity, "started": now()}
+                self.say(f"[claim] {gpu} @ {dc}: capacity wait {self.args.wait_capacity}s; known capacity only")
+                self.write_progress(strict=True)  # local evidence exists while the lifecycle CLI waits
+                argv = ["launch", "--detach", "--name", self.name, "--gpu-type", gpu, "--image", image,
+                        "--datacenter-id", dc, "--allowed-cuda-versions", CUDA_VERSIONS,
+                        "--container-disk-gb", str(disk), "--disk-size-gb", str(self.args.volume_gb),
+                        "--storage-name", self.args.storage_name]
+                if self.args.wait_capacity:
+                    argv += ["--wait-capacity", str(self.args.wait_capacity)]
+                self._capacity_exhausted = False
+                try:
+                    if getattr(self.cli, "supports_capacity_progress", False):
+                        code, out, err = self.cli(argv, env, on_capacity_wait=self.capacity_wait_progress)
+                    else:
+                        code, out, err = self.cli(argv, env)
+                except Exception as exc:
+                    code, out, err = 1, "", f"allocation_unknown: CLI unavailable ({type(exc).__name__})"
+                tried.append(f"{gpu}@{dc}")
+                self.state["claim_attempt"]["state"] = "allocated" if code == 0 else "failed"
+                # The lifecycle CLI prints ``error: {exc}`` on stderr and exits 1.
+                # AllocationUnknown is nonretryable even across our outer candidate loop.
+                ambiguous = re.search(rf"\b{AllocationUnknown.status}\b", out + "\n" + err) is not None
+                if code == 0:
+                    try:
+                        pod_id = parse_json_object(out).get("pod_id")
+                    except SessionError:
+                        pod_id = None
+                    ambiguous = ambiguous or not isinstance(pod_id, str) or not re.fullmatch(r"[a-z0-9]+", pod_id)
+                if ambiguous:
+                    self.state["claim_attempt"]["state"] = AllocationUnknown.status
+                    self.state["claim"] = {"state": AllocationUnknown.status, "reconciliation_required": True,
+                                           "gpu": gpu, "datacenter": dc, "attempted": tried, "exit_code": code,
+                                           "wait_capacity_sec": self.args.wait_capacity}
+                    raise SessionError("claim: allocation_unknown; reconcile the provider allocation before another launch")
+                if code == 0:
+                    self.pod_id = pod_id
+                    self.transport = self.transport_factory(pod_id, read_token_file(self.token_path))
+                    self.transport.wait_ready(timeout=600)
+                    storage = self.verify_storage(footprint)
+                    return {"pod_id": pod_id, "gpu": gpu, "datacenter": dc, "container_disk_gb": disk,
+                            "volume_gb": self.args.volume_gb, "image": image,
+                            "wait_capacity_sec": self.args.wait_capacity, "storage": storage}
+                if not self._capacity_exhausted:
+                    self.state["claim"] = {"state": "launch_failed", "reconciliation_required": True,
+                                           "gpu": gpu, "datacenter": dc, "attempted": tried, "exit_code": code,
+                                           "wait_capacity_sec": self.args.wait_capacity}
+                    raise SessionError("claim: non-capacity launch failure; reconcile before another launch")
+                self.say(f"[claim] {gpu} @ {dc}: no capacity (exit {code})")
         raise SessionError("claim: no pod from any of: " + ", ".join(tried))
 
     def verify_storage(self, footprint: int) -> dict:
@@ -685,12 +800,58 @@ class Session:
             raise SessionError("claim: requested existing volume identity is missing or ambiguous")
         volume_id = volumes[0]["id"]
         pods = [v for v in listing(["list", "--json"]) if v.get("id") == self.pod_id]
-        if len(pods) != 1 or pods[0].get("network_volume_id") != volume_id:
-            raise SessionError("claim: pod did not report the exact requested volume attachment")
-        request = {"pod_id": self.pod_id, "volume_id": volume_id, "nonce": secrets.token_hex(16),
+        if len(pods) != 1:
+            raise SessionError("claim: exact pod legacy observation is missing or ambiguous")
+        legacy = pods[0].get("network_volume_evidence")
+        if (not isinstance(legacy, dict) or set(legacy) != {"present", "valid", "conflict"}
+                or any(type(value) is not bool for value in legacy.values())
+                or not legacy["valid"] or legacy["conflict"]
+                or pods[0].get("network_volume_id") not in (None, volume_id)):
+            raise SessionError("claim: legacy attachment evidence is malformed or conflicting")
+        legacy_path = pods[0].get("network_volume_mount_path")
+        if legacy_path is not None and (not isinstance(legacy_path, str) or legacy_path != CACHE_MOUNT):
+            raise SessionError("claim: legacy attachment path conflicts with the requested mount")
+        legacy_objects = pods[0].get("legacy_object_mounts")
+        if legacy_objects is not None:
+            if not isinstance(legacy_objects, list) or len(legacy_objects) > 16:
+                raise SessionError("claim: legacy object mount evidence is malformed")
+            object_facts = []
+            for item in legacy_objects:
+                if (not isinstance(item, dict) or set(item) != {"volume_id", "mount_path", "read_only"}
+                        or not isinstance(item["volume_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]+", item["volume_id"])
+                        or not isinstance(item["mount_path"], str) or not item["mount_path"].startswith("/")
+                        or str(Path(item["mount_path"])) != item["mount_path"] or ".." in Path(item["mount_path"]).parts
+                        or "\\" in item["mount_path"] or any(ord(char) < 32 for char in item["mount_path"])
+                        or type(item["read_only"]) is not bool):
+                    raise SessionError("claim: legacy object mount evidence is malformed")
+                object_facts.append((item["volume_id"], item["mount_path"], item["read_only"]))
+            if len(set(object_facts)) != len(object_facts):
+                raise SessionError("claim: legacy object mount evidence is duplicated")
+        nonce = secrets.token_hex(16)
+        code, out, _ = self.cli(["mounts", self.pod_id, "--nonce", nonce, "--json"], self.cli_env)
+        if code:
+            raise SessionError("claim: exact pod typed provider observation is unavailable")
+        # Independently revalidate the CLI contract before any private upload.
+        try:
+            from pod_storage_probe import strict_json_object, validate_provider_mapping
+        except ModuleNotFoundError:
+            from scripts.pod_storage_probe import strict_json_object, validate_provider_mapping
+        try:
+            provider = strict_json_object(out)
+            validate_provider_mapping(provider, pod_id=self.pod_id, volume_id=volume_id, nonce=nonce, mount=CACHE_MOUNT)
+        except ValueError:
+            raise SessionError("claim: exact pod typed provider observation is invalid") from None
+        if legacy_objects is not None:
+            typed_objects = [(item["volume_id"], item["mount_path"], item["read_only"])
+                             for item in provider["volume_mounts"] if item["volume_type"] == "OBJECT_STORE_VOLUME"]
+            if set(object_facts) != set(typed_objects):
+                raise SessionError("claim: legacy object mounts conflict with typed provider observation")
+        provider["legacy_evidence"] = {"present": legacy["present"] or provider["legacy_evidence"]["present"],
+                                       "valid": True, "conflict": False}
+        request = {"pod_id": self.pod_id, "volume_id": volume_id, "nonce": nonce,
                    "mount": CACHE_MOUNT, "model_cache_root": MODEL_CACHE_ROOT, "engine_root": ENGINE_ROOT,
                    "required_volume_bytes": self.args.volume_gb * 10**9,
-                   "required_local_bytes": (footprint + 20) * 10**9}
+                   "required_local_bytes": (footprint + 20) * 10**9, "provider_mapping": provider}
         source = (REPO / "scripts/pod_storage_probe.py").read_text()
         blob = base64.b64encode(json.dumps(request).encode()).decode()
         command = "python3 -c " + shlex.quote(source) + " " + shlex.quote(blob)
@@ -706,9 +867,12 @@ class Session:
                 handle.write("\n")
         if code:
             raise SessionError("claim: mounted storage verification failed")
-        receipt = parse_json_object(out)
-        if (set(receipt) != set(request) | {"free_bytes", "total_bytes", "local_free_bytes"}
-                or any(type(receipt.get(k)) is not type(v) or receipt.get(k) != v for k, v in request.items())
+        receipt = strict_json_object(out)
+        expected = {key: value for key, value in request.items() if key != "provider_mapping"}
+        if (set(receipt) != set(expected) | {"free_bytes", "total_bytes", "local_free_bytes", "cache_device", "cache_mount_id"}
+                or any(type(receipt.get(k)) is not type(v) or receipt.get(k) != v for k, v in expected.items())
+                or type(receipt.get("cache_device")) is not int or receipt["cache_device"] < 0
+                or type(receipt.get("cache_mount_id")) is not int or receipt["cache_mount_id"] <= 0
                 or type(receipt.get("total_bytes")) is not int
                 or type(receipt.get("free_bytes")) is not int
                 or receipt["free_bytes"] < request["required_volume_bytes"]
@@ -716,6 +880,8 @@ class Session:
                 or type(receipt.get("local_free_bytes")) is not int
                 or receipt["local_free_bytes"] < request["required_local_bytes"]):
             raise SessionError("claim: storage evidence differs from the requested mount/capacity")
+        # Keep transient live filesystem binding out of progress/state/logs.
+        self._cache_binding = {key: receipt.pop(key) for key in ("cache_device", "cache_mount_id")}
         self.state["storage"] = receipt
         return receipt
 
@@ -732,6 +898,9 @@ class Session:
     def bundle_sources(self) -> dict:
         tar = self.workdir / "pod-src.tgz"
         size, digest = build_bundle(self.agent_root, Path(self.args.sources_dir), tar)
+        with tarfile.open(tar) as archive:
+            manifest = json.load(archive.extractfile(".pod-source.json"))
+        (self.workdir / "source-identity.json").write_text(json.dumps(manifest, sort_keys=True) + "\n")
         self.put(tar, BUNDLE_REMOTE)
         code, out, err = self.execute("bundle size check", f"stat -c %s {BUNDLE_REMOTE} && sha256sum {BUNDLE_REMOTE}")
         fields = out.split()
@@ -755,14 +924,24 @@ class Session:
 
     def bootstrap(self) -> dict:
         _, job = self.must("bootstrap", bootstrap_script(), 3600)
-        return {"job": job["id"]}
+        manifest = json.loads((self.workdir / "source-identity.json").read_text())
+        request = {"pod_id": self.pod_id, "volume_id": self.state["storage"]["volume_id"],
+                   "nonce": secrets.token_hex(16), "runtime_head": manifest["heads"]["astrid-runtime"],
+                   "runtime_lock_sha256": manifest["runtime_lock_sha256"]}
+        blob = base64.b64encode(json.dumps(request).encode()).decode()
+        out, probe = self.must("Runtime readiness", f"export PATH=/opt/astrid/bin:$PATH\npython3 {SRC_DIR}/astrid-agent/scripts/pod_runtime_ready.py {shlex.quote(blob)}", 600, want_stdout=True)
+        receipt = parse_json_object(out)
+        if any(receipt.get(k) != v for k, v in request.items()) or receipt.get("ready") is not True or receipt.get("stopped") is not True:
+            raise SessionError("bootstrap: live Runtime identity/readiness evidence differs")
+        self.state["runtime_ready"] = receipt
+        return {"job": job["id"], "runtime_job": probe["id"], "runtime": receipt}
 
     def install(self) -> dict:
-        _, job = self.must("install", engine_script("install", 14400), 14400 + 900)
+        _, job = self.must("install", engine_script("install", 14400, self._cache_binding), 14400 + 900)
         return {"job": job["id"], "sanity_cmd": SANITY_CMD}
 
     def rerun(self) -> dict:
-        out, job = self.must("rerun", engine_script("install", 3600), 3600, want_stdout=True)
+        out, job = self.must("rerun", engine_script("install", 3600, self._cache_binding), 3600, want_stdout=True)
         executed = out.count('"executed"')
         if executed:
             raise SessionError(f"rerun: {executed} step(s) executed; every step must be skipped")
@@ -857,13 +1036,46 @@ class Session:
                 pass
         env = self.cli_env
         pods = [self.pod_id] if self.pod_id else []
+        evidence = {"pods": pods if pods else None, "get": None, "list": None}
+        self.state["release"] = evidence
+        unresolved = self.state.get("claim", {}).get("reconciliation_required", False)
+        if unresolved:
+            evidence.update(status="unresolved", reconciliation_required=True)
+
+        def list_pods(*, session_only: bool = False) -> list[dict] | None:
+            evidence.update(list=None, list_scope="session" if session_only else "account")
+            evidence.pop("list_error", None)
+            argv = ["list", *(["--name-prefix", self.name] if session_only else []), "--json"]
+            try:
+                code, out, _ = self.cli(argv, env)
+            except Exception as exc:
+                evidence.update(list_exit_code=None, list_error=f"CLI unavailable ({type(exc).__name__})")
+                return None
+            evidence["list_exit_code"] = code
+            if code != 0:
+                evidence["list_error"] = f"CLI exited {code}"
+                return None
+            try:
+                listed = json.loads(out)
+            except (TypeError, ValueError):
+                evidence["list_error"] = "invalid JSON"
+                return None
+            if not isinstance(listed, list) or any(
+                not isinstance(p, dict) or not isinstance(p.get("id"), str)
+                or not re.fullmatch(r"[a-z0-9]+", p["id"]) for p in listed
+            ):
+                evidence["list_error"] = "expected a list of pod objects with valid ids"
+                return None
+            # Only pod IDs are needed as evidence; omit unrelated provider fields.
+            evidence["list"] = [{"id": p["id"]} for p in listed]
+            return listed
+
         if not pods:  # a failed launch can leave a pod behind: sweep by this session's name
-            code, out, _ = self.cli(["list", "--name-prefix", self.name, "--json"], env)
-            if code == 0:
-                try:
-                    pods = [p["id"] for p in json.loads(out) if isinstance(p, dict) and p.get("id")]
-                except ValueError:
-                    pass
+            listed = list_pods(session_only=True)
+            if listed is None:
+                raise SessionError("release: session pod listing unverified; reconciliation required")
+            pods = [p["id"] for p in listed]
+            evidence["pods"] = pods
         for pod in pods:
             code, _out, err = self.cli(["terminate", pod, "--yes"], env)
             if code != 0:
@@ -871,26 +1083,31 @@ class Session:
         if pods:
             for attempt in range(12):
                 statuses = [self._status(p) for p in pods]
-                code, out, _ = self.cli(["list", "--json"], env)
-                listed = json.loads(out) if code == 0 and out.strip() else None
+                evidence["get"] = statuses[0] if len(statuses) == 1 else statuses
+                listed = list_pods()
                 if all(s == 404 for s in statuses) and listed == []:
                     break
                 if attempt == 11:
-                    raise SessionError(f"release: pod(s) {pods} not gone (GET {statuses}, list {listed!r}); terminate by hand")
+                    raise SessionError(f"release: pod(s) {pods} not gone or absence unverified (GET {statuses}); terminate by hand")
                 self.sleep(10)
+        if unresolved:
+            raise SessionError("release: claim outcome remains unresolved; reconcile the provider allocation")
         self.released = True
         if self.token_path is not None:
             try:
                 self.token_path.unlink()
             except OSError:
                 pass
-        return {"pods": pods, "get": 404, "list": []}
+        if pods:
+            return {"pods": pods, "get": 404, "list": []}
+        return evidence
 
     # -- progress -----------------------------------------------------------------------------
     def progress_document(self) -> bytes:
         return (json.dumps({"schema": "astrid.pod-session-progress.v1", "session": self.sid, "pod_id": self.pod_id,
                             "jobs": self.budget.count, "steps": self.records,
-                            "storage_diagnostic": self.state.get("storage_diagnostic")}, indent=2, sort_keys=True) + "\n").encode()
+                            "storage_diagnostic": self.state.get("storage_diagnostic"),
+                            "claim_attempt": self.state.get("claim_attempt")}, indent=2, sort_keys=True) + "\n").encode()
 
     def write_progress(self, *, strict: bool) -> None:
         local = self.workdir / "pod-session-progress.json"
@@ -920,10 +1137,17 @@ class Session:
                 try:
                     detail = operation()
                 except BaseException as exc:
-                    self.record(step, "failed", {"error": str(exc) or type(exc).__name__})
+                    detail = {"error": str(exc) or type(exc).__name__}
+                    if step == "claim":
+                        detail.update(self.state.get("claim", {}))
+                    self.record(step, "failed", detail)
                     raise
                 self.record(step, "ok", detail)
-                self.write_progress(strict=True)
+                try:
+                    self.write_progress(strict=True)
+                except BaseException as exc:
+                    self.record("progress", "failed", {"error": str(exc) or type(exc).__name__})
+                    raise
         except BaseException as exc:  # fail closed: stop, then release below
             failure = exc
             if not isinstance(exc, BudgetExceeded):
@@ -937,8 +1161,9 @@ class Session:
             self.record("release", "ok", self.release())
         except Exception as exc:
             released = False
-            self.record("release", "failed", {"error": str(exc), "pod_id": self.pod_id})
-            self.say(f"RELEASE FAILED for pod {self.pod_id}: terminate it by hand")
+            self.record("release", "failed", {**self.state.get("release", {}), "error": str(exc), "pod_id": self.pod_id})
+            self.say(f"RELEASE FAILED for pod {self.pod_id}: terminate it by hand" if self.pod_id else
+                     f"RELEASE UNVERIFIED for session {self.name}: reconcile the provider allocation")
         try:
             (self.workdir / "pod-session-progress.json").write_bytes(self.progress_document())
         except OSError:
@@ -1164,7 +1389,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--container-disk-gb", type=int, help="default: max(120, 1.5 x the engine install footprint)")
     p.add_argument("--volume-gb", type=int, default=10)
     p.add_argument("--image", help="default: the image in astrid/packs/runpod/environment.linux-cu130.json")
-    p.add_argument("--wait-capacity", type=int, default=0, help="seconds to retry each GPU/datacenter claim")
+    p.add_argument("--wait-capacity", type=int, default=0,
+                   help="seconds to retry known capacity failures for each GPU/datacenter placement; total time can exceed this across placements (0: immediate fallback)")
     p.add_argument("--poll-interval", type=float, default=30.0)
     p.add_argument("--runpod-cli", default=None, help="runpod-lifecycle executable (default: beside this Python, else PATH)")
     return p
@@ -1177,13 +1403,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--request requires --asset-map")
     if args.jobs and args.asset_map:
         parser.error("--asset-map belongs to --request; use assets/asset-map in each h3 job")
+    if args.wait_capacity < 0:
+        raise SessionError("--wait-capacity must be non-negative")
+    source_paths = controller_source_paths(Path(args.sources_dir))
+    sys.path[:0] = [str(p) for p in source_paths]
     binary = args.runpod_cli
     if binary is None:
         sibling = Path(sys.executable).parent / "runpod-lifecycle"
         binary = str(sibling) if sibling.exists() else "runpod-lifecycle"
     try:
         session = (JobListSession if args.jobs else Session)(
-            args, cli=default_cli_runner(binary), transport_factory=default_transport_factory, http_status=default_http_status)
+            args, cli=default_cli_runner(binary, source_paths), transport_factory=default_transport_factory,
+            http_status=default_http_status, say=lambda message: print(message, flush=True))
     except (SessionError, ValueError) as exc:
         parser.error(str(exc))
     return session.run()

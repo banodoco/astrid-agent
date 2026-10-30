@@ -63,6 +63,44 @@ def test_target_planning(placement, capsys):
     assert code == 0 and json.loads(out)['plan']['placement'] == placement
 
 
+def test_install_cache_argument_reaches_installer_without_changing_local_root(monkeypatch, capsys):
+    seen = {}
+    def backend(**kwargs):
+        seen['backend'] = kwargs
+        return object(), object()
+    def install(plan, **kwargs):
+        seen['plan'], seen['install'] = plan, kwargs
+        return InstallResult(status='installed')
+    monkeypatch.setattr(engine_cli, 'install_engine', install)
+    rc, out, err = invoke(['install', *BASE, '--model-cache-root', '/mounted/models'], capsys,
+                          backend_factory=backend)
+    assert rc == 0 and not err and json.loads(out)['status'] == 'installed'
+    assert seen['install']['model_cache_root'] == '/mounted/models'
+    assert seen['plan'].root == seen['backend']['root'] == ROOT
+    assert 'model_cache_root' not in seen['backend']
+    assert recorded_engine_root('vibecomfy-h3') == ROOT
+
+
+def test_model_cache_is_an_install_only_argument(capsys):
+    with pytest.raises(SystemExit) as caught:
+        engine_cli.main(['status', *BASE, '--model-cache-root', '/mounted/models'])
+    assert caught.value.code == 2
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(('cache', 'placement', 'error'), [
+    (ROOT, 'local', 'unsafe_path'),
+    (ROOT + '/models', 'local', 'unsafe_path'),
+    ('/TARGET_ONLY', 'local', 'unsafe_path'),
+    ('relative/cache', 'local', 'unsafe_path'),
+    ('/mounted/models', 'runpod', 'unsupported_placement'),
+])
+def test_invalid_cache_binding_refuses_before_backend(cache, placement, error, capsys):
+    rc, out, err = invoke(['install', *BASE, '--placement', placement, '--model-cache-root', cache],
+                          capsys, backend_factory=lambda **kw: pytest.fail('backend'))
+    assert rc == 1 and not out and json.loads(err)['error']['code'] == error
+
+
 @pytest.mark.parametrize(('args', 'code'), [
     (['install', 'unknown', '--dry-run'], 'unknown_engine'),
     (['install', *BASE, '--platform', 'linux-x86_64-cu124', '--dry-run'], 'unsupported_platform'),
@@ -318,3 +356,25 @@ def test_only_successful_explicit_local_installs_change_registration(monkeypatch
     monkeypatch.setattr(engine_cli, 'install_engine', lambda *args, **kwargs: InstallResult(status='installed'))
     rc, _, _ = invoke(['install', engine], capsys, backend_factory=backend)
     assert rc == 0 and seen[-1] == other and recorded_engine_root(engine) is None
+
+
+def test_authenticated_cache_binding_reaches_installer(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(engine_cli, 'install_engine',
+                        lambda plan, **kwargs: seen.update(kwargs) or InstallResult(status='installed'))
+    rc, out, err = invoke(['install', *BASE, '--model-cache-root', '/mounted/models',
+                          '--model-cache-device', '99', '--model-cache-mount-id', '71'], capsys,
+                         backend_factory=lambda **kw: (object(), object()))
+    assert rc == 0 and not err
+    assert seen['model_cache_device'] == 99 and seen['model_cache_mount_id'] == 71
+
+
+@pytest.mark.parametrize('flags', [
+    ['--model-cache-device', '99'], ['--model-cache-mount-id', '71'],
+    ['--model-cache-root', '/mounted/models', '--model-cache-device', '99'],
+    ['--model-cache-root', '/mounted/models', '--model-cache-device', '-1', '--model-cache-mount-id', '71'],
+])
+def test_invalid_cache_binding_stops_before_backend(capsys, flags):
+    rc, out, err = invoke(['install', *BASE, *flags], capsys,
+                         backend_factory=lambda **kw: pytest.fail('unbound cache backend'))
+    assert rc == 1 and not out and json.loads(err)['error']['code'] == 'unsafe_path'

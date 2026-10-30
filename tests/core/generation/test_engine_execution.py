@@ -132,5 +132,72 @@ def test_download_delegates_canonical_and_confines_root(tmp_path, monkeypatch):
     model, limit = object(), deadline()
     assert ctx.download_model(model, models_root=root + '/models', deadline=limit) is sentinel
     assert seen == [(model, {'models_root': root + '/models', 'deadline': limit})]
+    cache = str(tmp_path / 'mounted-cache')
+    assert ctx.download_model(model, models_root=root + '/models', deadline=limit,
+                              model_cache_root=cache) is sentinel
+    assert seen[-1] == (model, {'models_root': root + '/models', 'deadline': limit,
+                                'model_cache_root': cache})
     with pytest.raises(UnsafePathError):
         ctx.download_model(model, models_root=str(tmp_path / 'elsewhere'), deadline=limit)
+
+
+@pytest.mark.parametrize('cache_relative', ['engine', 'engine/models', '.'])
+def test_context_refuses_cache_overlapping_private_engine_root(tmp_path, monkeypatch, cache_relative):
+    from astrid.core.generation import model_downloader
+    from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+    from astrid.core.generation.engine_platforms import platform_adapter
+    root = str(tmp_path / 'engine')
+    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+                                     root=root, adapter=platform_adapter('linux-x86_64-cu130'),
+                                     service_client=object())
+    monkeypatch.setattr(model_downloader, 'download_model', lambda *a, **kw: pytest.fail('downloader'))
+    with pytest.raises(UnsafePathError):
+        ctx.download_model(object(), models_root=root + '/models', deadline=deadline(),
+                           model_cache_root=str(tmp_path / cache_relative))
+    assert not (tmp_path / 'engine').exists()
+
+
+def test_context_copies_verified_cache_bytes_into_private_local_model_root(tmp_path, monkeypatch):
+    from astrid.core.generation import model_downloader
+    from astrid.core.generation.engine_contracts import ModelSpec
+    from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+    from astrid.core.generation.engine_platforms import platform_adapter
+    root, cache = tmp_path / 'engine', tmp_path / 'mounted-cache'
+    payload = b'locked model bytes'
+    model = ModelSpec(name='tiny-model', repository='owner/model', revision='a' * 40,
+                      path='model.bin', url=None, destination='nested/model.bin',
+                      bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+    source = cache / model_downloader._cache_relative(model)
+    source.parent.mkdir(parents=True)
+    source.write_bytes(payload)
+    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+                                     root=str(root), adapter=platform_adapter('linux-x86_64-cu130'),
+                                     service_client=object())
+    monkeypatch.setattr(model_downloader.urllib.request, 'urlopen',
+                        lambda *a, **kw: pytest.fail('network used for verified cache bytes'))
+    result = ctx.download_model(model, models_root=str(root / 'models'), deadline=deadline(),
+                                model_cache_root=str(cache))
+    destination = root / 'models' / model.destination
+    assert result.path == str(destination) and result.verified is True
+    assert result.bytes == len(payload) and result.sha256 == model.sha256
+    assert destination.read_bytes() == source.read_bytes() == payload
+    assert destination.stat().st_ino != source.stat().st_ino
+    assert sorted(cache.rglob('*')) == sorted([source.parent.parent, source.parent, source])
+    assert not (cache / '.astrid-engine').exists()
+
+
+def test_context_forwards_authenticated_cache_mount_binding(tmp_path, monkeypatch):
+    from astrid.core.generation import model_downloader
+    from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
+    from astrid.core.generation.engine_platforms import platform_adapter
+    root = str(tmp_path / 'engine')
+    ctx = LocalLinuxExecutionContext(engine='vibecomfy-h3', platform='linux-x86_64-cu130',
+        root=root, adapter=platform_adapter('linux-x86_64-cu130'), service_client=object())
+    seen = []
+    monkeypatch.setattr(model_downloader, 'download_model', lambda model, **kw: seen.append(kw))
+    limit = deadline()
+    ctx.download_model(object(), models_root=root + '/models', deadline=limit,
+        model_cache_root=str(tmp_path / 'cache'), model_cache_device=99, model_cache_mount_id=71)
+    assert seen == [{'models_root': root + '/models', 'deadline': limit,
+                     'model_cache_root': str(tmp_path / 'cache'), 'model_cache_device': 99,
+                     'model_cache_mount_id': 71}]

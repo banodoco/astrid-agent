@@ -64,11 +64,19 @@ class LocalLinuxExecutionContext:
     def file_fact(self, path, *, hash_bytes, deadline):
         return self._files.file_fact(path, hash_bytes=hash_bytes, deadline=deadline)
 
-    def download_model(self, model, *, models_root, deadline):
+    def download_model(self, model, *, models_root, deadline, model_cache_root=None,
+                       model_cache_device=None, model_cache_mount_id=None):
         from .model_downloader import download_model
+        from .engine_runner import validate_model_cache_root
         self._files._relative(models_root)
         _check(deadline)
-        return download_model(model, models_root=models_root, deadline=deadline)
+        cache_root = validate_model_cache_root(model_cache_root, engine_root=self.root,
+                                               platform=self.platform, placement=self.placement)
+        cache = {} if cache_root is None else {"model_cache_root": cache_root}
+        for key, value in (("model_cache_device", model_cache_device), ("model_cache_mount_id", model_cache_mount_id)):
+            if value is not None:
+                cache[key] = value
+        return download_model(model, models_root=models_root, deadline=deadline, **cache)
 
     def acquire_install_lock(self, root, *, deadline):
         if root != self.root:

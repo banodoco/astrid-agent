@@ -1485,3 +1485,123 @@ def test_sanity_failure_aborts_before_any_model_step_and_names_lib_paths(setup):
     message = str(caught.value)
     assert "libcublas.so.13" in message and "LD_LIBRARY_PATH=" in message and "exit 2" in message
     assert not [e for e in context.events if e[0] in {"download", "service:start"}]
+
+
+def test_cache_binding_preserves_lock_models_local_receipt_readiness_and_sanity_order(setup):
+    from astrid.core.generation.engine_local_endpoint import model_root_binding_from_receipt
+    plan, context, adapter, deadline = setup
+    cache_root = "/mounted/read-only-model-cache"
+    seen = []
+    original = context.download_model
+
+    def download(model, *, models_root, deadline, model_cache_root):
+        context.events.append(("cache-read", model_cache_root, deadline))
+        seen.append((model, models_root, model_cache_root))
+        return original(model, models_root=models_root, deadline=deadline)
+
+    context.download_model = download
+    _sanity_context(context)
+    receipt = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
+                                    sanity_cmd="fake-sanity", model_cache_root=cache_root)
+    locked = recipes.load_model_lock(context.recipe.models_lock).models
+    assert seen == [(model, ROOT + "/models", cache_root) for model in locked]
+    kinds = [event[0] for event in context.events]
+    assert kinds.index("sanity") < kinds.index("cache-read") < kinds.index("download")
+    assert receipt.root == ROOT and receipt.status == "installed"
+    assert all(model.path.startswith(ROOT + "/models/") and model.verified for model in receipt.models)
+    assert context.files[ROOT + "/.astrid-engine/install.json"]["root"] == ROOT
+    binding = model_root_binding_from_receipt(receipt, ROOT)
+    assert binding.path == Path(ROOT) / "models"
+    launches = [event[1] for event in context.events if event[0] == "service:start"]
+    assert launches and all(launch["root"] == ROOT and cache_root not in runner._json(launch)
+                            for launch in launches)
+    assert all(path.startswith(ROOT + "/") for path in context.files)
+    assert kinds[-1] == "release" and not context.held
+
+
+@pytest.mark.parametrize('cache', [ROOT, ROOT + '/models', '/TARGET_ONLY', 'relative/cache', '/cache/../models'])
+def test_unsafe_cache_binding_stops_before_install_or_model_work(setup, cache):
+    plan, context, adapter, deadline = setup
+    with pytest.raises(UnsafePathError):
+        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
+                              model_cache_root=cache)
+    assert not context.events and not context.held
+
+
+def test_cache_binding_requires_local_placement_before_install_work(setup):
+    plan, _, adapter, deadline = setup
+    context = FakeHttpsContext()
+    context.deadline = deadline
+    with pytest.raises(UnsupportedPlacement):
+        runner.install_engine(replace(plan, placement='runpod'), context=context, adapter=adapter,
+                              deadline=deadline, model_cache_root='/mounted/cache')
+    assert not context.events
+
+
+def test_sanity_failure_with_cache_never_accesses_cache_or_downloads(setup):
+    plan, context, adapter, deadline = setup
+    _sanity_context(context, code=1)
+    context.download_model = lambda *a, **kw: pytest.fail('cache or model access before successful sanity')
+    with pytest.raises(CommandFailed):
+        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
+                              sanity_cmd='fake-sanity', model_cache_root='/mounted/cache')
+    assert not [event for event in context.events if event[0] in {'download', 'service:start'}]
+    assert context.events[-1][0] == 'release' and not context.held
+
+
+def test_authenticated_mount_binding_is_forwarded_to_every_model_step(setup):
+    plan, context, adapter, deadline = setup
+    seen = []
+    original = context.download_model
+    def download(model, *, models_root, deadline, **cache):
+        seen.append(cache)
+        return original(model, models_root=models_root, deadline=deadline)
+    context.download_model = download
+    receipt = runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
+        model_cache_root='/mounted/cache', model_cache_device=99, model_cache_mount_id=71)
+    assert receipt.status == 'installed' and seen
+    assert all(cache == {'model_cache_root': '/mounted/cache', 'model_cache_device': 99,
+                         'model_cache_mount_id': 71} for cache in seen)
+    assert context.events[-1][0] == 'release'
+
+
+def test_cache_capacity_lost_before_writeback_cannot_commit_installed_receipt(setup, tmp_path, monkeypatch):
+    import io
+    from astrid.core.generation import model_downloader as downloader
+    from astrid.core.generation.engine_contracts import DownloadError
+    _, context, adapter, deadline = setup
+    payload = b'SYNTHETIC CPU locked model bytes'
+    lock = recipes.load_model_lock(context.recipe.models_lock)
+    model = replace(lock.models[0], bytes=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(recipes, 'load_model_lock', lambda ref: replace(lock, models=(model,)))
+    plan = runner.plan_install(context.recipe, root=ROOT, placement='local')
+    cache, local = tmp_path / 'cache', tmp_path / 'local-models'
+    checks, downloads = [], []
+
+    def available(descriptor):
+        checks.append(descriptor)
+        return types.SimpleNamespace(f_bavail=len(payload) if len(checks) == 1 else 0, f_frsize=1)
+
+    class Response(io.BytesIO):
+        status = 206
+        headers = {'Content-Range': f'bytes 0-{len(payload) - 1}/{len(payload)}'}
+    def opener(request, timeout):
+        downloads.append(request.full_url)
+        return Response(payload)
+    def download(model, *, models_root, deadline, **cache_args):
+        return downloader.download_model(model, models_root=str(local), deadline=deadline,
+                                         opener=opener, **cache_args)
+
+    monkeypatch.setattr(downloader.os, 'fstatvfs', available)
+    context.download_model = download
+    with pytest.raises(DownloadError, match='capacity'):
+        runner.install_engine(plan, context=context, adapter=adapter, deadline=deadline,
+                              model_cache_root=str(cache))
+    receipt = context.files[ROOT + '/.astrid-engine/install.json']
+    assert receipt['status'] == 'failed' and receipt['models'] == []
+    assert (local / model.destination).read_bytes() == payload
+    assert downloads and len(checks) == 2
+    assert not (cache / downloader._cache_relative(model)).exists()
+    assert not list(tmp_path.rglob('*.cache-*'))
+    assert not [event for event in context.events if event[0] == 'service:start']
+    assert context.events[-1][0] == 'release' and not context.held

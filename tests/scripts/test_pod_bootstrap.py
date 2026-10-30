@@ -126,14 +126,14 @@ def test_setup_runtime_with_real_runtime_creates_workspace_once(tmp_path):
 def test_vibecomfy_is_in_noneditable_package_step_before_marker():
     text = SCRIPT.read_text()
     assert "SRC_DIRS=(src/runpod-python src/astrid-runtime src/runpod-lifecycle src/astrid-agent src/VibeComfy)" in text
-    package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
+    package_step = 'staged_uv_install "$mode" "${SRC_DIRS[@]}"'
     assert text.count(package_step) == 1
     assert text.index('[ -f "$marker" ]') < text.index(package_step) < text.index('mkdir -p "$marker_dir"')
     install_lines = re.findall(r"^\s*uv pip install[^\n]*", text, re.M)
     assert all(not re.search(r"(?:^|\s)(?:-e|--editable)(?:[=\s]|$)", line) for line in install_lines)
 
 
-TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln", "cp"]
+TOOLS = ["find", "sort", "xargs", "sha256sum", "cut", "date", "mkdir", "dirname", "grep", "id", "cat", "env", "bash", "chmod", "ln", "cp", "mktemp", "tar", "rm"]
 PROBE_MODULES = ("engine_runner.py", "engine_runner_target.py")
 PROBE_TEXT = {name: f"# {name} from src/astrid-agent\n" for name in PROBE_MODULES}
 
@@ -178,7 +178,7 @@ def _uv_calls(log: Path) -> list:
 
 
 def _line_index(calls: list, prefix: str) -> int:
-    matches = [i for i, c in enumerate(calls) if c.startswith(prefix)]
+    matches = [i for i, c in enumerate(calls) if c.startswith(prefix) and (not prefix.endswith(" ") or "src/runpod-python" in c or "--reinstall-package astrid" in c)]
     assert len(matches) == 1, (prefix, calls)
     return matches[0]
 
@@ -204,10 +204,11 @@ def _tool_bin(tmp_path: Path, with_uv: bool) -> Path:
             '  "venv "*) for a; do v="$a"; done; mkdir -p "$v/bin"; ln -sf "$PY" "$v/bin/python"\n'
             '    printf \'#!/bin/sh\\nwhile [ $# -gt 0 ]; do [ "$1" = --realm-root ] && { mkdir -p "$2"; : > "$2/realm.sqlite3"; }; shift; done\\n\' > "$v/bin/astrid-runtime"\n'
             '    chmod +x "$v/bin/astrid-runtime"; printf "home = /tmp\\n" > "$v/pyvenv.cfg";;\n'
-            '  "pip install") if [[ " $* " == *" src/runpod-python "* ]]; then\n'
+            '  "pip install") for a; do if [[ "$a" == */src/runpod-python ]]; then stage="${a%/src/runpod-python}"; fi; done\n'
+            '    if [ -n "${stage:-}" ]; then\n'
             "    site=\"$(\"$ASTRID_VENV/bin/python\" -c 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])')\"\n"
-            '    mkdir -p "$site/astrid/core/generation"; cp src/astrid-agent/astrid/core/generation/*.py "$site/astrid/core/generation/"\n'
-            '    cp -R src/runpod-lifecycle/src/runpod_lifecycle "$site/"; fi;;\n'
+            '    mkdir -p "$site/astrid/core/generation"; cp "$stage"/src/astrid-agent/astrid/core/generation/*.py "$site/astrid/core/generation/"\n'
+            '    cp -R "$stage"/src/runpod-lifecycle/src/runpod_lifecycle "$site/"; fi;;\n'
             "esac\nexit 0\n"
         )
         uv.chmod(0o755)
@@ -317,7 +318,7 @@ def test_pip_check_is_after_package_install_and_before_marker():
     # Pip is checked on both paths and installed only when absent.
     pip_line = re.compile(r'^  uv pip install --python "\$VENV" pip$', re.M)
     assert len(pip_line.findall(text)) == 1
-    package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
+    package_step = 'staged_uv_install "$mode" "${SRC_DIRS[@]}"'
     assert text.index(package_step) < pip_line.search(text).start() < text.index('mkdir -p "$marker_dir"')
 
 
@@ -327,13 +328,15 @@ def test_probe_check_runs_on_rerun_and_after_package_install_and_never_cleans_en
     calls = [m.start() for m in re.finditer(r"^\s*verify_astrid_install$", text, re.M)]
     assert len(calls) == 2
     rerun, full = calls
-    package_step = 'uv pip install --python "$VENV" "${SRC_DIRS[@]}"'
+    package_step = 'staged_uv_install "$mode" "${SRC_DIRS[@]}"'
     assert text.index('if [ -f "$marker" ]') < rerun < text.index("    setup_runtime\n    exit 0")
     assert text.index(package_step) < full < text.index('mkdir -p "$marker_dir"')
     body = _probe_function_body(text)
-    assert "sha256sum" in body and "--reinstall-package astrid" in body
+    assert "sha256sum" in body and "staged_uv_install reinstall src/astrid-agent" in body
     # The bootstrap never deletes engine state; stale state is documented in SETUP.md instead.
-    assert "rm -" not in text and ".astrid-engine" not in text
+    cleanup = 'trap \'rm -rf "$stage"\' EXIT'
+    assert text.count(cleanup) == 1
+    assert "rm -" not in text.replace(cleanup, "") and ".astrid-engine" not in text
 
 
 def test_fresh_boot_orders_noneditable_package_pip_and_probe_check(tmp_path):
@@ -342,12 +345,13 @@ def test_fresh_boot_orders_noneditable_package_pip_and_probe_check(tmp_path):
     assert r.returncode == 0, r.stderr + r.stdout
     calls = _uv_calls(log)
     venv = tmp_path / "venv"
-    pkg = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
+    pkg = _line_index(calls, f"pip install --python {venv} ")
     pip = _line_index(calls, f"pip install --python {venv} pip")
-    assert shlex.split(calls[pkg]) == [
-        "pip", "install", "--python", str(venv), "src/runpod-python", "src/astrid-runtime",
-        "src/runpod-lifecycle", "src/astrid-agent", "src/VibeComfy",
-    ]
+    package_args = shlex.split(calls[pkg])
+    assert package_args[:4] == ["pip", "install", "--python", str(venv)]
+    assert [Path(arg).relative_to(Path(arg).parents[1]).as_posix() for arg in package_args[4:]] == ["src/runpod-python", "src/astrid-runtime", "src/runpod-lifecycle", "src/astrid-agent", "src/VibeComfy"]
+    assert all(str(tmp_path / "boot" / ".install.") in arg for arg in package_args[4:])
+    assert not list((tmp_path / "boot").glob(".install.*"))
     assert all(not any(arg == "-e" or arg == "--editable" or arg.startswith("--editable=")
                        for arg in shlex.split(call)) for call in calls)
     assert pkg < pip
@@ -474,12 +478,10 @@ def test_missing_lifecycle_is_installed_into_existing_managed_environment(tmp_pa
     r = _boot(tmp_path, {**_overrides(tmp_path), "UV_LOG": str(log), "FAKE_UV_FREEZE": str(freeze)})
     assert r.returncode == 0, r.stderr + r.stdout
     calls = _uv_calls(log)
-    install = _line_index(calls, f"pip install --python {venv} src/runpod-python ")
-    assert shlex.split(calls[install]) == [
-        "pip", "install", "--python", str(venv), "src/runpod-python", "src/astrid-runtime",
-        "src/runpod-lifecycle", "src/astrid-agent", "src/VibeComfy",
-        "--reinstall-package", "runpod-lifecycle",
-    ]
+    install = _line_index(calls, f"pip install --python {venv} ")
+    package_args = shlex.split(calls[install])
+    assert package_args[:6] == ["pip", "install", "--python", str(venv), "--reinstall-package", "runpod-lifecycle"]
+    assert [Path(arg).name for arg in package_args[6:]] == ["runpod-python", "astrid-runtime", "runpod-lifecycle", "astrid-agent", "VibeComfy"]
     assert not any(c.startswith(("python install", "venv ")) for c in calls)
     check = subprocess.run([str(venv / "bin/python"), "-c", "import runpod_lifecycle; print(runpod_lifecycle.__file__)"] , check=True, capture_output=True, text=True, cwd=tmp_path)
     assert str(_site(venv) / "runpod_lifecycle") in check.stdout
@@ -498,8 +500,8 @@ def test_marker_with_missing_lifecycle_repairs_install(tmp_path):
     assert second.returncode == 0, second.stderr + second.stdout
     assert "repairing packages" in second.stdout
     new_calls = _uv_calls(log)[before:]
-    install = _line_index(new_calls, f"pip install --python {tmp_path / 'venv'} src/runpod-python ")
-    assert shlex.split(new_calls[install])[-2:] == ["--reinstall-package", "runpod-lifecycle"]
+    install = _line_index(new_calls, f"pip install --python {tmp_path / 'venv'} ")
+    assert shlex.split(new_calls[install])[4:6] == ["--reinstall-package", "runpod-lifecycle"]
     assert not any(c.startswith(("python install", "venv ")) for c in new_calls)
     check = subprocess.run([str(tmp_path / "venv/bin/python"), "-c", "import runpod_lifecycle; print(runpod_lifecycle.__file__)"] , check=True, capture_output=True, text=True, cwd=tmp_path)
     assert str(_site(tmp_path / "venv") / "runpod_lifecycle") in check.stdout

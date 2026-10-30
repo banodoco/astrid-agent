@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import importlib.util
 import json
 import os
@@ -54,16 +55,42 @@ def make_manifest(root, *, mixed=True, failure=None):
     return path, document
 
 
-def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, release_status=None):
+def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, release_status=None, missing_storage=False):
     pod = LoopbackPod(tmp_path / "pod", ps, monkeypatch, sanity_fail=failure == "sanity",
+                      runtime_fail=failure == "runtime",
                       corrupt_download="generated.png" if failure == "hash" else None)
     try:
+        # Synthetic committed sources exercise the production exact-Git bundler.
+        for root in [*(pod.sources / name for name in ps.BUNDLE_TREES[1:]), pod.agent_root]:
+            if root == pod.agent_root:
+                (root / "runtime.lock.json").write_text(json.dumps({"source_commit":
+                    ps._bundle_git(pod.sources / "astrid-runtime", "rev-parse", "HEAD").decode().strip()}))
+            ps._bundle_git(root, "init", "-q")
+            ps._bundle_git(root, "add", ".")
+            ps._bundle_git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                           "commit", "-qm", "synthetic source")
+        pod.launches = []
+        def cli(argv, env):
+            if missing_storage and argv[0] == "list":
+                # No pod exists after failed attachment; preserve scoped cleanup evidence.
+                pod.events.append("list")
+                return 0, "[]", ""
+            if argv[0] == "launch":
+                pod.launches.append(argv)
+                assert argv[argv.index("--datacenter-id") + 1] == ps.DATACENTER
+                assert argv[argv.index("--storage-name") + 1] == ps.STORAGE_NAME
+                assert env["RUNPOD_STORAGE_NAME"] == ps.STORAGE_NAME
+                assert env["RUNPOD_ATTACH_ONLY"] == "true" and env["RUNPOD_STORAGE_VOLUMES"] == ""
+                assert "--storage-volumes" not in argv
+                if missing_storage:
+                    return 1, "", "error: existing storage not found (attach-only)"
+            return pod.cli(argv, env)
         manifest, document = make_manifest(tmp_path / "manifest", mixed=mixed, failure=failure)
         args = ps.build_parser().parse_args([
-            "--datacenters", ps.DATACENTER, "--sources-dir", str(pod.sources), "--jobs", str(manifest),
+            "--datacenters", ps.DATACENTER, "--storage-name", ps.STORAGE_NAME, "--sources-dir", str(pod.sources), "--jobs", str(manifest),
             "--workdir", str(tmp_path / "session"), "--token-dir", str(tmp_path / "tokens"), "--poll-interval", ".01"])
         messages = []
-        session = ps.JobListSession(args, cli=pod.cli, transport_factory=pod.factory,
+        session = ps.JobListSession(args, cli=cli, transport_factory=pod.factory,
                                    http_status=pod.http_status if release_status is None else lambda _pod: release_status,
                                    sleep=lambda _seconds: None, say=messages.append, budget=budget,
                                    agent_root=pod.agent_root)
@@ -72,7 +99,7 @@ def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, re
         if pod.setup_log.exists():
             (session.workdir / "setup-trace.txt").write_text(pod.setup_log.read_text())
         (session.workdir / "harness-boundaries.json").write_text(json.dumps({
-            "boundary":"fixture pod allocation, bootstrap/install/GPU and H3 model/action",
+            "boundary":"fixture pod allocation, mounted storage/Runtime readiness, bootstrap/install/GPU and H3 model/action",
             "production":"AgentServer, HTTPS transfer, detached jobs, hash/probe and packet runner",
             "agent_job_records":pod.record_count, "runner_budget":session.budget.count,
             "comfy_prompt_count":len(pod.comfy_prompts), "terminated":pod.terminated,
@@ -98,9 +125,20 @@ def test_job_list_constructs_install_sanity_hook_without_preinstall_probe(tmp_pa
                                 transport_factory=lambda *_args: pytest.fail("unexpected transport"),
                                 http_status=lambda _pod: pytest.fail("unexpected provider call"))
     commands = []
+    session.pod_id = "fixturepod"
+    session.state["storage"] = {"volume_id":"fixture-volume"}
+    session._cache_binding = {"cache_device":47, "cache_mount_id":102}
+    manifest_identity = {"heads":{"astrid-runtime":"a" * 40}, "runtime_lock_sha256":"b" * 64}
+    (session.workdir / "source-identity.json").write_text(json.dumps(manifest_identity))
 
     def capture(label, command, timeout, **kwargs):
         commands.append((label, command))
+        if label == "Runtime readiness":
+            request = json.loads(base64.b64decode(shlex.split(command)[-1]))
+            assert request["runtime_head"] == manifest_identity["heads"]["astrid-runtime"]
+            assert request["runtime_lock_sha256"] == manifest_identity["runtime_lock_sha256"]
+            assert request["pod_id"] == session.pod_id and request["volume_id"] == "fixture-volume"
+            return json.dumps({**request, "ready":True, "stopped":True}), {"id":label}
         return "", {"id": label}
 
     monkeypatch.setattr(session, "must", capture)
@@ -109,12 +147,13 @@ def test_job_list_constructs_install_sanity_hook_without_preinstall_probe(tmp_pa
     assert "sanity" not in dict(steps)
     dict(steps)["bootstrap"]()
     detail = dict(steps)["install"]()
-    assert [label for label, _command in commands] == ["bootstrap", "install"]
+    assert [label for label, _command in commands] == ["bootstrap", "Runtime readiness", "install"]
     assert "gpu_sanity.py" not in commands[0][1]
-    install = commands[1][1].splitlines()
+    assert session.state["runtime_ready"]["ready"] is True
+    install = commands[2][1].splitlines()
     assert install == ["set -eu", "export PATH=/opt/astrid/bin:$PATH",
                        f"export ASTRID_ENGINE_SANITY_CMD={shlex.quote(ps.SANITY_CMD)}",
-                       f"astrid engines install {ps.ENGINE} --placement local --root {ps.ENGINE_ROOT} --deadline 14400"]
+                       f"astrid engines install {ps.ENGINE} --placement local --root {ps.ENGINE_ROOT} --deadline 14400 --model-cache-root {shlex.quote(ps.MODEL_CACHE_ROOT)} --model-cache-device 47 --model-cache-mount-id 102"]
     assert detail["sanity_cmd"] == ps.SANITY_CMD
 
 
@@ -152,7 +191,8 @@ def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monk
     assert ("POST", "/jobs") in pod.requests and ("POST", "/uploads") in pod.requests
     assert any(path == "/download-chunk" for _method, path in pod.requests)
     setup = pod.setup_log.read_text().splitlines()
-    assert setup.index("bootstrap") < setup.index("install") < setup.index("sanity") < setup.index("models") < setup.index("h3:1") < setup.index("h3:9")
+    assert setup.index("storage") < setup.index("bootstrap") < setup.index("runtime-ready") < setup.index("install") < setup.index("sanity") < setup.index("models") < setup.index("h3:1") < setup.index("h3:9")
+    assert session.state["storage"]["volume_id"] == session.state["runtime_ready"]["volume_id"] == "fixture-volume"
     assert setup.count("sanity") == 2  # Initial install and its idempotency rerun both keep the hook.
     assert [p["prompt"]["1"]["inputs"]["seconds"] for p in pod.comfy_prompts] == [1, 9]
 
@@ -186,7 +226,7 @@ def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monk
     assert not list((tmp_path / "tokens").glob("*.token"))
 
 
-@pytest.mark.parametrize("failure", ["png", "json", "hash", "command", "sanity"])
+@pytest.mark.parametrize("failure", ["png", "json", "hash", "command", "sanity", "runtime"])
 def test_failed_two_job_rehearsal_stops_and_releases(tmp_path, monkeypatch, failure):
     session, pod, code, messages, _manifest, _document = run_jobs(tmp_path, monkeypatch, mixed=False, failure=failure)
     assert code == 1, "\n".join(messages)
@@ -194,16 +234,21 @@ def test_failed_two_job_rehearsal_stops_and_releases(tmp_path, monkeypatch, fail
     assert session.budget.count == pod.record_count < 40
     failed = [r for r in session.records if r["result"] == "failed"]
     assert len(failed) == 1
-    assert failed[0]["step"] == ("install" if failure == "sanity" else "job:image" if failure == "command" else "download:image")
+    assert failed[0]["step"] == ("bootstrap" if failure == "runtime" else "install" if failure == "sanity" else "job:image" if failure == "command" else "download:image")
     assert not any(record["step"].endswith(":later") for record in session.records)
     progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
     assert progress["steps"][-1]["step"] == "release"
     assert any("POD SESSION FAILED" in message for message in messages)
     if failure == "sanity":
-        assert pod.setup_log.read_text().splitlines() == ["bootstrap", "install", "sanity"]
+        assert pod.setup_log.read_text().splitlines() == ["storage", "bootstrap", "runtime-ready", "install", "sanity"]
         assert [r["step"] for r in session.records] == ["claim", "bundle", "bootstrap", "install", "release"]
         assert "exited 1" in failed[0]["detail"]["error"]
         assert not pod.comfy_prompts
+    elif failure == "runtime":
+        assert pod.setup_log.read_text().splitlines() == ["storage", "bootstrap", "runtime-ready"]
+        assert [record["step"] for record in session.records] == ["claim", "bundle", "bootstrap", "release"]
+        assert "identity/readiness" in failed[0]["detail"]["error"]
+        assert not pod.comfy_prompts and "runtime_ready" not in session.state
     else:
         check = json.loads((session.workdir / "packets/image/machine-check.json").read_text())
         assert check["status"] == "failed"
@@ -224,6 +269,8 @@ def test_release_verification_failure_keeps_session_failed(tmp_path, monkeypatch
         tmp_path, monkeypatch, mixed=False, failure="command", release_status=200)
     assert code == 1 and pod.terminated and not session.released
     assert pod.events.count("terminate") == 1 and pod.events.count("list") == 13
+    assert pod.events.index("list") < pod.events.index("terminate")
+    assert pod.events[pod.events.index("terminate") + 1:].count("list") == 12
     assert session.records[-1]["step"] == "release" and session.records[-1]["result"] == "failed"
     assert "not gone" in session.records[-1]["detail"]["error"]
     assert any("RELEASE FAILED" in message for message in messages)
@@ -291,3 +338,15 @@ def test_h3_manifest_rejects_missing_references_and_duplicate_ids(tmp_path):
     manifest.write_text(yaml.safe_dump(document))
     with pytest.raises(ps.SessionError, match="unique"):
         ps.load_jobs(manifest)
+
+
+def test_job_list_missing_storage_fails_without_fallback(tmp_path, monkeypatch):
+    session, pod, code, _messages, _manifest, _document = run_jobs(tmp_path, monkeypatch, missing_storage=True)
+    assert code == 1 and len(pod.launches) == 1
+    assert session.state["claim"]["state"] == "launch_failed"
+    assert [r["step"] for r in session.records] == ["claim", "release"]
+    assert session.records[-1]["result"] == "failed"
+    assert session.records[-1]["detail"]["status"] == "unresolved"
+    assert not session.released
+    assert not pod.requests and not pod.terminated and not pod.setup_log.exists()
+    assert session.budget.count == 0

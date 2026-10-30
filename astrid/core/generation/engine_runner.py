@@ -124,6 +124,25 @@ def _root(root, platform):
     return normalized
 
 
+def validate_model_cache_root(model_cache_root, *, engine_root, platform, placement):
+    """Bind a persistent cache separately from private local engine state.
+
+    This is lexical target validation only. The downloader validates each cache
+    filesystem component before it copies a canonical model-lock destination.
+    """
+    if model_cache_root is None:
+        return None
+    if placement != "local":
+        raise UnsupportedPlacement("mounted model cache requires local execution")
+    if not platform.startswith("linux-"):
+        raise UnsupportedPlatform("mounted model cache requires a local Linux target")
+    cache_root = _root(model_cache_root, platform)
+    if (cache_root == engine_root or cache_root.startswith(engine_root + "/")
+            or engine_root.startswith(cache_root + "/")):
+        raise UnsafePathError("model cache and private engine roots must be disjoint")
+    return cache_root
+
+
 def plan_install(recipe: EngineRecipe, *, root: TargetPath, placement: Placement) -> InstallPlan:
     if not isinstance(recipe, EngineRecipe):
         raise RecipeValidationError("plan_install requires an EngineRecipe")
@@ -191,7 +210,8 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 
 class _Runner:
-    def __init__(self, plan, context, adapter, deadline):
+    def __init__(self, plan, context, adapter, deadline, model_cache_root=None,
+                 model_cache_device=None, model_cache_mount_id=None):
         _deadline(deadline)
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
@@ -207,6 +227,16 @@ class _Runner:
         if adapter.validate_root(plan.root) != plan.root:
             raise UnsafePathError("adapter changed the bound install root")
         self.plan, self.context, self.adapter, self.deadline = plan, context, adapter, deadline
+        self.model_cache_root = validate_model_cache_root(
+            model_cache_root, engine_root=plan.root, platform=plan.platform, placement=plan.placement)
+        self.model_cache_binding = {}
+        for key, value in (("model_cache_device", model_cache_device), ("model_cache_mount_id", model_cache_mount_id)):
+            if value is not None:
+                if self.model_cache_root is None or type(value) is not int or value < (1 if key.endswith("mount_id") else 0):
+                    raise UnsafePathError("model cache binding is invalid")
+                self.model_cache_binding[key] = value
+        if len(self.model_cache_binding) not in (0, 2):
+            raise UnsafePathError("model cache requires both device and mount ID")
         self.models_lock = recipes.load_model_lock(self.recipe.models_lock)
         self.helper_sha256 = _sha(helper_manifest(self.recipe))
         self.env = dict(adapter.environment(self.recipe, plan.root))
@@ -548,7 +578,9 @@ class _Runner:
             result = DownloadResult(model.name, path, "skipped", model.bytes, model.sha256, True, 0)
         else:
             _deadline(self.deadline, self.step_id)
-            result = self.context.download_model(model, models_root=self.path("models"), deadline=self.deadline)
+            cache = {} if self.model_cache_root is None else {"model_cache_root": self.model_cache_root, **self.model_cache_binding}
+            result = self.context.download_model(model, models_root=self.path("models"),
+                                                 deadline=self.deadline, **cache)
             if (not isinstance(result, DownloadResult) or result.model != model.name or result.path != path
                     or result.bytes != model.bytes or result.sha256 != model.sha256 or result.verified is not True
                     or result.action not in {"downloaded", "resumed", "skipped"}
@@ -619,11 +651,17 @@ SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
 
 
 def install_engine(plan: InstallPlan, *, context: ExecutionContext,
-                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None) -> InstallReceipt:
+                   adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None,
+                   model_cache_root: TargetPath | None = None,
+                   model_cache_device: int | None = None, model_cache_mount_id: int | None = None) -> InstallReceipt:
     """Install the engine. ``sanity_cmd`` (default: ``ASTRID_ENGINE_SANITY_CMD``) runs once after the
-    last environment step and before the first model step; a failure aborts the install there."""
+    last environment step and before the first model step; a failure aborts the install there.
+    ``model_cache_root`` stores exact locked model bytes atomically;
+    installed models and all custody state remain beneath the local plan root.
+    """
     sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
-    runner = _Runner(plan, context, adapter, deadline)
+    runner = _Runner(plan, context, adapter, deadline, model_cache_root=model_cache_root,
+                     model_cache_device=model_cache_device, model_cache_mount_id=model_cache_mount_id)
     with context.acquire_install_lock(plan.root, deadline=deadline):
         # Also bind installed target code/data before any source/environment action.
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:

@@ -1,14 +1,16 @@
 """CPU model/action boundary for pod-job orchestration tests.
 
 The lifecycle AgentServer, HTTPS transport, detached jobs, uploads, downloads,
-hashes and media probes are real. Only pod allocation, installation/GPU checks
-and the H3 model/action boundary are fixtures. The fake ComfyUI follows the
+hashes and media probes are real. Pod allocation, mounted storage observations,
+Runtime readiness, installation/GPU checks and the H3 model/action boundary are
+fixtures. The fake ComfyUI follows the
 prompt/history/view pattern in h3_cpu_runtime._SERVER_CODE; this is runner
 acceptance, not acceptance of the H3 transform implementation.
 """
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 import shlex
@@ -41,6 +43,8 @@ def record(value):
 def option(name): return args[args.index(name) + 1]
 if args[:2] == ["engines", "install"]:
     record("install")
+    assert "--model-cache-root" in args
+    assert pathlib.Path(option("--root")) not in pathlib.Path(option("--model-cache-root")).parents
     # Installation/GPU remain fixtures; model the engine hook's venv contract.
     primary_venv = pathlib.Path(option("--root")) / "runtime/venv"
     primary_venv.mkdir(parents=True, exist_ok=True)
@@ -83,7 +87,7 @@ else:
 
 
 class LoopbackPod:
-    def __init__(self, root, module, monkeypatch, *, sanity_fail=False, corrupt_download=None):
+    def __init__(self, root, module, monkeypatch, *, sanity_fail=False, runtime_fail=False, corrupt_download=None):
         self.root, self.module = Path(root), module
         self.events, self.requests, self.downloads = [], [], []
         self.terminated = False
@@ -173,13 +177,19 @@ class LoopbackPod:
             "BUNDLE_DIR": self.remote / "bundle", "BUNDLE_REMOTE": self.remote / "bundle/pod-src.tgz",
             "SRC_DIR": self.remote / "bundle/src", "CLIP_DIR": self.remote / "clip",
             "JOB_ROOT": self.remote / "detached", "PROGRESS_REMOTE": self.remote / "progress.json",
-            "ENGINE_ROOT": self.remote / "engine",
+            "ENGINE_ROOT": self.remote / "engine", "CACHE_MOUNT": self.remote / "cache-mount",
+            "MODEL_CACHE_ROOT": self.remote / "cache-mount/models",
         }.items():
             monkeypatch.setattr(module, key, str(value))
         self.agent_root = self.root / "source-agent"
         scripts = self.agent_root / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "pod_bootstrap.sh").write_text('set -eu\nprintf "bootstrap\\n" >> "$POD_JOBS_SETUP_LOG"\n')
+        (scripts / "pod_runtime_ready.py").write_text(
+            'import base64,json,os,pathlib,sys\n'
+            'request = json.loads(base64.b64decode(sys.argv[1]))\n'
+            'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("runtime-ready\\n")\n'
+            + f'print(json.dumps({{**request, "ready": {not runtime_fail!r}, "stopped": True}}))\n')
         (scripts / "gpu_sanity.py").write_text(
             'import argparse,os,pathlib,sys\n'
             'parser = argparse.ArgumentParser()\nparser.add_argument("--venv", required=True)\n'
@@ -192,41 +202,26 @@ class LoopbackPod:
             source = self.sources / name
             source.mkdir(parents=True)
             (source / "fixture.txt").write_text(name)
-        # Current source custody ships only clean committed checkouts and pins
-        # Runtime's exact HEAD. Exercise that production bundle path unchanged.
-        git_env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
-        git_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
-
-        def git(root, *args):
-            return subprocess.run(["git", "-C", str(root), *args], check=True,
-                                  capture_output=True, text=True, env=git_env).stdout.strip()
-
-        for source in [*(self.sources / name for name in module.BUNDLE_TREES[1:]), self.agent_root]:
-            if source == self.agent_root:
-                (source / "runtime.lock.json").write_text(json.dumps({
-                    "source_commit": git(self.sources / "astrid-runtime", "rev-parse", "HEAD")}))
-            git(source, "init", "-q")
-            git(source, "add", ".")
-            git(source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                "commit", "-qm", "fixture")
 
     def cli(self, argv, env):
         operation = argv[0]
         self.events.append(operation)
-        if operation == "launch":
-            assert argv[argv.index("--datacenter-id") + 1] == self.module.DATACENTER
-            assert argv[argv.index("--storage-name") + 1] == self.module.STORAGE_NAME
-            assert env["RUNPOD_STORAGE_NAME"] == self.module.STORAGE_NAME
-            assert env["RUNPOD_STORAGE_VOLUMES"] == "" and env["RUNPOD_ATTACH_ONLY"] == "true"
-            return 0, json.dumps({"pod_id":"fakepod134"}), ""
+        if operation == "launch": return 0, json.dumps({"pod_id":"fakepod134"}), ""
+        if operation == "mounts":
+            nonce = argv[argv.index("--nonce") + 1]
+            return 0, json.dumps({"schema":"runpod.provider-mounts.v1", "pod_id":"fakepod134", "nonce":nonce,
+                "volume_mounts":[{"volume_id":"fixture-volume", "volume_type":"NETWORK_VOLUME", "mount_path":self.module.CACHE_MOUNT,"read_only":False}],
+                "legacy_evidence":{"present":False,"valid":True,"conflict":False}}), ""
         if operation == "terminate":
             assert argv[1] == "fakepod134"
             self.terminated = True
             return 0, "{}", ""
         if operation == "volumes":
-            return 0, json.dumps([{"id": "vol187", "name": self.module.STORAGE_NAME,
-                                   "dataCenterId": self.module.DATACENTER}]), ""
-        if operation == "list": return 0, "[]" if self.terminated else '[{"id":"fakepod134","network_volume_id":"vol187"}]', ""
+            assert argv == ["volumes", "ls", "--json"]
+            return 0, json.dumps([{"id":"fixture-volume", "name":self.module.STORAGE_NAME,
+                                   "dataCenterId":self.module.DATACENTER}]), ""
+        if operation == "list":
+            return 0, "[]" if self.terminated else json.dumps([{"id":"fakepod134", "network_volume_id":"fixture-volume", "network_volume_evidence": {"present":True,"valid":True,"conflict":False}}]), ""
         raise AssertionError(argv)
 
     def http_status(self, pod_id):
@@ -241,20 +236,29 @@ class LoopbackPod:
         self.agent_thread.start()
 
         class LocalTransport(HttpsPodTransport):
-            def execute_command(self, command, timeout=600):
-                if "def storage_probe(" in command:
-                    # This runner fixture isolates job behavior; real probe transport
-                    # and mount decisions are exercised in test_pod_session.
-                    blob = shlex.split(command)[-1]
-                    source = ("import base64,json,sys; r=json.loads(base64.b64decode(sys.argv[1])); "
-                              "print(json.dumps(r | {'free_bytes':10**15,'total_bytes':10**15,"
-                              "'local_free_bytes':10**15}))")
-                    command = shlex.join([sys.executable, "-c", source, blob])
-                return super().execute_command(command, timeout=timeout)
-
             def _request(self, method, path, **kwargs):
                 owner.requests.append((method, path))
                 return super()._request(method, path, **kwargs)
+
+            def execute_command(self, command, **kwargs):
+                parts = shlex.split(command)
+                if len(parts) == 4 and parts[:2] == ["python3", "-c"] and "def storage_probe(" in parts[2]:
+                    request = json.loads(base64.b64decode(parts[3]))
+                    assert request["pod_id"] == pod_id and request["volume_id"] == "fixture-volume"
+                    assert request["mount"] == owner.module.CACHE_MOUNT
+                    assert request["model_cache_root"] == owner.module.MODEL_CACHE_ROOT
+                    assert request["engine_root"] == owner.module.ENGINE_ROOT
+                    owner.events.append("storage-probe")
+                    receipt = {**{key:value for key,value in request.items() if key != "provider_mapping"}, "cache_device":47,"cache_mount_id":102, "free_bytes":request["required_volume_bytes"] + 1,
+                               "total_bytes":request["required_volume_bytes"] + 2,
+                               "local_free_bytes":request["required_local_bytes"] + 1}
+                    # Preserve real transport/AgentServer execution and budget
+                    # accounting; only machine-specific mount facts are fake.
+                    source = ('import os,pathlib\n'
+                              'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("storage\\n")\n'
+                              + f'print({json.dumps(receipt)!r})\n')
+                    command = "python3 -c " + shlex.quote(source)
+                return super().execute_command(command, **kwargs)
 
             def get(self, remote, local, **kwargs):
                 owner.downloads.append(remote)
