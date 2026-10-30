@@ -725,6 +725,64 @@ def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
         assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
 
 
+def test_same_schema_direct_migration_recovery_preserves_post_switch_workspace(
+        tmp_path, monkeypatch):
+    """A null-backup direct migration replay rolls back selection only."""
+    root, data = tmp_path / "program", tmp_path / "data"
+    old = _version(root, "old", release=17)
+    candidate = _version(root, "candidate", release=18)
+    switch(root, candidate)
+    workspace = data / "workspace.json"
+    workspace.parent.mkdir(parents=True)
+    workspace.write_bytes(b"project written after switched")
+    post_switch_workspace = workspace.read_bytes()
+    write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
+    realm = {"realm_id": "realm-1", "realm_root": str(data)}
+    transaction_path = root / "update-transaction.json"
+    write_json(transaction_path, {
+        "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
+        "transaction_kind": "migration", "step": "switched", "data_root": str(data),
+        "old": old.document(), "candidate": candidate.document(),
+        "realm": realm, "backup": None,
+    })
+    assert current(root) == candidate
+    events = []
+
+    class NoBackupBackend:
+        def restore(self, *_args):
+            raise AssertionError("null-backup direct recovery must never restore workspace data")
+
+    monkeypatch.setattr(core, "install_runtime", lambda _root: None)
+    monkeypatch.setattr(core, "install_launcher", lambda _root: None)
+
+    def save(step, **details):
+        events.append("save:" + step)
+        transaction = read_json(transaction_path)
+        transaction.update(step=step, **details)
+        write_json(transaction_path, transaction)
+
+    def switch_old(version, _candidate):
+        events.append("switch-old")
+        switch(root, version)
+
+    recover_transaction(
+        root, data, NoBackupBackend(),
+        stop=lambda version, _data: events.append("stop:" + version.root.name),
+        switch_old=switch_old,
+        activate_old=lambda version, _data, _realm: events.append("start:" + version.root.name),
+        say=lambda _line: None, save=save,
+    )
+
+    assert current(root) == old
+    assert workspace.read_bytes() == post_switch_workspace
+    assert events == ["stop:candidate", "save:recovering", "switch-old",
+                      "save:rollback_selected", "start:old", "save:rolled_back"]
+    recovered = read_json(transaction_path)
+    assert recovered["transaction_kind"] == "migration"
+    assert recovered["backup"] is None
+    assert recovered["step"] == "rolled_back"
+
+
 def test_legacy_staged_migration_journal_with_backup_restores_workspace(tmp_path):
     """Old v1 staged records were published after stop and backup."""
     root, data = tmp_path / "program", tmp_path / "data"
