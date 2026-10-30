@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import fcntl
 import hashlib
 import io
 import json
@@ -57,6 +58,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -100,6 +102,10 @@ _SECRET_LINE = re.compile(r"key|token|secret|bearer|authorization|password", re.
 
 class SessionError(RuntimeError):
     """A step failed; the message is safe to print."""
+
+
+class JobRowError(SessionError):
+    """A completed job or its local result failed while the session remains usable."""
 
 
 class BudgetExceeded(SessionError):
@@ -618,12 +624,11 @@ class Session:
         self.name = f"astrid-pod-session-{self.sid}"
         self.workdir = Path(args.workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
-        # A reused work directory must not present a prior session observation.
-        (self.workdir / "storage-mount-observation.json").unlink(missing_ok=True)
         self.pod_id: str | None = None
         self.transport = None
         self.token_path: Path | None = None
         self.released = False
+        self._strict_transport = bool(getattr(args, "hold_on_row_failure", False))
         self.records: list[dict] = []
         self.state: dict[str, Any] = {}
         self._cache_binding: dict[str, int] = {}
@@ -653,7 +658,9 @@ class Session:
             try:
                 state = self.transport.detached_poll(job["id"], root=JOB_ROOT)
                 errors = 0
-            except Exception as exc:  # polls are reads; rate limits and route gaps are transient
+            except Exception as exc:  # ordinary sessions may retry transient read errors
+                if self._strict_transport:
+                    raise SessionError(f"job {job['id']}: poll failed ({type(exc).__name__})") from None
                 errors += 1
                 if errors > 20:
                     raise SessionError(f"job {job['id']}: poll failed {errors} times ({type(exc).__name__})") from None
@@ -667,7 +674,8 @@ class Session:
                 raise SessionError(f"job {job['id']} did not exit within {int(timeout)} s")
             self.sleep(self.args.poll_interval)
 
-    def run_job(self, label: str, command: str, timeout: float, *, want_stdout: bool = False) -> tuple[int, str, dict]:
+    def run_job(self, label: str, command: str, timeout: float, *, want_stdout: bool = False,
+                strict_fetch: bool = False) -> tuple[int, str, dict]:
         job = self.start_job(label, command)
         try:
             code = self.wait_job(job, timeout)
@@ -686,7 +694,8 @@ class Session:
                     self.say(f"[{label}] job {job['id']} exit {code}; stdout tail:\n{safe_tail(out)}")
                     self.say(f"[{label}] stderr tail:\n{safe_tail(self.fetch(job['dir'] + '/stderr'))}")
             except Exception:
-                pass
+                if strict_fetch or self._strict_transport:
+                    raise
         return code, out, job
 
     def must(self, label: str, command: str, timeout: float, **kw) -> tuple[str, dict]:
@@ -971,7 +980,7 @@ class Session:
                 self.transport.put(local, remote)
                 return
             except Exception:
-                if attempt == 2:
+                if self._strict_transport or attempt == 2:
                     raise
                 self.sleep(20)
 
@@ -1002,9 +1011,7 @@ class Session:
             self.put(local, remote)
         return detail
 
-    def bootstrap(self) -> dict:
-        _, job = self.must("bootstrap", bootstrap_script(), 3600)
-        manifest = json.loads((self.workdir / "source-identity.json").read_text())
+    def runtime_readiness(self, manifest: dict) -> tuple[dict, dict]:
         request = {"pod_id": self.pod_id, "volume_id": self.state["storage"]["volume_id"],
                    "nonce": secrets.token_hex(16), "runtime_head": manifest["heads"]["astrid-runtime"],
                    "runtime_lock_sha256": manifest["runtime_lock_sha256"]}
@@ -1014,6 +1021,12 @@ class Session:
         if any(receipt.get(k) != v for k, v in request.items()) or receipt.get("ready") is not True or receipt.get("stopped") is not True:
             raise SessionError("bootstrap: live Runtime identity/readiness evidence differs")
         self.state["runtime_ready"] = receipt
+        return receipt, probe
+
+    def bootstrap(self) -> dict:
+        _, job = self.must("bootstrap", bootstrap_script(), 3600)
+        manifest = json.loads((self.workdir / "source-identity.json").read_text())
+        receipt, probe = self.runtime_readiness(manifest)
         return {"job": job["id"], "runtime_job": probe["id"], "runtime": receipt}
 
     def install(self) -> dict:
@@ -1210,10 +1223,49 @@ class Session:
         self.records.append({"step": step, "time": now(), "result": result, "detail": detail, "jobs": self.budget.count})
         self.say(f"[{step}] {result} jobs={self.budget.count} {json.dumps(detail, default=str)[:300]}")
 
+    def continue_after_step_failure(self, step: str, exc: BaseException) -> bool:
+        return False
+
+    def should_run_step(self, step: str) -> bool:
+        return True
+
     def run(self) -> int:
+        lock = self.workdir / ".held-session.lock"
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                self.say("STOPPED: session workdir is in use")
+                return 1
+            if os.path.lexists(self._held_path()):
+                self.say("STOPPED: workdir contains held custody; release or reconcile it first")
+                return 1
+            return self._run_session()
+        finally:
+            os.close(fd)
+
+    def _run_session(self) -> int:
+        # A reused work directory must not present a prior session observation.
+        (self.workdir / "storage-mount-observation.json").unlink(missing_ok=True)
         failure: BaseException | None = None
+        hold_eligible = False
+        completed = False
         try:
             for step, operation in self.run_steps():
+                if not self.should_run_step(step):
+                    self.record(step, "skipped", {"reason": "earlier phase of this job failed"})
+                    try:
+                        self.write_progress(strict=True)
+                    except BaseException as exc:
+                        hold_eligible = False
+                        self.record("progress", "failed", {"error": str(exc) or type(exc).__name__})
+                        if failure is None:
+                            failure = exc
+                        self.say(f"STOPPED: {exc}" if isinstance(exc, SessionError) else
+                                 f"STOPPED: {type(exc).__name__}: {exc}")
+                        break
+                    continue
                 try:
                     detail = operation()
                 except BaseException as exc:
@@ -1221,21 +1273,58 @@ class Session:
                     if step == "claim":
                         detail.update(self.state.get("claim", {}))
                     self.record(step, "failed", detail)
-                    raise
+                    if failure is None:
+                        failure = exc
+                    if not self.continue_after_step_failure(step, exc):
+                        hold_eligible = False
+                        self.say(f"STOPPED: {exc}" if isinstance(exc, SessionError) else
+                                 f"STOPPED: {type(exc).__name__}: {exc}")
+                        break
+                    hold_eligible = isinstance(exc, JobRowError)
+                    try:
+                        self.write_progress(strict=True)
+                    except BaseException as progress_exc:
+                        hold_eligible = False
+                        self.record("progress", "failed", {"error": str(progress_exc) or type(progress_exc).__name__})
+                        if failure is None:
+                            failure = progress_exc
+                        self.say(f"STOPPED: {progress_exc}" if isinstance(progress_exc, SessionError) else
+                                 f"STOPPED: {type(progress_exc).__name__}: {progress_exc}")
+                        break
+                    continue
                 self.record(step, "ok", detail)
                 try:
                     self.write_progress(strict=True)
                 except BaseException as exc:
+                    hold_eligible = False
                     self.record("progress", "failed", {"error": str(exc) or type(exc).__name__})
-                    raise
+                    if failure is None:
+                        failure = exc
+                    self.say(f"STOPPED: {exc}" if isinstance(exc, SessionError) else
+                             f"STOPPED: {type(exc).__name__}: {exc}")
+                    break
+            else:
+                completed = True
         except BaseException as exc:  # fail closed: stop, then release below
-            failure = exc
-            if not isinstance(exc, BudgetExceeded):
-                try:
-                    self.write_progress(strict=False)
-                except Exception:
-                    pass
+            hold_eligible = False
+            if failure is None:
+                failure = exc
             self.say(f"STOPPED: {exc}" if isinstance(exc, SessionError) else f"STOPPED: {type(exc).__name__}: {exc}")
+        if (completed and hold_eligible and failure is not None
+                and getattr(self.args, "hold_on_row_failure", False)):
+            try:
+                self.save_held_session()
+                self.say("POD SESSION HELD after row failure")
+                return 1
+            except BaseException as exc:
+                self.say(f"STOPPED: unable to persist held session ({type(exc).__name__})")
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    failure = exc
+        if failure is not None and not isinstance(failure, BudgetExceeded):
+            try:
+                self.write_progress(strict=False)
+            except Exception:
+                pass
         released = True
         try:
             self.record("release", "ok", self.release())
@@ -1254,6 +1343,286 @@ class Session:
         self.say("POD SESSION " + ("COMPLETE" if ok else "FAILED") + f" (agent job records used: {self.budget.count})")
         return 0 if ok else 1
 
+    def _held_path(self) -> Path:
+        return self.workdir / "held-session.json"
+
+    def _write_held(self, doc: dict, *, create: bool = False) -> None:
+        path = self._held_path()
+        if create and path.exists():
+            raise SessionError("held state already exists; choose a fresh workdir")
+        fd, temporary = tempfile.mkstemp(prefix=".held-session-", dir=self.workdir)
+        created = False
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                json.dump(doc, handle, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if create:
+                os.link(temporary, path)  # fail instead of replacing prior custody
+                created = True
+                os.unlink(temporary)
+            else:
+                os.replace(temporary, path)
+            directory = os.open(self.workdir, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except BaseException:
+            if created:
+                path.unlink(missing_ok=True)
+            raise
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def save_held_session(self) -> None:
+        if (not self.pod_id or not self.token_path or not self.transport
+                or not self.state.get("storage") or not self.state.get("runtime_ready")):
+            raise SessionError("held state: incomplete session")
+        failed = [r for r in self.records if r["result"] == "failed"]
+        if len(failed) != 1:
+            raise SessionError("held state: primary failure is ambiguous")
+        manifest = json.loads((self.workdir / "source-identity.json").read_text())
+        ready = self.state["runtime_ready"]
+        identity = ready.get("identity")
+        if (not isinstance(identity, dict) or not identity
+                or identity.get("agent_head") != manifest["heads"]["astrid-agent"]
+                or identity.get("runtime_head") != manifest["heads"]["astrid-runtime"]
+                or ready.get("pod_id") != self.pod_id or ready.get("volume_id") != self.state["storage"]["volume_id"]
+                or ready.get("runtime_head") != manifest["heads"]["astrid-runtime"]
+                or ready.get("runtime_lock_sha256") != manifest["runtime_lock_sha256"]
+                or ready.get("ready") is not True or ready.get("stopped") is not True):
+            raise SessionError("held state: Runtime identity differs")
+        self.record("hold", "ok", {"primary_step": failed[0]["step"]})
+        self.write_progress(strict=True)
+        if ((self.workdir / "pod-session-progress.remote.json").read_bytes()
+                != (self.workdir / "pod-session-progress.json").read_bytes()):
+            raise SessionError("held state: remote progress differs")
+        # Sync all local packet and progress evidence before making custody durable.
+        evidence = [self.workdir / "pod-session-progress.json",
+                    self.workdir / "pod-session-progress.remote.json",
+                    self.workdir / "source-identity.json"]
+        packet_root = self.workdir / "packets"
+        for root, directories, files in os.walk(packet_root, topdown=False, followlinks=False):
+            evidence.extend(Path(root) / name for name in files)
+            evidence.extend(Path(root) / name for name in directories)
+        evidence.extend((packet_root, self.workdir))
+        for path in evidence:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                info = os.fstat(descriptor)
+                if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                    raise SessionError("held state: unsafe evidence")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        doc = {"schema": "astrid.pod-held-session.v1", "status": "held", "session": self.sid,
+               "pod_id": self.pod_id, "volume_id": self.state["storage"]["volume_id"],
+               "volume_gb": self.args.volume_gb, "source": manifest, "runtime_identity": identity,
+               "primary_step": failed[0]["step"], "jobs": self.budget.count,
+               "expires_at": time.time() + 3600,
+               "progress_sha256": _file_sha256(self.workdir / "pod-session-progress.json"),
+               "token_dir": str(Path(self.args.token_dir).resolve())}
+        self._write_held(doc, create=True)
+        try:
+            self._read_held()  # reject an incomplete record before relinquishing custody
+        except BaseException:
+            self._held_path().unlink(missing_ok=True)
+            raise
+
+    def _read_held(self) -> dict:
+        path = self._held_path()
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600):
+                raise SessionError("held state: file protection invalid")
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate held state key")
+                    result[key] = value
+                return result
+            doc = json.load(handle, object_pairs_hook=unique)
+        keys = {"schema", "status", "session", "pod_id", "volume_id", "volume_gb", "source",
+                "primary_step", "jobs", "expires_at", "progress_sha256", "token_dir", "runtime_identity"}
+        if (not isinstance(doc, dict) or set(doc) != keys or doc["schema"] != "astrid.pod-held-session.v1"
+                or doc["status"] not in ("held", "in_use")
+                or not isinstance(doc["session"], str) or not re.fullmatch(r"[0-9a-f]{8}", doc["session"])
+                or not isinstance(doc["pod_id"], str) or not re.fullmatch(r"[a-z0-9]+", doc["pod_id"])
+                or not isinstance(doc["volume_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]+", doc["volume_id"])
+                or type(doc["volume_gb"]) is not int or doc["volume_gb"] <= 0
+                or type(doc["jobs"]) is not int or not 0 <= doc["jobs"] < JOB_LIMIT
+                or type(doc["expires_at"]) not in (float, int) or not math.isfinite(doc["expires_at"])
+                or not isinstance(doc["primary_step"], str) or not doc["primary_step"]
+                or not isinstance(doc["progress_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", doc["progress_sha256"])
+                or not isinstance(doc["token_dir"], str) or not Path(doc["token_dir"]).is_absolute()
+                or not isinstance(doc["runtime_identity"], dict) or not doc["runtime_identity"]
+                or not isinstance(doc["source"], dict) or set(doc["source"]) != {"heads", "runtime_lock_sha256"}
+                or not isinstance(doc["source"]["heads"], dict)
+                or set(doc["source"]["heads"]) != set(BUNDLE_TREES)
+                or any(not isinstance(v, str) or not re.fullmatch(r"[0-9a-f]{40}", v) for v in doc["source"]["heads"].values())
+                or not isinstance(doc["source"]["runtime_lock_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", doc["source"]["runtime_lock_sha256"])
+                or doc["runtime_identity"].get("agent_head") != doc["source"]["heads"]["astrid-agent"]
+                or doc["runtime_identity"].get("runtime_head") != doc["source"]["heads"]["astrid-runtime"]):
+            raise SessionError("held state: malformed or incomplete")
+        return doc
+
+    def _verify_held_identity(self) -> None:
+        code, out, _ = self.cli(["list", "--name-prefix", self.name, "--json"], self.cli_env)
+        try:
+            pods = json.loads(out)
+        except (ValueError, TypeError):
+            pods = None
+        if (code or not isinstance(pods, list) or len(pods) != 1
+                or not isinstance(pods[0], dict) or pods[0].get("id") != self.pod_id
+                or pods[0].get("name") != self.name):
+            raise SessionError("held state: pod identity is missing, conflicting or ambiguous")
+
+    def run_held(self, command: str | None = None) -> int:
+        """One serialized, bounded follow-up, or an explicit verified release."""
+        lock = self.workdir / ".held-session.lock"
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            self.say("STOPPED: held session is in use")
+            return 1
+        self._strict_transport = True
+        doc = None
+        custody_verified = False
+        progress_restored = False
+        release_attempted = False
+        try:
+            doc = self._read_held()
+            self.sid, self.pod_id = doc["session"], doc["pod_id"]
+            self.name = f"astrid-pod-session-{self.sid}"
+            self.token_path = Path(doc["token_dir"]) / f"pod-session-{self.sid}.token"
+            self._verify_held_identity()
+            custody_verified = True
+            if command is None:
+                progress_path = self.workdir / "pod-session-progress.json"
+                try:
+                    if _file_sha256(progress_path) == doc["progress_sha256"]:
+                        progress = json.loads(progress_path.read_text())
+                        if (progress.get("session") == self.sid and progress.get("pod_id") == self.pod_id
+                                and progress.get("jobs") == doc["jobs"] and isinstance(progress.get("steps"), list)):
+                            self.records = progress["steps"]
+                            self.budget.count = doc["jobs"]
+                            progress_restored = True
+                except (OSError, ValueError, TypeError):
+                    pass
+                doc["status"] = "in_use"
+                self._write_held(doc)
+                release_attempted = True
+                result = self.release()
+                if self.records:
+                    self.record("release", "ok", result)
+                    progress_path.write_bytes(self.progress_document())
+                else:
+                    # Preserve untrusted/invalid progress byte-for-byte.
+                    release_path = self.workdir / "held-session-release.json"
+                    descriptor = os.open(release_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(descriptor, "w") as handle:
+                        json.dump({"session": self.sid, "pod_id": self.pod_id, "release": result}, handle)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                self._held_path().unlink()
+                self.say(f"[release] ok {json.dumps(result)}")
+                return 0
+            if (doc["status"] != "held" or doc["expires_at"] <= time.time()
+                    or doc["expires_at"] > time.time() + 3600
+                    or Path(self.args.token_dir).resolve() != Path(doc["token_dir"])
+                    or self.args.datacenters != [DATACENTER] or self.args.storage_name != STORAGE_NAME
+                    or self.args.volume_gb != doc["volume_gb"]
+                    or not command.strip() or not 1 <= self.args.followup_timeout <= 600):
+                raise SessionError("held state: stale, incomplete or incompatible")
+            progress_path = self.workdir / "pod-session-progress.json"
+            if _file_sha256(progress_path) != doc["progress_sha256"]:
+                raise SessionError("held state: progress differs")
+            progress = json.loads(progress_path.read_text())
+            if (progress.get("schema") != "astrid.pod-session-progress.v1"
+                    or progress.get("session") != self.sid or progress.get("pod_id") != self.pod_id
+                    or progress.get("jobs") != doc["jobs"] or not isinstance(progress.get("steps"), list)
+                    or len([r for r in progress["steps"] if r.get("result") == "failed"
+                            and r.get("step") == doc["primary_step"]]) != 1
+                    or json.loads((self.workdir / "source-identity.json").read_text()) != doc["source"]):
+                raise SessionError("held state: progress or source identity differs")
+            self.records = progress["steps"]
+            self.budget.count = doc["jobs"]
+            progress_restored = True
+            # A crash after this durable transition cannot replay an uncertain operation.
+            doc["status"] = "in_use"
+            self._write_held(doc)
+            from runpod_lifecycle.https import read_token_file
+            self.transport = self.transport_factory(self.pod_id, read_token_file(self.token_path))
+            self.transport.wait_ready(timeout=600)
+            storage = self.verify_storage(recipe_footprint_gb())
+            if storage["volume_id"] != doc["volume_id"]:
+                raise SessionError("held state: volume identity differs")
+            receipt, _ = self.runtime_readiness(doc["source"])
+            if receipt.get("identity") != doc["runtime_identity"]:
+                raise SessionError("held state: Runtime source identity differs")
+            if json.loads(self.fetch(f"{SRC_DIR}/.pod-source.json")) != doc["source"]:
+                raise SessionError("held state: transported source manifest differs")
+            code, _, job = self.run_job("follow-up", command, self.args.followup_timeout)
+            if code:
+                raise SessionError(f"follow-up: job {job['id']} exited {code}")
+            self.record("follow-up", "ok", {"job": job["id"]})
+            self.write_progress(strict=True)
+            if (self.workdir / "pod-session-progress.remote.json").read_bytes() != progress_path.read_bytes():
+                raise SessionError("held state: remote progress differs")
+            for path in (progress_path, self.workdir / "pod-session-progress.remote.json", self.workdir):
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            doc.update(status="held", jobs=self.budget.count,
+                       progress_sha256=_file_sha256(progress_path))
+            self._write_held(doc)
+            self.say("POD SESSION HELD; original row failure remains")
+            return 1
+        except BaseException as exc:
+            detail = str(exc) if isinstance(exc, SessionError) else type(exc).__name__
+            self.say(f"STOPPED: held session unavailable ({detail})")
+            if custody_verified and not release_attempted:
+                try:
+                    result = self.release()
+                    self.record("release", "ok", result)
+                    self._held_path().unlink(missing_ok=True)
+                    if progress_restored:
+                        try:
+                            (self.workdir / "pod-session-progress.json").write_bytes(self.progress_document())
+                        except OSError:
+                            pass
+                    else:
+                        release_path = self.workdir / "held-session-release.json"
+                        descriptor = os.open(release_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(descriptor, "w") as handle:
+                            json.dump({"session": self.sid, "pod_id": self.pod_id, "release": result}, handle)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                except Exception:
+                    self.say(f"RELEASE FAILED for pod {self.pod_id}: terminate it by hand")
+            elif release_attempted:
+                self.say(f"RELEASE FAILED for pod {self.pod_id}: reconcile termination")
+            else:
+                self.say("RELEASE UNVERIFIED: reconcile the recorded session identity")
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            return 1
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
     def run_steps(self):
         return [(step, getattr(self, step)) for step in STEPS[:-1]]
 
@@ -1267,6 +1636,9 @@ class JobListSession(Session):
 
     def __init__(self, args, **kwargs):
         self.jobs = load_jobs(Path(args.jobs))
+        if getattr(args, "hold_on_row_failure", False) and len(self.jobs) != 1:
+            raise SessionError("held sessions require exactly one job row")
+        self._failed_rows: set[str] = set()
         super().__init__(args, **kwargs)
         for job in self.jobs:
             packet = self.workdir / "packets" / job["id"]
@@ -1336,18 +1708,22 @@ class JobListSession(Session):
         else:
             command = "\n".join(["set -eu", "export PATH=/opt/astrid/bin:$PATH",
                                  f"mkdir -p {shlex.quote(remote)}", f"cd {shlex.quote(remote)}", job["command"]]) + "\n"
-        code, stdout, handle = self.run_job(label, command, job["timeout"], want_stdout=True)
+        code, stdout, handle = self.run_job(label, command, job["timeout"], want_stdout=True, strict_fetch=True)
         logs = job["packet"] / "logs"
         logs.mkdir(exist_ok=True)
         phase = "s0" if smoke else "job"
         (logs / f"{phase}.stdout").write_text(stdout, encoding="utf-8")
         (logs / f"{phase}.stderr").write_text(self.fetch(handle["dir"] + "/stderr"), encoding="utf-8")
         if code:
-            raise SessionError(f"{label}: job {handle['id']} exited {code}")
+            raise JobRowError(f"{label}: job {handle['id']} exited {code}")
         if job["type"] == "h3":
-            summary = parse_json_object(self.fetch(f"{CLIP_DIR}/runs/{name}.summary.json"))
+            summary_text = self.fetch(f"{CLIP_DIR}/runs/{name}.summary.json")
+            try:
+                summary = parse_json_object(summary_text)
+            except SessionError as exc:
+                raise JobRowError(str(exc)) from exc
             if summary.get("ok") is not True or summary.get("out") != out:
-                raise SessionError(f"{label}: H3 action did not publish a successful output summary")
+                raise JobRowError(f"{label}: H3 action did not publish a successful output summary")
             if not smoke:
                 job["summary"] = summary
         return {"job": handle["id"], "type": job["type"]}
@@ -1390,16 +1766,33 @@ class JobListSession(Session):
         else:
             specs = {o["path"]: o for o in job["expected-outputs"]}
             remote = {p: f"{job['remote']}/{p}" for p in specs}
-        local, digests = self.download_files(remote, job["packet"] / "outputs")
-        outputs = {p: self.verify_output(path, specs[p]) for p, path in local.items()}
+        try:
+            local, digests = self.download_files(remote, job["packet"] / "outputs")
+        except SessionError as exc:
+            if str(exc).startswith(("download: the pod could not hash the expected outputs",
+                                    "download: sha256 of the ")):
+                raise JobRowError(str(exc)) from exc
+            raise
+        outputs = {}
+        for path, local_path in local.items():
+            try:
+                outputs[path] = self.verify_output(local_path, specs[path])
+            except (SessionError, ValueError, json.JSONDecodeError) as exc:
+                raise JobRowError(str(exc) or type(exc).__name__) from exc
         if job["type"] == "h3":
-            receipt = json.loads(local["receipt.json"].read_text(encoding="utf-8"))
+            try:
+                receipt = json.loads(local["receipt.json"].read_text(encoding="utf-8"))
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise JobRowError(str(exc) or type(exc).__name__) from exc
             if not publication_verified(receipt):
-                raise SessionError("H3 downloaded receipt does not verify final composition publication")
+                raise JobRowError("H3 downloaded receipt does not verify final composition publication")
             attested = attested_object_id(receipt)
             if attested and attested != "sha256:" + digests["final.mp4"]:
-                raise SessionError("H3 video differs from the receipt's published object id")
-            check_video(outputs["final.mp4"])
+                raise JobRowError("H3 video differs from the receipt's published object id")
+            try:
+                check_video(outputs["final.mp4"])
+            except SessionError as exc:
+                raise JobRowError(str(exc) or type(exc).__name__) from exc
         job["outputs"] = outputs
         return {"packet": str(job["packet"]), "sha256": digests}
 
@@ -1439,6 +1832,23 @@ class JobListSession(Session):
                 if step in (f"job:{job['id']}", f"download:{job['id']}", f"packet:{job['id']}", f"h3:{job['id']}:s0"):
                     self.packet_check(job, "failed", error=detail.get("error"), outputs=job.get("outputs", {}))
 
+    def continue_after_step_failure(self, step, exc):
+        if not isinstance(exc, Exception) or isinstance(exc, BudgetExceeded):
+            return False
+        for job in self.jobs:
+            if (step in (f"job:{job['id']}", f"download:{job['id']}", f"h3:{job['id']}:s0")
+                    and isinstance(exc, JobRowError)):
+                self._failed_rows.add(job["id"])
+                return True
+        return False
+
+    def should_run_step(self, step):
+        for job_id in self._failed_rows:
+            if step in (f"job:{job_id}", f"download:{job_id}",
+                        f"packet:{job_id}", f"h3:{job_id}:s0"):
+                return False
+        return True
+
     def run_steps(self):
         # Install runs sanity after constructing the primary venv, before models.
         steps = [(step, getattr(self, step)) for step in ("claim", "bundle", "bootstrap", "install", "rerun")]
@@ -1463,6 +1873,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--request", help="the 9 s clip request JSON (requires --asset-map)")
     mode.add_argument("--jobs", help="version: 1 YAML job list (h3 request/assets or cmd command/input-files/expected-outputs)")
+    mode.add_argument("--resume-held", metavar="COMMAND", help="run one bounded command on the recorded held pod")
+    mode.add_argument("--release-held", action="store_true", help="terminate and verify the recorded held pod")
+    p.add_argument("--hold-on-row-failure", action="store_true", help="hold a single-row session only after a recoverable row failure")
+    p.add_argument("--followup-timeout", type=int, default=300, help="follow-up deadline in seconds (1–600)")
     p.add_argument("--asset-map", help="JSON map of request asset ids to local files")
     p.add_argument("--workdir", required=True, help="local directory for the bundle, downloads and progress")
     p.add_argument("--token-dir", default=str(Path.home() / ".astrid-pod-tokens"), help="directory for the per-claim token file")
@@ -1483,6 +1897,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--request requires --asset-map")
     if args.jobs and args.asset_map:
         parser.error("--asset-map belongs to --request; use assets/asset-map in each h3 job")
+    if args.hold_on_row_failure and not args.jobs:
+        parser.error("--hold-on-row-failure requires --jobs")
+    if args.resume_held is not None and not 1 <= args.followup_timeout <= 600:
+        parser.error("--followup-timeout must be between 1 and 600 seconds")
     if args.wait_capacity < 0:
         raise SessionError("--wait-capacity must be non-negative")
     source_paths = controller_source_paths(Path(args.sources_dir))
@@ -1497,6 +1915,8 @@ def main(argv: list[str] | None = None) -> int:
             http_status=default_http_status, say=lambda message: print(message, flush=True))
     except (SessionError, ValueError) as exc:
         parser.error(str(exc))
+    if args.resume_held is not None or args.release_held:
+        return session.run_held(args.resume_held)
     return session.run()
 
 

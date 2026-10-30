@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -239,6 +240,24 @@ class LoopbackPod:
             def _request(self, method, path, **kwargs):
                 owner.requests.append((method, path))
                 return super()._request(method, path, **kwargs)
+
+            def detached_poll(self, job_id, *, root):
+                # These finite CPU fixture commands must finish publishing state
+                # before acceptance polls it. Replacing an opened status inode
+                # can change its ctime and correctly trigger the agent's HTTP 412
+                # integrity guard. Keep the real HTTPS poll and every error from
+                # it; this barrier only removes fixture scheduling from the test.
+                directory = Path(root) / job_id
+                deadline = time.monotonic() + 60
+                published = threading.Event()
+                while True:
+                    state = (directory / "status").read_text().strip()
+                    if state == "cancelled" or (state == "exited" and (directory / "exit").is_file()):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("loopback supervisor did not publish terminal status")
+                    published.wait(.01)
+                return super().detached_poll(job_id, root=root)
 
             def execute_command(self, command, **kwargs):
                 parts = shlex.split(command)

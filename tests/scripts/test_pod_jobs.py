@@ -48,18 +48,37 @@ def make_manifest(root, *, mixed=True, failure=None):
            "timeout":20}
     first = {"id":"clip", "type":"h3", "goal":"Produce a nine-second audiovisual clip.",
              "request":"request.json", "assets":{"reference":"reference.png"}, "timeout":40}
-    second = dict(cmd, id="later", command=[sys.executable, "-c", "raise SystemExit('later must not execute')"])
+    second = dict(cmd, id="later", command=[sys.executable, "-c",
+        "import json,pathlib; pathlib.Path('later.png').write_bytes(pathlib.Path('data/reference.png').read_bytes()); pathlib.Path('result.json').write_text(json.dumps({'ok': True}))"],
+        **{"expected-outputs":[{"path":"later.png", "kind":"png", "width":32, "height":24}, "result.json"]})
     document = {"version":1, "jobs":[first, cmd] if mixed else [cmd, second]}
     path = root / "jobs.yaml"
     path.write_text(yaml.safe_dump(document, sort_keys=False))
     return path, document
 
 
-def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, release_status=None, missing_storage=False):
+def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, release_status=None,
+             missing_storage=False, fail_row_transport=False, single=False, hold=False,
+             configure=None, after_run=None, process_boundary=False):
     pod = LoopbackPod(tmp_path / "pod", ps, monkeypatch, sanity_fail=failure == "sanity",
                       runtime_fail=failure == "runtime",
                       corrupt_download="generated.png" if failure == "hash" else None)
     try:
+        # Model the production Runtime probe's source checks for all transported
+        # checkouts and emit stable identity fields across separate sessions.
+        (pod.agent_root / "scripts/pod_runtime_ready.py").write_text(
+            'import base64,json,os,pathlib,subprocess,sys\n'
+            'request = json.loads(base64.b64decode(sys.argv[1]))\n'
+            'root = pathlib.Path(__file__).resolve().parents[2]\n'
+            'manifest = json.loads((root / ".pod-source.json").read_text())\n'
+            'for name, expected in manifest["heads"].items():\n'
+            '    checkout = root / name\n'
+            '    head = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"]).decode().strip()\n'
+            '    dirty = subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=all"])\n'
+            '    if head != expected or dirty: sys.exit(3)\n'
+            'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("runtime-ready\\n")\n'
+            'identity = {"agent_head": manifest["heads"]["astrid-agent"], "runtime_head": manifest["heads"]["astrid-runtime"], "managed_by": "source", "dirty": False}\n'
+            + f'print(json.dumps({{**request, "ready": {failure != "runtime"!r}, "stopped": True, "identity": identity}}))\n')
         # Synthetic committed sources exercise the production exact-Git bundler.
         for root in [*(pod.sources / name for name in ps.BUNDLE_TREES[1:]), pod.agent_root]:
             if root == pod.agent_root:
@@ -84,17 +103,73 @@ def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, re
                 assert "--storage-volumes" not in argv
                 if missing_storage:
                     return 1, "", "error: existing storage not found (attach-only)"
+            if argv[0] == "list" and "--name-prefix" in argv and not pod.terminated:
+                pod.events.append("list")
+                return 0, json.dumps([{"id":"fakepod134", "name":session_holder["session"].name}]), ""
             return pod.cli(argv, env)
         manifest, document = make_manifest(tmp_path / "manifest", mixed=mixed, failure=failure)
+        if single:
+            document["jobs"] = [document["jobs"][0]]
+            manifest.write_text(yaml.safe_dump(document, sort_keys=False))
         args = ps.build_parser().parse_args([
             "--datacenters", ps.DATACENTER, "--storage-name", ps.STORAGE_NAME, "--sources-dir", str(pod.sources), "--jobs", str(manifest),
-            "--workdir", str(tmp_path / "session"), "--token-dir", str(tmp_path / "tokens"), "--poll-interval", ".01"])
+            "--workdir", str(tmp_path / "session"), "--token-dir", str(tmp_path / "tokens"), "--poll-interval", ".01"]
+            + (["--hold-on-row-failure"] if hold else []))
         messages = []
-        session = ps.JobListSession(args, cli=cli, transport_factory=pod.factory,
+        session_holder = {}
+        def transport_factory(pod_id, token):
+            assert pod_id == "fakepod134"
+            transport = pod.transport if pod.transport is not None else pod.factory(pod_id, token)
+            if fail_row_transport:
+                start = transport.detached_start
+                def fail_row_start(command, *, root, job_id=None, launch_timeout=60):
+                    session = session_holder["session"]
+                    if f"{ps.CLIP_DIR}/jobs/{session.sid}-image" in command:
+                        raise RuntimeError("fixture transport disconnected")
+                    return start(command, root=root, job_id=job_id, launch_timeout=launch_timeout)
+                transport.detached_start = fail_row_start
+            return transport
+        session = ps.JobListSession(args, cli=cli, transport_factory=transport_factory,
                                    http_status=pod.http_status if release_status is None else lambda _pod: release_status,
                                    sleep=lambda _seconds: None, say=messages.append, budget=budget,
                                    agent_root=pod.agent_root)
-        code = session.run()
+        session.test_messages = messages
+        session_holder["session"] = session
+        if configure:
+            configure(session, pod)
+        if process_boundary:
+            # Keep the loopback service in the parent; only the controller exits.
+            # This fixture-only value never appears in an argument or report.
+            fixture_token = "T" * 64
+            pod.factory("fakepod134", fixture_token)
+            monkeypatch.setattr(ps.secrets, "token_urlsafe", lambda _n: fixture_token)
+            reader, writer = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                os.close(reader)
+                try:
+                    child_code = session.run()
+                    summary = {"code": child_code, "events": pod.events,
+                               "launches": len(pod.launches), "pid": os.getpid()}
+                    with os.fdopen(writer, "w") as output:
+                        json.dump(summary, output)
+                    os._exit(0)
+                except BaseException:
+                    os._exit(2)
+            os.close(writer)
+            with os.fdopen(reader) as stream:
+                summary = json.load(stream)
+            exited_pid, status = os.waitpid(pid, 0)
+            assert exited_pid == summary["pid"] == pid and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+            assert pid != os.getpid()
+            pod.events.extend(summary["events"])
+            pod.launches = [None] * summary["launches"]
+            code = summary["code"]
+            session.pod_id = json.loads((session.workdir / "held-session.json").read_text())["pod_id"]
+        else:
+            code = session.run()
+        if after_run:
+            after_run(session, pod, code, cli, transport_factory)
         (session.workdir / "http-trace.json").write_text(json.dumps(pod.requests, indent=2) + "\n")
         if pod.setup_log.exists():
             (session.workdir / "setup-trace.txt").write_text(pod.setup_log.read_text())
@@ -116,6 +191,199 @@ def assert_release_verified(session, pod):
     assert session.records[-1]["step"] == "release"
     assert session.records[-1]["result"] == "ok"
     assert session.records[-1]["detail"] == {"pods":["fakepod134"], "get":404, "list":[]}
+
+
+def held_control(session, pod, cli, transport_factory, *, command=None):
+    mode = ["--release-held"] if command is None else ["--resume-held", command]
+    args = ps.build_parser().parse_args([
+        "--datacenters", ps.DATACENTER, "--sources-dir", str(pod.sources),
+        "--workdir", str(session.workdir), "--token-dir", str(session.args.token_dir),
+        "--poll-interval", ".01", *mode])
+    messages = []
+    control = ps.Session(args, cli=cli, transport_factory=transport_factory,
+                         http_status=pod.http_status, sleep=lambda _seconds: None,
+                         say=messages.append, agent_root=pod.agent_root)
+    control.test_messages = messages
+    return control
+
+
+def failure_diagnostics(session):
+    return "\n".join(message for message in session.test_messages
+                     if message.startswith(("STOPPED:", "RELEASE FAILED", "RELEASE UNVERIFIED")))
+
+
+@pytest.mark.parametrize("process_boundary", [False, True])
+def test_single_row_hold_resume_and_verified_release_across_sessions(tmp_path, monkeypatch, process_boundary):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and len(pod.launches) == 1 and not pod.terminated, failure_diagnostics(session)
+        held = session.workdir / "held-session.json"
+        assert held.is_file() and held.stat().st_mode & 0o777 == 0o600
+        initial = json.loads((session.workdir / "pod-session-progress.json").read_text())
+        primary = next(r for r in initial["steps"] if r["step"] == "job:image" and r["result"] == "failed")
+        assert "exited 7" in primary["detail"]["error"]
+        assert json.loads((session.workdir / "packets/image/machine-check.json").read_text())["status"] == "failed"
+        marker = tmp_path / "followup-ran"
+        command = f"printf done > {shlex.quote(str(marker))}"
+        resumed = held_control(session, pod, cli, transport_factory, command=command)
+        assert resumed.run_held(command=command) == 1
+        assert marker.read_text() == "done"
+        assert len(pod.launches) == 1 and not pod.terminated, failure_diagnostics(resumed)
+        assert resumed.sid == session.sid and resumed.pod_id == session.pod_id
+        progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
+        assert primary in progress["steps"]
+        release = held_control(session, pod, cli, transport_factory)
+        assert release.run_held(command=None) == 0
+        assert pod.events.count("terminate") == 1 and pod.events[-1] == "list"
+        assert "release-get" in pod.events and release.released and pod.terminated
+        assert len(pod.launches) == 1
+        assert pod.events.count("launch") == 1
+        assert not list((tmp_path / "tokens").glob("*.token"))
+        assert primary in json.loads((session.workdir / "pod-session-progress.json").read_text())["steps"]
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run, process_boundary=process_boundary)
+
+
+def test_failed_followup_releases_and_retains_primary_failure(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated, failure_diagnostics(session)
+        resumed = held_control(session, pod, cli, transport_factory, command="exit 9")
+        assert resumed.run_held(command="exit 9") == 1
+        assert_release_verified(resumed, pod)
+        progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
+        assert any(r["step"] == "job:image" and r["result"] == "failed"
+                   and "exited 7" in r["detail"]["error"] for r in progress["steps"])
+        assert len(pod.launches) == 1 and not (session.workdir / "held-session.json").exists()
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_success_in_hold_mode_still_releases(tmp_path, monkeypatch):
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, single=True, hold=True)
+    assert code == 0, failure_diagnostics(session)
+    assert_release_verified(session, pod)
+    assert not (session.workdir / "held-session.json").exists()
+
+
+def test_progress_status_replacement_transport_failure_releases(tmp_path, monkeypatch):
+    from runpod_lifecycle.pod_agent import Handler
+
+    replaced, rejected = [], []
+    def configure(session, _pod):
+        original_info, original_reply = Handler.download_info, Handler.reply
+        def download_info(handler, stream):
+            info = original_info(handler, stream)
+            status = Path(stream.name)
+            if (not replaced and status.name == "status" and status.parent.parent == Path(ps.JOB_ROOT)
+                    and any(r["step"] == "install" and r["result"] == "ok" for r in session.records)):
+                # Force the supervisor's atomic-publication race between the
+                # handler's two fstats, even after the fixture barrier completes.
+                staged = status.with_name("status.fixture-tmp")
+                staged.write_bytes(status.read_bytes())
+                staged.replace(status)
+                replaced.append(status.parent.name)
+            return info
+        def reply(handler, status, data=None, **kwargs):
+            if status == 412:
+                rejected.append(data)
+            return original_reply(handler, status, data, **kwargs)
+        monkeypatch.setattr(Handler, "download_info", download_info)
+        monkeypatch.setattr(Handler, "reply", reply)
+
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, single=True, hold=True, configure=configure)
+    assert code == 1 and len(replaced) == 1
+    assert rejected == [{"error": "file changed"}]
+    failed = next(r for r in session.records if r["result"] == "failed")
+    assert failed["step"] == "progress"
+    assert failed["detail"]["error"] == f"job {replaced[0]}: poll failed (PodTransportError)"
+    assert not any(r["step"] == "job:image" for r in session.records)
+    assert_release_verified(session, pod)
+    assert len(pod.launches) == 1 and not (session.workdir / "held-session.json").exists()
+
+
+def test_held_explicit_release_requires_verified_termination(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        release = held_control(session, pod, cli, transport_factory)
+        release.http_status = lambda _pod: 200
+        assert release.run_held(command=None) == 1
+        assert pod.terminated and not release.released
+        assert (session.workdir / "held-session.json").exists()
+        assert len(pod.launches) == 1
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+@pytest.mark.parametrize("fault", ["missing", "corrupt", "stale", "token", "progress", "source", "remote-source", "remote-manifest",
+                                  "identity", "storage", "readiness", "transport"])
+def test_held_resume_refuses_unusable_state_or_binding(tmp_path, monkeypatch, fault):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated, failure_diagnostics(session)
+        held = session.workdir / "held-session.json"
+        if fault == "missing":
+            held.unlink()
+        elif fault == "corrupt":
+            held.write_text("{broken")
+        elif fault == "stale":
+            document = json.loads(held.read_text())
+            document["expires_at"] = 1
+            held.write_text(json.dumps(document))
+        elif fault == "token":
+            session.token_path.unlink()
+        elif fault == "progress":
+            (session.workdir / "pod-session-progress.json").write_text("{}")
+        elif fault == "source":
+            (session.workdir / "source-identity.json").write_text("{}")
+        elif fault == "remote-source":
+            (Path(ps.SRC_DIR) / "VibeComfy/fixture.txt").write_text("changed after hold")
+        elif fault == "remote-manifest":
+            remote_manifest = Path(ps.SRC_DIR) / ".pod-source.json"
+            document = json.loads(remote_manifest.read_text())
+            document["heads"]["VibeComfy"] = "0" * 40
+            remote_manifest.write_text(json.dumps(document))
+
+        def changed_cli(argv, env):
+            if fault == "identity" and argv[0] == "list" and "--name-prefix" in argv:
+                pod.events.append("list")
+                return 0, json.dumps([{"id":"otherpod", "name":session.name}]), ""
+            if fault == "storage" and argv[:2] == ["volumes", "ls"]:
+                pod.events.append("volumes")
+                return 0, json.dumps([{"id":"other-volume", "name":ps.STORAGE_NAME,
+                                       "dataCenterId":ps.DATACENTER}]), ""
+            return cli(argv, env)
+
+        def changed_transport(pod_id, token):
+            transport = transport_factory(pod_id, token)
+            if fault == "transport":
+                monkeypatch.setattr(transport, "wait_ready", lambda **_kw: (_ for _ in ()).throw(RuntimeError("disconnected")))
+            return transport
+
+        marker = tmp_path / "forbidden-followup"
+        command = f"printf bad > {shlex.quote(str(marker))}"
+        resumed = held_control(session, pod, changed_cli, changed_transport, command=command)
+        if fault == "readiness":
+            original = resumed.must
+            def must(label, *args, **kwargs):
+                output, handle = original(label, *args, **kwargs)
+                if label == "Runtime readiness":
+                    receipt = json.loads(output)
+                    receipt["runtime_head"] = "0" * 40
+                    return json.dumps(receipt), handle
+                return output, handle
+            monkeypatch.setattr(resumed, "must", must)
+        assert resumed.run_held(command=command) == 1
+        assert not marker.exists() and len(pod.launches) == 1
+        if fault in ("missing", "corrupt", "identity"):
+            assert not pod.terminated  # No verified identity to terminate safely.
+        else:
+            assert_release_verified(resumed, pod)
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
 
 
 def test_job_list_constructs_install_sanity_hook_without_preinstall_probe(tmp_path, monkeypatch):
@@ -227,7 +495,7 @@ def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monk
 
 
 @pytest.mark.parametrize("failure", ["png", "json", "hash", "command", "sanity", "runtime"])
-def test_failed_two_job_rehearsal_stops_and_releases(tmp_path, monkeypatch, failure):
+def test_failed_two_job_rehearsal_retains_diagnostic_and_releases(tmp_path, monkeypatch, failure):
     session, pod, code, messages, _manifest, _document = run_jobs(tmp_path, monkeypatch, mixed=False, failure=failure)
     assert code == 1, "\n".join(messages)
     assert_release_verified(session, pod)
@@ -235,7 +503,6 @@ def test_failed_two_job_rehearsal_stops_and_releases(tmp_path, monkeypatch, fail
     failed = [r for r in session.records if r["result"] == "failed"]
     assert len(failed) == 1
     assert failed[0]["step"] == ("bootstrap" if failure == "runtime" else "install" if failure == "sanity" else "job:image" if failure == "command" else "download:image")
-    assert not any(record["step"].endswith(":later") for record in session.records)
     progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
     assert progress["steps"][-1]["step"] == "release"
     assert any("POD SESSION FAILED" in message for message in messages)
@@ -253,6 +520,184 @@ def test_failed_two_job_rehearsal_stops_and_releases(tmp_path, monkeypatch, fail
         check = json.loads((session.workdir / "packets/image/machine-check.json").read_text())
         assert check["status"] == "failed"
         assert "failed" in (session.workdir / "packets/image/README.md").read_text().lower()
+        assert [r["step"] for r in session.records if r["step"].endswith(":later")] == [
+            "job:later", "download:later", "packet:later"]
+        assert json.loads((session.workdir / "packets/later/machine-check.json").read_text())["status"] == "passed"
+
+
+def test_recoverable_row_failure_keeps_pod_for_next_row_and_records_failure(tmp_path, monkeypatch):
+    session, pod, code, messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, failure="command")
+    assert code == 1, "\n".join(messages)
+    assert pod.launches and len(pod.launches) == 1
+    assert pod.events.count("terminate") == 1
+    steps = [record["step"] for record in session.records]
+    assert steps.index("job:image") < steps.index("job:later") < steps.index("release")
+    failed = next(record for record in session.records if record["step"] == "job:image")
+    assert failed["result"] == "failed" and "exited 7" in failed["detail"]["error"]
+    progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
+    retained = next(record for record in progress["steps"] if record["step"] == "job:image")
+    assert retained["result"] == "failed" and "exited 7" in retained["detail"]["error"]
+    assert json.loads((session.workdir / "packets/image/machine-check.json").read_text())["status"] == "failed"
+    assert json.loads((session.workdir / "packets/later/machine-check.json").read_text())["status"] == "passed"
+
+
+def test_unusable_setup_still_releases_and_preserves_primary_failure(tmp_path, monkeypatch):
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, failure="runtime")
+    assert code == 1
+    assert_release_verified(session, pod)
+    failed = next(record for record in session.records if record["result"] == "failed")
+    assert failed["step"] == "bootstrap" and "identity/readiness" in failed["detail"]["error"]
+    assert not any(record["step"] in ("job:image", "job:later") for record in session.records)
+
+
+def test_row_transport_failure_stops_before_later_job_and_releases(tmp_path, monkeypatch):
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, fail_row_transport=True)
+    assert code == 1
+    assert_release_verified(session, pod)
+    failed = next(record for record in session.records if record["result"] == "failed")
+    assert failed["step"] == "job:image" and "transport disconnected" in failed["detail"]["error"]
+    assert not any(record["step"] in ("job:later", "download:later", "packet:later")
+                   for record in session.records)
+
+
+@pytest.mark.parametrize("fault", ["progress", "packet", "local-output", "held-state", "transport", "runtime"])
+def test_hold_mode_fails_closed_on_nonrecoverable_failure(tmp_path, monkeypatch, fault):
+    def configure(session, _pod):
+        if fault == "progress":
+            original = session.write_progress
+            def write_progress(*, strict):
+                if strict and any(r["step"] == "job:image" and r["result"] == "failed" for r in session.records):
+                    raise OSError("fixture progress write failed")
+                return original(strict=strict)
+            monkeypatch.setattr(session, "write_progress", write_progress)
+        elif fault == "packet":
+            original = session.packet_check
+            def packet_check(job, status, **detail):
+                if status == "failed":
+                    raise OSError("fixture packet write failed")
+                return original(job, status, **detail)
+            monkeypatch.setattr(session, "packet_check", packet_check)
+        elif fault == "local-output":
+            original = Path.write_text
+            def write_text(path, *args, **kwargs):
+                if path.name == "job.stdout":
+                    raise OSError("fixture local output write failed")
+                return original(path, *args, **kwargs)
+            monkeypatch.setattr(Path, "write_text", write_text)
+        elif fault == "held-state":
+            def fail_state(*_args, **_kwargs):
+                raise OSError("fixture held state write failed")
+            monkeypatch.setattr(session, "_write_held", fail_state)
+
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+        failure="runtime" if fault == "runtime" else "command",
+        fail_row_transport=fault == "transport", configure=configure)
+    assert code == 1
+    assert_release_verified(session, pod)
+    assert not (session.workdir / "held-session.json").exists()
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_transient_row_log_fetch_failure_cannot_hold(tmp_path, monkeypatch, stream):
+    failed_fetches = []
+    def configure(session, _pod):
+        original_run, original_fetch = session.run_job, session.fetch
+        in_row = False
+        def run_job(label, *args, **kwargs):
+            nonlocal in_row
+            in_row = label == "job:image"
+            try:
+                return original_run(label, *args, **kwargs)
+            finally:
+                in_row = False
+        def fetch(remote):
+            if in_row and remote.endswith("/" + stream) and not failed_fetches:
+                failed_fetches.append(remote)
+                raise RuntimeError("fixture transient log transport failure")
+            return original_fetch(remote)
+        monkeypatch.setattr(session, "run_job", run_job)
+        monkeypatch.setattr(session, "fetch", fetch)
+
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+        failure="command", configure=configure)
+    assert len(failed_fetches) == 1 and code == 1
+    assert_release_verified(session, pod)
+    assert not (session.workdir / "held-session.json").exists()
+
+
+@pytest.mark.parametrize("phase", ["row", "followup"])
+def test_transient_detached_poll_failure_releases_session(tmp_path, monkeypatch, phase):
+    injected = []
+    def inject(session, label_to_fail):
+        original_run = session.run_job
+        def run_job(label, *args, **kwargs):
+            if label != label_to_fail:
+                return original_run(label, *args, **kwargs)
+            original_poll = session.transport.detached_poll
+            def poll(job_id, *, root):
+                if not injected:
+                    injected.append(job_id)
+                    raise RuntimeError("fixture transient polling failure")
+                return original_poll(job_id, root=root)
+            monkeypatch.setattr(session.transport, "detached_poll", poll)
+            try:
+                return original_run(label, *args, **kwargs)
+            finally:
+                monkeypatch.setattr(session.transport, "detached_poll", original_poll)
+        monkeypatch.setattr(session, "run_job", run_job)
+
+    def configure(session, _pod):
+        if phase == "row":
+            inject(session, "job:image")
+
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1
+        if phase == "row":
+            assert_release_verified(session, pod)
+        else:
+            assert not pod.terminated
+            resumed = held_control(session, pod, cli, transport_factory, command="printf followup")
+            inject(resumed, "follow-up")
+            assert resumed.run_held(command="printf followup") == 1
+            assert_release_verified(resumed, pod)
+            progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
+            assert any(r["step"] == "job:image" and r["result"] == "failed" for r in progress["steps"])
+        assert len(injected) == 1 and len(pod.launches) == 1
+        assert not (session.workdir / "held-session.json").exists()
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", configure=configure, after_run=after_run)
+
+
+def test_transient_upload_failure_cannot_hold(tmp_path, monkeypatch):
+    injected = []
+    def configure(session, _pod):
+        original_put = session.put
+        def put(local, remote):
+            original_transport_put = session.transport.put
+            def transport_put(*args, **kwargs):
+                if not injected:
+                    injected.append(True)
+                    raise RuntimeError("fixture transient upload failure")
+                return original_transport_put(*args, **kwargs)
+            monkeypatch.setattr(session.transport, "put", transport_put)
+            try:
+                return original_put(local, remote)
+            finally:
+                monkeypatch.setattr(session.transport, "put", original_transport_put)
+        monkeypatch.setattr(session, "put", put)
+
+    session, pod, code, _messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+        failure="command", configure=configure)
+    assert injected == [True] and code == 1
+    assert_release_verified(session, pod)
+    assert not (session.workdir / "held-session.json").exists()
 
 
 def test_budget_exhaustion_still_releases_without_allocating_a_record(tmp_path, monkeypatch):
