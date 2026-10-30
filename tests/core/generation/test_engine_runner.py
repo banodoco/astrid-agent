@@ -681,6 +681,37 @@ def test_status_revalidates_models_and_health_readonly(setup):
     assert status(setup).status == "failed"
 
 
+@pytest.mark.parametrize("node,input_name", [
+    ("LoadImage", "image"), ("LoadImageMask", "image"),
+    ("LoadVideo", "video"), ("LoadVideo", "file"),
+    ("VHS_LoadVideo", "video"), ("VHS_LoadVideo", "file"),
+])
+def test_status_tolerates_only_dynamic_file_choice_drift(setup, node, input_name):
+    context = setup[1]
+    context.health_objects[node] = {
+        "input": {"required": {input_name: [["initial.png"], {"image_upload": True}]}},
+        "output": ["IMAGE"],
+    }
+    receipt = install(setup)
+    persisted = copy.deepcopy(context.files)
+    context.events.clear()
+    context.health_objects[node]["input"]["required"][input_name][0] = ["new.png", "other.png"]
+    current = status(setup)
+    assert current.status == "installed" and current.health.status == "healthy"
+    assert current.health.required_nodes_present is True
+    assert current.health.object_info_sha256 == receipt.health.object_info_sha256
+    assert current.failed_step_id is None and context.files == persisted
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
+
+    context.health_objects[node]["output"] = ["MASK"]
+    current = status(setup)
+    assert (current.status, current.error_code, current.failed_step_id) == (
+        "failed", "integrity_failed", "receipt-evidence")
+    assert current.health.status == "unhealthy" and current.health.required_nodes_present is False
+    assert context.files == persisted
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
+
+
 @pytest.mark.parametrize("gate", [
     "source:comfyui", "source:vibecomfy", "source:h3-motion-context", "source:videohelpersuite",
     "environment:comfy", "model:h3-reference-to-video", "model:h3-text-encoder",

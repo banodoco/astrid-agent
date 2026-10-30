@@ -34,7 +34,7 @@ from .engine_contracts import (
     EndpointHealthError, EndpointOwnershipError, EngineError, IntegrityError,
     RecipeValidationError, UnsafePathError, UnsupportedPlatform,
 )
-from .engine_runner import _json, _root, _sha, helper_manifest
+from .engine_runner import _json, _object_info_sha256, _root, _sha, helper_manifest
 from .engine_platforms import LinuxPlatformAdapter
 
 _SCHEMA = "astrid.engine-service.v1"
@@ -550,7 +550,7 @@ class _Supervisor:
                 check()
                 if not self.engine.live() or not _listener_owned(self.engine.process, self.recipe.start.port):
                     raise EndpointHealthError("engine ownership changed during health")
-                return self.facts("owned", healthy=True, digest=_sha(nodes))
+                return self.facts("owned", healthy=True, digest=_object_info_sha256(nodes))
             except (OSError, ValueError):
                 time.sleep(min(health.poll_interval_seconds, _remaining(deadline)))
 

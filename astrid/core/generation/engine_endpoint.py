@@ -396,9 +396,9 @@ def _endpoint_for_prepared_claim(preparer, reference, session, evidence, snapsho
 
 
 def _probe_prepared_endpoint(endpoint, recipe, *, agent_port, deadline):
-    import hashlib
     import time
     from .engine_contracts import DeadlineExceeded, EndpointHealthError
+    from .engine_runner import _object_info_sha256
     from .engine_transport import EngineEndpointTransport
 
     transport = EngineEndpointTransport(endpoint, pod_id=endpoint.attestation.pod_id, agent_port=agent_port)
@@ -406,8 +406,7 @@ def _probe_prepared_endpoint(endpoint, recipe, *, agent_port, deadline):
         objects = transport.object_info(deadline=deadline)
     finally:
         transport.close()
-    digest = hashlib.sha256(json.dumps(objects, sort_keys=True, separators=(",", ":"),
-                                       ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    digest = _object_info_sha256(objects)
     if digest != endpoint.attestation.object_info_sha256 or not all(node in objects for node in recipe.health.required_nodes):
         raise EndpointHealthError("claimed engine object_info differs from readiness")
     if time.monotonic() >= deadline:

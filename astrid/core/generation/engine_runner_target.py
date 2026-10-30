@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import engine_recipe as recipes
 from .engine_contracts import EngineError, IntegrityError, RecipeValidationError, UnsafePathError
-from .engine_runner import _HELPER_SCHEMA, _json, _root, _sha, helper_manifest
+from .engine_runner import _HELPER_SCHEMA, _json, _object_info_sha256, _root, _sha, helper_manifest
 
 _OPERATIONS = {"identity", "empty-source", "node-lock", "lock-inputs", "commit-lock",
                "install-locks", "environment-spec", "models-config", "models-config-check"}
@@ -71,7 +71,7 @@ def _health_facts(health, object_info, required_nodes):
     digest = None
     if isinstance(object_info, dict):
         try:
-            digest = _sha(object_info)
+            digest = _object_info_sha256(object_info)
         except (ValueError, TypeError, UnicodeError):
             pass
     return {"healthy": isinstance(health, dict) and digest is not None,

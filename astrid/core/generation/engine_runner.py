@@ -103,6 +103,44 @@ def _sha(value):
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
+# VibeComfy schema validation identifies these input-directory file pickers
+# explicitly (vibecomfy/schema/validate.py:_is_dynamic_file_choice). Model
+# pickers and semantic enums are deliberately not included.
+_DYNAMIC_FILE_CHOICES = frozenset({
+    ("LoadImage", "image"),
+    ("LoadImageMask", "image"),
+    ("LoadVideo", "video"),
+    ("LoadVideo", "file"),
+    ("VHS_LoadVideo", "video"),
+    ("VHS_LoadVideo", "file"),
+})
+
+
+def _object_info_sha256(object_info):
+    """Hash the complete schema except known runtime file-picker values.
+
+    Comfy represents a choice input as [choices, optional constraints]. Keep
+    that shape and every other field intact; unrecognized or malformed shapes
+    are hashed unchanged. Never alter the original object-info response.
+    """
+    from copy import deepcopy
+
+    projected = deepcopy(object_info)
+    if isinstance(projected, dict):
+        for class_type, input_name in _DYNAMIC_FILE_CHOICES:
+            node = projected.get(class_type)
+            inputs = node.get("input") if isinstance(node, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            for requiredness in ("required", "optional"):
+                group = inputs.get(requiredness)
+                spec = group.get(input_name) if isinstance(group, dict) else None
+                if (isinstance(spec, list) and spec and isinstance(spec[0], list)
+                        and all(isinstance(choice, str) for choice in spec[0])):
+                    spec[0] = []
+    return _sha(projected)
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
