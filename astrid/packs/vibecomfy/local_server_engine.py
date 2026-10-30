@@ -27,13 +27,12 @@ _LOCAL_PROMPT_TIMEOUT_SEC = 3300  # leave containment time below the host's 3600
 
 
 class _UploadedMediaSchema:
-    """Live schema view whose video/audio file pickers accept uploaded names.
+    """Live schema view whose managed media file pickers accept uploaded names.
 
-    A managed video/audio value is a staged basename, then an uploaded
+    A managed image, mask, video or audio value is a staged basename, then an uploaded
     ``astrid/<task>/<name>`` reference; neither can appear in the picker's
-    choices read before the upload, and VibeComfy only exempts image pickers
-    from that enum check. Everything else is delegated unchanged, and only the
-    classes and fields that managed video/audio public inputs name are exempt.
+    choices read before the upload. Everything else is delegated unchanged, and only
+    the classes and fields that managed media public inputs name are exempt.
     """
 
     def __init__(self, provider: Any, targets: set[tuple[str, str]]) -> None:
@@ -60,7 +59,7 @@ def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -
         spec = bundle.workflow.inputs.get(name)
         media = str(getattr(spec, "media_semantics", "") or "").lower()
         node = bundle.workflow.nodes.get(str(getattr(spec, "node_id", ""))) if spec is not None else None
-        if media in {"video", "audio"} and node is not None:
+        if media in {"image", "mask", "video", "audio"} and node is not None:
             targets.add((node.class_type, str(spec.field)))
     return targets
 
