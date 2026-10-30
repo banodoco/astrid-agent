@@ -24,6 +24,9 @@ from .core import (
     Version,
     absolute,
     current,
+    install_identity,
+    install_release,
+    linked,
     persist_install_identity,
     read_json,
     version_id,
@@ -39,6 +42,30 @@ SERVICE_SETTINGS = frozenset({"ASTRID_WARM_IDLE_SECONDS", "ASTRID_ALLOW_UNQUALIF
 # Enumerating and filtering makes an absent task a successful no-op while still
 # propagating Task Scheduler access failures through ErrorActionPreference=Stop.
 TASK_QUERY = f"$t=Get-ScheduledTask | Where-Object {{ $_.TaskName -eq '{TASK}' -and $_.TaskPath -eq '\\' }}; "
+
+
+def _launch_prelude_source() -> str:
+    """Return launch admission with no dependency on the selected Agent package."""
+    # These definitions execute under the selected version's interpreter. Keep
+    # every installer dependency in the generated text so a retained release-0
+    # Agent can run the current admission gate without importing its old core.
+    definitions = (
+        linked,
+        absolute,
+        read_json,
+        version_id,
+        install_release,
+        install_identity,
+        Version,
+        current,
+        launch_admission,
+    )
+    return (
+        "import json,os,re,stat,sys\n"
+        "from dataclasses import dataclass\n"
+        "from pathlib import Path\n"
+        + "\n".join(inspect.getsource(definition) for definition in definitions)
+    )
 
 
 def platform_target() -> str:
@@ -160,12 +187,9 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
     arguments = ["run", "--profile", "astrid", "--data-root", str(data),
                  "--source-manifest", str(version.profile), *(extra_args or [])]
     # Every managed run enters the same admission, including POSIX services.
-    source = globals().get("_ADMISSION_SOURCE") or inspect.getsource(launch_admission)
-    script = ("import json,os,re,sys\nfrom pathlib import Path\n"
-              "from astrid.installer.core import Version,absolute,current,read_json,version_id\n"
-              + source + "\n"
-              + f"launch_admission(Version(Path({str(version.root)!r}),Path({str(version.python)!r}),"
-              + f"Path({str(version.profile)!r}),{version.env!r},{version.release!r},{version.managed_by!r}),Path({str(data)!r}))\n"
+    source = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
+    script = (source + "\n"
+              + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}))\n"
               + f"os.environ.update({version.env!r})\n")
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
