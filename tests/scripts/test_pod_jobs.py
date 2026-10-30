@@ -196,7 +196,7 @@ def assert_release_verified(session, pod):
     assert session.records[-1]["detail"] == {"pods":["fakepod134"], "get":404, "list":[]}
 
 
-def held_control(session, pod, cli, transport_factory, *, command=None, renew=False):
+def held_control(session, pod, cli, transport_factory, *, command=None, renew=False, local_free_bytes=None):
     mode = (["--renew-held"] if renew else
             ["--release-held"] if command is None else ["--resume-held", command])
     args = ps.build_parser().parse_args([
@@ -225,7 +225,8 @@ def held_control(session, pod, cli, transport_factory, *, command=None, renew=Fa
                                "cache_device":47, "cache_mount_id":102,
                                "free_bytes":request["required_volume_bytes"] + 1,
                                "total_bytes":request["required_volume_bytes"] + 2,
-                               "local_free_bytes":request["required_local_bytes"] + 1}
+                               "local_free_bytes":(request["required_local_bytes"] + 1
+                                                   if local_free_bytes is None else local_free_bytes)}
                     source = ('import os,pathlib\n'
                               'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("storage\\n")\n'
                               + f'print({json.dumps(receipt)!r})\n')
@@ -251,6 +252,116 @@ def _packet_snapshot(root):
     packets = root / "packets"
     return {str(path.relative_to(packets)): path.read_bytes()
             for path in packets.rglob("*") if path.is_file()}
+
+
+def test_cold_claim_keeps_recipe_storage_reserve(tmp_path, monkeypatch):
+    requests = []
+    def configure(session, _pod):
+        original_execute = session.execute
+        def execute(label, command, *args, **kwargs):
+            if label == "storage mount verification":
+                requests.append(json.loads(base64.b64decode(shlex.split(command)[3])))
+            return original_execute(label, command, *args, **kwargs)
+        monkeypatch.setattr(session, "execute", execute)
+
+    session, pod, code, messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, single=True, configure=configure)
+    assert code == 0, "\n".join(messages)
+    assert len(requests) == 1
+    assert requests[0]["required_local_bytes"] == (ps.recipe_footprint_gb() + 20) * 10**9 == 84 * 10**9
+    assert session.state["storage"]["required_local_bytes"] == requests[0]["required_local_bytes"]
+    assert_release_verified(session, pod)
+
+
+@pytest.mark.parametrize("local_free_bytes", [20 * 10**9, 59_422_531_584, 20 * 10**9 - 1],
+                         ids=["exact-20gb", "installed-pod-headroom", "insufficient-20gb"])
+def test_held_installed_followup_uses_warm_scratch(tmp_path, monkeypatch, local_free_bytes):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        before = json.loads(held_path.read_text())
+        packets_before = _packet_snapshot(session.workdir)
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress_before = progress_path.read_bytes()
+        assert [(r["step"], r["result"]) for r in json.loads(progress_before)["steps"]
+                if r["step"] in ("install", "rerun")] == [("install", "ok"), ("rerun", "ok")]
+        assert session.state["storage"]["required_local_bytes"] == 84 * 10**9
+        setup_before = pod.setup_log.read_text().splitlines()
+        records_before = pod.record_count
+        marker = tmp_path / "warm-followup"
+        command = f"printf done >> {shlex.quote(str(marker))}"
+        control = held_control(session, pod, cli, transport_factory, command=command,
+                               local_free_bytes=local_free_bytes)
+        assert control.run_held(command=command) == 1
+        held = json.loads(held_path.read_text())
+        if local_free_bytes >= 20 * 10**9:
+            assert marker.read_text() == "done"
+            assert control.state["storage"]["required_local_bytes"] == 20 * 10**9
+            assert held["status"] == "held"
+            assert sum(r["step"] == "follow-up" for r in json.loads(progress_path.read_text())["steps"]) == 1
+        else:
+            assert not marker.exists()
+            assert "storage evidence differs" in failure_diagnostics(control)
+            assert held["status"] == "in_use"
+            assert held["operation"]["label"] == "storage mount verification"
+            assert held["operation"]["state"] == "exited" and held["operation"]["exit_code"] == 0
+            assert pod.record_count == records_before + 1
+            assert progress_path.read_bytes() == progress_before
+            charged = held["charged_jobs"]
+            reconcile = held_control(session, pod, cli, transport_factory, command=command)
+            assert reconcile.run_held(command=command) == 1
+            held = json.loads(held_path.read_text())
+            assert held["status"] == "held" and held["charged_jobs"] == charged == pod.record_count
+            assert held["jobs"] == before["jobs"] and held["progress_sha256"] == before["progress_sha256"]
+            assert not marker.exists() and progress_path.read_bytes() == progress_before
+        assert held["charged_jobs"] == control.budget.count == pod.record_count
+        assert held["charged_jobs"] > before.get("charged_jobs", before["jobs"])
+        assert (control.sid, control.pod_id) == (session.sid, session.pod_id)
+        setup_after = pod.setup_log.read_text().splitlines()
+        assert setup_after.count("install") == setup_before.count("install")
+        assert setup_after.count("sanity") == setup_before.count("sanity")
+        assert _packet_snapshot(session.workdir) == packets_before
+        assert len(pod.launches) == pod.events.count("launch") == 1
+        assert not pod.terminated and pod.events.count("terminate") == 0
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+@pytest.mark.parametrize("step", ["install", "rerun"])
+@pytest.mark.parametrize("fault", ["missing", "failed", "duplicate", "conflicting", "unbound"])
+def test_held_warm_scratch_requires_digest_bound_success(tmp_path, monkeypatch, step, fault):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        held = json.loads(held_path.read_text())
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress = json.loads(progress_path.read_text())
+        row = next(r for r in progress["steps"] if r["step"] == step)
+        if fault == "missing":
+            progress["steps"].remove(row)
+        elif fault in ("failed", "unbound"):
+            row["result"] = "failed"
+        else:
+            progress["steps"].append(dict(row, result="failed" if fault == "conflicting" else "ok"))
+        progress_path.write_text(json.dumps(progress))
+        if fault != "unbound":
+            held["progress_sha256"] = hashlib.sha256(progress_path.read_bytes()).hexdigest()
+            session._write_held(held)
+        held_before, progress_before = held_path.read_bytes(), progress_path.read_bytes()
+        records_before = pod.record_count
+        marker = tmp_path / "forbidden-warm-followup"
+        command = f"printf bad > {shlex.quote(str(marker))}"
+        control = held_control(session, pod, cli, transport_factory, command=command)
+        assert control.run_held(command=command) == 1
+        assert ("progress differs" if fault == "unbound" else "successful install and rerun evidence") in failure_diagnostics(control)
+        assert held_path.read_bytes() == held_before and progress_path.read_bytes() == progress_before
+        assert pod.record_count == records_before and not marker.exists()
+        assert len(pod.launches) == pod.events.count("launch") == 1
+        assert not pod.terminated and pod.events.count("terminate") == 0
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
 
 
 def test_held_renewal_changes_only_expiry_and_preserves_failure_evidence(tmp_path, monkeypatch):

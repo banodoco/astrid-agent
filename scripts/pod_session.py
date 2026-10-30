@@ -933,7 +933,7 @@ class Session:
                 self.say(f"[claim] {gpu} @ {dc}: no capacity (exit {code})")
         raise SessionError("claim: no pod from any of: " + ", ".join(tried))
 
-    def verify_storage(self, footprint: int) -> dict:
+    def verify_storage(self, footprint: int, *, local_free_gb: int | None = None) -> dict:
         """Corroborate exact account attachment with live mount source and statvfs."""
         def listing(argv):
             code, out, _ = self.cli(argv, self.cli_env)
@@ -1004,7 +1004,8 @@ class Session:
         request = {"pod_id": self.pod_id, "volume_id": volume_id, "nonce": nonce,
                    "mount": CACHE_MOUNT, "model_cache_root": MODEL_CACHE_ROOT, "engine_root": ENGINE_ROOT,
                    "required_volume_bytes": self.args.volume_gb * 10**9,
-                   "required_local_bytes": (footprint + 20) * 10**9, "provider_mapping": provider}
+                   "required_local_bytes": (footprint + 20 if local_free_gb is None else local_free_gb) * 10**9,
+                   "provider_mapping": provider}
         source = (REPO / "scripts/pod_storage_probe.py").read_text()
         blob = base64.b64encode(json.dumps(request).encode()).decode()
         command = "python3 -c " + shlex.quote(source) + " " + shlex.quote(blob)
@@ -1824,6 +1825,10 @@ class Session:
             self.budget.count = doc.get("charged_jobs", doc["jobs"])
             reconciling = doc["status"] == "in_use"
             if not reconciling:
+                installed = [(r.get("step"), r.get("result")) for r in self.records
+                             if r.get("step") in ("install", "rerun")]
+                if installed != [("install", "ok"), ("rerun", "ok")]:
+                    raise SessionError("held state: successful install and rerun evidence is missing or inconsistent")
                 self._preserve_held_progress(original_progress)
                 doc.update(charged_jobs=self.budget.count, operation=None)
             self._held_doc = doc
@@ -1840,7 +1845,7 @@ class Session:
                 self._restore_held_retry(original_progress)
                 self.say("HELD SESSION RECONCILED; terminal proof recorded; a later resume may retry")
                 return 1
-            storage = self.verify_storage(recipe_footprint_gb())
+            storage = self.verify_storage(recipe_footprint_gb(), local_free_gb=20)
             if storage["volume_id"] != doc["volume_id"]:
                 raise SessionError("held state: volume identity differs")
             receipt, _ = self.runtime_readiness(doc["source"])
