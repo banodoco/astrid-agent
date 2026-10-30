@@ -1031,7 +1031,7 @@ def _compile_native_v2(
             "source_binding": "source_video",
             "audio_binding": "source_audio_from_source_video",
             "timing_binding": ["source_start", "source_frames", "duration"],
-            "edit_binding": "prompt schedule",
+            "edit_binding": "full_frame through graph context",
             "mask_binding": "full_frame through graph context",
             "references": len(reference_ids),
             "reference_capacity": 2,
@@ -1052,16 +1052,9 @@ def _compile_native_v2(
 
 
 def _native_v2_prompt(request: H3Request) -> str:
-    """Carry normalized edit/audio/timing semantics through the graph prompt port."""
+    """Keep creative text separate from preparation schedules and graph bindings."""
 
-    schedule = []
-    for item in request.value["media"]:
-        schedule.append({
-            key: item[key]
-            for key in ("occurrence_id", "role", "modality", "at", "range", "edit")
-            if key in item
-        })
-    return f"{request.value['prompt']}\n\nNative-v2 media schedule:\n{json.dumps(schedule, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
+    return request.value["prompt"]
 
 
 def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) -> dict[str, Any]:

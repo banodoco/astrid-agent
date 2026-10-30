@@ -601,13 +601,32 @@ def test_operation_directory_writer_lock_is_nonblocking_and_scoped(tmp_path) -> 
 
 
 def test_dry_run_includes_the_final_publication_stage(tmp_path: Path) -> None:
+    import json
+    from PIL import Image
     from astrid.packs.h3_av.actions.transform.run import build_parser, run_transform
+
+    request_path = tmp_path / "raw-request.json"
+    asset_map_path = tmp_path / "assets.json"
+    look_path = tmp_path / "look.png"
+    Image.new("RGB", (16, 16), color=(32, 64, 128)).save(look_path)
+    request_path.write_text(json.dumps({
+        "version": 1,
+        "operation": "generate",
+        "source": None,
+        "output": {"duration": 5},
+        "content": {"prompt": "A quiet field at dawn."},
+        "changes": {"video": [], "audio": []},
+        "references": [{"asset": "look.png", "purpose": "appearance"}],
+        "overrides": {},
+    }), encoding="utf-8")
+    asset_map_path.write_text(json.dumps({"look.png": str(look_path)}) + "\n", encoding="utf-8")
     result = run_transform(build_parser().parse_args([
-        "--request", str(tmp_path / "raw-request.json"), "--asset-map", str(tmp_path / "assets.json"),
+        "--request", str(request_path), "--asset-map", str(asset_map_path),
         "--out", str(tmp_path / "operation"), "--dry-run",
     ]))
     assert result["status"] == "planned"
     assert result["stages"][-1] == "h3_av.publication_finalizer"
+    assert (tmp_path / "operation" / "plan.json").is_file()
     assert not (tmp_path / "operation/result.json").exists()
 
 
@@ -729,10 +748,30 @@ def test_transform_rejects_unknown_target_kind(tmp_path: Path, dry_run) -> None:
 
 
 def test_dry_run_reports_the_resolved_placement(tmp_path: Path) -> None:
+    import json
+    from PIL import Image
     from astrid.packs.h3_av.actions.transform.run import run_transform
+
+    request_path = tmp_path / "raw-request.json"
+    asset_map_path = tmp_path / "assets.json"
+    look_path = tmp_path / "look.png"
+    Image.new("RGB", (16, 16), color=(32, 64, 128)).save(look_path)
+    request_path.write_text(json.dumps({
+        "version": 1,
+        "operation": "generate",
+        "source": None,
+        "output": {"duration": 5},
+        "content": {"prompt": "A quiet field at dawn."},
+        "changes": {"video": [], "audio": []},
+        "references": [{"asset": "look.png", "purpose": "appearance"}],
+        "overrides": {},
+    }), encoding="utf-8")
+    asset_map_path.write_text(json.dumps({"look.png": str(look_path)}) + "\n", encoding="utf-8")
     assert run_transform(_transform_args(tmp_path, "--dry-run"))["placement"] == "local"
+    assert (tmp_path / "operation" / "plan.json").is_file()
     legacy = run_transform(_transform_args(tmp_path, "--dry-run", "--prepared-worker", str(tmp_path / "p.json")))
     assert legacy["placement"] == "runpod"
+    assert (tmp_path / "operation" / "plan.json").is_file()
 
 
 def test_local_placement_passes_endpoint_inputs_and_records_receipt(tmp_path: Path, monkeypatch) -> None:

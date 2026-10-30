@@ -6,6 +6,16 @@ public request uses `changes.video` and `changes.audio` schedules. The active
 H3 pack contract supports source-backed edits, native continuation, reference-guided generation,
 and explicit mask assets without creating a second project or task database.
 
+`h3_av.transform --dry-run` performs CPU planning only: it normalizes the request,
+resolves preparation and compile bindings, and writes `plan.json` under the
+operation output directory without submitting a local GPU or RunPod task. The
+plan records the resolved spec and bindings, requested and raw timing with trim,
+preview data, sampling-pass count, warnings, and ignored fields. Planning supports
+one canonical modifying operation (`generate`, `extend`, or `regenerate`) with
+preservation constraints. Rectangle regions can be previewed in the plan; the
+compiler still requires supported image-mask inputs for regional edits, so a
+preview does not make a rectangle executable.
+
 ## Character Swap (opt-in native-v2 candidate)
 
 Native-v2 requests may opt into `settings.adapter.id: character_swap_v1`. The route

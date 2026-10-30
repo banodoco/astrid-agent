@@ -1405,8 +1405,14 @@ def _run_transform_unlocked(
             valid_options=("--placement runpod",),
         )
     if args.dry_run:
+        from astrid.packs.h3_av.shared.planner import plan_request
+
+        plan = plan_request(
+            normalize_request(load_request_document(args.request)),
+            asset_map=_json_mapping(args.asset_map), out_dir=root,
+        )
         return {
-            "status": "planned",
+            **plan,
             "placement": placement,
             "request": str(args.request.resolve()),
             "asset_map": str(args.asset_map.resolve()),
