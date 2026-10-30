@@ -4916,3 +4916,68 @@ def test_host_bridge_outer_send_diagnostic_preserves_revoke_close(
         finally:
             sdk.close()
             b.revoke()
+
+
+def _lease_evidence():
+    return {
+        "schema_version": 1, "category": "heartbeat_exception",
+        "observed_at_utc": "2026-10-30T18:44:22+00:00",
+        "last_successful_heartbeat_at_utc": None,
+        "last_successful_heartbeat_expiry": "2026-10-30T18:45:22+00:00",
+        "observed": {"state": "running", "attempt_id": "attempt-1", "fence": "12",
+                     "lease_expires_at": "2026-10-30T18:45:22+00:00"},
+        "exception_type": "RuntimeError", "runtime_code": "lease_lost", "request_id": "req:123",
+    }
+
+
+def test_public_task_projects_only_bounded_lease_evidence():
+    from astrid.core.execution._child_bridge import _public_task
+    diagnostic = _lease_evidence()
+    source = {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+              "result": {"payload": {"input": "PAYLOAD_SENTINEL"}, "outputs": ["PRIVATE_PATH"],
+                         "error": {"message": "MESSAGE_SENTINEL", "diagnostic": {
+                             **diagnostic, "runtime_message": "MESSAGE_SENTINEL",
+                             "request": {"prompt": "PROMPT_SENTINEL"},
+                             "observed": {**diagnostic["observed"], "input": "INPUT_SENTINEL"}}}}}
+    public = _public_task(source)
+    assert public == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+                      "result": {"payload": {}, "outputs": [], "error": {"diagnostic": diagnostic}}}
+    for sentinel in ("PAYLOAD_SENTINEL", "PRIVATE_PATH", "MESSAGE_SENTINEL", "PROMPT_SENTINEL", "INPUT_SENTINEL"):
+        assert sentinel not in json.dumps(public)
+    no_diagnostic = copy.deepcopy(source)
+    del no_diagnostic["result"]["error"]["diagnostic"]
+    assert _public_task(no_diagnostic) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+                                           "result": {"payload": {}, "outputs": []}}
+    completed = copy.deepcopy(source)
+    completed["state"] = "completed"
+    completed["result"]["payload"] = {"action_result": {"ok": True}}
+    assert _public_task(completed) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "completed",
+        "result": {"payload": {"action_result": {"ok": True}}, "outputs": []}}
+
+
+@pytest.mark.parametrize("diagnostic", [
+    None, [], {}, {"schema_version": True, "category": "lease_expired"},
+    {"schema_version": 2, "category": "lease_expired"},
+    {"schema_version": 1, "category": "observing"},
+    {**_lease_evidence(), "observed_at_utc": "2026-10-30T18:44:22+01:00"},
+    {**_lease_evidence(), "observed_at_utc": "not-a-time"},
+    {**_lease_evidence(), "last_successful_heartbeat_expiry": []},
+    {**_lease_evidence(), "exception_type": "Runtime Error"},
+    {**_lease_evidence(), "runtime_code": "x" * 65},
+    {**_lease_evidence(), "request_id": "x" * 97},
+    {**_lease_evidence(), "observed": []},
+    {**_lease_evidence(), "observed": {"fence": 1}},
+    {**_lease_evidence(), "observed": {"attempt_id": "../private/path"}},
+    {**_lease_evidence(), "observed": {"lease_expires_at": "2026-10-30"}},
+    {**_lease_evidence(), "unrecognized": "x" * 4097},
+    {**_lease_evidence(), "unrecognized": ["x"] * 129},
+    {**_lease_evidence(), "unrecognized": {"nested": {"nested": {"nested": {"nested":
+        {"nested": {"nested": {"nested": {"nested": {"nested": "too deep"}}}}}}}}}},
+    {**_lease_evidence(), "unrecognized": "\ud800"},
+])
+def test_public_task_omits_invalid_lease_evidence(diagnostic):
+    from astrid.core.execution._child_bridge import _public_task
+    task = {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+            "result": {"error": {"diagnostic": diagnostic, "message": "MESSAGE_SENTINEL"}}}
+    assert _public_task(task) == {"task_id": "T", "run_id": "R", "attempt_id": "A", "state": "failed",
+                                  "result": {"payload": {}, "outputs": []}}

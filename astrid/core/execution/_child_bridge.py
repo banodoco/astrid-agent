@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -196,6 +196,120 @@ def _snapshot(root: Path, filename: str, maximum: int, *, attempt_fd: int | None
         os.close(directory)
 
 
+_LEASE_CATEGORIES = frozenset({
+    "lease_loss_unclassified", "task_read_exception", "lease_metadata_invalid",
+    "lease_expired", "task_state_changed", "attempt_changed", "fence_changed",
+    "heartbeat_exception",
+})
+
+
+def _public_lease_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Project a recognized host record, rejecting invalid known evidence."""
+    if not isinstance(value, Mapping):
+        return None
+    # Bound the entire JSON-shaped record, including fields we will discard.
+    # Inspect sizes before encoding or expanding containers so unknown values
+    # cannot force an unbounded serialization or traversal.
+    remaining, pending, visited = 4096, [(value, 0)], 0
+    while pending:
+        item, depth = pending.pop()
+        visited += 1
+        if visited > 256 or depth > 8:
+            return None
+        remaining -= 1  # Structural overhead.
+        if isinstance(item, str):
+            if len(item) > remaining:
+                return None
+            try:
+                remaining -= len(item.encode("utf-8"))
+            except UnicodeEncodeError:
+                return None
+        elif item is None or type(item) is bool:
+            remaining -= 5
+        elif type(item) is int:
+            if item.bit_length() > 256:
+                return None
+            remaining -= len(str(item))
+        elif type(item) is float:
+            if not math.isfinite(item):
+                return None
+            remaining -= 32
+        elif isinstance(item, Mapping):
+            if len(item) > 128:
+                return None
+            for key, nested in item.items():
+                if not isinstance(key, str):
+                    return None
+                pending.append((key, depth + 1))
+                pending.append((nested, depth + 1))
+        elif type(item) is list:
+            if len(item) > 128:
+                return None
+            pending.extend((nested, depth + 1) for nested in item)
+        else:
+            return None
+        if remaining < 0:
+            return None
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        return None
+    category = value.get("category")
+    if not isinstance(category, str) or category not in _LEASE_CATEGORIES:
+        return None
+    result: dict[str, Any] = {"schema_version": 1, "category": category}
+
+    def timestamp(item: Any, *, utc: bool = False) -> bool:
+        if not isinstance(item, str) or len(item) > 96:
+            return False
+        try:
+            offset = datetime.fromisoformat(item).utcoffset()
+            return offset is not None and (not utc or offset == timedelta(0))
+        except (ValueError, OverflowError):
+            return False
+
+    for key in ("observed_at_utc", "last_successful_heartbeat_at_utc", "last_successful_heartbeat_expiry"):
+        if key not in value:
+            continue
+        item = value[key]
+        if not (item is None and key.startswith("last_successful_")) and not timestamp(
+                item, utc=key.endswith("_at_utc")):
+            return None
+        result[key] = item
+    for key, limit, pattern in (
+        ("exception_type", 64, r"[A-Za-z_][A-Za-z0-9_]*"),
+        ("runtime_code", 64, r"[A-Za-z0-9._-]+"),
+        ("request_id", 96, r"[A-Za-z0-9._:-]+"),
+    ):
+        if key not in value:
+            continue
+        item = value[key]
+        if not isinstance(item, str) or len(item) > limit or not re.fullmatch(pattern, item):
+            return None
+        result[key] = item
+    if "observed" in value:
+        observed = value["observed"]
+        if not isinstance(observed, Mapping):
+            return None
+        safe_observed: dict[str, str] = {}
+        for key, limit, pattern in (
+            ("state", 48, r"[A-Za-z_]+"),
+            ("attempt_id", 96, r"[A-Za-z0-9._:-]+"),
+            ("fence", 96, r"[0-9]+"),
+        ):
+            if key not in observed:
+                continue
+            item = observed[key]
+            if not isinstance(item, str) or len(item) > limit or not re.fullmatch(pattern, item):
+                return None
+            safe_observed[key] = item
+        if "lease_expires_at" in observed:
+            if not timestamp(observed["lease_expires_at"]):
+                return None
+            safe_observed["lease_expires_at"] = observed["lease_expires_at"]
+        if safe_observed:
+            result["observed"] = safe_observed
+    return result
+
+
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     result = {"task_id": task.get("task_id", task.get("id")),
               "run_id": task.get("run_id"), "attempt_id": task.get("attempt_id")}
@@ -209,11 +323,15 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     settled = task.get("result")
     if isinstance(settled, Mapping):
         payload = settled.get("payload", settled)
-        # Only the action ABI's result crosses the channel. Private Runtime
-        # lineage, admission, lease and settlement diagnostics stay in host.
+        # Only the action ABI and bounded lease evidence cross the channel.
         result["result"] = {"payload": {"action_result": payload["action_result"]}
                             if isinstance(payload, Mapping) and "action_result" in payload else {},
                             "outputs": []}
+        failure = settled.get("error")
+        if state == "failed" and isinstance(failure, Mapping):
+            diagnostic = _public_lease_diagnostic(failure.get("diagnostic"))
+            if diagnostic is not None:
+                result["result"]["error"] = {"diagnostic": diagnostic}
     return result
 
 
