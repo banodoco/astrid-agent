@@ -3,6 +3,10 @@
 
 Usage: pod_session.py --datacenters EUR-NO-1 --storage-name storage --sources-dir DIR --workdir DIR
                       (--jobs jobs.yaml | --request job/request.json --asset-map job/asset-map.json)
+Held follow-up: use --resume-held-jobs jobs.yaml with the existing custody --workdir.
+Rows need fresh packet ids; the first failure stops the list. Successful lists return 0,
+failed lists return 1, and both retain the held pod and its original failure evidence.
+Uncertain operations require a separate reconciliation turn and are never replayed.
 
 Legacy steps: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
 Job lists use install-owned GPU sanity after environments and before models, then S0 for each H3 job,
@@ -1678,14 +1682,14 @@ class Session:
                 or pods[0].get("name") != self.name):
             raise SessionError("held state: pod identity is missing, conflicting or ambiguous")
 
-    def _preserve_held_progress(self, data: bytes) -> None:
+    def _preserve_held_progress(self, data: bytes, *, filename="held-session-followup-progress.json") -> None:
         fd, temporary = tempfile.mkstemp(prefix=".held-progress-", dir=self.workdir)
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self.workdir / "held-session-followup-progress.json")
+            os.replace(temporary, self.workdir / filename)
             directory = os.open(self.workdir, os.O_RDONLY)
             try:
                 os.fsync(directory)
@@ -1742,7 +1746,32 @@ class Session:
             self._persist_held_operation()
             raise
 
-    def run_held(self, command: str | None = None) -> int:
+    def _finish_held_progress(self, *, job_list: bool = False) -> None:
+        """Publish verified follow-up evidence without changing admission or identity."""
+        progress_path = self.workdir / "pod-session-progress.json"
+        remote_path = self.workdir / "pod-session-progress.remote.json"
+        if remote_path.read_bytes() != progress_path.read_bytes():
+            raise SessionError("held state: remote progress differs")
+        evidence = [progress_path, remote_path]
+        if job_list:
+            self._preserve_held_progress(self.progress_document(), filename="held-session-joblist-progress.json")
+            for root, directories, files in os.walk(self.workdir / "packets", topdown=False, followlinks=False):
+                evidence.extend(Path(root) / name for name in files + directories)
+            evidence.append(self.workdir / "packets")
+        evidence.append(self.workdir)
+        for path in evidence:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        completed_doc = dict(self._held_doc, status="held", jobs=self.budget.count,
+                             progress_sha256=_file_sha256(progress_path))
+        self._write_held(completed_doc)
+        if self._read_held() != completed_doc:
+            raise SessionError("held state: completed follow-up publication differs")
+
+    def run_held(self, command: str | None = None, *, job_list: bool = False) -> int:
         """One serialized, bounded follow-up, or an explicit verified release."""
         lock = self.workdir / ".held-session.lock"
         fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -1766,7 +1795,7 @@ class Session:
             self.token_path = Path(doc["token_dir"]) / f"pod-session-{self.sid}.token"
             self._verify_held_identity()
             custody_verified = True
-            if command is None:
+            if command is None and not job_list:
                 progress_path = self.workdir / "pod-session-progress.json"
                 try:
                     if _file_sha256(progress_path) == doc["progress_sha256"]:
@@ -1801,7 +1830,7 @@ class Session:
                     or Path(self.args.token_dir).resolve() != Path(doc["token_dir"])
                     or self.args.datacenters != [DATACENTER] or self.args.storage_name != STORAGE_NAME
                     or self.args.volume_gb != doc["volume_gb"]
-                    or not command.strip() or not 1 <= self.args.followup_timeout <= 600):
+                    or (not job_list and (not command.strip() or not 1 <= self.args.followup_timeout <= 600))):
                 raise SessionError("held state: stale, incomplete or incompatible")
             if ("charged_jobs" not in doc
                     and (self.workdir / "held-session-followup-failures.jsonl").exists()):
@@ -1829,6 +1858,8 @@ class Session:
                              if r.get("step") in ("install", "rerun")]
                 if installed != [("install", "ok"), ("rerun", "ok")]:
                     raise SessionError("held state: successful install and rerun evidence is missing or inconsistent")
+                if job_list:
+                    self.prepare_held_jobs()
                 self._preserve_held_progress(original_progress)
                 doc.update(charged_jobs=self.budget.count, operation=None)
             self._held_doc = doc
@@ -1854,32 +1885,25 @@ class Session:
             if json.loads(self.fetch(f"{SRC_DIR}/.pod-source.json")) != doc["source"]:
                 raise SessionError("held state: transported source manifest differs")
             followup_started = True
-            code, _, job = self.run_job("follow-up", command, self.args.followup_timeout)
-            if code:
-                raise SessionError(f"follow-up: job {job['id']} exited {code}")
-            self.record("follow-up", "ok", {"job": job["id"]})
-            self.write_progress(strict=True)
-            if (self.workdir / "pod-session-progress.remote.json").read_bytes() != progress_path.read_bytes():
-                raise SessionError("held state: remote progress differs")
-            for path in (progress_path, self.workdir / "pod-session-progress.remote.json", self.workdir):
-                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-            completed_doc = dict(doc, status="held", jobs=self.budget.count,
-                                 progress_sha256=_file_sha256(progress_path))
-            self._write_held(completed_doc)
-            if self._read_held() != completed_doc:
-                raise SessionError("held state: completed follow-up publication differs")
+            if job_list:
+                self.run_held_manifest()
+            else:
+                code, _, job = self.run_job("follow-up", command, self.args.followup_timeout)
+                if code:
+                    raise SessionError(f"follow-up: job {job['id']} exited {code}")
+                self.record("follow-up", "ok", {"job": job["id"]})
+                self.write_progress(strict=True)
+            self._finish_held_progress(job_list=job_list)
             self.say("POD SESSION HELD; original row failure remains")
-            return 1
+            return 0 if job_list else 1
         except BaseException as exc:
             detail = str(exc) if isinstance(exc, SessionError) else type(exc).__name__
             self.say(f"STOPPED: held session unavailable ({detail})")
             recovered = False
             if custody_verified and followup_started and original_progress is not None and doc is not None:
                 try:
+                    if job_list:
+                        self._preserve_held_progress(self.progress_document(), filename="held-session-joblist-progress.json")
                     doc["status"] = "in_use"
                     self._persist_held_operation()
                     terminal = (doc["operation"] is not None and doc["operation"]["state"] == "exited")
@@ -1890,9 +1914,13 @@ class Session:
                             terminal = False
                     self._record_held_failure(detail, retryable=terminal)
                     if terminal:
-                        # Restore the digest-bound failure evidence, keeping every
-                        # charged record separately from the original progress count.
-                        self._restore_held_retry(original_progress)
+                        if job_list:
+                            self.write_progress(strict=True)
+                            self._finish_held_progress(job_list=True)
+                        else:
+                            # Keep every charged record separately from the original
+                            # digest-bound progress count when a command fails.
+                            self._restore_held_retry(original_progress)
                         recovered = True
                         self.say("HELD SESSION RETAINED; terminal follow-up failure is durable and may be retried")
                     else:
@@ -1924,14 +1952,15 @@ class JobListSession(Session):
     """
 
     def __init__(self, args, **kwargs):
-        self.jobs = load_jobs(Path(args.jobs))
+        held_jobs = getattr(args, "resume_held_jobs", None)
+        self.jobs = load_jobs(Path(held_jobs or args.jobs))
         if getattr(args, "hold_on_row_failure", False) and len(self.jobs) != 1:
             raise SessionError("held sessions require exactly one job row")
         self._failed_rows: set[str] = set()
         super().__init__(args, **kwargs)
         for job in self.jobs:
             packet = self.workdir / "packets" / job["id"]
-            if packet.exists():
+            if not held_jobs and packet.exists():
                 raise SessionError(f"packet already exists; choose a fresh workdir: {packet}")
             job["packet"] = packet
             job["remote"] = f"{CLIP_DIR}/jobs/{self.sid}-{job['id']}"
@@ -1954,37 +1983,73 @@ class JobListSession(Session):
     def bundle(self):
         detail = self.bundle_sources()
         for job in self.jobs:
-            packet, remote = job["packet"], job["remote"]
-            inputs = packet / "inputs"
-            inputs.mkdir(parents=True)
-            (packet / "job.json").write_text(json.dumps(
-                {k: v for k, v in job.items() if k not in ("packet", "remote")}, default=str, indent=2) + "\n")
-            self.packet_check(job, "pending")
-
-            def stage(local, relative):
-                target = inputs / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(local, target)
-                self.put(target, f"{remote}/{relative}")
-
-            if job["type"] == "h3":
-                clip, smoke = derive_requests(job["request"])
-                amap = {}
-                for asset, local in job["assets"].items():
-                    relative = f"assets/{asset}{local.suffix}"
-                    stage(local, relative)
-                    amap[asset] = f"{remote}/{relative}"
-                for name, data in (("request.json", clip), ("smoke-request.json", smoke),
-                                   ("asset-map.json", (json.dumps(amap, indent=2) + "\n").encode())):
-                    target = inputs / name
-                    target.write_bytes(data)
-                    self.put(target, f"{remote}/{name}")
-                if job.get("asset-map"):
-                    shutil.copyfile(job["asset-map"], inputs / "original-asset-map.json")
-            else:
-                for relative, local in job["input-files"].items():
-                    stage(local, relative)
+            self.stage_manifest_job(job)
         return detail | {"jobs": [j["id"] for j in self.jobs]}
+
+    def stage_manifest_job(self, job):
+        packet, remote = job["packet"], job["remote"]
+        inputs = packet / "inputs"
+        inputs.mkdir(parents=True)
+        (packet / "job.json").write_text(json.dumps(
+            {k: v for k, v in job.items() if k not in ("packet", "remote")}, default=str, indent=2) + "\n")
+        self.packet_check(job, "pending")
+
+        def stage(local, relative):
+            target = inputs / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(local, target)
+            self.put(target, f"{remote}/{relative}")
+
+        if job["type"] == "h3":
+            clip, smoke = derive_requests(job["request"])
+            amap = {}
+            for asset, local in job["assets"].items():
+                relative = f"assets/{asset}{local.suffix}"
+                stage(local, relative)
+                amap[asset] = f"{remote}/{relative}"
+            for name, data in (("request.json", clip), ("smoke-request.json", smoke),
+                               ("asset-map.json", (json.dumps(amap, indent=2) + "\n").encode())):
+                target = inputs / name
+                target.write_bytes(data)
+                self.put(target, f"{remote}/{name}")
+            if job.get("asset-map"):
+                shutil.copyfile(job["asset-map"], inputs / "original-asset-map.json")
+        else:
+            for relative, local in job["input-files"].items():
+                stage(local, relative)
+        return {"packet": str(packet), "remote": remote}
+
+    def prepare_held_jobs(self):
+        """Admit fresh rows under the existing custody root, using the verified sid."""
+        packets = self.workdir / "packets"
+        if packets.is_symlink() or not packets.is_dir():
+            raise SessionError("held state: existing packets directory is required")
+        for job in self.jobs:
+            if os.path.lexists(job["packet"]):
+                raise SessionError(f"packet already exists; held follow-ups require fresh job ids: {job['id']}")
+            job["remote"] = f"{CLIP_DIR}/jobs/{self.sid}-{job['id']}"
+
+    def run_held_jobs(self) -> int:
+        return self.run_held(job_list=True)
+
+    def run_held_manifest(self):
+        # Held custody never invokes the provisioning/release driver or its
+        # continue-after-row-failure policy. Every failed phase stops this list.
+        for step, operation in self.manifest_steps(stage=True):
+            try:
+                detail = operation()
+            except BaseException as exc:
+                self.record(step, "failed", {"error": str(exc) or type(exc).__name__})
+                raise
+            self.record(step, "ok", detail)
+            # Retain completed steps even if the controller dies during the
+            # remote progress write and a later reconciliation restores admission.
+            self._preserve_held_progress(self.progress_document(), filename="held-session-joblist-progress.json")
+            try:
+                self.write_progress(strict=True)
+            except BaseException as exc:
+                self.record("progress", "failed", {"error": str(exc) or type(exc).__name__})
+                raise
 
     def run_manifest_job(self, job, smoke=False):
         remote, jid = job["remote"], job["id"]
@@ -2118,7 +2183,8 @@ class JobListSession(Session):
         super().record(step, result, detail)
         if result == "failed":
             for job in self.jobs:
-                if step in (f"job:{job['id']}", f"download:{job['id']}", f"packet:{job['id']}", f"h3:{job['id']}:s0"):
+                if step in (f"upload:{job['id']}", f"job:{job['id']}", f"download:{job['id']}",
+                            f"packet:{job['id']}", f"h3:{job['id']}:s0"):
                     self.packet_check(job, "failed", error=detail.get("error"), outputs=job.get("outputs", {}))
 
     def continue_after_step_failure(self, step, exc):
@@ -2138,16 +2204,22 @@ class JobListSession(Session):
                 return False
         return True
 
-    def run_steps(self):
-        # Install runs sanity after constructing the primary venv, before models.
-        steps = [(step, getattr(self, step)) for step in ("claim", "bundle", "bootstrap", "install", "rerun")]
+    def manifest_steps(self, *, stage=False):
+        steps = []
         for job in self.jobs:
+            if stage:
+                steps.append((f"upload:{job['id']}", lambda j=job: self.stage_manifest_job(j)))
             if job["type"] == "h3":
                 steps.append((f"h3:{job['id']}:s0", lambda j=job: self.run_manifest_job(j, smoke=True)))
             steps.extend([(f"job:{job['id']}", lambda j=job: self.run_manifest_job(j)),
                           (f"download:{job['id']}", lambda j=job: self.download_manifest_job(j)),
                           (f"packet:{job['id']}", lambda j=job: self.finish_packet(j))])
         return steps
+
+    def run_steps(self):
+        # Install runs sanity after constructing the primary venv, before models.
+        setup = [(step, getattr(self, step)) for step in ("claim", "bundle", "bootstrap", "install", "rerun")]
+        return setup + self.manifest_steps()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2164,6 +2236,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--request", help="the 9 s clip request JSON (requires --asset-map)")
     mode.add_argument("--jobs", help="version: 1 YAML job list (h3 request/assets or cmd command/input-files/expected-outputs)")
     mode.add_argument("--resume-held", metavar="COMMAND", help="run one bounded command on the recorded held pod")
+    mode.add_argument("--resume-held-jobs", metavar="MANIFEST",
+                      help="run a v1 job list with fresh packet ids in the existing held custody workdir; never release")
     mode.add_argument("--release-held", action="store_true", help="terminate and verify the recorded held pod")
     mode.add_argument("--renew-held", action="store_true", help="extend a verified held admission without contacting the pod")
     p.add_argument("--hold-on-row-failure", action="store_true", help="hold a single-row session only after a recoverable row failure")
@@ -2186,7 +2260,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.request and not args.asset_map:
         parser.error("--request requires --asset-map")
-    if args.jobs and args.asset_map:
+    if (args.jobs or args.resume_held_jobs) and args.asset_map:
         parser.error("--asset-map belongs to --request; use assets/asset-map in each h3 job")
     if args.hold_on_row_failure and not args.jobs:
         parser.error("--hold-on-row-failure requires --jobs")
@@ -2201,13 +2275,15 @@ def main(argv: list[str] | None = None) -> int:
         sibling = Path(sys.executable).parent / "runpod-lifecycle"
         binary = str(sibling) if sibling.exists() else "runpod-lifecycle"
     try:
-        session = (JobListSession if args.jobs else Session)(
+        session = (JobListSession if args.jobs or args.resume_held_jobs else Session)(
             args, cli=default_cli_runner(binary, source_paths), transport_factory=default_transport_factory,
             http_status=default_http_status, say=lambda message: print(message, flush=True))
     except (SessionError, ValueError) as exc:
         parser.error(str(exc))
     if args.renew_held:
         return session.renew_held()
+    if args.resume_held_jobs:
+        return session.run_held_jobs()
     if args.resume_held is not None or args.release_held:
         return session.run_held(args.resume_held)
     return session.run()

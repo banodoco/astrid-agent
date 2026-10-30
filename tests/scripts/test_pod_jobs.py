@@ -196,8 +196,10 @@ def assert_release_verified(session, pod):
     assert session.records[-1]["detail"] == {"pods":["fakepod134"], "get":404, "list":[]}
 
 
-def held_control(session, pod, cli, transport_factory, *, command=None, renew=False, local_free_bytes=None):
+def held_control(session, pod, cli, transport_factory, *, command=None, renew=False, local_free_bytes=None,
+                 jobs=None):
     mode = (["--renew-held"] if renew else
+            ["--resume-held-jobs", str(jobs)] if jobs is not None else
             ["--release-held"] if command is None else ["--resume-held", command])
     args = ps.build_parser().parse_args([
         "--datacenters", ps.DATACENTER, "--sources-dir", str(pod.sources),
@@ -236,7 +238,8 @@ def held_control(session, pod, cli, transport_factory, *, command=None, renew=Fa
             transport._held_storage_fixture = True
         return transport
 
-    control = ps.Session(args, cli=cli, transport_factory=held_transport,
+    control_type = ps.JobListSession if jobs is not None else ps.Session
+    control = control_type(args, cli=cli, transport_factory=held_transport,
                          http_status=pod.http_status, sleep=lambda _seconds: None,
                          say=messages.append, agent_root=pod.agent_root)
     control.test_messages = messages
@@ -515,6 +518,192 @@ def test_single_row_hold_resume_and_verified_release_across_sessions(tmp_path, m
 
     run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
              failure="command", after_run=after_run, process_boundary=process_boundary)
+
+
+def _held_joblist_manifest(root, *, failing=None):
+    manifest, document = make_manifest(root, mixed=True)
+    cmd = dict(document["jobs"][1])
+    cmd["id"] = "next-image"
+    if failing == "command":
+        cmd["command"] = "exit 9"
+    elif failing == "verification":
+        (Path(root) / "generate.py").write_text(
+            "import pathlib; pathlib.Path('generated.png').write_bytes(pathlib.Path('data/reference.png').read_bytes()); "
+            "pathlib.Path('result.json').write_text('{invalid json')\n")
+    later = dict(document["jobs"][1])
+    later.update(id="later", command=[sys.executable, "-c",
+        "import json,pathlib; pathlib.Path('later.png').write_bytes(pathlib.Path('data/reference.png').read_bytes()); "
+        "pathlib.Path('result.json').write_text(json.dumps({'ok': True}))"],
+        **{"expected-outputs":[{"path":"later.png", "kind":"png", "width":32, "height":24}, "result.json"]})
+    document["jobs"] = [document["jobs"][0], cmd, later]
+    manifest.write_text(yaml.safe_dump(document, sort_keys=False))
+    return manifest
+
+
+@pytest.mark.parametrize("process_boundary", [False, True])
+def test_held_joblist_runs_fresh_mixed_rows_and_keeps_custody(tmp_path, monkeypatch, process_boundary):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated, failure_diagnostics(session)
+        original_failure = next(r for r in json.loads(
+            (session.workdir / "pod-session-progress.json").read_text())["steps"]
+            if r["step"] == "job:image" and r["result"] == "failed")
+        held_path = session.workdir / "held-session.json"
+        held_before = json.loads(held_path.read_text())
+        original_packet = _packet_snapshot(session.workdir)
+        original_count = len(json.loads((session.workdir / "pod-session-progress.json").read_text())["steps"])
+        setup_before = pod.setup_log.read_text().splitlines()
+        manifest = _held_joblist_manifest(tmp_path / "resume-list")
+        before_events = list(pod.events)
+        before_count = pod.record_count
+        control = held_control(session, pod, cli, transport_factory, jobs=manifest)
+        assert control.run_held_jobs() == 0, failure_diagnostics(control)
+        assert control.sid == session.sid and control.pod_id == session.pod_id
+        assert pod.events.count("launch") == 1 and pod.record_count > before_count
+        assert not pod.terminated and json.loads((session.workdir / "held-session.json").read_text())["status"] == "held"
+        assert not any(event in pod.events[len(before_events):] for event in ("terminate", "launch"))
+        progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
+        assert original_failure in progress["steps"]
+        resumed_steps = [r["step"] for r in progress["steps"][original_count:]]
+        assert resumed_steps == ["upload:clip", "h3:clip:s0", "job:clip", "download:clip", "packet:clip",
+                                 "upload:next-image", "job:next-image", "download:next-image", "packet:next-image",
+                                 "upload:later", "job:later", "download:later", "packet:later"]
+        assert not any(r["step"] in ("claim", "bundle", "bootstrap", "install", "rerun", "release")
+                       for r in progress["steps"][original_count:])
+        remote = json.loads((session.workdir / "pod-session-progress.remote.json").read_text())
+        assert remote == progress
+        assert json.loads((session.workdir / "held-session-joblist-progress.json").read_text()) == progress
+        held_after = json.loads(held_path.read_text())
+        assert held_after["jobs"] == held_after["charged_jobs"] == control.budget.count
+        assert pod.record_count - before_count == control.budget.count - held_before["jobs"]
+        for key in ("session", "pod_id", "volume_id", "volume_gb", "source", "runtime_identity", "expires_at"):
+            assert held_after[key] == held_before[key]
+        assert held_after["progress_sha256"] == hashlib.sha256(
+            (session.workdir / "pod-session-progress.json").read_bytes()).hexdigest()
+        packets = session.workdir / "packets"
+        assert {p.name for p in packets.iterdir()} == {"image", "clip", "next-image", "later"}
+        final_packets = _packet_snapshot(session.workdir)
+        assert {k: v for k, v in final_packets.items() if k.startswith("image/")} == {
+            k: v for k, v in original_packet.items() if k.startswith("image/")}
+        for row in ("clip", "next-image", "later"):
+            check = json.loads((packets / row / "machine-check.json").read_text())
+            assert check["status"] == "passed"
+            for relative, evidence in check["outputs"].items():
+                output = packets / row / "outputs" / relative
+                assert output.is_file()
+                assert evidence["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+        clip_outputs = packets / "clip/outputs"
+        assert {"final.mp4", "receipt.json", "composition-manifest.json"} <= {
+            path.name for path in clip_outputs.iterdir()}
+        assert ps.publication_verified(json.loads((clip_outputs / "receipt.json").read_text()))
+        prompts = [int(prompt["prompt"]["1"]["inputs"]["seconds"]) for prompt in pod.comfy_prompts]
+        assert prompts == [1, 9]
+        setup_after = pod.setup_log.read_text().splitlines()
+        assert setup_after.count("install") == setup_before.count("install")
+        assert setup_after.count("sanity") == setup_before.count("sanity")
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run, process_boundary=process_boundary)
+
+
+@pytest.mark.parametrize("failure,failed_step", [("command", "job:next-image"),
+                                                  ("verification", "download:next-image")])
+def test_held_joblist_terminal_row_failure_keeps_original_failure_and_snapshot(
+        tmp_path, monkeypatch, failure, failed_step):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        progress_path = session.workdir / "pod-session-progress.json"
+        original = progress_path.read_bytes()
+        primary = next(r for r in json.loads(original)["steps"] if r["step"] == "job:image")
+        manifest = _held_joblist_manifest(tmp_path / "resume-list-fail", failing=failure)
+        control = held_control(session, pod, cli, transport_factory, jobs=manifest)
+        assert control.run_held_jobs() == 1
+        held = json.loads((session.workdir / "held-session.json").read_text())
+        assert held["status"] == "held"
+        progress = json.loads(progress_path.read_text())
+        assert primary in progress["steps"]
+        assert any(r["step"] == failed_step and r["result"] == "failed" for r in progress["steps"])
+        assert (session.workdir / "held-session-joblist-progress.json").is_file()
+        failures = (session.workdir / "held-session-followup-failures.jsonl").read_text().splitlines()
+        assert json.loads(failures[-1])["retryable"] is True
+        assert not (session.workdir / "packets/later").exists()
+        assert json.loads((session.workdir / "packets/clip/machine-check.json").read_text())["status"] == "passed"
+        assert pod.events.count("launch") == 1 and pod.events.count("terminate") == 0
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_joblist_uncertain_row_keeps_in_use_operation_and_snapshot(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        manifest = _held_joblist_manifest(tmp_path / "resume-list-uncertain")
+        original_transport = transport_factory
+        def uncertain_transport(pod_id, token):
+            transport = original_transport(pod_id, token)
+            start = transport.detached_start
+            def detached_start(command, *, root, job_id=None, launch_timeout=60):
+                if ("cd " in command and f"{ps.CLIP_DIR}/jobs/" in command
+                        and "next-image" in command):
+                    # The reservation is durable before this start transport
+                    # raises, so the accepted/uncertain slot must not be reused.
+                    raise TimeoutError("fixture lost row start response")
+                return start(command, root=root, job_id=job_id, launch_timeout=launch_timeout)
+            transport.detached_start = detached_start
+            return transport
+        control = held_control(session, pod, cli, uncertain_transport, jobs=manifest)
+        assert control.run_held_jobs() == 1
+        held = json.loads((session.workdir / "held-session.json").read_text())
+        assert held["status"] == "in_use"
+        assert held["operation"]["state"] == "starting"
+        assert held["operation"]["label"] == "job:next-image"
+        assert held["charged_jobs"] == control.budget.count == pod.record_count + 1
+        assert (session.workdir / "held-session-joblist-progress.json").is_file()
+        assert not (session.workdir / "packets/later").exists()
+        assert pod.events.count("launch") == 1 and pod.events.count("terminate") == 0
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+@pytest.mark.parametrize("fault", ["stale", "identity", "progress", "packet", "dangling-packet"])
+def test_held_joblist_refuses_invalid_custody_before_staging(tmp_path, monkeypatch, fault):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        progress_path = session.workdir / "pod-session-progress.json"
+        if fault == "stale":
+            held = json.loads(held_path.read_text())
+            held["expires_at"] = 1
+            held_path.write_text(json.dumps(held))
+        elif fault == "progress":
+            progress_path.write_text("{}")
+        elif fault == "packet":
+            (session.workdir / "packets/clip").mkdir()
+        elif fault == "dangling-packet":
+            (session.workdir / "packets/clip").symlink_to(tmp_path / "missing-target")
+        def changed_cli(argv, env):
+            if fault == "identity" and argv[0] == "list" and "--name-prefix" in argv:
+                pod.events.append("list")
+                return 0, json.dumps([{"id":"otherpod", "name":session.name}]), ""
+            return cli(argv, env)
+        manifest = _held_joblist_manifest(tmp_path / f"resume-list-{fault}")
+        records_before = pod.record_count
+        control = held_control(session, pod, changed_cli, transport_factory, jobs=manifest)
+        assert control.run_held_jobs() == 1
+        assert pod.record_count == records_before
+        rejected_packet = session.workdir / "packets/clip"
+        if fault == "packet":
+            assert rejected_packet.is_dir() and not any(rejected_packet.iterdir())
+        elif fault == "dangling-packet":
+            assert rejected_packet.is_symlink() and not rejected_packet.exists()
+        else:
+            assert not os.path.lexists(rejected_packet)
+        assert not os.path.lexists(session.workdir / "packets/next-image")
+        assert pod.events.count("launch") == 1 and pod.events.count("terminate") == 0
+        assert not pod.terminated
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
 
 
 def test_failed_followup_then_retry_keeps_same_held_pod_and_primary_evidence(tmp_path, monkeypatch):

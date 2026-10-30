@@ -582,11 +582,14 @@ def test_https_bootstrap_sdk_serialization_roundtrips():
     assert decoded == arguments and literal[end:].lstrip().startswith((",", "}"))
 
 
-@pytest.mark.parametrize("job_list", [False, True])
-def test_main_binds_controller_and_cli_to_bundle_sources(tmp_path, monkeypatch, job_list):
+@pytest.mark.parametrize("mode", ["legacy", "jobs", "held_jobs"])
+def test_main_binds_controller_and_cli_to_bundle_sources(tmp_path, monkeypatch, mode):
     args, _ = make_args(tmp_path)
-    if job_list:
+    if mode == "jobs":
         args.jobs, args.request, args.asset_map = "synthetic-unopened-jobs.yaml", None, None
+    elif mode == "held_jobs":
+        args.jobs, args.request, args.asset_map = None, None, None
+        args.resume_held_jobs = "synthetic-unopened-held-jobs.yaml"
     sources = Path(args.sources_dir)
     (sources / "runpod-python/runpod/api/mutations").mkdir(parents=True)
     (sources / "runpod-python/runpod/__init__.py").write_text("# fake source package")
@@ -617,9 +620,12 @@ def test_main_binds_controller_and_cli_to_bundle_sources(tmp_path, monkeypatch, 
             assert origins["argv"] == ["--transport", "https", "launch"]
             assert env == {"PYTHONPATH": "/prior-source"}
             return 7
+        if mode == "held_jobs":
+            return SimpleNamespace(run_held_jobs=run,
+                                   run=lambda: pytest.fail("held job list used provisioning driver"))
         return SimpleNamespace(run=run)
 
-    selected, other = ("JobListSession", "Session") if job_list else ("Session", "JobListSession")
+    selected, other = ("JobListSession", "Session") if mode != "legacy" else ("Session", "JobListSession")
     monkeypatch.setattr(ps, selected, session)
     monkeypatch.setattr(ps, other, lambda *_a, **_k: pytest.fail("wrong A3 session dispatch"))
     assert ps.main([]) == 7
