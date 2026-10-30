@@ -75,8 +75,19 @@ def test_mask_node_is_spatial_crop_disabled_audio_untouched(tmp_path):
     block = _v2v_block(manifest)
     for fragment in ("mode='spatial'", "crop='disabled'", "audio_strength=0,",
                      "inside_strength=1.0,", "outside_strength=0,",
-                     "source_audio=vhs_loadvideoffmpeg.out('AUDIO')", "source_mask=loadimagemask.out("):
+                     "source_mask=loadimagemask.out("):
         assert fragment in block, fragment
+    from vibecomfy.cli_loader import load_workflow_any
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile(
+        "api", run_inputs=manifest["workflow_inputs"])
+    edit = next(row["inputs"] for row in api.values() if row["class_type"] == "H3V2VGranularFractionalDenoise")
+    audio = api[edit["source_audio"][0]]
+    assert audio["class_type"] == "AudioConcat"
+    assert audio["inputs"]["audio1"] == ["99", 2]
+    assert audio["inputs"]["direction"] == "after"
+    silence = api[audio["inputs"]["audio2"][0]]
+    assert silence["class_type"] == "EmptyAudio"
+    assert silence["inputs"]["duration"] == manifest["capabilities"]["generation_timing"]["trim_tail_frames"] / 24
     text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
     assert "LoadImageMask(channel='red'" in text
     # The sampler and scheduler take the V2V node's model and latent.
@@ -125,7 +136,20 @@ def test_native_masked_edit_video_mask_binding(tmp_path):
     text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
     assert "start_time=0.0" in text and text.count("frame_load_cap=120") == 2
     assert "imagetomask = ImageToMask(" in text
-    assert "image=vhs_loadvideoffmpeg_2.out('IMAGE')" in text
+    from vibecomfy.cli_loader import load_workflow_any
+    api = load_workflow_any(manifest["workflow"]["workflow.py"]["path"]).compile(
+        "api", run_inputs=manifest["workflow_inputs"])
+    mask = next(row for row in api.values() if row["class_type"] == "ImageToMask")
+    batch = api[mask["inputs"]["image"][0]]
+    assert batch["class_type"] == "ImageBatch"
+    loader = api[batch["inputs"]["image1"][0]]
+    assert loader["class_type"] == "VHS_LoadVideoFFmpeg"
+    assert loader["inputs"]["start_time"] == 0
+    assert loader["inputs"]["frame_load_cap"] == 120
+    preserve = api[batch["inputs"]["image2"][0]]
+    assert preserve["class_type"] == "EmptyImage"
+    assert preserve["inputs"]["color"] == 0
+    assert preserve["inputs"]["batch_size"] == 4
     assert "channel='red'" in text and "LoadImageMask" not in text
     block = _v2v_block(manifest)
     assert "mode='spatial'" in block and "source_mask=imagetomask.out('MASK')" in block

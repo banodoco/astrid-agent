@@ -598,6 +598,13 @@ def _compile_native_masked_edit(
                              "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
             "overrides": ["model", "steps", "seed", "sampler", "guidance"],
             "generation_timing": timing,
+            "source_frame_fit": {
+                "source_window_frames": frame_load_cap,
+                "internal_tail_frames": timing["trim_tail_frames"],
+                "video_tail": "repeat_last_selected_frame",
+                "audio_tail": "silence",
+                "video_mask_tail": "preserve" if mask_kind == "video" else "broadcast_static_mask",
+            },
             "output_contract": "muxed_av_full_timeline",
             "public_generation": {"modality": "video", "selectors": [
                 {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],

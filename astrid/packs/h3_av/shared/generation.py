@@ -209,6 +209,9 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     ``masked_edit`` (keys ``source_binding``, ``start_time``, ``frame_load_cap``,
     ``mask_binding``, ``mask_channel``, optional ``mask_kind="video"`` and ``strength`` in 0..1) inserts the native spatial V2V node
     between the target latent and the sampler; it also permits zero references.
+    The loader remains bounded to the requested source window. Only the planned
+    H3 rounding tail is extended (last video frame, silent audio, black video masks);
+    a genuinely short decoded source still fails the native node's fit checks.
 
     Graph shape depends only on reference list length. Filenames remain managed
     run bindings, not graph defaults; ordered slots bind Picture 1..N without
@@ -216,7 +219,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     """
     from vibecomfy.templates import ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node
     from vibecomfy.nodes.core import (
-        BasicGuider, BasicScheduler, CLIPLoader, KSamplerSelect, LoadImage,
+        AudioConcat, BasicGuider, BasicScheduler, CLIPLoader, EmptyAudio, EmptyImage,
+        ImageBatch, ImageFromBatch, KSamplerSelect, LoadImage, RepeatImageBatch,
         LoraLoaderModelOnly, RandomNoise, SamplerCustomAdvanced, UNETLoader,
         VAEDecode, VAEDecodeAudio, VAELoader,
     )
@@ -353,6 +357,21 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
             )
             wf.register_input(masked_edit["source_binding"], "99", "video", "",
                               type="CHOICE", default="", required=True, media_semantics="video")
+            source_frames = source.out("IMAGE")
+            source_audio = source.out(2)
+            source_count = int(masked_edit["frame_load_cap"])
+            tail_frames = frames - source_count
+            if source_count < 1 or tail_frames < 0:
+                raise ValueError("masked edit source window must contain 1..target frames")
+            if tail_frames:
+                # Append a fixed R-N tail, never pad-to-length: missing requested
+                # frames must remain missing when the native node checks R.
+                last = ImageFromBatch(image=source_frames, batch_index=source_count - 1, length=1)
+                tail = RepeatImageBatch(image=last.out("IMAGE"), amount=tail_frames)
+                source_frames = ImageBatch(image1=source_frames, image2=tail.out("IMAGE")).out("IMAGE")
+                silence = EmptyAudio(duration=tail_frames / 24, sample_rate=44100, channels=2)
+                source_audio = AudioConcat(audio1=source_audio, audio2=silence.out("AUDIO"),
+                                           direction="after").out("AUDIO")
             if masked_edit.get("mask_kind") == "video":
                 # Binary mask video: read the RED channel of the IMAGE output. The VHS MASK
                 # output is alpha-derived and must not be used.
@@ -365,7 +384,12 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                 )
                 wf.register_input(masked_edit["mask_binding"], masked_edit["mask_binding"], "video", "",
                                   type="CHOICE", default="", required=True, media_semantics="video")
-                mask = node("ImageToMask", _outputs=("MASK",), image=mask_loader.out("IMAGE"),
+                mask_frames = mask_loader.out("IMAGE")
+                if tail_frames:
+                    # The internal tail grants no additional edit permissions.
+                    preserve = EmptyImage(width=1024, height=576, batch_size=tail_frames, color=0)
+                    mask_frames = ImageBatch(image1=mask_frames, image2=preserve.out("IMAGE")).out("IMAGE")
+                mask = node("ImageToMask", _outputs=("MASK",), image=mask_frames,
                             channel=masked_edit["mask_channel"])
             else:
                 mask = LoadImageMask(image="", channel=masked_edit["mask_channel"], _id=masked_edit["mask_binding"])
@@ -385,8 +409,8 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                            "native_output_types": ["LATENT", "MODEL", "STRING"],
                        },
                        latent=target.out("LATENT"), model=shifted.out("MODEL"), vae=video_vae.out("VAE"),
-                       audio_vae=audio.out("audio_vae"), source_frames=source.out("IMAGE"),
-                       source_audio=source.out(2), source_fps=24.0, mode="spatial",
+                       audio_vae=audio.out("audio_vae"), source_frames=source_frames,
+                       source_audio=source_audio, source_fps=24.0, mode="spatial",
                        global_strength=0.9995, inside_strength=masked_edit.get("strength", 1), outside_strength=0, audio_strength=0,
                        source_fit="start", crop="disabled", mask_temporal_reduce="max", invert_mask=False,
                        source_mask=mask.out("MASK"))

@@ -72,15 +72,24 @@ def test_imported_v1_and_v2_use_the_same_native_lowering(case, tmp_path, monkeyp
         assert (edit["mode"], edit["crop"], edit["audio_strength"], edit["outside_strength"]) == ("spatial", "disabled", 0, 0)
         assert _node(api, "RandomNoise")["noise_seed"] == 123456789
         assert not any("LanPaint" in row["class_type"] for row in api.values())
-        assert api[edit["source_frames"][0]]["inputs"]["start_time"] == 2
-        assert api[edit["source_frames"][0]]["inputs"]["frame_load_cap"] == 96
+        fitted_source = api[edit["source_frames"][0]]
+        assert fitted_source["class_type"] == "ImageBatch"
+        source = api[fitted_source["inputs"]["image1"][0]]
+        assert source["inputs"]["start_time"] == 2
+        assert source["inputs"]["frame_load_cap"] == 96
         mask = api[edit["source_mask"][0]]
         assert mask["inputs"]["channel"] == "red"
         if mask["class_type"] == "ImageToMask":
-            loader = api[mask["inputs"]["image"][0]]
+            fitted_mask = api[mask["inputs"]["image"][0]]
+            assert fitted_mask["class_type"] == "ImageBatch"
+            loader = api[fitted_mask["inputs"]["image1"][0]]
             assert loader["class_type"] == "VHS_LoadVideoFFmpeg"
             assert loader["inputs"]["frame_load_cap"] == 96
             assert loader["inputs"]["start_time"] == 0
+            preserve = api[fitted_mask["inputs"]["image2"][0]]
+            assert preserve["class_type"] == "EmptyImage"
+            assert preserve["inputs"]["color"] == 0
+            assert preserve["inputs"]["batch_size"] == 11
         else:
             assert mask["class_type"] == "LoadImageMask"
         assert manifest["capabilities"]["reference_order"] == ["look.png"]
