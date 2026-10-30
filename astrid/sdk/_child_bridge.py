@@ -482,7 +482,7 @@ def _install_child_bridge(channel: socket.socket) -> ChildBridge:
 
 def _child_request(capability: Any, inputs: dict[str, Any], *, digest: str,
                    child_key: str | None, wait: bool, timeout_seconds: float,
-                   poll_seconds: float) -> dict[str, Any]:
+                   poll_seconds: float, execution_request: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from astrid.core.execution.managed_inputs import managed_file_digest
     descriptors = []
     values = dict(inputs)
@@ -509,6 +509,8 @@ def _child_request(capability: Any, inputs: dict[str, Any], *, digest: str,
         descriptors.append(descriptor)
     exact = {"child": {"capability_id": capability.id, "capability_digest": digest},
              "inputs": values, "input_descriptors": descriptors}
+    if execution_request is not None:
+        exact["execution_request"] = dict(execution_request)
     encoded = _strict_json(exact)
     if child_key is None:
         child_key = "sdk-child-" + hashlib.sha256(encoded).hexdigest()

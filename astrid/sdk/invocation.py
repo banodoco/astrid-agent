@@ -3813,6 +3813,7 @@ def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_s
 def _invoke_bridge_child(
     capability: Any, *, registries: Any, inputs: dict[str, Any], bridge: Any,
     child_key: str | None, wait: bool, timeout_seconds: float, poll_seconds: float,
+    execution_request: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
     from types import SimpleNamespace
@@ -3824,7 +3825,8 @@ def _invoke_bridge_child(
 
     digest = executor_definition_digest(registries[0].get(capability.id))
     request = _child_request(capability, inputs, digest="sha256:" + digest, child_key=child_key,
-                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+                             execution_request=execution_request)
     try:
         data = bridge.submit(request)
     except _BridgeRejected as exc:
@@ -4008,9 +4010,9 @@ def invoke(
     if child_mode and _child_bridge._bridge is None:
         raise CapabilityInvocationError("child invocation requires a live host bridge")
     if child_mode and any(value is not None for value in (
-        execution_request, idempotency_context, idempotency_key, outputs, project, out, brief, python_exec,
+        idempotency_context, idempotency_key, outputs, project, out, brief, python_exec,
     )):
-        raise CapabilityValidationError("child invocation accepts only declared inputs and child wait controls")
+        raise CapabilityValidationError("child invocation accepts only declared inputs, execution_request and child wait controls")
     if _include_internal and _internal_dispatch_token is not _INTERNAL_DISPATCH_TOKEN:
         raise TypeError("private capabilities can only be invoked through internal dispatch")
     if not isinstance(read_managed_outputs, bool):
@@ -4186,6 +4188,7 @@ def invoke(
             capability, registries=registries, inputs=effective_inputs,
             bridge=_child_bridge._bridge, child_key=child_key,
             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+            execution_request=normalized_execution_request,
         )
 
     if isinstance(project, str) and not project.strip():

@@ -30,8 +30,11 @@ from astrid.sdk._child_bridge import (
     _validate_output,
     _write_bridge_io_failure,
 )
+from astrid.sdk.execution_request import ExecutionRequestError, normalize_execution_request
 
-from .generic_host import HostError, _verify_admitted_source
+from .generic_host import (
+    HostError, _assert_verified_placement_binding, _execution_contract, _verify_admitted_source,
+)
 
 _MAX_FRAME = 1048576
 _MAX_OBJECT = 5 * 1024 ** 3
@@ -436,7 +439,7 @@ class HostChildBridge:
             return AdmittedChildrenSnapshot(tuple(self._admitted_children.values()),
                                             self._channel_closed, self._revoked.is_set())
 
-    def _live(self) -> None:
+    def _live(self) -> dict[str, Any]:
         if self._revoked.is_set() or self.cancelled():
             self.revoke()
             raise ChildBridgeError("parent authority ended")
@@ -455,6 +458,39 @@ class HostChildBridge:
                 or task.get("runtime_epoch", self.context["runtime_epoch"]) != self.context["runtime_epoch"]):
             self.revoke()
             raise ChildBridgeError("parent authority ended")
+        return task
+
+    def _child_execution_request(self, supplied: Any) -> dict[str, Any] | None:
+        """Select child controls using only the live, host-retained parent claim."""
+        try:
+            selected = normalize_execution_request(supplied)
+        except ExecutionRequestError as exc:
+            raise ChildBridgeError(str(exc)) from exc
+        parent = self._live()
+        contract = _execution_contract(parent)
+        effective = None
+        if contract is not None:
+            binding = parent.get("execution_binding")
+            if (not isinstance(binding, Mapping)
+                    or binding != self.task.get("execution_binding")
+                    or any(binding.get(key) != self.context[key] for key in (
+                        "task_id", "attempt_id", "lease_id", "fence", "runtime_epoch"))
+                    or binding.get("executor_id") != self.host.executor_id):
+                raise ChildBridgeError("parent target binding changed from claimed identity")
+            try:
+                inherited = normalize_execution_request({"target": binding.get("effective_target")})
+            except ExecutionRequestError as exc:
+                raise ChildBridgeError("invalid parent effective target") from exc
+            effective = inherited["target"]
+            _assert_verified_placement_binding(binding, effective)
+            if selected is None:
+                selected = inherited
+        elif _execution_contract(getattr(self, "task", {})) is not None:
+            raise ChildBridgeError("parent execution request disappeared")
+        if (selected is not None and selected["target"] not in self.policy.get("targets", [])
+                and selected["target"] != effective):
+            raise ChildBridgeError("child target outside persisted parent policy")
+        return selected
 
     def _submit(self, request: dict[str, Any], *, prepared: Mapping[str, Any] | None = None,
                 authority: Any = None) -> dict[str, Any]:
@@ -472,6 +508,7 @@ class HostChildBridge:
             live()
         if self.policy is None:
             raise ChildBridgeError("child submission requires persisted child policy")
+        execution_request = self._child_execution_request(request.get("execution_request"))
         child, inputs, bindings = request["child"], request["inputs"], request["input_descriptors"]
         if (type(child) is not dict or set(child) != {"capability_id", "capability_digest"}
                 or type(inputs) is not dict or type(bindings) is not list):
@@ -564,6 +601,8 @@ class HostChildBridge:
         if len({ref["filename"] for ref in ordered}) != len(ordered):
             raise ChildBridgeError("child input registration filenames collide")
         identity_values = {"child": child, "inputs": inputs, "ordered": ordered}
+        if execution_request is not None:
+            identity_values["execution_request"] = execution_request
         if prepared is not None:
             identity_values["discovery_provenance"] = dict(prepared)
         identity = hashlib.sha256(_strict_json(identity_values)).hexdigest()
@@ -589,13 +628,18 @@ class HostChildBridge:
         live()
         admitted = self.client.admit_child(
             child={"child_id": wire_id, **child}, inputs=inputs, ordered_inputs=ordered,
-            derived_inputs=refs, **self.context)
+            derived_inputs=refs, **self.context,
+            **({"execution_request": execution_request} if execution_request is not None else {}))
         task = task_resource(admitted)
         self._assert_lineage(task)
         if (task.get("capability_id", task.get("capability")) != child["capability_id"]
                 or task.get("capability_digest") != child["capability_digest"]
                 or task.get("idempotency_key") != wire_id):
             raise ChildBridgeError("admitted child identity disagrees with request")
+        if execution_request is not None:
+            observed = normalize_execution_request(task.get("execution_request"))
+            if observed is None or observed["target"] != execution_request["target"]:
+                raise ChildBridgeError("admitted child target disagrees with request")
         bound["task"] = task
         bound["deadline"] = time.monotonic() + request["timeout_seconds"]
         live()
@@ -676,7 +720,8 @@ class HostChildBridge:
         if _public_task(task)["run_id"] != _public_task(bound["task"])["run_id"]:
             raise ChildBridgeError("foreign child run")
         self._assert_lineage(task)
-        if any(task.get(k) != bound["task"].get(k) for k in ("capability_id", "capability_digest", "idempotency_key")):
+        if any(task.get(k) != bound["task"].get(k) for k in (
+                "capability_id", "capability_digest", "idempotency_key", "execution_request")):
             raise ChildBridgeError("child identity changed after admission")
         return task
 
@@ -1051,6 +1096,8 @@ class HostChildBridge:
                              {"child_key", "child", "inputs", "input_descriptors", "wait", "timeout_seconds", "poll_seconds"}
                              if op == "submit" else {"child_key", "task_id", "association_id"}
                              if op == "materialize_output" else {"child_key", "task_id"})
+        if op == "submit" and "execution_request" in request:
+            expected.add("execution_request")
         if (set(request) != expected or request.get("v") != 1 or type(request.get("v")) is not int
                 or type(request.get("request_id")) is not int or request["request_id"] <= self._sequence
                 or op not in {"submit", "status", "outputs", "publish_snapshot", "materialize_output"}
