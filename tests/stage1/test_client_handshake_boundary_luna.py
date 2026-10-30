@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,11 +25,13 @@ class _Workspace:
     def __init__(self, health: object, handshake: object) -> None:
         self._health = health
         self._handshake = handshake
+        self.handshake_args: tuple[object, ...] | None = None
 
     def health(self) -> object:
         return self._health
 
-    def handshake(self, *_args: object) -> object:
+    def handshake(self, *args: object) -> object:
+        self.handshake_args = args
         return self._handshake
 
 
@@ -147,6 +150,62 @@ def test_open_accepts_source_startup_identity(monkeypatch: pytest.MonkeyPatch) -
         "dirty_hash": "c" * 64,
     }
     assert isinstance(_open_with_health(monkeypatch, _health(identity=identity)), AstridClient)
+
+
+def test_open_requests_declared_scopes_and_binds_explicit_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _Workspace(_health(), _handshake())
+    monkeypatch.setattr(
+        "astrid.sdk.workspace_client.WorkspaceClient",
+        lambda *_args: workspace,
+    )
+
+    AstridClient.open(
+        endpoint="http://127.0.0.1:1",
+        credential="token",
+        realm_id="realm-1",
+        actor_id="actor-1",
+        client_name="test-client",
+        client_version="2",
+        protocol_version=PROTOCOL,
+    )
+
+    assert workspace.handshake_args == (
+        "test-client",
+        "2",
+        [
+            "projects:read",
+            "projects:write",
+            "objects:read",
+            "objects:write",
+            "tasks:read",
+            "tasks:write",
+        ],
+    )
+    assert workspace.actor_id == "actor-1"
+
+
+@pytest.mark.parametrize("field", ["realm_id", "actor_id", "client_name", "client_version"])
+@pytest.mark.parametrize("invalid_value", [None, " "])
+def test_open_rejects_missing_identity_inputs_before_handshake(
+    monkeypatch: pytest.MonkeyPatch, field: str, invalid_value: object
+) -> None:
+    workspace = _Workspace(_health(), _handshake())
+    monkeypatch.setattr("astrid.sdk.workspace_client.WorkspaceClient", lambda *_args: workspace)
+    arguments: dict[str, Any] = {
+        "endpoint": "http://127.0.0.1:1",
+        "credential": "token",
+        "realm_id": "realm-1",
+        "actor_id": "actor-1",
+        "client_name": "test-client",
+        "client_version": "2",
+        "protocol_version": PROTOCOL,
+    }
+    arguments[field] = invalid_value
+
+    with pytest.raises(ServiceUnavailableError):
+        AstridClient.open(**arguments)
+
+    assert workspace.handshake_args is None
 
 
 @pytest.mark.parametrize(
