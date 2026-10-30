@@ -4868,6 +4868,36 @@ class RuntimeProtocolClient:
             self._attempt_runtime_epochs[attempt_id] = int(raw_epoch if raw_epoch is not None else claim_epoch)
         return claim
 
+    def claim_delegated_child(self, task_id: str, *, executor_id: str,
+                              capability_ids: list[str], target: Mapping[str, Any],
+                              parent: Mapping[str, Any], idempotency_key: str):
+        """Claim one child under fresh parent authority; never select queue work.
+
+        The parent lease deadline is part of signed authority. Issuance and
+        exact claim share its lease lock without renewing parent authority.
+        """
+        from ._child_bridge import ChildBridgeError, resource
+
+        attempt_id = parent["attempt_id"]
+        epoch = parent["runtime_epoch"]
+        with self._heartbeat_lock:
+            if self._claimed_runtime_epoch(attempt_id) != epoch:
+                raise HostError("delegated child claim epoch disagrees with parent")
+            receipt = resource(self.generated.issue_child_authority(
+                attempt_id, lease_id=parent["lease_id"], fence=parent["fence"], runtime_epoch=epoch))
+            if (receipt.get("parent_task_id") != parent["task_id"]
+                    or receipt.get("parent_attempt_id") != attempt_id
+                    or not isinstance(receipt.get("authority"), str) or not receipt["authority"]):
+                raise ChildBridgeError("foreign delegated child claim authority")
+            claim = self.generated.claim_delegated_child(
+                task_id, executor_id=executor_id, capability_ids=capability_ids,
+                target=dict(target), runtime_epoch=epoch, authority=receipt["authority"],
+                idempotency_key=idempotency_key)
+            child_attempt = self._claim_attempt_id(claim)
+            if child_attempt is not None:
+                self._attempt_runtime_epochs[child_attempt] = int(_claim_field(claim, "runtime_epoch"))
+            return claim
+
     def task(self, task_id: str):
         return self._lifecycle_client().get_task(task_id)
 
@@ -11185,6 +11215,10 @@ class GenericPackHost:
             self._handoff_leave_claim_rpc(handoff_thread_id, claimed=claimed_attempt)
         if claim is None or (_claim_field(claim, "waiting_reason") and not _claim_field(claim, "attempt_id")):
             return None
+        return self._execute_claimed_task(claim)
+
+    def _execute_claimed_task(self, claim: Any) -> Mapping[str, Any] | None:
+        """Validate and execute the canonical immutable claim handoff."""
         claim_data = dict(claim) if isinstance(claim, Mapping) else {
             "attempt_id": getattr(claim, "attempt_id", None),
             "task_id": getattr(claim, "task_id", None),
@@ -11405,6 +11439,57 @@ class GenericPackHost:
                 break
             self._shutdown.wait(max(0.0, float(poll_seconds)))
         return results
+
+    def run_delegated_child(self, task: Mapping[str, Any], *, parent: Mapping[str, Any],
+                            authority_client: Any, target: Mapping[str, Any], live: Any) -> Mapping[str, Any] | None:
+        """Serve exactly one delegated child in an isolated host slot.
+
+        Runtime performs all authority and capacity checks atomically. This
+        entry has one exact RPC and never enters the ordinary claim loop.
+        """
+        thread_id = threading.get_ident()
+        try:
+            if self._shutdown.is_set():
+                raise HostError("host shutdown before delegated child claim")
+            reason = self._registration_admission_reason()
+            if reason:
+                raise HostError(reason)
+            if not self.capabilities:
+                self.discover()
+            capability = str(task.get("capability_id", task.get("capability", "")))
+            if capability not in self.capabilities:
+                raise HostError("delegated child capability is not served")
+            ready = self._preflight(capability, full_remotion=False)
+            if not any(record.id == capability and record.ready and not _is_withdrawn(record) for record in ready):
+                raise HostError("delegated child capability is not ready")
+            self.execution_policy.assert_budget_available()
+            live()
+            if not self._handoff_enter_claim_rpc():
+                raise HostError("host claim gate is closed")
+            claim = None
+            try:
+                claim = authority_client.claim_delegated_child(
+                    str(task.get("task_id", task.get("id"))), executor_id=self.executor_id,
+                    capability_ids=[capability], target=target, parent=parent,
+                    idempotency_key="delegated-claim-" + _canonical_digest({
+                        "task_id": task.get("task_id", task.get("id")), "target": dict(target),
+                        "parent": dict(parent)}))
+            finally:
+                self._handoff_leave_claim_rpc(thread_id, claimed=bool(_claim_field(claim, "attempt_id")))
+            attempt_id = _claim_field(claim, "attempt_id")
+            if not attempt_id or _claim_field(claim, "task_id") != task.get("task_id", task.get("id")):
+                raise HostError("exact delegated child claim returned foreign or missing attempt")
+            self.client._attempt_runtime_epochs[str(attempt_id)] = int(_claim_field(claim, "runtime_epoch"))
+            try:
+                live()
+            except Exception:
+                self.client.fail(str(_claim_field(claim, "task_id")), str(_claim_field(claim, "lease_id")),
+                    "parent authority ended before delegated child execution", retryable=False,
+                    attempt_id=str(attempt_id), fence=int(_claim_field(claim, "fence")))
+                raise
+            return self._execute_claimed_task(claim)
+        finally:
+            self._handoff_leave_attempt(thread_id)
 
     def _new_claim_slot(self) -> GenericPackHost:
         """Retain session warmth in a slot without sharing attempt custody."""
