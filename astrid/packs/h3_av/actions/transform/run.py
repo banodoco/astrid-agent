@@ -10,6 +10,7 @@ import shutil
 import zipfile
 from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -601,6 +602,94 @@ def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], pr
     return path
 
 
+_LEASE_CATEGORIES = frozenset({
+    "lease_loss_unclassified", "task_read_exception", "lease_metadata_invalid",
+    "lease_expired", "task_state_changed", "attempt_changed", "fence_changed",
+    "heartbeat_exception",
+})
+
+
+def _bounded_lease_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Copy only the host's bounded lease evidence, never its message or payload."""
+    if not isinstance(value, Mapping) or type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
+        return None
+    category = value.get("category")
+    if not isinstance(category, str) or category not in _LEASE_CATEGORIES:
+        return None
+    result: dict[str, Any] = {"schema_version": 1, "category": category}
+
+    def timestamp(item: Any, *, utc: bool = False) -> str | None:
+        if not isinstance(item, str) or len(item) > 96:
+            return None
+        try:
+            parsed = datetime.fromisoformat(item)
+            offset = parsed.utcoffset()
+            if offset is None or (utc and offset != timedelta(0)):
+                return None
+        except ValueError:
+            return None
+        return item
+
+    for key in ("observed_at_utc", "last_successful_heartbeat_at_utc", "last_successful_heartbeat_expiry"):
+        if key in value and value[key] is None and key.startswith("last_successful_"):
+            result[key] = None
+        elif (safe := timestamp(value.get(key), utc=key.endswith("_at_utc"))) is not None:
+            result[key] = safe
+    for key, limit, pattern in (
+        ("exception_type", 64, r"[A-Za-z_][A-Za-z0-9_]*"),
+        ("runtime_code", 64, r"[A-Za-z0-9._-]+"),
+        ("request_id", 96, r"[A-Za-z0-9._:-]+"),
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and len(item) <= limit and re.fullmatch(pattern, item):
+            result[key] = item
+    observed = value.get("observed")
+    if isinstance(observed, Mapping):
+        safe_observed: dict[str, str] = {}
+        for key, limit, pattern in (
+            ("state", 48, r"[A-Za-z_]+"),
+            ("attempt_id", 96, r"[A-Za-z0-9._:-]+"),
+            ("fence", 96, r"[0-9]+"),
+        ):
+            item = observed.get(key)
+            if isinstance(item, str) and len(item) <= limit and re.fullmatch(pattern, item):
+                safe_observed[key] = item
+        if (safe := timestamp(observed.get("lease_expires_at"))) is not None:
+            safe_observed["lease_expires_at"] = safe
+        if safe_observed:
+            result["observed"] = safe_observed
+    return result
+
+
+def _validation_failure(result: InvocationResult) -> AstridError:
+    # Runtime's failed task carries the host diagnostic in result.error.
+    # The SDK also embeds that object in its formatted error details: remove
+    # this untrusted subtree before formatting, even when it is malformed.
+    raw = result.raw_result
+    task = raw.get("task") if isinstance(raw, Mapping) else None
+    settled = task.get("result") if isinstance(task, Mapping) else None
+    failure = settled.get("error") if isinstance(settled, Mapping) else None
+    diagnostic = _bounded_lease_diagnostic(failure.get("diagnostic")) if isinstance(failure, Mapping) else None
+    error = result.error
+    has_diagnostic = isinstance(failure, Mapping) and "diagnostic" in failure
+    if isinstance(error, Mapping):
+        details = error.get("details")
+        error_result = details.get("result") if isinstance(details, Mapping) else None
+        inner = error_result.get("error") if isinstance(error_result, Mapping) else None
+        has_diagnostic = has_diagnostic or (isinstance(inner, Mapping) and "diagnostic" in inner)
+    if has_diagnostic:
+        # A settled failure can contain arbitrary input and exception data in
+        # other fields too. Keep its failure state without formatting that data.
+        code = error.get("code") if isinstance(error, Mapping) else None
+        if not isinstance(code, str) or code not in {"task_failed", "task_cancelled", "task_cancel_requested"}:
+            code = "task_failed"
+        error = {"code": code, "message": "validation task failed"}
+    exc = AstridError(f"vibecomfy.validate failed: {error}")
+    if diagnostic is not None:
+        exc.lease_diagnostic = diagnostic
+    return exc
+
+
 def _invoke(
     client: Any,
     capability_id: str,
@@ -627,6 +716,8 @@ def _invoke(
         read_managed_outputs=True,
     )
     if not result.ok:
+        if capability_id == "vibecomfy.validate":
+            raise _validation_failure(result)
         raise AstridError(f"{capability_id} failed: {result.error}")
     return result
 
@@ -2133,6 +2224,9 @@ def _write_transform_result(
         resolved_options=options, cost=None, warnings=[],
         settled=False, settlement=None, effect=None,
     )
+    diagnostic = _bounded_lease_diagnostic(getattr(error, "lease_diagnostic", None))
+    if diagnostic is not None:
+        receipt["lease_diagnostic"] = diagnostic
     write_json_atomic(root / "result.json", receipt)
 
 

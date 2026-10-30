@@ -643,6 +643,75 @@ def _transform_args(tmp_path: Path, *extra: str, target=None):
     return args
 
 
+@pytest.mark.parametrize("with_diagnostic", [True, False])
+def test_validation_failure_persists_only_bounded_lease_evidence(tmp_path, monkeypatch, with_diagnostic):
+    import json
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform import run as transform
+
+    secret = "PRIVATE_WORKFLOW_INPUT_SENTINEL"
+    diagnostic = {
+        "schema_version": 1, "category": "heartbeat_exception",
+        "observed_at_utc": "2026-10-30T18:44:22+00:00",
+        "last_successful_heartbeat_at_utc": "2026-10-30T18:43:00+00:00",
+        "last_successful_heartbeat_expiry": "2026-10-30T18:45:00+00:00",
+        "observed": {"state": "running", "attempt_id": "attempt-1", "fence": "3",
+                     "lease_expires_at": "2026-10-30T18:45:00+00:00", "input": secret},
+        "exception_type": "RuntimeFault", "runtime_code": "runtime_unavailable",
+        "request_id": "request-1", "runtime_message": secret,
+        "workflow_inputs": {"prompt": secret},
+    }
+    expected = {key: value for key, value in diagnostic.items()
+                if key not in {"runtime_message", "workflow_inputs"}}
+    expected["observed"] = {key: value for key, value in diagnostic["observed"].items() if key != "input"}
+    settled = {"error": {"code": "lease_lost", "message": "lease lost", "diagnostic": diagnostic,
+                         "request": secret}, "workflow_inputs": secret} if with_diagnostic else {"payload": {}, "outputs": []}
+    sdk_error = {"code": "task_failed", "message": "lease lost" if with_diagnostic else "render task failed",
+                 "details": {"state": "failed", "result": settled}}
+    class Client:
+        def invoke_result(self, capability_id, **kwargs):
+            return InvocationResult(capability_id=capability_id, capability_type="executor", native_kind="executor",
+                                    ok=False, error=sdk_error, raw_result={"task": {"state": "failed", "result": settled}})
+
+    def invoke_validation(args, *, terminal):
+        terminal["enabled"] = True
+        terminal["journal"] = OperationJournal(args.out / "operation-state.json", request_digest="request-a")
+        return transform._invoke_stage(
+            Client(), "vibecomfy.validate", inputs={"workflow_inputs": secret}, out=args.out / "03-validate",
+            project=None, saved_result=args.out / "03-validate" / "invocation-result.json", resume=False,
+            journal=terminal["journal"], phase="validate",
+        )
+
+    monkeypatch.setattr(transform, "_run_transform_unlocked", invoke_validation)
+    args = _transform_args(tmp_path)
+    with pytest.raises(AstridError) as caught:
+        transform.run_transform(args)
+    receipt_text = (args.out / "result.json").read_text()
+    receipt = json.loads(receipt_text)
+    assert receipt["status"] == "failed" and receipt["ok"] is False
+    assert receipt["error"]["message"] == str(caught.value)
+    assert secret not in receipt_text
+    if with_diagnostic:
+        assert receipt["lease_diagnostic"] == expected
+    else:
+        assert "lease_diagnostic" not in receipt
+        assert str(caught.value) == f"vibecomfy.validate failed: {sdk_error}"
+
+
+def test_lease_diagnostic_rejects_malformed_or_unbounded_values():
+    from astrid.packs.h3_av.actions.transform.run import _bounded_lease_diagnostic
+
+    assert _bounded_lease_diagnostic({"schema_version": True, "category": "lease_expired"}) is None
+    assert _bounded_lease_diagnostic({"schema_version": 1, "category": "unknown"}) is None
+    assert _bounded_lease_diagnostic({
+        "schema_version": 1, "category": "lease_expired",
+        "observed_at_utc": "2026-10-30T18:44:22+01:00", "request_id": "x" * 97,
+        "runtime_code": "payload=secret", "exception_type": "A/secret",
+        "observed": {"state": "running\nprivate", "fence": {"input": "private"},
+                     "attempt_id": "/private/path", "lease_expires_at": "invalid"},
+    }) == {"schema_version": 1, "category": "lease_expired"}
+
+
 @pytest.mark.parametrize("different_request", [False, True])
 def test_rejected_journal_admission_preserves_existing_terminal_result(tmp_path, monkeypatch, different_request):
     import json
