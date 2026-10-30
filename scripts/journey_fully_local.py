@@ -83,14 +83,6 @@ def _equal(left: Any, right: Any, path: str) -> None:
         raise ReceiptValidationError(f"{path}: invariant changed")
 
 
-def _event(receipt: Mapping[str, Any], name: str) -> Mapping[str, Any]:
-    for event in _field(_mapping(receipt, "receipt").get("route").get("events"),
-                        "route.events", list):
-        if isinstance(event, Mapping) and event.get("name") == name:
-            return event
-    raise _missing(f"route.events[{name}]")
-
-
 def _validate_provenance(receipt: Mapping[str, Any], require_linux: bool) -> None:
     evidence_class = _field(receipt.get("evidence_class"), "evidence_class", str)
     platform = _mapping(receipt.get("platform"), "platform")
@@ -106,6 +98,8 @@ def _validate_provenance(receipt: Mapping[str, Any], require_linux: bool) -> Non
         if "linux" in receipt["evidence_disclaimer"].lower() and "not" not in receipt["evidence_disclaimer"].lower():
             raise ReceiptValidationError("source/fake disclaimer must not imply Linux evidence")
         return
+    if not require_linux:
+        raise ReceiptValidationError("Linux evidence requires the explicit Linux receipt gate")
     if platform.get("linux_receipt") is not True or platform.get("kind") != "linux":
         raise ReceiptValidationError("linux_receipt evidence must identify a real Linux platform")
     for path in ("captured_at", "command", "pinokio_version", "runner_identity"):
@@ -118,12 +112,14 @@ def _validate_route(receipt: Mapping[str, Any]) -> None:
     _equal(route.get("mode"), "local", "route.mode")
     if route.get("backend") is not False or route.get("foreground_service") is not False:
         raise ReceiptValidationError("backend and foreground-service routes are forbidden")
+    for key in ("pre_update_sha", "target_sha", "journal_id", "temporary_runtime_id", "controller_id"):
+        _field(route.get(key), f"route.{key}", str)
     events = _field(route.get("events"), "route.events", list)
     names = [event.get("name") if isinstance(event, Mapping) else None for event in events]
     if names != list(ROUTE_ORDER):
         raise ReceiptValidationError(f"route order mismatch: expected {list(ROUTE_ORDER)!r}, got {names!r}")
     for sequence, event in enumerate(events, start=1):
-        if not isinstance(event, Mapping) or event.get("sequence") != sequence:
+        if not isinstance(event, Mapping) or type(event.get("sequence")) is not int or event.get("sequence") != sequence:
             raise ReceiptValidationError("route events must have unambiguous contiguous sequence numbers")
         _field(event.get("status"), f"route.events[{sequence}].status", str)
     ready_positions = [index for index, event in enumerate(events) if event.get("ready") is True]
@@ -146,10 +142,11 @@ def _validate_failure(receipt: Mapping[str, Any]) -> None:
     if "--build" not in command or "local" not in command:
         raise ReceiptValidationError("failure.command is not the local editor build step")
     status = _field(failure.get("exit_status"), "failure.exit_status", int)
-    if status <= 0:
+    if type(status) is not int or status <= 0:
         raise ReceiptValidationError("failure.exit_status must be nonzero")
     if failure.get("pinokio_break") is not True or not failure.get("ASTRID_PINOKIO_FAILURE"):
         raise ReceiptValidationError("Pinokio break evidence is missing")
+    _field(failure.get("raw_action_log"), "failure.raw_action_log", str)
     if failure.get("ready_event_seen") is not False or failure.get("local_set_seen") is not False:
         raise ReceiptValidationError("failed build must not publish ready or local.set")
     boundary = _mapping(receipt.get("boundary"), "boundary")
@@ -350,6 +347,11 @@ def _fake_receipt() -> dict[str, Any]:
             "mode": "local",
             "backend": False,
             "foreground_service": False,
+            "pre_update_sha": baseline_head,
+            "target_sha": target_head,
+            "journal_id": "m4-4b-fake-journal-1",
+            "temporary_runtime_id": "runtime-build-1",
+            "controller_id": "controller-build-1",
             "events": events,
         },
         "boundary": {
@@ -365,6 +367,7 @@ def _fake_receipt() -> dict[str, Any]:
             "command": ["node", "scripts/dev-local-workspace.mjs", "--build", "session.mjs", "local"],
             "exit_status": 23,
             "ASTRID_PINOKIO_FAILURE": "injected-editor-build-failure",
+            "raw_action_log": "source/fake Pinokio action log: injected editor build failure",
             "pinokio_break": True,
             "ready_event_seen": False,
             "local_set_seen": False,
