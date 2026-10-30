@@ -930,7 +930,7 @@ def test_prepared_workflow_bundle_rejects_unverified_input_before_copy(tmp_path:
 # These tests exercise the local transform's client context: the first receipt
 # must already exist when the ephemeral client starts its cleanup.
 def _h3_failure_client_fixture(tmp_path, monkeypatch, *, diagnostic, cleanup_fails=False,
-                               fail_first_result_write=False, details_only=False):
+                               fail_first_result_write=False, details_only=False, comfy_diagnostic=None):
     import json
     from astrid.packs.h3_av.actions.transform import run as transform
 
@@ -982,6 +982,15 @@ def _h3_failure_client_fixture(tmp_path, monkeypatch, *, diagnostic, cleanup_fai
         )
 
     monkeypatch.setattr(transform, "_prepare_transform_input", prepare)
+    if comfy_diagnostic is not None:
+        original_failure = transform._validation_failure
+
+        def failure(*args, **kwargs):
+            error = original_failure(*args, **kwargs)
+            error.comfy_diagnostic = comfy_diagnostic
+            return error
+
+        monkeypatch.setattr(transform, "_validation_failure", failure)
     original_write = transform.write_json_atomic
 
     def write(path, value):
@@ -1048,7 +1057,8 @@ def test_nested_failure_with_missing_or_malformed_diagnostic_is_unclassified(tmp
     with pytest.raises(AstridError):
         transform.run_transform(args)
     envelope = json.loads((args.out / "result.json").read_text())["failure_envelope"]
-    assert envelope["cause"] == {"category": "unclassified", "lease_diagnostic": "unavailable"}
+    assert envelope["cause"] == {"category": "unclassified", "lease_diagnostic": "unavailable",
+                                 "execution_diagnostic": "unavailable"}
     assert envelope["source"] == {"identity": "unavailable", "sha256": "unavailable"}
     assert envelope["child"]["task_id"] == "child-task-1"
     assert observed["before_cleanup"] is not None
@@ -1094,6 +1104,113 @@ def test_evidence_write_rejection_is_separate_from_original_failure(tmp_path, mo
     assert all(sentinel not in json.dumps(receipt["failure_envelope"]) for sentinel in sentinels)
 
 
+@pytest.mark.parametrize("cleanup_fails,fail_first_write", [(False, False), (True, False), (False, True)])
+def test_comfy_diagnostic_is_bounded_and_persisted_before_cleanup(
+    tmp_path, monkeypatch, cleanup_fails, fail_first_write,
+):
+    import json
+    from astrid.core.contracts.errors import AstridError
+
+    diagnostic = {
+        "schema_version": 1, "code": "comfy_execution_error", "stage": "execution",
+        "node_id": "123", "node_class": "VHS_LoadVideoFFmpeg", "exception_type": "ValueError",
+        "expected": 56, "observed": 48.0,
+        "correlation": "01234567-89ab-cdef-0123-456789abcdef",
+        "message": "RAW_EXCEPTION_SENTINEL" * 1000,
+        "source_identity": "SECRET_SENTINEL", "current_inputs": "WORKFLOW_INPUT_SENTINEL",
+        "unknown": {"prompt": "PROMPT_SENTINEL", "path": "/private/MEDIA_SENTINEL.mov"},
+    }
+    transform, args, observed, sentinels = _h3_failure_client_fixture(
+        tmp_path, monkeypatch, diagnostic={"schema_version": 1, "category": "lease_expired"},
+        comfy_diagnostic=diagnostic, cleanup_fails=cleanup_fails, fail_first_result_write=fail_first_write,
+    )
+    with pytest.raises(AstridError) as caught:
+        transform.run_transform(args)
+    receipt = json.loads((args.out / "result.json").read_text())
+    envelope = receipt["failure_envelope"]
+    execution = envelope["cause"]["execution_diagnostic"]
+    assert execution == {
+        "schema_version": 1, "code": "comfy_execution_error", "stage": "execution",
+        "node_id": "123", "node_class": "VHS_LoadVideoFFmpeg", "exception_type": "ValueError",
+        "message": "unavailable", "expected": 56, "observed": 48.0,
+        "correlation": "01234567-89ab-cdef-0123-456789abcdef", "source_identity": "unavailable",
+    }
+    assert envelope["cause"]["lease_diagnostic"]["category"] == "lease_expired"
+    assert envelope["cause"]["category"] == "lease_expired"
+    assert receipt["status"] == "failed" and receipt["ok"] is False
+    assert receipt["error"]["code"] == (caught.value.code or "executor_failed")
+    assert "vibecomfy.validate failed" in str(caught.value)
+    assert envelope["persistence"]["before_cleanup"] == ("failed" if fail_first_write else "succeeded")
+    assert envelope["cleanup"]["client_context_exit"] == ("failed" if cleanup_fails else "succeeded")
+    if not fail_first_write:
+        before = observed["before_cleanup"]["failure_envelope"]
+        assert before["cause"]["execution_diagnostic"] == execution
+        assert before["cleanup"]["client_context_exit"] == "pending"
+        assert all(sentinel not in json.dumps(before) for sentinel in sentinels)
+    else:
+        assert observed["before_cleanup"] is None
+    assert all(sentinel not in json.dumps(envelope) for sentinel in sentinels)
+
+
+def test_comfy_diagnostic_rejects_unsafe_and_malformed_values(tmp_path, monkeypatch):
+    import json
+    from astrid.core.contracts.errors import AstridError
+
+    diagnostic = {
+        "schema_version": 1, "code": "SECRET_SENTINEL", "stage": "PROMPT_SENTINEL",
+        "node_id": "9" * 100, "node_class": "SECRET_SENTINEL", "exception_type": "SECRET_SENTINEL",
+        "expected": float("nan"), "observed": float("inf"), "message": "/private/MEDIA_SENTINEL.mov",
+        "correlation": "WORKFLOW_INPUT_SENTINEL", "source_identity": "SECRET_SENTINEL",
+    }
+    transform, args, observed, sentinels = _h3_failure_client_fixture(
+        tmp_path, monkeypatch, diagnostic=None, comfy_diagnostic=diagnostic,
+    )
+    with pytest.raises(AstridError):
+        transform.run_transform(args)
+    before = observed["before_cleanup"]["failure_envelope"]
+    execution = before["cause"]["execution_diagnostic"]
+    assert execution == {"schema_version": 1, **{key: "unavailable" for key in (
+        "code", "stage", "node_id", "node_class", "exception_type", "message", "expected", "observed",
+        "correlation", "source_identity",
+    )}}
+    assert all(sentinel not in json.dumps(before) for sentinel in sentinels)
+    for invalid in (None, [], {"schema_version": True}, {"schema_version": 2}):
+        error = AstridError("failed")
+        error.comfy_diagnostic = invalid
+        assert transform._bounded_execution_diagnostic(error) == "unavailable"
+    for invalid in (True, "56", 2**53, -2**53, float("nan"), float("inf")):
+        error = AstridError("failed")
+        error.comfy_diagnostic = {"schema_version": 1, "expected": invalid, "observed": invalid}
+        result = transform._bounded_execution_diagnostic(error)
+        assert result["expected"] == result["observed"] == "unavailable"
+
+
+def test_comfy_diagnostic_extraction_failure_preserves_original_failure(tmp_path, monkeypatch):
+    import json
+    from collections.abc import Mapping
+    from astrid.core.contracts.errors import AstridError
+
+    class BrokenMapping(Mapping):
+        def __getitem__(self, key):
+            raise RuntimeError("SECRET_SENTINEL")
+        def __iter__(self):
+            return iter(())
+        def __len__(self):
+            return 0
+
+    transform, args, observed, sentinels = _h3_failure_client_fixture(
+        tmp_path, monkeypatch, diagnostic=None, comfy_diagnostic=BrokenMapping(),
+    )
+    with pytest.raises(AstridError, match="vibecomfy.validate failed"):
+        transform.run_transform(args)
+    before = observed["before_cleanup"]["failure_envelope"]
+    assert before["cause"]["execution_diagnostic"] == "unavailable"
+    assert before["persistence"]["before_cleanup"] == "succeeded"
+    after = json.loads((args.out / "result.json").read_text())["failure_envelope"]
+    assert after["cleanup"]["client_context_exit"] == "succeeded"
+    assert all(sentinel not in json.dumps(after) for sentinel in sentinels)
+
+
 def test_pre_execution_failure_has_no_invented_child_identity(tmp_path, monkeypatch):
     import json
     from astrid.core.contracts.errors import AstridError
@@ -1114,7 +1231,8 @@ def test_pre_execution_failure_has_no_invented_child_identity(tmp_path, monkeypa
     assert envelope["stage"] == "unavailable"
     assert envelope["child"] == {"task_id": "unavailable", "run_id": "unavailable", "attempt_id": "unavailable"}
     assert envelope["source"] == {"identity": "unavailable", "sha256": "unavailable"}
-    assert envelope["cause"] == {"category": "unclassified", "lease_diagnostic": "unavailable"}
+    assert envelope["cause"] == {"category": "unclassified", "lease_diagnostic": "unavailable",
+                                 "execution_diagnostic": "unavailable"}
     assert envelope["cleanup"]["status"] == "unavailable"
 
 

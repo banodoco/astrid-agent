@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import shutil
 import zipfile
@@ -2203,6 +2204,75 @@ def _safe_correlation(value: Any) -> str:
     return "unavailable"
 
 
+# These are node classes used by the bundled H3 workflows. Unknown classes are
+# deliberately omitted: a syntactically valid identifier can still be a secret.
+_COMFY_NODE_CLASSES = frozenset({
+    "BasicGuider", "BasicScheduler", "CLIPLoader", "ComfyMathExpression",
+    "KSamplerSelect", "LoadAudio", "LoadImage", "LoraLoaderModelOnly",
+    "MiniMaxH3AVExtensionController", "MiniMaxH3AVSourceAudioModeParam",
+    "MiniMaxH3AVStartModeParam", "MiniMaxH3AudioVAECompatibility",
+    "MiniMaxH3CropTo32", "MiniMaxH3CustomKeyframes", "MiniMaxH3FinalizeVHSOutput",
+    "MiniMaxH3GeneratedAVMaskedContext", "MiniMaxH3LastActiveVHSPreviewBarrier",
+    "MiniMaxH3ReferenceToVideo", "MiniMaxH3SigmaShift", "MiniMaxH3SourceAudioPolicy",
+    "MiniMaxH3SourceAudioRegenLength", "MiniMaxH3SourceAudioRegenMask",
+    "MiniMaxH3StartCanvasSelector", "MiniMaxH3StartMaskedContext",
+    "MiniMaxH3StreamLiveExtensionAVToVHS", "MiniMaxH3Validate24FPSVideo",
+    "ModelAttentionBackend", "PreviewAny", "PrimitiveFloat", "PrimitiveInt",
+    "RandomNoise", "ResolutionSelector", "SamplerCustomAdvanced", "UNETLoader",
+    "VAEDecode", "VAEDecodeAudio", "VAELoader", "VHS_LoadVideoFFmpeg", "VHS_VideoCombine",
+})
+_COMFY_EXCEPTION_TYPES = frozenset({
+    "AssertionError", "IndexError", "KeyError", "OSError", "RuntimeError", "TypeError", "ValueError",
+})
+
+
+def _bounded_execution_diagnostic(error: Exception) -> dict[str, Any] | str:
+    """Copy only recognized Comfy facts; never copy free-form exception text.
+
+    A producer-provided source identity has no independent attestation on this
+    route. A broken property or mapping must not affect execution or cleanup.
+    """
+    try:
+        value = getattr(error, "comfy_diagnostic", None)
+        if not isinstance(value, Mapping) or type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
+            return "unavailable"
+
+        def choice(key: str, allowed: frozenset[str]) -> str:
+            item = value.get(key)
+            return item if type(item) is str and item in allowed else "unavailable"
+
+        node_id = value.get("node_id")
+        if type(node_id) is not str or not re.fullmatch(r"[0-9]{1,32}", node_id):
+            node_id = "unavailable"
+        correlation = value.get("correlation")
+        if type(correlation) is not str or not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", correlation
+        ):
+            correlation = "unavailable"
+
+        def number(key: str) -> int | float | str:
+            item = value.get(key)
+            if type(item) not in (int, float) or abs(item) > 2**53 - 1:
+                return "unavailable"
+            return item if math.isfinite(item) else "unavailable"
+
+        return {
+            "schema_version": 1,
+            "code": choice("code", frozenset({"comfy_execution_error"})),
+            "stage": choice("stage", frozenset({"execution"})),
+            "node_id": node_id,
+            "node_class": choice("node_class", _COMFY_NODE_CLASSES),
+            "exception_type": choice("exception_type", _COMFY_EXCEPTION_TYPES),
+            "message": "unavailable",
+            "expected": number("expected"),
+            "observed": number("observed"),
+            "correlation": correlation,
+            "source_identity": "unavailable",
+        }
+    except Exception:
+        return "unavailable"
+
+
 def _failure_envelope(error: Exception, terminal: Mapping[str, Any]) -> dict[str, Any]:
     child = getattr(error, "h3_child_correlation", None)
     child = child if isinstance(child, Mapping) else {}
@@ -2220,7 +2290,8 @@ def _failure_envelope(error: Exception, terminal: Mapping[str, Any]) -> dict[str
         # No trusted import attestation is exposed by this invocation route.
         "source": {"identity": "unavailable", "sha256": "unavailable"},
         "cause": {"category": diagnostic["category"] if diagnostic else "unclassified",
-                  "lease_diagnostic": diagnostic if diagnostic else "unavailable"},
+                  "lease_diagnostic": diagnostic if diagnostic else "unavailable",
+                  "execution_diagnostic": _bounded_execution_diagnostic(error)},
         "persistence": {"before_cleanup": terminal.get("evidence_persistence", "unavailable"),
                         "journal": getattr(error, "h3_journal_status", "unavailable")},
         # Client exit and actual ephemeral-host cleanup are different operations.
