@@ -16,6 +16,10 @@ pod interpreter verifies both clean sources, imports and the producer lock befor
 invoking the action. Selection failures never fall back to the default environment.
 Verified identities are saved in each packet's logs; held custody retains its
 original source identity. Cmd rows and lists without this option keep their defaults.
+A held list may put one {id: recover, type: h3-install, timeout: 3600} row before
+an H3 row. It requires the same source selection, runs canonical engines install
+vibecomfy-h3 at the fixed existing registered root, and verifies receipt/readiness.
+No install command, root, engine id or input/output path is accepted in that row.
 
 Legacy steps: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
 Job lists use install-owned GPU sanity after environments and before models, then S0 for each H3 job,
@@ -168,13 +172,18 @@ def load_jobs(path: Path) -> list[dict]:
         if not isinstance(jid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", jid) or jid in seen:
             raise SessionError("job ids must be unique safe names (1-64 characters)")
         seen.add(jid)
-        if kind not in ("h3", "cmd"):
-            raise SessionError(f"job {jid}: type must be h3 or cmd")
+        if kind not in ("h3", "cmd", "h3-install"):
+            raise SessionError(f"job {jid}: type must be h3, cmd or h3-install")
         timeout = job.get("timeout", 5400)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
             raise SessionError(f"job {jid}: timeout must be positive seconds")
         job["timeout"] = timeout
-        if kind == "h3":
+        if kind == "h3-install":
+            if set(job) - {"id", "type", "timeout", "goal", "prompt"}:
+                raise SessionError(f"job {jid}: h3-install accepts no command, root or input/output options")
+            if timeout > 604800:
+                raise SessionError(f"job {jid}: h3-install timeout exceeds canonical deadline limit")
+        elif kind == "h3":
             job["request"] = local_file(job.get("request"))
             # Keep the existing nine-second H3 plus one-second S0 contract intact.
             derive_requests(job["request"])
@@ -441,15 +450,30 @@ def bootstrap_script() -> str:
     ]) + "\n"
 
 
-def engine_script(verb: str, deadline: int, storage: dict | None = None) -> str:
+def engine_script(verb: str, deadline: float, storage: dict | None = None, *,
+                  source: dict | None = None, evidence: str | None = None) -> str:
     lines = ["set -eu", "export PATH=/opt/astrid/bin:$PATH"]
     if verb == "install":
         lines.append(f"export ASTRID_ENGINE_SANITY_CMD={shlex.quote(SANITY_CMD)}")
     cache_option = f" --model-cache-root {shlex.quote(MODEL_CACHE_ROOT)}" if verb == "install" else ""
     if verb == "install" and storage is not None:
         cache_option += f" --model-cache-device {storage['cache_device']} --model-cache-mount-id {storage['cache_mount_id']}"
-    lines.append(f"astrid engines {verb} {ENGINE} --placement local --root {ENGINE_ROOT} --deadline {deadline}{cache_option}")
+    command = f"engines {verb} {ENGINE} --placement local --root {shlex.quote(ENGINE_ROOT)} --deadline {deadline}{cache_option}"
+    if source is not None:
+        if verb != "install" or evidence is None:
+            raise SessionError("selected engine invocation requires install evidence")
+        lines.append(f"mkdir -p {shlex.quote(str(Path(evidence).parent))}")
+        lines.append(source_invocation(source, evidence, shlex.split(command)))
+    else:
+        lines.append("astrid " + command)
     return "\n".join(lines) + "\n"
+
+
+def source_invocation(source: dict, evidence: str, argv: list[str]) -> str:
+    source = validate_selection(source)
+    helper = (REPO / "scripts/pod_action_source.py").read_text()
+    blob = base64.b64encode(json.dumps(source, sort_keys=True).encode()).decode()
+    return shlex.join(["/opt/astrid/bin/python", "-I", "-c", helper, blob, evidence, *argv])
 
 
 def action_script(name: str, request: str, asset_map: str, out: str, *, source: dict | None = None) -> str:
@@ -459,11 +483,7 @@ def action_script(name: str, request: str, asset_map: str, out: str, *, source: 
               "--placement", "local", "--out", out]
     invocation = "astrid " + shlex.join(action)
     if source is not None:
-        source = validate_selection(source)
-        helper = (REPO / "scripts/pod_action_source.py").read_text()
-        blob = base64.b64encode(json.dumps(source, sort_keys=True).encode()).decode()
-        invocation = shlex.join(["/opt/astrid/bin/python", "-I", "-c", helper, blob,
-                                 summary + ".source.json", *action])
+        invocation = source_invocation(source, summary + ".source.json", action)
     return "\n".join([
         "export PATH=/opt/astrid/bin:$PATH",
         f"if [ -e {shlex.quote(out)} ]; then echo 'out dir already exists' >&2; exit 3; fi",
@@ -2069,6 +2089,13 @@ class JobListSession(Session):
         self.jobs = load_jobs(Path(held_jobs or args.jobs))
         if selection is not None and not any(j["type"] == "h3" for j in self.jobs):
             raise SessionError("H3 source selection requires an H3 row")
+        installers = [i for i, job in enumerate(self.jobs) if job["type"] == "h3-install"]
+        if installers:
+            if self.h3_source is None:
+                raise SessionError("h3-install requires --h3-source-selection; no default source is allowed")
+            if (not held_jobs or len(installers) != 1
+                    or not any(j["type"] == "h3" for j in self.jobs[installers[0] + 1:])):
+                raise SessionError("h3-install requires a held list with exactly one installer before an H3 row")
         if getattr(args, "hold_on_row_failure", False) and len(self.jobs) != 1:
             raise SessionError("held sessions require exactly one job row")
         self._failed_rows: set[str] = set()
@@ -2129,7 +2156,7 @@ class JobListSession(Session):
                 self.put(target, f"{remote}/{name}")
             if job.get("asset-map"):
                 shutil.copyfile(job["asset-map"], inputs / "original-asset-map.json")
-        else:
+        elif job["type"] == "cmd":
             for relative, local in job["input-files"].items():
                 stage(local, relative)
         return {"packet": str(packet), "remote": remote}
@@ -2175,6 +2202,13 @@ class JobListSession(Session):
             request = "smoke-request.json" if smoke else "request.json"
             command = action_script(name, f"{remote}/{request}", f"{remote}/asset-map.json", out,
                                     source=self.h3_source)
+        elif job["type"] == "h3-install":
+            if self.h3_source is None or smoke:
+                raise SessionError("h3-install requires a selected source and cannot run as smoke")
+            name = f"{self.sid}-{jid}-install"
+            source_path = f"{remote}/source.json"
+            command = engine_script("install", job["timeout"], self._cache_binding,
+                                    source=self.h3_source, evidence=source_path)
         else:
             command = "\n".join(["set -eu", "export PATH=/opt/astrid/bin:$PATH",
                                  f"mkdir -p {shlex.quote(remote)}", f"cd {shlex.quote(remote)}", job["command"]]) + "\n"
@@ -2185,9 +2219,10 @@ class JobListSession(Session):
         (logs / f"{phase}.stdout").write_text(stdout, encoding="utf-8")
         (logs / f"{phase}.stderr").write_text(self.fetch(handle["dir"] + "/stderr"), encoding="utf-8")
         source_detail = {}
-        if job["type"] == "h3" and self.h3_source is not None:
+        if job["type"] in ("h3", "h3-install") and self.h3_source is not None:
             try:
-                evidence = json.loads(self.fetch(f"{CLIP_DIR}/runs/{name}.summary.json.source.json"))
+                evidence = json.loads(self.fetch(source_path if job["type"] == "h3-install" else
+                                                 f"{CLIP_DIR}/runs/{name}.summary.json.source.json"))
             except (SessionError, ValueError):
                 if not code:
                     raise SessionError("H3 selected source evidence is missing or invalid") from None
@@ -2209,6 +2244,18 @@ class JobListSession(Session):
                 source_detail = {"source": evidence}
         if code:
             raise JobRowError(f"{label}: job {handle['id']} exited {code}")
+        if job["type"] == "h3-install":
+            result = parse_json_object(stdout)
+            if (set(result) != {"schema", "engine", "root", "status", "receipt_sha256", "receipt_id"}
+                    or result.get("schema") != "astrid.pod-h3-install.v1"
+                    or result.get("engine") != ENGINE or result.get("root") != ENGINE_ROOT
+                    or result.get("status") != "ready"
+                    or not isinstance(result.get("receipt_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", result["receipt_sha256"])
+                    or not isinstance(result.get("receipt_id"), str) or not result["receipt_id"]):
+                raise SessionError("H3 installer result or receipt evidence differs")
+            job["outputs"] = {"install": result}
+            self.packet_check(job, "passed", outputs=job["outputs"], **source_detail)
         if job["type"] == "h3":
             summary_text = self.fetch(f"{CLIP_DIR}/runs/{name}.summary.json")
             try:
@@ -2348,6 +2395,12 @@ class JobListSession(Session):
         for job in self.jobs:
             if stage:
                 steps.append((f"upload:{job['id']}", lambda j=job: self.stage_manifest_job(j)))
+            if job["type"] == "h3-install":
+                # No input upload or artifact download is needed: the canonical
+                # installer result, receipt attestation and source evidence are
+                # verified in this row before its existing progress checkpoint.
+                steps.append((f"job:{job['id']}", lambda j=job: self.run_manifest_job(j)))
+                continue
             if job["type"] == "h3":
                 steps.append((f"h3:{job['id']}:s0", lambda j=job: self.run_manifest_job(j, smoke=True)))
             steps.extend([(f"job:{job['id']}", lambda j=job: self.run_manifest_job(j)),
@@ -2376,14 +2429,14 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--jobs", help="version: 1 YAML job list (h3 request/assets or cmd command/input-files/expected-outputs)")
     mode.add_argument("--resume-held", metavar="COMMAND", help="run one bounded command on the recorded held pod")
     mode.add_argument("--resume-held-jobs", metavar="MANIFEST",
-                      help="run a v1 job list with fresh packet ids in the existing held custody workdir; never release")
+                      help="run a v1 job list (including selected-source h3-install) with fresh packet ids in existing held custody; never release")
     mode.add_argument("--release-held", action="store_true", help="terminate and verify the recorded held pod")
     mode.add_argument("--renew-held", action="store_true", help="extend a verified held admission without contacting the pod")
     p.add_argument("--hold-on-row-failure", action="store_true", help="hold a single-row session only after a recoverable row failure")
     p.add_argument("--followup-timeout", type=int, default=300, help="follow-up deadline in seconds (1–600)")
     p.add_argument("--asset-map", help="JSON map of request asset ids to local files")
     p.add_argument("--h3-source-selection", metavar="JSON",
-                   help="pin all H3 rows to explicit pod agent_root/runtime_root, agent_head/runtime_head and runtime_lock_sha256; no fallback")
+                   help="pin all H3 and h3-install rows to explicit pod agent_root/runtime_root, agent_head/runtime_head and runtime_lock_sha256; no fallback")
     p.add_argument("--workdir", required=True, help="local directory for the bundle, downloads and progress")
     p.add_argument("--token-dir", default=str(Path.home() / ".astrid-pod-tokens"), help="directory for the per-claim token file")
     p.add_argument("--container-disk-gb", type=int, help="default: max(120, 1.5 x the engine install footprint)")

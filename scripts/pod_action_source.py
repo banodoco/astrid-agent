@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import contextlib
+import io
 import importlib
 import json
 import os
@@ -96,6 +98,44 @@ def verify_selection(value):
     return profile, identity
 
 
+def install_selected(args, selected, identity):
+    """Canonical same-root recovery followed by the ordinary local readiness gate."""
+    from astrid.core import engine_cli
+    from astrid.core.generation.engine_local_endpoint import (
+        RECEIPT_RELATIVE_PATH, local_engine_endpoint, recorded_engine_root,
+    )
+
+    parsed = engine_cli._parser().parse_args(args[1:])
+    if (args[:3] != ["engines", "install", "vibecomfy-h3"] or parsed.root is None
+            or parsed.placement != "local" or parsed.dry_run
+            or recorded_engine_root("vibecomfy-h3") != parsed.root):
+        raise ValueError("installer requires the existing registered root")
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = engine_cli.main(args[1:])
+    if code != 0:
+        raise ValueError("canonical engine installation failed")
+    # Canonical CLI output must equal the receipt it committed at the same root.
+    result = json.loads(output.getvalue())
+    receipt_path = Path(parsed.root) / RECEIPT_RELATIVE_PATH
+    receipt_bytes = receipt_path.read_bytes()
+    if (result != json.loads(receipt_bytes) or result.get("status") != "installed"
+            or result.get("engine") != "vibecomfy-h3" or result.get("root") != parsed.root
+            or recorded_engine_root("vibecomfy-h3") != parsed.root):
+        raise ValueError("canonical engine receipt differs")
+    ready = local_engine_endpoint(root=parsed.root, deadline_seconds=parsed.deadline).endpoint
+    digest = hashlib.sha256(receipt_bytes).hexdigest()
+    if (ready.state != "ready" or ready.attestation.install_receipt_sha256 != digest
+            or receipt_path.read_bytes() != receipt_bytes):
+        raise ValueError("canonical engine readiness receipt differs")
+    _, after = verify_selection(selected)
+    if after != identity:
+        raise ValueError("installer source identity changed")
+    print(json.dumps({"schema": "astrid.pod-h3-install.v1", "engine": "vibecomfy-h3",
+                      "root": parsed.root, "status": "ready", "receipt_sha256": digest,
+                      "receipt_id": result["receipt_id"]}, sort_keys=True))
+
+
 def main():
     try:
         selected = load_selection(base64.b64decode(sys.argv[1], validate=True))
@@ -109,15 +149,23 @@ def main():
         manifest.write_text(json.dumps(profile.as_dict()))
         os.environ.pop("PYTHONHOME", None)
         os.environ.update(PYTHONPATH=os.pathsep.join((selected["agent_root"], selected["runtime_root"])),
-                          PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1", ASTRID_RUNTIME_SOURCE_MANIFEST=str(manifest),
-                          ASTRID_RUNTIME_LAUNCHER=str(Path(sys.executable).with_name("astrid-runtime")))
+                          PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1", ASTRID_RUNTIME_SOURCE_MANIFEST=str(manifest))
+        # Engine installation is local; only actions launch Runtime descendants.
+        if action_args[:2] != ["engines", "install"]:
+            os.environ["ASTRID_RUNTIME_LAUNCHER"] = str(Path(sys.executable).with_name("astrid-runtime"))
         receipt = {k: selected[k] for k in ("agent_head", "runtime_head", "runtime_lock_sha256")}
         # Canonical identity contains digests/versions, never input or checkout paths.
         receipt.update(schema="astrid.pod-action-source.v1", identity=identity)
         with evidence.open("x", encoding="utf-8") as stream:
             json.dump(receipt, stream, sort_keys=True)
-        sys.argv = ["astrid", *action_args]
-        runpy.run_module("astrid", run_name="__main__")
+        if action_args[:2] == ["engines", "install"]:
+            try:
+                install_selected(action_args, selected, identity)
+            except Exception:
+                sys.exit("H3 selected source installer verification failed")
+        else:
+            sys.argv = ["astrid", *action_args]
+            runpy.run_module("astrid", run_name="__main__")
 
 
 if __name__ == "__main__":

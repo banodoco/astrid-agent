@@ -1750,3 +1750,122 @@ def test_job_list_missing_storage_fails_without_fallback(tmp_path, monkeypatch):
     assert not session.released
     assert not pod.requests and not pod.terminated and not pod.setup_log.exists()
     assert session.budget.count == 0
+
+
+@pytest.mark.parametrize("failure", [None, "install", "identity", "result", "evidence", "uncertain", "timeout"])
+def test_source_bound_installer_then_h3_held_accounting(tmp_path, monkeypatch, failure):
+    """Real held transport/accounting; selected CLI/readiness are CPU boundaries.
+
+    The real canonical recovery and source checker have separate focused tests.
+    This fixture refuses H3 until the selected installer boundary reports ready.
+    """
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        manifest = _held_joblist_manifest(tmp_path / "install-list")
+        document = yaml.safe_load(manifest.read_text())
+        document["jobs"] = [{"id": "recover", "type": "h3-install", "timeout": .05 if failure == "timeout" else 40}, document["jobs"][0]]
+        manifest.write_text(yaml.safe_dump(document))
+        selected = {"agent_root": "/synthetic/selected-agent", "runtime_root": "/synthetic/selected-runtime",
+                    "agent_head": "a" * 40, "runtime_head": "b" * 40, "runtime_lock_sha256": "c" * 64}
+        selection = tmp_path / "selected.json"
+        selection.write_text(json.dumps(selected))
+        evidence = {"schema": "astrid.pod-action-source.v1", **{k: selected[k] for k in
+                    ("agent_head", "runtime_head", "runtime_lock_sha256")}, "identity": {
+                    "release": 0, "managed_by": "source", "dirty": False, "dirty_hash": "d" * 64,
+                    **{k: selected[k] for k in ("agent_head", "runtime_head")}}}
+        ready = pod.root / "selected-ready"
+        invocations = []
+        def selected_cli(source, evidence_path, argv):
+            assert source == selected
+            invocations.append(argv)
+            row_evidence = dict(evidence)
+            if failure == "identity" and argv[:2] == ["engines", "install"]:
+                row_evidence["agent_head"] = "0" * 40
+            script = "import json,pathlib,subprocess,sys\n"
+            if failure != "evidence":
+                script += f"pathlib.Path({evidence_path!r}).write_text({json.dumps(row_evidence)!r})\n"
+            if argv[:2] == ["engines", "install"]:
+                assert argv[:3] == ["engines", "install", ps.ENGINE]
+                assert argv[argv.index("--root") + 1] == ps.ENGINE_ROOT
+                assert argv[argv.index("--model-cache-device") + 1] == "47"
+                assert argv[argv.index("--model-cache-mount-id") + 1] == "102"
+                assert "--model-cache-root" in argv
+                result = {"schema": "astrid.pod-h3-install.v1", "engine": ps.ENGINE,
+                          "root": ps.ENGINE_ROOT, "status": "ready", "receipt_sha256": "e" * 64,
+                          "receipt_id": "canonical-synthetic-receipt"}
+                if failure == "result": result["root"] = "/wrong/root"
+                script += f"pathlib.Path({str(ready)!r}).touch()\nprint({json.dumps(result)!r})\n"
+                if failure == "install": script += "sys.exit(7)\n"
+            else:
+                assert argv[:3] == ["action", "run", ps.ACTION]
+                script += f"assert pathlib.Path({str(ready)!r}).is_file(), 'readiness requires install'\n"
+                script += f"sys.exit(subprocess.call({['astrid', *argv]!r}))\n"
+            return shlex.join([sys.executable, "-c", script])
+        monkeypatch.setattr(ps, "source_invocation", selected_cli)
+        # held_control reads selection before touching the transport.
+        parser = ps.build_parser
+        def with_selection():
+            result = parser()
+            result.set_defaults(h3_source_selection=str(selection))
+            return result
+        monkeypatch.setattr(ps, "build_parser", with_selection)
+        before = pod.record_count
+        held_before = json.loads((session.workdir / "held-session.json").read_text())
+        control = held_control(session, pod, cli, transport_factory, jobs=manifest)
+        labels = []
+        reserve = control._reserve_held_job
+        def counted(label):
+            labels.append(label)
+            return reserve(label)
+        monkeypatch.setattr(control, "_reserve_held_job", counted)
+        if failure in ("uncertain", "timeout"):
+            original = control.transport_factory
+            def uncertain_factory(*args):
+                transport = original(*args)
+                start, poll = transport.detached_start, transport.detached_poll
+                timed_out = set()
+                def uncertain(command, **kwargs):
+                    if "canonical-synthetic-receipt" in command:
+                        if failure == "uncertain":
+                            raise OSError("synthetic lost launch response")
+                        timed_out.add(kwargs["job_id"])
+                    return start(command, **kwargs)
+                def polling(job_id, **kwargs):
+                    if job_id in timed_out:
+                        return {"state": "running"}  # terminal proof unavailable until reconciliation
+                    return poll(job_id, **kwargs)
+                transport.detached_start, transport.detached_poll = uncertain, polling
+                return transport
+            monkeypatch.setattr(control, "transport_factory", uncertain_factory)
+        assert control.run_held_jobs() == (0 if failure is None else 1), failure_diagnostics(control)
+        held = json.loads((session.workdir / "held-session.json").read_text())
+        for key in ("session", "pod_id", "source", "runtime_identity", "volume_id", "expires_at"):
+            assert held[key] == held_before[key]
+        assert held["charged_jobs"] == control.budget.count
+        assert not pod.terminated and len(pod.launches) == 1
+        assert control.budget.count - held_before.get("charged_jobs", held_before["jobs"]) == len(labels)
+        progress = json.loads((session.workdir / "held-session-joblist-progress.json").read_text())
+        if failure is None:
+            expected = ["storage mount verification", "Runtime readiness", "progress", "job:recover", "progress",
+                        "progress", "h3:clip:s0", "progress", "job:clip", "progress", "remote sha256", "progress", "progress"]
+            assert labels == expected
+            assert pod.record_count - before == len(labels) == 13
+            assert 86 + len(labels) == 99 < 100
+            assert held["status"] == "held" and progress == json.loads(
+                (session.workdir / "pod-session-progress.remote.json").read_text())
+            assert [argv[:2] for argv in invocations] == [["engines", "install"], ["action", "run"], ["action", "run"]]
+            assert json.loads((session.workdir / "packets/recover/machine-check.json").read_text())["status"] == "passed"
+            print(json.dumps({"records": len(labels), "labels": labels, "charged_before_projection": 86,
+                              "charged_after_projection": 99, "remaining_before_strict_cap": 0}, sort_keys=True))
+        else:
+            assert len(invocations) == 1 and "h3:clip:s0" not in labels
+            assert any(r["step"] == "job:recover" and r["result"] == "failed" for r in progress["steps"])
+            assert json.loads((session.workdir / "packets/recover/machine-check.json").read_text())["status"] == "failed"
+            assert held["status"] == ("in_use" if failure in ("uncertain", "timeout") else "held")
+            assert pod.record_count - before == len(labels) - (failure == "uncertain")
+            if failure in ("uncertain", "timeout"):
+                assert held["operation"]["state"] == "starting" and held["operation"]["label"] == "job:recover"
+            if failure in ("install", "result"):
+                assert json.loads((session.workdir / "packets/recover/logs/job.source-identity.json").read_text()) == evidence
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)

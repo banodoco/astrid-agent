@@ -233,3 +233,109 @@ def test_row_seam_records_selected_identity_without_new_jobs(candidate, tmp_path
     assert len(calls) == 1
     phase = "s0" if smoke else "job"
     assert json.loads((tmp_path / "logs" / f"{phase}.source-identity.json").read_text()) == evidence
+
+
+@pytest.mark.parametrize("selected,held,rows,message", [
+    (False, True, ["h3-install", "h3"], "requires --h3-source-selection"),
+    (True, True, ["h3-install"], "requires an H3 row"),
+    (True, False, ["h3-install", "h3"], "requires a held list"),
+    (True, True, ["h3", "h3-install"], "requires a held list"),
+    (True, True, ["h3-install", "h3-install", "h3"], "requires a held list"),
+])
+def test_installer_selection_and_order_required_before_transport(candidate, tmp_path, monkeypatch,
+                                                               selected, held, rows, message):
+    path = tmp_path / "selection.json"
+    path.write_text(json.dumps(candidate))
+    monkeypatch.setattr(ps, "load_jobs", lambda *_: [{"type": kind} for kind in rows])
+    args = Namespace(h3_source_selection=str(path) if selected else None,
+                     resume_held_jobs="unopened.yaml" if held else None, jobs="unopened.yaml")
+    with pytest.raises(ps.SessionError, match=message):
+        ps.JobListSession(args)
+
+
+@pytest.mark.parametrize("field,value", [("root", "/arbitrary"), ("engine", "other"),
+    ("command", "echo unsafe"), ("input-files", {}), ("expected-outputs", ["a.json"]),
+    ("source", {}), ("timeout", 604801)])
+def test_malformed_installer_rows_reject(tmp_path, field, value):
+    import yaml
+    manifest = tmp_path / "jobs.yaml"
+    manifest.write_text(yaml.safe_dump({"jobs": [{"id": "recover", "type": "h3-install", field: value}]}))
+    with pytest.raises(ps.SessionError, match="h3-install"):
+        ps.load_jobs(manifest)
+
+
+def test_installer_invalid_source_cannot_fall_back(candidate, tmp_path, monkeypatch):
+    selected = dict(candidate, agent_head="0" * 40)
+    monkeypatch.setattr(ps, "ENGINE_ROOT", str(tmp_path / "registered"))
+    evidence = tmp_path / "install.source.json"
+    command = ps.engine_script("install", 45, source=selected, evidence=str(evidence))
+    command = command.replace("/opt/astrid/bin/python -I", shlex.quote(sys.executable) + " -I", 1)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    default = bin_dir / "astrid"
+    marker = tmp_path / "default-called"
+    default.write_text("#!/bin/sh\ntouch " + shlex.quote(str(marker)) + "\n")
+    default.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ASTRID_") and not k.upper().startswith("GIT_")}
+    env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+    done = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True, timeout=90)
+    assert done.returncode != 0 and not evidence.exists() and not marker.exists()
+    assert done.stderr.strip() == "H3 selected source identity verification failed"
+
+
+@pytest.mark.parametrize("install_code", [0, 7])
+def test_source_bound_installer_dispatch_and_identity(candidate, tmp_path, monkeypatch, install_code):
+    # A tiny committed synthetic CLI is the install/health boundary. The source
+    # selection, Git/producer-lock checks, wrapper and receipt attestation are real.
+    agent = tmp_path / "installer-agent ' ; $literal"
+    shutil.copytree(candidate["agent_root"], agent)
+    core = agent / "astrid/core"
+    generation = core / "generation"
+    generation.mkdir(parents=True)
+    for package in (core, generation):
+        (package / "__init__.py").write_text("")
+    engine_root = tmp_path / "registered ' ; $literal"
+    engine_root.mkdir()
+    (core / "engine_cli.py").write_text(
+        "import argparse,json,pathlib,sys\n"
+        "def _parser():\n"
+        " p=argparse.ArgumentParser(); p.add_argument('command'); p.add_argument('engine')\n"
+        " p.add_argument('--placement'); p.add_argument('--root'); p.add_argument('--deadline',type=float)\n"
+        " p.add_argument('--model-cache-root'); p.add_argument('--dry-run',action='store_true'); return p\n"
+        "def main(argv):\n"
+        " p=_parser().parse_args(argv)\n"
+        " result={'engine':p.engine,'root':p.root,'status':'installed','receipt_id':'fixture-cli'}\n"
+        " path=pathlib.Path(p.root)/'.astrid-engine/install.json'; path.parent.mkdir()\n"
+        " path.write_text(json.dumps(result)); (path.parent/'argv.json').write_text(json.dumps(argv))\n"
+        f" print(json.dumps(result)); return {install_code}\n")
+    (generation / "engine_local_endpoint.py").write_text(
+        "import hashlib,pathlib,types\n"
+        "RECEIPT_RELATIVE_PATH='.astrid-engine/install.json'\n"
+        f"def recorded_engine_root(engine): return {str(engine_root)!r}\n"
+        "def local_engine_endpoint(*,root,deadline_seconds):\n"
+        " digest=hashlib.sha256((pathlib.Path(root)/RECEIPT_RELATIVE_PATH).read_bytes()).hexdigest()\n"
+        " endpoint=types.SimpleNamespace(state='ready',attestation=types.SimpleNamespace(install_receipt_sha256=digest))\n"
+        " return types.SimpleNamespace(endpoint=endpoint)\n")
+    selected = dict(candidate, agent_root=str(agent), agent_head=commit(agent))
+    monkeypatch.setattr(ps, "ENGINE_ROOT", str(engine_root))
+    evidence = tmp_path / "install.source.json"
+    command = ps.engine_script("install", 45, source=selected, evidence=str(evidence))
+    command = command.replace("/opt/astrid/bin/python -I", shlex.quote(sys.executable) + " -I", 1)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ASTRID_") and not k.upper().startswith("GIT_")}
+    # No usable default CLI exists on this PATH.
+    env["PYTHONPATH"] = str(tmp_path / "absent-default")
+    done = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True, timeout=90)
+    assert done.returncode == (0 if install_code == 0 else 1), done.stderr
+    proof = json.loads(evidence.read_text())
+    assert proof["agent_head"] == selected["agent_head"] and proof["identity"]["dirty"] is False
+    assert selected["agent_root"] not in json.dumps(proof) and selected["runtime_root"] not in json.dumps(proof)
+    argv = json.loads((engine_root / ".astrid-engine/argv.json").read_text())
+    assert argv[:2] == ["install", "vibecomfy-h3"]
+    assert argv[argv.index("--root") + 1] == str(engine_root)
+    assert argv[argv.index("--placement") + 1] == "local"
+    if install_code:
+        assert done.stdout == "" and done.stderr.strip() == "H3 selected source installer verification failed"
+    else:
+        result = json.loads(done.stdout)
+        assert result["status"] == "ready" and result["root"] == str(engine_root)
+        assert result["receipt_sha256"] == hashlib.sha256((engine_root / ".astrid-engine/install.json").read_bytes()).hexdigest()
