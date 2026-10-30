@@ -66,7 +66,11 @@ class FakePod:
             self.launch_storage_env.append({key: env.get(key) for key in
                                             ("RUNPOD_STORAGE_NAME", "RUNPOD_STORAGE_VOLUMES", "RUNPOD_ATTACH_ONLY")})
             self.events.append("launch")
+            if on_capacity_wait:
+                on_capacity_wait('RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}\n')
             if self.launch_result is not None:
+                if on_capacity_wait and "allocation_unknown" in str(self.launch_result):
+                    on_capacity_wait('RUNPOD_TERMINAL_FAILURE {"classification":"allocation_unknown","placement_attempt":1}\n')
                 return self.launch_result
             if self.fail == "missing_storage":
                 return 1, "", "error: existing storage volume not found (attach-only)"
@@ -496,12 +500,12 @@ def test_runner_through_lifecycle_wait_is_capacity_only(tmp_path, monkeypatch, w
         parsed = cli.build_parser().parse_args(["--transport", "https", *argv])
         launch_args.append(parsed)
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        parsed.capacity_progress_fd = 1
+        with monkeypatch.context() as scope, contextlib.redirect_stdout(stdout):
+            scope.setattr(cli, "_write_capacity_progress", lambda fd, line: on_capacity_wait(line))
             try:
                 return asyncio.run(cli._cmd_launch(parsed)), stdout.getvalue(), ""
             except Exception as exc:
-                if isinstance(exc, lifecycle._CapacityLaunchFailure):
-                    on_capacity_wait("RUNPOD_CAPACITY_EXHAUSTED\n")
                 return 1, stdout.getvalue(), f"error: {exc}"
 
     runner.supports_capacity_progress = True
@@ -553,6 +557,7 @@ def test_exhausted_capacity_wait_can_advance(tmp_path):
     def runner(argv, env, *, on_capacity_wait=None):
         result = pod.cli(argv, env)
         if argv[0] == "launch" and len(pod.launches) == 1:
+            on_capacity_wait('RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}\n')
             on_capacity_wait("RUNPOD_CAPACITY_EXHAUSTED\n")
             return 1, "", ("error: Capacity did not become available after 2881 attempts over 86400s: "
                             "Failed to launch pod across GPU candidates ['fake']: no longer any instances available")
@@ -892,17 +897,14 @@ sys.stderr.flush()
 fd = int(sys.argv[sys.argv.index("--capacity-progress-fd") + 1])
 progress = __import__("os").fdopen(fd, "w")
 for line in [
-    "provider error token=synthetic-secret pod=private-provider-id",
-    'RUNPOD_CAPACITY_WAIT {{"placement_attempt":1,"retry_interval":30,"wait_seconds":120,"pod_id":"private-provider-id"}}',
-    'RUNPOD_CAPACITY_WAIT {{"placement_attempt":"synthetic-secret","retry_interval":30,"wait_seconds":120}}',
-    'RUNPOD_CAPACITY_WAIT {{"placement_attempt":true,"retry_interval":30,"wait_seconds":120}}',
-    'RUNPOD_CAPACITY_WAIT {{"placement_attempt":1,"retry_interval":30,"wait_seconds":999}}',
+    'RUNPOD_PLACEMENT_ATTEMPT {{"placement_attempt":1}}',
     'RUNPOD_CAPACITY_WAIT {{"placement_attempt":1,"retry_interval":30,"wait_seconds":120}}',
 ]:
     print(line, file=progress, flush=True)
 deadline = time.monotonic() + 15
 while not __import__("pathlib").Path({str(release)!r}).exists() and time.monotonic() < deadline:
     time.sleep(0.01)
+print('RUNPOD_PLACEMENT_ATTEMPT {{"placement_attempt":2}}', file=progress, flush=True)
 ''')
     executable.chmod(0o700)
     messages, ready, result = [], threading.Event(), []
@@ -969,6 +971,7 @@ if n == 1:
     print("RUNPOD_CAPACITY_EXHAUSTED", file=sys.stderr)
     print("error: Failed to launch pod across GPU candidates ['private-provider-id']: no longer any instances available", file=sys.stderr)
     if {typed_capacity!r}:
+        os.write(fd, b'RUNPOD_PLACEMENT_ATTEMPT {{"placement_attempt":1}}\\n')
         os.write(fd, b"RUNPOD_CAPACITY_EXHAUSTED\\n")
     sys.exit(1)
 print(json.dumps({{"pod_id": "abc123podid"}}))
@@ -1635,3 +1638,173 @@ def test_storage_attachment_refuses_before_probe_and_upload(tmp_path, video, cas
     assert session.run()==1 and session.released and pod.terminated
     assert "exec:storage" not in pod.events and ps.BUNDLE_REMOTE not in pod.puts
     assert "job:bootstrap" not in pod.events and "job:install" not in pod.events
+
+
+def test_capacity_retries_then_terminal_rejection_preserves_exact_attempt(tmp_path):
+    args, agent = make_args(tmp_path, ["--wait-capacity", "120"])
+    pod = FakePod(b"")
+    messages = []
+    def runner(argv, env, *, on_capacity_wait=None):
+        if argv[0] != "launch":
+            return pod.cli(argv, env)
+        pod.launches.append(argv)
+        for line in [
+            'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}',
+            'RUNPOD_CAPACITY_WAIT {"placement_attempt":1,"retry_interval":30,"wait_seconds":120}',
+            'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}',
+            'RUNPOD_CAPACITY_WAIT {"placement_attempt":2,"retry_interval":30,"wait_seconds":120}',
+            'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":3}',
+            'RUNPOD_TERMINAL_FAILURE {"classification":"non_capacity_failure","placement_attempt":3}',
+        ]:
+            on_capacity_wait(line + "\n")
+        return 1, "", "secret-provider-response private-id"
+    runner.supports_capacity_progress = True
+    session = ps.Session(args, cli=runner, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, say=messages.append)
+    assert session.run() == 1 and len(pod.launches) == 1
+    detail = session.records[0]["detail"]
+    assert detail["state"] == "launch_failed" and detail["classification"] == "non_capacity_failure"
+    assert detail["placement_attempt"] == 3 and detail["reconciliation_required"] is True
+    report = (Path(args.workdir) / "pod-session-progress.json").read_text()
+    attempt = json.loads(report)["claim_attempt"]
+    assert attempt["placement_attempt"] == 3 and attempt["classification"] == "non_capacity_failure"
+    assert attempt["reconciliation_required"] is True and "retry_interval" not in attempt
+    assert "secret-provider-response" not in report + "\n".join(messages)
+    assert "private-id" not in report + "\n".join(messages)
+    assert not pod.terminated and session.records[-1]["result"] == "failed"
+
+
+@pytest.mark.parametrize("events", [
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_WAIT {"placement_attempt":1,"retry_interval":30,"wait_seconds":120,"pod_id":"private-id"}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_WAIT {"placement_attempt":"secret","retry_interval":30,"wait_seconds":120}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_WAIT {"placement_attempt":true,"retry_interval":30,"wait_seconds":120}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_WAIT {"placement_attempt":1,"retry_interval":30,"wait_seconds":999}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_WAIT {"placement_attempt":1,"retry_interval":30,"wait_seconds":120}', 'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}'],
+    ['unexpected secret-provider-response'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1,"placement_attempt":1}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_WAIT {"placement_attempt":2,"retry_interval":30,"wait_seconds":120}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_EXHAUSTED', 'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_EXHAUSTED', 'RUNPOD_TERMINAL_FAILURE {"classification":"unknown","placement_attempt":1}'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_TERMINAL_FAILURE {"classification":"non_capacity_failure","placement_attempt":2}'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_TERMINAL_FAILURE {"classification":"non_capacity_failure"}'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_TERMINAL_FAILURE {"classification":"non_capacity_failure","placement_attempt":1,"secret":"private-id"}'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_TERMINAL_FAILURE {broken'],
+])
+def test_invalid_progress_cannot_authorize_fallback_or_forge_attempt(tmp_path, events):
+    args, agent = make_args(tmp_path, ["--wait-capacity", "120"])
+    pod = FakePod(b"")
+    def runner(argv, env, *, on_capacity_wait=None):
+        if argv[0] != "launch":
+            return pod.cli(argv, env)
+        pod.launches.append(argv)
+        for line in events:
+            on_capacity_wait(line + "\n")
+        return 1, "", "secret-provider-response"
+    runner.supports_capacity_progress = True
+    session = ps.Session(args, cli=runner, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, say=lambda _: None)
+    assert session.run() == 1 and len(pod.launches) == 1
+    detail = session.records[0]["detail"]
+    assert detail["reconciliation_required"] is True and detail["classification"] == "unknown"
+    if events[0] == 'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}':
+        expected = 2 if len(events) == 3 and events[2] == 'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}' and 'RUNPOD_CAPACITY_WAIT' in events[1] else 1
+        assert detail["placement_attempt"] == expected
+    else:
+        assert "placement_attempt" not in detail
+    report = (Path(args.workdir) / "pod-session-progress.json").read_text()
+    assert "private-id" not in report and "secret-provider-response" not in report
+    assert session.records[-1]["result"] == "failed"
+
+
+def test_structured_ambiguous_allocation_after_retry_is_terminal(tmp_path):
+    args, agent = make_args(tmp_path, ["--wait-capacity", "120"])
+    pod = FakePod(b"")
+    def runner(argv, env, *, on_capacity_wait=None):
+        if argv[0] != "launch":
+            return pod.cli(argv, env)
+        pod.launches.append(argv)
+        for line in [
+            'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}',
+            'RUNPOD_CAPACITY_WAIT {"placement_attempt":1,"retry_interval":30,"wait_seconds":120}',
+            'RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}',
+            'RUNPOD_TERMINAL_FAILURE {"classification":"allocation_unknown","placement_attempt":2}',
+        ]:
+            on_capacity_wait(line + "\n")
+        return 1, "", "private-id secret-provider-response"
+    runner.supports_capacity_progress = True
+    session = ps.Session(args, cli=runner, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, say=lambda _: None)
+    assert session.run() == 1 and len(pod.launches) == 1
+    detail = session.records[0]["detail"]
+    assert detail["state"] == detail["classification"] == "allocation_unknown"
+    assert detail["placement_attempt"] == 2 and detail["reconciliation_required"] is True
+    assert "private-id" not in (Path(args.workdir) / "pod-session-progress.json").read_text()
+    assert session.records[-1]["result"] == "failed"
+
+
+@pytest.mark.parametrize("events", [
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":2}'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}', 'RUNPOD_CAPACITY_EXHAUSTED'],
+    ['RUNPOD_PLACEMENT_ATTEMPT {"placement_attempt":1}',
+     'RUNPOD_CAPACITY_WAIT {"placement_attempt":1,"retry_interval":30,"wait_seconds":120}'],
+])
+def test_success_with_invalid_progress_retains_known_pod_for_release(tmp_path, events):
+    args, agent = make_args(tmp_path, ["--wait-capacity", "120"])
+    pod = FakePod(b"")
+    def runner(argv, env, *, on_capacity_wait=None):
+        if argv[0] != "launch":
+            return pod.cli(argv, env)
+        pod.launches.append(argv)
+        for event in events:
+            on_capacity_wait(event + "\n")
+        return 0, json.dumps({"pod_id": pod.pod}), ""
+    runner.supports_capacity_progress = True
+    session = ps.Session(args, cli=runner, transport_factory=pod.factory, http_status=pod.http_status,
+                         agent_root=agent, say=lambda _: None, sleep=lambda _: None)
+    assert session.run() == 1 and len(pod.launches) == 1
+    assert session.pod_id == pod.pod and pod.terminated
+    assert session.records[0]["detail"]["reconciliation_required"] is True
+    assert session.records[-1]["result"] == "failed"
+
+
+def test_real_lifecycle_capacity_retries_then_rejection_stop_without_fallback(tmp_path):
+    args, agent = make_args(tmp_path, ["--wait-capacity", "120"])
+    pod = FakePod(b"")
+    count = tmp_path / "create-count"
+    executable = tmp_path / "offline-lifecycle-rejection"
+    executable.write_text(f'''#!{sys.executable}
+import pathlib
+from runpod_lifecycle import cli, lifecycle
+from runpod_lifecycle.config import RunPodConfig
+from runpod_lifecycle.errors import ProviderCapacityUnavailable, ProviderRequestRejected
+cli._resolve_config = lambda parsed: RunPodConfig(api_key="synthetic", gpu_type=parsed.gpu_type,
+    ram_tiers_enabled=False, transport="https", https_token="synthetic", storage_volumes=(), storage_name=None)
+lifecycle.find_gpu_type = lambda *args: {{"id": "fake"}}
+calls = 0
+def create(*args, **kwargs):
+    global calls
+    calls += 1
+    pathlib.Path({str(count)!r}).write_text(str(calls))
+    if calls <= 2:
+        raise ProviderCapacityUnavailable(200, "no longer any instances available secret-provider-response")
+    raise ProviderRequestRejected(403, "private-id secret-provider-response")
+lifecycle.create_pod = create
+async def sleep(seconds):
+    pass
+lifecycle.asyncio.sleep = sleep
+raise SystemExit(cli.main())
+''')
+    executable.chmod(0o700)
+    messages = []
+    session = ps.Session(args, cli=offline_launch_cli(executable, pod), transport_factory=pod.factory,
+                         http_status=pod.http_status, agent_root=agent, say=messages.append)
+    assert session.run() == 1 and count.read_text() == "3" and len(pod.launches) == 1
+    detail = session.records[0]["detail"]
+    assert detail["placement_attempt"] == 3 and detail["reconciliation_required"] is True
+    assert detail["classification"] == "allocation_unknown"
+    report = (Path(args.workdir) / "pod-session-progress.json").read_text()
+    assert "secret-provider-response" not in report + "\n".join(messages)
+    assert "private-id" not in report + "\n".join(messages)

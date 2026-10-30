@@ -697,17 +697,73 @@ class Session:
 
     # -- steps --------------------------------------------------------------------------------
     def capacity_wait_progress(self, line: str) -> None:
+        # This pipe is a protocol, not provider output. Reject malformed, out-of-order,
+        # or contradictory protocol records without copying their contents to evidence.
         if line == "RUNPOD_CAPACITY_EXHAUSTED\n":
-            self._capacity_exhausted = True
+            if self._progress_phase != "started":
+                self._progress_invalid = True
+            else:
+                self._progress_phase = "exhausted"
             return
-        event = capacity_wait_event(line, self.args.wait_capacity)
-        if event is None:
+        prefixes = ("RUNPOD_PLACEMENT_ATTEMPT ", "RUNPOD_TERMINAL_FAILURE ", "RUNPOD_CAPACITY_WAIT ")
+        prefix = next((p for p in prefixes if line.startswith(p)), None)
+        if prefix is None:
+            self._progress_invalid = True
             return
-        self.state["claim_attempt"].update(event)
-        self.write_progress(strict=True)
-        self.say(f"[claim] capacity retry after attempt {event['placement_attempt']}; "
-                 f"waiting {event['retry_interval']}s (placement limit {event['wait_seconds']}s)")
-        sys.stdout.flush()
+        def unique_pairs(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate progress key")
+                result[key] = value
+            return result
+        try:
+            event = json.loads(line[len(prefix):], object_pairs_hook=unique_pairs)
+        except (ValueError, RecursionError):
+            self._progress_invalid = True
+            return
+        if not isinstance(event, dict):
+            self._progress_invalid = True
+            return
+        attempt = event.get("placement_attempt")
+        if type(attempt) is not int or not 1 <= attempt <= 2**31 - 1:
+            self._progress_invalid = True
+            return
+        if prefix == prefixes[0]:
+            if (set(event) != {"placement_attempt"} or attempt != self._progress_attempt + 1
+                    or self._progress_phase not in ("initial", "waiting")):
+                self._progress_invalid = True
+                return
+            self._progress_attempt = attempt
+            self._progress_phase = "started"
+            claim = self.state["claim_attempt"]
+            claim.pop("retry_interval", None)
+            claim.pop("wait_seconds", None)
+            claim["placement_attempt"] = attempt
+            self.write_progress(strict=True)
+        elif prefix == prefixes[1]:
+            if (set(event) != {"classification", "placement_attempt"}
+                    or event.get("classification") not in ("allocation_unknown", "non_capacity_failure")
+                    or attempt != self._progress_attempt or self._progress_phase != "started"):
+                self._progress_invalid = True
+                return
+            self._progress_phase = "terminal"
+            self._terminal_classification = event["classification"]
+            claim = self.state["claim_attempt"]
+            claim.update(state=event["classification"], classification=event["classification"],
+                         reconciliation_required=True)
+            self.write_progress(strict=True)
+        else:
+            event = capacity_wait_event(line, self.args.wait_capacity)
+            if event is None or attempt != self._progress_attempt or self._progress_phase != "started":
+                self._progress_invalid = True
+                return
+            self._progress_phase = "waiting"
+            self.state["claim_attempt"].update(event)
+            self.write_progress(strict=True)
+            self.say(f"[claim] capacity retry after attempt {attempt}; "
+                     f"waiting {event['retry_interval']}s (placement limit {event['wait_seconds']}s)")
+            sys.stdout.flush()
 
     def claim(self) -> dict:
         from runpod_lifecycle import AllocationUnknown
@@ -742,31 +798,51 @@ class Session:
                         "--storage-name", self.args.storage_name]
                 if self.args.wait_capacity:
                     argv += ["--wait-capacity", str(self.args.wait_capacity)]
-                self._capacity_exhausted = False
+                self._progress_attempt = 0
+                self._progress_phase = "initial"
+                self._progress_invalid = False
+                self._terminal_classification = None
+                cli_exception = False
                 try:
                     if getattr(self.cli, "supports_capacity_progress", False):
                         code, out, err = self.cli(argv, env, on_capacity_wait=self.capacity_wait_progress)
                     else:
                         code, out, err = self.cli(argv, env)
-                except Exception as exc:
-                    code, out, err = 1, "", f"allocation_unknown: CLI unavailable ({type(exc).__name__})"
+                except Exception:
+                    cli_exception = True
+                    code, out, err = 1, "", ""
                 tried.append(f"{gpu}@{dc}")
                 self.state["claim_attempt"]["state"] = "allocated" if code == 0 else "failed"
-                # The lifecycle CLI prints ``error: {exc}`` on stderr and exits 1.
-                # AllocationUnknown is nonretryable even across our outer candidate loop.
-                ambiguous = re.search(rf"\b{AllocationUnknown.status}\b", out + "\n" + err) is not None
+                # Never classify provider output or infer an attempt from a missing event.
+                ambiguous = cli_exception or self._terminal_classification == AllocationUnknown.status
                 if code == 0:
                     try:
                         pod_id = parse_json_object(out).get("pod_id")
                     except SessionError:
                         pod_id = None
-                    ambiguous = ambiguous or not isinstance(pod_id, str) or not re.fullmatch(r"[a-z0-9]+", pod_id)
-                if ambiguous:
-                    self.state["claim_attempt"]["state"] = AllocationUnknown.status
-                    self.state["claim"] = {"state": AllocationUnknown.status, "reconciliation_required": True,
-                                           "gpu": gpu, "datacenter": dc, "attempted": tried, "exit_code": code,
+                    valid_pod_id = isinstance(pod_id, str) and re.fullmatch(r"[a-z0-9]+", pod_id)
+                    if valid_pod_id:
+                        # Preserve custody even if the progress protocol is contradictory.
+                        self.pod_id = pod_id
+                    ambiguous = ambiguous or not valid_pod_id
+                protocol_failure = (self._progress_invalid or self._progress_phase == "terminal"
+                                    or (code == 0 and self._progress_phase in ("waiting", "exhausted")))
+                if ambiguous or protocol_failure:
+                    classification = (AllocationUnknown.status if ambiguous else
+                                      "unknown" if self._progress_invalid else
+                                      self._terminal_classification or "unknown")
+                    claim_state = AllocationUnknown.status if ambiguous else "launch_failed"
+                    self.state["claim_attempt"].update(state=claim_state, classification=classification,
+                                                       reconciliation_required=True)
+                    self.state["claim"] = {"state": claim_state, "classification": classification,
+                                           "reconciliation_required": True, "gpu": gpu, "datacenter": dc,
+                                           "attempted": tried, "exit_code": code,
                                            "wait_capacity_sec": self.args.wait_capacity}
-                    raise SessionError("claim: allocation_unknown; reconcile the provider allocation before another launch")
+                    if self._progress_attempt:
+                        self.state["claim"]["placement_attempt"] = self._progress_attempt
+                    if ambiguous:
+                        raise SessionError("claim: allocation_unknown; reconcile the provider allocation before another launch")
+                    raise SessionError("claim: non-capacity launch failure; reconcile before another launch")
                 if code == 0:
                     self.pod_id = pod_id
                     self.transport = self.transport_factory(pod_id, read_token_file(self.token_path))
@@ -775,10 +851,14 @@ class Session:
                     return {"pod_id": pod_id, "gpu": gpu, "datacenter": dc, "container_disk_gb": disk,
                             "volume_gb": self.args.volume_gb, "image": image,
                             "wait_capacity_sec": self.args.wait_capacity, "storage": storage}
-                if not self._capacity_exhausted:
+                if self._progress_phase != "exhausted":
                     self.state["claim"] = {"state": "launch_failed", "reconciliation_required": True,
                                            "gpu": gpu, "datacenter": dc, "attempted": tried, "exit_code": code,
-                                           "wait_capacity_sec": self.args.wait_capacity}
+                                           "wait_capacity_sec": self.args.wait_capacity,
+                                           "classification": "unknown"}
+                    self.state["claim_attempt"].update(classification="unknown", reconciliation_required=True)
+                    if self._progress_attempt:
+                        self.state["claim"]["placement_attempt"] = self._progress_attempt
                     raise SessionError("claim: non-capacity launch failure; reconcile before another launch")
                 self.say(f"[claim] {gpu} @ {dc}: no capacity (exit {code})")
         raise SessionError("claim: no pod from any of: " + ", ".join(tried))
