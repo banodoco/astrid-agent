@@ -74,12 +74,6 @@ def _ignored_fields(request: H3Request, spec: H3Spec, compilation: Mapping[str, 
     elif value["settings"]["turbo"]["enabled"] is False:
         ignored.append({"field": "settings.turbo.strength", "value": value["settings"]["turbo"]["strength"],
                         "reason": "Turbo is disabled; its strength is disconnected"})
-    global_refs = tuple(ref.name for ref in spec.refs)
-    for index, op in enumerate(spec.ops):
-        if op.op == "regenerate" and op.refs != global_refs:
-            ignored.append({"field": f"ops[{index}].refs", "value": list(op.refs),
-                            "effective_value": list(global_refs),
-                            "reason": "The current graph conditions on every reference in declaration order"})
     return ignored
 
 

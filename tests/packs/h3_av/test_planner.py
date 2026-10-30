@@ -88,13 +88,14 @@ def test_plan_static_image_mask_has_a_preview_and_runtime_binding(tmp_path: Path
     assert "h3.plan.gpu_unqualified" in {row["code"] for row in plan["warnings"]}
 
 
-def test_box_region_is_previewed_but_compilation_limit_is_reported(tmp_path: Path) -> None:
+def test_box_region_is_previewed_and_bound_by_native_compilation(tmp_path: Path) -> None:
     request = _source_edit(area={"rectangle": [10, 20, 80, 60]})
     plan = plan_request(request, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "plan")
 
     assert plan["previews"] and Path(plan["previews"][0]["path"]).is_file()
-    assert plan["compilation"]["status"] == "blocked"
-    assert "h3.plan.compile_unavailable" in {row["code"] for row in plan["warnings"]}
+    assert plan["compilation"]["status"] == "compiled"
+    assert any(row["binding"] == "video_mask_0" for row in plan["bindings"]["runtime"])
+    assert "h3.plan.compile_unavailable" not in {row["code"] for row in plan["warnings"]}
 
 
 @pytest.mark.parametrize(
@@ -145,7 +146,8 @@ def test_plan_reports_ignored_v1_constant_overrides_and_keeps_supported_controls
     plan = plan_request(request, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "plan")
 
     ignored = {row["field"]: row["value"] for row in plan["ignored_fields"]}
-    assert ignored == {"overrides.sampler": "res_multistep", "overrides.guidance": 0.95}
+    assert ignored == ({"overrides.sampler": "res_multistep", "overrides.guidance": 0.95}
+                       if operation == "continue" else {})
     assert plan["compilation"]["workflow_inputs"]["steps"] == expected_steps
     assert plan["compilation"]["workflow_inputs"]["seed"] == expected_seed
 
@@ -227,7 +229,7 @@ def test_v2_ignored_constant_settings_and_disabled_turbo_strength(tmp_path: Path
     assert plan["compilation"]["workflow_inputs"]["seed"] == 88
 
 
-def test_plan_reports_per_edit_reference_selection_ignored_by_current_graph(tmp_path: Path) -> None:
+def test_plan_binds_per_edit_reference_selection(tmp_path: Path) -> None:
     h3_request = normalize_request({
         "version": 2, "prompt": "Edit using the first look.", "duration": 4, "settings": {},
         "media": [
@@ -242,12 +244,10 @@ def test_plan_reports_per_edit_reference_selection_ignored_by_current_graph(tmp_
     assets["second.png"] = str(_image(tmp_path / "second.png", size=(32, 32)))
     plan = plan_request(h3_request, asset_map=assets, out_dir=tmp_path / "plan")
     assert plan["compilation"]["status"] == "compiled"
-    assert plan["ignored_fields"] == [{
-        "field": "ops[0].refs", "value": ["ref-1"], "effective_value": ["ref-1", "ref-2"],
-        "reason": "The current graph conditions on every reference in declaration order",
-    }]
+    assert plan["ignored_fields"] == []
     assert plan["spec"]["ops"][0]["refs"] == ("ref-1",)
-    assert {row["binding"] for row in plan["bindings"]["runtime"]} >= {"reference_0", "reference_1"}
+    assert {row["binding"] for row in plan["bindings"]["runtime"]} == {"source_video", "video_mask_0", "reference_0"}
+    assert plan["compilation"]["capabilities"]["reference_order"] == ["look.png"]
 
 
 def test_plan_rejects_a_preserve_only_spec(tmp_path: Path) -> None:

@@ -47,7 +47,8 @@ def _prepared(tmp_path: Path, request, *, masks: bool = False, references: bool 
     asset_map = {"source.mp4": str(source)}
     if masks:
         mask = tmp_path / "mask.png"
-        mask.write_bytes(b"mask-image")
+        from PIL import Image
+        Image.new("L", (1024, 576), 255).save(mask)
         asset_map["mask.png"] = str(mask)
     if references:
         ref = tmp_path / "reference.png"
@@ -56,34 +57,28 @@ def _prepared(tmp_path: Path, request, *, masks: bool = False, references: bool 
     return prepare_request(request, asset_map=asset_map)
 
 
-def test_lanpaint_bindings_preserve_prompt_duration_masks_and_audio_intervals(tmp_path: Path) -> None:
-    compiled = compile_preparation(_prepared(tmp_path, _request()), out_dir=tmp_path / "compiled")
-    inputs = compiled["workflow_inputs"]
-
-    frozen_workflow = Path(compiled["workflow"]["workflow.py"]["path"])
-    assert "LanPaint_VideoMaskEditor" in frozen_workflow.read_text(encoding="utf-8")
-    assert inputs["duration"] == 4.0
-    assert "Keep the shot" in inputs["prompt"]
-    assert "Say hello." in inputs["prompt"]
-    assert json.loads(inputs["audio_intervals"]) == [{"start": 0.5, "end": 1.25}]
-    keyframes = json.loads(inputs["mask_keyframes"])
-    assert keyframes["24"].endswith("mask_full_frame.png")
-    assert keyframes["72"].endswith("mask_preserve.png")
-    assert compiled["capabilities"]["audio_mask"] == "independent sample intervals"
-    assert compiled["capabilities"]["output_contract"] == "separate_av_full_timeline"
-    _assert_single_public_video(compiled, internal_outputs=["audio"])
+def test_audio_regeneration_fails_closed_without_legacy_edit_dispatch(tmp_path: Path) -> None:
+    with pytest.raises(CompilationError, match="Advanced legacy changes are outside SPEC-MIN"):
+        compile_preparation(_prepared(tmp_path, _request()), out_dir=tmp_path / "compiled")
 
 
-def test_lanpaint_regional_change_requires_and_binds_real_mask_asset(tmp_path: Path) -> None:
-    request = _request(
-        changes={
-            "video": [{"during": [1, 3], "area": {"rectangle": [0, 0, 100, 100]}, "mask_asset": "mask.png", "action": "generate"}],
-            "audio": [],
-        }
-    )
+def test_imported_v1_regional_change_binds_native_red_mask(tmp_path: Path) -> None:
+    from vibecomfy.cli_loader import load_workflow_any
+
+    request = _request(changes={
+        "video": [{"during": [1, 3], "area": {"rectangle": [0, 0, 100, 100]},
+                   "mask_asset": "mask.png", "action": "generate"}], "audio": [],
+    })
     compiled = compile_preparation(_prepared(tmp_path, request, masks=True), out_dir=tmp_path / "compiled")
-    keyframes = json.loads(compiled["workflow_inputs"]["mask_keyframes"])
-    assert keyframes["24"].endswith("mask.png")
+    workflow = load_workflow_any(compiled["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=compiled["workflow_inputs"])
+    mask = next(node for node in api.values() if node["class_type"] == "ImageToMask")
+    assert mask["inputs"]["channel"] == "red"
+    edit = next(node for node in api.values() if node["class_type"] == "H3V2VGranularFractionalDenoise")
+    assert edit["inputs"]["mode"] == "spatial"
+    assert edit["inputs"]["crop"] == "disabled"
+    assert compiled["capabilities"]["edit_binding"]["during_frames"] == [24, 72]
+    _assert_single_public_video(compiled, internal_outputs=[])
 
 
 @pytest.mark.parametrize("count", [0, 1, 2])
@@ -136,9 +131,13 @@ def test_unsupported_capabilities_fail_before_graph_submission(tmp_path: Path) -
         compile_preparation(_prepared(tmp_path, too_many, references=True), out_dir=tmp_path / "too-many")
 
     unsupported_audio = _request(changes={"video": [], "audio": [{"during": [1, 2], "action": "generate", "stem": "voice"}]})
-    with pytest.raises(CompilationError, match="stem"):
+    with pytest.raises(CompilationError, match="Advanced legacy changes are outside SPEC-MIN"):
         compile_preparation(_prepared(tmp_path, unsupported_audio), out_dir=tmp_path / "stem")
 
-    edit_with_refs = _request(references=[{"asset": "reference.png", "purpose": "appearance"}])
-    with pytest.raises(CompilationError, match="no reference-image input"):
-        compile_preparation(_prepared(tmp_path, edit_with_refs, references=True), out_dir=tmp_path / "edit-refs")
+    edit_with_refs = _request(
+        changes={"video": [{"during": [0, 4], "area": {"full_frame": True}, "action": "generate"}], "audio": []},
+        references=[{"asset": "reference.png", "purpose": "appearance"}],
+    )
+    compiled = compile_preparation(_prepared(tmp_path, edit_with_refs, references=True), out_dir=tmp_path / "edit-refs")
+    assert compiled["capabilities"]["reference_order"] == ["reference.png"]
+    assert compiled["workflow_inputs"]["reference_0"].endswith("reference.png")

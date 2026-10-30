@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -430,90 +431,33 @@ def _compile_lanpaint(
     return result
 
 
-def _compile_source_backed_v2(
-    request: H3Request, assets: Mapping[str, Path], destination: Path
-) -> dict[str, Any]:
-    """Adapt non-continuation permissions to the graph's actual AV masks.
-
-    The continuation graph only samples a suffix. LanPaint instead edits the
-    source timeline with independent frame keyframes and audio intervals.
-    Keep the native request identity while reusing the established edit binder.
-    """
-    value = request.value
-    timelines = [item for item in value["media"] if item["role"] == "timeline"]
-    if len(timelines) != 1 or timelines[0].get("modality") != "video":
-        raise CompilationError("native-v2 source-backed edits require one timeline video; no separate audio input is bound")
-    source = timelines[0]
-    if source["resolved_at"]["value"] != 0:
-        raise CompilationError("native-v2 source-backed edits require their timeline video at frame 0")
-    if not isinstance(source.get("range"), list) or len(source["range"]) != 2:
-        raise CompilationError("native-v2 source-backed edits require a bounded timeline video range")
-    changes: dict[str, list[dict[str, Any]]] = {"video": [], "audio": []}
-    for edit in source.get("edit", []):
-        stream = edit["stream"]
-        change = {"during": edit["during"], "action": edit["action"]}
-        if stream == "video":
-            if edit["mask"].get("full_frame") is not True:
-                # Image-mask regional edits are routed to _compile_native_masked_edit
-                # before reaching here; rectangle/polygon masks are not rasterized.
-                raise CompilationError("native-v2 source-backed composition supports only full_frame or image-asset masks")
-            change["area"] = {"full_frame": True}
-        else:
-            if edit.get("channels", "all") != "all":
-                raise CompilationError("native-v2 source-backed edits have no channel-specific audio mask binding")
-            if "text" in edit:
-                change["dialogue"] = edit["text"]
-        changes[stream].append(change)
-    settings = effective_settings(request)
-    if settings["scheduler"] != "simple":
-        raise CompilationError("native-v2 source-backed LanPaint graph has no scheduler input")
-    if not settings["turbo"]["enabled"]:
-        raise CompilationError("native-v2 source-backed LanPaint graph cannot disable its existing model adapter")
-    edit_value = {
-        "version": 1,
-        "operation": "edit",
-        "source": {"asset": source["asset"], "range": source.get("range")},
-        "output": {"duration": value["duration"]},
-        "content": {"prompt": _native_v2_prompt(request)},
-        "changes": changes,
-        "references": [{"asset": item["asset"], "purpose": "appearance"}
-                       for item in value["media"] if item["role"] == "reference"],
-        "overrides": {"model": settings["model"], "steps": settings["steps"],
-                      "seed": settings["seed"], "sampler": settings["sampler"],
-                      "guidance": settings["turbo"]["strength"]},
-    }
-    return _compile_lanpaint(
-        H3Request(value=edit_value, digest=request.digest), assets, destination,
-        profile_id="h3_av.native.v2", native_v2_branch="source_backed_v2v",
-    )
-
-
 # Assumes white-on-black grayscale masks (white = edited region). Manager
 # decision; revisit if the real masks carry the region in alpha.
 _MASK_CHANNEL = "red"
 
 
-def _has_regional_image_mask(request: H3Request) -> bool:
-    return any(
-        edit.get("stream") == "video" and isinstance(edit.get("mask"), Mapping) and "asset" in edit["mask"]
-        for item in request.value["media"] if item["role"] == "timeline"
-        for edit in item.get("edit", [])
-    )
+def _bounded_edit_mask(path: Path, *, kind: str, frames: int, during: tuple[int, int], destination: Path) -> Path:
+    """Bound spatial permissions to the edit interval before the existing loader.
 
-
-def _native_mask_kind(path: Path, mask_id: str) -> str:
-    """Return "video" for a lossless per-frame mask video, else "image".
-
-    Opaque non-media fixtures (ffprobe cannot decode them) keep the static path.
+    This is mask preprocessing, not another sampling or execution path. FFV1
+    retains exact mask pixels; bitexact flags make the sealed asset repeatable.
     """
-    from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
-
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise CompilationError("bounded native edit masks require ffmpeg")
+    target = destination / "bounded-mask.mkv"
+    start, end = during
+    inputs = ["-loop", "1", "-framerate", "24"] if kind == "image" else []
     try:
-        return str(probe_mask(path, mask_id=mask_id)["kind"])
-    except CompositionError as exc:
-        if "not decodable image or video media" in str(exc):
-            return "image"
-        raise CompilationError(str(exc)) from exc
+        subprocess.run([
+            ffmpeg, "-v", "error", "-y", "-fflags", "+bitexact", *inputs, "-i", str(path),
+            "-vf", f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='lt(n,{start})+gte(n,{end})'",
+            "-frames:v", str(frames), "-an", "-fflags", "+bitexact", "-map_metadata", "-1", "-c:v", "ffv1",
+            "-flags:v", "+bitexact", "-threads", "1", "-level", "3", "-pix_fmt", "gray", str(target),
+        ], check=True, capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CompilationError(f"cannot bound native edit mask to its interval: {exc}") from exc
+    return target
 
 
 def _compile_native_masked_edit(
@@ -522,82 +466,101 @@ def _compile_native_masked_edit(
     """Compile a regional source-backed edit to native H3 nodes (no LanPaint).
 
     The source window is encoded by H3V2VGranularFractionalDenoise in spatial
-    mode (inside=1, outside=0, audio_strength=0, crop disabled) between the
-    target latent and the sampler. Time limits and paste-back stay in compose.
+    mode (selected inside strength, outside=0, audio_strength=0, crop disabled)
+    between the target latent and the sampler. Bounded mask frames encode the
+    edit interval; composition still owns preservation and exact tail trimming.
     """
     from astrid.packs.h3_av.shared.generation import build_generation_workflow, generation_timing
     from vibecomfy.model_assets import resolve_referenced_assets
     from vibecomfy.security.provenance import Provenance
     from vibecomfy.workflow_bundle import emit_bundle
 
-    value = request.value
-    settings = effective_settings(request)
+    from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
+    from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
+    from astrid.packs.h3_av.shared.spec import Region, canonical_spec
+
+    try:
+        spec = canonical_spec(request)
+    except H3RequestError as exc:
+        raise CompilationError(str(exc)) from exc
+    settings = spec.settings
     if settings.get("adapter"):
         raise CompilationError("native masked edit does not combine with an adapter")
-    timelines = [item for item in value["media"] if item["role"] == "timeline"]
-    if len(timelines) != 1 or timelines[0].get("modality") != "video":
-        raise CompilationError("native masked edit requires one timeline video")
-    source = timelines[0]
-    if source["resolved_at"]["value"] != 0:
-        raise CompilationError("native masked edit requires its timeline video at frame 0")
-    resolved = source.get("resolved_range")
-    if not isinstance(source.get("range"), list) or not isinstance(resolved, list) or len(resolved) != 2:
-        raise CompilationError("native masked edit requires a bounded timeline video range")
-    video_edits = [e for e in source.get("edit", []) if e.get("stream") == "video"]
-    if any(e.get("stream") == "audio" for e in source.get("edit", [])):
-        raise CompilationError("native masked edit leaves audio untouched; audio edits are unsupported")
-    masks = []
-    for edit in video_edits:
-        mask = edit.get("mask", {})
-        if not isinstance(mask, Mapping) or not isinstance(mask.get("asset"), str):
-            raise CompilationError("native masked edit requires an image mask asset on every video edit; rectangle, polygon and full_frame masks are unsupported")
-        if mask["asset"] not in assets:
-            raise CompilationError(f"native masked edit mask {mask['asset']!r} is missing from preparation")
-        masks.append(mask["asset"])
-    if len(set(masks)) != 1:
-        raise CompilationError("native masked edit supports one mask per request (static image or mask video)")
-    source_id = str(source["asset"])
+    passes = spec.sampling_passes()
+    if len(passes) != 1 or passes[0].operation.op != "regenerate":
+        raise CompilationError("native masked edit requires exactly one modifying video operation")
+    operation = passes[0].operation
+    source = spec.source
+    if source is None:
+        raise CompilationError("native masked edit requires one bounded timeline video")
+    source_id = source.asset
     if source_id not in assets:
         raise CompilationError(f"native masked edit asset {source_id!r} is missing from preparation")
-    references = [item for item in value["media"] if item["role"] == "reference"]
-    if any(item.get("modality") != "image" for item in references):
-        raise CompilationError("native masked edit accepts image references only")
-    frame_load_cap = int(resolved[1]) - int(resolved[0])
-    mask_kind = _native_mask_kind(assets[masks[0]], masks[0])
-    mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
-    if mask_kind == "video":
-        from astrid.packs.h3_av.shared.compose import CompositionError, probe_mask
-
+    frame_load_cap = round((source.range[1] - source.range[0]) * 24)
+    if frame_load_cap != round(spec.duration * 24):
+        raise CompilationError("native masked edit source window must match output duration")
+    if frame_load_cap > 360:
+        raise CompilationError("native masked edit source windows are limited to 15 s")
+    # B2 resolves boxes and supplied static masks to the same binary PNG. The
+    # graph fixes its output canvas at 1024x576, as source preflight requires.
+    regions = {region.name: region for region in spec.regions}
+    region = regions[operation.region] if operation.region else Region("full-frame", box=(0, 0, 1024, 576))
+    destination.mkdir(parents=True, exist_ok=True)
+    mask_kind = "image"
+    if region.mask_asset:
+        if region.mask_asset not in assets:
+            raise CompilationError(f"native masked edit mask {region.mask_asset!r} is missing from preparation")
         try:
-            mask_frames = int(probe_mask(assets[masks[0]], mask_id=masks[0])["frames"])
+            mask_info = probe_mask(assets[region.mask_asset], mask_id=region.mask_asset)
         except CompositionError as exc:
             raise CompilationError(str(exc)) from exc
-        if mask_frames != frame_load_cap:
-            raise CompilationError(
-                f"native masked edit mask video {masks[0]!r} has {mask_frames} frames; "
-                f"the source window loads {frame_load_cap}"
+        mask_kind = str(mask_info["kind"])
+        if mask_kind == "video":
+            if int(mask_info["frames"]) != frame_load_cap:
+                raise CompilationError(
+                    f"native masked edit mask video {region.mask_asset!r} has {mask_info['frames']} frames; "
+                    f"the source window loads {frame_load_cap}"
+                )
+            mask_path = assets[region.mask_asset]
+    if mask_kind == "image":
+        try:
+            resolved = resolve_static_region(
+                region, width=1024, height=576, assets=assets,
+                polarity="black_preserve_white_edit" if region.mask_asset else None,
             )
-    bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: assets[masks[0]]}
+        except H3RequestError as exc:
+            raise CompilationError(str(exc)) from exc
+        mask_path = destination / "resolved-mask.png"
+        mask_path.write_bytes(resolved.mask_png)
+    during = tuple(round(value * 24) for value in operation.during)
+    if during != (0, frame_load_cap):
+        mask_path = _bounded_edit_mask(mask_path, kind=mask_kind, frames=frame_load_cap,
+                                       during=during, destination=destination)
+        mask_kind = "video"
+    mask_binding = "video_mask_0" if mask_kind == "video" else "mask_0"
+    bindings: dict[str, Path] = {"source_video": assets[source_id], mask_binding: mask_path}
+    references_by_name = {item.name: item for item in spec.refs}
+    references = [references_by_name[name] for name in operation.refs]
     for index, item in enumerate(references):
-        if str(item["asset"]) not in assets:
-            raise CompilationError(f"native masked edit reference {item['asset']!r} is missing from preparation")
-        bindings[f"reference_{index}"] = assets[str(item["asset"])]
+        if item.asset not in assets:
+            raise CompilationError(f"native masked edit reference {item.asset!r} is missing from preparation")
+        bindings[f"reference_{index}"] = assets[item.asset]
     try:
-        timing = generation_timing(float(value["duration"]))
+        timing = generation_timing(float(spec.duration))
     except ValueError as exc:
         raise CompilationError(str(exc)) from exc
-    prompt = _native_v2_prompt(request)
+    prompt = spec.prompt
+    seed = operation.seed if operation.seed is not None else settings["seed"]
     turbo = settings["turbo"]
     graph = build_generation_workflow(
         references=[f"reference_{index}" for index in range(len(references))],
         prompt=prompt, frames=timing["raw_frames"], model=settings["model"],
-        steps=settings["steps"], seed=settings["seed"], sampler=settings["sampler"],
+        steps=settings["steps"], seed=seed, sampler=settings["sampler"],
         scheduler=settings["scheduler"], guidance=turbo["strength"], turbo_enabled=turbo["enabled"],
         masked_edit={
             "source_binding": "source_video", "mask_binding": mask_binding, "mask_channel": _MASK_CHANNEL,
-            "mask_kind": mask_kind,
-            "start_time": float(source["range"][0]),
-            "frame_load_cap": frame_load_cap,
+            "mask_kind": mask_kind, "strength": operation.strength,
+            "start_time": float(source.range[0]), "frame_load_cap": frame_load_cap,
         },
     )
     active_assets, unresolved = resolve_referenced_assets(graph)
@@ -613,7 +576,7 @@ def _compile_native_masked_edit(
         "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
     }, sort_keys=True) + "\n", encoding="utf-8")
     workflow_inputs: dict[str, Any] = {
-        "model": settings["model"], "steps": settings["steps"], "seed": settings["seed"],
+        "model": settings["model"], "steps": settings["steps"], "seed": seed,
         "sampler": settings["sampler"], "scheduler": settings["scheduler"], "prompt": prompt, **members,
     }
     if turbo["enabled"]:
@@ -630,6 +593,11 @@ def _compile_native_masked_edit(
                 else "mask_0 (static image, spatial, crop disabled, channel " + _MASK_CHANNEL + ")"),
             "audio_binding": "source_audio_from_source_video, audio_strength=0",
             "references": len(references),
+            "reference_order": [item.asset for item in references],
+            "edit_binding": {"during_frames": list(during), "frame_load_cap": frame_load_cap,
+                             "strength": operation.strength, "seed": seed, "refs": list(operation.refs)},
+            "overrides": ["model", "steps", "seed", "sampler", "guidance"],
+            "generation_timing": timing,
             "output_contract": "muxed_av_full_timeline",
             "public_generation": {"modality": "video", "selectors": [
                 {"selector": "main-0", "ordinal": 0, "variant_key": "original", "required": True}],
@@ -638,11 +606,13 @@ def _compile_native_masked_edit(
         },
         limitations=[
             "native masked edit is CPU-verified only; spatial mode on ref2va plus Turbo is unproven on GPU",
-            "one mask per request (static image or per-frame mask video); rectangle and polygon masks are unsupported",
+            "one modifying video operation per request; static boxes, image masks or per-frame mask video",
+            "audio regeneration, polygon masks and per-operation adapters are unsupported",
+            "box-only regions bind in the graph; end-to-end execution still needs resolved mask propagation for composition paste-back",
             "windows are limited to 15 s with no automatic chunking",
             "zero-reference requests assume MiniMaxH3ReferenceToVideo accepts no ref images (unverified)",
         ],
-        profile_id="h3_av.native.v2",
+        profile_id="h3_av.native.v2" if request.value.get("version") == 2 else _PROFILE_ID,
         extra_manifest={"branch": branch},
     )
 
@@ -692,6 +662,8 @@ def _compile_character_swap_v2(
         if item["role"] != "timeline":
             continue
         for edit_index, edit in enumerate(item.get("edit", [])):
+            if "strength" in edit or "seed" in edit:
+                raise CompilationError("character_swap_v1 does not bind per-operation strength or seed")
             if edit.get("stream") == "video":
                 mask = edit.get("mask", {})
                 if mask.get("full_frame") is not True and not (
@@ -934,9 +906,7 @@ def _compile_native_v2(
         )
 
     if branch == "source_backed_v2v":
-        if _has_regional_image_mask(request):
-            return _compile_native_masked_edit(request, assets, destination, branch=branch)
-        return _compile_source_backed_v2(request, assets, destination)
+        return _compile_native_masked_edit(request, assets, destination, branch=branch)
 
     destination.mkdir(parents=True, exist_ok=True)
     if settings["sampler"] != _DEFAULTS["sampler"]:
@@ -976,6 +946,8 @@ def _compile_native_v2(
 
     for item in request.value["media"]:
         for edit in item.get("edit", []):
+            if "strength" in edit or "seed" in edit:
+                raise CompilationError("native-v2 continuation has no per-operation strength or seed binding")
             if edit.get("stream") == "video":
                 mask = edit.get("mask", {})
                 if not isinstance(mask, Mapping) or mask.get("full_frame") is not True:
@@ -1068,7 +1040,7 @@ def compile_preparation(preparation: Mapping[str, Any], *, out_dir: str | Path) 
     if request.value["operation"] == "generate":
         return _compile_generation(request, assets, destination)
     if request.value["operation"] == "edit":
-        return _compile_lanpaint(request, assets, destination)
+        return _compile_native_masked_edit(request, assets, destination, branch="source_backed_v2v")
     if request.value["operation"] == "continue":
         return _compile_native(request, assets, destination)
     raise CompilationError(f"unsupported H3 operation: {request.value['operation']!r}")

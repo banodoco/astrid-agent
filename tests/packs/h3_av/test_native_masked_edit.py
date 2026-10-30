@@ -30,11 +30,19 @@ WATERMARK = {
 def _prepare(raw: dict, tmp_path: Path) -> dict:
     request = normalize_request(raw)
     assets = []
+    masks = {
+        e["mask"]["asset"] for m in raw["media"] for e in m.get("edit", []) if "asset" in e["mask"]
+    }
     for asset in {m["asset"] for m in raw["media"]} | {
         e["mask"]["asset"] for m in raw["media"] for e in m.get("edit", []) if "asset" in e["mask"]
     }:
         path = tmp_path / f"{asset}.bin"
-        path.write_bytes(f"fixture {asset}".encode())
+        if asset in masks:
+            from PIL import Image
+            path = tmp_path / f"{asset}.png"
+            Image.new("L", (1024, 576), 255).save(path)
+        else:
+            path.write_bytes(f"fixture {asset}".encode())
         assets.append({"asset": asset, "status": "resolved", "path": str(path), "size": path.stat().st_size,
                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
     return {"kind": "h3_av_preparation", "status": "prepared", "runtime_submission": "eligible",
@@ -51,7 +59,7 @@ def test_doc_examples_compile_to_native_nodes(raw, tmp_path):
     manifest = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
     assert manifest["status"] == "compiled"
     text = _graph(manifest)
-    for needed in ("H3V2VGranularFractionalDenoise", "LoadImageMask", "VHS_LoadVideoFFmpeg"):
+    for needed in ("H3V2VGranularFractionalDenoise", "VHS_LoadVideoFFmpeg"):
         assert needed in text
     assert "LanPaint" not in text
 
@@ -63,10 +71,10 @@ def _v2v_block(manifest: dict) -> str:
 
 
 def test_mask_node_is_spatial_crop_disabled_audio_untouched(tmp_path):
-    manifest = compile_preparation(_prepare(PILL, tmp_path), out_dir=tmp_path / "out")
+    manifest = compile_preparation(_prepare(WATERMARK, tmp_path), out_dir=tmp_path / "out")
     block = _v2v_block(manifest)
     for fragment in ("mode='spatial'", "crop='disabled'", "audio_strength=0,",
-                     "inside_strength=1,", "outside_strength=0,",
+                     "inside_strength=1.0,", "outside_strength=0,",
                      "source_audio=vhs_loadvideoffmpeg.out('AUDIO')", "source_mask=loadimagemask.out("):
         assert fragment in block, fragment
     text = Path(manifest["workflow"]["workflow.py"]["path"]).read_text()
@@ -82,11 +90,16 @@ def test_source_window_comes_from_range(tmp_path):
     assert "start_time=90.0" in text and "frame_load_cap=120" in text
 
 
-def test_rectangle_masks_still_fail_closed(tmp_path):
+def test_rectangle_masks_bind_resolved_static_region(tmp_path):
     raw = json.loads(json.dumps(WATERMARK))
     raw["media"][0]["edit"][0]["mask"] = {"rectangle": [0, 0, 10, 10]}
-    with pytest.raises(Exception):
-        compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    manifest = compile_preparation(_prepare(raw, tmp_path), out_dir=tmp_path / "out")
+    from vibecomfy.cli_loader import load_workflow_any
+    workflow = load_workflow_any(manifest["workflow"]["workflow.py"]["path"])
+    api = workflow.compile("api", run_inputs=manifest["workflow_inputs"])
+    mask = next(row for row in api.values() if row["class_type"] == "LoadImageMask")
+    assert mask["inputs"]["channel"] == "red"
+    assert manifest["capabilities"]["edit_binding"]["during_frames"] == [0, 288]
 
 
 def _video_mask_prepare(tmp_path: Path, frames: int) -> dict:
@@ -121,8 +134,10 @@ def test_native_masked_edit_video_mask_binding(tmp_path):
     assert manifest["capabilities"]["mask_binding"] == "per-frame video mask"
     archives = [Path(row["path"]) for row in _all_files(manifest) if str(row["path"]).endswith("managed-assets.zip")]
     assert archives, "managed-assets.zip missing"
+    row = next(row for row in manifest["managed_assets"]["manifest"]["assets"]
+               if row["binding"] == "video_mask_0")
     with zipfile.ZipFile(archives[0]) as zf:
-        assert any("pill-mask" in name or "video_mask_0" in name for name in zf.namelist()), zf.namelist()
+        assert hashlib.sha256(zf.read(row["member"])).hexdigest() == row["sha256"]
 
 
 def _all_files(manifest: dict):

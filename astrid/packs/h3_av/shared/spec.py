@@ -47,6 +47,8 @@ class Operation:
     region: str | None = None  # None selects the full frame.
     refs: tuple[str, ...] = ()
     stream: str = "video"
+    strength: float = 1.0
+    seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,15 @@ def _normalize_spec(spec: H3Spec, modalities: Mapping[str, str] | None) -> H3Spe
                 path,
                 "Use generate, extend, regenerate, or preserve",
             )
+        if isinstance(op.strength, bool) or not isinstance(op.strength, (int, float)) or not 0 <= op.strength <= 1:
+            _fail("unsupported_control", "Strength must be a finite number in 0..1", f"{path}.strength",
+                  "Supply a supported native spatial strength")
+        if op.seed is not None and (type(op.seed) is not int or not 0 <= op.seed <= 2**64 - 1):
+            _fail("unsupported_control", "Seed must be an unsigned 64-bit integer", f"{path}.seed",
+                  "Supply an integer from 0 to 2**64-1")
+        if op.op != "regenerate" and (op.strength != 1 or op.seed is not None):
+            _fail("unsupported_control", "Strength and seed apply to video regeneration only", path,
+                  "Remove per-operation controls from generation, extension and preservation")
         if op.stream not in {"video", "audio", "av"}:
             _fail(
                 "unsupported_op", "Unsupported stream", f"{path}.stream", "Use video, audio, or av"
@@ -296,8 +307,12 @@ def _normalize_spec(spec: H3Spec, modalities: Mapping[str, str] | None) -> H3Spe
                 }
                 if stream == "video":
                     edit["mask"] = masks[op.region] if op.region else {"full_frame": True}
-                if op.refs:
+                if op.op == "regenerate":
                     edit["guides"] = list(op.refs)
+                    if op.strength != 1:
+                        edit["strength"] = op.strength
+                    if op.seed is not None:
+                        edit["seed"] = op.seed
                 edits.append(edit)
     generators = [op for op in ops if op.op in {"generate", "extend"}]
     if generators and (len(generators) != 1 or any(op.op == "regenerate" for op in ops)):
@@ -460,7 +475,7 @@ def _from_v2(request: H3Request) -> H3Spec:
         source = Source(item["asset"], tuple(item["range"]))
         for edit in item["edit"]:
             if (
-                set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels"}
+                set(edit) - {"stream", "during", "resolved", "action", "mask", "guides", "channels", "strength", "seed"}
                 or edit.get("channels", "all") != "all"
             ):
                 _fail(
@@ -479,6 +494,8 @@ def _from_v2(request: H3Request) -> H3Spec:
                     region,
                     guides,
                     edit["stream"],
+                    edit.get("strength", 1.0),
+                    edit.get("seed"),
                 )
             )
     if source is None:
@@ -543,7 +560,8 @@ def canonical_spec(
         ops = []
         for stream in ("video", "audio"):
             for change in value["changes"][stream]:
-                if set(change) - {"during", "action", "area"}:
+                if set(change) - ({"during", "action", "area", "mask_asset"} if stream == "video"
+                                  else {"during", "action"}):
                     _fail(
                         "unsupported_op",
                         "Advanced legacy changes are outside SPEC-MIN",
@@ -552,6 +570,8 @@ def canonical_spec(
                     )
                 area = change.get("area", {})
                 mask = {"asset" if key == "mask_asset" else key: val for key, val in area.items()}
+                if "mask_asset" in change:
+                    mask = {"asset": change["mask_asset"]}
                 region = _region(mask, regions) if stream == "video" else None
                 ops.append(
                     Operation(
@@ -595,7 +615,7 @@ def canonical_spec(
         settings = dict(value["overrides"])
         if value["operation"] == "edit":
             settings = {
-                "model": "minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+                "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
                 "steps": 20,
                 "seed": 0,
                 **settings,

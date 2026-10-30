@@ -276,7 +276,7 @@ def test_managed_output_retrieval_reads_object_and_verifies_digest(tmp_path: Pat
     assert media.calls == [digest]
 
 
-def _lanpaint_preparation(tmp_path: Path) -> dict[str, object]:
+def _native_edit_preparation(tmp_path: Path) -> dict[str, object]:
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source-video")
     request = normalize_request(
@@ -285,10 +285,10 @@ def _lanpaint_preparation(tmp_path: Path) -> dict[str, object]:
             "operation": "edit",
             "source": {"asset": "source", "range": [0, 4]},
             "output": {"duration": 4},
-            "content": {"prompt": "Replace the spoken line."},
+            "content": {"prompt": "Replace the selected picture region."},
             "changes": {
                 "video": [{"during": [1, 3], "area": {"full_frame": True}, "action": "generate"}],
-                "audio": [{"during": [1, 2], "action": "generate", "dialogue": "Say hello."}],
+                "audio": [],
             },
             "references": [],
             "overrides": {"seed": 7, "steps": 12},
@@ -308,7 +308,7 @@ class _FakeManagedMedia:
 
 
 def _compile_result_with_managed_bundle(tmp_path: Path):
-    compiled = compile_preparation(_lanpaint_preparation(tmp_path), out_dir=tmp_path / "compiled")
+    compiled = compile_preparation(_native_edit_preparation(tmp_path), out_dir=tmp_path / "compiled")
     objects: dict[str, bytes] = {}
     rows: list[dict[str, object]] = []
     outputs = {
@@ -325,7 +325,7 @@ def _compile_result_with_managed_bundle(tmp_path: Path):
     return compiled, SimpleNamespace(capability_id="h3_av.compile", outputs={"managed_outputs": rows}, raw_result={}), _FakeManagedMedia(objects)
 
 
-def test_connected_client_uses_selected_lanpaint_bundle_and_attests_provenance(tmp_path: Path) -> None:
+def test_connected_client_uses_selected_native_edit_bundle_and_attests_provenance(tmp_path: Path) -> None:
     compiled, result, media = _compile_result_with_managed_bundle(tmp_path)
 
     inputs = _retrieve_compiled_workflow(
@@ -336,7 +336,7 @@ def test_connected_client_uses_selected_lanpaint_bundle_and_attests_provenance(t
     )
 
     assert set(inputs) == {"python", "companion", "source"}
-    assert b"LanPaint_VideoMaskEditor" in media.objects[inputs["python"]["object_id"]]
+    assert b"H3V2VGranularFractionalDenoise" in media.objects[inputs["python"]["object_id"]]
     assert media.reads == [
         inputs["python"]["object_id"],
         inputs["companion"]["object_id"],
@@ -350,7 +350,7 @@ def test_connected_client_fails_closed_on_workflow_hash_or_provenance_mismatch(t
     compilation = json.loads(Path(compiled["manifest_path"]).read_text(encoding="utf-8"))
     if mismatch == "payload":
         python_digest = next(row["object_id"] for row in result.outputs["managed_outputs"] if row["name"] == "python")
-        media.objects[python_digest] = b"tampered-lanpaint-workflow"
+        media.objects[python_digest] = b"tampered-native-edit-workflow"
     else:
         compilation["workflow"]["workflow.py"]["sha256"] = "0" * 64
 
@@ -754,6 +754,7 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     raw["operation"] = operation
     if operation == "edit":
         raw["source"]["range"] = [0, 2]
+        raw["changes"]["audio"] = []
     asset_map = {"source": str(source)}
     if verification_fault == "mask":
         from PIL import Image

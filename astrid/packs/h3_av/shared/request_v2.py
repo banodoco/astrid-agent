@@ -350,7 +350,7 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
             for edit_index, raw_edit in enumerate(edits):
                 edit_path = f"{path}.edit[{edit_index}]"
                 edit = _object(raw_edit, edit_path) or {}
-                _unknown(edit, {"stream", "during", "mask", "guides", "text", "dialogue", "channels", "action", "keep"}, edit_path)
+                _unknown(edit, {"stream", "during", "mask", "guides", "text", "dialogue", "channels", "action", "keep", "strength", "seed"}, edit_path)
                 stream = edit.get("stream")
                 if stream not in {"video", "audio"}: raise H3RequestError(f"{edit_path}.stream must be video or audio")
                 action = "preserve" if edit.get("keep") is True else edit.get("action", "generate")
@@ -368,6 +368,18 @@ def normalize_v2(raw: Mapping[str, Any], *, asset_modalities: Mapping[str, str] 
                 if "guides" in edit:
                     guides = edit["guides"] if isinstance(edit["guides"], list) else [edit["guides"]]
                     normalized["guides"] = [_nonblank(guide, f"{edit_path}.guides[{i}]") for i, guide in enumerate(guides)]
+                if "strength" in edit or "seed" in edit:
+                    if stream != "video" or action != "generate":
+                        raise H3RequestError(f"{edit_path} strength and seed require a generated video edit")
+                    if "strength" in edit:
+                        strength = _number(edit["strength"], f"{edit_path}.strength", minimum=0)
+                        if strength > 1:
+                            raise H3RequestError(f"{edit_path}.strength must be in the range 0..1")
+                        normalized["strength"] = strength
+                    if "seed" in edit:
+                        if type(edit["seed"]) is not int or not 0 <= edit["seed"] <= 2**64 - 1:
+                            raise H3RequestError(f"{edit_path}.seed must be an unsigned 64-bit integer")
+                        normalized["seed"] = edit["seed"]
                 occurrence["edit"].append(normalized)
         occurrences.append(occurrence)
     by_id = {item.get("id", item["occurrence_id"]): item for item in occurrences}

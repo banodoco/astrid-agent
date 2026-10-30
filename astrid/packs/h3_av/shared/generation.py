@@ -207,7 +207,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
     """Build ordinary H3 nodes and one muxed sink, ready for canonical emission.
 
     ``masked_edit`` (keys ``source_binding``, ``start_time``, ``frame_load_cap``,
-    ``mask_binding``, ``mask_channel``, optional ``mask_kind="video"``) inserts the native spatial V2V node
+    ``mask_binding``, ``mask_channel``, optional ``mask_kind="video"`` and ``strength`` in 0..1) inserts the native spatial V2V node
     between the target latent and the sampler; it also permits zero references.
 
     Graph shape depends only on reference list length. Filenames remain managed
@@ -385,7 +385,7 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
                        latent=target.out("LATENT"), model=shifted.out("MODEL"), vae=video_vae.out("VAE"),
                        audio_vae=audio.out("audio_vae"), source_frames=source.out("IMAGE"),
                        source_audio=source.out(2), source_fps=24.0, mode="spatial",
-                       global_strength=0.9995, inside_strength=1, outside_strength=0, audio_strength=0,
+                       global_strength=0.9995, inside_strength=masked_edit.get("strength", 1), outside_strength=0, audio_strength=0,
                        source_fit="start", crop="disabled", mask_temporal_reduce="max", invert_mask=False,
                        source_mask=mask.out("MASK"))
             sampling_model = v2v.out("MODEL")

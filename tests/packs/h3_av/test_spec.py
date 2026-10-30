@@ -43,7 +43,7 @@ LEGACY_DIGESTS = {
 }
 SCHEMA_DIGESTS = {
     1: "3eb17c74f0c9788f4077896603c7918918aa62cf321dc26e394c31e4aca65403",
-    2: "e80527ff806dacf2430b6663f01038febacba528d1a76487a4ae8859fe779605",
+    2: "ee22c452912dfe56c29b101dc7c6facd5a16508d352a791a23d1cf375c7b136e",
 }
 
 
@@ -112,7 +112,7 @@ def test_v1_v2_and_typed_spec_have_equal_semantics_without_changing_identity(cas
 
 
 @pytest.mark.parametrize("version", (1, 2))
-def test_legacy_schema_bytes_and_fixture_validation_are_preserved(version: int) -> None:
+def test_versioned_schema_bytes_and_legacy_fixture_validation(version: int) -> None:
     data = (PACK / f"schemas/request.v{version}.json").read_bytes()
     assert hashlib.sha256(data).hexdigest() == SCHEMA_DIGESTS[version]
     schema = json.loads(data)
@@ -130,17 +130,19 @@ def test_canonical_view_preserves_v1_prompt_bytes_and_legacy_digest() -> None:
     assert request.digest != normalize_request(CASES[0]["v1"]).digest
 
 
-def test_legacy_edit_defaults_and_explicit_settings_are_not_erased() -> None:
+def test_legacy_edit_uses_native_model_and_keeps_sampling_defaults_and_explicit_settings() -> None:
     raw = copy.deepcopy(CASES[1]["v1"])
     raw["overrides"] = {}
     legacy = normalize_request(raw).canonical
     native = normalize_request(CASES[1]["v2"]).canonical
-    assert legacy.settings["model"] == "minimax_h3_fl2va_pruned_fp8_scaled.safetensors"
+    assert legacy.settings["model"] == native.settings["model"]
+    assert legacy.settings["model"] == "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
     assert legacy.settings["steps"] == 20
     assert legacy.settings["seed"] == 0
     assert legacy != native
     raw["overrides"] = {"model": native.settings["model"], "steps": 12, "seed": 42}
     customized = normalize_request(raw).canonical
+    assert customized.settings["model"] == native.settings["model"]
     assert customized.settings["steps"] == 12
     assert customized.settings["seed"] == 42
     assert customized != native
