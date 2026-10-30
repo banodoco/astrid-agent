@@ -209,30 +209,40 @@ def test_cancellation_records_terminal_state_and_receipt(case, monkeypatch, sour
     assert not case.runtime.failures
 
 
-@pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "heartbeat", "expired", "resource_expired",
+@pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "fence", "heartbeat", "expired", "resource_expired",
                                 "null_expiry", "invalid_expiry", "naive_expiry"])
 def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
+    class RuntimeFault(OSError):
+        code = "runtime_unavailable"
+        request_id = "req-lease-17"
+
+        def __init__(self, message):
+            super().__init__(message)
+            self.message = message
+
     def execute(*args, **kwargs):
         if loss == "task_read":
-            monkeypatch.setattr(case.runtime, "task", lambda *_: (_ for _ in ()).throw(OSError("lease transport lost")))
+            monkeypatch.setattr(case.runtime, "task", lambda *_: (_ for _ in ()).throw(RuntimeFault("task read unavailable")))
         elif loss == "queued":
             case.task["task"]["status"] = "queued"
         elif loss == "successor":
             case.task["task"]["attempt_id"] = "successor"
+        elif loss == "fence":
+            case.task["task"]["fence"] = 4
         elif loss == "heartbeat":
-            monkeypatch.setattr(case.runtime, "heartbeat", lambda *_a, **_k: (_ for _ in ()).throw(OSError("lease renewal lost")))
+            monkeypatch.setattr(case.runtime, "heartbeat", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeFault("bearer token: do-not-record")))
             (case.root / ".astrid-progress.json").write_text('{"phase":"changed","percent":30}')
         else:
-            expiry = {"null_expiry": None, "invalid_expiry": "invalid", "naive_expiry": "2000-01-01T00:00:00"}.get(
+            lease_expiry = {"null_expiry": None, "invalid_expiry": "invalid", "naive_expiry": "2000-01-01T00:00:00"}.get(
                 loss, "2000-01-01T00:00:00+00:00")
             if loss == "resource_expired":
                 monkeypatch.setattr(case.runtime, "task", lambda *_a: SimpleNamespace(
                     state=case.task["task"]["status"], attempt_id="attempt-result", lease_fence=3,
-                    lease_expires_at=expiry))
+                    lease_expires_at=lease_expiry))
             else:
-                case.task["task"]["lease_expires_at"] = expiry
-        expiry = time.monotonic() + 2
-        while case.task["task"]["status"] != "failed" and time.monotonic() < expiry:
+                case.task["task"]["lease_expires_at"] = lease_expiry
+        polling_deadline = time.monotonic() + 2
+        while case.task["task"]["status"] != "failed" and time.monotonic() < polling_deadline:
             time.sleep(0.01)
         raise HostCancelled("lease observer contained executor")
 
@@ -242,6 +252,65 @@ def test_lease_loss_is_failure_with_terminal_receipt(case, monkeypatch, loss):
         case.host.run_task(case.task, lease_token="lease-result")
     assert_failed(case, started, code="lease_lost")
     assert len(case.runtime.failures) == 1
+    categories = {
+        "task_read": "task_read_exception", "queued": "task_state_changed",
+        "successor": "attempt_changed", "fence": "fence_changed",
+        "heartbeat": "heartbeat_exception", "expired": "lease_expired",
+        "resource_expired": "lease_expired", "null_expiry": "lease_metadata_invalid",
+        "invalid_expiry": "lease_metadata_invalid", "naive_expiry": "lease_metadata_invalid",
+    }
+    diagnostic = case.runtime.failures[0][3]["failure_diagnostic"]
+    assert diagnostic["category"] == categories[loss]
+    assert diagnostic["schema_version"] == 1
+    assert diagnostic["observed_at_utc"].endswith("+00:00")
+    last_heartbeat = datetime.fromisoformat(diagnostic["last_successful_heartbeat_at_utc"])
+    assert last_heartbeat.tzinfo == timezone.utc
+    assert len(json.dumps(diagnostic)) < 1200
+    if loss in {"task_read", "heartbeat"}:
+        assert diagnostic["exception_type"] == "RuntimeFault"
+        assert diagnostic["runtime_code"] == "runtime_unavailable"
+        assert diagnostic["request_id"] == "req-lease-17"
+    if loss == "task_read":
+        assert diagnostic["runtime_message"] == "task read unavailable"
+    if loss == "heartbeat":
+        assert "runtime_message" not in diagnostic
+        assert "do-not-record" not in json.dumps(diagnostic)
+    terminal_diagnostic = receipt(case)["lease_diagnostic"]
+    assert terminal_diagnostic == diagnostic
+    assert case.task["task"]["status"] == "failed"
+    assert not case.runtime.settlements
+
+
+def test_lease_loss_keeps_last_successful_heartbeat_receipt(case, monkeypatch):
+    pulsed = threading.Event()
+    expiry = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+    original_heartbeat = case.runtime.heartbeat
+
+    def heartbeat(*args, **kwargs):
+        original_heartbeat(*args, **kwargs)
+        pulsed.set()
+        return SimpleNamespace(lease_expires_at=expiry)
+
+    monkeypatch.setattr(case.runtime, "heartbeat", heartbeat)
+
+    def execute(*args, **kwargs):
+        assert pulsed.wait(2)
+        case.task["task"]["status"] = "queued"
+        deadline = time.monotonic() + 2
+        while case.task["task"]["status"] != "failed" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        raise HostCancelled("lease observer contained executor")
+
+    monkeypatch.setattr(case.host, "_run_command_definition", execute)
+    with pytest.raises(HostError, match="lease lost"):
+        case.host.run_task(case.task, lease_token="lease-result")
+    diagnostic = receipt(case)["lease_diagnostic"]
+    assert diagnostic["category"] == "task_state_changed"
+    assert datetime.fromisoformat(diagnostic["last_successful_heartbeat_at_utc"]).tzinfo == timezone.utc
+    assert diagnostic["last_successful_heartbeat_expiry"] == expiry
+    assert diagnostic["observed"] == {"state": "queued", "attempt_id": "attempt-result", "fence": "3"}
+    assert case.task["task"]["status"] == "failed"
+    assert not case.runtime.settlements
 
 
 @pytest.mark.parametrize("read_model", ["mapping", "resource"])

@@ -9388,6 +9388,8 @@ class GenericPackHost:
             settled=terminal.get("settled"), settlement=terminal.get("settlement"),
             effect=terminal.get("effect"),
         )
+        if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
+            receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
         with terminal.get("completion_lock", threading.RLock()):
             # A slow harvest may have started before the observer's timeout.
             # Recheck at publication, without holding this lock over harvesting.
@@ -9424,6 +9426,12 @@ class GenericPackHost:
             "task": dict(data), "attempt_id": exact_attempt, "lifetime": lifetime,
             "pump_stop": stop, "cancel_signal": abort, "stage": "admission",
             "completion_lock": completion_lock,
+            "lease_diagnostic": {
+                "schema_version": 1,
+                "category": "observing",
+                "last_successful_heartbeat_at_utc": None,
+                "last_successful_heartbeat_expiry": None,
+            },
         }
         if self.attempt_root is not None:
             terminal["root"] = self.attempt_root
@@ -9455,6 +9463,67 @@ class GenericPackHost:
                     "lease_deadline_present": lease_deadline_present,
                     "lease_expires_at": value("lease_expires_at")}
 
+        def safe_lease_value(value, *, limit=96):
+            """Keep observer evidence to small printable identifiers/timestamps."""
+            if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                return None
+            text = str(value)
+            if len(text) > limit or any(ord(char) < 32 or ord(char) > 126 for char in text):
+                return None
+            return text
+
+        def lease_runtime_error(error):
+            """Extract only bounded, non-secret Runtime error fields."""
+            error_type = type(error).__name__[:64]
+            detail = {"exception_type": error_type}
+            def attr(name, fallback=None):
+                try:
+                    return getattr(error, name, fallback)
+                except BaseException:
+                    return None
+            code = safe_lease_value(attr("code"), limit=64)
+            request_id = safe_lease_value(attr("request_id", attr("req_id")), limit=96)
+            if code and all(char.isalnum() or char in "._-" for char in code):
+                detail["runtime_code"] = code
+            if request_id and all(char.isalnum() or char in "._:-" for char in request_id):
+                detail["request_id"] = request_id
+            message = safe_lease_value(attr("message"), limit=256)
+            if message:
+                # Error messages are optional and may contain request payloads.
+                # Exclude likely credential-bearing forms instead of persisting them.
+                lowered = message.lower()
+                sensitive = ("token", "secret", "password", "bearer", "authorization",
+                             "prompt", "payload", "progress", "media", "input", "credential")
+                if not any(marker in lowered for marker in sensitive):
+                    detail["runtime_message"] = message
+            return detail
+
+        def lease_snapshot_detail(current):
+            observed = {}
+            for key, source in (("state", "status"), ("attempt_id", "attempt_id"),
+                                ("fence", "fence"), ("lease_expires_at", "lease_expires_at")):
+                value = current.get(source)
+                if key == "state" and value is None:
+                    continue
+                if key == "fence" and value is None:
+                    continue
+                safe = safe_lease_value(value, limit=96 if key != "state" else 48)
+                if safe is not None:
+                    observed[key] = safe
+            return observed
+
+        def record_lease_diagnostic(category, *, current=None, error=None):
+            with completion_lock:
+                diagnostic = dict(terminal["lease_diagnostic"])
+                diagnostic["category"] = category
+                diagnostic["observed_at_utc"] = datetime.now(timezone.utc).isoformat()
+                if current is not None:
+                    diagnostic["observed"] = lease_snapshot_detail(current)
+                if error is not None:
+                    diagnostic.update(lease_runtime_error(error))
+                # The object is intentionally a fixed-shape, bounded record.
+                terminal["lease_diagnostic"] = diagnostic
+
         def ensure_failure(error):
             if terminal.get("recorded") or self.client is None or not exact_attempt or exact_fence is None:
                 return
@@ -9474,6 +9543,8 @@ class GenericPackHost:
                     message, retryable=False,
                     attempt_id=exact_attempt, fence=exact_fence,
                     structured_error=structured_error,
+                    **({"failure_diagnostic": dict(terminal["lease_diagnostic"])}
+                       if terminal.get("forced") == "lease_lost" else {}),
                 )
             except Exception:
                 # Observe cancellation only after attempting the original
@@ -9509,9 +9580,21 @@ class GenericPackHost:
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
             if progress is not None:
                 kwargs["progress"] = progress
-            self.client.heartbeat(str(data["id"]), lease_token, **kwargs)
+            result = self.client.heartbeat(str(data["id"]), lease_token, **kwargs)
+            try:
+                expiry = (result.get("lease_expires_at") if isinstance(result, Mapping)
+                          else getattr(result, "lease_expires_at", None))
+            except BaseException:
+                expiry = None
+            with completion_lock:
+                diagnostic = dict(terminal["lease_diagnostic"])
+                diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
+                diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
+                terminal["lease_diagnostic"] = diagnostic
 
         def force_abort(code):
+            if code == "lease_lost" and terminal["lease_diagnostic"].get("category") == "observing":
+                record_lease_diagnostic("lease_loss_unclassified")
             with completion_lock:
                 if terminal.get("recorded") or terminal.get("forced"):
                     return
@@ -9548,25 +9631,49 @@ class GenericPackHost:
                 next_poll = time.monotonic() + _LEASE_POLL_SECONDS
                 try:
                     current = task_snapshot()
-                    if current["status"] in {"cancel_requested", "cancelled"}:
-                        force_abort("cancelled")
-                        return
-                    state = current["status"]
-                    if current["lease_deadline_present"]:
+                except BaseException as exc:
+                    record_lease_diagnostic("task_read_exception", error=exc)
+                    force_abort("timeout" if lifetime.expired() else "lease_lost")
+                    return
+                record_lease_diagnostic("observing", current=current)
+                if current["status"] in {"cancel_requested", "cancelled"}:
+                    force_abort("cancelled")
+                    return
+                state = current["status"]
+                if current["lease_deadline_present"]:
+                    try:
                         expiry = datetime.fromisoformat(current["lease_expires_at"].replace("Z", "+00:00"))
-                        if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+                        if expiry.tzinfo is None:
+                            record_lease_diagnostic("lease_metadata_invalid", current=current)
                             force_abort("lease_lost")
                             return
-                    if (state not in {None, "running"}
-                            or current.get("attempt_id", exact_attempt) != exact_attempt
-                            or current.get("fence", exact_fence) != exact_fence):
+                        if expiry <= datetime.now(timezone.utc):
+                            record_lease_diagnostic("lease_expired", current=current)
+                            force_abort("lease_lost")
+                            return
+                    except (AttributeError, TypeError, ValueError) as exc:
+                        record_lease_diagnostic("lease_metadata_invalid", current=current, error=exc)
                         force_abort("lease_lost")
                         return
-                    # Main execution/child guards validate full interactive
-                    # authority. The observer must keep its deadline clock
-                    # available if those authority reads themselves stall.
+                if state not in {None, "running"}:
+                    record_lease_diagnostic("task_state_changed", current=current)
+                    force_abort("lease_lost")
+                    return
+                if current.get("attempt_id", exact_attempt) != exact_attempt:
+                    record_lease_diagnostic("attempt_changed", current=current)
+                    force_abort("lease_lost")
+                    return
+                if current.get("fence", exact_fence) != exact_fence:
+                    record_lease_diagnostic("fence_changed", current=current)
+                    force_abort("lease_lost")
+                    return
+                # Main execution/child guards validate full interactive
+                # authority. The observer must keep its deadline clock
+                # available if those authority reads themselves stall.
+                try:
                     renew_progress()
-                except BaseException:
+                except BaseException as exc:
+                    record_lease_diagnostic("heartbeat_exception", current=current, error=exc)
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
