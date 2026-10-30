@@ -2449,6 +2449,7 @@ def _execution_contract(
     task_data: Mapping[str, Any],
     *,
     runtime_session_id: str | None = None,
+    allow_runtime_empty_inputs: bool = False,
 ) -> dict[str, Any] | None:
     """Validate the carried request before the worker spends or opens a session."""
     envelope = task_data.get("spec")
@@ -2479,7 +2480,13 @@ def _execution_contract(
         raise HostError(f"invalid execution_request: {exc}") from exc
     if normalized is None or not isinstance(request, Mapping):
         raise HostError("invalid execution_request")
-    if _canonical_digest(dict(request)) != _canonical_digest(normalized):
+    carried_request = dict(request)
+    # Exact delegated claims receive Runtime's canonical empty input manifest.
+    # The SDK omits that empty member; permit this one representation only on
+    # the authenticated exact handoff, preserving ordinary claim validation.
+    if allow_runtime_empty_inputs and type(carried_request.get("inputs")) is list and carried_request["inputs"] == []:
+        carried_request.pop("inputs")
+    if _canonical_digest(carried_request) != _canonical_digest(normalized):
         raise HostError("runtime task execution_request is not normalized")
 
     declared = normalized.get("inputs", [])
@@ -11217,7 +11224,7 @@ class GenericPackHost:
             return None
         return self._execute_claimed_task(claim)
 
-    def _execute_claimed_task(self, claim: Any) -> Mapping[str, Any] | None:
+    def _execute_claimed_task(self, claim: Any, *, delegated_child: bool = False) -> Mapping[str, Any] | None:
         """Validate and execute the canonical immutable claim handoff."""
         claim_data = dict(claim) if isinstance(claim, Mapping) else {
             "attempt_id": getattr(claim, "attempt_id", None),
@@ -11296,9 +11303,11 @@ class GenericPackHost:
         # Falsy malformed requests are present-invalid, never a fallback.
         try:
             claim_request = _execution_contract(
-                claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+                claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"),
+                allow_runtime_empty_inputs=delegated_child)
             read_request = _execution_contract(
-                task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+                task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"),
+                allow_runtime_empty_inputs=delegated_child)
         except Exception as exc:
             fail_claim_handoff(str(exc))
         if _canonical_digest(claim_request) != _canonical_digest(read_request):
@@ -11487,7 +11496,7 @@ class GenericPackHost:
                     "parent authority ended before delegated child execution", retryable=False,
                     attempt_id=str(attempt_id), fence=int(_claim_field(claim, "fence")))
                 raise
-            return self._execute_claimed_task(claim)
+            return self._execute_claimed_task(claim, delegated_child=True)
         finally:
             self._handoff_leave_attempt(thread_id)
 

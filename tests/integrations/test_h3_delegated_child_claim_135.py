@@ -5,6 +5,7 @@ fixture authorities and placement are generated inside the disposable realm.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import threading
@@ -14,7 +15,7 @@ import pytest
 import yaml
 
 from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridge, resource, task_resource
-from astrid.core.execution.generic_host import GenericPackHost, RuntimeProtocolClient
+from astrid.core.execution.generic_host import GenericPackHost, HostError, RuntimeProtocolClient, _execution_contract
 from astrid.sdk._child_bridge import ChildBridge, _BridgeRejected
 from astrid_runtime_client import ApiError, WorkspaceClient
 
@@ -235,3 +236,26 @@ def test_h3_bridge_exact_claim_rejection_never_falls_back(claim_world, monkeypat
     for row in (selected, world.foreign_child, other):
         assert task_resource(world.client.task(row["task_id"]))["state"] == "queued"
     assert world.host._handoff_active_attempts == 0
+
+
+def test_exact_handoff_accepts_only_runtime_empty_input_representation(claim_world):
+    world = claim_world
+    selected = admit_child(world, "selected")
+    claim = world.client.claim_delegated_child(selected["task_id"], executor_id=world.host.executor_id,
+        capability_ids=[CHILD], target=DEFAULT, parent=world.context, idempotency_key="representation-claim")
+    value = resource(claim)
+    assert value["execution_request"]["inputs"] == []
+    with pytest.raises(HostError, match="execution_request is not normalized"):
+        _execution_contract(value)
+    normalized = _execution_contract(value, allow_runtime_empty_inputs=True)
+    assert normalized["target"] == DEFAULT and "inputs" not in normalized
+
+    nonempty = copy.deepcopy(value)
+    nonempty["execution_request"]["inputs"] = [{"name": "value", "object_id": digest("fixture"),
+        "filename": "value.txt"}]  # Missing requiredness would normalize to True.
+    with pytest.raises(HostError, match="execution_request is not normalized"):
+        _execution_contract(nonempty, allow_runtime_empty_inputs=True)
+    unknown = copy.deepcopy(value)
+    unknown["execution_request"]["unrecognized"] = True
+    with pytest.raises(HostError, match="invalid execution_request"):
+        _execution_contract(unknown, allow_runtime_empty_inputs=True)
