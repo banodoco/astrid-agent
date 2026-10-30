@@ -2166,10 +2166,11 @@ def _automatic_generation_intent(
     """
     if modality is None or getattr(capability, "capability_type", None) != "executor":
         return None
-    capability_id = str(getattr(capability, "id", ""))
-    if capability_id == "generation.generate_image_openai":
+    if (str(getattr(capability, "id", "")) == "generation.generate_image_openai"
+            and not isinstance(inputs.get("jobs"), str)):
+        # OpenAI prompt files must already have expanded from authenticated
+        # bytes. A manifest count default is not an output cardinality witness.
         return None
-
     count_value: Any = inputs.get("count")
     if count_value is None:
         for port in getattr(capability, "inputs", ()) or ():
@@ -2604,7 +2605,7 @@ def _kernel_invoke(
                 raise CapabilityValidationError(
                     f"VibeComfy invocation preflight failed: {exc}"
                 ) from exc
-    if str(capability.id) == "generation.generate_image_codex":
+    if str(capability.id) in {"generation.generate_image_codex", "generation.generate_image_openai"}:
         # Bounded host profiles consume typed params as their single input
         # authority, including the ordered CAS descriptors.
         spec["params"] = spec.pop("inputs")
@@ -2629,13 +2630,15 @@ def _kernel_invoke(
     # manifest; otherwise a remote GenericPackHost can see the descriptor but
     # is correctly forbidden from fetching it.  This was especially easy to
     # miss for VibeComfy's canonical sibling bundle and managed source video.
-    file_input_names = {
+    file_input_names = [
         str(port.name)
         for port in (getattr(capability, "inputs", ()) or ())
         if getattr(port, "name", None)
         and str(getattr(port, "type", "")).lower() == "file"
-    }
-    for name in sorted(file_input_names):
+    ]
+    ordered_file_names = (file_input_names if str(capability.id) == "generation.generate_image_openai"
+                          else sorted(file_input_names))
+    for name in ordered_file_names:
         value = spec.get("inputs", request_inputs).get(name)
         if value is None:
             continue
@@ -3920,6 +3923,88 @@ _AUDIO_TTS_PASSTHROUGH_INPUTS = frozenset({"voice", "rate", "volume", "pitch", "
 _AUDIO_TTS_IGNORED_INPUTS = frozenset({"mode", "model", "execution"})
 
 
+def _openai_image_reference_ports(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze the public reference order into existing scalar CAS file ports."""
+    values = dict(inputs)
+    reference = values.pop("image_ref", None)
+    if reference is None:
+        return values
+    references = reference if isinstance(reference, (list, tuple)) else [reference]
+    if not 1 <= len(references) <= 16:
+        raise CapabilityValidationError("OpenAI image_ref requires between 1 and 16 references")
+    if any(f"image_ref_{index:02d}" in values for index in range(16)):
+        raise CapabilityValidationError("OpenAI image_ref cannot be mixed with scalar reference ports")
+    for index, item in enumerate(references):
+        if item is None:
+            raise CapabilityValidationError("OpenAI references must not contain null values")
+        values[f"image_ref_{index:02d}"] = item
+    return values
+
+
+def _prepare_openai_image_inputs(
+    capability: Any, inputs: Mapping[str, Any], *, client: Any,
+) -> dict[str, Any]:
+    """Authenticate managed bytes before expanding jobs or deriving admission intent."""
+    from astrid.core.execution.managed_inputs import managed_file_digest
+    from astrid.core.generation.backends.openai import normalize_request, validate_reference_bytes
+
+    values = dict(inputs)
+    unknown = set(values) - {str(port.name) for port in capability.inputs}
+    if unknown:
+        raise CapabilityValidationError(f"OpenAI request contains undeclared inputs: {', '.join(sorted(unknown))}")
+    if values.get("execution", "openai") != "openai":
+        raise CapabilityValidationError("OpenAI image execution must be openai")
+    metadata = capability.definition.get("metadata", {})
+    limits = metadata.get("storage_input_max_bytes", {})
+    files: list[tuple[str, str, int, Mapping[str, Any]]] = []
+    seen_references: set[str] = set()
+    for port in capability.inputs:
+        name = str(port.name)
+        if str(port.type).lower() != "file" or values.get(name) is None:
+            continue
+        descriptor = values[name]
+        if not isinstance(descriptor, Mapping):
+            raise CapabilityValidationError(f"OpenAI {name} requires a managed descriptor with size_bytes")
+        try:
+            digest = managed_file_digest(descriptor, name)
+        except ValueError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+        size = descriptor.get("size_bytes")
+        limit = limits.get(name)
+        if (type(size) is not int or size < 1 or type(limit) is not int
+                or size > limit):
+            raise CapabilityValidationError(f"OpenAI {name} has an invalid or oversized size_bytes")
+        if name.startswith("image_ref_"):
+            if digest in seen_references:
+                raise CapabilityValidationError("OpenAI references must use distinct managed objects")
+            seen_references.add(digest)
+        files.append((name, digest, size, descriptor))
+
+    reader = getattr(getattr(client, "media", None), "read_bytes", None)
+    if files and not callable(reader):
+        raise CapabilityValidationError("OpenAI managed inputs require the Runtime object reader")
+    prompt_bytes = None
+    for name, digest, size, descriptor in files:
+        try:
+            data = reader(digest)
+        except Exception as exc:
+            raise CapabilityValidationError(f"OpenAI managed input {name!r} could not be authenticated") from exc
+        if (type(data) is not bytes or len(data) != size
+                or hashlib.sha256(data).hexdigest() != digest.removeprefix("sha256:")):
+            raise CapabilityValidationError(f"OpenAI managed input {name!r} differs from its digest or size")
+        if name == "prompts_file":
+            prompt_bytes = data
+        else:
+            try:
+                validate_reference_bytes(data, index=int(name.rsplit("_", 1)[1]))
+            except ValueError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+    try:
+        return normalize_request(values, prompt_bytes=prompt_bytes)
+    except ValueError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
+
+
 def _speech_inputs_from_audio_request(inputs: Mapping[str, Any] | None) -> dict[str, Any]:
     """Map generation.generate_audio mode=tts onto generation.generate_speech.
 
@@ -4056,6 +4141,12 @@ def invoke(
     # bounded runtime profile for Codex (the cloud profile remains closed).
     if capability_id == "generation.generate_image" and (inputs or {}).get("execution") == "codex":
         capability_id = "generation.generate_image_codex"
+    if capability_id == "generation.generate_image" and (
+        (inputs or {}).get("execution") == "openai"
+        or isinstance((inputs or {}).get("model"), str)
+        and (inputs or {})["model"].startswith("gpt-image")
+    ):
+        capability_id = "generation.generate_image_openai"
     # generation.generate_audio mode=tts is the speech route: it is served by
     # the exact-text Edge TTS executor, not by the music backend.
     if capability_id == "generation.generate_audio" and (inputs or {}).get("mode") == "tts":
@@ -4090,6 +4181,32 @@ def invoke(
 
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
+    if capability.id == "generation.generate_image_openai":
+        request_inputs = _openai_image_reference_ports(request_inputs)
+        request_inputs.setdefault("model", "gpt-image-2")
+        request_inputs.setdefault("execution", "openai")
+        request_inputs.setdefault("mode", "edit" if any(
+            request_inputs.get(f"image_ref_{index:02d}") is not None for index in range(16)
+        ) else "t2i")
+        if child_mode and any(name in request_inputs for name in (
+            "generation_intent", "variant_of", "primary",
+        )):
+            raise CapabilityValidationError(
+                "OpenAI child publication intent is host-derived; publication controls are not accepted"
+            )
+        if child_mode:
+            # Child object custody uses the existing scalar identity protocol.
+            # The host authenticates the retained bytes and checks their size;
+            # media display metadata is not part of that wire descriptor.
+            for name in ("prompts_file", *(f"image_ref_{index:02d}" for index in range(16))):
+                value = request_inputs.get(name)
+                if isinstance(value, Mapping) and ({"digest", "object_id"} & value.keys()):
+                    if set(value) - {"digest", "object_id", "filename", "media_type", "size_bytes"}:
+                        raise CapabilityValidationError(f"OpenAI child file {name!r} contains unsupported fields")
+                    request_inputs[name] = {
+                        key: item for key, item in value.items()
+                        if key in {"digest", "object_id", "filename"}
+                    }
     if capability.id == "rendering.render":
         # Apply caller/mode checks before delegated child dispatch as well as
         # top-level preflight. Child file custody still belongs to the bridge.
@@ -4136,7 +4253,7 @@ def invoke(
         )
         # Intent is admission metadata, not an executor-facing input port.
         request_inputs.pop("generation_intent")
-    elif not dry_run:
+    elif not dry_run and capability.id != "generation.generate_image_openai":
         generation_intent = _automatic_generation_intent(
             capability,
             request_inputs,
@@ -4154,6 +4271,12 @@ def invoke(
     for port in capability.inputs if hasattr(capability, "inputs") else ():
         if port.name not in effective_inputs and port.default is not None:
             effective_inputs[port.name] = port.default
+    if capability.id == "generation.generate_image_openai" and child_mode:
+        # ``count`` becomes total output cardinality only after host-side
+        # expansion. Do not turn a manifest default into a caller count/n.
+        for name in ("count", "n"):
+            if name not in request_inputs:
+                effective_inputs.pop(name, None)
     validate_action_inputs(capability, effective_inputs)
 
     if child_mode:
@@ -4240,6 +4363,21 @@ def invoke(
         if not isinstance(idempotency_context, Mapping):
             raise CapabilityValidationError("idempotency_context must be an object")
         invocation_authority_context = _json_safe_mapping(dict(idempotency_context))
+    if capability.id == "generation.generate_image_openai" and not dry_run:
+        from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+
+        request_inputs = _prepare_openai_image_inputs(capability, request_inputs, client=_client)
+        invocation_storage_estimate = OPENAI_IMAGE_STORAGE_POLICY.estimate
+        if generation_intent is None:
+            generation_intent = _automatic_generation_intent(
+                capability, request_inputs, modality=intent_modality,
+            )
+        if generation_intent is None:
+            raise CapabilityValidationError("OpenAI output cardinality is not safely inferable")
+        selectors = [selector for group in generation_intent["groups"] for selector in group["selectors"]]
+        if (len(selectors) != request_inputs["count"]
+                or sorted(selector["ordinal"] for selector in selectors) != list(range(request_inputs["count"]))):
+            raise CapabilityValidationError("OpenAI generation_intent differs from the expanded output cardinality")
     if capability.id == "generation.generate_image_codex":
         count = request_inputs.get("count", 1)
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 4:
@@ -4371,6 +4509,7 @@ def invoke(
     modality = {
         "generation.generate_image": "image",
         "generation.generate_image_codex": "image",
+        "generation.generate_image_openai": "image",
         "generation.generate_video": "video",
         "generation.generate_audio": "audio",
     }.get(str(capability.id))
@@ -4410,6 +4549,7 @@ def invoke(
             execution=request_inputs.get("execution"),
             inputs=request_inputs,
             modality=modality,
+            **({"required_features": ()} if capability.id == "generation.generate_image_openai" else {}),
         )
         if request_inputs.get("execution") == "local":
             require_local_generation_readiness(

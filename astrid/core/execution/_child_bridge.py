@@ -436,6 +436,10 @@ class HostChildBridge:
                                   noun="executor", error_cls=ChildBridgeError)
         from astrid.sdk.actions import validate_action_inputs_definition
         validate_action_inputs_definition(record.definition, inputs)
+        if record.id == "generation.generate_image_openai":
+            unknown = set(inputs) - {port.name for port in record.definition.inputs}
+            if unknown:
+                raise ChildBridgeError("OpenAI child contains undeclared inputs")
         file_ports = {port.name: port for port in record.definition.inputs if port.type == "file"}
         names = [name for name in file_ports if name in inputs]
         if [b.get("name") for b in bindings if isinstance(b, dict)] != names or len(bindings) != len(names):
@@ -450,6 +454,11 @@ class HostChildBridge:
         if bound is None and len(self._children) >= self.policy["limits"]["max_children"]:
             raise ChildBridgeError("child bridge count exceeds persisted limit")
         refs, ordered = [], []
+        openai_request = record.id == "generation.generate_image_openai"
+        if openai_request:
+            inputs = dict(inputs)
+        authenticated = {}
+        input_limits = record.definition.metadata.get("storage_input_max_bytes", {}) if openai_request else {}
         uploads = []
         snapshot_bytes = 0
         child_bytes = 0
@@ -464,6 +473,8 @@ class HostChildBridge:
                     raise ChildBridgeError("invalid producer metadata")
                 maximum = min(_MAX_OBJECT, self.policy["limits"]["max_child_bytes"],
                               self.policy["limits"]["max_derived_bytes"])
+                if openai_request:
+                    maximum = min(maximum, input_limits[name])
                 data = _snapshot(self.output_root, binding["filename"], maximum, attempt_fd=self._attempt_fd)
                 if prepared is not None and name in prepared:
                     self._verify_prepared_snapshot(prepared[name], binding, data)
@@ -499,6 +510,47 @@ class HostChildBridge:
                                 "required": file_ports[name].required})
             else:
                 raise ChildBridgeError("unsupported input binding")
+            if openai_request:
+                if not isinstance(data, bytes) or not data or len(data) > input_limits[name]:
+                    raise ChildBridgeError("OpenAI input exceeds its declared byte limit")
+                authenticated[name] = data
+                # Keep actual authenticated size alongside the digest in the
+                # frozen request; caller metadata never supplies this witness.
+                ordered[-1]["size"] = len(data)
+                inputs[name] = {"object_id": ordered[-1]["object_id"],
+                                "digest": ordered[-1]["object_id"],
+                                "filename": ordered[-1]["filename"], "size_bytes": len(data)}
+        admission_extras = {}
+        if openai_request:
+            # Consume only retained authenticated bytes. Never re-open a
+            # producer pathname or trust caller-expanded work/selector counts.
+            from types import SimpleNamespace
+            from astrid.core.generation.backends.openai import normalize_request
+            from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+            from astrid.sdk.invocation import _automatic_generation_intent
+
+            if (child_bytes > self.policy["limits"]["max_child_bytes"]
+                    or len(refs) > self.policy["limits"]["max_derived_objects"]
+                    or snapshot_bytes > self.policy["limits"]["max_derived_bytes"]):
+                raise ChildBridgeError("OpenAI child input budget exceeded")
+            try:
+                inputs = normalize_request(inputs, prompt_bytes=authenticated.get("prompts_file"))
+                reference_digests = set()
+                for name, data in authenticated.items():
+                    if name.startswith("image_ref_"):
+                        digest = hashlib.sha256(data).hexdigest()
+                        if digest in reference_digests:
+                            raise ValueError("OpenAI references must use distinct managed objects")
+                        reference_digests.add(digest)
+                        OPENAI_IMAGE_STORAGE_POLICY.validate_reference_bytes(data, index=int(name[-2:]))
+            except ValueError as exc:
+                raise ChildBridgeError(str(exc)) from exc
+            intent = _automatic_generation_intent(
+                SimpleNamespace(id=record.id, capability_type="executor"), inputs, modality="image")
+            if intent is None:
+                raise ChildBridgeError("OpenAI output cardinality is not bound")
+            admission_extras = {"generation_intent": intent,
+                                "storage_estimate": OPENAI_IMAGE_STORAGE_POLICY.estimate}
         if prepared is not None:
             if (set(prepared) - {ref["name"] for ref in refs}
                     or len(refs) > self.policy["limits"]["max_derived_objects"]
@@ -511,6 +563,8 @@ class HostChildBridge:
         if len({ref["filename"] for ref in ordered}) != len(ordered):
             raise ChildBridgeError("child input registration filenames collide")
         identity_values = {"child": child, "inputs": inputs, "ordered": ordered}
+        if admission_extras:
+            identity_values["admission"] = admission_extras
         if prepared is not None:
             identity_values["discovery_provenance"] = dict(prepared)
         identity = hashlib.sha256(_strict_json(identity_values)).hexdigest()
@@ -536,7 +590,7 @@ class HostChildBridge:
         live()
         admitted = self.client.admit_child(
             child={"child_id": wire_id, **child}, inputs=inputs, ordered_inputs=ordered,
-            derived_inputs=refs, **self.context)
+            derived_inputs=refs, **admission_extras, **self.context)
         task = task_resource(admitted)
         self._assert_lineage(task)
         if (task.get("capability_id", task.get("capability")) != child["capability_id"]

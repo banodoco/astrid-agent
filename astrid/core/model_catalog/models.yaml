@@ -1020,3 +1020,105 @@ models:
             price:
               unit: second
               usd: 0.0002
+
+  # Explicit GPT Image IDs select the separately bounded OpenAI capability.
+  - id: gpt-image-2
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-2
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-2
+  - id: gpt-image-1.5
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-1.5
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-1.5
+  - id: gpt-image-1
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-1
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-1
+  - id: gpt-image-1-mini
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-1-mini
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-1-mini

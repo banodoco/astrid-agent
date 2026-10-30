@@ -117,7 +117,12 @@ _IMAGE_ARGV_FLAG_NAMES: tuple[str, ...] = (
     "env_file",
     "loras",
     "shot_generation_recipe",
-)
+    "jobs",
+    "n",
+    "output_format",
+    "output_compression",
+    "moderation",
+) + tuple(f"image_ref_{index:02d}" for index in range(16))
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +258,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reference image path or URL for i2i/edit modes.",
     )
     p.add_argument("--style-ref", help="Additional Codex style reference image.")
+    p.add_argument("--jobs", help=argparse.SUPPRESS)
+    p.add_argument("--n", type=int, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--output-format", default=None)
+    p.add_argument("--output-compression", type=int, default=None)
+    p.add_argument("--moderation", default=None)
+    for index in range(16):
+        p.add_argument(f"--image-ref-{index:02d}", dest=f"image_ref_{index:02d}", default=None)
     p.add_argument("--brand-ref", help="Additional Codex brand reference image.")
     p.add_argument(
         "--mask-ref",
@@ -432,6 +444,16 @@ def generate_core(
             f"Error: {exc}",
             recovery_command="check available models and modes with --help and retry with a valid (model, mode) pair",
         ) from exc
+
+    if args.execution == "openai":
+        from astrid.core.generation.backends.openai import OpenAIBackend
+        if "openai" not in mode_spec.backends:
+            raise AstridError("selected model/mode has no OpenAI backend")
+        if args.jobs is None:
+            raise AstridError("managed OpenAI execution requires authenticated frozen jobs")
+        return OpenAIBackend(env_file=args.env_file).generate(
+            entry, mode_name, vars(args), args.out.expanduser().resolve() / "images"
+        )
 
     bounded_profile = getattr(args, "storage_policy_version", None)
     bounded_profiles = {

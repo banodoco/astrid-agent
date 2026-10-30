@@ -781,6 +781,10 @@ class TestShippedRegistry:
     """Verify the shipped models.yaml loads correctly with all expected entries."""
 
     EXPECTED_SHIPPED_IDS = {
+        "gpt-image-2",
+        "gpt-image-1.5",
+        "gpt-image-1",
+        "gpt-image-1-mini",
         "seedvr2-upscaler",
         "z-image",
         "qwen-image-2512",
@@ -923,6 +927,10 @@ class TestListByModalityV2:
 
         ids = {m.id for m in image_models}
         assert ids == {
+            "gpt-image-2",
+            "gpt-image-1.5",
+            "gpt-image-1",
+            "gpt-image-1-mini",
             "seedvr2-upscaler",
             "z-image",
             "qwen-image-2512",

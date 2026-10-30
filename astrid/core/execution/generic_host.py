@@ -4894,7 +4894,8 @@ class RuntimeProtocolClient:
                     task_id: str, attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
                     run_id: str, project_id: str | None, stage: str | None = None,
                     input_refs: list[Mapping[str, Any]] | None = None,
-                    generation_intent: Mapping[str, Any] | None = None):
+                    generation_intent: Mapping[str, Any] | None = None,
+                    storage_estimate: Mapping[str, int] | None = None):
         """Fenced delegated transport; signed authority stays in this frame.
 
         Stages and managed input refs are explicit trusted-host arguments. The
@@ -4904,6 +4905,15 @@ class RuntimeProtocolClient:
         from astrid.sdk._child_bridge import _strict_json
 
         staged = stage is not None or input_refs is not None
+        openai_request = child["capability_id"] == "generation.generate_image_openai"
+        if openai_request:
+            from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+
+            if (storage_estimate != OPENAI_IMAGE_STORAGE_POLICY.estimate
+                    or generation_intent is None or staged):
+                raise ChildBridgeError("OpenAI child requires bound publication and storage intent")
+        elif storage_estimate is not None:
+            raise ChildBridgeError("storage estimate transport is reserved for the bounded OpenAI child")
         staged_task = None
         child_id = child["child_id"]
         if staged:
@@ -4958,9 +4968,16 @@ class RuntimeProtocolClient:
                 descriptor["required"] = required
                 descriptors.append(descriptor)
                 child_inputs[ref["name"]] = {k: descriptor[k] for k in ("object_id", "digest", "filename")}
+                if openai_request:
+                    if type(original.get("size")) is not int or original["size"] < 1:
+                        raise ChildBridgeError("OpenAI input requires an authenticated size witness")
+                    child_inputs[ref["name"]]["size_bytes"] = original["size"]
             task = {"capability_id": child["capability_id"], "capability_digest": child["capability_digest"],
                     "input_object_ids": [ref["object_id"] for ref in descriptors],
-                    "spec": {"capability_id": child["capability_id"], "kind": "action", "inputs": child_inputs}}
+                    "spec": {"capability_id": child["capability_id"], "kind": "action",
+                             "params" if openai_request else "inputs": child_inputs}}
+            if openai_request:
+                task["storage_estimate"] = dict(storage_estimate)
             if descriptors:
                 task["execution_request"] = normalize_execution_request({
                     "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
@@ -7263,6 +7280,7 @@ class GenericPackHost:
         managed_root.mkdir(parents=True, exist_ok=True)
         materialized_objects: dict[str, str] = {}
         materialized_input_metadata: dict[str, dict[str, str | None]] = {}
+        openai_authenticated: dict[str, bytes] = {}
         fetched_objects: dict[tuple[str, str], Path] = {}
         scratch_limit = (
             int(storage_estimate["scratch_bytes"])
@@ -7409,6 +7427,11 @@ class GenericPackHost:
                     data = getattr(data, "data", None)
                 if not isinstance(data, (bytes, bytearray)) or hashlib.sha256(bytes(data)).hexdigest() != normalized:
                     raise HostError(f"input object hash mismatch for {name}")
+                if storage_policy_version == "astrid.openai-image.v1":
+                    if (not isinstance(value, Mapping) or type(value.get("size_bytes")) is not int
+                            or len(data) != value["size_bytes"]):
+                        raise HostError(f"OpenAI input object size mismatch for {name}")
+                    openai_authenticated[str(name)] = bytes(data)
                 write_scratch(path, bytes(data), name=str(name))
                 values[name] = str(path)
 
@@ -7444,6 +7467,20 @@ class GenericPackHost:
             derived_path.parent.mkdir(parents=True, exist_ok=True)
             derived_path.write_text(json.dumps(derived, sort_keys=True), encoding="utf-8")
             values[name] = str(derived_path)
+        if storage_policy_version == "astrid.openai-image.v1":
+            from astrid.core.generation.backends.openai import normalize_request
+            from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+
+            if not isinstance(params, Mapping) or input_spec.get("inputs"):
+                raise HostError("OpenAI image admission requires sole typed params authority")
+            try:
+                normalize_request(params, prompt_bytes=openai_authenticated.get("prompts_file"),
+                                  require_frozen=True)
+                for name, data in openai_authenticated.items():
+                    if name.startswith("image_ref_"):
+                        OPENAI_IMAGE_STORAGE_POLICY.validate_reference_bytes(data, index=int(name[-2:]))
+            except ValueError as exc:
+                raise HostError(str(exc)) from exc
         if materialized_objects:
             values["materialized_root"] = str(managed_root)
             values["materialized_objects"] = materialized_objects

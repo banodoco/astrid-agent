@@ -732,12 +732,6 @@ class GenerationFacade:
         **inputs: Any,
     ) -> Any:
         _reject_retired_generation_inputs(inputs)
-        if execution == "openai":
-            raise CapabilityPreconditionError(
-                "astrid.generate.image does not support execution='openai'; use executor "
-                "'generation.generate_image_openai' directly"
-            )
-
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
         if entry is not None:
@@ -752,6 +746,11 @@ class GenerationFacade:
             if description["source"] == "workflow" and target is None:
                 target = "auto"
         resolved_mode = sdk_module._infer_image_mode(mode, inputs)
+        explicit_openai = execution == "openai" or (
+            isinstance(model, str) and model.startswith("gpt-image")
+        )
+        if explicit_openai and mode is None and inputs.get("image_ref"):
+            resolved_mode = "edit"
         if model is not None and mode is None and inputs.get("image_ref"):
             from astrid.core.generation.entries import find_entry
             manifest = find_entry(model)
@@ -779,7 +778,8 @@ class GenerationFacade:
         except KeyError as exc:
             raise CapabilityValidationError(str(exc)) from exc
 
-        if mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES:
+        if (mode is None and resolved_mode in sdk_module._EXPLICIT_ONLY_IMAGE_MODES
+                and not explicit_openai):
             raise CapabilityValidationError(
                 f"Mode {resolved_mode!r} requires an explicit 'mode' argument"
             )
