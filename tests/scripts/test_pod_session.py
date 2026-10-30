@@ -284,6 +284,192 @@ def job_commands(pod, label):
     return [j["command"] for j in pod.jobs.values() if j["label"] == label]
 
 
+@pytest.fixture
+def held_list_renewal(tmp_path):
+    """Local custody fixture; loopback cases also exercise the actual list writer."""
+    from runpod_lifecycle.https import write_token_file
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    runtime_lock = json.dumps({"source_commit": "b" * 40}).encode()
+    (agent / "runtime.lock.json").write_bytes(runtime_lock)
+    tokens = tmp_path.resolve() / "tokens"
+    tokens.mkdir()
+    args = ps.build_parser().parse_args([
+        "--datacenters", ps.DATACENTER, "--sources-dir", str(tmp_path / "sources"),
+        "--workdir", str(tmp_path / "held"), "--token-dir", str(tokens),
+        "--storage-volume-id", "fixture-volume", "--renew-held"])
+    def no_remote(*_args, **_kwargs):
+        pytest.fail("renewal attempted remote work")
+    messages = []
+    session = ps.Session(args, cli=no_remote, transport_factory=no_remote, http_status=no_remote,
+                         agent_root=agent, say=messages.append)
+    write_token_file(tokens / "pod-session-deadbeef.token", "synthetic-offline-token-not-a-credential")
+    source = {"heads": {name: "b" * 40 if name == "astrid-runtime" else "a" * 40
+                        for name in ps.BUNDLE_TREES},
+              "runtime_lock_sha256": hashlib.sha256(runtime_lock).hexdigest()}
+    def row(step, result, jobs, detail):
+        return {"step": step, "result": result, "jobs": jobs, "detail": detail, "time": "2026-10-30T22:22:00Z"}
+    progress = {"schema": "astrid.pod-session-progress.v1", "session": "deadbeef", "pod_id": "fakepod134",
+                "jobs": 12, "storage_diagnostic": None, "claim_attempt": None,
+                "steps": [row("install", "ok", 2, {}), row("rerun", "ok", 3, {}),
+                          row("job:image", "failed", 4, {"error": "original failure"}),
+                          row("hold", "ok", 5, {"primary_step": "job:image"}),
+                          row("upload:next-image", "ok", 7, {}),
+                          row("job:next-image", "failed", 11, {"error": "list row exited 9"})]}
+    doc = {"schema": "astrid.pod-held-session.v1", "status": "held", "session": "deadbeef",
+           "pod_id": "fakepod134", "volume_id": "fixture-volume", "volume_gb": args.volume_gb,
+           "source": source, "runtime_identity": {"agent_head": "a" * 40, "runtime_head": "b" * 40},
+           "primary_step": "job:image", "jobs": 12, "charged_jobs": 12,
+           "operation": {"id": "c" * 32, "label": "progress", "state": "exited", "exit_code": 0},
+           "expires_at": ps.time.time() + 60, "token_dir": str(tokens), "progress_sha256": "0" * 64}
+    events = [{"session": "deadbeef", "pod_id": "fakepod134", "time": "2026-10-30T22:22:01Z",
+               "retryable": True, "job_id": "b" * 32, "charged_jobs": 11, "error": "list row exited 9",
+               "operation": {"id": "b" * 32, "label": "job:next-image", "state": "exited", "exit_code": 9}}]
+    def publish():
+        data = (json.dumps(progress, sort_keys=True) + "\n").encode()
+        doc["progress_sha256"] = hashlib.sha256(data).hexdigest()
+        for name in ("pod-session-progress.json", "pod-session-progress.remote.json", "held-session-joblist-progress.json"):
+            (session.workdir / name).write_bytes(data)
+        (session.workdir / "held-session-followup-failures.jsonl").write_text(
+            "".join(json.dumps(event) + "\n" for event in events))
+        (session.workdir / "source-identity.json").write_text(json.dumps(source))
+        session._write_held(doc)
+    publish()
+    return session, doc, progress, events, publish, messages
+
+
+@pytest.mark.parametrize("case", ["terminal", "repeated", "command_success", "command_failure", "long_error"])
+def test_held_list_renewal_preserves_every_charge_and_evidence(held_list_renewal, case):
+    session, doc, progress, events, publish, messages = held_list_renewal
+    if case == "repeated":
+        progress["steps"].append(dict(progress["steps"][-1], step="download:later", jobs=16,
+                                      detail={"error": "invalid output"}))
+        events.append(dict(events[0], job_id="d" * 32, charged_jobs=16, error="invalid output",
+                           operation=dict(events[0]["operation"], id="d" * 32, label="output-hashes", exit_code=0)))
+        progress["jobs"] = doc["jobs"] = doc["charged_jobs"] = 17
+    elif case == "long_error":
+        error = "output failure " * 60
+        progress["steps"][-1]["detail"]["error"] = error
+        events[0]["error"] = error[:500]
+    publish()
+    if case in ("command_success", "command_failure"):
+        doc["charged_jobs"] = 16
+        doc["operation"] = dict(doc["operation"], id="e" * 32, label="follow-up", exit_code=7)
+        if case == "command_success":
+            progress["steps"].append(dict(progress["steps"][-1], step="follow-up", result="ok", jobs=15,
+                                          detail={"job": "e" * 32}))
+            progress["jobs"] = doc["jobs"] = 16
+            doc["operation"].update(label="progress", exit_code=0)
+            data = json.dumps(progress).encode()
+            (session.workdir / "pod-session-progress.json").write_bytes(data)
+            doc["progress_sha256"] = hashlib.sha256(data).hexdigest()
+        session._write_held(doc)
+    before = json.loads(session._held_path().read_text())
+    evidence = {path: path.read_bytes() for path in session.workdir.iterdir() if path != session._held_path()}
+    assert session.renew_held() == 0, messages
+    after = json.loads(session._held_path().read_text())
+    assert after["expires_at"] > before["expires_at"]
+    assert dict(after, expires_at=before["expires_at"]) == before
+    assert all(path.read_bytes() == data for path, data in evidence.items())
+    assert after["progress_sha256"] == hashlib.sha256((session.workdir / "pod-session-progress.json").read_bytes()).hexdigest()
+    assert session.budget.count == 0
+
+
+@pytest.mark.parametrize("fault", [
+    "in_use", "starting", "running", "expired", "unbound", "progress_keys", "progress_nonfinite",
+    "missing_primary", "duplicate_primary",
+    "unrelated", "extra_failure", "malformed_step", "boolean_jobs", "no_charges", "budget_limit",
+    "snapshot_missing", "snapshot_json", "snapshot_keys", "snapshot_identity", "snapshot_jobs",
+    "snapshot_steps", "snapshot_short", "ledger_missing", "ledger_empty", "ledger_json", "ledger_keys",
+    "ledger_session", "ledger_pod", "ledger_job_id", "ledger_charge", "ledger_error", "ledger_duplicate",
+    "ledger_uncertain", "ledger_starting", "ledger_exit", "ledger_nonretryable", "ledger_extra_key"])
+def test_held_list_renewal_rejects_unproven_or_mismatched_evidence(held_list_renewal, fault):
+    session, doc, progress, events, publish, messages = held_list_renewal
+    if fault == "in_use":
+        doc["status"] = "in_use"
+    elif fault in ("starting", "running"):
+        doc["operation"].update(state=fault, exit_code=None)
+    elif fault == "expired":
+        doc["expires_at"] = 1
+    elif fault == "missing_primary":
+        progress["steps"][2]["result"] = "ok"
+    elif fault == "duplicate_primary":
+        progress["steps"][-1]["step"] = doc["primary_step"]
+    elif fault == "unrelated":
+        progress["steps"][-1]["step"] = "install"
+    elif fault == "extra_failure":
+        progress["steps"].append(dict(progress["steps"][-1], step="job:unrelated", jobs=12))
+    elif fault == "malformed_step":
+        progress["steps"][4] = "not a progress row"
+    elif fault == "boolean_jobs":
+        progress["steps"][-1]["jobs"] = True
+    elif fault == "no_charges":
+        del doc["charged_jobs"], doc["operation"]
+    elif fault == "budget_limit":
+        doc["charged_jobs"] = ps.JOB_LIMIT
+    elif fault == "ledger_session":
+        events[0]["session"] = "12345678"
+    elif fault == "ledger_pod":
+        events[0]["pod_id"] = "otherpod"
+    elif fault == "ledger_job_id":
+        events[0]["job_id"] = "d" * 32
+    elif fault == "ledger_charge":
+        events[0]["charged_jobs"] -= 1
+    elif fault == "ledger_error":
+        events[0]["error"] = "unrelated command failure"
+    elif fault == "ledger_duplicate":
+        events.append(events[0])
+    elif fault == "ledger_uncertain":
+        events[0]["operation"].update(state="starting", exit_code=None)
+        events[0]["retryable"] = False
+    elif fault == "ledger_starting":
+        events[0]["operation"].update(state="starting", exit_code=None)
+    elif fault == "ledger_exit":
+        events[0]["operation"]["exit_code"] = True
+    elif fault == "ledger_nonretryable":
+        events[0]["retryable"] = False
+    elif fault == "ledger_extra_key":
+        events[0]["extra"] = "unrecognized evidence"
+    publish()
+    snapshot = session.workdir / "held-session-joblist-progress.json"
+    ledger = session.workdir / "held-session-followup-failures.jsonl"
+    if fault == "unbound":
+        (session.workdir / "pod-session-progress.json").write_text("{}")
+    elif fault in ("progress_keys", "progress_nonfinite"):
+        path = session.workdir / "pod-session-progress.json"
+        data = path.read_text().replace("{", '{"session":"duplicate",', 1) if fault == "progress_keys" else path.read_text().replace("null", "NaN", 1)
+        path.write_text(data)
+        doc["progress_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        session._write_held(doc)
+    elif fault == "snapshot_missing":
+        snapshot.unlink()
+    elif fault in ("snapshot_json", "ledger_json"):
+        (snapshot if fault == "snapshot_json" else ledger).write_text("{invalid JSON\n")
+    elif fault in ("snapshot_keys", "ledger_keys"):
+        target = snapshot if fault == "snapshot_keys" else ledger
+        target.write_text(target.read_text().replace("{", '{"session":"duplicate",', 1))
+    elif fault.startswith("snapshot_"):
+        value = json.loads(snapshot.read_text())
+        if fault == "snapshot_identity":
+            value["pod_id"] = "otherpod"
+        elif fault == "snapshot_jobs":
+            value["jobs"] -= 2
+        elif fault == "snapshot_steps":
+            value["steps"][-1]["detail"]["error"] = "mismatched snapshot"
+        elif fault == "snapshot_short":
+            value["steps"].pop()
+        snapshot.write_text(json.dumps(value))
+    elif fault == "ledger_missing":
+        ledger.unlink()
+    elif fault == "ledger_empty":
+        ledger.write_bytes(b"")
+    before = session._held_path().read_bytes()
+    evidence = {path: path.read_bytes() for path in session.workdir.iterdir() if path != session._held_path()}
+    assert session.renew_held() == 1, messages
+    assert session._held_path().read_bytes() == before
+    assert all(path.read_bytes() == data for path, data in evidence.items())
+
+
 # ---- (a) step order -----------------------------------------------------------------------
 
 def test_full_run_order_and_outputs(tmp_path, video, capsys):

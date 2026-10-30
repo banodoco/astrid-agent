@@ -7,6 +7,8 @@ Held follow-up: use --resume-held-jobs jobs.yaml with the existing custody --wor
 Rows need fresh packet ids; the first failure stops the list. Successful lists return 0,
 failed lists return 1, and both retain the held pod and its original failure evidence.
 Uncertain operations require a separate reconciliation turn and are never replayed.
+After a terminal list failure, --renew-held verifies the preserved list snapshot and
+failure ledger locally, then extends only admission expiry; failures and charges remain.
 
 Legacy steps: claim, bundle, bootstrap, install, rerun, S0, CLIP, download, release.
 Job lists use install-owned GPU sanity after environments and before models, then S0 for each H3 job,
@@ -1584,6 +1586,103 @@ class Session:
         finally:
             os.close(fd)
 
+    @staticmethod
+    def _held_json(data: bytes) -> Any:
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise SessionError("held state: duplicate evidence key")
+                result[key] = value
+            return result
+        def invalid_constant(_value):
+            raise SessionError("held state: non-finite evidence value")
+        return json.loads(data, object_pairs_hook=unique, parse_constant=invalid_constant)
+
+    def _verify_renewal_progress(self, doc: dict, progress: dict) -> None:
+        if (not isinstance(progress, dict)
+                or progress.get("schema") != "astrid.pod-session-progress.v1"
+                or progress.get("session") != doc["session"]
+                or progress.get("pod_id") != doc["pod_id"]
+                or type(progress.get("jobs")) is not int or progress["jobs"] != doc["jobs"]
+                or not isinstance(progress.get("steps"), list)):
+            raise SessionError("held state: progress lineage differs")
+        failed = []
+        previous_jobs = 0
+        for row in progress["steps"]:
+            if (not isinstance(row, dict) or set(row) != {"step", "time", "result", "detail", "jobs"}
+                    or not isinstance(row["step"], str) or not row["step"]
+                    or not isinstance(row["time"], str) or not row["time"]
+                    or row["result"] not in ("ok", "failed", "skipped")
+                    or not isinstance(row["detail"], dict)
+                    or type(row["jobs"]) is not int or not previous_jobs <= row["jobs"] <= doc["jobs"]):
+                raise SessionError("held state: malformed progress step")
+            previous_jobs = row["jobs"]
+            if row["result"] == "failed":
+                failed.append(row)
+        if (not failed or failed[0]["step"] != doc["primary_step"]
+                or sum(row["step"] == doc["primary_step"] for row in failed) != 1):
+            raise SessionError("held state: primary failure differs")
+        if len(failed) == 1:
+            return
+
+        # Only the list runner publishes failed steps after the original hold.
+        # Ordinary command failures restore progress and retain charges separately.
+        snapshot = self._held_json(self._read_held_evidence(self.workdir / "held-session-joblist-progress.json"))
+        holds = [i for i, row in enumerate(progress["steps"]) if row["step"] == "hold"]
+        if (not isinstance(snapshot, dict)
+                or set(snapshot) != set(progress)
+                or any(snapshot[key] != progress[key] for key in progress if key not in ("steps", "jobs"))
+                or type(snapshot.get("jobs")) is not int or not 0 <= snapshot["jobs"] <= doc["jobs"]
+                or not isinstance(snapshot.get("steps"), list)
+                or snapshot["steps"] != progress["steps"][:len(snapshot["steps"])]
+                or (snapshot["steps"] and snapshot["steps"][-1]["jobs"] > snapshot["jobs"])
+                or len(holds) != 1 or progress["steps"][holds[0]]["result"] != "ok"
+                or progress["steps"][holds[0]]["detail"] != {"primary_step": doc["primary_step"]}
+                or progress["steps"].index(failed[0]) >= holds[0]
+                or "charged_jobs" not in doc or doc["operation"] is None):
+            raise SessionError("held state: list snapshot differs")
+
+        ledger = self._read_held_evidence(self.workdir / "held-session-followup-failures.jsonl")
+        events = [self._held_json(line) for line in ledger.splitlines()]
+        previous_jobs = 0
+        for event in events:
+            if (not isinstance(event, dict)
+                    or set(event) != {"session", "pod_id", "time", "retryable", "job_id", "operation", "charged_jobs", "error"}
+                    or event["session"] != doc["session"] or event["pod_id"] != doc["pod_id"]
+                    or not isinstance(event["time"], str) or not event["time"]
+                    or type(event["retryable"]) is not bool or not isinstance(event["error"], str)
+                    or type(event["charged_jobs"]) is not int
+                    or not previous_jobs <= event["charged_jobs"] <= doc["charged_jobs"]):
+                raise SessionError("held state: malformed list failure ledger")
+            operation = event["operation"]
+            if (not isinstance(operation, dict) or set(operation) != {"id", "label", "state", "exit_code"}
+                    or not isinstance(operation["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", operation["id"])
+                    or event["job_id"] != operation["id"]
+                    or not isinstance(operation["label"], str) or not operation["label"]
+                    or operation["state"] not in ("starting", "exited")
+                    or (operation["state"] == "starting" and (operation["exit_code"] is not None or event["retryable"]))
+                    or (operation["state"] == "exited" and (type(operation["exit_code"]) is not int
+                                                             or not 0 <= operation["exit_code"] <= 255))):
+                raise SessionError("held state: malformed list failure operation")
+            previous_jobs = event["charged_jobs"]
+
+        previous_event = -1
+        for row in failed[1:]:
+            index = progress["steps"].index(row)
+            error = row["detail"].get("error")
+            if (index <= holds[0] or index >= len(snapshot["steps"])
+                    or row["jobs"] > snapshot["jobs"] or not isinstance(error, str) or not error
+                    or not re.fullmatch(r"(?:(?:upload|job|download|packet):[A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
+                                        r"|h3:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:s0|progress)", row["step"])):
+                raise SessionError("held state: unrelated failure in progress")
+            matches = [i for i, event in enumerate(events)
+                       if event["retryable"] and event["operation"]["state"] == "exited"
+                       and event["charged_jobs"] == row["jobs"] and event["error"] == error[:500]]
+            if len(matches) != 1 or matches[0] <= previous_event:
+                raise SessionError("held state: list failure lacks terminal ledger proof")
+            previous_event = matches[0]
+
     def renew_held(self) -> int:
         """Extend only a verified held admission; never run a job or release the pod."""
         lock = self.workdir / ".held-session.lock"
@@ -1623,16 +1722,7 @@ class Session:
                 progress_bytes = self._read_held_evidence(progress_path)
                 if hashlib.sha256(progress_bytes).hexdigest() != doc["progress_sha256"]:
                     raise SessionError("held state: progress differs")
-                progress = json.loads(progress_bytes)
-                failed = [row for row in progress.get("steps", [])
-                          if isinstance(row, dict) and row.get("result") == "failed"]
-                if (progress.get("schema") != "astrid.pod-session-progress.v1"
-                        or progress.get("session") != doc["session"]
-                        or progress.get("pod_id") != doc["pod_id"]
-                        or progress.get("jobs") != doc["jobs"]
-                        or not isinstance(progress.get("steps"), list)
-                        or len(failed) != 1 or failed[0].get("step") != doc["primary_step"]):
-                    raise SessionError("held state: progress lineage differs")
+                self._verify_renewal_progress(doc, self._held_json(progress_bytes))
 
                 source = json.loads(self._read_held_evidence(self.workdir / "source-identity.json"))
                 if source != doc["source"]:

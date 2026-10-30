@@ -629,6 +629,35 @@ def test_held_joblist_terminal_row_failure_keeps_original_failure_and_snapshot(
         assert json.loads((session.workdir / "packets/clip/machine-check.json").read_text())["status"] == "passed"
         assert pod.events.count("launch") == 1 and pod.events.count("terminate") == 0
 
+        evidence = {name: (session.workdir / name).read_bytes() for name in (
+            "pod-session-progress.json", "pod-session-progress.remote.json", "source-identity.json",
+            "held-session-joblist-progress.json", "held-session-followup-failures.jsonl")}
+        packets = _packet_snapshot(session.workdir)
+        events, records = list(pod.events), pod.record_count
+        renewal = held_control(session, pod, cli, transport_factory, renew=True)
+        assert renewal.renew_held() == 0, failure_diagnostics(renewal)
+        renewed = json.loads((session.workdir / "held-session.json").read_text())
+        assert renewed["expires_at"] > held["expires_at"]
+        assert dict(renewed, expires_at=held["expires_at"]) == held
+        assert all((session.workdir / name).read_bytes() == data for name, data in evidence.items())
+        assert _packet_snapshot(session.workdir) == packets
+        assert pod.events == events and pod.record_count == records and not pod.terminated
+
+        # A later ordinary command failure keeps its separate durable charge;
+        # the earlier list failure remains renewable without replay or refund.
+        followup = held_control(session, pod, cli, transport_factory, command="exit 11")
+        assert followup.run_held(command="exit 11") == 1
+        after_command = json.loads((session.workdir / "held-session.json").read_text())
+        assert after_command["charged_jobs"] > renewed["charged_jobs"]
+        assert after_command["jobs"] == renewed["jobs"]
+        assert (session.workdir / "pod-session-progress.json").read_bytes() == evidence["pod-session-progress.json"]
+        renewal = held_control(session, pod, cli, transport_factory, renew=True)
+        events, records = list(pod.events), pod.record_count
+        assert renewal.renew_held() == 0, failure_diagnostics(renewal)
+        after = json.loads((session.workdir / "held-session.json").read_text())
+        assert dict(after, expires_at=after_command["expires_at"]) == after_command
+        assert pod.events == events and pod.record_count == records and not pod.terminated
+
     run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
              failure="command", after_run=after_run)
 
@@ -660,6 +689,65 @@ def test_held_joblist_uncertain_row_keeps_in_use_operation_and_snapshot(tmp_path
         assert (session.workdir / "held-session-joblist-progress.json").is_file()
         assert not (session.workdir / "packets/later").exists()
         assert pod.events.count("launch") == 1 and pod.events.count("terminate") == 0
+
+        held_bytes = (session.workdir / "held-session.json").read_bytes()
+        events, records = list(pod.events), pod.record_count
+        renewal = held_control(session, pod, cli, transport_factory, renew=True)
+        assert renewal.renew_held() == 1
+        assert (session.workdir / "held-session.json").read_bytes() == held_bytes
+        assert pod.events == events and pod.record_count == records and not pod.terminated
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_joblist_uncertain_failure_requires_reconcile_before_renewal(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1
+        held_path = session.workdir / "held-session.json"
+        original_progress = (session.workdir / "pod-session-progress.json").read_bytes()
+        manifest = _held_joblist_manifest(tmp_path / "resume-list-lost-response", failing="command")
+        transport = pod.transport
+        start, poll = transport.detached_start, transport.detached_poll
+        target, uncertain = {}, [True]
+        def lost_response(command, *, root, job_id=None, launch_timeout=60):
+            job = start(command, root=root, job_id=job_id, launch_timeout=launch_timeout)
+            if "next-image" in command and "cd " in command:
+                target["id"] = job_id
+                raise TimeoutError("fixture lost failed list row response")
+            return job
+        def delayed_poll(job_id, *, root):
+            if uncertain[0] and job_id == target.get("id"):
+                return {"id": job_id, "dir": root + "/" + job_id, "state": "running", "exit_code": None}
+            return poll(job_id, root=root)
+        monkeypatch.setattr(transport, "detached_start", lost_response)
+        monkeypatch.setattr(transport, "detached_poll", delayed_poll)
+        control = held_control(session, pod, cli, transport_factory, jobs=manifest)
+        assert control.run_held_jobs() == 1
+        held = json.loads(held_path.read_text())
+        assert held["status"] == "in_use" and held["operation"]["state"] == "starting"
+        renewal = held_control(session, pod, cli, transport_factory, renew=True)
+        assert renewal.renew_held() == 1
+
+        uncertain[0] = False
+        records = pod.record_count
+        reconcile = held_control(session, pod, cli, transport_factory, command="exit 99")
+        assert reconcile.run_held(command="exit 99") == 1
+        reconciled = json.loads(held_path.read_text())
+        assert reconciled["status"] == "held"
+        assert reconciled["operation"] == dict(held["operation"], state="exited", exit_code=9)
+        assert reconciled["charged_jobs"] == held["charged_jobs"]
+        assert (session.workdir / "pod-session-progress.json").read_bytes() == original_progress
+        evidence = {name: (session.workdir / name).read_bytes() for name in (
+            "pod-session-progress.json", "held-session-joblist-progress.json", "held-session-followup-failures.jsonl")}
+        packets, events = _packet_snapshot(session.workdir), list(pod.events)
+        renewal = held_control(session, pod, cli, transport_factory, renew=True)
+        assert renewal.renew_held() == 0, failure_diagnostics(renewal)
+        renewed = json.loads(held_path.read_text())
+        assert dict(renewed, expires_at=reconciled["expires_at"]) == reconciled
+        assert all((session.workdir / name).read_bytes() == data for name, data in evidence.items())
+        assert _packet_snapshot(session.workdir) == packets
+        assert pod.events == events and pod.record_count == records and not pod.terminated
 
     run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
              failure="command", after_run=after_run)
