@@ -10,7 +10,7 @@ import shutil
 import zipfile
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -661,7 +661,7 @@ def _bounded_lease_diagnostic(value: Any) -> dict[str, Any] | None:
     return result
 
 
-def _validation_failure(result: InvocationResult) -> AstridError:
+def _validation_failure(result: InvocationResult, *, capability_id: str = "vibecomfy.validate") -> AstridError:
     # Runtime's failed task carries the host diagnostic in result.error.
     # The SDK also embeds that object in its formatted error details: remove
     # this untrusted subtree before formatting, even when it is malformed.
@@ -677,6 +677,8 @@ def _validation_failure(result: InvocationResult) -> AstridError:
         error_result = details.get("result") if isinstance(details, Mapping) else None
         inner = error_result.get("error") if isinstance(error_result, Mapping) else None
         has_diagnostic = has_diagnostic or (isinstance(inner, Mapping) and "diagnostic" in inner)
+        if diagnostic is None and isinstance(inner, Mapping):
+            diagnostic = _bounded_lease_diagnostic(inner.get("diagnostic"))
     if has_diagnostic:
         # A settled failure can contain arbitrary input and exception data in
         # other fields too. Keep its failure state without formatting that data.
@@ -684,7 +686,7 @@ def _validation_failure(result: InvocationResult) -> AstridError:
         if not isinstance(code, str) or code not in {"task_failed", "task_cancelled", "task_cancel_requested"}:
             code = "task_failed"
         error = {"code": code, "message": "validation task failed"}
-    exc = AstridError(f"vibecomfy.validate failed: {error}")
+    exc = AstridError(f"{capability_id} failed: {error}")
     if diagnostic is not None:
         exc.lease_diagnostic = diagnostic
     return exc
@@ -716,9 +718,13 @@ def _invoke(
         read_managed_outputs=True,
     )
     if not result.ok:
-        if capability_id == "vibecomfy.validate":
-            raise _validation_failure(result)
-        raise AstridError(f"{capability_id} failed: {result.error}")
+        exc = _validation_failure(result, capability_id=capability_id)
+        exc.h3_child_correlation = {
+            key: _safe_correlation(getattr(result, attribute, None))
+            for key, attribute in (("run_id", "kernel_run_id"), ("task_id", "kernel_task_id"),
+                                   ("attempt_id", "kernel_attempt_id"))
+        }
+        raise exc
     return result
 
 
@@ -750,7 +756,13 @@ def _invoke_workflow(
         poll_seconds=1.0,
     )
     if not result.ok:
-        raise AstridError(f"vibecomfy.run failed: {result.error}")
+        exc = _validation_failure(result, capability_id="vibecomfy.run")
+        exc.h3_child_correlation = {
+            key: _safe_correlation(getattr(result, attribute, None))
+            for key, attribute in (("run_id", "kernel_run_id"), ("task_id", "kernel_task_id"),
+                                   ("attempt_id", "kernel_attempt_id"))
+        }
+        raise exc
     return result
 
 
@@ -1095,7 +1107,7 @@ def _observe_legacy_saved_result(
     return observed
 
 
-def _invoke_stage(
+def _invoke_stage_impl(
     client: Any,
     capability_id: str,
     *,
@@ -1200,10 +1212,14 @@ def _invoke_stage(
             recovery_path=receipt_path,
         )
     except Exception as exc:
-        journal.record(
-            phase, "uncertain", capability_id=capability_id,
-            input_digest=input_digest, error=type(exc).__name__, message=str(exc)[:1000],
-        )
+        try:
+            journal.record(
+                phase, "uncertain", capability_id=capability_id,
+                input_digest=input_digest, error=type(exc).__name__, message=str(exc)[:1000],
+            )
+            exc.h3_journal_status = "succeeded"
+        except Exception:
+            exc.h3_journal_status = "failed"
         raise
     _save_invocation_result(saved_result, result, input_digest=input_digest)
     journal.record(
@@ -1218,12 +1234,26 @@ def _invoke_stage(
     return result
 
 
+_H3_STAGES = frozenset({"prepare", "compile", "validate", "compose", "verify",
+                        "cumulative-compose", "cumulative-verify", "finalizer", "run"})
+
+
+def _invoke_stage(*args: Any, **kwargs: Any) -> InvocationResult:
+    # Also cover errors in the resume path and failures before invocation.
+    try:
+        return _invoke_stage_impl(*args, **kwargs)
+    except Exception as exc:
+        phase = kwargs.get("phase")
+        exc.h3_stage = phase if phase in _H3_STAGES else "unavailable"
+        raise
+
+
 def _stable_digest(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _invoke_canonical_run(
+def _invoke_canonical_run_impl(
     client: Any,
     *,
     inputs: Mapping[str, Any],
@@ -1369,11 +1399,15 @@ def _invoke_canonical_run(
             raise AstridError("canonical run result is missing task/run/attempt identity")
         _save_invocation_result(saved_result, result, input_digest=run_input_digest)
     except Exception as exc:
-        journal.set_admission_phase("uncertain")
-        journal.record(
-            "run", "uncertain", admission_digest=admission_digest, workflow_route=workflow_route,
-            error=type(exc).__name__, message=str(exc)[:1000],
-        )
+        try:
+            journal.set_admission_phase("uncertain")
+            journal.record(
+                "run", "uncertain", admission_digest=admission_digest, workflow_route=workflow_route,
+                error=type(exc).__name__, message=str(exc)[:1000],
+            )
+            exc.h3_journal_status = "succeeded"
+        except Exception:
+            exc.h3_journal_status = "failed"
         raise
     journal.set_admission_phase("settled")
     journal.record(
@@ -1381,6 +1415,14 @@ def _invoke_canonical_run(
         attempt_id=identity[2], admission_digest=admission_digest, workflow_route=workflow_route,
     )
     return result
+
+
+def _invoke_canonical_run(*args: Any, **kwargs: Any) -> InvocationResult:
+    try:
+        return _invoke_canonical_run_impl(*args, **kwargs)
+    except Exception as exc:
+        exc.h3_stage = "run"
+        raise
 
 
 def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
@@ -1803,6 +1845,7 @@ def _run_transform_unlocked(
     args: argparse.Namespace, *, terminal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     terminal = terminal if terminal is not None else {}
+    terminal["execution_not_started"] = True
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     execution_request = _json_mapping(args.execution_request) if args.execution_request else None
@@ -1889,7 +1932,7 @@ def _run_transform_unlocked(
     # The parent orchestrator is launched locally, while its child executor
     # tasks target the already-supervised Runtime/GenericPackHost. Starting a
     # second local pack host here would compete with that existing authority.
-    with AstridClient.open_from_launcher(start_pack_host=False) as client:
+    with _client_with_failure_evidence(args, root, terminal) as client:
         raw_request = load_request_document(args.request)
         request = normalize_request(raw_request)
         terminal["request_digest"] = request.digest
@@ -2154,6 +2197,68 @@ def _run_transform_unlocked(
     }
 
 
+def _safe_correlation(value: Any) -> str:
+    if isinstance(value, str) and len(value) <= 96 and re.fullmatch(r"[A-Za-z0-9._:-]+", value):
+        return value
+    return "unavailable"
+
+
+def _failure_envelope(error: Exception, terminal: Mapping[str, Any]) -> dict[str, Any]:
+    child = getattr(error, "h3_child_correlation", None)
+    child = child if isinstance(child, Mapping) else {}
+    correlation = {key: _safe_correlation(child.get(key)) for key in ("run_id", "task_id", "attempt_id")}
+    diagnostic = _bounded_lease_diagnostic(getattr(error, "lease_diagnostic", None))
+    stage = getattr(error, "h3_stage", "unavailable")
+    stage = stage if stage in _H3_STAGES else "unavailable"
+    return {
+        "schema_version": 1,
+        "category": ("child_failure" if any(v != "unavailable" for v in correlation.values()) or diagnostic
+                     else "pre_execution_failure" if terminal.get("execution_not_started") else "unclassified"),
+        "stage": stage,
+        "observed_at_utc": terminal.get("failure_observed_at_utc") or datetime.now(timezone.utc).isoformat(),
+        "child": correlation,
+        # No trusted import attestation is exposed by this invocation route.
+        "source": {"identity": "unavailable", "sha256": "unavailable"},
+        "cause": {"category": diagnostic["category"] if diagnostic else "unclassified",
+                  "lease_diagnostic": diagnostic if diagnostic else "unavailable"},
+        "persistence": {"before_cleanup": terminal.get("evidence_persistence", "unavailable"),
+                        "journal": getattr(error, "h3_journal_status", "unavailable")},
+        # Client exit and actual ephemeral-host cleanup are different operations.
+        "cleanup": {"status": "unavailable",
+                    "client_context_exit": terminal.get("cleanup_status", "unavailable")},
+    }
+
+
+@contextmanager
+def _client_with_failure_evidence(args: argparse.Namespace, root: Path, terminal: dict[str, Any]):
+    """Persist failure before the client context can clean up child evidence."""
+    manager = AstridClient.open_from_launcher(start_pack_host=False)
+    client = manager.__enter__()
+    terminal["execution_not_started"] = False
+    try:
+        yield client
+    except Exception as exc:
+        terminal["failure_observed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        terminal["cleanup_status"] = "pending"
+        terminal["evidence_persistence"] = "succeeded"
+        if terminal.get("enabled"):
+            try:
+                _write_transform_result(args, root, terminal, error=exc)
+            except Exception:
+                terminal["evidence_persistence"] = "failed"
+        else:
+            terminal["evidence_persistence"] = "unavailable"
+        try:
+            manager.__exit__(type(exc), exc, exc.__traceback__)
+        except Exception:
+            terminal["cleanup_status"] = "failed"
+        else:
+            terminal["cleanup_status"] = "succeeded"
+        raise
+    else:
+        manager.__exit__(None, None, None)
+
+
 @contextmanager
 def _operation_directory_writer_lock(root: Path):
     """Allow one H3 writer per operation directory at a time."""
@@ -2188,9 +2293,18 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
         except Exception as exc:
             journal = terminal.get("journal")
             if journal is not None:
-                journal.record("operation", "failed", error=type(exc).__name__, message=str(exc)[:1000])
+                try:
+                    journal.record("operation", "failed", error=type(exc).__name__, message=str(exc)[:1000])
+                    if getattr(exc, "h3_journal_status", None) != "failed":
+                        exc.h3_journal_status = "succeeded"
+                except Exception:
+                    exc.h3_journal_status = "failed"
             if terminal.get("enabled"):
-                _write_transform_result(args, root, terminal, error=exc)
+                try:
+                    _write_transform_result(args, root, terminal, error=exc)
+                except Exception:
+                    # Expose the persistence failure to the caller without replacing exc.
+                    exc.h3_evidence_persistence = "failed"
             raise
         if terminal.get("enabled"):
             _write_transform_result(args, root, terminal, result=result)
@@ -2227,6 +2341,8 @@ def _write_transform_result(
     diagnostic = _bounded_lease_diagnostic(getattr(error, "lease_diagnostic", None))
     if diagnostic is not None:
         receipt["lease_diagnostic"] = diagnostic
+    if error is not None:
+        receipt["failure_envelope"] = _failure_envelope(error, terminal)
     write_json_atomic(root / "result.json", receipt)
 
 
