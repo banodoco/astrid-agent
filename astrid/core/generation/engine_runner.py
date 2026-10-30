@@ -57,6 +57,19 @@ _SERVICE_SCHEMA = "astrid.engine-service.v1"
 _RECEIPT = ".astrid-engine/install.json"
 __all__ = ["plan_install", "install_engine", "engine_status"]
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_STATUS_ERROR_CODES = frozenset({
+    "engine_error", "unknown_engine", "unsupported_platform", "invalid_recipe",
+    "invalid_model_lock", "integrity_failed", "unsafe_path", "download_failed",
+    "command_failed", "transport_failed", "endpoint_ownership", "endpoint_unhealthy",
+    "unsupported_placement", "attestation_invalid",
+})
+
+
+def _status_step_ids(plan):
+    # Only packaged plan identifiers and these two local verification boundaries.
+    return {"helper-identity", "receipt-evidence", *(step.id for step in plan.steps)}
+
+
 # Explicit package closure, never a directory walk over ambient modules.
 _CODE_PATHS = (
     "__init__.py", "version.py", "core/__init__.py", "core/generation/__init__.py",
@@ -726,6 +739,8 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
 def _parse_receipt(raw, plan):
     """Strict JSON receipt reconstruction; a receipt is evidence, never instructions."""
     def obj(value, cls):
+        if cls is InstallReceipt and isinstance(value, Mapping):
+            value = {"failed_step_id": None, **value}
         if not isinstance(value, Mapping) or set(value) != {f.name for f in fields(cls)}:
             raise IntegrityError("invalid install receipt fields")
         return dict(value)
@@ -748,6 +763,11 @@ def _parse_receipt(raw, plan):
             raise ValueError
         if value["error_code"] is not None and (not isinstance(value["error_code"], str)
                 or not re.fullmatch("[a-z_]+", value["error_code"])):
+            raise ValueError
+        failed_step = value["failed_step_id"]
+        if failed_step is not None and (
+                not isinstance(failed_step, str) or failed_step not in _status_step_ids(plan)
+                or value["status"] != "failed" or value["error_code"] not in _STATUS_ERROR_CODES):
             raise ValueError
         for key in ("requirements_locks", "source_commits"):
             if not isinstance(value[key], Mapping):
@@ -840,17 +860,24 @@ def engine_status(engine: EngineId, *, platform: PlatformKey, placement: Placeme
         raise UnsupportedPlatform("installed status requires the A2 production Linux adapter") from exc
     runner = _Runner(plan, context, platform_adapter(platform), deadline)
     runner.receipt_id, runner.started_at = receipt.receipt_id, receipt.started_at
+    failed_step_id = "helper-identity"
     try:
         if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
             raise IntegrityError("target engine helper identity differs")
         for step in plan.steps:
+            failed_step_id = step.id
             runner.execute(step, readonly=True)
+        failed_step_id = "receipt-evidence"
         if (runner.locks != receipt.requirements_locks or runner.commits != receipt.source_commits
                 or runner.health.object_info_sha256 != receipt.health.object_info_sha256):
             raise IntegrityError("current evidence differs from installed receipt")
     except (CustodyUnresolved, DeadlineExceeded):
         raise
     except EngineError as exc:
+        # Use the active trusted boundary, never transport-supplied step IDs,
+        # exception text, command output, recovery handles or arbitrary facts.
+        code = exc.code if isinstance(exc.code, str) and exc.code in _STATUS_ERROR_CODES else EngineError.code
         return replace(receipt, status="failed", health=HealthEvidence("unhealthy", _now(), None, False),
-                       error_code=exc.code)
+                       error_code=code,
+                       failed_step_id=failed_step_id if failed_step_id in _status_step_ids(plan) else None)
     return replace(receipt, steps=tuple(runner.steps), models=tuple(runner.models), health=runner.health)

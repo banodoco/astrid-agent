@@ -438,6 +438,8 @@ class InstallReceipt:
     started_at: str
     completed_at: str | None
     error_code: str | None
+    # Read-only status diagnostic; absent in receipts written before this field.
+    failed_step_id: str | None = None
 
 
 @dataclass(frozen=True)

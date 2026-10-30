@@ -66,6 +66,7 @@ def test_installed_engine_becomes_a_local_endpoint(tmp_path):
 @pytest.mark.parametrize("overrides", [
     {"status": None},
     {"status": "failed"},
+    {"status": "failed", "error_code": "integrity_failed", "failed_step_id": "source:comfyui"},
     {"status": "installing"},
     {"health": HealthEvidence("unhealthy", "2026-10-28T00:00:00Z", None, False)},
     {"health": None},

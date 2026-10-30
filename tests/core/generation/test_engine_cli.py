@@ -141,6 +141,28 @@ def test_runner_execution_and_missing_status(capsys):
     assert any(event[0] == 'download' for event in context.events)
 
 
+def test_status_json_retains_integrity_gate_without_raw_target_output(monkeypatch, capsys):
+    fixture = _runner_fixture()
+    context = fixture.FakeContext()
+    import astrid.core.generation.engine_platforms as platforms
+    monkeypatch.setattr(platforms, 'platform_adapter', lambda *_: context.adapter)
+    def backend(**kwargs):
+        context.deadline = kwargs['deadline']
+        return context, context.adapter
+    rc, _, err = invoke(['install', *BASE], capsys, backend_factory=backend)
+    assert rc == 0 and not err
+    rc, out, err = invoke(['status', *BASE], capsys, backend_factory=backend)
+    assert rc == 0 and not err
+    assert json.loads(out)['status'] == 'installed' and json.loads(out)['failed_step_id'] is None
+    context.sources[ROOT + '/runtime/ComfyUI']['dirty'] = '/private/PRIVATE_INPUT_SENTINEL'
+    rc, out, err = invoke(['status', *BASE], capsys, backend_factory=backend)
+    data = json.loads(out)
+    assert rc == 0 and not err
+    assert (data['status'], data['error_code'], data['failed_step_id']) == (
+        'failed', 'integrity_failed', 'source:comfyui')
+    assert '/private/' not in out and 'PRIVATE_INPUT_SENTINEL' not in out
+
+
 def test_error_is_bounded_and_secret_free(capsys):
     def fail(**kwargs):
         raise CommandFailed('secret' * 10000, step_id='source:comfyui')

@@ -652,6 +652,12 @@ def test_full_revalidation_prevents_false_skips(setup, condition):
     context.events.clear()
     report = status(setup)
     assert report.status == "failed"
+    assert report.error_code == "integrity_failed"
+    assert report.failed_step_id == {
+        "dirty": "source:comfyui", "origin": "source:comfyui", "revision": "source:comfyui",
+        "model": "model:h3-reference-to-video", "node-lock": "environment:comfy",
+        "lock": "environment:comfy",
+    }[condition]
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
 
 
@@ -667,11 +673,102 @@ def test_status_revalidates_models_and_health_readonly(setup):
     context.events.clear()
     current = status(setup)
     assert current.status == "installed" and current.receipt_id == receipt.receipt_id
+    assert current.failed_step_id is None
     assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
     assert [e for e in context.events if e[0] == "service:health"]
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
     context.health_objects["new-node"] = {}
     assert status(setup).status == "failed"
+
+
+@pytest.mark.parametrize("gate", [
+    "source:comfyui", "source:vibecomfy", "source:h3-motion-context", "source:videohelpersuite",
+    "environment:comfy", "model:h3-reference-to-video", "model:h3-text-encoder",
+    "model:h3-video-vae", "model:h3-audio-vae", "model:h3-turbo-lora", "start", "health",
+])
+def test_status_failure_keeps_only_trusted_gate_and_code(setup, monkeypatch, gate):
+    install(setup)
+    plan, context, *_ = setup
+    persisted = copy.deepcopy(context.files)
+    context.events.clear()
+    original = runner._Runner.execute
+    private = "PRIVATE_INPUT_SENTINEL"
+    error = IntegrityError("exception-message " + private * 10000,
+                           step_id="source:" + private,
+                           recovery_handle="/arbitrary/private/" + private)
+    error.stdout = "raw-command-output " + private
+    error.target_facts = {"media": private}
+
+    def fail(self, step, *, readonly=False):
+        assert readonly is True
+        if step.id == gate:
+            raise error
+        return original(self, step, readonly=readonly)
+
+    monkeypatch.setattr(runner._Runner, "execute", fail)
+    report = status(setup)
+    assert report.status == "failed" and report.error_code == "integrity_failed"
+    assert report.failed_step_id == gate
+    assert report.health.status == "unhealthy" and report.health.required_nodes_present is False
+    # Exercise the public status serializer, rather than just inspecting the exception.
+    from astrid.core.engine_cli import _plain
+    output = json.dumps(_plain(report))
+    for forbidden in (private, "exception-message", "raw-command-output", "/arbitrary/private", "target_facts"):
+        assert forbidden not in output
+    assert len(output) < 16384
+    assert runner._parse_receipt(json.loads(output), plan) == report
+    assert context.files == persisted
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
+
+
+@pytest.mark.parametrize("code", ["PRIVATE_INPUT_SENTINEL", "a" * 10000, None])
+def test_status_failure_does_not_serialize_unrecognized_error_codes(setup, monkeypatch, code):
+    install(setup)
+    error = IntegrityError("PRIVATE_INPUT_SENTINEL", step_id="/arbitrary/private/path")
+    error.code = code
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(runner._Runner, "execute", fail)
+    report = status(setup)
+    assert report.failed_step_id == "source:comfyui" and report.error_code == "engine_error"
+    assert "PRIVATE_INPUT_SENTINEL" not in runner._json(report)
+
+
+@pytest.mark.parametrize("gate", ["helper-identity", "receipt-evidence"])
+def test_status_failure_identifies_non_plan_verification_gates(setup, gate):
+    install(setup)
+    context = setup[1]
+    persisted = copy.deepcopy(context.files)
+    context.events.clear()
+    if gate == "helper-identity":
+        context.wrong_identity = True
+    else:
+        context.health_objects["new-node"] = {}
+    report = status(setup)
+    assert (report.status, report.error_code, report.failed_step_id) == ("failed", "integrity_failed", gate)
+    assert context.files == persisted
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
+
+
+def test_status_reads_legacy_receipt_without_diagnostics(setup):
+    receipt = install(setup)
+    setup[1].files[ROOT + "/" + runner._RECEIPT].pop("failed_step_id")
+    report = status(setup)
+    assert report.status == "installed" and report.failed_step_id is None
+    for field in ("receipt_id", "root", "recipe_sha256", "models_lock_sha256", "source_commits", "requirements_locks"):
+        assert getattr(report, field) == getattr(receipt, field)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("failed_step_id", "/arbitrary/private/path"), ("failed_step_id", "source:PRIVATE_INPUT_SENTINEL"),
+    ("failed_step_id", ["health"]), ("failed_step_id", "health"),
+])
+def test_status_refuses_untrusted_or_inconsistent_receipt_diagnostics(setup, field, value):
+    install(setup)
+    raw = setup[1].files[ROOT + "/" + runner._RECEIPT]
+    raw[field] = value
+    with pytest.raises(IntegrityError):
+        status(setup)
 
 
 @pytest.mark.parametrize("field,value", [("schema", "wrong"), ("qualified", True), ("root", "/other"), ("unknown", True), ("steps", [])])
