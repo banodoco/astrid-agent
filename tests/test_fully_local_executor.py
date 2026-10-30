@@ -127,6 +127,25 @@ def test_dirty_or_unmarked_inputs_fail_closed(tmp_path: Path) -> None:
         run_execution(checkout=checkout, state_root=state)
 
 
+def test_nested_custody_and_receipt_outputs_fail_before_execution(tmp_path: Path) -> None:
+    checkout, state, baseline_head, _mode = _disposable_fixture(tmp_path)
+
+    nested_state = checkout / "nested-state"
+    nested_state.mkdir()
+    (nested_state / DISPOSABLE_MARKER).write_text("m4-4b-disposable\n", encoding="utf-8")
+    with pytest.raises(ExecutionError, match="disjoint"):
+        run_execution(checkout=checkout, state_root=nested_state)
+
+    with pytest.raises(ExecutionError, match="outside checkout"):
+        run_execution(checkout=checkout, state_root=state, output=checkout / "receipt.json")
+    with pytest.raises(ExecutionError, match="outside checkout"):
+        run_execution(checkout=checkout, state_root=state, output=state / "receipt.json")
+
+    assert not (checkout / "receipt.json").exists()
+    assert not (state / "receipt.json").exists()
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == baseline_head
+
+
 def test_source_fake_only_evidence_is_rejected() -> None:
     with pytest.raises(ReceiptValidationError, match="local_process"):
         validate_execution_receipt(run_journey(DeterministicFakeAdapter()))

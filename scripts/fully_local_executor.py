@@ -110,6 +110,10 @@ def _require_disposable_directory(path: Path, label: str) -> Path:
     return resolved
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
 def _checkout_snapshot(checkout: Path) -> CheckoutSnapshot:
     head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     branch = _git(checkout, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
@@ -402,8 +406,8 @@ def _build_receipt(checkout: Path, state_root: Path) -> dict[str, Any]:
     project_root = Path(__file__).resolve().parents[1]
     checkout = _require_disposable_directory(checkout, "checkout")
     state_root = _require_disposable_directory(state_root, "state root")
-    if checkout == state_root:
-        raise ExecutionError("checkout and Runtime state root must be separate disposable paths")
+    if _is_within(checkout, state_root) or _is_within(state_root, checkout):
+        raise ExecutionError("checkout and Runtime state root must be disjoint disposable paths")
     project_root = project_root.resolve()
     if checkout == project_root or state_root == project_root:
         raise ExecutionError("the Agent checkout is not a disposable execution target")
@@ -664,12 +668,26 @@ def _build_receipt(checkout: Path, state_root: Path) -> dict[str, Any]:
 
 
 def run_execution(*, checkout: Path, state_root: Path, output: Path | None = None) -> dict[str, Any]:
+    checkout_resolved = checkout.expanduser().resolve()
+    state_root_resolved = state_root.expanduser().resolve()
+    output_resolved: Path | None = None
+    if output is not None:
+        if output.is_symlink():
+            raise ExecutionError("receipt output must not be a symlink")
+        output_resolved = output.expanduser().resolve()
+        project_root = Path(__file__).resolve().parents[1]
+        if any(
+            _is_within(output_resolved, custody)
+            for custody in (checkout_resolved, state_root_resolved, project_root)
+        ):
+            raise ExecutionError(
+                "receipt output must be outside checkout, Runtime state, and Agent custody"
+            )
     receipt = _build_receipt(checkout, state_root)
     encoded = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
-    if output is not None:
-        output = output.expanduser().resolve()
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(encoded, encoding="utf-8")
+    if output_resolved is not None:
+        output_resolved.parent.mkdir(parents=True, exist_ok=True)
+        output_resolved.write_text(encoded, encoding="utf-8")
     return receipt
 
 
