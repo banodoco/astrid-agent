@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -160,6 +161,26 @@ def _v2_source_free(*, settings=None, prompt="A subject crosses the field."):
         "media": [{"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}],
         "settings": settings or {},
     })
+
+
+def test_repeated_identical_v2_planning_preserves_workflow_bytes_and_compilation_digest(tmp_path: Path) -> None:
+    assets = _assets(tmp_path, look=True)
+    plans = []
+    manifests = []
+    sources = []
+    for _ in range(3):
+        plan = plan_request(_v2_source_free(), asset_map=assets, out_dir=tmp_path / "plan")
+        manifest = json.loads(Path(plan["compilation"]["manifest_path"]).read_text())
+        plans.append(plan)
+        manifests.append(manifest)
+        sources.append(Path(manifest["workflow"]["workflow.py"]["path"]).read_bytes())
+
+    assert sources[0] == sources[1] == sources[2]
+    workflow_sha = hashlib.sha256(sources[0]).hexdigest()
+    for manifest in manifests:
+        assert manifest["workflow"]["workflow.py"]["sha256"] == workflow_sha
+    assert manifests[0]["compilation_digest"] == manifests[1]["compilation_digest"] == manifests[2]["compilation_digest"]
+    assert plans[0] == plans[1] == plans[2]
 
 
 def _v2_continue(*, settings=None, prompt="Continue the shot."):

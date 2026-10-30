@@ -51,6 +51,7 @@ Operational families:
   python3 -m astrid auth {login,status,logout,revoke}
 
 External tools:
+  python3 -m astrid h3 {plan,run,compose,edit} ...
   python3 -m astrid hivemind search QUERY [--limit N] [--json]
 
 Nested mounts (manifest-owned):
@@ -119,6 +120,7 @@ Contributor authentication (reserved):
   auth        [hivemind] login/status/logout/revoke; contribution-only access
 
 External tools:
+  h3          [pack: h3_av] plan/run/compose/edit audiovisual requests
   hivemind    [managed pack] search current messages and resources
   installed pack routes are discovered from pack manifests; packs without a
   declared CLI command remain available through ``astrid agent``
