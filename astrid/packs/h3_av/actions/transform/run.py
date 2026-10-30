@@ -63,7 +63,7 @@ def _resolve_local_engine() -> Any:
     """Resolve the installed local engine endpoint or fail fast with the next action."""
 
     from astrid.core.generation.engine_contracts import EngineError
-    from astrid.core.generation.engine_local_endpoint import local_engine_endpoint
+    from astrid.core.generation.engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
 
     try:
         return local_engine_endpoint("vibecomfy-h3")
@@ -71,9 +71,10 @@ def _resolve_local_engine() -> Any:
         if exc.code == "endpoint_ownership":
             raise AstridError(f"local H3 engine endpoint ownership error ({exc.code}): {exc}",
                               code=exc.code) from exc
+        reason = f"readiness reason: {exc.reason_code}; " if isinstance(exc, EngineNotInstalled) else ""
         raise AstridError(
             f"local H3 engine is not ready ({exc.code}): "
-            f"run `{LOCAL_ENGINE_INSTALL_ACTION}` first",
+            f"{reason}run `{LOCAL_ENGINE_INSTALL_ACTION}` first",
             recovery_command=LOCAL_ENGINE_INSTALL_ACTION,
         ) from exc
 

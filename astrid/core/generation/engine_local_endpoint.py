@@ -36,12 +36,26 @@ ENGINE_ROOT_RECORD_SCHEMA = "astrid.engine-root.v1"
 _ENGINE_ID = re.compile(r"[a-z][a-z0-9-]*")
 _RECORD_LIMIT = 4096
 
+# Only fixed local readiness reasons may cross the public action's error boundary.
+# Model/validation reasons and unexpected receipt status text can contain paths.
+_READINESS_REASON_CODES = {
+    "engine root record is unreadable": "root_record_unreadable",
+    "engine root record is not a regular file": "root_record_not_regular",
+    "engine root record is not valid": "root_record_invalid",
+    "no install receipt": "install_receipt_missing",
+    "install receipt unreadable": "install_receipt_unreadable",
+    "install status failed, engine not healthy": "install_status_failed",
+    "install status installing, engine not healthy": "install_status_installing",
+    "install status installed, engine not healthy": "engine_unhealthy",
+}
+
 
 class EngineNotInstalled(EngineError):
     code = "engine_not_installed"
 
     def __init__(self, engine: str, reason: str):
         self.next_action = f"astrid engines install {engine}"
+        self.reason_code = _READINESS_REASON_CODES.get(reason, "engine_not_ready")
         super().__init__(f"engine {engine} is not ready locally ({reason}); run: {self.next_action}")
 
 

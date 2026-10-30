@@ -789,6 +789,61 @@ def test_local_placement_reports_endpoint_ownership(tmp_path: Path, monkeypatch)
     assert receipt["error"]["code"] == "endpoint_ownership"
 
 
+@pytest.mark.parametrize("fault,reason", [
+    ("missing", "install_receipt_missing"),
+    ("failed", "install_status_failed"),
+    ("installing", "install_status_installing"),
+    ("unhealthy", "engine_unhealthy"),
+    ("unreadable", "install_receipt_unreadable"),
+    ("invalid_record", "root_record_invalid"),
+    ("unknown_status", "engine_not_ready"),
+])
+def test_local_readiness_reason_survives_h3_failure_without_private_details(tmp_path, monkeypatch, fault, reason):
+    """Real root selection, readiness gate and H3 failure publication; fake status/backend only."""
+    import json
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import engine_execution, engine_local_endpoint, engine_runner
+    from astrid.packs.h3_av.actions.transform import run as transform
+
+    private = "PRIVATE_CHECKOUT_ENDPOINT_CREDENTIAL"
+    home = tmp_path / "engine-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    root = tmp_path / private
+    record = engine_local_endpoint.record_engine_root("vibecomfy-h3", str(root))
+    # The existing recorded root must still win; no discovery or fallback is added.
+    monkeypatch.setenv("ASTRID_ENGINE_ROOT", str(tmp_path / "unused-default"))
+    if fault == "invalid_record":
+        record.write_text(json.dumps({"root": str(root), "private": private}))
+    calls = []
+    def status(engine, **kwargs):
+        calls.append(kwargs["root"])
+        assert engine == "vibecomfy-h3" and kwargs["root"] == str(root)
+        if fault == "missing":
+            return None
+        health = SimpleNamespace(status="healthy", required_nodes_present=True, object_info_sha256="a" * 64)
+        if fault == "unhealthy":
+            health.status = "unhealthy"
+        status_value = private if fault == "unknown_status" else fault if fault in {"failed", "installing"} else "installed"
+        return SimpleNamespace(status=status_value,
+                               health=health, error_code=private, failed_step_id=private)
+    monkeypatch.setattr(engine_execution, "create_local_backend", lambda **kwargs: (object(), None))
+    monkeypatch.setattr(engine_runner, "engine_status", status)
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher",
+                        lambda **kwargs: pytest.fail("connected before engine readiness"))
+    args = _transform_args(tmp_path, "--placement", "local")
+    with pytest.raises(AstridError) as caught:
+        transform.run_transform(args)
+    message = str(caught.value)
+    assert "local H3 engine is not ready (engine_not_installed)" in message
+    assert f"readiness reason: {reason}" in message
+    assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+    result = json.loads((args.out / "result.json").read_text())
+    assert result["status"] == "failed" and result["error"]["message"] == message
+    assert private not in json.dumps(result) + message
+    assert calls == ([] if fault == "invalid_record" else [str(root)])
+
+
 def test_runpod_placement_without_prepared_worker_uses_the_remote_wrapper(tmp_path: Path, monkeypatch) -> None:
     from astrid.packs.h3_av.actions.transform import run as transform
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: pytest.fail("connected"))
