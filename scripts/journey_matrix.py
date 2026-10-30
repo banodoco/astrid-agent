@@ -25,16 +25,36 @@ RELEASE1_MATRIX: Final = (
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
 RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in RELEASE1_MATRIX}))
 
-# M4-4a is deliberately a narrower contract than the Release-1 matrix.  Keep
-# it named separately so fully-local rows, source/unit checks, and the hosted
-# backend lifecycle cannot be mistaken for one another by an aggregate gate.
-M4_4A_BACKEND_MATRIX: Final = (
-    {"job_id": "pinokio-backend-macos", "mode": "pinokio-backend", "runner": "macos-14",
-     "shell": "sh", "os": "macos", "leg": "fresh-install"},
-    {"job_id": "pinokio-backend-linux", "mode": "pinokio-backend", "runner": "ubuntu-24.04",
-     "shell": "sh", "os": "linux", "leg": "fresh-install"},
-    {"job_id": "pinokio-backend-windows", "mode": "pinokio-backend", "runner": "windows-2022",
-     "shell": "powershell.exe", "os": "windows", "leg": "fresh-install"},
+# M4-4a is deliberately a narrower contract than the Release-1 matrix. Keep
+# all of its immutable receipt vocabulary here so the driver and checker cannot
+# silently drift apart.
+M4_4A_OLD_LAUNCHER_REF: Final = "bbba620e3d89eeff8021417f365e6ea584203105"
+M4_4A_OLD_UPDATE_SHA256: Final = "a0f998c03bbba57966c8863a3bd38411d7859d970ddc4c93af1e28b04a66291b"
+M4_4A_PROVISIONAL_AGENT_REF: Final = "3cc84be5d8c565f1a4a500dcf713478498e34885"
+M4_4A_REQUIRED_AGENT_ANCESTORS: Final = (
+    "14d87abe38cd2545411a84549d5e4edc5a33561d",  # paired M1-4a prerequisite
+    "b97a4757a908982c978e46c90898a816c0c5d9ee",  # M1-4b stopped-path implementation
+)
+M4_4A_BACKEND_SIDECARS: Final = (
+    "action-array-first.json", "action-array-retry.json", "events.jsonl",
+    "first-click.stdout.log", "first-click.stderr.log",
+    "status-after-update.json", "health-after-update.json", "menu-after-update.json",
+    "status-after-restart.json", "health-after-restart.json", "menu-after-restart.json",
+    "processes-before.json", "processes-after-first-click.json",
+    "processes-after-stop.json", "processes-after-retry-ready.json",
+    "processes-after-final-stop.json", "processes-after-restart-ready.json",
+    "negative-controls.json",
+)
+M4_4A_REQUIRED_EVENTS: Final = (
+    "action_built", "launcher_ref_advanced", "first_click_begin",
+    "launcher_pull_begin", "launcher_pull_end", "installer_begin",
+    "installer_end", "ready_sentinel", "action_end", "health_probe_begin",
+    "health_probe_pass", "stop_begin", "stop_end", "retry_begin", "retry_end",
+    "start_begin", "start_end",
+)
+M4_4A_BACKEND_MATRIX: Final = tuple(
+    {**row, "leg": row.get("leg", "fresh-install")}
+    for row in RELEASE1_MATRIX if row["mode"] == "pinokio-backend"
 )
 M4_4A_BACKEND_JOB_IDS: Final = tuple(row["job_id"] for row in M4_4A_BACKEND_MATRIX)
 

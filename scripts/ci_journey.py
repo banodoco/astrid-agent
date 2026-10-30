@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import ntpath
 import os
@@ -16,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.request
@@ -25,10 +27,24 @@ from pathlib import Path
 
 if __package__:
     from . import ci_windows_journey as windows
-    from .journey_matrix import RELEASE1_MODES, validate_job
+    from .journey_matrix import (
+        M4_4A_OLD_LAUNCHER_REF,
+        M4_4A_OLD_UPDATE_SHA256,
+        M4_4A_PROVISIONAL_AGENT_REF,
+        M4_4A_REQUIRED_AGENT_ANCESTORS,
+        RELEASE1_MODES,
+        validate_job,
+    )
 else:
     import ci_windows_journey as windows
-    from journey_matrix import RELEASE1_MODES, validate_job
+    from journey_matrix import (
+        M4_4A_OLD_LAUNCHER_REF,
+        M4_4A_OLD_UPDATE_SHA256,
+        M4_4A_PROVISIONAL_AGENT_REF,
+        M4_4A_REQUIRED_AGENT_ANCESTORS,
+        RELEASE1_MODES,
+        validate_job,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,27 +57,6 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
-
-M4_4A_OLD_LAUNCHER_REF = "bbba620e3d89eeff8021417f365e6ea584203105"
-M4_4A_OLD_UPDATE_SHA256 = "a0f998c03bbba57966c8863a3bd38411d7859d970ddc4c93af1e28b04a66291b"
-M4_4A_BACKEND_SIDECARS = (
-    "action-array-first.json", "action-array-retry.json", "events.jsonl",
-    "first-click.stdout.log", "first-click.stderr.log",
-    "status-after-update.json", "health-after-update.json", "menu-after-update.json",
-    "status-after-restart.json", "health-after-restart.json", "menu-after-restart.json",
-    "processes-before.json", "processes-after-first-click.json",
-    "processes-after-stop.json", "processes-after-retry-ready.json",
-    "processes-after-final-stop.json", "processes-after-restart-ready.json",
-    "negative-controls.json",
-)
-M4_4A_REQUIRED_EVENTS = (
-    "action_built", "launcher_ref_advanced", "first_click_begin",
-    "launcher_pull_begin", "launcher_pull_end", "installer_begin",
-    "installer_end", "ready_sentinel", "action_end", "health_probe_begin",
-    "health_probe_pass", "stop_begin", "stop_end", "retry_begin", "retry_end",
-    "start_begin", "start_end",
-)
-SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def journey_os_label() -> str:
@@ -101,10 +96,9 @@ _PINOKIO_ACTION_SCRIPT = r'''
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { execFileSync } = require('node:child_process');
 
-const [repo, source, appDirectory, mode, sourceKind] = process.argv.slice(1);
-const lib = require(path.join(repo, 'pinokio', 'lib.js'));
+const [sourceRoot, appDirectory, mode] = process.argv.slice(1);
+const lib = require(path.join(sourceRoot, 'pinokio', 'lib.js'));
 const app = lib.createApp({ appDirectory });
 const bootstrapActions = new Map();
 const realBootstrap = app.bootstrapScript.bind(app);
@@ -121,12 +115,11 @@ app.shellStep = (message, ...args) => {
 };
 app.readInstallMode = () => mode;
 app.hasPendingUpdate = () => false;
-let sourceText;
-if (sourceKind === 'git') sourceText = execFileSync('git', ['-C', repo, 'show', `${source}:pinokio/update.js`], { encoding: 'utf8' });
-else sourceText = fs.readFileSync(source, 'utf8');
+const source = path.join(sourceRoot, 'pinokio', 'update.js');
+const sourceText = fs.readFileSync(source, 'utf8');
 const module = { exports: {} };
 const injectedRequire = (name) => name === './lib' ? app : require(name);
-vm.runInNewContext(sourceText, { module, exports: module.exports, require: injectedRequire }, { filename: `${source}:pinokio/update.js` });
+vm.runInNewContext(sourceText, { module, exports: module.exports, require: injectedRequire }, { filename: source });
 Promise.resolve(module.exports({}, {})).then((action) => {
   const normalize = (value) => {
     if (typeof value === 'function') return { kind: 'custom', name: value.name || 'anonymous' };
@@ -146,24 +139,50 @@ Promise.resolve(module.exports({}, {})).then((action) => {
 '''
 
 
-def build_pinokio_action(pinokio: Path, source: str | Path, *, mode: str = "backend",
+def _export_pinokio_source(pinokio: Path, ref: str, destination: Path) -> None:
+    """Export committed launcher bytes without checking out or mutating the input."""
+    archive = subprocess.check_output(
+        ["git", "-C", str(pinokio), "archive", "--format=tar", ref, "pinokio"],
+    )
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
+        for member in stream.getmembers():
+            relative = Path(member.name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError("Pinokio source archive contains an unsafe path")
+            target = destination.joinpath(*relative.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                extracted = stream.extractfile(member)
+                if extracted is None:
+                    raise ValueError("Pinokio source archive contains an unreadable file")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(extracted.read())
+            else:
+                raise ValueError("Pinokio source archive contains a non-regular entry")
+
+
+def build_pinokio_action(pinokio: Path, source_ref: str, *, mode: str = "backend",
                          app_directory: Path | None = None) -> dict:
-    """Build an action through Pinokio's existing JavaScript action interface."""
+    """Build an action from one immutable launcher commit and its matching lib."""
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node.js is required to build the Pinokio action")
     pinokio = pinokio.resolve(strict=True)
-    source_kind = "git" if isinstance(source, str) else "path"
-    source_value = str(source)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_ref):
+        raise ValueError("Pinokio action source must be a full commit SHA")
     app_directory = (app_directory or pinokio).resolve()
-    node_args = ["-e", _PINOKIO_ACTION_SCRIPT, str(pinokio), source_value,
-                 str(app_directory), mode, source_kind]
-    argv = (windows.powershell5_command(node, node_args)
-            if sys.platform == "win32" else [node, *node_args])
-    completed = subprocess.run(
-        argv,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="astrid-m4-4a-action-") as temporary:
+        source_root = Path(temporary)
+        _export_pinokio_source(pinokio, source_ref, source_root)
+        node_args = ["-e", _PINOKIO_ACTION_SCRIPT, str(source_root),
+                     str(app_directory), mode]
+        argv = (windows.powershell5_command(node, node_args)
+                if sys.platform == "win32" else [node, *node_args])
+        completed = subprocess.run(
+            argv,
+            capture_output=True, text=True, timeout=30, check=False,
+        )
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip().splitlines()
         raise RuntimeError(f"Pinokio action construction failed: {detail[-1] if detail else 'unknown error'}")
@@ -176,13 +195,14 @@ def build_pinokio_action(pinokio: Path, source: str | Path, *, mode: str = "back
     return value
 
 
-def _write_sidecar(path: Path, value: object) -> str:
+def _write_sidecar(path: Path, value: object, *, receipt_root: Path) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(value, str):
         path.write_text(value, encoding="utf-8")
     else:
         path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return {"path": path.relative_to(receipt_root).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 def _emit_pinokio_event(stream, sequence: int, name: str, *, mode: str = "pinokio-backend",
@@ -196,6 +216,29 @@ def _emit_pinokio_event(stream, sequence: int, name: str, *, mode: str = "pinoki
     return sequence + 1
 
 
+def validate_m4_4a_product_ref(args: argparse.Namespace) -> dict:
+    """Require an explicit integrated stopped-path Agent before hosted execution."""
+    supplied = getattr(args, "stopped_path_agent_ref", None)
+    if not isinstance(supplied, str) or not re.fullmatch(r"[0-9a-f]{40}", supplied):
+        raise ValueError("pinokio-backend requires --stopped-path-agent-ref as a full commit SHA")
+    if supplied == M4_4A_PROVISIONAL_AGENT_REF:
+        raise ValueError("the provisional Agent base does not contain the integrated stopped path")
+    checkout = getattr(args, "candidate_agent_checkout", None)
+    if checkout is None or git_source(checkout)["sha"] != supplied:
+        raise ValueError("--stopped-path-agent-ref must equal the frozen candidate Agent checkout")
+    missing = [ref for ref in M4_4A_REQUIRED_AGENT_ANCESTORS if subprocess.run(
+        ["git", "-C", str(checkout), "merge-base", "--is-ancestor", ref, supplied],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    ).returncode != 0]
+    if missing:
+        raise ValueError("candidate Agent lacks the paired stopped-path commits: " + ", ".join(missing))
+    candidate_path = getattr(args, "candidate", None)
+    if candidate_path is None or read_json(candidate_path).get("agent") != supplied:
+        raise ValueError("--stopped-path-agent-ref must equal the frozen candidate Agent input")
+    return {"ref": supplied, "required_ancestors": list(M4_4A_REQUIRED_AGENT_ANCESTORS),
+            "provisional_base_refused": M4_4A_PROVISIONAL_AGENT_REF, "validated": True}
+
+
 def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
     """Build the old and retry action receipts before lifecycle execution.
 
@@ -207,6 +250,7 @@ def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
         raise ValueError("pinokio-backend requires --old-launcher-ref")
     pinokio = args.pinokio_checkout.resolve(strict=True)
     provenance = validate_old_launcher_provenance(pinokio, args.old_launcher_ref)
+    product = validate_m4_4a_product_ref(args)
     backend_evidence = evidence / "pinokio-backend"
     backend_evidence.mkdir(parents=True, exist_ok=True)
     events_path = backend_evidence / "events.jsonl"
@@ -223,22 +267,50 @@ def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
         first_record = {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
                         "built_before_ref_advance": True, "launcher": provenance,
                         "ordered_steps": first_steps}
-        first_hash = _write_sidecar(backend_evidence / "action-array-first.json", first_record)
+        first_sidecar = _write_sidecar(
+            backend_evidence / "action-array-first.json", first_record, receipt_root=evidence)
         sequence = _emit_pinokio_event(events, sequence, "launcher_ref_advanced",
                                        details={"launcher_ref": git_source(pinokio)["sha"]})
-        retry = build_pinokio_action(pinokio, pinokio / "pinokio" / "update.js", app_directory=pinokio)
+        retry_ref = git_source(pinokio)["sha"]
+        retry = build_pinokio_action(pinokio, retry_ref, app_directory=pinokio)
         retry_record = {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
                         "launcher": git_source(pinokio), "ordered_steps": retry["run"]}
-        retry_hash = _write_sidecar(backend_evidence / "action-array-retry.json", retry_record)
+        retry_sidecar = _write_sidecar(
+            backend_evidence / "action-array-retry.json", retry_record, receipt_root=evidence)
+    events_sidecar = {"path": events_path.relative_to(evidence).as_posix(),
+                      "sha256": hashlib.sha256(events_path.read_bytes()).hexdigest()}
+    def blocked(phase: str) -> dict:
         return {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
-                "evidence_kind": "source-and-hosted-lifecycle",
-                "old_launcher": provenance, "first_action_sha256": first_hash,
-                "retry_action_sha256": retry_hash,
-                "events_sha256": hashlib.sha256(events_path.read_bytes()).hexdigest(),
-                "sidecars": {"action-array-first.json": first_hash,
-                              "action-array-retry.json": retry_hash,
-                              "events.jsonl": hashlib.sha256(events_path.read_bytes()).hexdigest()},
-                "not_applicable": []}
+                "phase": phase, "status": "blocked",
+                "reason": "hosted lifecycle executor not admitted"}
+    return {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
+            "evidence_kind": "source-unit", "hosted_lifecycle": {
+                "status": "not-run", "reason": "integrated-product execution not admitted",
+            },
+            "old_launcher": provenance, "stopped_path_agent": product,
+            "first_click": blocked("first-click"),
+            "stop_after_refusal": blocked("stop-after-refusal"),
+            "retry_after_stop": blocked("retry-after-stop"),
+            "readiness_after_update": blocked("readiness-after-update"),
+            "stop_start": {"schema_version": 1, "os": journey_os_label(),
+                           "mode": "pinokio-backend", "status": "blocked",
+                           "reason": "hosted lifecycle executor not admitted"},
+            "negative_controls": {
+                name: blocked(name) for name in (
+                    "busy_stop", "unknown_stop", "identity_mismatch", "instance_mismatch")
+            },
+            "historical_compatibility": blocked("historical-compatibility"),
+            "provisional_dependencies": {
+                "required_agent_ancestors": list(M4_4A_REQUIRED_AGENT_ANCESTORS),
+                "hosted_receipts": "not-run", "g3": "external-gate",
+            },
+            "first_action_sha256": first_sidecar["sha256"],
+            "retry_action_sha256": retry_sidecar["sha256"],
+            "events_sha256": events_sidecar["sha256"],
+            "sidecars": {"action-array-first.json": first_sidecar,
+                          "action-array-retry.json": retry_sidecar,
+                          "events.jsonl": events_sidecar},
+            "not_applicable": []}
 
 
 def runner_identity() -> dict:
@@ -1097,6 +1169,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pinokio-checkout", type=Path)
     parser.add_argument("--old-launcher-ref",
                         help="required full SHA for the approved pre-self-pull Pinokio action")
+    parser.add_argument("--stopped-path-agent-ref",
+                        help="required full candidate Agent SHA carrying the integrated stopped path")
     parser.add_argument("--release0-fixture", type=Path,
                         help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
@@ -1118,10 +1192,15 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         if not all((args.candidate_agent_checkout, args.candidate_runtime_checkout, args.pinokio_checkout)):
             parser.error("Release-1 receipts require candidate Agent, Runtime and Pinokio checkouts")
-        if args.mode == "pinokio-backend" and not args.old_launcher_ref:
-            parser.error("pinokio-backend requires --old-launcher-ref")
-    elif args.old_launcher_ref:
-        parser.error("--old-launcher-ref requires a Release-1 Pinokio backend job")
+        if args.mode == "pinokio-backend":
+            if not args.old_launcher_ref:
+                parser.error("pinokio-backend requires --old-launcher-ref")
+            if not args.stopped_path_agent_ref:
+                parser.error("pinokio-backend requires --stopped-path-agent-ref")
+        elif args.old_launcher_ref or args.stopped_path_agent_ref:
+            parser.error("Pinokio backend refs require a pinokio-backend job")
+    elif args.old_launcher_ref or args.stopped_path_agent_ref:
+        parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
     if args.leg == "release0-to-release1":
         if not (args.job_id and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
