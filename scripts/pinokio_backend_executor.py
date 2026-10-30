@@ -38,6 +38,18 @@ GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 OS_NAMES = {"linux", "macos", "windows"}
 REQUIRED_CHECKOUTS = ("app", "agent", "runtime", "pinokio")
 REQUIRED_CONTROLS = ("busy_stop", "unknown_stop", "identity_mismatch", "instance_mismatch")
+APPROVED_OLD_LAUNCHER_REF = "bbba620e3d89eeff8021417f365e6ea584203105"
+APPROVED_OLD_UPDATE_SHA256 = "a0f998c03bbba57966c8863a3bd38411d7859d970ddc4c93af1e28b04a66291b"
+PROVISIONAL_AGENT_REF = "3cc84be5d8c565f1a4a500dcf713478498e34885"
+REQUIRED_STOPPED_PATH_ANCESTORS = (
+    "14d87abe38cd2545411a84549d5e4edc5a33561d",
+    "b97a4757a908982c978e46c90898a816c0c5d9ee",
+)
+HOSTED_RUNNERS = {
+    "linux": ("ubuntu-24.04", "Linux", "ubuntu24"),
+    "macos": ("macos-14", "macOS", "macos14"),
+    "windows": ("windows-2022", "Windows", "win22"),
+}
 SIDECARS = (
     "action-array-first.json", "action-array-retry.json", "events.jsonl",
     "first-click.stdout.log", "first-click.stderr.log", "retry.stdout.log",
@@ -203,10 +215,24 @@ def _validate_platform(raw: Mapping[str, Any]) -> dict[str, Any]:
     hosted = raw.get("hosted", evidence_class == "hosted-lifecycle")
     if not isinstance(hosted, bool):
         raise ValidationError("platform.hosted must be boolean")
-    if hosted and evidence_class != "hosted-lifecycle":
-        raise ValidationError("hosted platform input must use evidence_class hosted-lifecycle")
+    if hosted != (evidence_class == "hosted-lifecycle"):
+        raise ValidationError("platform.hosted and evidence_class hosted-lifecycle must agree")
+    runner_provenance: dict[str, str] = {}
+    if hosted:
+        expected_runner, expected_runner_os, expected_image_os = HOSTED_RUNNERS[os_name]
+        if runner != expected_runner:
+            raise ValidationError(f"hosted {os_name} execution requires runner {expected_runner}")
+        runner_provenance = {
+            "RUNNER_OS": os.environ.get("RUNNER_OS", ""),
+            "ImageOS": os.environ.get("ImageOS", ""),
+            "ImageVersion": os.environ.get("ImageVersion", ""),
+        }
+        if (runner_provenance["RUNNER_OS"] != expected_runner_os
+                or runner_provenance["ImageOS"] != expected_image_os
+                or not runner_provenance["ImageVersion"].strip()):
+            raise ValidationError("hosted runner provenance is absent or does not match the declared platform")
     return {"os": os_name, "runner": runner, "shell": shell, "hosted": hosted,
-            "evidence_class": evidence_class}
+            "evidence_class": evidence_class, "runner_provenance": runner_provenance}
 
 
 def _validate_command(raw: Mapping[str, Any], label: str) -> dict[str, Any]:
@@ -260,11 +286,21 @@ def _validate_action(raw: Mapping[str, Any], label: str, expected_ref: str, expe
     steps = raw.get("steps")
     if not isinstance(steps, list) or not steps or not all(isinstance(step, Mapping) for step in steps):
         raise ValidationError(f"{label}.steps must be a non-empty exported Pinokio action array")
+    shape = [(step.get("kind"), step.get("bootstrap_action")) for step in steps]
+    if label == "actions.first" and shape != [("git-shell", None), ("shell", "update-app")]:
+        raise ValidationError("actions.first is not the immutable H1 backend action array")
+    if label == "actions.retry" and shape != [
+        ("custom", "preflightStop"), ("git-shell", None), ("shell", "install"),
+    ]:
+        raise ValidationError("actions.retry is not the candidate backend action array")
     refusal_codes = raw.get("refusal_exit_codes", [42])
     if not isinstance(refusal_codes, list) or not all(isinstance(code, int) for code in refusal_codes):
         raise ValidationError(f"{label}.refusal_exit_codes must be an integer list")
+    refusal_text = (_text(raw.get("refusal_text"), f"{label}.refusal_text")
+                    if label == "actions.first" else None)
     return {"kind": "pinokio-action", "command": command, "provenance": dict(provenance),
-            "steps": [dict(step) for step in steps], "refusal_exit_codes": list(refusal_codes)}
+            "steps": [dict(step) for step in steps], "refusal_exit_codes": list(refusal_codes),
+            "refusal_text": refusal_text}
 
 
 def _validate_probe_set(runtime: Mapping[str, Any]) -> dict[str, Any]:
@@ -274,7 +310,12 @@ def _validate_probe_set(runtime: Mapping[str, Any]) -> dict[str, Any]:
         result[name] = _validate_command(runtime.get(name), f"runtime.{name}")
     identity = _text(runtime.get("expected_identity"), "runtime.expected_identity")
     instance = _text(runtime.get("expected_instance_id"), "runtime.expected_instance_id")
-    return {"commands": result, "expected_identity": identity, "expected_instance_id": instance}
+    restart_instance = _text(runtime.get("expected_restart_instance_id"),
+                             "runtime.expected_restart_instance_id")
+    if restart_instance == instance:
+        raise ValidationError("runtime restart instance must differ from the post-update instance")
+    return {"commands": result, "expected_identity": identity, "expected_instance_id": instance,
+            "expected_restart_instance_id": restart_instance}
 
 
 def _validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -293,6 +334,20 @@ def _validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValidationError("candidate_checkouts missing: " + ", ".join(missing))
     old = _validate_old_launcher(config.get("old_launcher"))
     platform_data = _validate_platform(config.get("platform"))
+    stopped_path = {
+        "ref": candidates["agent"]["ref"],
+        "required_ancestors": list(REQUIRED_STOPPED_PATH_ANCESTORS),
+        "validated": False,
+    }
+    if platform_data["hosted"]:
+        if old["ref"] != APPROVED_OLD_LAUNCHER_REF or old["sha256"] != APPROVED_OLD_UPDATE_SHA256:
+            raise ValidationError("hosted execution requires the approved immutable H1 old launcher")
+        if candidates["agent"]["ref"] == PROVISIONAL_AGENT_REF:
+            raise ValidationError("hosted execution refuses the provisional Agent without the stopped path")
+        agent_path = Path(candidates["agent"]["path"])
+        for ancestor in REQUIRED_STOPPED_PATH_ANCESTORS:
+            _git(agent_path, "merge-base", "--is-ancestor", ancestor, candidates["agent"]["ref"])
+        stopped_path["validated"] = True
     actions = config.get("actions")
     if not isinstance(actions, Mapping):
         raise ValidationError("actions must contain first and retry Pinokio actions")
@@ -329,9 +384,11 @@ def _validate_config(config: Mapping[str, Any]) -> dict[str, Any]:
     source_override = config.get("source_override_test_mode", False)
     if not isinstance(source_override, bool):
         raise ValidationError("source_override_test_mode must be boolean")
+    if source_override:
+        raise ValidationError("source overrides are forbidden for the Pinokio backend executor")
     return {"candidates": candidates, "old": old, "platform": platform_data,
             "first": first, "retry": retry, "runtime": runtime, "controls": controls,
-            "source_override": source_override}
+            "source_override": source_override, "stopped_path": stopped_path}
 
 
 def _iso_now() -> str:
@@ -524,7 +581,8 @@ class PinokioBackendExecutor:
         runtime = self.data["runtime"]
         ready = self._probe("ready", runtime["commands"]["ready"])
         expected_identity = runtime["expected_identity"]
-        expected_instance = runtime["expected_instance_id"]
+        expected_instance = (runtime["expected_instance_id"] if stage == "after-update"
+                             else runtime["expected_restart_instance_id"])
         identity = ready.get("identity")
         instance = ready.get("runtime_instance_id")
         status = bool(ready.get("ready") is True and ready.get("http_status") == 200
@@ -549,33 +607,46 @@ class PinokioBackendExecutor:
         self._write_sidecar(f"menu-{suffix}.json", menu)
         return status, health, menu
 
-    def _processes(self, suffix: str) -> dict[str, Any]:
+    def _processes(self, suffix: str, expected_running: bool | None = None) -> dict[str, Any]:
         value = self._probe("processes", self.data["runtime"]["commands"]["processes"])
+        if expected_running is not None and value.get("running") is not expected_running:
+            raise ExecutionError(f"process snapshot {suffix} does not show running={expected_running}")
+        if expected_running is False:
+            if value.get("owned_processes") != [] or value.get("owned_ports_free") is not True:
+                raise ExecutionError(f"process snapshot {suffix} retains an owned process or port")
         self._write_sidecar(f"processes-{suffix}.json", value)
         return value
 
     def _control(self, name: str) -> dict[str, Any]:
         control = self.data["controls"][name]
         if name in {"busy_stop", "unknown_stop"}:
-            before = self._processes("control-before")
+            before = self._processes("control-before", expected_running=True)
             guards_before = {str(path): _tree_digest(path) for path in control["guard_paths"]}
             refusal = self._run(control["refusal"])
             if refusal.returncode == 0 or control["expected_reason"] not in (refusal.stdout + refusal.stderr):
                 raise ExecutionError(f"negative control {name} did not refuse with its declared reason")
-            after = self._processes("control-after")
+            after = self._processes("control-after", expected_running=True)
             guards_after = {str(path): _tree_digest(path) for path in control["guard_paths"]}
             if guards_before != guards_after or _stable_identity(before) != _stable_identity(after):
                 raise ExecutionError(f"negative control {name} mutated state or lost session identity")
             recovery = self._run(control["recovery"])
             if recovery.returncode:
                 raise ExecutionError(f"negative control {name} recovery failed")
-            recovered = self._processes("control-recovered")
+            try:
+                recovery_receipt = json.loads(recovery.stdout)
+            except json.JSONDecodeError as exc:
+                raise ExecutionError(f"negative control {name} recovery did not return JSON") from exc
+            if (not isinstance(recovery_receipt, dict)
+                    or recovery_receipt.get("outcome") != "stopped"
+                    or recovery_receipt.get("same_session") is not True):
+                raise ExecutionError(f"negative control {name} recovery did not stop the same session")
+            recovered = self._processes("control-recovered", expected_running=False)
             return {"status": "pass", "outcome": "refused", "reason": control["expected_reason"],
                     "same_session_retry": "stopped", "process_identity_before": _stable_identity(before),
                     "process_identity_after": _stable_identity(after),
                     "process_identity_recovered": _stable_identity(recovered),
                     "guard_digests_before": guards_before, "guard_digests_after": guards_after,
-                    "mutation": False}
+                    "recovery_receipt": _sanitize(recovery_receipt), "mutation": False}
         result = self._run(control["probe"])
         if result.returncode:
             raise ExecutionError(f"negative control {name} probe failed")
@@ -586,11 +657,26 @@ class PinokioBackendExecutor:
         if not isinstance(value, dict):
             raise ExecutionError(f"negative control {name} did not return an object")
         identity_mismatch = name == "identity_mismatch" and value.get("identity") != self.data["runtime"]["expected_identity"]
-        instance_mismatch = name == "instance_mismatch" and value.get("runtime_instance_id") != self.data["runtime"]["expected_instance_id"]
-        if not (identity_mismatch or instance_mismatch) or value.get("ready") is True:
+        instance_mismatch = (name == "instance_mismatch"
+                             and value.get("runtime_instance_id") != self.data["runtime"]["expected_restart_instance_id"])
+        suppression_observed = (value.get("ready") is False
+                                and value.get("ready_sentinel") is False
+                                and value.get("local_set") is False
+                                and value.get("open_menu") is False)
+        if not (identity_mismatch or instance_mismatch) or not suppression_observed:
             raise ExecutionError(f"negative control {name} did not suppress readiness")
         return {"status": "pass", "mismatch_observed": True, "readiness_suppressed": True,
-                "observed": _sanitize(value), "local_set": False, "open_menu": False}
+                "observed": _sanitize(value), "ready_sentinel": False,
+                "local_set": False, "open_menu": False}
+
+    def _rearm_after_refusal_control(self, name: str) -> dict[str, Any]:
+        self.recorder.emit("control_rearm_begin", control=name)
+        start = self._run(self.data["runtime"]["commands"]["start"])
+        if start.returncode:
+            raise ExecutionError(f"negative control {name} could not re-arm Runtime after its stopped retry")
+        readiness = self._readiness(f"after-{name}-rearm")
+        self.recorder.emit("control_rearm_end", control=name, result="ready")
+        return {"result": "ready", "exit_code": 0, "readiness": readiness}
 
     def execute(self) -> dict[str, Any]:
         candidates = self.data["candidates"]
@@ -602,9 +688,10 @@ class PinokioBackendExecutor:
         self.recorder.emit("action_built", action="first", launcher_ref=self.data["old"]["ref"],
                            command_digest=first["command"]["digest"])
         candidate_before = {name: _git(Path(item["path"]), "rev-parse", "HEAD") for name, item in candidates.items()}
-        self.recorder.emit("launcher_ref_advanced", candidate_ref=candidates["pinokio"]["ref"],
-                           observed_before=candidate_before["pinokio"],
-                           changed=candidate_before["pinokio"] != candidates["pinokio"]["ref"])
+        self.recorder.emit("launcher_ref_advanced", from_ref=self.data["old"]["ref"],
+                           candidate_ref=candidates["pinokio"]["ref"],
+                           observed_head=candidate_before["pinokio"],
+                           changed=self.data["old"]["ref"] != candidates["pinokio"]["ref"])
         self.recorder.emit("first_click_begin")
         self.recorder.emit("launcher_pull_begin", launcher_ref=self.data["old"]["ref"])
         self.recorder.emit("launcher_pull_end", launcher_ref=self.data["old"]["ref"])
@@ -616,10 +703,12 @@ class PinokioBackendExecutor:
         if first_result.returncode == 0:
             first_outcome = "succeeded"
         elif first_result.returncode in refusal_codes:
+            if first["refusal_text"] not in (first_result.stdout + first_result.stderr):
+                raise ExecutionError("first Pinokio action used a refusal exit without the contract refusal text")
             first_outcome = "refused"
         else:
             raise ExecutionError(f"first Pinokio action failed without a contract refusal: {first_result.returncode}")
-        self._processes("after-first-click")
+        self._processes("after-first-click", expected_running=True)
         stop_after_refusal: dict[str, Any] | None = None
         retry_after_stop: dict[str, Any] | None = None
         if first_outcome == "refused":
@@ -628,7 +717,7 @@ class PinokioBackendExecutor:
             if stop_result.returncode:
                 raise ExecutionError("Stop after first-click refusal did not succeed")
             self.recorder.emit("stop_end", result="stopped", reason="first-click-refusal")
-            self._processes("after-stop")
+            self._processes("after-stop", expected_running=False)
             stop_after_refusal = {"result": "stopped", "exit_code": 0}
             self.recorder.emit("retry_begin", action="candidate")
             retry = self.data["retry"]
@@ -654,7 +743,7 @@ class PinokioBackendExecutor:
         self.recorder.emit("retry_end", result="succeeded" if first_outcome == "refused" else "not-applicable")
         self.recorder.emit("health_probe_begin", stage="after-update")
         status, health, menu = self._readiness_sidecars("after-update")
-        self._processes("after-retry-ready")
+        self._processes("after-retry-ready", expected_running=True)
         self.recorder.emit("health_probe_pass", stage="after-update", http_status=200)
         if (status.get("support", {}).get("healthy") is not True
                 or health.get("status") not in {"ok", "healthy"}
@@ -665,7 +754,7 @@ class PinokioBackendExecutor:
         if final_stop.returncode:
             raise ExecutionError("Stop before Start did not succeed")
         self.recorder.emit("stop_end", result="stopped", reason="stop-start")
-        self._processes("after-final-stop")
+        self._processes("after-final-stop", expected_running=False)
         self.recorder.emit("start_begin")
         start_result = self._run(self.data["runtime"]["commands"]["start"])
         if start_result.returncode:
@@ -673,14 +762,24 @@ class PinokioBackendExecutor:
         restart_readiness = self._readiness("after-restart")
         self.recorder.emit("ready_sentinel", stage="after-restart")
         self.recorder.emit("local_set", stage="after-restart")
-        self._processes("after-restart-ready")
+        self._processes("after-restart-ready", expected_running=True)
         restart_status, restart_health, restart_menu = self._readiness_sidecars("after-restart")
         if (restart_status.get("support", {}).get("healthy") is not True
                 or restart_health.get("status") not in {"ok", "healthy"}
                 or restart_menu.get("open_astrid") is not True):
             raise ExecutionError("post-restart health/menu readiness contract failed")
         self.recorder.emit("start_end", result="ready")
-        negatives = {name: self._control(name) for name in REQUIRED_CONTROLS}
+        negatives: dict[str, dict[str, Any]] = {}
+        for name in REQUIRED_CONTROLS:
+            negatives[name] = self._control(name)
+            if name in {"busy_stop", "unknown_stop"}:
+                negatives[name]["rearmed_after_stopped_retry"] = self._rearm_after_refusal_control(name)
+        self.recorder.emit("final_cleanup_begin")
+        final_cleanup = self._run(self.data["runtime"]["commands"]["stop"])
+        if final_cleanup.returncode:
+            raise ExecutionError("final controlled Stop did not succeed")
+        final_processes = self._processes("after-cleanup", expected_running=False)
+        self.recorder.emit("final_cleanup_end", result="stopped")
         self._write_sidecar("negative-controls.json", {"controls": negatives})
         self._write_sidecar("events.jsonl", self.recorder.rows)
         command_lines = [{"schema_version": SCHEMA_VERSION, "os": self.data["platform"]["os"],
@@ -693,8 +792,10 @@ class PinokioBackendExecutor:
             "schema_version": SCHEMA_VERSION, "os": self.data["platform"]["os"], "mode": MODE,
             "hosted_lifecycle": {"status": "pass" if self.data["platform"]["hosted"] else "not-run"},
             "evidence_class": self.data["platform"]["evidence_class"], "source_override_test_mode": self.data["source_override"],
-            "old_launcher": self.data["old"], "candidate_ref_transition": {"before": candidate_before,
-                                                                                "after": observed_after},
+            "old_launcher": self.data["old"], "stopped_path_agent": self.data["stopped_path"],
+            "candidate_ref_transition": {"from_old_launcher": self.data["old"]["ref"],
+                                         "candidate_before_action": candidate_before,
+                                         "candidate_after_action": observed_after},
             "first_click": {"outcome": first_outcome, "exit_code": first_result.returncode},
             "stop_after_refusal": stop_after_refusal,
             "retry_after_stop": retry_after_stop,
@@ -703,19 +804,24 @@ class PinokioBackendExecutor:
             "stop_start": {"stop": {"result": "stopped", "next_action": "Start"},
                            "start": {"result": "ready", "next_action": "Stop", **restart_readiness}},
             "negative_controls": negatives, "not_applicable": ["A3"] if first_outcome == "succeeded" else [],
+            "final_cleanup": {"result": "stopped", "exit_code": 0, "processes": final_processes},
             "sidecars": self.sidecars, "command_trace": command_trace,
         }
+        platform_data = self.data["platform"]
         receipt = {
             "schema_version": RECEIPT_SCHEMA_VERSION, "receipt_kind": "release1-installed-lifecycle",
-            "status": "pass", "job_id": self.data["platform"]["runner"], "mode": MODE,
-            "scenario": "fresh-install", "runner_image": self.data["platform"]["runner"],
-            "shell": self.data["platform"]["shell"], "evidence_class": self.data["platform"]["evidence_class"],
+            "status": "pass", "job_id": f"pinokio-backend-{platform_data['os']}", "mode": MODE,
+            "scenario": "fresh-install", "runner_image": platform_data["runner"],
+            "shell": platform_data["shell"], "evidence_class": platform_data["evidence_class"],
+            "runner_provenance": platform_data["runner_provenance"],
+            "os_build": f"{platform_data['os']}-{platform_module.platform()}",
             "source_override_test_mode": self.data["source_override"], "final_cleanup": "pass",
             "candidate_checkouts": {name: {**item, "sha": item["ref"]} for name, item in candidates.items()},
             "service_manager_prerequisite": {"outcome": "explicit-owner", "managed_by": "pinokio",
                                               "foreground_fallback": False},
-            "source_unit_evidence": {"status": "pass", "kind": "executable-boundary",
-                                     "substitute_for_hosted": not self.data["platform"]["hosted"]},
+            "source_unit_evidence": {"status": "pass", "kind": "pinokio-action-array-source-check",
+                                     "evidence_class": "executable-boundary",
+                                     "substitute_for_hosted": False},
             "pinokio_backend": backend,
         }
         _json_dump(self.output / "journey-result.json", receipt)
@@ -733,6 +839,32 @@ def admit_hosted_receipt(receipt: Mapping[str, Any]) -> None:
     backend = receipt.get("pinokio_backend")
     if not isinstance(backend, Mapping) or (backend.get("hosted_lifecycle") or {}).get("status") != "pass":
         raise ValidationError("hosted receipt lacks a passing hosted lifecycle")
+    os_name = backend.get("os")
+    if os_name not in HOSTED_RUNNERS:
+        raise ValidationError("hosted receipt has no supported backend OS")
+    expected_runner, expected_runner_os, expected_image_os = HOSTED_RUNNERS[os_name]
+    provenance = receipt.get("runner_provenance") or {}
+    if (receipt.get("job_id") != f"pinokio-backend-{os_name}"
+            or receipt.get("runner_image") != expected_runner
+            or provenance.get("RUNNER_OS") != expected_runner_os
+            or provenance.get("ImageOS") != expected_image_os
+            or not isinstance(provenance.get("ImageVersion"), str)
+            or not provenance["ImageVersion"].strip()):
+        raise ValidationError("hosted receipt runner provenance is absent or mismatched")
+    old = backend.get("old_launcher") or {}
+    if (old.get("ref") != APPROVED_OLD_LAUNCHER_REF
+            or old.get("sha256") != APPROVED_OLD_UPDATE_SHA256
+            or old.get("validated") is not True):
+        raise ValidationError("hosted receipt does not use the approved immutable H1 launcher")
+    stopped_path = backend.get("stopped_path_agent") or {}
+    if (stopped_path.get("validated") is not True
+            or set(stopped_path.get("required_ancestors") or []) != set(REQUIRED_STOPPED_PATH_ANCESTORS)):
+        raise ValidationError("hosted receipt lacks the integrated stopped-path Agent provenance")
+    source_unit = receipt.get("source_unit_evidence") or {}
+    if source_unit.get("substitute_for_hosted") is not False:
+        raise ValidationError("source/unit evidence is not visibly separate from hosted evidence")
+    if receipt.get("final_cleanup") != "pass" or (backend.get("final_cleanup") or {}).get("result") != "stopped":
+        raise ValidationError("hosted receipt lacks a passing controlled final cleanup")
 
 
 def execute(config: Mapping[str, Any], output: Path) -> dict[str, Any]:

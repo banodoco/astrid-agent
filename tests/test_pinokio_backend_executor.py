@@ -42,21 +42,25 @@ def _fixture_script(root: Path) -> Path:
 import json, os, pathlib, sys
 
 state = pathlib.Path(os.environ["STATE"])
+instance_file = pathlib.Path(os.environ["INSTANCE"])
 mode = sys.argv[1]
 current = state.read_text() if state.exists() else "new"
+instance = instance_file.read_text() if instance_file.exists() else "instance-1"
 
 if mode == "first-refuse":
     if current == "new":
         state.write_text("refused")
-        print("Astrid is still running; refused")
+        print("Astrid is still running. Choose Pinokio's Stop button, then try again.")
         raise SystemExit(42)
     raise SystemExit(0)
 if mode == "first-success":
     state.write_text("running")
+    instance_file.write_text("instance-1")
     print("first action success")
     raise SystemExit(0)
 if mode == "retry":
     state.write_text("running")
+    instance_file.write_text("instance-1")
     print("retry action success")
     raise SystemExit(0)
 if mode == "stop":
@@ -65,42 +69,50 @@ if mode == "stop":
     raise SystemExit(0)
 if mode == "start":
     state.write_text("running")
+    instance_file.write_text("instance-2")
     print("Astrid started.")
     raise SystemExit(0)
 if mode == "ready":
     running = state.read_text() == "running"
     print(json.dumps({"ready": running, "http_status": 200 if running else 503,
-                      "identity": "candidate", "runtime_instance_id": "instance-1"}))
+                      "identity": "candidate", "runtime_instance_id": instance}))
     raise SystemExit(0)
 if mode == "status":
     print(json.dumps({"support": {"healthy": state.read_text() == "running"},
-                      "runtime_instance_id": "instance-1"}))
+                      "runtime_instance_id": instance}))
     raise SystemExit(0)
 if mode == "health":
     print(json.dumps({"status": "ok", "protocol": "workspace.v1",
                       "install": {"managed_by": "pinokio"}, "identity": "candidate",
-                      "runtime_instance_id": "instance-1"}))
+                      "runtime_instance_id": instance}))
     raise SystemExit(0)
 if mode == "menu":
     print(json.dumps({"open_astrid": state.read_text() == "running"}))
     raise SystemExit(0)
 if mode == "processes":
-    print(json.dumps({"controller_pid": 101, "runtime_instance_id": "instance-1",
+    running = current != "stopped"
+    print(json.dumps({"controller_pid": 101 if running else None,
+                      "runtime_instance_id": instance, "running": running,
+                      "owned_processes": [101] if running else [],
+                      "owned_ports_free": not running,
                       "controller_token": os.environ["TOKEN"]}))
     raise SystemExit(0)
 if mode in {"busy-refusal", "unknown-refusal"}:
     print(json.dumps({"outcome": "refused", "reason": mode.split("-")[0]}))
     raise SystemExit(7)
 if mode == "recovery":
+    state.write_text("stopped")
     print(json.dumps({"outcome": "stopped", "same_session": True}))
     raise SystemExit(0)
 if mode == "identity-mismatch":
     print(json.dumps({"ready": False, "http_status": 200, "identity": "wrong",
-                      "runtime_instance_id": "instance-1"}))
+                      "runtime_instance_id": instance, "ready_sentinel": False,
+                      "local_set": False, "open_menu": False}))
     raise SystemExit(0)
 if mode == "instance-mismatch":
     print(json.dumps({"ready": False, "http_status": 200, "identity": "candidate",
-                      "runtime_instance_id": "wrong"}))
+                      "runtime_instance_id": "wrong", "ready_sentinel": False,
+                      "local_set": False, "open_menu": False}))
     raise SystemExit(0)
 raise SystemExit(2)
 """.strip()
@@ -113,7 +125,8 @@ raise SystemExit(2)
 def _command(script: Path, root: Path, state: Path, mode: str) -> dict:
     return {
         "id": f"fixture.{mode}", "argv": [sys.executable, str(script), mode], "cwd": str(root),
-        "env": {"STATE": str(state), "TOKEN": "fixture-secret"}, "redact_env": ["TOKEN"],
+        "env": {"STATE": str(state), "INSTANCE": str(root / "instance.txt"),
+                "TOKEN": "fixture-secret"}, "redact_env": ["TOKEN"],
         "timeout_seconds": 10,
     }
 
@@ -148,6 +161,8 @@ def _config(tmp_path: Path, *, first_mode: str = "first-refuse", evidence_class:
         "identity_mismatch": {"probe": _command(script, root, state, "identity-mismatch")},
         "instance_mismatch": {"probe": _command(script, root, state, "instance-mismatch")},
     }
+    os_name = {"linux": "linux", "darwin": "macos", "win32": "windows"}[sys.platform]
+    shell = "powershell.exe" if os_name == "windows" else "sh"
     return {
         "candidate_checkouts": candidates,
         "old_launcher": {"checkout": str(old_path), "ref": old_ref, "file": "pinokio/update.js",
@@ -156,14 +171,18 @@ def _config(tmp_path: Path, *, first_mode: str = "first-refuse", evidence_class:
             "first": {"kind": "pinokio-action", "command": _command(script, root, state, first_mode),
                        "refusal_exit_codes": [42], "provenance": {"ref": old_ref,
                        "sha256": old_hashes["pinokio/update.js"]},
+                       "refusal_text": "Astrid is still running. Choose Pinokio's Stop button, then try again.",
                        "steps": [{"kind": "git-shell"}, {"kind": "shell", "bootstrap_action": "update-app"}]},
             "retry": {"kind": "pinokio-action", "command": _command(script, root, state, "retry"),
                       "provenance": {"ref": pinokio_ref, "sha256": pinokio_hashes["pinokio/update.js"]},
-                      "steps": [{"kind": "shell", "bootstrap_action": "install"}]},
+                      "steps": [{"kind": "custom", "bootstrap_action": "preflightStop"},
+                                {"kind": "git-shell"},
+                                {"kind": "shell", "bootstrap_action": "install"}]},
         },
-        "runtime": {**runtime, "expected_identity": "candidate", "expected_instance_id": "instance-1"},
+        "runtime": {**runtime, "expected_identity": "candidate", "expected_instance_id": "instance-1",
+                    "expected_restart_instance_id": "instance-2"},
         "negative_controls": controls,
-        "platform": {"os": "macos", "runner": "fixture-macos", "shell": "sh",
+        "platform": {"os": os_name, "runner": f"fixture-{os_name}", "shell": shell,
                       "evidence_class": evidence_class, "hosted": evidence_class == "hosted-lifecycle"},
         "source_override_test_mode": False,
     }
@@ -183,15 +202,23 @@ def test_refusal_stop_retry_start_and_real_boundaries(tmp_path: Path):
     assert receipt["pinokio_backend"]["stop_after_refusal"]["result"] == "stopped"
     assert receipt["pinokio_backend"]["retry_after_stop"]["result"] == "succeeded"
     assert receipt["pinokio_backend"]["stop_start"]["start"]["result"] == "ready"
-    assert (tmp_path / "fixture/state.txt").read_text() == "running"
+    assert receipt["pinokio_backend"]["readiness_after_update"]["runtime_instance_id"] == "instance-1"
+    assert receipt["pinokio_backend"]["stop_start"]["start"]["runtime_instance_id"] == "instance-2"
+    assert receipt["pinokio_backend"]["final_cleanup"]["result"] == "stopped"
+    assert receipt["source_unit_evidence"]["substitute_for_hosted"] is False
+    assert (tmp_path / "fixture/state.txt").read_text() == "stopped"
     assert "fixture-secret" not in (output / "pinokio-backend/commands.jsonl").read_text()
     assert "fixture-secret" not in (output / "pinokio-backend/processes-before.json").read_text()
     names = [row["event"] for row in _events(output)]
     assert names.index("action_built") < names.index("launcher_ref_advanced") < names.index("first_click_begin")
+    advanced = next(row for row in _events(output) if row["event"] == "launcher_ref_advanced")
+    assert advanced["changed"] is True
     assert names.index("ready_sentinel") < names.index("installer_end") < names.index("action_end")
     assert names.index("action_end") < names.index("health_probe_begin") < names.index("health_probe_pass")
     assert [row["seq"] for row in _events(output)] == list(range(1, len(names) + 1))
     assert receipt["pinokio_backend"]["negative_controls"]["busy_stop"]["mutation"] is False
+    assert receipt["pinokio_backend"]["negative_controls"]["busy_stop"]["rearmed_after_stopped_retry"]["result"] == "ready"
+    assert receipt["pinokio_backend"]["negative_controls"]["unknown_stop"]["rearmed_after_stopped_retry"]["result"] == "ready"
 
 
 def test_success_branch_has_no_retry_or_manual_start(tmp_path: Path):
@@ -233,6 +260,25 @@ def test_source_fake_is_explicit_and_rejected_by_hosted_gate(tmp_path: Path):
     assert receipt["evidence_class"] == "source_fake"
     with pytest.raises(ValidationError, match="cannot satisfy hosted"):
         admit_hosted_receipt(receipt)
+
+
+def test_source_override_and_smuggled_hosted_label_fail_before_action(tmp_path: Path):
+    config = _config(tmp_path / "override")
+    config["source_override_test_mode"] = True
+    with pytest.raises(ValidationError, match="source overrides are forbidden"):
+        execute(config, tmp_path / "override-receipt")
+
+    config = _config(tmp_path / "hosted", evidence_class="hosted-lifecycle")
+    with pytest.raises(ValidationError, match="hosted .* execution requires runner"):
+        execute(config, tmp_path / "hosted-receipt")
+
+
+def test_mismatch_control_requires_observed_suppression_fields(tmp_path: Path):
+    config = _config(tmp_path)
+    command = config["negative_controls"]["identity_mismatch"]["probe"]
+    command["argv"] = [sys.executable, "-c", "import json; print(json.dumps({'ready': False, 'identity': 'wrong'}))"]
+    with pytest.raises(ExecutionError, match="did not suppress readiness"):
+        execute(config, tmp_path / "receipt")
 
 
 def test_cli_requires_explicit_output_and_help_is_available(tmp_path: Path):
