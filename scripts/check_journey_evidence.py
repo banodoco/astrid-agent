@@ -21,6 +21,17 @@ else:
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ARTIFACTS = ("public/install", "public/install.sh", "public/install.ps1")
+RELEASE0_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
+RELEASE0_BOOTSTRAP_SHA256 = {
+    "install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+    "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",
+}
+RUNNER_PROVENANCE = {
+    "ubuntu-24.04": ("Linux", "ubuntu24"),
+    "ubuntu-22.04": ("Linux", "ubuntu22"),
+    "windows-2022": ("Windows", "win22"),
+    "macos-14": ("macOS", "macos14"),
+}
 REQUIRED = {
     # Release candidates are no longer a loose list of legs.  They are the
     # exact nine ownership/OS jobs and must use --aggregate-release1.
@@ -179,6 +190,16 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{job_id}: runner does not match the required matrix")
         if row.get("shell") != contract["shell"]:
             errors.append(f"{job_id}: shell does not match the required matrix")
+        expected_os, expected_image = RUNNER_PROVENANCE[contract["runner"]]
+        provenance = row.get("runner_provenance")
+        if (not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
+                or provenance.get("ImageOS") != expected_image
+                or not isinstance(provenance.get("ImageVersion"), str)
+                or not provenance["ImageVersion"].strip()):
+            errors.append(f"{job_id}: hosted runner provenance does not match the required matrix")
+        os_build = row.get("os_build")
+        if not isinstance(os_build, str) or not os_build.startswith(expected_os + "-"):
+            errors.append(f"{job_id}: OS build does not match the required matrix")
         if row.get("source_override_test_mode") is not False:
             errors.append(f"{job_id}: source override is not admissible")
         if row.get("final_cleanup") != "pass":
@@ -190,6 +211,14 @@ def evaluate_release1_matrix(candidate, results):
             for name in ("app", "agent", "runtime", "pinokio"):
                 if (observed.get(name) or {}).get("sha") != candidate[name]:
                     errors.append(f"{job_id}: {name} checkout differs from frozen candidate")
+        sources = row.get("sources") or {}
+        installed = row.get("installed_tuple") or {}
+        for name in ("app", "agent", "runtime"):
+            source = sources.get(name) or {}
+            if installed.get(name) != candidate[name] or source.get("sha") != candidate[name]:
+                errors.append(f"{job_id}: {name} installed/source identity differs from frozen candidate")
+        if not row.get("import_origins"):
+            errors.append(f"{job_id}: installed import origins are absent")
         prerequisite = row.get("service_manager_prerequisite")
         if not isinstance(prerequisite, dict):
             errors.append(f"{job_id}: service-manager prerequisite receipt is absent")
@@ -209,7 +238,8 @@ def evaluate_release1_matrix(candidate, results):
                     or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
                 errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
             fixture = row.get("release0_fixture")
-            if (not isinstance(fixture, dict) or not all(
+            if (not isinstance(fixture, dict) or fixture.get("fixture_sums_sha256") != RELEASE0_SUMS_SHA256
+                    or fixture.get("bootstrap_sha256") != RELEASE0_BOOTSTRAP_SHA256 or not all(
                     isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
                     for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
                     or fixture.get("sources") != {
