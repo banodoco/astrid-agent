@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -431,3 +432,121 @@ def test_cached_output_facts_are_reverified_before_terminal_result(host_case, mo
     assert receipt["publication"] == {"status": "not_settled", "receipt": None, "effect": None}
     assert any("terminal output unavailable" in warning for warning in receipt["warnings"])
     assert len(case.runtime.failures) == 1
+
+
+def _terminal_state(case):
+    return {
+        "task": case.task["task"], "root": case.root,
+        "record": case.host.capabilities["test.echo"], "attempt_id": "attempt-result",
+        "inputs": {"mode": "precise", "seed": 17}, "status": "failed",
+        "error": AstridError("original failure", code="provider_failed"),
+        "payload": {"warnings": ["child warning"], "cost": 7},
+        "completion_lock": threading.RLock(),
+    }
+
+
+@pytest.mark.parametrize("phase", ["manifest", "harvest"])
+def test_minimal_receipt_is_durable_before_optional_evidence_can_abort(host_case, monkeypatch, phase):
+    case = host_case
+    _legacy_output(case, case.root / "outputs", cost=3)
+    terminal = _terminal_state(case)
+
+    def abort(*_args, **_kwargs):
+        receipt = _read_result(case, "failed")
+        assert receipt["raw_result"] == {}
+        assert receipt["manifest_path"] is None
+        assert receipt["outputs"] == {"artifacts": []}
+        assert receipt["warnings"] == []
+        assert receipt["cost"] == "unknown"
+        assert receipt["error"]["message"] == "original failure"
+        raise SystemExit("optional evidence aborted")
+
+    monkeypatch.setattr(generic_host, "validate_result_manifest" if phase == "manifest"
+                        else "harvest_staged_outputs", abort)
+    with pytest.raises(SystemExit, match="optional evidence aborted"):
+        case.host._write_task_result(terminal)
+
+    assert terminal["write_attempted"] is True
+    assert _read_result(case, "failed")["cost"] == "unknown"
+    assert (case.root / "outputs" / "manifest.json").read_bytes() == case.legacy_bytes
+
+
+def test_host_uses_shared_mapper_before_writing_under_completion_lock(host_case, monkeypatch):
+    case = host_case
+    terminal = _terminal_state(case)
+    mapped, written = [], []
+    serialize = generic_host.serialize_terminal_result
+    write = generic_host.write_json_atomic
+
+    class CompletionLock:
+        held = False
+
+        def __enter__(self):
+            assert not self.held
+            self.held = True
+
+        def __exit__(self, *_exc):
+            self.held = False
+
+    lock = terminal["completion_lock"] = CompletionLock()
+
+    def map_result(result, **facts):
+        assert isinstance(result, InvocationResult)
+        assert not lock.held
+        receipt = serialize(result, **facts)
+        mapped.append(receipt)
+        return receipt
+
+    def write_result(path, receipt):
+        assert lock.held
+        written.append(receipt)
+        write(path, receipt)
+
+    monkeypatch.setattr(generic_host, "serialize_terminal_result", map_result)
+    monkeypatch.setattr(generic_host, "write_json_atomic", write_result)
+    case.host._write_task_result(terminal)
+
+    assert len(mapped) == len(written) == 2
+    assert all(left is right for left, right in zip(mapped, written))
+    assert mapped[0]["raw_result"] == {}
+    assert mapped[1]["raw_result"] == terminal["payload"]
+    assert _read_result(case, "failed") == mapped[1]
+
+
+@pytest.mark.parametrize("forced_receipt_written", [False, True])
+def test_forced_receipt_wins_over_inflight_output_collection(host_case, monkeypatch, forced_receipt_written):
+    case = host_case
+    _legacy_output(case, case.root / "outputs", cost=3)
+    terminal = _terminal_state(case)
+    forced_bytes = []
+
+    def force_during_collection(*_args, **_kwargs):
+        # Model the lifecycle observer taking authority while optional evidence
+        # is being collected, both before and after its forced write completes.
+        with terminal["completion_lock"]:
+            terminal.update(forced="timeout", status="timeout", minimal=True)
+        if forced_receipt_written:
+            case.host._write_task_result(terminal)
+            forced_bytes.append((case.root / "result.json").read_bytes())
+        return []
+
+    monkeypatch.setattr(generic_host, "harvest_staged_outputs", force_during_collection)
+    case.host._write_task_result(terminal)
+
+    if forced_receipt_written:
+        assert (case.root / "result.json").read_bytes() == forced_bytes[0]
+    else:
+        # The in-flight rich receipt must not replace the initial minimal one.
+        assert _read_result(case, "failed")["cost"] == "unknown"
+        assert not terminal.get("receipt_final")
+        case.host._write_task_result(terminal)
+    receipt = _read_result(case, "timeout")
+    assert terminal["receipt_final"] is True
+    assert receipt["error"]["code"] == "timeout"
+    assert receipt["outputs"] == {"artifacts": []}
+    assert receipt["raw_result"] == {}
+    assert receipt["cost"] == "unknown"
+    final_bytes = (case.root / "result.json").read_bytes()
+    terminal.update(status="succeeded", payload={"cost": 99})
+    case.host._write_task_result(terminal)
+    assert (case.root / "result.json").read_bytes() == final_bytes

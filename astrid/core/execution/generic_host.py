@@ -161,6 +161,7 @@ from astrid.core.execution.provider_route_grant import (
     ProviderRouteGrantError,
 )
 from astrid.core.execution.task_scope import TaskScopeUnresolved, spawn as spawn_task_scope
+from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.execution.thumbnails import (
     THUMBNAIL_RECIPE_VERSION,
     ThumbnailError,
@@ -9367,7 +9368,7 @@ class GenericPackHost:
             if isinstance(source, Mapping):
                 options.update(source)
         cost = payload.get("cost", manifest.get("cost"))
-        receipt = InvocationResult(
+        result = InvocationResult(
             capability_id=str(task.get("capability") or ""), capability_type="executor",
             native_kind=record.definition.kind if record is not None else "executor",
             ok=status == "succeeded", error=error,
@@ -9377,17 +9378,16 @@ class GenericPackHost:
             executor_version=record.definition.version if record is not None else None,
             kernel_run_id=task.get("run_id"), kernel_task_id=task["id"],
             kernel_attempt_id=terminal["attempt_id"],
-        ).to_dict()
-        receipt.update({
-            "status": status, "task_id": task["id"], "attempt_id": terminal["attempt_id"],
-            "parent_task_id": task.get("parent_task_id", parent.get("parent_task_id")),
-            "parent_attempt_id": task.get("parent_attempt_id", parent.get("parent_attempt_id")),
-            "request_digest": "sha256:" + _canonical_digest(request),
-            "resolved_options": options, "cost": cost if cost is not None else "unknown",
-            "warnings": warnings,
-            "publication": {"status": "settled" if terminal.get("settled") else "not_settled",
-                            "receipt": terminal.get("settlement"), "effect": terminal.get("effect")},
-        })
+        )
+        receipt = serialize_terminal_result(
+            result, status=status, task_id=task["id"], attempt_id=terminal["attempt_id"],
+            parent_task_id=task.get("parent_task_id", parent.get("parent_task_id")),
+            parent_attempt_id=task.get("parent_attempt_id", parent.get("parent_attempt_id")),
+            request_digest="sha256:" + _canonical_digest(request),
+            resolved_options=options, cost=cost, warnings=warnings,
+            settled=terminal.get("settled"), settlement=terminal.get("settlement"),
+            effect=terminal.get("effect"),
+        )
         with terminal.get("completion_lock", threading.RLock()):
             # A slow harvest may have started before the observer's timeout.
             # Recheck at publication, without holding this lock over harvesting.
