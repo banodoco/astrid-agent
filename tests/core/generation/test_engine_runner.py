@@ -712,6 +712,138 @@ def test_status_tolerates_only_dynamic_file_choice_drift(setup, node, input_name
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
 
 
+@pytest.mark.parametrize("mismatch,gate", [
+    ("schema", "receipt-evidence"),
+    ("source", "source:comfyui"),
+    ("lock", "environment:comfy"),
+])
+def test_canonical_same_registered_root_recovers_legacy_object_info_receipt(
+        setup, tmp_path, monkeypatch, capsys, mismatch, gate):
+    from astrid.core import engine_cli
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import engine_execution
+    from astrid.core.generation import engine_local_endpoint as local
+    from astrid.packs.h3_av.actions.transform import run as transform
+
+    _, context, adapter, _ = setup
+    root = str(tmp_path / "synthetic-engine")
+    context.root = root
+    context.files = {path.replace(ROOT, root, 1): value for path, value in context.files.items()}
+    plan = runner.plan_install(context.recipe, root=root, placement="local")
+    receipt_path = Path(root, runner._RECEIPT)
+    context.health_objects["LoadImage"] = {
+        "input": {"required": {"image": [["synthetic-old.png"], {"image_upload": True}]}},
+        "output": ["IMAGE"],
+    }
+    # Mirror only canonical receipt writes for the endpoint's actual byte attestation.
+    # All target commands, models and other files remain in the CPU fake context.
+    write = context.write_json_atomic
+    def persist(path, value, *, deadline):
+        write(path, value, deadline=deadline)
+        if path == str(receipt_path):
+            receipt_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            receipt_path.write_text(runner._json(value), encoding="utf-8")
+    monkeypatch.setattr(context, "write_json_atomic", persist)
+    monkeypatch.setenv(local.ENGINE_ROOT_ENV, str(tmp_path / "unused-fallback"))
+
+    def backend(**kwargs):
+        assert (kwargs["engine"], kwargs["platform"], kwargs["placement"], kwargs["root"]) == (
+            plan.engine, plan.platform, "local", root)
+        context.deadline = kwargs["deadline"]
+        return context, adapter
+
+    monkeypatch.setattr(engine_execution, "create_local_backend", backend)
+
+    def install_cli():
+        code = engine_cli.main([
+            "install", plan.engine, "--placement", "local", "--root", root, "--deadline", "45",
+        ], backend_factory=backend)
+        output = capsys.readouterr()
+        assert code == 0 and not output.err
+        receipt = json.loads(output.out)
+        assert receipt == context.files[str(receipt_path)] == json.loads(receipt_path.read_bytes())
+        return receipt
+
+    def ready():
+        # Real H3 wrapper, root selection, status and endpoint gate; fake target backend only.
+        return transform._resolve_local_engine()
+
+    def current():
+        return runner.engine_status(plan.engine, platform=plan.platform, placement="local",
+                                    root=local.default_engine_root(plan.engine), context=context,
+                                    deadline=context.deadline)
+
+    # Reproduce the pre-H272 health producer, rather than hand-editing a receipt.
+    with monkeypatch.context() as legacy:
+        legacy.setattr(target, "_object_info_sha256", runner._sha)
+        legacy.setattr(runner, "_now", lambda: "2026-10-28T00:00:00+00:00")
+        old = install_cli()
+    assert old["health"]["object_info_sha256"] == runner._sha(context.health_objects)
+    assert old["health"]["object_info_sha256"] != runner._object_info_sha256(context.health_objects)
+    record_path = Path.home() / ".astrid-data/engines" / f"{plan.engine}.root.json"
+    record_bytes = record_path.read_bytes()
+    persisted = copy.deepcopy(context.files)
+    context.events.clear()
+    rejected = current()
+    assert (rejected.status, rejected.error_code, rejected.failed_step_id) == (
+        "failed", "integrity_failed", "receipt-evidence")
+    with pytest.raises(AstridError, match="readiness reason: install_status_failed") as caught:
+        ready()
+    assert isinstance(caught.value.__cause__, local.EngineNotInstalled)
+    assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+    assert context.files == persisted and json.loads(receipt_path.read_bytes()) == old
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
+
+    owner = context.server
+    context.events.clear()
+    with monkeypatch.context() as recovery:
+        recovery.setattr(runner, "_now", lambda: "2026-10-29T00:00:00+00:00")
+        new = install_cli()
+    assert {key for key in old if old[key] != new[key]} == {
+        "receipt_id", "started_at", "completed_at", "health", "steps", "models",
+    }
+    assert new["health"]["object_info_sha256"] == runner._object_info_sha256(context.health_objects)
+    assert {key for key in old["health"] if old["health"][key] != new["health"][key]} == {
+        "checked_at", "object_info_sha256",
+    }
+    assert new["status"] == "installed" and new["error_code"] is None
+    assert all(s["action"] == "skipped" and s["validation"] == "passed" for s in new["steps"])
+    assert [{k: v for k, v in m.items() if k != "action"} for m in old["models"]] == [
+        {k: v for k, v in m.items() if k != "action"} for m in new["models"]]
+    assert context.server == owner and context.bootstrap_count == 1
+    assert len([e for e in context.events if e[0] == "hash" and "/models/" in e[1]]) == 5
+    assert any(e[0] == "service:health" for e in context.events)
+    assert not [e for e in context.events if e[0] in {"service:start", "service:stop"}]
+    assert not [e for e in context.events if e[0] == "argv" and
+                any(arg in e[1] for arg in ("fetch", "install", "sync", "fake-bootstrap"))]
+    assert local.default_engine_root(plan.engine) == root and record_path.read_bytes() == record_bytes
+    endpoint = ready().endpoint
+    assert current().status == "installed" and endpoint.state == "ready"
+    assert endpoint.url == f"http://127.0.0.1:{context.recipe.start.port}"
+    assert endpoint.attestation.install_receipt_path == str(receipt_path)
+    assert endpoint.attestation.install_receipt_sha256 == hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    assert endpoint.attestation.object_info_sha256 == new["health"]["object_info_sha256"]
+
+    context.health_objects["LoadImage"]["input"]["required"]["image"][0] = ["synthetic-new.png"]
+    assert ready().endpoint.state == "ready"
+    if mismatch == "schema":
+        context.health_objects["LoadImage"]["output"] = ["MASK"]
+    elif mismatch == "source":
+        context.sources[root + "/runtime/ComfyUI"]["origin"] = "https://unreviewed.invalid/repo"
+    else:
+        context.files[root + "/.astrid-engine/environments/comfy/requirements.lock"] = FileFact(
+            True, True, False, 100, "0" * 64)
+    persisted = copy.deepcopy(context.files)
+    context.events.clear()
+    rejected = current()
+    assert (rejected.status, rejected.error_code, rejected.failed_step_id) == ("failed", "integrity_failed", gate)
+    with pytest.raises(AstridError, match="readiness reason: install_status_failed"):
+        ready()
+    assert context.files == persisted and json.loads(receipt_path.read_bytes()) == new
+    assert record_path.read_bytes() == record_bytes
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download", "service:start"}]
+
+
 @pytest.mark.parametrize("gate", [
     "source:comfyui", "source:vibecomfy", "source:h3-motion-context", "source:videohelpersuite",
     "environment:comfy", "model:h3-reference-to-video", "model:h3-text-encoder",
