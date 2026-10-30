@@ -11,12 +11,12 @@ import sys
 from pathlib import Path
 
 if __package__:
-    from .journey_matrix import RELEASE1_JOB_IDS, RELEASE1_MATRIX
+    from .journey_matrix import M4_4A_BACKEND_MATRIX, RELEASE1_JOB_IDS, RELEASE1_MATRIX
 else:
     try:
-        from journey_matrix import RELEASE1_JOB_IDS, RELEASE1_MATRIX
+        from journey_matrix import M4_4A_BACKEND_MATRIX, RELEASE1_JOB_IDS, RELEASE1_MATRIX
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
-        from scripts.journey_matrix import RELEASE1_JOB_IDS, RELEASE1_MATRIX
+        from scripts.journey_matrix import M4_4A_BACKEND_MATRIX, RELEASE1_JOB_IDS, RELEASE1_MATRIX
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -32,6 +32,16 @@ RUNNER_PROVENANCE = {
     "windows-2022": ("Windows", "win22"),
     "macos-14": ("macOS", "macos14"),
 }
+M4_4A_BACKEND_SIDECARS = (
+    "action-array-first.json", "action-array-retry.json", "events.jsonl",
+    "first-click.stdout.log", "first-click.stderr.log",
+    "status-after-update.json", "health-after-update.json", "menu-after-update.json",
+    "status-after-restart.json", "health-after-restart.json", "menu-after-restart.json",
+    "processes-before.json", "processes-after-first-click.json",
+    "processes-after-stop.json", "processes-after-retry-ready.json",
+    "processes-after-final-stop.json", "processes-after-restart-ready.json",
+    "negative-controls.json",
+)
 REQUIRED = {
     # Release candidates are no longer a loose list of legs.  They are the
     # exact nine ownership/OS jobs and must use --aggregate-release1.
@@ -264,6 +274,156 @@ def evaluate_release1_matrix(candidate, results):
     return errors
 
 
+def _sidecar_path(receipt: Path, item: object) -> tuple[Path | None, str | None]:
+    if not isinstance(item, dict):
+        return None, None
+    relative = item.get("path")
+    sha = item.get("sha256")
+    if not isinstance(relative, str) or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        return None, None
+    if not isinstance(sha, str) or not DIGEST.fullmatch(sha):
+        return None, None
+    path = (receipt / relative).resolve()
+    if not path.is_relative_to(receipt.resolve()):
+        return None, None
+    return path, sha
+
+
+def _event_errors(path: Path, expected_os: str, mode: str) -> list[str]:
+    errors = []
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            rows.append(json.loads(line))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [f"events.jsonl is not valid JSONL: {exc}"]
+    sequences = [row.get("seq") for row in rows]
+    if sequences != list(range(1, len(rows) + 1)):
+        errors.append("events.jsonl sequence is not monotonic")
+    for row in rows:
+        if row.get("schema_version") != 1 or row.get("os") != expected_os or row.get("mode") != mode:
+            errors.append("events.jsonl event lacks the stable OS/mode schema")
+            break
+    names = {row.get("event") for row in rows}
+    missing = set(M4_4A_REQUIRED_EVENTS) - names
+    if missing:
+        errors.append("events.jsonl is missing required events: " + ", ".join(sorted(missing)))
+    positions = {name: next((i for i, row in enumerate(rows) if row.get("event") == name), None)
+                 for name in names}
+    for left, right in (("action_built", "launcher_ref_advanced"),
+                        ("launcher_ref_advanced", "first_click_begin"),
+                        ("ready_sentinel", "installer_end"),
+                        ("installer_end", "action_end"),
+                        ("action_end", "health_probe_begin"),
+                        ("health_probe_begin", "health_probe_pass")):
+        if positions.get(left) is not None and positions.get(right) is not None and positions[left] >= positions[right]:
+            errors.append(f"events.jsonl order is invalid: {left} must precede {right}")
+    return errors
+
+
+def evaluate_m4_4a_backend_matrix(candidate, results, *, allow_source_override=False):
+    """Check the provisional M4-4a backend contract, never source evidence alone."""
+    errors = []
+    expected = {row["job_id"]: row for row in M4_4A_BACKEND_MATRIX}
+    found = {}
+    paths = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        job_id = row.get("job_id")
+        if job_id not in expected:
+            continue
+        if job_id in found:
+            errors.append(f"{job_id}: duplicate M4-4a backend receipt")
+        else:
+            found[job_id], paths[job_id] = row, path.parent
+    for job_id, contract in expected.items():
+        row = found.get(job_id)
+        if row is None:
+            errors.append(f"{job_id}: missing M4-4a backend receipt")
+            continue
+        if row.get("status") != "pass":
+            errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
+        for key, expected_value in (("mode", "pinokio-backend"), ("scenario", "fresh-install"),
+                                    ("runner_image", contract["runner"]), ("shell", contract["shell"]),
+                                    ("evidence_class", "hosted-lifecycle")):
+            if row.get(key) != expected_value:
+                errors.append(f"{job_id}: {key} is not {expected_value!r}")
+        override = row.get("source_override_test_mode")
+        if not isinstance(override, bool):
+            errors.append(f"{job_id}: source override is unlabelled")
+        elif override and not allow_source_override:
+            errors.append(f"{job_id}: source override is not admitted by this gate")
+        if row.get("final_cleanup") != "pass":
+            errors.append(f"{job_id}: final cleanup did not pass")
+        provenance = row.get("runner_provenance") or {}
+        expected_os = {"macos-14": "macOS", "ubuntu-24.04": "Linux", "windows-2022": "Windows"}[contract["runner"]]
+        expected_image = {"macos-14": "macos14", "ubuntu-24.04": "ubuntu24", "windows-2022": "win22"}[contract["runner"]]
+        if (provenance.get("RUNNER_OS") != expected_os or provenance.get("ImageOS") != expected_image
+                or not isinstance(provenance.get("ImageVersion"), str) or not provenance["ImageVersion"].strip()):
+            errors.append(f"{job_id}: hosted runner provenance is absent or mismatched")
+        observed = row.get("candidate_checkouts") or {}
+        for name in ("app", "agent", "runtime", "pinokio"):
+            if (observed.get(name) or {}).get("sha") != candidate.get(name):
+                errors.append(f"{job_id}: candidate {name} checkout differs from frozen tuple")
+        owner = row.get("service_manager_prerequisite") or {}
+        if (owner.get("outcome") != "explicit-owner" or owner.get("managed_by") != "pinokio"
+                or owner.get("foreground_fallback") is not False):
+            errors.append(f"{job_id}: Pinokio ownership prerequisite did not pass")
+        source_unit = row.get("source_unit_evidence")
+        if (not isinstance(source_unit, dict) or source_unit.get("substitute_for_hosted") is not False):
+            errors.append(f"{job_id}: source/unit evidence is not visibly separate from hosted evidence")
+        backend = row.get("pinokio_backend")
+        if not isinstance(backend, dict) or backend.get("schema_version") != 1:
+            errors.append(f"{job_id}: M4-4a backend receipt is missing or has the wrong schema")
+            continue
+        if backend.get("os") != contract["os"] or backend.get("mode") != contract["mode"]:
+            errors.append(f"{job_id}: backend phase receipt lacks the required OS/mode")
+        if (backend.get("hosted_lifecycle") or {}).get("status") != "pass":
+            errors.append(f"{job_id}: hosted lifecycle evidence is missing or not pass")
+        sidecars = backend.get("sidecars")
+        receipt_dir = paths[job_id]
+        if not isinstance(sidecars, dict) or set(sidecars) != set(M4_4A_BACKEND_SIDECARS):
+            errors.append(f"{job_id}: required M4-4a sidecars are missing")
+        else:
+            for name in M4_4A_BACKEND_SIDECARS:
+                sidecar, expected_sha = _sidecar_path(receipt_dir, sidecars[name])
+                if sidecar is None or not sidecar.is_file():
+                    errors.append(f"{job_id}: sidecar {name} is missing or unsafe")
+                elif digest(sidecar) != expected_sha:
+                    errors.append(f"{job_id}: sidecar {name} hash differs from its receipt")
+            event_ref = sidecars.get("events.jsonl")
+            event_path, _ = _sidecar_path(receipt_dir, event_ref)
+            if event_path and event_path.is_file():
+                errors.extend(f"{job_id}: {error}" for error in _event_errors(event_path, contract["os"], contract["mode"]))
+        first = backend.get("first_click") or {}
+        if first.get("outcome") not in {"refused", "succeeded"}:
+            errors.append(f"{job_id}: first click has no contract-defined outcome")
+        elif first.get("outcome") == "refused":
+            if (backend.get("stop_after_refusal") or {}).get("result") != "stopped":
+                errors.append(f"{job_id}: refused first click lacks a successful Stop phase")
+        elif "A3" not in set(backend.get("not_applicable") or []):
+            errors.append(f"{job_id}: successful first click must mark A3 not-applicable")
+        if (backend.get("readiness_after_update") or {}).get("status") != "pass":
+            errors.append(f"{job_id}: immediate post-update readiness did not pass")
+        stop_start = backend.get("stop_start") or {}
+        if (stop_start.get("stop") or {}).get("result") != "stopped" or (stop_start.get("start") or {}).get("result") != "ready":
+            errors.append(f"{job_id}: Stop -> Start lifecycle did not return to ready")
+        negatives = backend.get("negative_controls")
+        if not isinstance(negatives, dict):
+            errors.append(f"{job_id}: negative controls are missing")
+        else:
+            for name in ("busy_stop", "unknown_stop", "identity_mismatch", "instance_mismatch"):
+                if (negatives.get(name) or {}).get("status") != "pass":
+                    errors.append(f"{job_id}: negative control {name} is missing or skipped")
+        if (backend.get("historical_compatibility") or {}).get("status") != "pass":
+            errors.append(f"{job_id}: historical action compatibility is not pass")
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True, type=Path)
@@ -277,15 +437,24 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--aggregate-release1", action="store_true",
                         help="require the exact nine Release-1 job receipts under --results")
+    parser.add_argument("--aggregate-m4-4a", action="store_true",
+                        help="require all three hosted Pinokio backend M4-4a receipts")
     args = parser.parse_args()
     errors = []
     try:
         candidate = read(args.candidate)
         manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
+        if args.aggregate_release1 and args.aggregate_m4_4a:
+            raise ValueError("choose one aggregate mode")
         if args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
             errors.extend(evaluate_release1_matrix(candidate, args.results))
+        elif args.aggregate_m4_4a:
+            if args.results is None:
+                raise ValueError("--results is required with --aggregate-m4-4a")
+            errors.extend(evaluate_m4_4a_backend_matrix(
+                candidate, args.results, allow_source_override=args.allow_source_override))
         elif not args.prepare_only:
             if args.cadence == "release-candidate":
                 raise ValueError("release-candidate evidence requires --aggregate-release1")

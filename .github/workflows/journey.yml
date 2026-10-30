@@ -10,10 +10,18 @@ on:
         description: Frozen JSON with app, agent, runtime and pinokio full commit SHAs plus bootstrap hashes
         required: true
         type: string
+      old_launcher_ref:
+        description: Full SHA for the approved pre-self-pull Pinokio backend action
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       candidate:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action
+        required: true
+        type: string
+      old_launcher_ref:
+        description: Full SHA for the approved pre-self-pull Pinokio backend action
         required: true
         type: string
 
@@ -27,6 +35,7 @@ jobs:
     outputs:
       candidate: ${{ steps.config.outputs.candidate }}
       driver_agent_ref: ${{ steps.config.outputs.driver_agent_ref }}
+      old_launcher_ref: ${{ steps.config.outputs.old_launcher_ref }}
       matrix: ${{ steps.config.outputs.matrix }}
     steps:
       - id: config
@@ -35,6 +44,7 @@ jobs:
           CANDIDATE: ${{ inputs.candidate }}
           DRIVER_AGENT_REF: ${{ job.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -49,6 +59,9 @@ jobs:
               raise SystemExit("the reviewed Agent workflow SHA is required")
           if os.environ["WORKFLOW_REPOSITORY"] != "banodoco/astrid-agent":
               raise SystemExit("the receipt harness must run from banodoco/astrid-agent")
+          old_launcher = os.environ["OLD_LAUNCHER_REF"]
+          if not re.fullmatch(r"[0-9a-f]{40}", old_launcher):
+              raise SystemExit("a full old_launcher_ref SHA is required")
           matrix = [
               {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-14", "shell":"sh"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh"},
@@ -61,7 +74,8 @@ jobs:
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe"},
           ]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              for key, value in (("candidate", candidate), ("driver_agent_ref", driver), ("matrix", {"include": matrix})):
+              for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
+                                  ("old_launcher_ref", old_launcher), ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
 
@@ -140,6 +154,10 @@ jobs:
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
           $release0Args = @()
+          $oldLauncherArgs = @()
+          if ('${{ matrix.mode }}' -eq 'pinokio-backend') {
+            $oldLauncherArgs = @('--old-launcher-ref', '${{ needs.config.outputs.old_launcher_ref }}')
+          }
           if ('${{ matrix.leg }}' -eq 'release0-to-release1') {
             $release0Args = @(
               '--release0-fixture', "$pwd/agent/tests/fixtures/release0",
@@ -152,7 +170,7 @@ jobs:
             --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
             --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
-            --shell '${{ matrix.shell }}' @release0Args
+            --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain the matrix receipt even after a lifecycle failure
         if: always()
@@ -206,3 +224,10 @@ jobs:
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1
+      - name: Aggregate the exact M4-4a Pinokio backend receipts
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-m4-4a
