@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
-
 SCHEMA_VERSION = 1
 RECEIPT_KIND = "m4-4b-fully-local-editor-journey"
 MODE_BYTES = '{"schema_version":1,"mode":"local"}'
