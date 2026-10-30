@@ -586,19 +586,43 @@ class Handler(BaseHTTPRequestHandler):
                 by_class: dict[str, list[dict]] = {}
                 for node in prompt.values():
                     by_class.setdefault(node.get("class_type"), []).append(node)
-                for class_type in ("VHS_LoadVideoFFmpeg", "LoadImageMask", "H3V2VGranularFractionalDenoise"):
-                    if len(by_class.get(class_type, [])) != 1:
-                        raise ValueError(f"native masked edit fixture requires exactly one {class_type}")
+                if len(by_class.get("H3V2VGranularFractionalDenoise", [])) != 1:
+                    raise ValueError("native masked edit fixture requires exactly one H3V2VGranularFractionalDenoise")
                 v2v = by_class["H3V2VGranularFractionalDenoise"][0]["inputs"]
                 if v2v.get("mode") != "spatial" or v2v.get("crop") != "disabled" or v2v.get("audio_strength") != 0:
                     raise ValueError("native masked edit node must be spatial, crop disabled, audio_strength 0")
                 for key in ("source_frames", "source_audio", "source_mask", "latent", "model"):
                     if not isinstance(v2v.get(key), list):
                         raise ValueError(f"native masked edit node input {key} is not connected")
-                for class_type, key in (("VHS_LoadVideoFFmpeg", "video"), ("LoadImageMask", "image")):
-                    member = by_class[class_type][0]["inputs"].get(key)
+                source_loader = prompt[v2v["source_frames"][0]]
+                if source_loader.get("class_type") != "VHS_LoadVideoFFmpeg" or v2v["source_audio"][0] != v2v["source_frames"][0]:
+                    raise ValueError("native edit source frames and audio must use the same video loader")
+                mask_node = prompt[v2v["source_mask"][0]]
+                if mask_node.get("class_type") == "LoadImageMask":
+                    if len(by_class.get("VHS_LoadVideoFFmpeg", [])) != 1 or len(by_class.get("LoadImageMask", [])) != 1:
+                        raise ValueError("native static mask requires one video loader and one LoadImageMask")
+                    mask_loader, mask_key = mask_node, "image"
+                elif mask_node.get("class_type") == "ImageToMask":
+                    if len(by_class.get("VHS_LoadVideoFFmpeg", [])) != 2 or len(by_class.get("ImageToMask", [])) != 1 or by_class.get("LoadImageMask"):
+                        raise ValueError("native video mask requires two video loaders and one ImageToMask")
+                    mask_loader = prompt[mask_node["inputs"]["image"][0]]
+                    if mask_loader.get("class_type") != "VHS_LoadVideoFFmpeg" or mask_loader is source_loader:
+                        raise ValueError("native video mask must use its own video loader")
+                    mask_key = "video"
+                else:
+                    raise ValueError("native edit source_mask must use LoadImageMask or ImageToMask")
+                if mask_node["inputs"].get("channel") != "red":
+                    raise ValueError("native edit mask must use the red channel")
+                for loader, key in ((source_loader, "video"), (mask_loader, mask_key)):
+                    member = loader["inputs"].get(key)
                     if member not in expected["asset_files"] or Path(member).name != member:
-                        raise ValueError(f"native masked edit {class_type} is not bound to a managed member")
+                        raise ValueError("native masked edit loader is not bound to a managed member")
+                    staged_file = input_directory / member
+                    record = expected["asset_files"][member]
+                    if (staged_file.is_symlink() or not staged_file.is_file()
+                            or hashlib.sha256(staged_file.read_bytes()).hexdigest() != record["sha256"]
+                            or staged_file.stat().st_size != record["size"]):
+                        raise ValueError("native masked edit member differs from its managed input bundle")
                 if any(n.get("class_type") == "LanPaint_KSampler" for n in prompt.values()):
                     raise ValueError("native masked edit must not use LanPaint")
             else:

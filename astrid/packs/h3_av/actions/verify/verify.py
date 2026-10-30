@@ -17,6 +17,7 @@ from astrid.packs.h3_av.shared.compose import (
     _spatial_video_masks,
     _validate_candidate_coverage,
     _verify_spatial_mask_complement,
+    _mask_segment_evidence,
 )
 
 
@@ -385,20 +386,16 @@ def verify_candidate(
             for mask in spatial_masks:
                 path = Path(str(mask["path"]))
                 record = assets.get(mask["asset"], {})
-                if record.get("sha256") != _sha256(path) or record.get("size") != path.stat().st_size:
+                if "derived_box" not in mask and (record.get("sha256") != _sha256(path) or record.get("size") != path.stat().st_size):
                     raise VerificationError("regional mask provenance does not match preparation asset evidence")
             for start, end, _generated, mask in _segments_with_spatial_masks(
                 float(schedule["duration"]), list(schedule["video"]["generated_intervals"]), spatial_masks
             ):
                 if mask is not None:
-                    expected_segments.append({
-                        "during": [start, end], "mask_asset": mask["asset"],
-                        "mask_sha256": _sha256(Path(str(mask["path"]))),
-                        "mask_kind": mask["kind"], "mask_frames": mask["frames"],
-                    })
-            fields = ("during", "mask_asset", "mask_sha256", "mask_kind", "mask_frames")
+                    expected_segments.append({"during": [start, end], **_mask_segment_evidence(mask)})
+            fields = ("during", "mask_asset", "mask_sha256", "mask_kind", "mask_frames", "mask_union")
             actual_segments = [
-                {field: segment.get(field) for field in fields}
+                {field: segment[field] for field in fields if field in segment}
                 for segment in declared_segments
                 if isinstance(segment, Mapping) and any(field in segment for field in fields[1:])
             ]

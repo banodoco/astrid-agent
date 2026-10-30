@@ -120,13 +120,15 @@ def test_plan_requested_raw_and_trim_timing(tmp_path: Path, h3_request, assets: 
     assert ("h3.plan.tail_trim" in codes) is bool(trim)
 
 
-def test_plan_rejects_multiple_modifying_passes_and_unresolved_assets(tmp_path: Path) -> None:
+def test_plan_orders_multiple_modifying_passes_and_rejects_unresolved_assets(tmp_path: Path) -> None:
     multiple = _source_edit(extra_video=(
         {"during": [3, 4], "area": {"full_frame": True}, "action": "generate"},
     ))
-    with pytest.raises(H3RequestError) as caught:
-        plan_request(multiple, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "multi")
-    assert caught.value.code == "h3.plan.single_pass"
+    plan = plan_request(multiple, asset_map=_assets(tmp_path, source=True), out_dir=tmp_path / "multi")
+    assert plan["pass_count"] == 2
+    assert [item["operation"]["during"] for item in plan["passes"]] == [(1.0, 3.0), (3.0, 4.0)]
+    assert [item["reads"] for item in plan["passes"]] == ["source", "previous_verified_output"]
+    assert plan["runtime_submission"] == "eligible"
 
     with pytest.raises(H3RequestError) as caught:
         plan_request(_generate(), asset_map={}, out_dir=tmp_path / "unresolved")

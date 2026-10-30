@@ -157,7 +157,10 @@ def _overlap(a: Operation, b: Operation, regions: Mapping[str, Region]) -> bool:
     )
 
 
-def _normalize_spec(spec: H3Spec, modalities: Mapping[str, str] | None) -> H3Spec:
+def _normalize_spec(
+    spec: H3Spec, modalities: Mapping[str, str] | None,
+    *, request_document: dict[str, Any] | None = None,
+) -> H3Spec:
     if not isinstance(spec, H3Spec):
         _fail(
             "input",
@@ -378,17 +381,17 @@ def _normalize_spec(spec: H3Spec, modalities: Mapping[str, str] | None) -> H3Spe
         )
     from .request import normalize_request
 
-    request = normalize_request(
-        {
-            "version": 2,
-            "prompt": spec.prompt,
-            "duration": spec.duration,
-            "media": media,
-            "settings": dict(spec.settings),
-            "continuation": bool(generators and generators[0].op == "extend"),
-        },
-        asset_modalities=modalities,
-    )
+    document = {
+        "version": 2,
+        "prompt": spec.prompt,
+        "duration": spec.duration,
+        "media": media,
+        "settings": dict(spec.settings),
+        "continuation": bool(generators and generators[0].op == "extend"),
+    }
+    request = normalize_request(document, asset_modalities=modalities)
+    if request_document is not None:
+        request_document.update(document)
     result = _from_v2(request)
     return replace(result, prompt=spec.prompt)  # v1's prompt bytes remain significant.
 
@@ -406,6 +409,28 @@ def normalize_spec(spec: H3Spec, *, asset_modalities: Mapping[str, str] | None =
             "spec",
             "Correct the declared fields using the v1/v2 request contract",
         )
+
+
+def sampling_request_document(
+    request: H3Request, index: int, *, previous_verified_output: bool = False,
+) -> dict[str, Any]:
+    """Lower one canonical pass through the existing public v2 normalizer.
+
+    The parent request keeps its identity. Each derived request owns its normal
+    digest and carries every original preservation constraint. Later inputs are
+    already composed output timelines, so their source window starts at zero.
+    """
+    spec = canonical_spec(request)
+    sampling_pass = spec.sampling_passes()[index]
+    source = spec.source
+    if previous_verified_output and source is not None:
+        source = replace(source, range=(0, spec.duration))
+    document: dict[str, Any] = {}
+    _normalize_spec(
+        replace(spec, source=source, ops=(sampling_pass.operation, *sampling_pass.preserves)),
+        None, request_document=document,
+    )
+    return document
 
 
 def _region(mask: Mapping, regions: list[Region]) -> str | None:

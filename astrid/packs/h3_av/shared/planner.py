@@ -18,8 +18,8 @@ from astrid.packs.h3_av.actions.prepare.prepare import prepare_request, write_pr
 from astrid.packs.h3_av.actions.prepare.static_regions import resolve_static_region
 
 from .generation import generation_timing
-from .request import H3Request, H3RequestError
-from .spec import H3Spec, canonical_spec
+from .request import H3Request, H3RequestError, normalize_request
+from .spec import H3Spec, canonical_spec, sampling_request_document
 from .timing import plan_continuation
 
 
@@ -80,7 +80,7 @@ def _ignored_fields(request: H3Request, spec: H3Spec, compilation: Mapping[str, 
 def plan_request(
     request: H3Request, *, asset_map: Mapping[str, str] | None = None, out_dir: str | Path,
 ) -> dict[str, Any]:
-    """Write an inspectable single-pass plan, without submitting any work.
+    """Write inspectable ordered single-operation plans without submitting work.
 
     Use the existing request normalizer before calling. A plan may be blocked by
     the current compiler (for example a box awaiting the native binder); such a
@@ -93,12 +93,43 @@ def plan_request(
     plan_path.unlink(missing_ok=True)
     spec = canonical_spec(request)
     passes = spec.sampling_passes()
-    if len(passes) != 1:
+    if not passes:
         raise H3RequestError(
-            "B5 planning requires exactly one modifying operation",
-            code="h3.plan.single_pass", field="ops",
-            fix="Use one generate, extend or regenerate operation plus preservation constraints",
+            "Planning requires a modifying operation", code="h3.plan.single_pass", field="ops",
+            fix="Use a generate, extend or regenerate operation plus preservation constraints",
         )
+    if len(passes) > 1:
+        # Every pass uses the existing single-operation planner/compiler. Later
+        # compilation here is an inspectable preview: execution must replace its
+        # source binding with the preceding composed and verified candidate.
+        plans = [plan_request(
+            normalize_request(sampling_request_document(request, index, previous_verified_output=index > 0)),
+            asset_map=asset_map, out_dir=root / "passes" / f"{index + 1:02d}",
+        ) for index in range(len(passes))]
+        preparation = prepare_request(request, asset_map=asset_map)
+        preparation_path = write_preparation(root / "preparation.json", preparation)
+        compiled = all(item["runtime_submission"] == "eligible" for item in plans)
+        plan = {
+            "schema_version": 1, "kind": "h3_av_plan", "status": "planned",
+            "request_digest": request.digest, "spec": asdict(spec),
+            "bindings": {"assets": preparation["assets"], "regions": [], "runtime": []},
+            "timing": plans[0]["timing"], "previews": [preview for item in plans for preview in item["previews"]],
+            "pass_count": len(passes), "passes": [
+                {**asdict(sampling_pass), "plan_path": item["plan_path"],
+                 "request_digest": item["request_digest"], "compilation": item["compilation"],
+                 "source_binding": "original_source" if index == 0 else "deferred_until_previous_verified"}
+                for index, (sampling_pass, item) in enumerate(zip(passes, plans))
+            ],
+            "mask_schedule": preparation["mask_schedule"],
+            "warnings": [warning for item in plans for warning in item["warnings"]],
+            "ignored_fields": [field for item in plans for field in item["ignored_fields"]],
+            "compilation": {"status": "compiled" if compiled else "blocked", "ordered_passes": len(passes)},
+            "preparation_path": str(preparation_path),
+            "runtime_submission": "eligible" if compiled else "blocked_until_compilation",
+            "capabilities": spec.capabilities, "plan_path": str(plan_path),
+        }
+        write_json_atomic(plan_path, plan)
+        return plan
     preparation = prepare_request(request, asset_map=asset_map)
     if preparation["unresolved_assets"]:
         raise H3RequestError(

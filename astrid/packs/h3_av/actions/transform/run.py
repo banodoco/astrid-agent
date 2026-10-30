@@ -38,7 +38,7 @@ from astrid.packs.h3_av.actions.transform.receipt import (
 )
 from astrid.packs.h3_av.shared.input_bundle import build_input_bundle, materialize_input_bundle
 from astrid.packs.h3_av.shared.request import load_request_document, normalize_request
-from astrid.packs.h3_av.shared.request_v2 import branch_for
+from astrid.packs.h3_av.shared.request_v2 import CHARACTER_SWAP_ID, branch_for
 from astrid.sdk import AstridClient, generate, observe_task_invocation
 from astrid.sdk.results import InvocationResult
 
@@ -1376,6 +1376,338 @@ def _finalizer_generation_intent(
     }
 
 
+def _prepare_transform_input(
+    client: Any, *, args: argparse.Namespace, root: Path, request: Any,
+    raw_request: Mapping[str, Any], asset_map: Mapping[str, str],
+    journal: OperationJournal, idempotency_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    root.mkdir(parents=True, exist_ok=True)
+    staging = root / "staged-inputs"
+    staging.mkdir(parents=True, exist_ok=True)
+    bundle_path = build_input_bundle(request, asset_map, staging / "h3-inputs.zip")
+    request_path = staging / "request.json"
+    request_path.write_text(json.dumps(raw_request, sort_keys=True), encoding="utf-8")
+    request_descriptor = _import_runtime_file(
+        client, project=args.project, path=request_path, filename=request_path.name
+    )
+    bundle_descriptor = _import_runtime_file(
+        client, project=args.project, path=bundle_path, filename=bundle_path.name
+    )
+    # Freeze the authoritative source from the same verified bytes as the
+    # child inputs. Never open a prepare worker's absolute source path.
+    frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
+    source_inputs = {}
+    source_asset_id = _authoritative_source_asset_id(request)
+    if source_asset_id is not None:
+        source_path = Path(frozen_assets[source_asset_id])
+        source_inputs["source"] = _import_runtime_file(
+            client, project=args.project, path=source_path, filename=source_path.name
+        )
+    prepared = _invoke_stage(
+        client, "h3_av.prepare",
+        inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
+        out=root / "01-prepare", project=args.project,
+        saved_result=root / "01-prepare" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)),
+        journal=journal,
+        phase="prepare",
+        idempotency_context=idempotency_context,
+    )
+    preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
+    preparation = _json_mapping(preparation_path)
+    return {name: value for name, value in (
+        ("bundle_descriptor", bundle_descriptor),
+        ("source_inputs", source_inputs),
+        ("preparation_path", preparation_path),
+        ("preparation_row", preparation_row),
+        ("preparation", preparation),
+        ("frozen_assets", frozen_assets),
+    )}
+
+
+def _execute_verified_pass(
+    client: Any, *, args: argparse.Namespace, root: Path, request: Any,
+    raw_request: Mapping[str, Any], asset_map: Mapping[str, str],
+    journal: OperationJournal, idempotency_context: Mapping[str, Any],
+    local_engine: Any, prepared_selection: Any,
+    execution_request: Mapping[str, Any] | None, placement: str,
+    prepared_input: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The existing canonical stages; return only after composed-byte verification."""
+    if prepared_input is None:
+        prepared_input = _prepare_transform_input(
+            client, args=args, root=root, request=request, raw_request=raw_request,
+            asset_map=asset_map, journal=journal, idempotency_context=idempotency_context,
+        )
+    bundle_descriptor, source_inputs, preparation_path, preparation_row, preparation = (
+        prepared_input[name] for name in
+        ("bundle_descriptor", "source_inputs", "preparation_path", "preparation_row", "preparation")
+    )
+    compiled = _invoke_stage(
+        client, "h3_av.compile", inputs={
+            "preparation": _descriptor(preparation_row, filename="preparation.json"),
+            "input_bundle": bundle_descriptor,
+        },
+        out=root / "02-compile", project=args.project,
+        saved_result=root / "02-compile" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)),
+        journal=journal,
+        phase="compile",
+        idempotency_context=idempotency_context,
+    )
+    compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
+    managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
+    compilation = _json_mapping(compilation_path)
+    expected_assets_digest = compilation.get("managed_assets", {}).get("sha256")
+    actual_assets_digest = hashlib.sha256(managed_assets_path.read_bytes()).hexdigest()
+    if expected_assets_digest != actual_assets_digest:
+        raise AstridError("managed H3 assets failed compilation hash/provenance verification")
+    provenance = _provenance(preparation, compilation)
+    provenance_path = _write_provenance_preparation(root, preparation, provenance)
+    materialized_workflow: dict[str, Path] = {}
+    bundle_inputs = _retrieve_compiled_workflow(
+        client,
+        compiled,
+        compilation,
+        root / "02-compile",
+        materialized_paths=materialized_workflow,
+    )
+    # Canonical workflow Python is executable input.  Carry the explicit
+    # consent scalar required by VibeComfy's audited validation gate;
+    # execution-request targeting is not itself Python consent.
+    _invoke_stage(
+        client,
+        "vibecomfy.validate",
+        inputs={
+            **bundle_inputs,
+            "python_execution_consent": "confirmed",
+            "workflow_inputs": json.dumps(
+                compilation["workflow_inputs"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        },
+        out=root / "03-validate",
+        project=args.project,
+        saved_result=root / "03-validate" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)),
+        journal=journal,
+        phase="validate",
+        idempotency_context=idempotency_context,
+    )
+    generation_metadata = {"h3_av": provenance}
+    generation_intent = _generation_intent(compilation)
+    generation_intent["metadata"].update(generation_metadata)
+    run_inputs = {
+        **bundle_inputs,
+        "managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip"),
+        "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
+        "generation_intent": generation_intent,
+    }
+    if local_engine is not None:
+        run_inputs["comfy_url"] = local_engine.endpoint.url
+        run_inputs["comfy_output_dir"] = local_engine.comfy_output_dir
+    saved_run_path = root / "04-run" / "run-result.json"
+    child_execution_request = _execution_request_for_child(execution_request)
+    run_client = client
+    if prepared_selection is not None:
+        prepared_workflow_path = _materialize_prepared_worker_workflow_bundle(
+            materialized_workflow,
+            compilation,
+            root / "04-run" / "prepared-workflow-bundle",
+        )
+        run_client = prepared_selection.bind_client(
+            client,
+            workflow_path=prepared_workflow_path,
+            workflow_bundle_path=prepared_workflow_path.parent,
+            workflow_inputs=compilation["workflow_inputs"],
+        )
+    run = _invoke_canonical_run(
+        run_client,
+        inputs=run_inputs,
+        execution_request=child_execution_request,
+        out=root / "04-run",
+        project=args.project,
+        saved_result=saved_run_path,
+        journal=journal,
+        resume=bool(getattr(args, "resume", False)),
+        idempotency_context=idempotency_context,
+        placement=placement,
+    )
+    output_contract = compilation.get("capabilities", {}).get("output_contract")
+    generated_audio_path: Path | None = None
+    generated_bundle_path: Path | None = None
+    if output_contract == "muxed_av_full_timeline":
+        generated_path, muxed_row = _retrieve_muxed_generation(
+            client, run, root / "04-run"
+        )
+        generated_outputs: dict[str, tuple[Path, Mapping[str, Any]]] = {
+            "muxed_av": (generated_path, muxed_row)
+        }
+    elif output_contract == "separate_av_full_timeline":
+        generated_outputs = _retrieve_generation_outputs(client, run, root / "04-run")
+        generated_path = generated_outputs["video"][0]
+        generated_audio_path = generated_outputs["audio"][0]
+        generated_bundle_path = _write_generated_bundle(
+            generated_outputs,
+            root / "04-run" / "retrieved" / "lanpaint-generated-av.zip",
+        )
+    else:
+        raise AstridError(f"unsupported H3 output contract: {output_contract!r}")
+    journal.record("pullback", "completed")
+    raw_managed_publication = attest_runtime_managed_publication(
+        runtime_result=run,
+        request_digest=str(preparation["request_digest"]),
+        generation_intent=generation_intent,
+        retrieved_outputs=[row for _path, row in generated_outputs.values()],
+    )
+    runtime_provenance = {
+        "run_id": getattr(run, "kernel_run_id", None),
+        "task_id": getattr(run, "kernel_task_id", None),
+        "attempt_id": getattr(run, "kernel_attempt_id", None),
+        "generated_outputs": {
+            role: row for role, (_path, row) in generated_outputs.items()
+        },
+        "output_contract": output_contract,
+    }
+    if generated_bundle_path is not None:
+        runtime_provenance["generated_bundle"] = {
+            "filename": generated_bundle_path.name,
+            "sha256": hashlib.sha256(generated_bundle_path.read_bytes()).hexdigest(),
+        }
+    enriched = dict(preparation)
+    enriched["provenance"] = {**provenance, "runtime": runtime_provenance}
+    provenance_path.write_text(json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    preparation_descriptor = _import_runtime_file(
+        client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
+    )
+    generated_input_path = generated_bundle_path or generated_path
+    generated_descriptor = _import_runtime_file(
+        client,
+        project=args.project,
+        path=generated_input_path,
+        filename=generated_input_path.name,
+    )
+    composed = _invoke_stage(
+        client, "h3_av.compose",
+        inputs={
+            "preparation": preparation_descriptor,
+            "input_bundle": bundle_descriptor,
+            "generated": generated_descriptor,
+            **source_inputs,
+        },
+        out=root / "05-compose", project=args.project,
+        saved_result=root / "05-compose" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)),
+        journal=journal,
+        phase="compose",
+        idempotency_context=idempotency_context,
+    )
+    composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
+    candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
+    verified = _invoke_stage(
+        client, "h3_av.verify",
+        inputs={
+            "preparation": preparation_descriptor,
+            "input_bundle": bundle_descriptor,
+            "composition": _descriptor(composition_row, filename="composition-manifest.json"),
+            "candidate": _descriptor(candidate_row, filename="candidate.media"),
+            **source_inputs,
+        },
+        out=root / "06-verify", project=args.project,
+        saved_result=root / "06-verify" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)),
+        journal=journal,
+        phase="verify",
+        idempotency_context=idempotency_context,
+    )
+    verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
+    verification = _json_mapping(verification_path)
+    if (verification.get("status") != "verified"
+            or verification.get("request_digest") != request.digest
+            or "sha256:" + str(verification.get("candidate_sha256")) != candidate_row["digest"]):
+        raise AstridError("verification does not certify the composed candidate digest")
+    return {name: value for name, value in (
+        ("preparation_path", preparation_path),
+        ("preparation", preparation),
+        ("compilation_path", compilation_path),
+        ("compilation", compilation),
+        ("generated_path", generated_path),
+        ("generated_audio_path", generated_audio_path),
+        ("composition_path", composition_path),
+        ("composition_row", composition_row),
+        ("candidate_path", candidate_path),
+        ("candidate_row", candidate_row),
+        ("verification_path", verification_path),
+        ("verification_row", verification_row),
+        ("verification", verification),
+        ("run", run),
+        ("generation_intent", generation_intent),
+        ("raw_managed_publication", raw_managed_publication),
+    )}
+
+
+def _verify_cumulative_passes(
+    client: Any, *, args: argparse.Namespace, root: Path, request: Any,
+    original: Mapping[str, Any], state: dict[str, Any],
+    journal: OperationJournal, idempotency_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reuse the candidate contract against original-source permissions."""
+    preparation = original["preparation"]
+    provenance = {
+        "schema_version": 1, "request_digest": request.digest,
+        "schedule_digest": preparation["mask_schedule"]["digest"],
+        "assets": preparation["assets"],
+        "ordered_passes": str(root / "ordered-passes.json"),
+    }
+    preparation_path = _write_provenance_preparation(root, preparation, provenance)
+    preparation_descriptor = _import_runtime_file(
+        client, project=args.project, path=preparation_path, filename="provenance-preparation.json",
+    )
+    common_inputs = {
+        "preparation": preparation_descriptor,
+        "input_bundle": original["bundle_descriptor"], **original["source_inputs"],
+    }
+    composed = _invoke_stage(
+        client, "h3_av.compose", inputs={
+            **common_inputs,
+            "generated": _descriptor(state["candidate_row"], filename="verified-pass.media"),
+        }, out=root / "05-compose", project=args.project,
+        saved_result=root / "05-compose" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)), journal=journal,
+        phase="cumulative-compose", idempotency_context=idempotency_context,
+    )
+    composition_path, composition_row = _materialize_output(
+        client, composed, "composition", root / "05-compose", managed_only=True,
+    )
+    candidate_path, candidate_row = _materialize_output(
+        client, composed, "candidate", root / "05-compose", managed_only=True,
+    )
+    verified = _invoke_stage(
+        client, "h3_av.verify", inputs={
+            **common_inputs,
+            "composition": _descriptor(composition_row, filename="composition-manifest.json"),
+            "candidate": _descriptor(candidate_row, filename="candidate.media"),
+        }, out=root / "06-verify", project=args.project,
+        saved_result=root / "06-verify" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)), journal=journal,
+        phase="cumulative-verify", idempotency_context=idempotency_context,
+    )
+    verification_path, verification_row = _materialize_output(
+        client, verified, "verification", root / "06-verify", managed_only=True,
+    )
+    verification = _json_mapping(verification_path)
+    if (verification.get("status") != "verified"
+            or verification.get("request_digest") != request.digest
+            or "sha256:" + str(verification.get("candidate_sha256")) != candidate_row["digest"]):
+        raise AstridError("cumulative verification does not certify the composed candidate digest")
+    return {**state, "preparation_path": original["preparation_path"],
+            "preparation": preparation, "composition_path": composition_path,
+            "composition_row": composition_row, "candidate_path": candidate_path,
+            "candidate_row": candidate_row, "verification_path": verification_path,
+            "verification_row": verification_row, "verification": verification}
+
+
 def _run_transform_unlocked(
     args: argparse.Namespace, *, terminal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1483,225 +1815,115 @@ def _run_transform_unlocked(
         journal.record("operation", "started", resume=bool(getattr(args, "resume", False)))
         terminal["journal"] = journal
         idempotency_context = {"h3_submission_id": journal.submission_id}
-        staging = root / "staged-inputs"
-        staging.mkdir(parents=True, exist_ok=True)
-        bundle_path = build_input_bundle(
-            request, _json_mapping(args.asset_map), staging / "h3-inputs.zip"
+        from astrid.packs.h3_av.shared.spec import canonical_spec, sampling_request_document
+
+        asset_map = _json_mapping(args.asset_map)
+        original = _prepare_transform_input(
+            client, args=args, root=root, request=request, raw_request=raw_request,
+            asset_map=asset_map, journal=journal, idempotency_context=idempotency_context,
         )
-        request_path = staging / "request.json"
-        request_path.write_text(json.dumps(raw_request, sort_keys=True), encoding="utf-8")
-        request_descriptor = _import_runtime_file(
-            client, project=args.project, path=request_path, filename=request_path.name
-        )
-        bundle_descriptor = _import_runtime_file(
-            client, project=args.project, path=bundle_path, filename=bundle_path.name
-        )
-        # Freeze the authoritative source from the same verified bytes as the
-        # child inputs. Never open a prepare worker's absolute source path.
-        frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
-        source_inputs = {}
-        source_asset_id = _authoritative_source_asset_id(request)
-        if source_asset_id is not None:
-            source_path = Path(frozen_assets[source_asset_id])
-            source_inputs["source"] = _import_runtime_file(
-                client, project=args.project, path=source_path, filename=source_path.name
-            )
-        prepared = _invoke_stage(
-            client, "h3_av.prepare",
-            inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
-            out=root / "01-prepare", project=args.project,
-            saved_result=root / "01-prepare" / "invocation-result.json",
-            resume=bool(getattr(args, "resume", False)),
-            journal=journal,
-            phase="prepare",
-            idempotency_context=idempotency_context,
-        )
-        preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
-        preparation = _json_mapping(preparation_path)
-        compiled = _invoke_stage(
-            client, "h3_av.compile", inputs={
-                "preparation": _descriptor(preparation_row, filename="preparation.json"),
-                "input_bundle": bundle_descriptor,
-            },
-            out=root / "02-compile", project=args.project,
-            saved_result=root / "02-compile" / "invocation-result.json",
-            resume=bool(getattr(args, "resume", False)),
-            journal=journal,
-            phase="compile",
-            idempotency_context=idempotency_context,
-        )
-        compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
-        managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
-        compilation = _json_mapping(compilation_path)
-        expected_assets_digest = compilation.get("managed_assets", {}).get("sha256")
-        actual_assets_digest = hashlib.sha256(managed_assets_path.read_bytes()).hexdigest()
-        if expected_assets_digest != actual_assets_digest:
-            raise AstridError("managed H3 assets failed compilation hash/provenance verification")
-        provenance = _provenance(preparation, compilation)
-        provenance_path = _write_provenance_preparation(root, preparation, provenance)
-        materialized_workflow: dict[str, Path] = {}
-        bundle_inputs = _retrieve_compiled_workflow(
-            client,
-            compiled,
-            compilation,
-            root / "02-compile",
-            materialized_paths=materialized_workflow,
-        )
-        # Canonical workflow Python is executable input.  Carry the explicit
-        # consent scalar required by VibeComfy's audited validation gate;
-        # execution-request targeting is not itself Python consent.
-        _invoke_stage(
-            client,
-            "vibecomfy.validate",
-            inputs={
-                **bundle_inputs,
-                "python_execution_consent": "confirmed",
-                "workflow_inputs": json.dumps(
-                    compilation["workflow_inputs"],
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            },
-            out=root / "03-validate",
-            project=args.project,
-            saved_result=root / "03-validate" / "invocation-result.json",
-            resume=bool(getattr(args, "resume", False)),
-            journal=journal,
-            phase="validate",
-            idempotency_context=idempotency_context,
-        )
-        generation_metadata = {"h3_av": provenance}
-        generation_intent = _generation_intent(compilation)
-        generation_intent["metadata"].update(generation_metadata)
-        run_inputs = {
-            **bundle_inputs,
-            "managed_assets": _descriptor(managed_assets_row, filename="managed-assets.zip"),
-            "workflow_inputs": json.dumps(compilation["workflow_inputs"], sort_keys=True, separators=(",", ":")),
-            "generation_intent": generation_intent,
-        }
-        if local_engine is not None:
-            run_inputs["comfy_url"] = local_engine.endpoint.url
-            run_inputs["comfy_output_dir"] = local_engine.comfy_output_dir
-        saved_run_path = root / "04-run" / "run-result.json"
-        child_execution_request = _execution_request_for_child(execution_request)
-        run_client = client
-        if prepared_selection is not None:
-            prepared_workflow_path = _materialize_prepared_worker_workflow_bundle(
-                materialized_workflow,
-                compilation,
-                root / "04-run" / "prepared-workflow-bundle",
-            )
-            run_client = prepared_selection.bind_client(
-                client,
-                workflow_path=prepared_workflow_path,
-                workflow_bundle_path=prepared_workflow_path.parent,
-                workflow_inputs=compilation["workflow_inputs"],
-            )
-        run = _invoke_canonical_run(
-            run_client,
-            inputs=run_inputs,
-            execution_request=child_execution_request,
-            out=root / "04-run",
-            project=args.project,
-            saved_result=saved_run_path,
-            journal=journal,
-            resume=bool(getattr(args, "resume", False)),
-            idempotency_context=idempotency_context,
-            placement=placement,
-        )
-        output_contract = compilation.get("capabilities", {}).get("output_contract")
-        generated_audio_path: Path | None = None
-        generated_bundle_path: Path | None = None
-        if output_contract == "muxed_av_full_timeline":
-            generated_path, muxed_row = _retrieve_muxed_generation(
-                client, run, root / "04-run"
-            )
-            generated_outputs: dict[str, tuple[Path, Mapping[str, Any]]] = {
-                "muxed_av": (generated_path, muxed_row)
-            }
-        elif output_contract == "separate_av_full_timeline":
-            generated_outputs = _retrieve_generation_outputs(client, run, root / "04-run")
-            generated_path = generated_outputs["video"][0]
-            generated_audio_path = generated_outputs["audio"][0]
-            generated_bundle_path = _write_generated_bundle(
-                generated_outputs,
-                root / "04-run" / "retrieved" / "lanpaint-generated-av.zip",
+        adapter = request.value.get("settings", {}).get("adapter", {})
+        if isinstance(adapter, Mapping) and adapter.get("id") == CHARACTER_SWAP_ID:
+            # The existing adapter compiler supports reference semantics outside
+            # SPEC-MIN. Keep that single compilation route and its validation.
+            sampling_passes = (None,)
+        else:
+            sampling_passes = canonical_spec(request).sampling_passes()
+        if not sampling_passes:
+            raise AstridError("H3 execution requires a modifying operation")
+        if len(sampling_passes) == 1:
+            state = _execute_verified_pass(
+                client, args=args, root=root, request=request, raw_request=raw_request,
+                asset_map=asset_map, journal=journal, idempotency_context=idempotency_context,
+                local_engine=local_engine, prepared_selection=prepared_selection,
+                execution_request=execution_request, placement=placement,
+                prepared_input=original,
             )
         else:
-            raise AstridError(f"unsupported H3 output contract: {output_contract!r}")
-        journal.record("pullback", "completed")
-        raw_managed_publication = attest_runtime_managed_publication(
-            runtime_result=run,
-            request_digest=str(preparation["request_digest"]),
-            generation_intent=generation_intent,
-            retrieved_outputs=[row for _path, row in generated_outputs.values()],
+            current_assets = dict(original["frozen_assets"])
+            pass_rows: list[dict[str, Any]] = []
+            ledger_path = root / "ordered-passes.json"
+            for index, sampling_pass in enumerate(sampling_passes):
+                pass_number = index + 1
+                pass_root = root / "passes" / f"{pass_number:02d}"
+                pass_document = sampling_request_document(
+                    request, index, previous_verified_output=index > 0,
+                )
+                pass_request = normalize_request(pass_document)
+                pass_journal = OperationJournal(
+                    pass_root / "operation-state.json", request_digest=pass_request.digest,
+                )
+                source_asset = _authoritative_source_asset_id(pass_request)
+                input_path = Path(current_assets[source_asset]) if source_asset else None
+                row = {
+                    "index": pass_number, "operation": asdict(sampling_pass.operation),
+                    "request_digest": pass_request.digest, "reads": sampling_pass.reads,
+                    "preserves": [asdict(op) for op in sampling_pass.preserves],
+                    "input": None if input_path is None else {
+                        "path": str(input_path), "sha256": sha256_file(input_path),
+                    },
+                    "journal": str(pass_journal.path), "status": "started",
+                }
+                pass_rows.append(row)
+                write_json_atomic(ledger_path, {
+                    "schema_version": 1, "request_digest": request.digest,
+                    "pass_count": len(sampling_passes), "passes": pass_rows,
+                })
+                journal.record(f"pass-{pass_number}", "started", pass_record=row)
+                try:
+                    state = _execute_verified_pass(
+                        client, args=args, root=pass_root, request=pass_request,
+                        raw_request=pass_document, asset_map=current_assets,
+                        journal=pass_journal,
+                        idempotency_context={**idempotency_context, "h3_pass": pass_number},
+                        local_engine=local_engine, prepared_selection=prepared_selection,
+                        execution_request=execution_request, placement=placement,
+                    )
+                except Exception as exc:
+                    row.update(status="failed", error=type(exc).__name__, message=str(exc)[:1000])
+                    pass_journal.record("operation", "failed", error=type(exc).__name__, message=str(exc)[:1000])
+                    journal.record(f"pass-{pass_number}", "failed", error=type(exc).__name__, message=str(exc)[:1000])
+                    write_json_atomic(ledger_path, {
+                        "schema_version": 1, "request_digest": request.digest,
+                        "pass_count": len(sampling_passes), "passes": pass_rows,
+                    })
+                    raise
+                # The stage helper has independently checked both verification
+                # identity and the managed candidate digest before this handoff.
+                candidate = state["candidate_path"]
+                if "sha256:" + sha256_file(candidate) != state["candidate_row"]["digest"]:
+                    raise AstridError("verified pass candidate changed before handoff")
+                row.update(
+                    status="verified", output={"path": str(candidate), "sha256": sha256_file(candidate)},
+                    preparation=str(state["preparation_path"]),
+                    composition=str(state["composition_path"]),
+                    verification=str(state["verification_path"]),
+                    verification_result=state["verification"],
+                )
+                pass_journal.record("operation", "verified", output=row["output"], verification=row["verification"])
+                journal.record(f"pass-{pass_number}", "verified", output=row["output"], verification=row["verification"])
+                write_json_atomic(ledger_path, {
+                    "schema_version": 1, "request_digest": request.digest,
+                    "pass_count": len(sampling_passes), "passes": pass_rows,
+                })
+                if source_asset is not None:
+                    current_assets[source_asset] = str(candidate)
+            # Compose and independently verify source→final preservation using
+            # the original permissions and authoritative source bytes.
+            state = _verify_cumulative_passes(
+                client, args=args, root=root, request=request, original=original,
+                state=state, journal=journal, idempotency_context=idempotency_context,
+            )
+            write_json_atomic(ledger_path, {
+                "schema_version": 1, "request_digest": request.digest,
+                "pass_count": len(sampling_passes), "passes": pass_rows,
+                "cumulative": {"composition": str(state["composition_path"]),
+                               "verification": str(state["verification_path"]),
+                               "verification_result": state["verification"]},
+            })
+        preparation_path, preparation, compilation_path, compilation, generated_path, generated_audio_path, composition_path, composition_row, candidate_path, candidate_row, verification_path, verification_row, verification, run, generation_intent, raw_managed_publication = (
+            state[name] for name in ('preparation_path', 'preparation', 'compilation_path', 'compilation', 'generated_path', 'generated_audio_path', 'composition_path', 'composition_row', 'candidate_path', 'candidate_row', 'verification_path', 'verification_row', 'verification', 'run', 'generation_intent', 'raw_managed_publication')
         )
-        runtime_provenance = {
-            "run_id": getattr(run, "kernel_run_id", None),
-            "task_id": getattr(run, "kernel_task_id", None),
-            "attempt_id": getattr(run, "kernel_attempt_id", None),
-            "generated_outputs": {
-                role: row for role, (_path, row) in generated_outputs.items()
-            },
-            "output_contract": output_contract,
-        }
-        if generated_bundle_path is not None:
-            runtime_provenance["generated_bundle"] = {
-                "filename": generated_bundle_path.name,
-                "sha256": hashlib.sha256(generated_bundle_path.read_bytes()).hexdigest(),
-            }
-        enriched = dict(preparation)
-        enriched["provenance"] = {**provenance, "runtime": runtime_provenance}
-        provenance_path.write_text(json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-        preparation_descriptor = _import_runtime_file(
-            client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
-        )
-        generated_input_path = generated_bundle_path or generated_path
-        generated_descriptor = _import_runtime_file(
-            client,
-            project=args.project,
-            path=generated_input_path,
-            filename=generated_input_path.name,
-        )
-        composed = _invoke_stage(
-            client, "h3_av.compose",
-            inputs={
-                "preparation": preparation_descriptor,
-                "input_bundle": bundle_descriptor,
-                "generated": generated_descriptor,
-                **source_inputs,
-            },
-            out=root / "05-compose", project=args.project,
-            saved_result=root / "05-compose" / "invocation-result.json",
-            resume=bool(getattr(args, "resume", False)),
-            journal=journal,
-            phase="compose",
-            idempotency_context=idempotency_context,
-        )
-        composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
-        candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
-        verified = _invoke_stage(
-            client, "h3_av.verify",
-            inputs={
-                "preparation": preparation_descriptor,
-                "input_bundle": bundle_descriptor,
-                "composition": _descriptor(composition_row, filename="composition-manifest.json"),
-                "candidate": _descriptor(candidate_row, filename="candidate.media"),
-                **source_inputs,
-            },
-            out=root / "06-verify", project=args.project,
-            saved_result=root / "06-verify" / "invocation-result.json",
-            resume=bool(getattr(args, "resume", False)),
-            journal=journal,
-            phase="verify",
-            idempotency_context=idempotency_context,
-        )
-        verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
-        verification = _json_mapping(verification_path)
-        if (verification.get("status") != "verified"
-                or verification.get("request_digest") != request.digest
-                or "sha256:" + str(verification.get("candidate_sha256")) != candidate_row["digest"]):
-            raise AstridError("verification does not certify the composed candidate digest")
         task_evidence = {
             key: value
             for key, value in {
@@ -1836,6 +2058,8 @@ def _run_transform_unlocked(
         "verification": str(verification_path),
         "final_receipt": str(final_receipt_path),
         "final_receipt_status": receipt["overall_status"],
+        "pass_count": len(sampling_passes),
+        "ordered_passes": str(root / "ordered-passes.json") if len(sampling_passes) > 1 else None,
     }
 
 

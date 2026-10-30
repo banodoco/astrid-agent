@@ -459,3 +459,30 @@ def test_normalization_and_planning_do_no_media_or_provider_work_and_keep_capabi
     changed = spec.capabilities
     changed["generate"]["available"] = True
     assert spec.capabilities["generate"]["available"] is False
+
+
+def test_sampling_request_retains_v2_controls_and_rebinds_only_verified_source_window():
+    from astrid.packs.h3_av.shared.spec import canonical_spec, sampling_request_document
+
+    request = normalize_request({
+        "version": 2, "duration": 2, "prompt": "Two bounded edits.",
+        "media": [{"id": "clip", "asset": "source.mp4", "role": "timeline", "modality": "video",
+                   "at": {"frame": 0}, "range": [4, 6], "edit": [
+                       {"stream": "video", "during": [0.5, 1], "mask": {"rectangle": [0, 0, 256, 288]},
+                        "seed": 17, "strength": 0.4},
+                       {"stream": "video", "during": [0, 0.5], "mask": {"full_frame": True}, "action": "preserve"},
+                       {"stream": "video", "during": [1, 2], "mask": {"rectangle": [512, 288, 256, 288]},
+                        "seed": 23, "strength": 0.8},
+                   ]}],
+    })
+    digest = request.digest
+    first = canonical_spec(normalize_request(sampling_request_document(request, 0)))
+    second = canonical_spec(normalize_request(sampling_request_document(request, 1, previous_verified_output=True)))
+    assert first.source == Source("source.mp4", (4.0, 6.0))
+    assert second.source == Source("source.mp4", (0.0, 2.0))
+    assert [(spec.sampling_passes()[0].operation.seed, spec.sampling_passes()[0].operation.strength)
+            for spec in (first, second)] == [(17, 0.4), (23, 0.8)]
+    assert first.sampling_passes()[0].preserves == second.sampling_passes()[0].preserves
+    assert len(first.sampling_passes()[0].preserves) == 1
+    assert len(first.sampling_passes()) == len(second.sampling_passes()) == 1
+    assert request.digest == digest
