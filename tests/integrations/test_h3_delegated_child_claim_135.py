@@ -31,6 +31,13 @@ def digest(value):
 
 @pytest.fixture
 def claim_world(tmp_path, monkeypatch, real_runtime):
+    # The canonical h3_av source pack has the same id as this tiny CPU fixture.
+    # Retain the explicit fixture root without source-pack precedence hiding it.
+    from astrid.core.execution.executor import registry as executor_registry
+    from astrid.core.execution.orchestrator import registry as orchestrator_registry
+    from astrid.core.pack import discovery as pack_discovery
+    for module in (executor_registry, orchestrator_registry, pack_discovery):
+        monkeypatch.setattr(module, "discover_packs", lambda *_args, **_kwargs: ())
     daemon = real_runtime()
     # A synthetic credential claim on the disposable HTTP fixture; no host
     # credential file or real-machine placement is consulted.
@@ -52,6 +59,7 @@ def claim_world(tmp_path, monkeypatch, real_runtime):
         "version": "1.0.0", "actions": {"transform": action, "child": action}}))
     host = GenericPackHost(pack_roots=[pack], client=client, executor_id="astrid-pack-host", max_concurrency=4)
     host.discover()
+    assert set(host.capabilities) == {PARENT, CHILD}
     for record in host.capabilities.values():
         owner.register_capability(record.id, record.capability_digest, idempotency_key="cap-" + record.id)
     client.generated.register_executor({"executor_id": host.executor_id, "capabilities": [PARENT, CHILD],
