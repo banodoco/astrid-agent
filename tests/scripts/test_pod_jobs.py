@@ -205,7 +205,37 @@ def held_control(session, pod, cli, transport_factory, *, command=None, renew=Fa
         *(["--storage-volume-id", "fixture-volume"] if renew else []),
         "--poll-interval", ".01", *mode])
     messages = []
-    control = ps.Session(args, cli=cli, transport_factory=transport_factory,
+    def held_transport(pod_id, token):
+        transport = transport_factory(pod_id, token)
+        if not getattr(transport, "_held_storage_fixture", False):
+            original_start = transport.detached_start
+            def detached_start(command, *, root, job_id=None, launch_timeout=60):
+                # Held probes now use the same durable detached operation as
+                # follow-ups. Preserve the loopback's mount facts at that entry
+                # point while retaining real AgentServer execution and counts.
+                parts = shlex.split(command)
+                if len(parts) == 4 and parts[:2] == ["python3", "-c"] and "def storage_probe(" in parts[2]:
+                    request = json.loads(base64.b64decode(parts[3]))
+                    assert request["pod_id"] == pod_id and request["volume_id"] == pod.volume_id
+                    assert request["mount"] == ps.CACHE_MOUNT
+                    assert request["model_cache_root"] == ps.MODEL_CACHE_ROOT
+                    assert request["engine_root"] == ps.ENGINE_ROOT
+                    pod.events.append("storage-probe")
+                    receipt = {**{key:value for key,value in request.items() if key != "provider_mapping"},
+                               "cache_device":47, "cache_mount_id":102,
+                               "free_bytes":request["required_volume_bytes"] + 1,
+                               "total_bytes":request["required_volume_bytes"] + 2,
+                               "local_free_bytes":request["required_local_bytes"] + 1}
+                    source = ('import os,pathlib\n'
+                              'with pathlib.Path(os.environ["POD_JOBS_SETUP_LOG"]).open("a") as log: log.write("storage\\n")\n'
+                              + f'print({json.dumps(receipt)!r})\n')
+                    command = "python3 -c " + shlex.quote(source)
+                return original_start(command, root=root, job_id=job_id, launch_timeout=launch_timeout)
+            transport.detached_start = detached_start
+            transport._held_storage_fixture = True
+        return transport
+
+    control = ps.Session(args, cli=cli, transport_factory=held_transport,
                          http_status=pod.http_status, sleep=lambda _seconds: None,
                          say=messages.append, agent_root=pod.agent_root)
     control.test_messages = messages
@@ -410,6 +440,306 @@ def test_failed_followup_then_retry_keeps_same_held_pod_and_primary_evidence(tmp
              failure="command", after_run=after_run)
 
 
+@pytest.mark.parametrize("fault", ["timeout", "lost-start-response", "cancelled", "cancel-error", "interrupt",
+                                   "malformed-terminal"])
+def test_held_reconcile_uncertain_operation_blocks_every_new_start(tmp_path, monkeypatch, fault):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        before = json.loads(held_path.read_text())
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        command = "printf uncertain-followup"
+        control = held_control(session, pod, cli, transport_factory, command=command)
+        transport = pod.transport
+        original_start, original_poll = transport.detached_start, transport.detached_poll
+        starts, cancellations, target, interrupted = [], [], {}, []
+
+        def start(command_to_start, *, root, job_id=None, launch_timeout=60):
+            durable = json.loads(held_path.read_text())
+            assert durable["status"] == "in_use"
+            assert durable["operation"]["id"] == job_id and isinstance(job_id, str)
+            assert durable["operation"]["state"] == "starting"
+            assert durable["charged_jobs"] == control.budget.count
+            starts.append(job_id)
+            if command_to_start == command:
+                target["id"] = job_id
+            job = original_start(command_to_start, root=root, job_id=job_id,
+                                 launch_timeout=launch_timeout)
+            if command_to_start == command and fault == "lost-start-response":
+                raise TimeoutError("fixture lost response after remote launch")
+            return job
+
+        def poll(job_id, *, root):
+            if job_id != target.get("id"):
+                return original_poll(job_id, root=root)
+            if fault == "cancel-error":
+                raise RuntimeError("fixture cancellation outcome cannot be confirmed")
+            if fault == "interrupt" and not interrupted:
+                interrupted.append(job_id)
+                raise KeyboardInterrupt()
+            return {"id":job_id, "dir":root + "/" + job_id,
+                    "state":"cancelled" if fault == "cancelled" else
+                            "exited" if fault == "malformed-terminal" else "running",
+                    "exit_code":"0" if fault == "malformed-terminal" else None}
+
+        def cancel(job_id, *, root):
+            cancellations.append(job_id)
+            raise RuntimeError("fixture cancellation response lost")
+
+        monkeypatch.setattr(transport, "detached_start", start)
+        monkeypatch.setattr(transport, "detached_poll", poll)
+        monkeypatch.setattr(transport, "detached_cancel", cancel)
+        original_wait = control.wait_job
+        def wait(job, timeout):
+            if job["id"] != target.get("id") or fault != "timeout":
+                return original_wait(job, timeout)
+            ticks = iter((0.0, 2.0))
+            with monkeypatch.context() as patch:
+                patch.setattr(ps, "time", Namespace(time=ps.time.time,
+                                                    monotonic=lambda: next(ticks)))
+                return original_wait(job, 1)
+        monkeypatch.setattr(control, "wait_job", wait)
+        if fault == "interrupt":
+            with pytest.raises(KeyboardInterrupt):
+                control.run_held(command=command)
+        else:
+            assert control.run_held(command=command) == 1
+
+        held = json.loads(held_path.read_text())
+        assert target.get("id"), control.test_messages
+        assert held["status"] == "in_use"
+        assert held["operation"] == {"id":target["id"], "label":"follow-up",
+                                     "state":"starting", "exit_code":None}
+        assert held["charged_jobs"] == control.budget.count == pod.record_count
+        assert held["charged_jobs"] > before.get("charged_jobs", before["jobs"])
+        assert held["jobs"] == before["jobs"]
+        assert held["progress_sha256"] == before["progress_sha256"]
+        assert progress_path.read_bytes() == progress_before
+        assert _packet_snapshot(session.workdir) == packets_before
+        assert not cancellations and not pod.terminated and pod.events.count("terminate") == 0
+        assert "RECONCILIATION REQUIRED:" in "\n".join(control.test_messages)
+        failure = json.loads((session.workdir / "held-session-followup-failures.jsonl").read_text().splitlines()[-1])
+        assert failure["job_id"] == target["id"] and failure["retryable"] is False
+
+        starts_before, records_before = list(starts), pod.record_count
+        blocked = held_control(session, pod, cli, transport_factory, command="printf forbidden-second-job")
+        assert blocked.run_held(command="printf forbidden-second-job") == 1
+        assert starts == starts_before and pod.record_count == records_before
+        assert json.loads(held_path.read_text())["status"] == "in_use"
+        assert progress_path.read_bytes() == progress_before
+        assert _packet_snapshot(session.workdir) == packets_before
+        assert not cancellations and pod.events.count("launch") == 1 and len(pod.launches) == 1
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_reconcile_terminal_proof_needs_separate_turn_before_same_pod_retry(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        transport = pod.transport
+        original_start, original_poll = transport.detached_start, transport.detached_poll
+        target, uncertain = {}, [True]
+        command = "exit 9"
+        def start(command_to_start, *, root, job_id=None, launch_timeout=60):
+            job = original_start(command_to_start, root=root, job_id=job_id,
+                                 launch_timeout=launch_timeout)
+            if command_to_start == command:
+                target["id"] = job_id
+                raise TimeoutError("fixture response lost after starting failed follow-up")
+            return job
+        def poll(job_id, *, root):
+            if uncertain[0] and job_id == target.get("id"):
+                return {"id":job_id, "dir":root + "/" + job_id, "state":"running", "exit_code":None}
+            return original_poll(job_id, root=root)
+        monkeypatch.setattr(transport, "detached_start", start)
+        monkeypatch.setattr(transport, "detached_poll", poll)
+        failed = held_control(session, pod, cli, transport_factory, command=command)
+        assert failed.run_held(command=command) == 1
+        assert json.loads(held_path.read_text())["status"] == "in_use"
+        charged = json.loads(held_path.read_text())["charged_jobs"]
+        records_before = pod.record_count
+
+        uncertain[0] = False
+        marker = tmp_path / "retry-after-proof"
+        retry_command = f"printf retried > {shlex.quote(str(marker))}"
+        reconcile = held_control(session, pod, cli, transport_factory, command=retry_command)
+        assert reconcile.run_held(command=retry_command) == 1
+        reconciled = json.loads(held_path.read_text())
+        assert reconciled["status"] == "held" and reconciled["charged_jobs"] == charged
+        assert reconciled["operation"] == {"id":target["id"], "label":"follow-up", "state":"exited", "exit_code":9}
+        assert pod.record_count == records_before and not marker.exists()
+        assert progress_path.read_bytes() == progress_before
+        assert _packet_snapshot(session.workdir) == packets_before
+
+        retry = held_control(session, pod, cli, transport_factory, command=retry_command)
+        assert retry.run_held(command=retry_command) == 1, failure_diagnostics(retry)
+        assert marker.read_text() == "retried"
+        held = json.loads(held_path.read_text())
+        assert held["status"] == "held" and held["charged_jobs"] == retry.budget.count == pod.record_count
+        assert held["charged_jobs"] > charged and retry.pod_id == session.pod_id
+        assert pod.events.count("launch") == 1 and len(pod.launches) == 1
+        assert not pod.terminated and pod.events.count("terminate") == 0
+        assert _packet_snapshot(session.workdir) == packets_before
+        assert any(r["step"] == "job:image" and r["result"] == "failed"
+                   and "exited 7" in r["detail"]["error"]
+                   for r in json.loads(progress_path.read_text())["steps"])
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_reconcile_repeated_terminal_failures_exhaust_durable_budget(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        before = json.loads(held_path.read_text())
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        charged = before.get("charged_jobs", before["jobs"])
+        limit = charged + 7  # Two probes and one failed command per attempt.
+        for attempt in range(2):
+            control = held_control(session, pod, cli, transport_factory, command="exit 9")
+            control.budget = ps.JobBudget(limit=limit)
+            assert control.run_held(command="exit 9") == 1
+            held = json.loads(held_path.read_text())
+            assert held["status"] == "held"
+            assert held["operation"]["state"] == "exited" and held["operation"]["exit_code"] == 9
+            assert held["charged_jobs"] == charged + (attempt + 1) * 3
+            assert held["charged_jobs"] == control.budget.count == pod.record_count
+            assert held["jobs"] == before["jobs"] and held["progress_sha256"] == before["progress_sha256"]
+            assert progress_path.read_bytes() == progress_before
+            assert _packet_snapshot(session.workdir) == packets_before
+        records_before = pod.record_count
+        blocked = held_control(session, pod, cli, transport_factory, command="printf budget-bypass")
+        blocked.budget = ps.JobBudget(limit=limit)
+        assert blocked.run_held(command="printf budget-bypass") == 1
+        assert pod.record_count == records_before == limit - 1
+        held = json.loads(held_path.read_text())
+        assert held["charged_jobs"] == records_before and held["jobs"] == before["jobs"]
+        assert "job budget" in "\n".join(blocked.test_messages)
+        assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
+        assert not pod.terminated and pod.events.count("terminate") == 0
+        assert pod.events.count("launch") == 1 and len(pod.launches) == 1
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_reconcile_terminal_receipt_persistence_failure_stays_in_use(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        control = held_control(session, pod, cli, transport_factory, command="exit 9")
+        original_write = control._write_held
+        def write(doc, *, create=False):
+            operation = doc.get("operation")
+            if operation and operation["label"] == "follow-up" and operation["state"] == "exited":
+                raise OSError("fixture terminal receipt publication interrupted")
+            return original_write(doc, create=create)
+        monkeypatch.setattr(control, "_write_held", write)
+        assert control.run_held(command="exit 9") == 1
+        held = json.loads(held_path.read_text())
+        assert held["status"] == "in_use" and held["operation"]["state"] == "starting"
+        assert held["charged_jobs"] == control.budget.count == pod.record_count
+        assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
+        assert "RECONCILIATION REQUIRED:" in "\n".join(control.test_messages)
+        assert not pod.terminated and pod.events.count("terminate") == 0
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_reconcile_reservation_persistence_failure_never_dispatches(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        progress_path = session.workdir / "pod-session-progress.json"
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        marker = tmp_path / "must-not-dispatch"
+        command = f"printf forbidden > {shlex.quote(str(marker))}"
+        control = held_control(session, pod, cli, transport_factory, command=command)
+        original_write = control._write_held
+        rejected = []
+        def write(doc, *, create=False):
+            operation = doc.get("operation")
+            if operation and operation["label"] == "follow-up" and operation["state"] == "starting":
+                rejected.append(operation["id"])
+                raise OSError("fixture reservation publication interrupted before dispatch")
+            return original_write(doc, create=create)
+        monkeypatch.setattr(control, "_write_held", write)
+        assert control.run_held(command=command) == 1
+        held = json.loads(held_path.read_text())
+        assert rejected and held["status"] == "in_use" and not marker.exists()
+        assert pod.record_count <= control.budget.count <= pod.record_count + 1
+        assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
+        assert not pod.terminated and pod.events.count("terminate") == 0
+        records_before = pod.record_count
+        reconcile = held_control(session, pod, cli, transport_factory, command=command)
+        assert reconcile.run_held(command=command) == 1
+        assert pod.record_count == records_before and not marker.exists()
+        assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+def test_held_reconcile_progress_start_response_loss_keeps_exact_operation(tmp_path, monkeypatch):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        progress_path = session.workdir / "pod-session-progress.json"
+        before = json.loads(held_path.read_text())
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        transport = pod.transport
+        original_start, original_poll = transport.detached_start, transport.detached_poll
+        target = {}
+        def start(command, *, root, job_id=None, launch_timeout=60):
+            durable = json.loads(held_path.read_text())
+            assert durable["operation"]["id"] == job_id
+            job = original_start(command, root=root, job_id=job_id, launch_timeout=launch_timeout)
+            if durable["operation"]["label"] == "progress":
+                target["id"] = job_id
+                raise TimeoutError("fixture progress response lost after remote launch")
+            return job
+        def poll(job_id, *, root):
+            if job_id == target.get("id"):
+                return {"id":job_id, "dir":root + "/" + job_id, "state":"running", "exit_code":None}
+            return original_poll(job_id, root=root)
+        monkeypatch.setattr(transport, "detached_start", start)
+        monkeypatch.setattr(transport, "detached_poll", poll)
+        control = held_control(session, pod, cli, transport_factory, command="printf followed-up")
+        assert control.run_held(command="printf followed-up") == 1
+        held = json.loads(held_path.read_text())
+        assert target.get("id"), control.test_messages
+        assert held["status"] == "in_use" and held["jobs"] == before["jobs"]
+        assert held["operation"] == {"id":target["id"], "label":"progress", "state":"starting", "exit_code":None}
+        assert held["charged_jobs"] == control.budget.count == pod.record_count
+        assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
+        records_before = pod.record_count
+        blocked = held_control(session, pod, cli, transport_factory, command="printf forbidden-second-job")
+        assert blocked.run_held(command="printf forbidden-second-job") == 1
+        assert pod.record_count == records_before
+        assert json.loads(held_path.read_text())["status"] == "in_use"
+        assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
+        assert not pod.terminated and pod.events.count("terminate") == 0
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
 @pytest.mark.parametrize("fault", ["diagnostic", "persistence"])
 def test_transient_followup_diagnostic_or_persistence_error_retains_retry_custody(tmp_path, monkeypatch, fault):
     def after_run(session, pod, code, cli, transport_factory):
@@ -438,7 +768,13 @@ def test_transient_followup_diagnostic_or_persistence_error_retains_retry_custod
         failure_path = session.workdir / "held-session-followup-failures.jsonl"
         assert failure_path.is_file(), control.test_messages
         held_after = json.loads(held_path.read_text())
-        assert held_after == held_before and held_after["status"] == "held"
+        assert held_after["status"] == "held"
+        assert held_after["charged_jobs"] == control.budget.count == pod.record_count
+        assert held_after["charged_jobs"] > held_before.get("charged_jobs", held_before["jobs"])
+        assert held_after["operation"]["state"] == "exited"
+        assert held_after["operation"]["exit_code"] == 0
+        assert {key: held_after[key] for key in held_before if key not in ("charged_jobs", "operation")} == {
+            key: value for key, value in held_before.items() if key not in ("charged_jobs", "operation")}
         failure = json.loads(failure_path.read_text().splitlines()[-1])
         assert failure["retryable"] is True and failure["session"] == session.sid
         assert failure["pod_id"] == session.pod_id
@@ -509,7 +845,7 @@ def test_held_explicit_release_requires_verified_termination(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("fault", ["missing", "corrupt", "stale", "token", "progress", "source", "remote-source", "remote-manifest",
-                                  "identity", "storage", "readiness", "transport"])
+                                  "identity", "storage", "readiness", "transport", "unaccounted-followup"])
 def test_held_resume_refuses_unusable_state_or_binding(tmp_path, monkeypatch, fault):
     def after_run(session, pod, code, cli, transport_factory):
         assert code == 1 and not pod.terminated, failure_diagnostics(session)
@@ -524,6 +860,11 @@ def test_held_resume_refuses_unusable_state_or_binding(tmp_path, monkeypatch, fa
             held.write_text(json.dumps(document))
         elif fault == "token":
             session.token_path.unlink()
+        elif fault == "unaccounted-followup":
+            # Older controllers restored the original count after failures;
+            # those charges cannot be reconstructed from the legacy held record.
+            (session.workdir / "held-session-followup-failures.jsonl").write_text(
+                json.dumps({"retryable": True, "job_id": None}) + "\n")
         elif fault == "progress":
             (session.workdir / "pod-session-progress.json").write_text("{}")
         elif fault == "source":
@@ -553,6 +894,7 @@ def test_held_resume_refuses_unusable_state_or_binding(tmp_path, monkeypatch, fa
             return transport
 
         marker = tmp_path / "forbidden-followup"
+        records_before = pod.record_count
         command = f"printf bad > {shlex.quote(str(marker))}"
         resumed = held_control(session, pod, changed_cli, changed_transport, command=command)
         if fault == "readiness":
@@ -566,6 +908,9 @@ def test_held_resume_refuses_unusable_state_or_binding(tmp_path, monkeypatch, fa
                 return output, handle
             monkeypatch.setattr(resumed, "must", must)
         assert resumed.run_held(command=command) == 1
+        if fault == "unaccounted-followup":
+            assert pod.record_count == records_before
+            assert "prior follow-up charges need reconciliation" in "\n".join(resumed.test_messages)
         assert not marker.exists() and len(pod.launches) == 1
         assert not pod.terminated and pod.events.count("terminate") == 0
         assert "RECONCILIATION REQUIRED:" in "\n".join(resumed.test_messages)
@@ -879,7 +1224,11 @@ def test_transient_detached_poll_failure_retains_only_recoverable_followup(tmp_p
             inject(resumed, "follow-up")
             assert resumed.run_held(command="printf followup") == 1
             assert (session.workdir / "held-session.json").exists()
-            assert json.loads((session.workdir / "held-session.json").read_text())["status"] == "held"
+            held = json.loads((session.workdir / "held-session.json").read_text())
+            assert held["status"] == "held"
+            assert held["operation"]["id"] == injected[0]
+            assert held["operation"]["state"] == "exited" and held["operation"]["exit_code"] == 0
+            assert held["charged_jobs"] == resumed.budget.count == pod.record_count
             assert "RECONCILIATION REQUIRED:" not in "\n".join(resumed.test_messages)
             assert not pod.terminated and pod.events.count("terminate") == 0
             progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
