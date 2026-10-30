@@ -888,6 +888,9 @@ class Session:
         if len(volumes) != 1 or not isinstance(volumes[0].get("id"), str) or not volumes[0]["id"]:
             raise SessionError("claim: requested existing volume identity is missing or ambiguous")
         volume_id = volumes[0]["id"]
+        expected_volume_id = getattr(self.args, "storage_volume_id", None)
+        if expected_volume_id is not None and volume_id != expected_volume_id:
+            raise SessionError("claim: existing volume ID does not match the expected storage volume ID")
         pods = [v for v in listing(["list", "--json"]) if v.get("id") == self.pod_id]
         if len(pods) != 1:
             raise SessionError("claim: exact pod legacy observation is missing or ambiguous")
@@ -1867,6 +1870,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"the single C0 datacenter (must be {DATACENTER})")
     p.add_argument("--storage-name", default=STORAGE_NAME,
                    help=f"existing RunPod network volume (must be {STORAGE_NAME})")
+    p.add_argument("--storage-volume-id", help="require the uniquely observed existing network volume to have this ID")
     p.add_argument("--gpus", default=",".join(DEFAULT_GPUS), type=lambda s: [g.strip() for g in s.split(",") if g.strip()],
                    help="GPU names in order of preference (default: %(default)s)")
     p.add_argument("--sources-dir", required=True, help="directory holding runpod-python astrid-runtime runpod-lifecycle VibeComfy")

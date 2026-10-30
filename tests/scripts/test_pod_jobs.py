@@ -59,10 +59,12 @@ def make_manifest(root, *, mixed=True, failure=None):
 
 def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, release_status=None,
              missing_storage=False, fail_row_transport=False, single=False, hold=False,
-             configure=None, after_run=None, process_boundary=False):
+             configure=None, after_run=None, process_boundary=False, expected_storage_volume_id=None,
+             observed_storage_volume_id="fixture-volume"):
     pod = LoopbackPod(tmp_path / "pod", ps, monkeypatch, sanity_fail=failure == "sanity",
                       runtime_fail=failure == "runtime",
-                      corrupt_download="generated.png" if failure == "hash" else None)
+                      corrupt_download="generated.png" if failure == "hash" else None,
+                      volume_id=observed_storage_volume_id)
     try:
         # Model the production Runtime probe's source checks for all transported
         # checkouts and emit stable identity fields across separate sessions.
@@ -114,6 +116,7 @@ def run_jobs(tmp_path, monkeypatch, *, mixed=True, failure=None, budget=None, re
         args = ps.build_parser().parse_args([
             "--datacenters", ps.DATACENTER, "--storage-name", ps.STORAGE_NAME, "--sources-dir", str(pod.sources), "--jobs", str(manifest),
             "--workdir", str(tmp_path / "session"), "--token-dir", str(tmp_path / "tokens"), "--poll-interval", ".01"]
+            + (["--storage-volume-id", expected_storage_volume_id] if expected_storage_volume_id is not None else [])
             + (["--hold-on-row-failure"] if hold else []))
         messages = []
         session_holder = {}
@@ -492,6 +495,27 @@ def test_two_job_cpu_loopback_packets_progress_budget_and_release(tmp_path, monk
     comparison = ps.probe_video(clip / "outputs/side-by-side.mp4")
     assert comparison["frames"] == 216 and comparison["width"] > comparison["height"]
     assert not list((tmp_path / "tokens").glob("*.token"))
+
+
+def test_expected_storage_volume_id_match_is_accepted(tmp_path, monkeypatch):
+    session, pod, code, messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, expected_storage_volume_id="fixture-volume")
+    assert code == 0, "\n".join(messages)
+    assert session.state["storage"]["volume_id"] == "fixture-volume"
+    assert ("POST", "/uploads") in pod.requests
+    assert_release_verified(session, pod)
+
+
+def test_expected_storage_volume_id_mismatch_fails_closed_before_upload_and_releases(tmp_path, monkeypatch):
+    session, pod, code, messages, _manifest, _document = run_jobs(
+        tmp_path, monkeypatch, mixed=False, expected_storage_volume_id="expected-volume",
+        observed_storage_volume_id="fixture-volume")
+    assert code == 1
+    assert any("does not match the expected storage volume ID" in message for message in messages)
+    assert ("POST", "/uploads") not in pod.requests
+    assert not pod.setup_log.exists()
+    assert [record["step"] for record in session.records] == ["claim", "release"]
+    assert_release_verified(session, pod)
 
 
 @pytest.mark.parametrize("failure", ["png", "json", "hash", "command", "sanity", "runtime"])

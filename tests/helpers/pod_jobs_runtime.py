@@ -88,8 +88,10 @@ else:
 
 
 class LoopbackPod:
-    def __init__(self, root, module, monkeypatch, *, sanity_fail=False, runtime_fail=False, corrupt_download=None):
+    def __init__(self, root, module, monkeypatch, *, sanity_fail=False, runtime_fail=False, corrupt_download=None,
+                 volume_id="fixture-volume"):
         self.root, self.module = Path(root), module
+        self.volume_id = volume_id
         self.events, self.requests, self.downloads = [], [], []
         self.terminated = False
         self.corrupt_download = corrupt_download
@@ -211,7 +213,7 @@ class LoopbackPod:
         if operation == "mounts":
             nonce = argv[argv.index("--nonce") + 1]
             return 0, json.dumps({"schema":"runpod.provider-mounts.v1", "pod_id":"fakepod134", "nonce":nonce,
-                "volume_mounts":[{"volume_id":"fixture-volume", "volume_type":"NETWORK_VOLUME", "mount_path":self.module.CACHE_MOUNT,"read_only":False}],
+                "volume_mounts":[{"volume_id":self.volume_id, "volume_type":"NETWORK_VOLUME", "mount_path":self.module.CACHE_MOUNT,"read_only":False}],
                 "legacy_evidence":{"present":False,"valid":True,"conflict":False}}), ""
         if operation == "terminate":
             assert argv[1] == "fakepod134"
@@ -219,10 +221,10 @@ class LoopbackPod:
             return 0, "{}", ""
         if operation == "volumes":
             assert argv == ["volumes", "ls", "--json"]
-            return 0, json.dumps([{"id":"fixture-volume", "name":self.module.STORAGE_NAME,
+            return 0, json.dumps([{"id":self.volume_id, "name":self.module.STORAGE_NAME,
                                    "dataCenterId":self.module.DATACENTER}]), ""
         if operation == "list":
-            return 0, "[]" if self.terminated else json.dumps([{"id":"fakepod134", "network_volume_id":"fixture-volume", "network_volume_evidence": {"present":True,"valid":True,"conflict":False}}]), ""
+            return 0, "[]" if self.terminated else json.dumps([{"id":"fakepod134", "network_volume_id":self.volume_id, "network_volume_evidence": {"present":True,"valid":True,"conflict":False}}]), ""
         raise AssertionError(argv)
 
     def http_status(self, pod_id):
@@ -263,7 +265,7 @@ class LoopbackPod:
                 parts = shlex.split(command)
                 if len(parts) == 4 and parts[:2] == ["python3", "-c"] and "def storage_probe(" in parts[2]:
                     request = json.loads(base64.b64decode(parts[3]))
-                    assert request["pod_id"] == pod_id and request["volume_id"] == "fixture-volume"
+                    assert request["pod_id"] == pod_id and request["volume_id"] == owner.volume_id
                     assert request["mount"] == owner.module.CACHE_MOUNT
                     assert request["model_cache_root"] == owner.module.MODEL_CACHE_ROOT
                     assert request["engine_root"] == owner.module.ENGINE_ROOT
