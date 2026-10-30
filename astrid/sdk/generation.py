@@ -690,17 +690,39 @@ class GenerationFacade:
     def _resolve_public_entry(*, entry: str, model: str | None,
                               mode: str | None, modality: str,
                               inputs: Mapping[str, Any], registry: Any):
-        from astrid.core.generation.entries import resolve_entry_inputs
+        from astrid.core.generation.entries import describe_entry, resolve_entry_inputs, validate_inputs
 
         if model is not None and model != entry:
             raise CapabilityValidationError("model and entry select different generation entries")
         try:
-            description, values = resolve_entry_inputs(
-                entry, dict(inputs), mode=mode, kind=modality, registry=registry,
-            )
+            description = describe_entry(entry, mode=mode, registry=registry)
+            ports = {port["name"]: port for port in description["inputs"]}
+            producer = (description.get("action") == "h3_av.transform"
+                        and all(ports.get(name, {}).get("file_custody") == "producer_local"
+                                for name in ("request", "asset_map")))
+            if producer:
+                # The H3 admission adapter alone reads these owner controls.
+                # Keep its explicit producer boundary while validating each
+                # declared control's type, without changing execution metadata.
+                from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS
+                controls = {key: value for key, value in inputs.items() if key in PUBLIC_CONTROLS}
+                description, values = resolve_entry_inputs(
+                    entry, {key: value for key, value in inputs.items() if key not in PUBLIC_CONTROLS},
+                    mode=mode, kind=modality, registry=registry,
+                )
+                control_schema = {**description, "inputs": [
+                    {**port, **({"type": "object"} if port["name"] in {"execution_request", "cleanup_receipt"}
+                                and isinstance(controls.get(port["name"]), Mapping) else
+                               {"file_custody": "producer_local"} if port["type"] == "file" else {})}
+                    for port in description["inputs"] if port["name"] in PUBLIC_CONTROLS]}
+                values.update(validate_inputs(control_schema, controls, required=False))
+            else:
+                description, values = resolve_entry_inputs(
+                    entry, dict(inputs), mode=mode, kind=modality, registry=registry,
+                )
         except (ValueError, KeyError) as exc:
             raise CapabilityValidationError(str(exc)) from exc
-        if description.get("action"):
+        if description.get("action") and (not producer or description.get("runtime_parent_required")):
             raise CapabilityPreconditionError(
                 "action-backed generation requires a Runtime-admitted parent; "
                 "the tracked parent interface is not yet available"
@@ -896,6 +918,8 @@ class GenerationFacade:
         out: Path | str | None = None,
         project: str | None = None,
         client: Any | None = None,
+        recovery_path: Path | str | None = None,
+        resume: bool = False,
         project_root: str | Path | None = None,
         extra_pack_roots: tuple[str, ...] = (),
         banodoco_config: Any | None = None,
@@ -914,47 +938,50 @@ class GenerationFacade:
                        (("request", request), ("asset_map", asset_map)) if value is not None})
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
+        action_entry = None
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
             )
-            if model is not None and model != entry:
-                raise CapabilityValidationError("model and entry select different generation entries")
-            # Action entries have no public execution route until the tracked
-            # parent adapter is available. Resolve them through the same entry
-            # contract as the CLI, then stop before any target or Runtime setup.
-            from astrid.core.generation.entries import describe_entry, resolve_entry_inputs
-            try:
-                entry_metadata = describe_entry(entry, mode=mode, registry=registry)
-            except (ValueError, KeyError) as exc:
-                raise CapabilityValidationError(str(exc)) from exc
-            if entry_metadata.get("action"):
-                try:
-                    resolve_entry_inputs(
-                        entry, dict(inputs), mode=mode, kind="video", registry=registry,
-                    )
-                except (ValueError, KeyError) as exc:
-                    raise CapabilityValidationError(str(exc)) from exc
-                raise CapabilityPreconditionError(
-                    "action-backed generation requires a Runtime-admitted parent; "
-                    "the tracked parent interface is not yet available"
-                )
             description, inputs = self._resolve_public_entry(
                 entry=entry, model=model, mode=mode, modality="video",
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
+            action_entry = description if description.get("action") else None
             if description["source"] == "workflow" and target is None:
                 target = "auto"
         elif model is not None:
             from astrid.core.generation.entries import find_entry
             manifest = find_entry(model)
             if manifest is not None and "action" in manifest:
-                self._validate_action_entry(manifest, modality="video", mode=mode, inputs=inputs)
-                raise CapabilityPreconditionError(
-                    "action-backed generation requires a Runtime-admitted parent; "
-                    "the tracked parent interface is not yet available"
+                registry = sdk_module._load_model_registry(
+                    project_root=project_root, extra_pack_roots=extra_pack_roots,
                 )
+                action_entry, inputs = self._resolve_public_entry(
+                    entry=model, model=model, mode=mode, modality="video", inputs=inputs, registry=registry,
+                )
+        if action_entry is not None:
+            if action_entry["action"] != "h3_av.transform":
+                raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
+            if target not in (None, "auto", "managed") or execution not in (None, "local"):
+                raise CapabilityValidationError("tracked H3 requires the default Runtime target")
+            if not inputs.get("request") or not inputs.get("asset_map"):
+                raise CapabilityValidationError("H3 requires request and asset_map")
+            controls = dict(kind="action", inputs=inputs, project=project, out=out,
+                project_root=project_root, extra_pack_roots=extra_pack_roots,
+                banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
+                dry_run=dry_run, wait=True, read_managed_outputs=True,
+                recovery_path=recovery_path, resume=resume)
+            if client is None and not dry_run:
+                # Reuse the ordinary owner launcher connection; the admitted
+                # parent, including prepared custody, stays in this context.
+                with sdk_module.AstridClient.open_from_launcher(start_pack_host=False) as owner:
+                    return owner.invoke_result("h3_av.transform", **controls)
+            invoke = client.invoke_result if client is not None else sdk_module.invoke_result
+            return invoke("h3_av.transform", **controls)
+        if recovery_path is not None or resume:
+            raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)
         if registry is None:
             registry = sdk_module._load_model_registry(

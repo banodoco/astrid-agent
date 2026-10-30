@@ -86,25 +86,56 @@ def test_workflow_nonstandard_input_binding_alias_default_and_range(monkeypatch)
         entries.resolve_entry_inputs('custom', {'texture_amount': 2}, registry=registry)
 
 
-def test_h3_managed_ports_describe_and_resolve_without_execution(monkeypatch):
+def test_h3_producer_local_ports_describe_and_resolve_without_execution(monkeypatch, capsys):
     def forbidden(*args, **kwargs):
         pytest.fail('execution/probe operation during entry discovery')
     monkeypatch.setattr(entries, 'target_schema', forbidden)
     monkeypatch.setattr(entries, '_ready_entries_for', forbidden)
     monkeypatch.setattr(entries, '_load_entry_workflow', forbidden)
     from astrid.sdk.generation import GenerationFacade
+    from astrid.sdk.client import AstridClient
     monkeypatch.setattr(GenerationFacade, '_invoke', forbidden)
+    monkeypatch.setattr(AstridClient, 'open_from_launcher', forbidden)
     description = entries.describe_entry('h3')
     assert description['mode'] == 'transform' and description['action'] == 'h3_av.transform'
-    assert [(row['name'], row['type'], row['required']) for row in description['inputs']] == [
-        ('request', 'file', True), ('asset_map', 'file', True)]
-    digest = 'sha256:' + 'a' * 64
-    values = {'request': {'digest': digest}, 'asset_map': digest}
+    ports = {row['name']: row for row in description['inputs']}
+    local = {'request', 'asset_map'}
+    assert {name for name, port in ports.items() if port.get('file_custody') == 'producer_local'} == local
+    assert all(ports[name]['type'] == 'file' for name in local)
+    managed = {'execution_request', 'worker_qualification', 'prepared_worker', 'cleanup_receipt'}
+    assert all(ports[name]['type'] == 'file' and 'file_custody' not in ports[name] for name in managed)
+    assert ports['request']['required'] and not ports['asset_map']['required']
+    from astrid import console
+    assert console.main(['generate', 'describe', '--entry', 'h3', '--json']) == 0
+    assert json.loads(capsys.readouterr().out) == description
+    values = {'request': '/tmp/request.json', 'asset_map': '/tmp/assets.json'}
     assert entries.resolve_entry_inputs('h3', values)[1] == values
-    with pytest.raises(ValueError, match='managed Runtime object'):
-        entries.resolve_entry_inputs('h3', {**values, 'request': '/tmp/request.json'})
+    with pytest.raises(ValueError, match='requires a string'):
+        entries.resolve_entry_inputs('h3', {**values, 'request': {'digest': 'sha256:' + 'a' * 64}})
     with pytest.raises(ValueError, match='unsupported entry inputs'):
         entries.resolve_entry_inputs('h3', {**values, 'prompt': 'p'})
+    digest = 'sha256:' + 'a' * 64
+    for name in managed:
+        assert entries.resolve_entry_inputs('h3', {**values, name: {'digest': digest}})[1][name] == {'digest': digest}
+        with pytest.raises(ValueError, match='managed Runtime object'):
+            entries.resolve_entry_inputs('h3', {**values, name: '/tmp/local.json'})
+
+
+def test_other_action_file_ports_still_require_managed_descriptors(monkeypatch):
+    action = {'id': 'other', 'kind': 'video', 'modes': ['transform'], 'action': 'example.run',
+              'inputs': [{'name': 'file', 'type': 'file', 'required': True}]}
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'action_entries', lambda: [action])
+    monkeypatch.setattr(entries, '_ready_ids', lambda: set())
+    registry = ModelRegistry([])
+    digest = 'sha256:' + 'a' * 64
+    for value in (digest, {'digest': digest}):
+        assert entries.resolve_entry_inputs('other', {'file': value}, registry=registry)[1] == {'file': value}
+    with pytest.raises(ValueError, match='managed Runtime object'):
+        entries.resolve_entry_inputs('other', {'file': '/tmp/local.json'}, registry=registry)
+    for value in ('sha256:malformed', {'digest': 'sha256:malformed'}, {'digest': digest, 'object_id': 'sha256:' + 'b' * 64}):
+        with pytest.raises(ValueError, match='managed Runtime object'):
+            entries.resolve_entry_inputs('other', {'file': value}, registry=registry)
 
 
 def test_workflow_legacy_translation_is_shared_and_mode_specific(monkeypatch):

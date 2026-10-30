@@ -102,6 +102,7 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
             continue
         names = declaration.get("inputs")
         ports = {port.name: port for port in capability.inputs}
+        local_files = declaration.get("producer_local_inputs", [])
         if (not isinstance(declaration.get("id"), str) or not declaration["id"]
                 or declaration.get("kind") not in {"image", "video", "audio"}
                 or not isinstance(declaration.get("modes"), list)
@@ -109,13 +110,18 @@ def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:
                 or not all(isinstance(mode, str) and mode for mode in declaration["modes"])
                 or not isinstance(names, list) or not names
                 or any(not isinstance(name, str) or name not in ports for name in names)
-                or len(names) != len(set(names))):
+                or len(names) != len(set(names))
+                or not isinstance(local_files, list)
+                or any(not isinstance(name, str) or name not in names
+                       or _input_type(ports[name].type) != "file" for name in local_files)
+                or len(local_files) != len(set(local_files))):
             raise ValueError(f"invalid generation entry declaration on {capability.id!r}")
         rows.append({"id": declaration["id"], "kind": declaration["kind"],
                      "modes": list(declaration["modes"]), "action": capability.id,
                      "inputs": [{"name": ports[name].name, "type": ports[name].type,
                                  "required": ports[name].required,
                                  "description": ports[name].description,
+                                 **({"file_custody": "producer_local"} if name in local_files else {}),
                                  **_declared_default({"type": ports[name].type,
                                      "default": getattr(ports[name], "default", None)})} for name in names],
                      "requirements": declaration.get("requirements"),
@@ -338,9 +344,24 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
         kind = _input_type(port.get('type'))
         if value is None:
             raise ValueError(f'entry input {name!r} must not be null')
-        if kind == 'file' and (description.get('source') in {'action', 'action-entry'} or 'action' in description):
+        if (kind == 'file' and port.get('file_custody') != 'producer_local'
+                and (description.get('source') in {'action', 'action-entry'} or 'action' in description)):
             from astrid.core.execution.managed_inputs import managed_file_digest
             managed_file_digest(value, name)
+        elif kind == 'file' and port.get('file_custody') == 'producer_local':
+            if isinstance(value, Path):
+                value = str(value)
+            if not isinstance(value, str):
+                raise ValueError(f'entry input {name!r} requires a string producer-local file path')
+            from astrid.core.execution.managed_inputs import managed_file_digest
+            try:
+                managed_file_digest(value, name)
+            except ValueError:
+                managed = value.startswith('sha256:')
+            else:
+                managed = True
+            if managed:
+                raise ValueError(f'entry input {name!r} requires a string producer-local file path, not a managed digest')
         elif kind in {'string', 'file'}:
             if not isinstance(value, str):
                 raise ValueError(f'entry input {name!r} requires a string')
@@ -408,7 +429,27 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in dimensions):
             raise ValueError('width and height require positive integers')
         values['size' if 'size' in names else 'resolution'] = f'{dimensions[0]}x{dimensions[1]}'
-    return description, validate_inputs(description, values)
+    validation = description
+    ports = {port['name']: port for port in description['inputs']}
+    primary = ('request', 'asset_map')
+    if (description.get('action') == 'h3_av.transform'
+            and all(ports.get(name, {}).get('file_custody') == 'producer_local'
+                    for name in primary)):
+        # Older H3 callers supplied managed objects. Validate a complete managed
+        # pair at its original boundary, without reinterpreting either object as
+        # a producer-local path or admitting it through the new producer route.
+        from astrid.core.execution.managed_inputs import managed_file_digest
+        try:
+            for name in primary:
+                managed_file_digest(values.get(name), name)
+        except ValueError:
+            pass
+        else:
+            validation = {**description, 'inputs': [
+                {key: value for key, value in port.items() if key != 'file_custody'}
+                if port['name'] in primary else port for port in description['inputs']]}
+            description = {**description, 'runtime_parent_required': True}
+    return description, validate_inputs(validation, values)
 
 
 def infer_kind(workflow: Any) -> str:

@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import shutil
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from os import environ
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +20,9 @@ from typing import Any, Mapping
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
-from astrid.core.contracts.errors import AstridError
+from astrid.core._shared.result_manifest import write_json_atomic
+from astrid.core.contracts.errors import AstridError, coerce_astrid_error
+from astrid.core.execution.terminal_result import serialize_terminal_result
 from astrid.core.env_vars import ASTRID_TASK_RUN_ID
 from astrid.core.execution.worker_qualification import (
     WorkerQualificationError,
@@ -27,6 +31,7 @@ from astrid.core.execution.worker_qualification import (
     qualification_digest,
 )
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.packs.h3_av.actions.compose.run import _video_media_type
 from astrid.packs.h3_av.actions.transform.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.actions.transform.receipt import (
     attest_runtime_managed_composition,
@@ -212,7 +217,7 @@ def _managed_rows(result: Any, name: str) -> list[Mapping[str, Any]]:
             if isinstance(producer, Mapping)
             else row.get("producer_output_id")
         )
-        identity = producer_id or row.get("object_id") or row.get("digest") or row.get("content_hash")
+        identity = row.get("association_id") or producer_id or row.get("object_id") or row.get("digest") or row.get("content_hash")
         key = (str(identity), str(_output_role(row) or row.get("name") or row.get("output_port") or ""))
         if key not in seen:
             seen.add(key)
@@ -349,10 +354,17 @@ def _retrieve_generation_outputs(
 
     rows = _managed_rows(result, "vibecomfy_run")
     by_role: dict[str, list[Mapping[str, Any]]] = {"video": [], "audio": []}
-    for row in rows:
-        role = _output_role(row)
-        if role is not None:
-            by_role[role].append(row)
+    if isinstance(client, ManagedParentClient):
+        by_role["video"] = client.selected_raw(rows)
+        for row in rows:
+            producer = row.get("producer", {})
+            if isinstance(producer, Mapping) and producer.get("output_port") in {"audio", "generated_audio", "generated_audios", "SaveAudio"}:
+                by_role["audio"].append(row)
+    else:
+        for row in rows:
+            role = _output_role(row)
+            if role is not None:
+                by_role[role].append(row)
     missing = [role for role in ("video", "audio") if not by_role[role]]
     if missing:
         raise AstridError(
@@ -392,6 +404,8 @@ def _retrieve_muxed_generation(
     """Retrieve the native graph's one full-timeline muxed AV result."""
 
     rows = _managed_rows(result, "vibecomfy_run")
+    if isinstance(client, ManagedParentClient):
+        rows = client.selected_raw(rows)
     if len(rows) != 1:
         raise AstridError(
             "managed native H3 generation must return exactly one muxed AV output; "
@@ -599,6 +613,97 @@ def _write_provenance_preparation(root: Path, preparation: Mapping[str, Any], pr
     return path
 
 
+_LEASE_CATEGORIES = frozenset({
+    "lease_loss_unclassified", "task_read_exception", "lease_metadata_invalid",
+    "lease_expired", "task_state_changed", "attempt_changed", "fence_changed",
+    "heartbeat_exception",
+})
+
+
+def _bounded_lease_diagnostic(value: Any) -> dict[str, Any] | None:
+    """Copy only the host's bounded lease evidence, never its message or payload."""
+    if not isinstance(value, Mapping) or type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
+        return None
+    category = value.get("category")
+    if not isinstance(category, str) or category not in _LEASE_CATEGORIES:
+        return None
+    result: dict[str, Any] = {"schema_version": 1, "category": category}
+
+    def timestamp(item: Any, *, utc: bool = False) -> str | None:
+        if not isinstance(item, str) or len(item) > 96:
+            return None
+        try:
+            parsed = datetime.fromisoformat(item)
+            offset = parsed.utcoffset()
+            if offset is None or (utc and offset != timedelta(0)):
+                return None
+        except ValueError:
+            return None
+        return item
+
+    for key in ("observed_at_utc", "last_successful_heartbeat_at_utc", "last_successful_heartbeat_expiry"):
+        if key in value and value[key] is None and key.startswith("last_successful_"):
+            result[key] = None
+        elif (safe := timestamp(value.get(key), utc=key.endswith("_at_utc"))) is not None:
+            result[key] = safe
+    for key, limit, pattern in (
+        ("exception_type", 64, r"[A-Za-z_][A-Za-z0-9_]*"),
+        ("runtime_code", 64, r"[A-Za-z0-9._-]+"),
+        ("request_id", 96, r"[A-Za-z0-9._:-]+"),
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and len(item) <= limit and re.fullmatch(pattern, item):
+            result[key] = item
+    observed = value.get("observed")
+    if isinstance(observed, Mapping):
+        safe_observed: dict[str, str] = {}
+        for key, limit, pattern in (
+            ("state", 48, r"[A-Za-z_]+"),
+            ("attempt_id", 96, r"[A-Za-z0-9._:-]+"),
+            ("fence", 96, r"[0-9]+"),
+        ):
+            item = observed.get(key)
+            if isinstance(item, str) and len(item) <= limit and re.fullmatch(pattern, item):
+                safe_observed[key] = item
+        if (safe := timestamp(observed.get("lease_expires_at"))) is not None:
+            safe_observed["lease_expires_at"] = safe
+        if safe_observed:
+            result["observed"] = safe_observed
+    return result
+
+
+def _validation_failure(result: InvocationResult, *, capability_id: str = "vibecomfy.validate") -> AstridError:
+    # Runtime's failed task carries the host diagnostic in result.error.
+    # The SDK also embeds that object in its formatted error details: remove
+    # this untrusted subtree before formatting, even when it is malformed.
+    raw = result.raw_result
+    task = raw.get("task") if isinstance(raw, Mapping) else None
+    settled = task.get("result") if isinstance(task, Mapping) else None
+    failure = settled.get("error") if isinstance(settled, Mapping) else None
+    diagnostic = _bounded_lease_diagnostic(failure.get("diagnostic")) if isinstance(failure, Mapping) else None
+    error = result.error
+    has_diagnostic = isinstance(failure, Mapping) and "diagnostic" in failure
+    if isinstance(error, Mapping):
+        details = error.get("details")
+        error_result = details.get("result") if isinstance(details, Mapping) else None
+        inner = error_result.get("error") if isinstance(error_result, Mapping) else None
+        has_diagnostic = has_diagnostic or (isinstance(inner, Mapping) and "diagnostic" in inner)
+        if diagnostic is None and isinstance(inner, Mapping):
+            diagnostic = _bounded_lease_diagnostic(inner.get("diagnostic"))
+    if has_diagnostic:
+        # A settled failure can contain arbitrary input and exception data in
+        # other fields too. Keep its failure state without formatting that data.
+        code = error.get("code") if isinstance(error, Mapping) else None
+        if not isinstance(code, str) or code not in {"task_failed", "task_cancelled", "task_cancel_requested"}:
+            code = "task_failed"
+        error = {"code": code, "message": "validation task failed"}
+    exc = AstridError(f"{capability_id} failed: {error}")
+    if diagnostic is not None:
+        exc.lease_diagnostic = diagnostic
+    return exc
+
+
+
 def _invoke(
     client: Any,
     capability_id: str,
@@ -625,7 +730,13 @@ def _invoke(
         read_managed_outputs=True,
     )
     if not result.ok:
-        raise AstridError(f"{capability_id} failed: {result.error}")
+        exc = _validation_failure(result, capability_id=capability_id)
+        exc.h3_child_correlation = {
+            key: _safe_correlation(getattr(result, attribute, None))
+            for key, attribute in (("run_id", "kernel_run_id"), ("task_id", "kernel_task_id"),
+                                   ("attempt_id", "kernel_attempt_id"))
+        }
+        raise exc
     return result
 
 
@@ -641,6 +752,8 @@ def _invoke_workflow(
     recovery_path: Path,
     resume: bool = False,
 ) -> InvocationResult:
+    if isinstance(client, ManagedParentClient):
+        return _invoke(client, "vibecomfy.run", inputs=inputs, out=out, project=project)
     result = generate.workflow(
         client=client,
         placement=placement,
@@ -657,7 +770,13 @@ def _invoke_workflow(
         poll_seconds=1.0,
     )
     if not result.ok:
-        raise AstridError(f"vibecomfy.run failed: {result.error}")
+        exc = _validation_failure(result, capability_id="vibecomfy.run")
+        exc.h3_child_correlation = {
+            key: _safe_correlation(getattr(result, attribute, None))
+            for key, attribute in (("run_id", "kernel_run_id"), ("task_id", "kernel_task_id"),
+                                   ("attempt_id", "kernel_attempt_id"))
+        }
+        raise exc
     return result
 
 
@@ -1002,7 +1121,7 @@ def _observe_legacy_saved_result(
     return observed
 
 
-def _invoke_stage(
+def _invoke_stage_impl(
     client: Any,
     capability_id: str,
     *,
@@ -1026,6 +1145,18 @@ def _invoke_stage(
     })
     previous = journal.latest(phase)
     receipt_path = _recovery_receipt_path(saved_result, journal)
+    if resume and previous is not None and isinstance(client, ManagedParentClient):
+        if previous.get("input_digest") != input_digest or previous.get("capability_id") != capability_id:
+            raise AstridError(f"cannot resume {phase}: journaled child inputs changed")
+        # The same stable child key is rebound by the authenticated host and
+        # Runtime within this exact parent attempt, including unknown replies.
+        result = _invoke(client, capability_id, inputs=inputs, out=out, project=project)
+        _assert_recorded_identity(result, previous, phase=phase)
+        _save_invocation_result(saved_result, result, input_digest=input_digest)
+        journal.record(phase, "reused", capability_id=capability_id, input_digest=input_digest,
+                       task_id=result.kernel_task_id, run_id=result.kernel_run_id,
+                       attempt_id=result.kernel_attempt_id)
+        return result
     if resume and receipt_path.is_file():
         if previous is not None:
             recorded_digest = previous.get("input_digest")
@@ -1107,10 +1238,14 @@ def _invoke_stage(
             recovery_path=receipt_path,
         )
     except Exception as exc:
-        journal.record(
-            phase, "uncertain", capability_id=capability_id,
-            input_digest=input_digest, error=type(exc).__name__, message=str(exc)[:1000],
-        )
+        try:
+            journal.record(
+                phase, "uncertain", capability_id=capability_id,
+                input_digest=input_digest, error=type(exc).__name__, message=str(exc)[:1000],
+            )
+            exc.h3_journal_status = "succeeded"
+        except Exception:
+            exc.h3_journal_status = "failed"
         raise
     _save_invocation_result(saved_result, result, input_digest=input_digest)
     journal.record(
@@ -1125,12 +1260,27 @@ def _invoke_stage(
     return result
 
 
+_H3_STAGES = frozenset({"prepare", "compile", "validate", "compose", "verify",
+                        "cumulative-compose", "cumulative-verify", "finalizer", "run"})
+
+
+def _invoke_stage(*args: Any, **kwargs: Any) -> InvocationResult:
+    # Also cover errors in the resume path and failures before invocation.
+    try:
+        return _invoke_stage_impl(*args, **kwargs)
+    except Exception as exc:
+        phase = kwargs.get("phase")
+        exc.h3_stage = phase if phase in _H3_STAGES else "unavailable"
+        raise
+
+
+
 def _stable_digest(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _invoke_canonical_run(
+def _invoke_canonical_run_impl(
     client: Any,
     *,
     inputs: Mapping[str, Any],
@@ -1186,6 +1336,19 @@ def _invoke_canonical_run(
         raise AstridError(str(exc)) from exc
 
     receipt_path = _recovery_receipt_path(saved_result, journal)
+    if resume and prior_run is not None and isinstance(client, ManagedParentClient):
+        if prior_run.get("admission_digest") != admission_digest:
+            raise AstridError("cannot resume canonical run: journaled admission identity changed")
+        result = _invoke_workflow(client, placement=workflow_placement, inputs=inputs, out=out,
+            project=project, execution_request=execution_request, idempotency_context=idempotency_context,
+            recovery_path=receipt_path, resume=True)
+        _assert_recorded_identity(result, prior_run, phase="canonical run")
+        _save_invocation_result(saved_result, result, input_digest=run_input_digest)
+        journal.set_admission_phase("settled")
+        journal.record("run", "reused", task_id=result.kernel_task_id, run_id=result.kernel_run_id,
+                       attempt_id=result.kernel_attempt_id, admission_digest=admission_digest,
+                       workflow_route=workflow_route)
+        return result
     if resume and receipt_path.is_file():
         if prior_run is None:
             raise AstridError("cannot resume canonical run: SDK receipt has no matching journal route")
@@ -1276,11 +1439,15 @@ def _invoke_canonical_run(
             raise AstridError("canonical run result is missing task/run/attempt identity")
         _save_invocation_result(saved_result, result, input_digest=run_input_digest)
     except Exception as exc:
-        journal.set_admission_phase("uncertain")
-        journal.record(
-            "run", "uncertain", admission_digest=admission_digest, workflow_route=workflow_route,
-            error=type(exc).__name__, message=str(exc)[:1000],
-        )
+        try:
+            journal.set_admission_phase("uncertain")
+            journal.record(
+                "run", "uncertain", admission_digest=admission_digest, workflow_route=workflow_route,
+                error=type(exc).__name__, message=str(exc)[:1000],
+            )
+            exc.h3_journal_status = "succeeded"
+        except Exception:
+            exc.h3_journal_status = "failed"
         raise
     journal.set_admission_phase("settled")
     journal.record(
@@ -1288,6 +1455,15 @@ def _invoke_canonical_run(
         attempt_id=identity[2], admission_digest=admission_digest, workflow_route=workflow_route,
     )
     return result
+
+
+def _invoke_canonical_run(*args: Any, **kwargs: Any) -> InvocationResult:
+    try:
+        return _invoke_canonical_run_impl(*args, **kwargs)
+    except Exception as exc:
+        exc.h3_stage = "run"
+        raise
+
 
 
 def _generation_intent(compilation: Mapping[str, Any]) -> dict[str, Any]:
@@ -1374,10 +1550,68 @@ def _finalizer_generation_intent(
     }
 
 
-def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
+def _prepare_transform_input(
+    client: Any, *, args: argparse.Namespace, root: Path, request: Any,
+    raw_request: Mapping[str, Any], asset_map: Mapping[str, str],
+    journal: OperationJournal, idempotency_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    managed_client = getattr(args, "_managed_client", None)
+    staging = root / "staged-inputs"
+    staging.mkdir(parents=True, exist_ok=True)
+    if managed_client is not None:
+        bundle_path = args._managed_bundle
+        request_descriptor = args._managed_roots["request"]
+        bundle_descriptor = args._managed_roots["input_bundle"]
+    else:
+        bundle_path = build_input_bundle(
+            request, asset_map, staging / "h3-inputs.zip"
+        )
+        request_path = staging / "request.json"
+        request_path.write_text(json.dumps(raw_request, sort_keys=True), encoding="utf-8")
+        request_descriptor = _import_runtime_file(
+            client, project=args.project, path=request_path, filename=request_path.name
+        )
+        bundle_descriptor = _import_runtime_file(
+            client, project=args.project, path=bundle_path, filename=bundle_path.name
+        )
+    # Freeze the authoritative source from the same verified bytes as the
+    # child inputs. Never open a prepare worker's absolute source path.
+    frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
+    source_inputs = {}
+    source_asset_id = _authoritative_source_asset_id(request)
+    if source_asset_id is not None:
+        source_path = Path(frozen_assets[source_asset_id])
+        source_inputs["source"] = (args._managed_roots["source"] if managed_client is not None else
+            _import_runtime_file(client, project=args.project, path=source_path, filename=source_path.name))
+    prepared = _invoke_stage(
+        client, "h3_av.prepare",
+        inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
+        out=root / "01-prepare", project=args.project,
+        saved_result=root / "01-prepare" / "invocation-result.json",
+        resume=bool(getattr(args, "resume", False)),
+        journal=journal,
+        phase="prepare",
+        idempotency_context=idempotency_context,
+    )
+    preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
+    preparation = _json_mapping(preparation_path)
+    return {name: value for name, value in (
+        ("bundle_descriptor", bundle_descriptor), ("source_inputs", source_inputs),
+        ("preparation_path", preparation_path), ("preparation_row", preparation_row),
+        ("preparation", preparation), ("frozen_assets", frozen_assets),
+    )}
+
+
+def _run_transform_unlocked(
+    args: argparse.Namespace, *, terminal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    terminal = terminal if terminal is not None else {}
+    terminal["execution_not_started"] = True
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    execution_request = _json_mapping(args.execution_request) if args.execution_request else None
+    managed_client = getattr(args, "_managed_client", None)
+    execution_request = (getattr(args, "_admitted_execution_request", None) if managed_client is not None
+                         else _json_mapping(args.execution_request) if args.execution_request else None)
     requested_target = execution_request.get("target") if execution_request else None
     if isinstance(requested_target, Mapping) and requested_target.get("kind") not in (None, "default", "runpod"):
         raise AstridError(UNSUPPORTED_TARGET_MESSAGE)
@@ -1408,8 +1642,10 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
     local_engine = None
+    terminal["enabled"] = placement == "local" or legacy_prepared
     if placement == "local":
-        local_engine = _resolve_local_engine()
+        if managed_client is None:
+            local_engine = _resolve_local_engine()
     elif not legacy_prepared:
         return _run_remote_placement(args)
     prepared_selection = None
@@ -1449,58 +1685,44 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
 
         prepared_selection = load_prepared_worker_selection(args.prepared_worker)
         execution_request = prepared_selection.execution_request(execution_request)
-    cleanup_receipt = _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None
+    admitted_qualification = getattr(args, "_admitted_qualification_digest", None)
+    if managed_client is not None and admitted_qualification is not None:
+        (root / "00-worker-qualification.json").write_text(json.dumps({"schema_version": 1,
+            "status": "accepted", "qualification_digest": admitted_qualification,
+            "target": requested_target}, sort_keys=True) + "\n", encoding="utf-8")
+    cleanup_receipt = (getattr(args, "_admitted_cleanup_receipt", None) if managed_client is not None
+                       else _json_mapping(args.cleanup_receipt) if args.cleanup_receipt else None)
     # The parent orchestrator is launched locally, while its child executor
     # tasks target the already-supervised Runtime/GenericPackHost. Starting a
     # second local pack host here would compete with that existing authority.
-    with AstridClient.open_from_launcher(start_pack_host=False) as client:
+    connection = _client_with_failure_evidence(args, root, terminal)
+    with connection as client:
         raw_request = load_request_document(args.request)
         request = normalize_request(raw_request)
+        terminal["request_digest"] = request.digest
         try:
             journal = OperationJournal(
                 root / "operation-state.json", request_digest=request.digest
             )
         except OperationJournalError as exc:
+            terminal["enabled"] = False
             raise AstridError(f"cannot open H3 operation journal: {exc}") from exc
         if journal.has_history and not getattr(args, "resume", False):
+            terminal["enabled"] = False
             raise AstridError("operation journal already has history; use --resume to continue it")
         journal.record("operation", "started", resume=bool(getattr(args, "resume", False)))
+        terminal["journal"] = journal
         idempotency_context = {"h3_submission_id": journal.submission_id}
-        staging = root / "staged-inputs"
-        staging.mkdir(parents=True, exist_ok=True)
-        bundle_path = build_input_bundle(
-            request, _json_mapping(args.asset_map), staging / "h3-inputs.zip"
+        prepared_input = _prepare_transform_input(
+            client, args=args, root=root, request=request, raw_request=raw_request,
+            asset_map={} if managed_client is not None else _json_mapping(args.asset_map),
+            journal=journal, idempotency_context=idempotency_context,
         )
-        request_path = staging / "request.json"
-        request_path.write_text(json.dumps(raw_request, sort_keys=True), encoding="utf-8")
-        request_descriptor = _import_runtime_file(
-            client, project=args.project, path=request_path, filename=request_path.name
-        )
-        bundle_descriptor = _import_runtime_file(
-            client, project=args.project, path=bundle_path, filename=bundle_path.name
-        )
-        # Freeze the authoritative source from the same verified bytes as the
-        # child inputs. Never open a prepare worker's absolute source path.
-        frozen_assets, _ = materialize_input_bundle(request, bundle_path, staging / "assets")
-        source_inputs = {}
-        source_asset_id = _authoritative_source_asset_id(request)
-        if source_asset_id is not None:
-            source_path = Path(frozen_assets[source_asset_id])
-            source_inputs["source"] = _import_runtime_file(
-                client, project=args.project, path=source_path, filename=source_path.name
-            )
-        prepared = _invoke_stage(
-            client, "h3_av.prepare",
-            inputs={"request": request_descriptor, "input_bundle": bundle_descriptor},
-            out=root / "01-prepare", project=args.project,
-            saved_result=root / "01-prepare" / "invocation-result.json",
-            resume=bool(getattr(args, "resume", False)),
-            journal=journal,
-            phase="prepare",
-            idempotency_context=idempotency_context,
-        )
-        preparation_path, preparation_row = _materialize_output(client, prepared, "preparation", root / "01-prepare", managed_only=True)
-        preparation = _json_mapping(preparation_path)
+        bundle_descriptor = prepared_input["bundle_descriptor"]
+        source_inputs = prepared_input["source_inputs"]
+        preparation_path = prepared_input["preparation_path"]
+        preparation_row = prepared_input["preparation_row"]
+        preparation = prepared_input["preparation"]
         compiled = _invoke_stage(
             client, "h3_av.compile", inputs={
                 "preparation": _descriptor(preparation_row, filename="preparation.json"),
@@ -1516,6 +1738,8 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
         compilation_path, compilation_row = _materialize_output(client, compiled, "compilation", root / "02-compile", managed_only=True)
         managed_assets_path, managed_assets_row = _materialize_output(client, compiled, "managed_assets", root / "02-compile", managed_only=True)
         compilation = _json_mapping(compilation_path)
+        if managed_client is not None:
+            managed_client.verify_compilation(compilation)
         expected_assets_digest = compilation.get("managed_assets", {}).get("sha256")
         actual_assets_digest = hashlib.sha256(managed_assets_path.read_bytes()).hexdigest()
         if expected_assets_digest != actual_assets_digest:
@@ -1606,10 +1830,11 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             generated_outputs = _retrieve_generation_outputs(client, run, root / "04-run")
             generated_path = generated_outputs["video"][0]
             generated_audio_path = generated_outputs["audio"][0]
-            generated_bundle_path = _write_generated_bundle(
-                generated_outputs,
-                root / "04-run" / "retrieved" / "lanpaint-generated-av.zip",
-            )
+            if managed_client is None:
+                generated_bundle_path = _write_generated_bundle(
+                    generated_outputs,
+                    root / "04-run" / "retrieved" / "lanpaint-generated-av.zip",
+                )
         else:
             raise AstridError(f"unsupported H3 output contract: {output_contract!r}")
         journal.record("pullback", "completed")
@@ -1636,22 +1861,38 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
         enriched = dict(preparation)
         enriched["provenance"] = {**provenance, "runtime": runtime_provenance}
         provenance_path.write_text(json.dumps(enriched, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-        preparation_descriptor = _import_runtime_file(
-            client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
-        )
         generated_input_path = generated_bundle_path or generated_path
-        generated_descriptor = _import_runtime_file(
-            client,
-            project=args.project,
-            path=generated_input_path,
-            filename=generated_input_path.name,
-        )
+        if managed_client is not None:
+            # Preserve the actual producer associations in the staged route.
+            # Enriched local provenance is evidence, never a new input grant.
+            preparation_descriptor = _descriptor(preparation_row, filename="preparation.json")
+            raw_row = (muxed_row if output_contract == "muxed_av_full_timeline"
+                       else generated_outputs["video"][1])
+            generated_descriptor = _descriptor(raw_row, filename=generated_path.name)
+        else:
+            preparation_descriptor = _import_runtime_file(
+                client, project=args.project, path=provenance_path, filename="provenance-preparation.json"
+            )
+            generated_descriptor = _import_runtime_file(
+                client, project=args.project, path=generated_input_path, filename=generated_input_path.name
+            )
         composed = _invoke_stage(
             client, "h3_av.compose",
             inputs={
                 "preparation": preparation_descriptor,
                 "input_bundle": bundle_descriptor,
                 "generated": generated_descriptor,
+                **({"compilation": _descriptor(compilation_row, filename="compilation.json"),
+                    "generation_provenance": json.dumps({
+                        "run_id": run.kernel_run_id, "task_id": run.kernel_task_id,
+                        "attempt_id": run.kernel_attempt_id, "output_contract": output_contract,
+                        "generated_outputs": {role: {key: row[key] for key in (
+                            "association_id", "run_id", "task_id", "attempt_id", "object_id", "digest", "size",
+                            "filename", "media_type", "output_port", "ordinal", "group_key", "variant_key", "producer")
+                            if key in row} for role, (_path, row) in generated_outputs.items()},
+                    }, sort_keys=True, separators=(",", ":")),
+                    **({"generated_audio": _descriptor(generated_outputs["audio"][1], filename="generated-audio.media")}
+                       if output_contract == "separate_av_full_timeline" else {})} if managed_client is not None else {}),
                 **source_inputs,
             },
             out=root / "05-compose", project=args.project,
@@ -1663,6 +1904,9 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
         )
         composition_path, composition_row = _materialize_output(client, composed, "composition", root / "05-compose", managed_only=True)
         candidate_path, candidate_row = _materialize_output(client, composed, "candidate", root / "05-compose", managed_only=True)
+        if managed_client is not None:
+            _, enriched_row = _materialize_output(client, composed, "preparation", root / "05-compose", managed_only=True)
+            preparation_descriptor = _descriptor(enriched_row, filename="provenance-preparation.json")
         verified = _invoke_stage(
             client, "h3_av.verify",
             inputs={
@@ -1783,6 +2027,18 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             raw_managed_publication=raw_managed_publication,
             final_managed_publication=final_managed_publication,
         )
+        candidate_digest = "sha256:" + hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        candidate_size = candidate_path.stat().st_size
+        if (candidate_digest != candidate_row["digest"]
+                or (candidate_row.get("size") is not None and candidate_size != candidate_row["size"])):
+            raise AstridError("verified candidate digest or size changed before result publication")
+        if receipt["states"]["candidate_verified"]["status"] != "passed":
+            raise AstridError("operation has no verified composition")
+        terminal["artifacts"] = [{
+            "id": "candidate#0", "name": "candidate", "ordinal": 0,
+            "digest": candidate_digest, "media_type": _video_media_type(candidate_path),
+            "size": candidate_size, "path": str(candidate_path), "role": "result",
+        }]
         final_receipt_path = write_final_receipt(root / "08-final-receipt.json", receipt)
         journal.record(
             "operation",
@@ -1800,6 +2056,7 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
         "verification": str(verification_path),
         "final_receipt": str(final_receipt_path),
         "final_receipt_status": receipt["overall_status"],
+        "verified_candidate": str(final_path) if final_managed_publication is not None else None,
     }
 
 
@@ -1823,6 +2080,184 @@ def _operation_directory_writer_lock(root: Path):
         os.close(descriptor)
 
 
+def _safe_correlation(value: Any) -> str:
+    if isinstance(value, str) and len(value) <= 96 and re.fullmatch(r"[A-Za-z0-9._:-]+", value):
+        return value
+    return "unavailable"
+
+
+
+_COMFY_NODE_CLASSES = frozenset({
+    "BasicGuider", "BasicScheduler", "CLIPLoader", "ComfyMathExpression",
+    "KSamplerSelect", "LoadAudio", "LoadImage", "LoraLoaderModelOnly",
+    "MiniMaxH3AVExtensionController", "MiniMaxH3AVSourceAudioModeParam",
+    "MiniMaxH3AVStartModeParam", "MiniMaxH3AudioVAECompatibility",
+    "MiniMaxH3CropTo32", "MiniMaxH3CustomKeyframes", "MiniMaxH3FinalizeVHSOutput",
+    "MiniMaxH3GeneratedAVMaskedContext", "MiniMaxH3LastActiveVHSPreviewBarrier",
+    "MiniMaxH3ReferenceToVideo", "MiniMaxH3SigmaShift", "MiniMaxH3SourceAudioPolicy",
+    "MiniMaxH3SourceAudioRegenLength", "MiniMaxH3SourceAudioRegenMask",
+    "MiniMaxH3StartCanvasSelector", "MiniMaxH3StartMaskedContext",
+    "MiniMaxH3StreamLiveExtensionAVToVHS", "MiniMaxH3Validate24FPSVideo",
+    "ModelAttentionBackend", "PreviewAny", "PrimitiveFloat", "PrimitiveInt",
+    "RandomNoise", "ResolutionSelector", "SamplerCustomAdvanced", "UNETLoader",
+    "VAEDecode", "VAEDecodeAudio", "VAELoader", "VHS_LoadVideoFFmpeg", "VHS_VideoCombine",
+})
+_COMFY_EXCEPTION_TYPES = frozenset({
+    "AssertionError", "IndexError", "KeyError", "OSError", "RuntimeError", "TypeError", "ValueError",
+})
+
+
+
+def _bounded_execution_diagnostic(error: Exception) -> dict[str, Any] | str:
+    """Copy only recognized Comfy facts; never copy free-form exception text.
+
+    A producer-provided source identity has no independent attestation on this
+    route. A broken property or mapping must not affect execution or cleanup.
+    """
+    try:
+        value = getattr(error, "comfy_diagnostic", None)
+        if not isinstance(value, Mapping) or type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
+            return "unavailable"
+
+        def choice(key: str, allowed: frozenset[str]) -> str:
+            item = value.get(key)
+            return item if type(item) is str and item in allowed else "unavailable"
+
+        node_id = value.get("node_id")
+        if type(node_id) is not str or not re.fullmatch(r"[0-9]{1,32}", node_id):
+            node_id = "unavailable"
+        correlation = value.get("correlation")
+        if type(correlation) is not str or not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", correlation
+        ):
+            correlation = "unavailable"
+
+        def number(key: str) -> int | float | str:
+            item = value.get(key)
+            if type(item) not in (int, float) or abs(item) > 2**53 - 1:
+                return "unavailable"
+            return item if math.isfinite(item) else "unavailable"
+
+        return {
+            "schema_version": 1,
+            "code": choice("code", frozenset({"comfy_execution_error"})),
+            "stage": choice("stage", frozenset({"execution"})),
+            "node_id": node_id,
+            "node_class": choice("node_class", _COMFY_NODE_CLASSES),
+            "exception_type": choice("exception_type", _COMFY_EXCEPTION_TYPES),
+            "message": "unavailable",
+            "expected": number("expected"),
+            "observed": number("observed"),
+            "correlation": correlation,
+            "source_identity": "unavailable",
+        }
+    except Exception:
+        return "unavailable"
+
+
+
+def _failure_envelope(error: Exception, terminal: Mapping[str, Any]) -> dict[str, Any]:
+    child = getattr(error, "h3_child_correlation", None)
+    child = child if isinstance(child, Mapping) else {}
+    correlation = {key: _safe_correlation(child.get(key)) for key in ("run_id", "task_id", "attempt_id")}
+    diagnostic = _bounded_lease_diagnostic(getattr(error, "lease_diagnostic", None))
+    stage = getattr(error, "h3_stage", "unavailable")
+    stage = stage if stage in _H3_STAGES else "unavailable"
+    return {
+        "schema_version": 1,
+        "category": ("child_failure" if any(v != "unavailable" for v in correlation.values()) or diagnostic
+                     else "pre_execution_failure" if terminal.get("execution_not_started") else "unclassified"),
+        "stage": stage,
+        "observed_at_utc": terminal.get("failure_observed_at_utc") or datetime.now(timezone.utc).isoformat(),
+        "child": correlation,
+        # No trusted import attestation is exposed by this invocation route.
+        "source": {"identity": "unavailable", "sha256": "unavailable"},
+        "cause": {"category": diagnostic["category"] if diagnostic else "unclassified",
+                  "lease_diagnostic": diagnostic if diagnostic else "unavailable",
+                  "execution_diagnostic": _bounded_execution_diagnostic(error)},
+        "persistence": {"before_cleanup": terminal.get("evidence_persistence", "unavailable"),
+                        "journal": getattr(error, "h3_journal_status", "unavailable")},
+        # Client exit and actual ephemeral-host cleanup are different operations.
+        "cleanup": {"status": "unavailable",
+                    "client_context_exit": terminal.get("cleanup_status", "unavailable")},
+    }
+
+
+
+@contextmanager
+def _client_with_failure_evidence(args: argparse.Namespace, root: Path, terminal: dict[str, Any]):
+    """Persist failure before the client context can clean up child evidence."""
+    managed_client = getattr(args, "_managed_client", None)
+    manager = (nullcontext(managed_client) if managed_client is not None else
+               AstridClient.open_from_launcher(start_pack_host=False))
+    client = manager.__enter__()
+    terminal["execution_not_started"] = False
+    try:
+        yield client
+    except Exception as exc:
+        terminal["failure_observed_at_utc"] = datetime.now(timezone.utc).isoformat()
+        terminal["cleanup_status"] = "pending"
+        terminal["evidence_persistence"] = "succeeded"
+        if terminal.get("enabled"):
+            try:
+                _write_transform_result(args, root, terminal, error=exc)
+            except Exception:
+                terminal["evidence_persistence"] = "failed"
+        else:
+            terminal["evidence_persistence"] = "unavailable"
+        try:
+            manager.__exit__(type(exc), exc, exc.__traceback__)
+        except Exception:
+            terminal["cleanup_status"] = "failed"
+        else:
+            terminal["cleanup_status"] = "succeeded"
+        raise
+    else:
+        manager.__exit__(None, None, None)
+
+
+
+def _write_transform_result(
+    args: argparse.Namespace,
+    root: Path,
+    terminal: Mapping[str, Any],
+    *,
+    result: Mapping[str, Any] | None = None,
+    error: Exception | None = None,
+) -> None:
+    normalized = coerce_astrid_error(error) if error is not None else None
+    managed_parent = isinstance(getattr(args, "_managed_client", None), ManagedParentClient)
+    native_kind = "executor" if managed_parent else "orchestrator"
+    options = {key: str(value) if isinstance(value, Path) else value
+               for key, value in vars(args).items() if not key.startswith("_")}
+    receipt = serialize_terminal_result(
+        InvocationResult(
+            capability_id="h3_av.transform", capability_type=native_kind, native_kind=native_kind,
+            ok=error is None, run_root=str(root), raw_result=dict(result or {}),
+            error=None if normalized is None else {
+                "code": normalized.code or "executor_failed", "message": normalized.message,
+                "field": normalized.field, "fix": normalized.fix,
+            },
+            outputs={"artifacts": terminal.get("artifacts", []) if error is None else []},
+        ),
+        status="succeeded" if error is None else "failed",
+        # This diagnostic sidecar precedes host settlement. The host owns the
+        # authenticated parent identity and final settlement; this route has
+        # no parent identity readback. Environment markers are not attestation.
+        task_id=None, attempt_id=None, parent_task_id=None, parent_attempt_id=None,
+        request_digest=terminal.get("request_digest") or _stable_digest(options),
+        resolved_options=options, cost=None, warnings=[],
+        settled=False, settlement=None, effect=None,
+    )
+    diagnostic = _bounded_lease_diagnostic(getattr(error, "lease_diagnostic", None))
+    if diagnostic is not None:
+        receipt["lease_diagnostic"] = diagnostic
+    if error is not None:
+        receipt["failure_envelope"] = _failure_envelope(error, terminal)
+    write_json_atomic(root / "result.json", receipt)
+
+
+
 def run_transform(args: argparse.Namespace) -> dict[str, Any]:
     """Run one serialized H3 operation in its existing output directory."""
 
@@ -1831,7 +2266,28 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     with _operation_directory_writer_lock(root):
-        return _run_transform_unlocked(args)
+        terminal: dict[str, Any] = {}
+        try:
+            result = _run_transform_unlocked(args, terminal=terminal)
+        except Exception as exc:
+            journal = terminal.get("journal")
+            if journal is not None:
+                try:
+                    journal.record("operation", "failed", error=type(exc).__name__, message=str(exc)[:1000])
+                    if getattr(exc, "h3_journal_status", None) != "failed":
+                        exc.h3_journal_status = "succeeded"
+                except Exception:
+                    exc.h3_journal_status = "failed"
+            if terminal.get("enabled"):
+                try:
+                    _write_transform_result(args, root, terminal, error=exc)
+                except Exception:
+                    # Expose the persistence failure to the caller without replacing exc.
+                    exc.h3_evidence_persistence = "failed"
+            raise
+        if terminal.get("enabled"):
+            _write_transform_result(args, root, terminal, result=result)
+        return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1847,6 +2303,368 @@ def main(argv: list[str] | None = None) -> int:
     result = run_transform(build_parser().parse_args(argv))
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+
+STAGES = (
+    ("prepare", "h3_av.prepare"), ("compile", "h3_av.compile"),
+    ("validate", "vibecomfy.validate"), ("run", "vibecomfy.run"),
+    ("compose", "h3_av.compose"), ("verify", "h3_av.verify"),
+    ("finalizer", "h3_av.publication_finalizer"),
+)
+
+
+def _bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _parent_digest(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _compile_plan(request, bundle: Path, destination: Path) -> dict[str, Any]:
+    # Reuse the installed H3 implementation, including all branch/eligibility
+    # decisions. This is CPU preparation, never a provider/worker admission.
+    from astrid.packs.h3_av.actions.prepare.prepare import prepare_request
+    from astrid.packs.h3_av.actions.compile.compile import compile_preparation
+    from astrid.packs.h3_av.shared.input_bundle import bundle_digest, resolve_preparation_assets
+
+    paths, identities = materialize_input_bundle(request, bundle, destination / "assets")
+    preparation = prepare_request(request, asset_map=paths)
+    preparation["assets"] = identities
+    preparation["input_bundle_sha256"] = bundle_digest(bundle)
+    preparation = resolve_preparation_assets(preparation, bundle, destination / "compile-assets")
+    compilation = compile_preparation(preparation, out_dir=destination / "compile")
+    return _sealed_plan(compilation)
+
+
+def _sealed_plan(compilation: Mapping[str, Any]) -> dict[str, Any]:
+    capabilities = compilation.get("capabilities", {})
+    contract = capabilities.get("output_contract")
+    if contract not in {"muxed_av_full_timeline", "separate_av_full_timeline"}:
+        raise AstridError("unsupported H3 parent output mapping")
+    intent = _generation_intent(compilation)
+    if (intent["modality"] != "video" or len(intent["groups"]) != 1
+            or len(intent["groups"][0]["selectors"]) != 1):
+        raise AstridError("tracked H3 requires the sealed single video selector")
+    digest = compilation.get("compilation_digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise AstridError("H3 compilation has no sealed identity")
+    return {"compilation_digest": digest, "output_contract": contract, "intent": intent}
+
+
+def _import(client, project: str, data: bytes, filename: str) -> dict[str, Any]:
+    import mimetypes
+
+    importer = getattr(getattr(client, "media", None), "import_bytes", None)
+    if not callable(importer):
+        raise AstridError("tracked H3 requires Runtime managed-byte import")
+    oid = _parent_digest(data)
+    response = importer(project=project, data=data, filename=filename,
+                        media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                        idempotency_key="h3-parent-input-" + oid[7:])
+    value = getattr(response, "data", None)
+    if not getattr(response, "ok", False) or not isinstance(value, Mapping):
+        raise AstridError("H3 managed input import did not return a confirmed object")
+    if (value.get("digest") or value.get("object_id")) != oid:
+        raise AstridError("H3 managed input import changed its bytes")
+    return {"object_id": oid, "digest": oid, "filename": filename}
+
+
+PUBLIC_CONTROLS = frozenset({"execution_request", "worker_qualification", "prepared_worker",
+                              "cleanup_receipt", "require_worker_qualification", "resume", "dry_run"})
+
+
+def public_controls(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve producer-local controls; no owner path crosses the worker seam."""
+    from astrid.sdk.execution_request import normalize_execution_request
+    def document(name):
+        value = inputs.get(name)
+        return _json_mapping(Path(value)) if isinstance(value, (str, Path)) else value
+    for name in ("require_worker_qualification", "resume", "dry_run"):
+        if type(inputs.get(name, False)) is not bool:
+            raise AstridError(f"H3 {name} must be an explicit boolean")
+    request = normalize_execution_request(document("execution_request"))
+    if request and request.get("inputs"):
+        raise AstridError("H3 run inputs are derived from admitted stages")
+    qualification = None
+    if inputs.get("worker_qualification") is not None:
+        qualification = load_worker_qualification(inputs["worker_qualification"])
+        request, _ = _qualified_execution_request(qualification, request)
+    prepared_digest = None
+    if inputs.get("prepared_worker") is not None:
+        from astrid.packs.runpod.prepared_task import load_prepared_worker_selection, prepared_selection_digest
+        selection = load_prepared_worker_selection(inputs["prepared_worker"])
+        request = selection.execution_request(request)
+        prepared_digest = prepared_selection_digest(selection)
+    elif inputs.get("require_worker_qualification") and qualification is None:
+        raise AstridError("worker qualification is required before targeted H3 admission")
+    if request and request["target"]["kind"] not in {"default", "runpod"}:
+        raise AstridError(UNSUPPORTED_TARGET_MESSAGE)
+    request = normalize_execution_request(request)
+    cleanup = document("cleanup_receipt")
+    if cleanup is not None and not isinstance(cleanup, Mapping):
+        raise AstridError("cleanup_receipt must contain a JSON object")
+    return {"run_execution_request": request, "cleanup_receipt": cleanup,
+            "qualification_digest": qualification_digest(qualification) if qualification else None,
+            "prepared_selection_digest": prepared_digest,
+            "require_worker_qualification": bool(inputs.get("require_worker_qualification", False))}
+
+
+def project_parent(inputs: Mapping[str, Any], *, project: str, client, registry):
+    """Freeze and import exact request/bundle/source bytes before one admission."""
+    import tempfile
+    from astrid.core.foundation.hash import executor_definition_digest
+    from astrid.sdk.invocation import _generation_publish_effect
+
+    if not project or inputs.get("project", project) != project:
+        raise AstridError("H3 parent project must match its Runtime project")
+    show = getattr(getattr(client, "projects", None), "show", None)
+    observed = show(project) if callable(show) else None
+    project_data = getattr(observed, "data", None)
+    if not getattr(observed, "ok", False) or not isinstance(project_data, Mapping):
+        raise AstridError("H3 parent requires confirmed Runtime project identity")
+    project = project_data.get("project_id") or project_data.get("id")
+    if not isinstance(project, str) or not project:
+        raise AstridError("H3 Runtime project has no canonical identity")
+    controls = public_controls(inputs)
+    if set(inputs) - ({"request", "asset_map", "project", "editorial_approved"} | PUBLIC_CONTROLS):
+        raise AstridError("unsupported tracked H3 parent controls or caller-supplied roots")
+    if type(inputs.get("editorial_approved", False)) is not bool:
+        raise AstridError("H3 editorial approval must be an explicit boolean")
+    # Only the trusted producer opens asset_map paths. No such path is retained
+    # in the admitted spec. The existing bundle validates exact membership.
+    request_path, map_path = inputs.get("request"), inputs.get("asset_map")
+    if not isinstance(request_path, (str, Path)) or not isinstance(map_path, (str, Path)):
+        raise AstridError("tracked H3 requires request and asset_map files before admission")
+    document = load_request_document(request_path)
+    request = normalize_request(document)
+    asset_map = _json_mapping(Path(map_path))
+    with tempfile.TemporaryDirectory(prefix="astrid-h3-parent-") as temporary:
+        root = Path(temporary)
+        bundle = build_input_bundle(request, asset_map, root / "h3-inputs.zip")
+        paths, _ = materialize_input_bundle(request, bundle, root / "validated-assets")
+        sealed = _compile_plan(request, bundle, root / "plan")
+        roots = {
+            "request": _import(client, project, _bytes(document), "request.json"),
+            "input_bundle": _import(client, project, bundle.read_bytes(), "h3-inputs.zip"),
+        }
+        source_id = _authoritative_source_asset_id(request)
+        if source_id is not None:
+            source = Path(paths[source_id])
+            roots["source"] = _import(client, project, source.read_bytes(), source.name)
+
+    identities = {name: {"capability_id": capability,
+                         "capability_digest": "sha256:" + executor_definition_digest(registry.get(capability))}
+                  for name, capability in STAGES}
+    root_ref = lambda name: {"name": name, "root_object_id": roots[name]["object_id"]}
+    producer = lambda name, stage, port: {"name": name, "producer_stage": stage, "output_port": port}
+    workflow = [producer(name, "compile", name) for name in ("python", "companion", "source")]
+    source = [root_ref("source")] if "source" in roots else []
+    bindings = {
+        "prepare": [root_ref("request"), root_ref("input_bundle")],
+        "compile": [producer("preparation", "prepare", "preparation"), root_ref("input_bundle")],
+        "validate": workflow,
+        "run": [*workflow, producer("managed_assets", "compile", "managed_assets")],
+        "compose": [producer("preparation", "prepare", "preparation"), root_ref("input_bundle"),
+                    producer("compilation", "compile", "compilation"),
+                    producer("generated", "run", "vibecomfy_run"),
+                    *([producer("generated_audio", "run", "vibecomfy_run")]
+                      if sealed["output_contract"] == "separate_av_full_timeline" else []), *source],
+        "verify": [producer("preparation", "compose", "preparation"), root_ref("input_bundle"),
+                   producer("composition", "compose", "composition"), producer("candidate", "compose", "candidate"), *source],
+        "finalizer": [producer("candidate", "compose", "candidate"), producer("verification", "verify", "verification")],
+    }
+    def capability(capability_id):
+        definition = registry.get(capability_id)
+        return SimpleNamespace(id=capability_id, inputs=definition.inputs, outputs=definition.outputs,
+                               definition=definition.to_dict())
+    intent = {**sealed["intent"], "metadata": {"h3_av": {"request_digest": request.digest}}}
+    raw = _generation_publish_effect(capability("vibecomfy.run"), project=project, generation_intent=intent)
+    final_intent = {**intent, "groups": [{"group_key": "main", "selectors": [{
+        "selector": "final-composition", "ordinal": 0, "variant_key": "final-composition", "required": True}]}]}
+    final_intent["metadata"] = {"h3_av": {"request_digest": request.digest, "publication_scope": "final_composition"}}
+    final = _generation_publish_effect(capability("h3_av.publication_finalizer"), project=project,
+                                       generation_intent=final_intent)
+    run_request = controls["run_execution_request"]
+    run_target = run_request["target"] if run_request else {"kind": "default"}
+    policy = {
+        "capabilities": list(identities.values()),
+        "targets": [{"kind": "default"}] + ([run_target] if run_target != {"kind": "default"} else []),
+        "input_object_ids": list(dict.fromkeys(row["object_id"] for row in roots.values())),
+        "stages": [{"name": name, **identities[name], "target": run_target if name == "run" else {"kind": "default"},
+                    **({"execution_request": run_request} if name == "run" and run_request else {}),
+                    "inputs": [ref for port in registry.get(capability_id).inputs
+                               for ref in bindings[name] if ref["name"] == port.name]}
+                   for name, capability_id in STAGES],
+        "publications": {
+            "raw": {"stage": "run", "output_port": "vibecomfy_run", "effect": raw},
+            "final": {"stage": "finalizer", "output_port": "verified_candidate", "candidate_stage": "compose",
+                      "candidate_output_port": "candidate", "verify_stage": "verify",
+                      "verify_output_port": "verification", "effect": final},
+        },
+    }
+    plan = {"version": 1, "project": project, "request_digest": request.digest, "roots": roots,
+            "stages": policy["stages"], "publications": policy["publications"], "controls": controls, **sealed}
+    return {**roots, "plan": plan, "editorial_approved": bool(inputs.get("editorial_approved", False))}, policy
+
+
+class ManagedParentClient:
+    """Adapt the existing transform to the attempt's host-owned child bridge."""
+    def __init__(self, plan: Mapping[str, Any], output_root: Path):
+        self.plan = plan
+        self.output_root = output_root
+        self.results: dict[str, Any] = {}
+        self.media = SimpleNamespace(read_bytes=self.read_bytes)
+
+    def selected_raw(self, rows):
+        group = self.plan["publications"]["raw"]["effect"]["payload"]["groups"][0]
+        selector = group["selectors"][0]
+        selected = [row for row in rows if row.get("output_port") == selector["output_port"]
+                    and row.get("group_key") == group["group_key"]
+                    and row.get("variant_key") == selector["variant_key"]
+                    and row.get("ordinal") == selector["ordinal"]]
+        if len(selected) != 1:
+            raise AstridError("raw selector must resolve exactly one child association")
+        return selected
+
+    def invoke_result(self, capability_id, *, inputs, **kwargs):
+        from astrid.sdk.invocation import invoke_result
+        stage = next((name for name, cid in STAGES if cid == capability_id), None)
+        if stage is None:
+            raise AstridError("H3 parent attempted an undeclared stage")
+        values = dict(inputs)
+        intent = values.pop("generation_intent", None)
+        if intent is not None:
+            values["generation_intent"] = intent
+        declaration = next(row for row in self.plan["stages"] if row["name"] == stage)
+        refs = []
+        for declared in declaration["inputs"]:
+            name = declared["name"]
+            value = values.get(name)
+            if not isinstance(value, Mapping):
+                raise AstridError("staged input descriptor is missing")
+            oid = value.get("object_id", value.get("digest"))
+            values[name] = {key: value[key] for key in ("object_id", "digest", "filename") if key in value}
+            if "root_object_id" in declared:
+                if oid != declared["root_object_id"]:
+                    raise AstridError("staged root identity changed")
+                refs.append({"name": name, "root_object_id": oid})
+                continue
+            producer = self.results.get(declared["producer_stage"])
+            if producer is None:
+                raise AstridError("staged input producer is unavailable")
+            rows = [row for row in producer.outputs.get("managed_outputs", [])
+                    if row["object_id"] == oid and row["output_port"] == declared["output_port"]]
+            if declared["producer_stage"] == "run" and name == "generated":
+                selector = self.plan["publications"]["raw"]["effect"]["payload"]["groups"][0]
+                selected = selector["selectors"][0]
+                rows = [row for row in rows if row.get("group_key") == selector["group_key"]
+                        and row.get("variant_key") == selected["variant_key"]
+                        and row.get("ordinal") == selected["ordinal"]]
+            if name == "generated_audio":
+                rows = [row for row in rows if row.get("producer", {}).get("output_port") in {"audio", "generated_audio", "generated_audios", "SaveAudio"}]
+            if len(rows) != 1:
+                raise AstridError("staged input association is absent or ambiguous")
+            row = rows[0]
+            refs.append({"name": name, "producer_task_id": row["task_id"],
+                         "association_id": row["association_id"], "output_port": row["output_port"]})
+        result = invoke_result(capability_id, kind="executor", inputs=values, child_key=stage,
+                               stage=stage, input_refs=refs,
+                               wait=True, read_managed_outputs=True,
+                               timeout_seconds=3600.0, poll_seconds=1.0)
+        if not result.ok:
+            exc = _validation_failure(result, capability_id=capability_id)
+            exc.h3_stage = stage
+            exc.h3_child_correlation = {
+                key: _safe_correlation(getattr(result, attribute, None))
+                for key, attribute in (("run_id", "kernel_run_id"), ("task_id", "kernel_task_id"),
+                                       ("attempt_id", "kernel_attempt_id"))
+            }
+            raise exc
+        self.results[stage] = result
+        return result
+
+    def verify_compilation(self, compilation):
+        observed = _sealed_plan(compilation)
+        if observed != {key: self.plan[key] for key in observed}:
+            raise AstridError("H3 staged compilation changed the admitted sealed plan")
+
+    def read_bytes(self, object_id):
+        for result in self.results.values():
+            for row in result.outputs.get("managed_outputs", []):
+                if row.get("object_id") == object_id:
+                    materialized = result.materialize_output(row["association_id"])
+                    return (self.output_root / materialized.filename).read_bytes()
+        raise AstridError("H3 parent cannot read an unbound child object")
+
+
+def execute(*, request, input_bundle, plan, source=None, editorial_approved=False,
+            host_output_root=None, **unused):
+    """Installed Python action; the host owns output root, lease and settlement."""
+    from os import environ
+    from astrid.sdk import _child_bridge
+    from astrid.core._shared.result_manifest import build_manifest, write_manifest
+    if not environ.get(ASTRID_TASK_RUN_ID, "").strip() or _child_bridge._bridge is None:
+        raise AstridError("H3 parent requires a live Runtime-admitted attempt and child bridge")
+    if unused or not isinstance(plan, Mapping) or plan.get("version") != 1 or host_output_root is None:
+        raise AstridError("unsupported H3 parent projection")
+    root = Path(host_output_root)
+    paths = {"request": Path(request), "input_bundle": Path(input_bundle)}
+    if source is not None:
+        paths["source"] = Path(source)
+    roots = plan.get("roots", {})
+    if set(paths) != set(roots):
+        raise AstridError("H3 parent root input set changed")
+    for name, path in paths.items():
+        if _parent_digest(path.read_bytes()) != roots[name].get("object_id"):
+            raise AstridError("H3 parent managed root bytes changed")
+    normalized = normalize_request(load_request_document(paths["request"]))
+    if normalized.digest != plan.get("request_digest"):
+        raise AstridError("H3 parent request identity changed")
+    members, _ = materialize_input_bundle(normalized, paths["input_bundle"], root / "root-assets")
+    source_id = _authoritative_source_asset_id(normalized)
+    if (source_id is None) != (source is None):
+        raise AstridError("H3 parent source declaration changed")
+    if source_id is not None and paths["source"].read_bytes() != Path(members[source_id]).read_bytes():
+        raise AstridError("H3 parent source must be the exact validated bundle member")
+    # Python actions load under a verified private module prefix. Use the
+    # installed adapter class shared with transform.run's bounded dispatch.
+    client = ManagedParentClient(plan, root)
+    controls = plan.get("controls", {})
+    admitted_request = controls.get("run_execution_request")
+    placement = "runpod" if (admitted_request or {}).get("target", {}).get("kind") == "runpod" else "local"
+    args = argparse.Namespace(request=paths["request"], asset_map=None, out=root / "stages",
+        project=plan["project"], execution_request=None, worker_qualification=None, prepared_worker=None,
+        cleanup_receipt=None, require_worker_qualification=False, editorial_approved=editorial_approved,
+        resume=(root / "stages" / "operation-state.json").is_file(),
+        dry_run=False, placement=placement, _managed_client=client,
+        _managed_bundle=paths["input_bundle"], _managed_roots=roots,
+        _admitted_cleanup_receipt=controls.get("cleanup_receipt"),
+        _admitted_execution_request=admitted_request,
+        _admitted_qualification_digest=controls.get("qualification_digest"))
+    result = run_transform(args)
+    receipt = _json_mapping(Path(result["final_receipt"]))
+    if (receipt.get("overall_status") not in {"candidate_verified", "complete"}
+            or any(receipt.get("states", {}).get(key, {}).get("status") != "passed"
+                   for key in ("raw_managed_publication", "candidate_verified", "final_composition_publication"))):
+        raise AstridError("H3 parent final managed publication is unproven")
+    candidate = root / "verified-candidate.media"
+    final_receipt = root / "final-receipt.json"
+    shutil.copyfile(result["verified_candidate"], candidate)
+    shutil.copyfile(result["final_receipt"], final_receipt)
+    final_rows = [row for row in client.results["finalizer"].outputs["managed_outputs"]
+                  if row["output_port"] == "verified_candidate"]
+    if len(final_rows) != 1 or _parent_digest(candidate.read_bytes()) != final_rows[0]["object_id"]:
+        raise AstridError("H3 parent must retain the actual final publication bytes")
+    write_manifest(root / "manifest.json", build_manifest(kind="h3_av.transform", inputs={}, outputs=[
+        {"name": "verified_candidate", "path": candidate.name, "ordinal": 0,
+         "group_key": "main", "variant_key": "final-composition",
+         "media_type": final_rows[0]["media_type"]},
+        {"name": "final_receipt", "path": final_receipt.name, "ordinal": 0, "media_type": "application/json"},
+    ], created=datetime.now(timezone.utc).isoformat()))
+    return {"status": receipt["overall_status"], "overall_status": receipt["overall_status"],
+            "states": receipt["states"]}
 
 
 if __name__ == "__main__":

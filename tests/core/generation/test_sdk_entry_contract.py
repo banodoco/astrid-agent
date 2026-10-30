@@ -163,3 +163,70 @@ def test_actual_h3_cli_and_sdk_validate_same_files_and_stop_before_parent(monkey
         cli.main(["video", "--entry", "h3", "--inputs-json", str(file)])
     assert str(sdk_error.value) == str(cli_error.value)
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("value,error,diagnostic", [
+    ("/tmp/local.json", CapabilityValidationError, "managed Runtime object"),
+    ({"digest": "sha256:" + "a" * 64}, CapabilityPreconditionError, "Runtime-admitted parent"),
+])
+def test_task129_ordinary_action_keeps_validation_and_parent_boundary(monkeypatch, value, error, diagnostic):
+    import astrid.sdk as sdk
+    from astrid.sdk.client import AstridClient
+
+    action = {"id": "ordinary", "kind": "video", "modes": ["transform"], "action": "example.run",
+              "inputs": [{"name": "request", "type": "file", "required": True}]}
+    monkeypatch.setattr(entries, "user_entries", lambda: [])
+    monkeypatch.setattr(entries, "action_entries", lambda: [action])
+    monkeypatch.setattr(entries, "_ready_ids", lambda: set())
+    monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: ModelRegistry([]))
+    def forbidden(*args, **kwargs):
+        pytest.fail("ordinary action crossed the parent boundary")
+    monkeypatch.setattr(sdk, "invoke_result", forbidden)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
+    with pytest.raises(error, match=diagnostic):
+        GenerationFacade().video(entry="ordinary", request=value)
+
+
+def test_task130_unsupported_action_entry_fails_before_invoke(monkeypatch):
+    import astrid.sdk as sdk
+
+    digest = "sha256:" + "d" * 64
+    action = {"id": "ordinary", "kind": "video", "modes": ["transform"],
+              "action": "example.transform", "inputs": [
+                  {"name": "request", "type": "file", "required": True},
+                  {"name": "asset_map", "type": "file", "required": True}]}
+    monkeypatch.setattr(entries, "user_entries", lambda: [])
+    monkeypatch.setattr(entries, "action_entries", lambda: [action])
+    monkeypatch.setattr(entries, "ready_entries", lambda: [])
+    monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: ModelRegistry([]))
+    monkeypatch.setattr(sdk, "invoke_result", lambda *a, **k: pytest.fail("unsupported action was invoked"))
+    client = SimpleNamespace(invoke_result=lambda *a, **k: pytest.fail("unsupported action was invoked"))
+
+    with pytest.raises(CapabilityPreconditionError, match="Runtime-admitted parent"):
+        GenerationFacade().video(entry="ordinary", request=digest, asset_map=digest, client=client)
+
+
+@pytest.mark.parametrize("digest", ["sha256:" + "a" * 64, "a" * 64, "sha256:malformed"])
+def test_task129_h3_mixed_digest_and_local_path_never_reaches_parent(monkeypatch, digest):
+    import astrid.sdk as sdk
+    from astrid.sdk.client import AstridClient
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("mixed custody reached admission")
+    monkeypatch.setattr(sdk, "invoke_result", forbidden)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
+    with pytest.raises(CapabilityValidationError, match="producer-local file path"):
+        GenerationFacade().video(entry="h3", request="/tmp/request.json", asset_map=digest)
+
+
+def test_task129_h3_producer_controls_keep_declared_boolean_validation(monkeypatch):
+    import astrid.sdk as sdk
+    from astrid.sdk.client import AstridClient
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid producer control reached admission")
+    monkeypatch.setattr(sdk, "invoke_result", forbidden)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
+    with pytest.raises(CapabilityValidationError, match="requires a boolean"):
+        GenerationFacade().video(entry="h3", request="/tmp/request.json", asset_map="/tmp/assets.json",
+                                 require_worker_qualification="false")

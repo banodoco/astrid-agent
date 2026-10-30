@@ -36,6 +36,11 @@ MATRIX = ROOT / "config" / "astrid-beta-capabilities.json"
 # emitted in the report.  The direct rule below prevents the canonical
 # Remotion compositor from being hidden behind the offline render helpers.
 FAMILY_PROOFS: dict[str, dict[str, str]] = {
+    "orchestration": {
+        "kind": "family_representative",
+        "selector": "tests/packs/h3_av/test_parent_scheduling_122.py::test_h3_parent_and_cpu_children_progress_with_attempt_fences",
+        "rationale": "the focused Runtime test proves tracked-parent progress alongside exclusive CPU children, settlement and stale-attempt fencing using the actual H3 declaration and resource mapping",
+    },
     "cpu": {
         "kind": "family_representative",
         "selector": "tests/stage1/test_runtime_client_cutover.py::test_generic_host_cpu_route_claims_settles_and_fences_stale_attempt_across_restart",

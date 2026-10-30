@@ -1495,6 +1495,9 @@ class AdapterRegistry:
 
     _specs = {
         "cpu": AdapterSpec("cpu", ("cpu",)),
+        # Tracked parents coordinate children; each child reserves its own
+        # execution resources while the parent retains an ordinary task lease.
+        "orchestration": AdapterSpec("orchestration"),
         "provider": AdapterSpec("provider", ("provider",), requires_network=True),
         "render": AdapterSpec("render", ("render",), ("node", "ffmpeg")),
         "local_generation": AdapterSpec("local_generation", ("gpu",), ()),
@@ -4895,7 +4898,9 @@ class RuntimeProtocolClient:
                     run_id: str, project_id: str | None, stage: str | None = None,
                     input_refs: list[Mapping[str, Any]] | None = None,
                     generation_intent: Mapping[str, Any] | None = None,
-                    storage_estimate: Mapping[str, int] | None = None):
+                    stage_execution_request: Mapping[str, Any] | None = None,
+                    storage_estimate: Mapping[str, int] | None = None,
+                    execution_request: Mapping[str, Any] | None = None):
         """Fenced delegated transport; signed authority stays in this frame.
 
         Stages and managed input refs are explicit trusted-host arguments. The
@@ -4904,6 +4909,7 @@ class RuntimeProtocolClient:
         from ._child_bridge import ChildBridgeError, _staged_child_task, resource
         from astrid.sdk._child_bridge import _strict_json
 
+        request = normalize_execution_request(execution_request)
         staged = stage is not None or input_refs is not None
         openai_request = child["capability_id"] == "generation.generate_image_openai"
         if openai_request:
@@ -4917,17 +4923,23 @@ class RuntimeProtocolClient:
         staged_task = None
         child_id = child["child_id"]
         if staged:
+            if request is not None:
+                raise ChildBridgeError("staged execution request is frozen by parent policy")
             if stage is None or input_refs is None or derived_inputs:
                 raise ChildBridgeError("staged child requires stage/input_refs without derived inputs")
             staged_task = _staged_child_task(
                 child=child, inputs=inputs, ordered_inputs=ordered_inputs,
-                stage=stage, input_refs=input_refs)
+                stage=stage, input_refs=input_refs, execution_request=stage_execution_request)
         if generation_intent is not None:
             if not isinstance(generation_intent, Mapping):
                 raise ChildBridgeError("generation_intent must be an object")
             generation_intent = json.loads(_strict_json(dict(generation_intent)))
 
         with self._heartbeat_lock:
+            # Reject stale admission context before any lease mutation, while
+            # retaining the check after heartbeat for epoch drift during RPC.
+            if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
+                raise HostError("child admission epoch disagrees with claim")
             self.heartbeat(task_id, lease_id, attempt_id=attempt_id, fence=fence)
             if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
                 raise HostError("child admission epoch disagrees with claim")
@@ -4978,9 +4990,17 @@ class RuntimeProtocolClient:
                              "params" if openai_request else "inputs": child_inputs}}
             if openai_request:
                 task["storage_estimate"] = dict(storage_estimate)
-            if descriptors:
+            if request is not None and request.get("inputs"):
+                supplied = [{**item, "digest": item.get("digest", item["object_id"])}
+                            for item in request["inputs"]]
+                if supplied != descriptors:
+                    raise ChildBridgeError("child execution_request inputs disagree with canonical descriptors")
+            if request is not None or descriptors:
                 task["execution_request"] = normalize_execution_request({
-                    "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
+                    **(request if request is not None else {
+                        "schema_version": 1, "target": {"kind": "default"},
+                    }),
+                    "inputs": descriptors,
                 })
             if generation_intent is not None:
                 task["generation_intent"] = generation_intent
@@ -7607,6 +7627,7 @@ class GenericPackHost:
         descriptors: Sequence[Mapping[str, Any]],
         attempt: Path,
         generation_intent: Mapping[str, Any] | None = None,
+        unselected_generation_port: str | None = None,
     ) -> list[dict[str, Any]]:
         """Bind validated harvest descriptors to their declared output ports."""
         outputs: list[dict[str, Any]] = []
@@ -7647,6 +7668,14 @@ class GenericPackHost:
                 raise HostError(
                     f"harvested output {name!r} has invalid ordinal {ordinal!r}"
                 )
+            # A Runtime-admitted named raw stage may have other durable
+            # results on the same port.  Only declared ordinals are bound to
+            # publication; the others remain ordinary producer associations.
+            if (is_generation_result and name == unselected_generation_port
+                    and not any(item["ordinal"] == ordinal for item in declarations)
+                    and harvested.get("output_port", name) == name
+                    and not any(field in harvested for field in ("group_key", "variant_key", "selector"))):
+                is_generation_result = False
             identity = (name, ordinal)
             if identity in seen_identities and not is_generation_result:
                 raise HostError(
@@ -9364,8 +9393,8 @@ class GenericPackHost:
                     output_root, definition=record.definition, values=values, require=False)
                 staged = self._typed_outputs(
                     record, harvested, root,
-                    generation_intent=task.get("generation_intent")
-                    if isinstance(task.get("generation_intent"), Mapping) else None)
+                    generation_intent=_task_generation_intent(task),
+                    unselected_generation_port=_named_raw_publication_port(task))
             except (OSError, ValueError, AstridError, HostError) as exc:
                 warnings.append(f"terminal output collection unavailable: {exc}")
         outputs = []
@@ -10091,6 +10120,10 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            if capability_id == "h3_av.transform":
+                if "host_output_root" in inputs or child_bridge is None:
+                    raise HostError("H3 parent requires host-owned output custody and delegated admission")
+                inputs["host_output_root"] = str(root / "outputs")
             _terminal["inputs"] = inputs
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
                 from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -10484,6 +10517,10 @@ class GenericPackHost:
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
                         allow_runtime_connection=not private_runtime_context)
+                    if capability_id == "h3_av.transform":
+                        # Presence is an entrypoint guard only. Parent authority
+                        # comes exclusively from the authenticated child bridge.
+                        worker_env["ASTRID_TASK_RUN_ID"] = task_id
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -10576,12 +10613,10 @@ class GenericPackHost:
                 record,
                 harvested,
                 root,
-                generation_intent=(
-                    task_data.get("generation_intent")
-                    if isinstance(task_data.get("generation_intent"), Mapping)
-                    else None
-                ),
+                generation_intent=_task_generation_intent(task_data),
+                unselected_generation_port=_named_raw_publication_port(task_data),
             )
+            _bind_named_parent_output(task_data, typed_outputs)
             _terminal["outputs"] = typed_outputs
             thumbnail_outputs, thumbnail_diagnostics = self._generation_thumbnail_outputs(
                 typed_outputs,
@@ -10674,6 +10709,13 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            if capability_id == "h3_av.transform" and child_bridge is not None:
+                action_result = payload.get("action_result")
+                if not isinstance(action_result, Mapping):
+                    raise HostError("H3 parent did not return its publication outcome")
+                for field in ("status", "overall_status", "states"):
+                    if field in action_result:
+                        payload[field] = action_result[field]
             _terminal["payload"] = payload
             if renderer_selection is not None:
                 payload["renderer_selection"] = dict(renderer_selection)
@@ -12107,6 +12149,10 @@ class LocalExecutionPreparation:
         self._lock = threading.RLock()
         self._prepare_done = threading.Event()
         self._prepare_done.set()
+        # The claim loop may stop as soon as shutdown starts.  The private
+        # control reply must be sent before the process can exit.
+        self._control_cleanup_done = threading.Event()
+        self._control_cleanup_done.set()
         self._claim_host: GenericPackHost | None = None
         self._activation_grant: dict[str, Any] | None = None
         self._retained_relay_actor: Any | None = None
@@ -13381,6 +13427,7 @@ class LocalExecutionPreparation:
             if self._abort_ack is not None:
                 return json.loads(json.dumps(self._abort_ack))
         try:
+            self._control_cleanup_done.clear()
             if self._claim_host is not None:
                 self._claim_host.shutdown()
             # Positive acknowledgement follows actual owned-child, bridge and
@@ -13826,6 +13873,10 @@ class LocalExecutionPreparation:
                                  "error_code": "preparation_unresolved" if command == "prepare_local_execution" else "report_unresolved",
                                  "custody_capabilities": self.known_custody_capabilities()}
                     _send_activation_frame(control, reply)
+                    if frame.get("command") == "abort_local_execution":
+                        # A failed write is not an acknowledgement. Retain the
+                        # process until Runtime resolves the broken channel.
+                        self._control_cleanup_done.set()
             except BaseException as exc:
                 self.control_error = exc
             finally:
@@ -13834,6 +13885,83 @@ class LocalExecutionPreparation:
         thread.start()
         return thread
 
+    def wait_for_shutdown_cleanup(self) -> None:
+        self._control_cleanup_done.wait()
+
+
+
+def _named_raw_publication_port(task: Mapping[str, Any]) -> str | None:
+    """Read the raw-stage marker reserved and populated by Runtime admission."""
+    spec = task.get("spec")
+    if not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping):
+        return None
+    source = spec.get("verified_publication_source")
+    if (not isinstance(spec.get("delegated_stage"), str) or not isinstance(source, Mapping)
+            or set(source) != {"publication_name", "output_port"}
+            or source.get("publication_name") != "raw"):
+        return None
+    port = source.get("output_port")
+    return port if isinstance(port, str) and port else None
+
+
+def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    intent = task.get("generation_intent")
+    # Named child effects are frozen by Runtime from the parent's policy.
+    # Reconstruct the host's existing selector view from that effect, not
+    # from the worker or from the ordering or media type of its outputs.
+    spec = task.get("spec")
+    source = spec.get("verified_publication_source") if isinstance(spec, Mapping) else None
+    effect = task.get("expected_effect")
+    if (not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping)
+            or not isinstance(source, Mapping) or source.get("publication_name") not in {"raw", "final"}):
+        return intent if isinstance(intent, Mapping) else None
+    if (not isinstance(effect, Mapping) or effect.get("effect_type") != "generation.publish_v1"
+            or not isinstance(effect.get("payload"), Mapping)):
+        raise HostError("named publication has no admitted generation effect")
+    payload = effect["payload"]
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        raise HostError("named publication effect has no selector groups")
+    from astrid.sdk.invocation import _validate_generation_intent
+    from astrid.sdk.exceptions import CapabilityValidationError
+    try:
+        projected = [{"group_key": group["group_key"], "selectors": [
+            {key: value for key, value in selector.items() if key != "output_port"}
+            for selector in group["selectors"]]} for group in groups]
+        if any(selector.get("output_port") != source.get("output_port")
+               for group in groups for selector in group["selectors"]):
+            raise HostError("named publication effect selects another port")
+        return _validate_generation_intent({"version": payload["version"], "modality": payload["modality"],
+            "partial_success_policy": payload["partial_success_policy"], "groups": projected},
+            modality=payload["modality"])
+    except (KeyError, TypeError, ValueError, CapabilityValidationError) as exc:
+        raise HostError("named publication effect has an invalid selector") from exc
+
+
+def _bind_named_parent_output(task: Mapping[str, Any], outputs: list[dict[str, Any]]) -> None:
+    spec = task.get("spec")
+    policy = spec.get("child_delegation") if isinstance(spec, Mapping) else None
+    publications = policy.get("publications") if isinstance(policy, Mapping) else None
+    if publications is None:
+        return
+    try:
+        final = publications["final"]
+        groups = final["effect"]["payload"]["groups"]
+        if len(groups) != 1 or len(groups[0]["selectors"]) != 1:
+            raise ValueError("expected one final selector")
+        group, selector = groups[0], groups[0]["selectors"][0]
+        port = final["output_port"]
+        if selector["output_port"] != port:
+            raise ValueError("final selector port differs")
+        matches = [row for row in outputs if row.get("name") == port
+                   and row.get("ordinal") == selector["ordinal"]]
+        if len(matches) != 1:
+            raise ValueError("final output missing or ambiguous")
+        matches[0].update(output_port=port, group_key=group["group_key"],
+                          variant_key=selector["variant_key"],
+                          selector={"group_key": group["group_key"], "variant_key": selector["variant_key"]})
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HostError("named parent final selector cannot be bound") from exc
 
 
 def _selected_birth_matches(observed: Any, retained: Any) -> bool:
@@ -14604,7 +14732,7 @@ def _log_cli_exit_failure(error: BaseException) -> None:
 
 
 def _cli() -> int:
-    managed_shutdowns: list[_ManagedStdinShutdown] = []
+    managed_shutdowns: list[Any] = []
     try:
         return _cli_impl(managed_shutdowns)
     finally:
@@ -14614,7 +14742,7 @@ def _cli() -> int:
             lifecycle.wait_for_shutdown_cleanup()
 
 
-def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
+def _cli_impl(managed_shutdowns: list[Any]) -> int:
 
     parser = argparse.ArgumentParser(prog="astrid-generic-host")
     parser.add_argument("command", nargs="?", choices=("run", "supervise"), help="run the worker loop or JSONL supervisor")
@@ -14684,6 +14812,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         if not has_activation_transport or args.host_control_fd < 3 or args.host_control_fd == args.activation_fd:
             parser.error("local host-control requires a distinct parked activation transport")
         preparation = LocalExecutionPreparation(operation_id=args.activation_operation_id, channel_id=args.activation_channel_id)
+        managed_shutdowns.append(preparation)
         preparation.control_thread = preparation.serve_control(args.host_control_fd)
         def parked_shutdown(signum, _frame):
             try:
