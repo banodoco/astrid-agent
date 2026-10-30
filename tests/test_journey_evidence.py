@@ -20,7 +20,8 @@ def release1_receipts(tmp_path):
                "shell": contract["shell"], "source_override_test_mode": False, "final_cleanup": "pass",
                "candidate_checkouts": {name: {"sha": sha} for name, sha in candidate.items()},
                "service_manager_prerequisite": service,
-               "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass"}}
+               "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass",
+                          "task_settled": "pass", "one_runtime": "pass", "unrelated_sentinel": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
             row["release_transition"] = {"from": 0, "to": 1,
@@ -156,6 +157,13 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     data["semantic_data"]["after_sha256"] = "c" * 64
     direct.write_text(json.dumps(data), encoding="utf-8")
     assert any("direct-windows: semantic data preservation" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    direct = tmp_path / "direct-linux" / "journey-result.json"
+    data = json.loads(direct.read_text())
+    data["checks"]["task_settled"] = "not-run"
+    direct.write_text(json.dumps(data), encoding="utf-8")
+    assert any("direct-linux: task_settled assertion did not pass" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 

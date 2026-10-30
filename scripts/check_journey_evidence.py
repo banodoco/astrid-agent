@@ -223,7 +223,8 @@ def evaluate_release1_matrix(candidate, results):
                                for name in ("before_sha256", "after_sha256"))
                     or semantic.get("before_sha256") != semantic.get("after_sha256")):
                 errors.append(f"{job_id}: semantic data preservation is absent or unequal")
-            for check in ("release", "service", "health", "semantic_data"):
+            for check in ("release", "service", "health", "semantic_data", "task_settled",
+                          "one_runtime", "unrelated_sentinel"):
                 if (row.get("checks") or {}).get(check) != "pass":
                     errors.append(f"{job_id}: {check} assertion did not pass")
         elif (prerequisite.get("outcome") != "explicit-owner"
