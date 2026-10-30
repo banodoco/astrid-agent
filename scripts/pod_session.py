@@ -1606,6 +1606,10 @@ class Session:
         custody_verified = False
         progress_restored = False
         release_attempted = False
+        progress_path = self.workdir / "pod-session-progress.json"
+        original_progress = None
+        followup_started = False
+        followup_job_id = None
         try:
             doc = self._read_held()
             self.sid, self.pod_id = doc["session"], doc["pod_id"]
@@ -1650,9 +1654,9 @@ class Session:
                     or self.args.volume_gb != doc["volume_gb"]
                     or not command.strip() or not 1 <= self.args.followup_timeout <= 600):
                 raise SessionError("held state: stale, incomplete or incompatible")
-            progress_path = self.workdir / "pod-session-progress.json"
             if _file_sha256(progress_path) != doc["progress_sha256"]:
                 raise SessionError("held state: progress differs")
+            original_progress = progress_path.read_bytes()
             progress = json.loads(progress_path.read_text())
             if (progress.get("schema") != "astrid.pod-session-progress.v1"
                     or progress.get("session") != self.sid or progress.get("pod_id") != self.pod_id
@@ -1678,7 +1682,9 @@ class Session:
                 raise SessionError("held state: Runtime source identity differs")
             if json.loads(self.fetch(f"{SRC_DIR}/.pod-source.json")) != doc["source"]:
                 raise SessionError("held state: transported source manifest differs")
+            followup_started = True
             code, _, job = self.run_job("follow-up", command, self.args.followup_timeout)
+            followup_job_id = job.get("id") if isinstance(job, dict) else None
             if code:
                 raise SessionError(f"follow-up: job {job['id']} exited {code}")
             self.record("follow-up", "ok", {"job": job["id"]})
@@ -1699,29 +1705,43 @@ class Session:
         except BaseException as exc:
             detail = str(exc) if isinstance(exc, SessionError) else type(exc).__name__
             self.say(f"STOPPED: held session unavailable ({detail})")
-            if custody_verified and not release_attempted:
+            recovered = False
+            if custody_verified and followup_started and original_progress is not None and doc is not None:
                 try:
-                    result = self.release()
-                    self.record("release", "ok", result)
-                    self._held_path().unlink(missing_ok=True)
-                    if progress_restored:
-                        try:
-                            (self.workdir / "pod-session-progress.json").write_bytes(self.progress_document())
-                        except OSError:
-                            pass
-                    else:
-                        release_path = self.workdir / "held-session-release.json"
-                        descriptor = os.open(release_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                        with os.fdopen(descriptor, "w") as handle:
-                            json.dump({"session": self.sid, "pod_id": self.pod_id, "release": result}, handle)
-                            handle.flush()
-                            os.fsync(handle.fileno())
-                except Exception:
-                    self.say(f"RELEASE FAILED for pod {self.pod_id}: terminate it by hand")
-            elif release_attempted:
-                self.say(f"RELEASE FAILED for pod {self.pod_id}: reconcile termination")
-            else:
-                self.say("RELEASE UNVERIFIED: reconcile the recorded session identity")
+                    failure_path = self.workdir / "held-session-followup-failures.jsonl"
+                    failure_fd = os.open(failure_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT |
+                                         getattr(os, "O_NOFOLLOW", 0), 0o600)
+                    try:
+                        info = os.fstat(failure_fd)
+                        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                            raise SessionError("held state: follow-up failure evidence protection invalid")
+                        event = {"session": self.sid, "pod_id": self.pod_id, "time": now(),
+                                 "retryable": True, "job_id": followup_job_id,
+                                 "error": detail[:500]}
+                        os.write(failure_fd, (json.dumps(event, sort_keys=True) + "\n").encode())
+                        os.fsync(failure_fd)
+                    finally:
+                        os.close(failure_fd)
+                    # A remote diagnostic or local publication can fail after the command ran.
+                    # Restore the exact pre-attempt progress whose digest is already in custody.
+                    progress_path.write_bytes(original_progress)
+                    with progress_path.open("rb") as handle:
+                        os.fsync(handle.fileno())
+                    if _file_sha256(progress_path) != doc["progress_sha256"]:
+                        raise SessionError("held state: original progress could not be restored")
+                    doc["status"] = "held"
+                    self._write_held(doc)
+                    if self._read_held() != doc:
+                        raise SessionError("held state: retry custody verification failed")
+                    recovered = True
+                    self.say("HELD SESSION RETAINED; follow-up failure is durable and may be retried")
+                except Exception as recovery_exc:
+                    self.say(f"RECONCILIATION REQUIRED: held retry state could not be restored ({type(recovery_exc).__name__})")
+            if not recovered:
+                if release_attempted:
+                    self.say(f"RECONCILIATION REQUIRED: explicit release outcome for pod {self.pod_id} is uncertain")
+                else:
+                    self.say("RECONCILIATION REQUIRED: verify the recorded held pod and custody evidence; no release was attempted")
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             return 1

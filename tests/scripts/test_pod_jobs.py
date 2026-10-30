@@ -351,6 +351,7 @@ def test_single_row_hold_resume_and_verified_release_across_sessions(tmp_path, m
         primary = next(r for r in initial["steps"] if r["step"] == "job:image" and r["result"] == "failed")
         assert "exited 7" in primary["detail"]["error"]
         assert json.loads((session.workdir / "packets/image/machine-check.json").read_text())["status"] == "failed"
+        packet_before = _packet_snapshot(session.workdir)
         marker = tmp_path / "followup-ran"
         command = f"printf done > {shlex.quote(str(marker))}"
         resumed = held_control(session, pod, cli, transport_factory, command=command)
@@ -358,6 +359,8 @@ def test_single_row_hold_resume_and_verified_release_across_sessions(tmp_path, m
         assert marker.read_text() == "done"
         assert len(pod.launches) == 1 and not pod.terminated, failure_diagnostics(resumed)
         assert resumed.sid == session.sid and resumed.pod_id == session.pod_id
+        assert json.loads(held.read_text())["status"] == "held"
+        assert _packet_snapshot(session.workdir) == packet_before
         progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
         assert primary in progress["steps"]
         release = held_control(session, pod, cli, transport_factory)
@@ -373,16 +376,74 @@ def test_single_row_hold_resume_and_verified_release_across_sessions(tmp_path, m
              failure="command", after_run=after_run, process_boundary=process_boundary)
 
 
-def test_failed_followup_releases_and_retains_primary_failure(tmp_path, monkeypatch):
+def test_failed_followup_then_retry_keeps_same_held_pod_and_primary_evidence(tmp_path, monkeypatch):
     def after_run(session, pod, code, cli, transport_factory):
         assert code == 1 and not pod.terminated, failure_diagnostics(session)
+        packet_before = _packet_snapshot(session.workdir)
+        held = session.workdir / "held-session.json"
+        pod_id = session.pod_id
         resumed = held_control(session, pod, cli, transport_factory, command="exit 9")
         assert resumed.run_held(command="exit 9") == 1
-        assert_release_verified(resumed, pod)
+        failure_log = session.workdir / "held-session-followup-failures.jsonl"
+        assert failure_log.is_file()
+        failure = json.loads(failure_log.read_text().splitlines()[-1])
+        assert failure["retryable"] is True and failure["session"] == session.sid
+        assert failure["pod_id"] == pod_id and "exited 9" in failure["error"]
+        assert json.loads(held.read_text())["status"] == "held"
+        assert _packet_snapshot(session.workdir) == packet_before
+        assert pod.events.count("terminate") == 0 and len(pod.launches) == 1
+
+        marker = tmp_path / "retry-succeeded"
+        command = f"printf retried > {shlex.quote(str(marker))}"
+        retry = held_control(session, pod, cli, transport_factory, command=command)
+        assert retry.run_held(command=command) == 1
+        assert marker.read_text() == "retried"
         progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
         assert any(r["step"] == "job:image" and r["result"] == "failed"
                    and "exited 7" in r["detail"]["error"] for r in progress["steps"])
-        assert len(pod.launches) == 1 and not (session.workdir / "held-session.json").exists()
+        assert json.loads(held.read_text())["status"] == "held"
+        assert retry.pod_id == pod_id and pod.events.count("terminate") == 0
+        assert pod.events.count("launch") == 1 and len(pod.launches) == 1
+        assert _packet_snapshot(session.workdir) == packet_before
+
+    run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
+             failure="command", after_run=after_run)
+
+
+@pytest.mark.parametrize("fault", ["diagnostic", "persistence"])
+def test_transient_followup_diagnostic_or_persistence_error_retains_retry_custody(tmp_path, monkeypatch, fault):
+    def after_run(session, pod, code, cli, transport_factory):
+        assert code == 1 and not pod.terminated
+        held_path = session.workdir / "held-session.json"
+        progress_path = session.workdir / "pod-session-progress.json"
+        held_before = json.loads(held_path.read_text())
+        progress_before = progress_path.read_bytes()
+        packets_before = _packet_snapshot(session.workdir)
+        control = held_control(session, pod, cli, transport_factory, command="printf followup")
+        if fault == "diagnostic":
+            original_record = control.record
+            def fail_followup_record(step, result, detail):
+                if step == "follow-up":
+                    raise RuntimeError("fixture transient diagnostic interruption")
+                return original_record(step, result, detail)
+            monkeypatch.setattr(control, "record", fail_followup_record)
+        else:
+            monkeypatch.setattr(control, "write_progress", lambda **_kw: (_ for _ in ()).throw(
+                OSError("fixture progress publication interruption")))
+        assert control.run_held(command="printf followup") == 1
+        assert not pod.terminated and pod.events.count("terminate") == 0
+        assert len(pod.launches) == 1 and pod.events.count("launch") == 1
+        assert progress_path.read_bytes() == progress_before
+        assert _packet_snapshot(session.workdir) == packets_before
+        failure_path = session.workdir / "held-session-followup-failures.jsonl"
+        assert failure_path.is_file(), control.test_messages
+        held_after = json.loads(held_path.read_text())
+        assert held_after == held_before and held_after["status"] == "held"
+        failure = json.loads(failure_path.read_text().splitlines()[-1])
+        assert failure["retryable"] is True and failure["session"] == session.sid
+        assert failure["pod_id"] == session.pod_id
+        assert failure["error"] == ("RuntimeError" if fault == "diagnostic" else "OSError")
+        assert "RECONCILIATION REQUIRED:" not in "\n".join(control.test_messages)
 
     run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
              failure="command", after_run=after_run)
@@ -506,10 +567,13 @@ def test_held_resume_refuses_unusable_state_or_binding(tmp_path, monkeypatch, fa
             monkeypatch.setattr(resumed, "must", must)
         assert resumed.run_held(command=command) == 1
         assert not marker.exists() and len(pod.launches) == 1
-        if fault in ("missing", "corrupt", "identity"):
-            assert not pod.terminated  # No verified identity to terminate safely.
-        else:
-            assert_release_verified(resumed, pod)
+        assert not pod.terminated and pod.events.count("terminate") == 0
+        assert "RECONCILIATION REQUIRED:" in "\n".join(resumed.test_messages)
+        if fault not in ("missing", "corrupt"):
+            assert held.exists()
+            if fault in ("remote-source", "remote-manifest", "storage", "readiness", "transport"):
+                assert json.loads(held.read_text())["status"] == "in_use"
+        assert len(pod.launches) == 1 and not marker.exists()
 
     run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
              failure="command", after_run=after_run)
@@ -781,7 +845,7 @@ def test_transient_row_log_fetch_failure_cannot_hold(tmp_path, monkeypatch, stre
 
 
 @pytest.mark.parametrize("phase", ["row", "followup"])
-def test_transient_detached_poll_failure_releases_session(tmp_path, monkeypatch, phase):
+def test_transient_detached_poll_failure_retains_only_recoverable_followup(tmp_path, monkeypatch, phase):
     injected = []
     def inject(session, label_to_fail):
         original_run = session.run_job
@@ -814,11 +878,15 @@ def test_transient_detached_poll_failure_releases_session(tmp_path, monkeypatch,
             resumed = held_control(session, pod, cli, transport_factory, command="printf followup")
             inject(resumed, "follow-up")
             assert resumed.run_held(command="printf followup") == 1
-            assert_release_verified(resumed, pod)
+            assert (session.workdir / "held-session.json").exists()
+            assert json.loads((session.workdir / "held-session.json").read_text())["status"] == "held"
+            assert "RECONCILIATION REQUIRED:" not in "\n".join(resumed.test_messages)
+            assert not pod.terminated and pod.events.count("terminate") == 0
             progress = json.loads((session.workdir / "pod-session-progress.json").read_text())
             assert any(r["step"] == "job:image" and r["result"] == "failed" for r in progress["steps"])
         assert len(injected) == 1 and len(pod.launches) == 1
-        assert not (session.workdir / "held-session.json").exists()
+        if phase == "row":
+            assert not (session.workdir / "held-session.json").exists()
 
     run_jobs(tmp_path, monkeypatch, mixed=False, single=True, hold=True,
              failure="command", configure=configure, after_run=after_run)
