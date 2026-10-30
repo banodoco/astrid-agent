@@ -1,0 +1,16 @@
+[Unit]
+Description=Astrid Runtime
+
+[Service]
+ExecStart="/astrid/versions/v1/py/bin/python" "-X" "utf8" "-I" "-m" "astrid_runtime" "run" "--profile" "astrid" "--data-root" "/astrid data" "--source-manifest" "/astrid/versions/v1/profile.json"
+Environment="PATH=/astrid/tools:/usr/bin:/bin"
+Environment="PYTHONUTF8=1"
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=90
+StandardOutput="append:/logs/runtime-service.log"
+StandardError="append:/logs/runtime-service.log"
+
+[Install]
+WantedBy=default.target
