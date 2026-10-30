@@ -7,17 +7,35 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+from astrid.core.contracts.errors import AstridValueError
+
+if TYPE_CHECKING:
+    from .spec import H3Spec
 
 
-class H3RequestError(ValueError):
+class H3RequestError(AstridValueError):
     """A fail-closed request error with a user-facing path."""
+
+    def __init__(
+        self, message: str, *, code: str = "h3.request.invalid",
+        field: str = "request", fix: str = "Correct the request using its v1/v2 schema",
+    ) -> None:
+        super().__init__(message, code=code, field=field, fix=fix)
 
 
 @dataclass(frozen=True)
 class H3Request:
     value: dict[str, Any]
     digest: str
+
+    @property
+    def canonical(self) -> H3Spec:
+        """Return the Phase B view without changing legacy value or identity."""
+        from .spec import canonical_spec
+
+        return canonical_spec(self)
 
 
 _OPERATIONS = {"edit", "continue", "generate"}

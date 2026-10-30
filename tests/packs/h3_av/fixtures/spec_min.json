@@ -1,0 +1,217 @@
+[
+  {
+    "name": "source_free_generate",
+    "v1": {
+      "version": 1,
+      "content": {
+        "prompt": "A quiet café scene."
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {},
+      "operation": "generate",
+      "source": null,
+      "output": {
+        "duration": 5
+      },
+      "changes": {
+        "video": [],
+        "audio": []
+      }
+    },
+    "v2": {
+      "version": 2,
+      "prompt": "A quiet café scene.",
+      "settings": {},
+      "media": [
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "duration": 5
+    }
+  },
+  {
+    "name": "source_backed_regenerate",
+    "v1": {
+      "version": 1,
+      "content": {
+        "prompt": "A quiet café scene."
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {
+        "model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "steps": 8,
+        "seed": 123456789
+      },
+      "operation": "edit",
+      "source": {
+        "asset": "source.mp4",
+        "range": [
+          0,
+          4
+        ]
+      },
+      "output": {
+        "duration": 4
+      },
+      "changes": {
+        "video": [
+          {
+            "during": [
+              1,
+              2
+            ],
+            "area": {
+              "rectangle": [
+                8,
+                12,
+                32,
+                24
+              ]
+            },
+            "action": "generate"
+          }
+        ],
+        "audio": []
+      }
+    },
+    "v2": {
+      "version": 2,
+      "prompt": "A quiet café scene.",
+      "settings": {},
+      "media": [
+        {
+          "id": "source",
+          "asset": "source.mp4",
+          "role": "timeline",
+          "modality": "video",
+          "at": {
+            "frame": 0
+          },
+          "range": [
+            0,
+            4
+          ],
+          "edit": [
+            {
+              "stream": "video",
+              "during": [
+                1,
+                2
+              ],
+              "mask": {
+                "rectangle": [
+                  8,
+                  12,
+                  32,
+                  24
+                ]
+              },
+              "guides": [
+                "look"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "duration": 4
+    }
+  },
+  {
+    "name": "source_backed_extend",
+    "v1": {
+      "version": 1,
+      "content": {
+        "prompt": "A quiet café scene."
+      },
+      "references": [
+        {
+          "asset": "look.png",
+          "purpose": "appearance"
+        }
+      ],
+      "overrides": {},
+      "operation": "continue",
+      "source": {
+        "asset": "source.mp4",
+        "range": [
+          0,
+          2
+        ]
+      },
+      "output": {
+        "duration": 5
+      },
+      "changes": {
+        "video": [
+          {
+            "during": [
+              2,
+              5
+            ],
+            "area": {
+              "full_frame": true
+            },
+            "action": "generate"
+          }
+        ],
+        "audio": [
+          {
+            "during": [
+              2,
+              5
+            ],
+            "action": "generate"
+          }
+        ]
+      }
+    },
+    "v2": {
+      "version": 2,
+      "prompt": "A quiet café scene.",
+      "settings": {},
+      "media": [
+        {
+          "id": "source",
+          "asset": "source.mp4",
+          "role": "timeline",
+          "modality": "video",
+          "at": {
+            "frame": 0
+          },
+          "range": [
+            0,
+            2
+          ]
+        },
+        {
+          "id": "look",
+          "asset": "look.png",
+          "role": "reference",
+          "modality": "image"
+        }
+      ],
+      "duration": 5,
+      "continuation": true
+    }
+  }
+]
