@@ -4692,9 +4692,9 @@ class RuntimeProtocolClient:
         self._local_runtime_instance, self._local_runtime_realm = instance, realm
         return True
 
-    def health(self):
+    def health(self, *, deadline: float | None = None):
         """Read protocol/schema/runtime epoch through the generated client."""
-        value = self._lifecycle_client().health()
+        value = self._lifecycle_client(deadline=deadline).health()
         epoch = value.get("runtime_epoch") if isinstance(value, Mapping) else getattr(value, "runtime_epoch", None)
         if epoch is not None:
             self._runtime_epoch = int(epoch)
@@ -4719,9 +4719,9 @@ class RuntimeProtocolClient:
             raise HostError("authenticated Runtime worker readiness is foreign or incomplete")
         return str(field("realm_id"))
 
-    def _current_runtime_epoch(self) -> int:
+    def _current_runtime_epoch(self, *, deadline: float | None = None) -> int:
         """Read the live bootstrap epoch before every mutating operation."""
-        value = self.health()
+        value = self.health(deadline=deadline) if deadline is not None else self.health()
         epoch = value.get("runtime_epoch") if isinstance(value, Mapping) else getattr(value, "runtime_epoch", None)
         if epoch is None:
             raise HostError("runtime health returned no runtime_epoch")
@@ -4732,11 +4732,11 @@ class RuntimeProtocolClient:
         value = claim.get("attempt_id") if isinstance(claim, Mapping) else getattr(claim, "attempt_id", None)
         return str(value) if isinstance(value, str) and value else None
 
-    def _claimed_runtime_epoch(self, attempt_id: str) -> int:
+    def _claimed_runtime_epoch(self, attempt_id: str, *, deadline: float | None = None) -> int:
         expected = self._attempt_runtime_epochs.get(str(attempt_id))
         if expected is None:
             raise HostError("attempt runtime epoch was not captured at claim")
-        current = self._current_runtime_epoch()
+        current = self._current_runtime_epoch(deadline=deadline) if deadline is not None else self._current_runtime_epoch()
         if current != expected:
             raise HostError(
                 "runtime epoch changed after claim; stale attempt is fenced and requires reconciliation"
@@ -4816,25 +4816,29 @@ class RuntimeProtocolClient:
             idempotency_key=f"capability-withdraw-{capability_id}-{digest}",
         )
 
-    def _lifecycle_client(self):
+    def _lifecycle_client(self, *, deadline: float | None = None):
         """Bound lifecycle reads/writes without mutating concurrent RPC options."""
+        remaining = 2.0 if deadline is None else min(2.0, deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("attempt validity expired before Runtime operation")
         if not hasattr(self.generated, "timeout"):
             return self.generated
         client = copy.copy(self.generated)
-        client.timeout = min(float(client.timeout), 2.0)
+        client.timeout = min(float(client.timeout), remaining)
         return client
 
-    def heartbeat(self, task_id: str, lease_token: str, *, attempt_id: str | None = None, fence: int | None = None, progress: Mapping[str, Any] | None = None):
+    def heartbeat(self, task_id: str, lease_token: str, *, attempt_id: str | None = None, fence: int | None = None, progress: Mapping[str, Any] | None = None, deadline: float | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated heartbeat requires attempt_id and fence")
-        runtime_epoch = self._claimed_runtime_epoch(attempt_id)
+        runtime_epoch = self._claimed_runtime_epoch(attempt_id, deadline=deadline)
         # A heartbeat extends the lease and is therefore a new mutation, not a
         # replay of the first pulse.  Reusing one idempotency key here makes a
         # long render appear healthy to the host while the runtime repeatedly
         # returns the original receipt and lets the lease expire.
         # Delegated admission holds this same lock across its fenced RPCs.
         # Waiting for it must not strand the attempt's deadline observer.
-        if not self._heartbeat_lock.acquire(timeout=2.0):
+        remaining = 2.0 if deadline is None else min(2.0, max(0.0, deadline - time.monotonic()))
+        if not self._heartbeat_lock.acquire(timeout=remaining):
             raise HostError("runtime heartbeat authority is busy")
         try:
             self._heartbeat_sequence += 1
@@ -4850,7 +4854,7 @@ class RuntimeProtocolClient:
             }
             if progress is not None:
                 payload["progress"] = dict(progress)
-            return self._lifecycle_client().heartbeat_attempt(attempt_id, **payload)
+            return self._lifecycle_client(deadline=deadline).heartbeat_attempt(attempt_id, **payload)
         finally:
             self._heartbeat_lock.release()
 
@@ -4872,8 +4876,8 @@ class RuntimeProtocolClient:
             self._attempt_runtime_epochs[attempt_id] = int(raw_epoch if raw_epoch is not None else claim_epoch)
         return claim
 
-    def task(self, task_id: str):
-        return self._lifecycle_client().get_task(task_id)
+    def task(self, task_id: str, *, deadline: float | None = None):
+        return self._lifecycle_client(deadline=deadline).get_task(task_id)
 
     def upload_child_input(self, data: bytes, *, descriptor: Mapping[str, Any],
                            project_id: str | None, run_id: str, task_id: str,
@@ -9437,6 +9441,10 @@ class GenericPackHost:
             terminal["root"] = self.attempt_root
 
         def completion_call(operation, *args, **kwargs):
+            if operation == self.client.settle:
+                valid_until = terminal.get("lease_valid_until")
+                if lifetime.expired() or (valid_until is not None and time.monotonic() >= valid_until):
+                    force_abort("timeout" if lifetime.expired() else "lease_lost")
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
@@ -9449,8 +9457,18 @@ class GenericPackHost:
                 terminal.update(recorded=True, completion=result)
             return result
 
+        def lease_call(operation, *args, **kwargs):
+            # The adapter bounds each transport and lock wait by the remaining
+            # acknowledged validity as well as the independent execution cap.
+            if isinstance(getattr(operation, "__self__", None), RuntimeProtocolClient):
+                bounds = [value for value in (lifetime.deadline(), terminal.get("lease_valid_until"))
+                          if value is not None]
+                if bounds:
+                    kwargs["deadline"] = min(bounds)
+            return operation(*args, **kwargs)
+
         def task_snapshot():
-            current = self.client.task(str(data["id"]))
+            current = lease_call(self.client.task, str(data["id"]))
             if isinstance(current, Mapping):
                 current = current.get("task", current)
             def value(name, default=None):
@@ -9487,15 +9505,8 @@ class GenericPackHost:
                 detail["runtime_code"] = code
             if request_id and all(char.isalnum() or char in "._:-" for char in request_id):
                 detail["request_id"] = request_id
-            message = safe_lease_value(attr("message"), limit=256)
-            if message:
-                # Error messages are optional and may contain request payloads.
-                # Exclude likely credential-bearing forms instead of persisting them.
-                lowered = message.lower()
-                sensitive = ("token", "secret", "password", "bearer", "authorization",
-                             "prompt", "payload", "progress", "media", "input", "credential")
-                if not any(marker in lowered for marker in sensitive):
-                    detail["runtime_message"] = message
+            # Transport errors can expose raw exception text through message.
+            # Persist typed identifiers only, never exception/message strings.
             return detail
 
         def lease_snapshot_detail(current):
@@ -9566,31 +9577,82 @@ class GenericPackHost:
                     pass
             return terminal.get("progress")
 
-        def renew_progress():
-            # A timer is not evidence of progress. Host stage advances and
-            # changed semantic child checkpoints are the only renewal credits.
+        def lease_transport_fault(category, error, current=None):
+            record_lease_diagnostic(category, current=current, error=error)
+            try:
+                code = getattr(error, "code", None)
+                transient = ((getattr(error, "status", None) == 0
+                              and code in {"transport_timeout", "transport_error"})
+                             or (isinstance(error, OSError) and code is None))
+            except BaseException:
+                transient = False
+            with completion_lock:
+                valid_until = terminal.get("lease_valid_until")
+                return (transient and valid_until is not None and time.monotonic() < valid_until
+                        and lifetime.deadline() is not None and not lifetime.expired()
+                        and not terminal.get("forced") and not terminal.get("recorded")
+                        and not stop.is_set())
+
+        def renew_progress(*, liveness=False):
+            # Progress and ownership are independent. Only a changed semantic
+            # checkpoint is sent as progress; a bounded liveness tick omits it.
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
             with completion_lock:
                 if stop.is_set() or terminal.get("recorded") or terminal.get("forced") or lifetime.expired():
                     return
-                if token == terminal.get("renewed_progress"):
+                valid_until = terminal.get("lease_valid_until")
+                if valid_until is not None and time.monotonic() >= valid_until:
+                    raise HostError("execution lease expired before renewal")
+                changed = token != terminal.get("renewed_progress")
+                if terminal.get("renewal_inflight") or not (changed or (
+                        liveness and valid_until is not None and lifetime.deadline() is not None)):
                     return
-                terminal["renewed_progress"] = token
+                terminal["renewal_inflight"] = True
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
-            if progress is not None:
+            if progress is not None and token[1] != terminal.get("sent_progress"):
                 kwargs["progress"] = progress
-            result = self.client.heartbeat(str(data["id"]), lease_token, **kwargs)
+            started = time.monotonic()
+            started_utc = datetime.now(timezone.utc)
             try:
-                expiry = (result.get("lease_expires_at") if isinstance(result, Mapping)
-                          else getattr(result, "lease_expires_at", None))
-            except BaseException:
-                expiry = None
-            with completion_lock:
-                diagnostic = dict(terminal["lease_diagnostic"])
-                diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
-                diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
-                terminal["lease_diagnostic"] = diagnostic
+                result = lease_call(self.client.heartbeat, str(data["id"]), lease_token, **kwargs)
+                def field(name):
+                    return result.get(name) if isinstance(result, Mapping) else getattr(result, name, None)
+                for name, expected in (("attempt_id", exact_attempt), ("fence", exact_fence),
+                                       ("task_id", str(data["id"])), ("lease_id", lease_token),
+                                       ("runtime_epoch", data.get("runtime_epoch"))):
+                    if field(name) is not None and expected is not None and field(name) != expected:
+                        raise HostError("heartbeat acknowledgement changed attempt ownership")
+                expiry = field("lease_expires_at")
+                acknowledged_until = None
+                if expiry is not None or valid_until is not None:
+                    try:
+                        parsed = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                        if parsed.tzinfo is None:
+                            raise ValueError("lease expiry requires timezone")
+                        acknowledged_until = started + (parsed - started_utc).total_seconds()
+                    except (AttributeError, TypeError, ValueError) as exc:
+                        raise HostError("invalid heartbeat lease expiry") from exc
+                with completion_lock:
+                    if terminal.get("forced") or terminal.get("recorded") or lifetime.expired() or stop.is_set():
+                        return
+                    now = time.monotonic()
+                    prior_until = terminal.get("lease_valid_until")
+                    if ((prior_until is not None and now >= prior_until)
+                            or (acknowledged_until is not None and now >= acknowledged_until)):
+                        raise HostError("heartbeat acknowledgement arrived after lease expiry")
+                    if acknowledged_until is not None:
+                        terminal["lease_valid_until"] = acknowledged_until
+                    terminal["renewed_progress"] = token
+                    if "progress" in kwargs:
+                        terminal["sent_progress"] = token[1]
+                    diagnostic = dict(terminal["lease_diagnostic"])
+                    diagnostic["last_successful_heartbeat_at_utc"] = datetime.now(timezone.utc).isoformat()
+                    diagnostic["last_successful_heartbeat_expiry"] = safe_lease_value(expiry, limit=96)
+                    terminal["lease_diagnostic"] = diagnostic
+            finally:
+                with completion_lock:
+                    terminal["renewal_inflight"] = False
 
         def force_abort(code):
             if code == "lease_lost" and terminal["lease_diagnostic"].get("category") == "observing":
@@ -9623,6 +9685,13 @@ class GenericPackHost:
                     return
                 if terminal.get("recorded"):
                     return
+                valid_until = terminal.get("lease_valid_until")
+                if valid_until is not None and time.monotonic() >= valid_until:
+                    # Keep the last typed transport observation, if any.
+                    if terminal["lease_diagnostic"].get("category") == "observing":
+                        record_lease_diagnostic("lease_expired")
+                    force_abort("lease_lost")
+                    return
                 if self._shutdown.is_set():
                     force_abort("cancelled")
                     return
@@ -9632,7 +9701,8 @@ class GenericPackHost:
                 try:
                     current = task_snapshot()
                 except BaseException as exc:
-                    record_lease_diagnostic("task_read_exception", error=exc)
+                    if lease_transport_fault("task_read_exception", exc):
+                        continue
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
                 record_lease_diagnostic("observing", current=current)
@@ -9651,6 +9721,9 @@ class GenericPackHost:
                             record_lease_diagnostic("lease_expired", current=current)
                             force_abort("lease_lost")
                             return
+                        if terminal.get("lease_valid_until") is not None:
+                            terminal["lease_valid_until"] = min(terminal["lease_valid_until"],
+                                time.monotonic() + (expiry - datetime.now(timezone.utc)).total_seconds())
                     except (AttributeError, TypeError, ValueError) as exc:
                         record_lease_diagnostic("lease_metadata_invalid", current=current, error=exc)
                         force_abort("lease_lost")
@@ -9671,14 +9744,16 @@ class GenericPackHost:
                 # authority. The observer must keep its deadline clock
                 # available if those authority reads themselves stall.
                 try:
-                    renew_progress()
+                    renew_progress(liveness=True)
                 except BaseException as exc:
-                    record_lease_diagnostic("heartbeat_exception", current=current, error=exc)
+                    if lease_transport_fault("heartbeat_exception", exc, current):
+                        continue
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
-                        read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort)
+                        read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort,
+                        lease_transport_fault=lease_transport_fault, task_snapshot=task_snapshot)
         pump_thread = None
         try:
             owns_attempt = self._handoff_begin_direct_attempt()
@@ -9695,6 +9770,19 @@ class GenericPackHost:
                 except (AttributeError, TypeError, ValueError) as exc:
                     raise HostError("invalid claimed task deadline_at") from exc
             terminal["record"] = self.capabilities.get(str(data.get("capability", "")))
+            # A claimed/read lease is already acknowledged authority. Use its
+            # remaining validity for silent setup, never an invented TTL. The
+            # ordinary admission path still precedes the first mutation when
+            # no such acknowledgement was supplied.
+            if data.get("lease_expires_at") is not None:
+                try:
+                    expiry = datetime.fromisoformat(data["lease_expires_at"].replace("Z", "+00:00"))
+                    if expiry.tzinfo is None:
+                        raise ValueError("lease expiry requires timezone")
+                    terminal["lease_valid_until"] = time.monotonic() + (
+                        expiry - datetime.now(timezone.utc)).total_seconds()
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise HostError("invalid claimed lease expiry") from exc
             pump_thread = threading.Thread(target=pump_lease, name=f"astrid-heartbeat-{data.get('id')}", daemon=True)
             terminal["pump_thread"] = pump_thread
             # Root ownership is established before the observer may publish.
@@ -9702,6 +9790,12 @@ class GenericPackHost:
             pump_thread.start()
             if _setup_error is not None:
                 raise _setup_error
+            if terminal.get("lease_valid_until") is not None:
+                try:
+                    renew_progress()
+                except Exception as exc:
+                    if not lease_transport_fault("heartbeat_exception", exc):
+                        raise
             _publish_busy(busy_path, +1)
             busy_published = True
             # This is pure admission validation. Tighten the same absolute
@@ -10033,11 +10127,7 @@ class GenericPackHost:
         self._vibecomfy_requested_warmth_hint = None
 
         def current_task_state():
-            current = self.client.task(task_id)
-            current_task = current.get("task", current) if isinstance(current, Mapping) else current
-            if isinstance(current_task, Mapping):
-                return current_task.get("state", current_task.get("status"))
-            return getattr(current_task, "state", getattr(current_task, "status", None))
+            return _terminal["task_snapshot"]()["status"]
 
         def cancelled():
             nonlocal deadline_exceeded, evidence_cap_exceeded
@@ -10073,7 +10163,9 @@ class GenericPackHost:
                     self._publish_evidence_status()
             try:
                 state = current_task_state()
-            except Exception:
+            except Exception as exc:
+                if _terminal["lease_transport_fault"]("task_read_exception", exc):
+                    return False
                 _terminal["force_abort"]("lease_lost")
                 return True
             # A request contains this owned invocation; it is not a Runtime
@@ -10127,7 +10219,11 @@ class GenericPackHost:
                                 fence=fence, lease_id=lease_token)
 
         read_progress = _terminal["read_progress"]
-        _terminal["renew_progress"]()
+        try:
+            _terminal["renew_progress"]()
+        except Exception as exc:
+            if not _terminal["lease_transport_fault"]("heartbeat_exception", exc):
+                raise
         child_bridge = None
         session_hold = None
         try:
@@ -10629,8 +10725,9 @@ class GenericPackHost:
             if final_progress is not None and not cancelled():
                 try:
                     _terminal["renew_progress"]()
-                except Exception:
-                    _terminal["force_abort"]("lease_lost")
+                except Exception as exc:
+                    if not _terminal["lease_transport_fault"]("heartbeat_exception", exc):
+                        _terminal["force_abort"]("lease_lost")
             if cancelled():
                 handle_guard_abort()
                 if deadline_failed:
