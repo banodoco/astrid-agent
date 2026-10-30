@@ -4903,10 +4903,14 @@ class RuntimeProtocolClient:
     def admit_child(self, *, child: Mapping[str, Any], inputs: Mapping[str, Any],
                     ordered_inputs: list[Mapping[str, Any]], derived_inputs: list[Mapping[str, Any]],
                     task_id: str, attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
-                    run_id: str, project_id: str | None):
+                    run_id: str, project_id: str | None,
+                    execution_request: Mapping[str, Any] | None = None):
         """Exact issuance/admission pair; signed receipt stays in this frame."""
         from ._child_bridge import ChildBridgeError, resource
 
+        # The bridge selects explicit/inherited controls; receipts remain the
+        # authority for managed inputs, independent of those controls.
+        request = normalize_execution_request(execution_request)
         with self._heartbeat_lock:
             self.heartbeat(task_id, lease_id, attempt_id=attempt_id, fence=fence)
             if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
@@ -4939,9 +4943,17 @@ class RuntimeProtocolClient:
             task = {"capability_id": child["capability_id"], "capability_digest": child["capability_digest"],
                     "input_object_ids": [ref["object_id"] for ref in descriptors],
                     "spec": {"capability_id": child["capability_id"], "kind": "action", "inputs": child_inputs}}
-            if descriptors:
+            if request is not None and request.get("inputs"):
+                supplied = [{**item, "digest": item.get("digest", item["object_id"])}
+                            for item in request["inputs"]]
+                if supplied != descriptors:
+                    raise ChildBridgeError("child execution_request inputs disagree with canonical descriptors")
+            if request is not None or descriptors:
                 task["execution_request"] = normalize_execution_request({
-                    "schema_version": 1, "target": {"kind": "default"}, "inputs": descriptors,
+                    **(request if request is not None else {
+                        "schema_version": 1, "target": {"kind": "default"},
+                    }),
+                    "inputs": descriptors,
                 })
             return self.generated.admit_delegated_task(
                 authority=receipt["authority"], task=task, idempotency_key=child["child_id"])
