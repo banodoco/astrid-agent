@@ -608,6 +608,7 @@ def test_dry_run_includes_the_final_publication_stage(tmp_path: Path) -> None:
     ]))
     assert result["status"] == "planned"
     assert result["stages"][-1] == "h3_av.publication_finalizer"
+    assert not (tmp_path / "operation/result.json").exists()
 
 
 def _transform_args(tmp_path: Path, *extra: str, target=None):
@@ -621,6 +622,34 @@ def _transform_args(tmp_path: Path, *extra: str, target=None):
         args.execution_request = tmp_path / "execution-request.json"
         args.execution_request.write_text(json.dumps({"target": target}), encoding="utf-8")
     return args
+
+
+@pytest.mark.parametrize("different_request", [False, True])
+def test_rejected_journal_admission_preserves_existing_terminal_result(tmp_path, monkeypatch, different_request):
+    import json
+    from contextlib import nullcontext
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform import run as transform
+    from astrid.packs.h3_av.shared.request import normalize_request
+
+    args = _transform_args(tmp_path)
+    request = normalize_request({
+        "version": 1, "operation": "generate", "output": {"duration": 1},
+        "content": {"prompt": "scene"}, "changes": {"video": [], "audio": []},
+        "references": [{"asset": "image.png", "purpose": "appearance"}], "overrides": {},
+    })
+    args.request.write_text(json.dumps(request.value))
+    journal = OperationJournal(args.out / "operation-state.json", request_digest="other" if different_request else request.digest)
+    journal.record("operation", "candidate_verified")
+    prior_journal = journal.path.read_bytes()
+    result_path = args.out / "result.json"
+    result_path.write_bytes(b'{"prior": "terminal receipt"}\n')
+    monkeypatch.setattr(transform, "_resolve_local_engine", lambda: object())
+    monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(object()))
+    with pytest.raises(AstridError, match="another request|already has history"):
+        transform.run_transform(args)
+    assert result_path.read_bytes() == b'{"prior": "terminal receipt"}\n'
+    assert journal.path.read_bytes() == prior_journal
 
 
 def test_placement_flag_defaults_to_unset_and_accepts_local_runpod(tmp_path: Path) -> None:
@@ -643,6 +672,12 @@ def test_local_placement_fails_fast_when_engine_not_installed(tmp_path: Path, mo
         with pytest.raises(AstridError) as caught:
             transform.run_transform(_transform_args(tmp_path, *extra))
         assert caught.value.recovery_command == "astrid engines install vibecomfy-h3"
+        import json
+        receipt = json.loads((tmp_path / "operation/result.json").read_text())
+        assert receipt["status"] == "failed" and receipt["ok"] is False
+        assert receipt["capability_id"] == "h3_av.transform"
+        assert receipt["outputs"] == {"artifacts": []}
+        assert receipt["error"]["message"] == str(caught.value)
 
 
 def test_local_placement_reports_endpoint_ownership(tmp_path: Path, monkeypatch) -> None:
@@ -660,6 +695,10 @@ def test_local_placement_reports_endpoint_ownership(tmp_path: Path, monkeypatch)
     assert caught.value.code == "endpoint_ownership"
     assert "unowned" in str(caught.value)
     assert not caught.value.recovery_command
+    import json
+    receipt = json.loads((tmp_path / "operation/result.json").read_text())
+    assert receipt["status"] == "failed"
+    assert receipt["error"]["code"] == "endpoint_ownership"
 
 
 def test_runpod_placement_without_prepared_worker_uses_the_remote_wrapper(tmp_path: Path, monkeypatch) -> None:

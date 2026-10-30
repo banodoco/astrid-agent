@@ -13,6 +13,7 @@ from astrid.packs.h3_av.shared.compose import (
     CompositionError,
     _audio_witness,
     _sample_digest,
+    _segments_with_spatial_masks,
     _spatial_video_masks,
     _validate_candidate_coverage,
     _verify_spatial_mask_complement,
@@ -51,7 +52,18 @@ def _probe_strict(path: Path) -> dict[str, Any]:
         value = json.loads(completed.stdout)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as exc:
         raise VerificationError(f"ffprobe failed for {path.name}") from exc
-    if not isinstance(value, dict) or not value:
+    streams = value.get("streams") if isinstance(value, dict) else None
+    if (
+        not isinstance(streams, list)
+        or not streams
+        or any(not isinstance(stream, Mapping) for stream in streams)
+        or not any(
+            stream.get("codec_type") in ("video", "audio")
+            and isinstance(stream.get("codec_name"), str)
+            and stream["codec_name"].strip()
+            for stream in streams
+        )
+    ):
         raise VerificationError(f"ffprobe produced no usable output for {path.name}")
     return value
 
@@ -158,6 +170,7 @@ def _verify_sample_evidence(
                     or candidate_actual != candidate_hash
                     or source_count <= 0
                     or candidate_count <= 0
+                    or sample_count != min(source_count, candidate_count)
                 ):
                     raise VerificationError(f"protected {stream_type} sample digest does not match candidate")
             elif method == "ffmpeg-decoded-audio-similarity-v1":
@@ -171,6 +184,10 @@ def _verify_sample_evidence(
                 ):
                     raise VerificationError("protected audio evidence is not a positive matching sample witness")
                 try:
+                    source_actual, _ = _sample_digest(
+                        source, stream_type, _source_offset(preparation) + key[0], key[1] - key[0]
+                    )
+                    candidate_actual, _ = _sample_digest(candidate, stream_type, key[0], key[1] - key[0])
                     witness = _audio_witness(
                         source=source,
                         candidate=candidate,
@@ -182,6 +199,12 @@ def _verify_sample_evidence(
                     raise VerificationError("protected audio samples could not be decoded") from exc
                 if float(witness["similarity"]) < 0.985 or witness["sample_count"] <= 0:
                     raise VerificationError("protected audio evidence is not a positive matching sample witness")
+                if (
+                    source_actual != source_hash
+                    or candidate_actual != candidate_hash
+                    or any(entry.get(field) != value for field, value in witness.items())
+                ):
+                    raise VerificationError("protected audio sample witness does not match candidate")
             else:
                 # A witness_digest the record declares about itself is not
                 # evidence: only methods verify can recompute from the source
@@ -198,11 +221,20 @@ def _verify_provenance(preparation: Mapping[str, Any], composition: Mapping[str,
     schedule = preparation.get("mask_schedule")
     if not isinstance(schedule, Mapping) or composition.get("schedule_digest") != schedule.get("digest"):
         raise VerificationError("composition schedule provenance does not match preparation")
+    encoded = json.dumps(
+        {key: value for key, value in schedule.items() if key != "digest"},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if hashlib.sha256(encoded).hexdigest() != schedule.get("digest"):
+        raise VerificationError("mask schedule digest does not match preparation permissions")
     provenance = composition.get("provenance")
     if provenance in (None, {}):
         return
     if not isinstance(provenance, Mapping) or provenance.get("request_digest") != preparation.get("request_digest"):
         raise VerificationError("composition provenance is missing the request identity")
+    if "schedule_digest" in provenance and provenance["schedule_digest"] != schedule.get("digest"):
+        raise VerificationError("composition mask schedule provenance does not match preparation")
     assets = provenance.get("assets")
     prepared_assets = preparation.get("assets")
     if assets is not None:
@@ -334,7 +366,10 @@ def verify_candidate(
         preservation_status = "no_protected_permissions"
 
     spatial_evidence: list[dict[str, Any]] = []
-    spatial_masks = _spatial_video_masks(preparation, source_path)
+    try:
+        spatial_masks = _spatial_video_masks(preparation, source_path)
+    except CompositionError as exc:
+        raise VerificationError(str(exc)) from exc
     if spatial_masks:
         if source_path is None:
             raise VerificationError("regional video preservation requires an authoritative source")
@@ -342,16 +377,33 @@ def verify_candidate(
             composition.get("composition", {}).get("video_segments", [])
             if isinstance(composition.get("composition"), Mapping) else []
         )
-        for segment in declared_segments:
-            if isinstance(segment, Mapping) and segment.get("mask_sha256"):
-                for mask in spatial_masks:
-                    if mask.get("asset") == segment.get("mask_asset") and _sha256(
-                        Path(str(mask["path"]))
-                    ) != segment["mask_sha256"]:
-                        raise VerificationError(
-                            "regional mask provenance does not match composition evidence"
-                        )
+        if not isinstance(declared_segments, list):
+            raise VerificationError("regional mask provenance is missing composition segments")
         try:
+            expected_segments = []
+            assets = {row.get("asset"): row for row in preparation.get("assets", []) if isinstance(row, Mapping)}
+            for mask in spatial_masks:
+                path = Path(str(mask["path"]))
+                record = assets.get(mask["asset"], {})
+                if record.get("sha256") != _sha256(path) or record.get("size") != path.stat().st_size:
+                    raise VerificationError("regional mask provenance does not match preparation asset evidence")
+            for start, end, _generated, mask in _segments_with_spatial_masks(
+                float(schedule["duration"]), list(schedule["video"]["generated_intervals"]), spatial_masks
+            ):
+                if mask is not None:
+                    expected_segments.append({
+                        "during": [start, end], "mask_asset": mask["asset"],
+                        "mask_sha256": _sha256(Path(str(mask["path"]))),
+                        "mask_kind": mask["kind"], "mask_frames": mask["frames"],
+                    })
+            fields = ("during", "mask_asset", "mask_sha256", "mask_kind", "mask_frames")
+            actual_segments = [
+                {field: segment.get(field) for field in fields}
+                for segment in declared_segments
+                if isinstance(segment, Mapping) and any(field in segment for field in fields[1:])
+            ]
+            if actual_segments != expected_segments:
+                raise VerificationError("regional mask provenance does not match composition evidence")
             spatial_evidence = _verify_spatial_mask_complement(
                 source=source_path,
                 candidate=candidate_path,

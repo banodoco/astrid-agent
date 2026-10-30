@@ -17,7 +17,10 @@ from typing import Any, Mapping
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
-from astrid.core.contracts.errors import AstridError
+from astrid.core._shared.result_manifest import write_json_atomic
+from astrid.core.contracts.errors import AstridError, coerce_astrid_error
+from astrid.core.execution.terminal_result import serialize_terminal_result
+from astrid.core.foundation.hash import sha256_file
 from astrid.core.execution.worker_qualification import (
     WorkerQualificationError,
     ensure_runpod_worker,
@@ -25,6 +28,7 @@ from astrid.core.execution.worker_qualification import (
     qualification_digest,
 )
 from astrid.core.pack.entrypoint import guard_canonical_entrypoint, run_pack_main
+from astrid.packs.h3_av.actions.compose.run import _video_media_type
 from astrid.packs.h3_av.actions.transform.operation import OperationJournal, OperationJournalError
 from astrid.packs.h3_av.actions.transform.receipt import (
     attest_runtime_managed_composition,
@@ -1372,7 +1376,10 @@ def _finalizer_generation_intent(
     }
 
 
-def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
+def _run_transform_unlocked(
+    args: argparse.Namespace, *, terminal: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    terminal = terminal if terminal is not None else {}
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     execution_request = _json_mapping(args.execution_request) if args.execution_request else None
@@ -1406,6 +1413,8 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             "stages": ["h3_av.prepare", "h3_av.compile", "vibecomfy.validate", "vibecomfy.run", "h3_av.compose", "h3_av.verify", "h3_av.publication_finalizer"],
         }
     local_engine = None
+    # The remote placement command owns execution on its local run root.
+    terminal["enabled"] = placement == "local" or legacy_prepared
     if placement == "local":
         local_engine = _resolve_local_engine()
     elif not legacy_prepared:
@@ -1454,15 +1463,19 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
     with AstridClient.open_from_launcher(start_pack_host=False) as client:
         raw_request = load_request_document(args.request)
         request = normalize_request(raw_request)
+        terminal["request_digest"] = request.digest
         try:
             journal = OperationJournal(
                 root / "operation-state.json", request_digest=request.digest
             )
         except OperationJournalError as exc:
+            terminal["enabled"] = False
             raise AstridError(f"cannot open H3 operation journal: {exc}") from exc
         if journal.has_history and not getattr(args, "resume", False):
+            terminal["enabled"] = False
             raise AstridError("operation journal already has history; use --resume to continue it")
         journal.record("operation", "started", resume=bool(getattr(args, "resume", False)))
+        terminal["journal"] = journal
         idempotency_context = {"h3_submission_id": journal.submission_id}
         staging = root / "staged-inputs"
         staging.mkdir(parents=True, exist_ok=True)
@@ -1679,6 +1692,10 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
         )
         verification_path, verification_row = _materialize_output(client, verified, "verification", root / "06-verify", managed_only=True)
         verification = _json_mapping(verification_path)
+        if (verification.get("status") != "verified"
+                or verification.get("request_digest") != request.digest
+                or "sha256:" + str(verification.get("candidate_sha256")) != candidate_row["digest"]):
+            raise AstridError("verification does not certify the composed candidate digest")
         task_evidence = {
             key: value
             for key, value in {
@@ -1781,12 +1798,27 @@ def _run_transform_unlocked(args: argparse.Namespace) -> dict[str, Any]:
             raw_managed_publication=raw_managed_publication,
             final_managed_publication=final_managed_publication,
         )
+        # A child generation receipt cannot certify the whole composition.
+        # Revalidate the local bytes after the finalizer before describing them
+        # as a verified result of this operation.
+        candidate_digest = "sha256:" + sha256_file(candidate_path)
+        candidate_size = candidate_path.stat().st_size
+        if (candidate_digest != candidate_row["digest"]
+                or (candidate_row.get("size") is not None and candidate_size != candidate_row["size"])):
+            raise AstridError("verified candidate digest or size changed before result publication")
+        if receipt["states"]["candidate_verified"]["status"] != "passed":
+            raise AstridError("operation has no verified composition")
         final_receipt_path = write_final_receipt(root / "08-final-receipt.json", receipt)
         journal.record(
             "operation",
             receipt["overall_status"],
             final_receipt=str(final_receipt_path),
         )
+        terminal["artifacts"] = [{
+            "id": "candidate#0", "name": "candidate", "ordinal": 0,
+            "digest": candidate_digest, "media_type": _video_media_type(candidate_path),
+            "size": candidate_size, "path": str(candidate_path), "role": "result",
+        }]
     return {
         "status": receipt["overall_status"],
         "preparation": str(preparation_path),
@@ -1829,7 +1861,49 @@ def run_transform(args: argparse.Namespace) -> dict[str, Any]:
     root = args.out.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     with _operation_directory_writer_lock(root):
-        return _run_transform_unlocked(args)
+        terminal: dict[str, Any] = {}
+        try:
+            result = _run_transform_unlocked(args, terminal=terminal)
+        except Exception as exc:
+            journal = terminal.get("journal")
+            if journal is not None:
+                journal.record("operation", "failed", error=type(exc).__name__, message=str(exc)[:1000])
+            if terminal.get("enabled"):
+                _write_transform_result(args, root, terminal, error=exc)
+            raise
+        if terminal.get("enabled"):
+            _write_transform_result(args, root, terminal, result=result)
+        return result
+
+
+def _write_transform_result(
+    args: argparse.Namespace,
+    root: Path,
+    terminal: Mapping[str, Any],
+    *,
+    result: Mapping[str, Any] | None = None,
+    error: Exception | None = None,
+) -> None:
+    normalized = coerce_astrid_error(error) if error is not None else None
+    options = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    receipt = serialize_terminal_result(
+        InvocationResult(
+            capability_id="h3_av.transform", capability_type="orchestrator", native_kind="orchestrator",
+            ok=error is None, run_root=str(root), raw_result=dict(result or {}),
+            error=None if normalized is None else {
+                "code": normalized.code or "executor_failed", "message": normalized.message,
+                "field": normalized.field, "fix": normalized.fix,
+            },
+            outputs={"artifacts": terminal.get("artifacts", []) if error is None else []},
+        ),
+        status="succeeded" if error is None else "failed",
+        # This local orchestrator has no parent Runtime task or settlement.
+        task_id=None, attempt_id=None, parent_task_id=None, parent_attempt_id=None,
+        request_digest=terminal.get("request_digest") or _stable_digest(options),
+        resolved_options=options, cost=None, warnings=[],
+        settled=False, settlement=None, effect=None,
+    )
+    write_json_atomic(root / "result.json", receipt)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -712,19 +712,35 @@ def test_generation_prompt_socket_type_survives_canonical_reload(tmp_path: Path,
         assert graph.inputs["prompt"].field == "prompt"
 
 
-@pytest.mark.parametrize(("operation", "finalizer_state"), [
-    ("continue", "passed"), ("edit", "passed"), ("generate", "passed"),
-    ("continue", "rejected"), ("continue", "unclaimed"), ("character", "passed"),
+@pytest.mark.parametrize(("operation", "finalizer_state", "placement", "verification_fault"), [
+    ("continue", "passed", "runpod", None),
+    ("edit", "passed", "runpod", None),
+    ("generate", "passed", "runpod", None),
+    ("continue", "rejected", "runpod", None),
+    ("continue", "unclaimed", "runpod", None),
+    ("character", "passed", "runpod", None),
+    ("generate", "passed", "local", None),
+    *[("generate", "passed", "local", fault) for fault in (
+        "forged_verify_status", "forged_verify_request", "forged_verify_candidate",
+        "candidate_after_verify",
+    )],
+    *[("continue", "passed", "local", fault) for fault in (
+        "ffprobe_missing", "ffprobe_exit", "ffprobe_empty", "ffprobe_garbled", "ffprobe_unusable",
+        "forged_witness_method", "forged_witness_digest", "schedule", "candidate",
+    )],
+    ("edit", "passed", "local", "mask"),
 ])
 @pytest.mark.integration
 @pytest.mark.ffmpeg
 def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, finalizer_state: str,
+    placement: str, verification_fault: str | None, request: pytest.FixtureRequest,
 ):
     """Run the real H3 stages through admission/materialization; fake only CAS
     transport and GPU generation. No preceding directory survives a handoff.
     """
     import yaml
+    from astrid.core.contracts.errors import AstridError
     from astrid.core.execution.generic_host import GenericPackHost
     from astrid.packs.h3_av.actions.transform import run as transform
     from astrid.sdk.invocation import _kernel_invoke
@@ -739,6 +755,14 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     if operation == "edit":
         raw["source"]["range"] = [0, 2]
     asset_map = {"source": str(source)}
+    if verification_fault == "mask":
+        from PIL import Image
+        mask = caller / "region.png"
+        Image.new("L", (32, 32), 255).save(mask)
+        raw["changes"]["video"][0].update(
+            area={"rectangle": [0, 0, 32, 32]}, mask_asset=mask.name,
+        )
+        asset_map[mask.name] = str(mask)
     if operation == "character":
         from PIL import Image
         _synthetic_av(source, 15, color="blue")
@@ -1022,6 +1046,11 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                     "outputs": {"artifacts": [final_row]},
                     "managed_outputs": [managed],
                 }
+                if verification_fault == "candidate_after_verify":
+                    candidates = [path for path in (tmp_path / "parent/05-compose/retrieved").iterdir()
+                                  if path.suffix != ".json"]
+                    assert len(candidates) == 1
+                    candidates[0].write_bytes(b"changed after successful verification")
                 shutil.rmtree(attempt)
                 return InvocationResult(
                     capability_id=capability_id,
@@ -1060,7 +1089,59 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                     if arg["input"] in localized:
                         argv.extend([arg["flag"], str(localized[arg["input"]])])
                 module = importlib.import_module(f"astrid.packs.h3_av.actions.{stage}.run")
+                if stage == "verify" and verification_fault and verification_fault.startswith("ffprobe_"):
+                    # Break only the external probe at the real verification
+                    # boundary; compose and the verifier itself remain real.
+                    from astrid.packs.h3_av.actions.verify import verify as verifier
+                    real_which, real_run = shutil.which, subprocess.run
+                    with monkeypatch.context() as probe_patch:
+                        if verification_fault == "ffprobe_missing":
+                            probe_patch.setattr(verifier.shutil, "which", lambda name: (
+                                None if name == "ffprobe" else real_which(name)
+                            ))
+                        else:
+                            def failed_probe(command, *args, **kwargs):
+                                if Path(command[0]).name != "ffprobe":
+                                    return real_run(command, *args, **kwargs)
+                                if verification_fault == "ffprobe_exit":
+                                    raise subprocess.CalledProcessError(1, command)
+                                output = {
+                                    "ffprobe_empty": "", "ffprobe_garbled": "{not json",
+                                    "ffprobe_unusable": '{"streams": []}',
+                                }[verification_fault]
+                                return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
+                            probe_patch.setattr(verifier.subprocess, "run", failed_probe)
+                        module.main(argv)
+                    pytest.fail("verification accepted an unusable ffprobe")
                 assert module.main(argv) == 0
+                if stage == "verify" and verification_fault and verification_fault.startswith("forged_verify_"):
+                    report_path = out / "verification.json"
+                    report = json.loads(report_path.read_text())
+                    field, value = {
+                        "forged_verify_status": ("status", "failed"),
+                        "forged_verify_request": ("request_digest", "sha256:" + "0" * 64),
+                        "forged_verify_candidate": ("candidate_sha256", "0" * 64),
+                    }[verification_fault]
+                    report[field] = value
+                    report_path.write_text(json.dumps(report))
+                if stage == "compose" and verification_fault:
+                    composition_path = out / "composition-manifest.json"
+                    composition = json.loads(composition_path.read_text())
+                    if verification_fault.startswith("forged_witness_"):
+                        witness = composition["preservation_evidence"]["protected_samples"]["video"][0]
+                        if verification_fault == "forged_witness_method":
+                            witness.update(method="custom-self-attested-v1", witness_digest="deadbeef")
+                        else:
+                            witness["source_sha256"] = witness["candidate_sha256"] = "0" * 64
+                    elif verification_fault == "schedule":
+                        composition["schedule_digest"] = "0" * 64
+                    elif verification_fault == "candidate":
+                        composition["candidate"]["sha256"] = "0" * 64
+                    elif verification_fault == "mask":
+                        segment = next(item for item in composition["composition"]["video_segments"]
+                                       if item.get("mask_asset") == "region.png")
+                        segment["mask_sha256"] = "0" * 64
+                    composition_path.write_text(json.dumps(composition))
                 if stage == "prepare":
                     preparation = json.loads((out / "preparation.json").read_text())
                     assert all("path" not in row for row in preparation["assets"])
@@ -1117,7 +1198,31 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
                 rows = [settle(report_path, "validation")]
             else:
                 assert capability_id == "vibecomfy.run"
-                if operation in {"continue", "generate", "character"}:
+                if placement == "local" and operation == "generate":
+                    from astrid.packs.vibecomfy.shared.python_execution_consent import confirmed_python_execution_scope
+                    from vibecomfy import workflow_bundle
+                    for name, filename in (("python", "workflow.py"), ("companion", "workflow.vibe.json"),
+                                           ("source", "source.json")):
+                        (out / filename).write_bytes(objects[inputs[name]["object_id"]])
+                    with confirmed_python_execution_scope("confirmed"):
+                        bundle = workflow_bundle.load_bundle(out / "workflow.py")
+                        graph = bundle.workflow.compile("api", run_inputs=json.loads(inputs["workflow_inputs"]))
+                    expected = json.loads(fake_comfy.expected.read_text())
+                    expected["generated_seconds"] = self.compilation["capabilities"]["generation_timing"]["raw_frames"] / 24
+                    fake_comfy.expected.write_text(json.dumps(expected))
+                    status, body = fake_comfy.post(graph)
+                    assert status == 200 and body["node_errors"] == {}, body
+                    prompt_id = body["prompt_id"]
+                    history = json.loads(fake_comfy.get(f"/history/{prompt_id}"))[prompt_id]
+                    assert history["status"]["status_str"] == "success"
+                    (output,) = history["outputs"].values()
+                    (item,) = output["gifs"]
+                    generated = out / "generated.mp4"
+                    generated.write_bytes(fake_comfy.get(
+                        f"/view?filename={item['filename']}&subfolder=&type=output"
+                    ))
+                    rows = [settle(generated, "video", media_type="video/mp4")]
+                elif operation in {"continue", "generate", "character"}:
                     duration = (self.compilation["generation_timing"]["raw_frames"] / 24
                                 if operation == "character" else
                                 self.compilation["capabilities"]["generation_timing"]["raw_frames"] / 24
@@ -1246,16 +1351,78 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     monkeypatch.setattr(transform, "generate", SimpleNamespace(workflow=workflow_facade))
     client = Client()
     monkeypatch.setattr(transform.AstridClient, "open_from_launcher", lambda **kwargs: nullcontext(client))
+    if placement == "local":
+        from astrid.core.generation.engine_contracts import HealthEvidence, LocalAttestation
+        health = HealthEvidence("healthy", "2026-10-28T00:00:00Z", "ab" * 32, True)
+        attestation = LocalAttestation("local-engine.v1", "/cpu/install.json", "cd" * 32, health, "ab" * 32)
+        engine = SimpleNamespace(
+            endpoint=SimpleNamespace(url="http://127.0.0.1:8188", attestation=attestation),
+            comfy_output_dir="/cpu/ComfyUI/output",
+        )
+        if operation == "generate":
+            from tests.packs.h3_av.test_cpu_rehearsal import _FakeComfy
+            server_root = tmp_path / "fake-comfy"
+            server_root.mkdir()
+            fake_comfy = _FakeComfy(server_root, source=source, basename=source.name)
+            request.addfinalizer(fake_comfy.close)
+            engine.endpoint.url = fake_comfy.url
+            engine.comfy_output_dir = str(fake_comfy.output_dir)
+        monkeypatch.setattr(transform, "_resolve_local_engine", lambda: engine)
     execution_request = tmp_path / "execution-request.json"
     execution_request.write_text(json.dumps({"target": {
         "kind": "runpod", "pod_id": "pod-cpu-test", "provider_account_ref": "account-cpu-test",
         "storage": {"network_volume_id": "volume-cpu-test"},
     }}))
-    result = transform.run_transform(transform.build_parser().parse_args([
+    arguments = [
         "--request", str(caller / "request.json"), "--asset-map", str(caller / "asset-map.json"),
         "--out", str(tmp_path / "parent"), "--project", "cpu-test",
-        "--execution-request", str(execution_request),
-    ]))
+        "--placement", placement,
+    ]
+    if placement == "runpod":
+        arguments.extend(["--execution-request", str(execution_request)])
+    if verification_fault:
+        expected_error = {
+            "forged_witness_method": "cannot be recomputed",
+            "forged_witness_digest": "does not match candidate",
+            "schedule": "schedule provenance",
+            "candidate": "candidate digest",
+            "mask": "regional mask provenance",
+            "forged_verify_status": "does not certify",
+            "forged_verify_request": "does not certify",
+            "forged_verify_candidate": "does not certify",
+            "candidate_after_verify": "candidate digest",
+        }.get(verification_fault, "ffprobe")
+        parent_fault = verification_fault.startswith("forged_verify_") or verification_fault == "candidate_after_verify"
+        with pytest.raises(AstridError if parent_fault else VerificationError, match=expected_error):
+            transform.run_transform(transform.build_parser().parse_args(arguments))
+        assert calls[-1][0] == ("h3_av.publication_finalizer" if verification_fault == "candidate_after_verify"
+                                else "h3_av.verify")
+        if verification_fault != "candidate_after_verify":
+            assert not any(name == "h3_av.publication_finalizer" for name, _ in calls)
+        assert not (tmp_path / "parent/08-final-receipt.json").exists()
+        if not parent_fault:
+            assert not (attempts[-1] / "outputs/verification.json").exists()
+            assert not (attempts[-1] / "outputs/manifest.json").exists()
+        # A settled child generation is independent of final composition success.
+        child_result = json.loads((tmp_path / "parent/04-run/run-result.json").read_text())["result"]
+        assert child_result["ok"] is True
+        assert child_result["capability_id"] == "vibecomfy.run"
+        terminal = json.loads((tmp_path / "parent/result.json").read_text())
+        assert terminal["capability_id"] == "h3_av.transform"
+        assert terminal["status"] == "failed" and terminal["ok"] is False
+        assert terminal["request_digest"] == normalize_request(raw).digest
+        assert terminal["resolved_options"]["placement"] == "local"
+        assert terminal["outputs"]["artifacts"] == []
+        assert terminal["manifest_path"] is None
+        assert expected_error in terminal["error"]["message"]
+        journal = json.loads((tmp_path / "parent/operation-state.json").read_text())
+        assert journal["events"][-1]["phase"] == "operation"
+        assert journal["events"][-1]["status"] == "failed"
+        if not parent_fault:
+            assert journal["events"][-2]["phase"] == "verify"
+            assert journal["events"][-2]["status"] == "uncertain"
+        return
+    result = transform.run_transform(transform.build_parser().parse_args(arguments))
     assert result["status"] == "candidate_verified"
     assert Path(result["candidate"]).is_file()
     assert Path(result["final_receipt"]).is_file()
@@ -1285,11 +1452,18 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     workflow_facade.assert_called_once()
     forwarded = workflow_facade.call_args.kwargs
     assert forwarded["client"] is client
-    assert forwarded["placement"] == "runpod"
+    assert forwarded["placement"] == placement
     assert {name: forwarded[name] for name in call_inputs["vibecomfy.run"]} == call_inputs["vibecomfy.run"]
     assert forwarded["workflow_inputs"] == json.dumps(client.compilation["workflow_inputs"], sort_keys=True, separators=(",", ":"))
-    assert all(event["workflow_route"] == "generation.workflow.v1/runpod"
+    assert all(event["workflow_route"] == f"generation.workflow.v1/{placement}"
                for event in journal["events"] if event["phase"] == "run")
+    if placement == "local":
+        assert forwarded["comfy_url"] == engine.endpoint.url
+        assert forwarded["comfy_output_dir"] == engine.comfy_output_dir
+        assert final_receipt["placement"] == "local"
+        evidence = json.loads(fake_comfy.evidence.read_text())
+        assert evidence["prompt_id"] and evidence["node_id"] == ""
+        assert (fake_comfy.output_dir / evidence["output_filename"]).is_file()
     # VibeComfy's source port is workflow provenance, not the source video.
     assert call_inputs["vibecomfy.run"]["source"]["filename"] == "source.json"
     intent = call_inputs["vibecomfy.run"]["generation_intent"]
@@ -1326,6 +1500,39 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     # Relocation cannot weaken the candidate hash check.
     composition = json.loads(Path(result["composition"]).read_text())
     preparation = json.loads(Path(result["preparation"]).read_text())
+    if placement == "local":
+        terminal = json.loads((tmp_path / "parent/result.json").read_text())
+        serialized_keys = InvocationResult(
+            capability_id="h3_av.transform", capability_type="orchestrator",
+            native_kind="orchestrator", ok=True,
+        ).to_dict().keys()
+        assert terminal.keys() == set(serialized_keys) | {
+            "status", "task_id", "attempt_id", "parent_task_id", "parent_attempt_id",
+            "request_digest", "resolved_options", "cost", "warnings", "publication",
+        }
+        assert terminal["capability_id"] == "h3_av.transform"
+        assert terminal["capability_type"] == terminal["native_kind"] == "orchestrator"
+        assert terminal["status"] == "succeeded" and terminal["ok"] is True
+        assert terminal["raw_result"] == result
+        assert terminal["request_digest"] == preparation["request_digest"]
+        assert terminal["run_root"] == str(tmp_path / "parent")
+        assert terminal["manifest_path"] is None
+        assert all(terminal[key] is None for key in (
+            "task_id", "attempt_id", "parent_task_id", "parent_attempt_id",
+            "kernel_task_id", "kernel_run_id", "kernel_attempt_id",
+        ))
+        assert terminal["resolved_options"]["placement"] == "local"
+        assert terminal["resolved_options"]["project"] == "cpu-test"
+        assert terminal["cost"] == "unknown" and terminal["warnings"] == []
+        assert terminal["publication"]["status"] == "not_settled"
+        candidate = terminal["outputs"]["artifacts"][0]
+        assert candidate["name"] == "candidate" and candidate["role"] == "result"
+        assert candidate["ordinal"] == 0
+        assert candidate["digest"] == "sha256:" + composition["candidate"]["sha256"]
+        assert candidate["digest"] == "sha256:" + hashlib.sha256(Path(result["candidate"]).read_bytes()).hexdigest()
+        assert candidate["size"] == Path(result["candidate"]).stat().st_size
+        assert candidate["path"] == result["candidate"]
+        assert candidate["media_type"] == "video/mp4"
     Path(result["candidate"]).write_bytes(b"tampered")
     with pytest.raises(VerificationError, match="digest"):
         verify_candidate(preparation=preparation, composition=composition, candidate=result["candidate"])
