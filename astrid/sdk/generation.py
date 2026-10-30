@@ -690,17 +690,29 @@ class GenerationFacade:
     def _resolve_public_entry(*, entry: str, model: str | None,
                               mode: str | None, modality: str,
                               inputs: Mapping[str, Any], registry: Any):
-        from astrid.core.generation.entries import resolve_entry_inputs
+        from astrid.core.generation.entries import describe_entry, resolve_entry_inputs, validate_inputs
 
         if model is not None and model != entry:
             raise CapabilityValidationError("model and entry select different generation entries")
         try:
-            description, values = resolve_entry_inputs(
-                entry, dict(inputs), mode=mode, kind=modality, registry=registry,
-            )
+            description = describe_entry(entry, mode=mode, registry=registry)
+            if description.get("action") == "h3_av.transform":
+                if description["kind"] != modality or description["mode"] is None:
+                    raise ValueError("H3 entry requires its declared video mode")
+                # These are producer-local files; the admission adapter freezes
+                # and imports them before creating the tracked Runtime parent.
+                producer_schema = {key: value for key, value in description.items() if key != "action"}
+                producer_schema["source"] = "workflow"
+                values = validate_inputs(producer_schema, {
+                    key: str(value) if isinstance(value, Path) else value for key, value in inputs.items()
+                })
+            else:
+                description, values = resolve_entry_inputs(
+                    entry, dict(inputs), mode=mode, kind=modality, registry=registry,
+                )
         except (ValueError, KeyError) as exc:
             raise CapabilityValidationError(str(exc)) from exc
-        if description.get("action"):
+        if description.get("action") and description.get("action") != "h3_av.transform":
             raise CapabilityPreconditionError(
                 "action-backed generation requires a Runtime-admitted parent; "
                 "the tracked parent interface is not yet available"
@@ -896,6 +908,8 @@ class GenerationFacade:
         out: Path | str | None = None,
         project: str | None = None,
         client: Any | None = None,
+        recovery_path: Path | str | None = None,
+        resume: bool = False,
         project_root: str | Path | None = None,
         extra_pack_roots: tuple[str, ...] = (),
         banodoco_config: Any | None = None,
@@ -914,6 +928,7 @@ class GenerationFacade:
                        (("request", request), ("asset_map", asset_map)) if value is not None})
         sdk_module = importlib.import_module(self.sdk_module_name)
         registry = None
+        action_entry = None
         if entry is not None:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
@@ -923,17 +938,34 @@ class GenerationFacade:
                 inputs=inputs, registry=registry,
             )
             model, mode = entry, description["mode"]
+            action_entry = description if description.get("action") else None
             if description["source"] == "workflow" and target is None:
                 target = "auto"
         elif model is not None:
             from astrid.core.generation.entries import find_entry
             manifest = find_entry(model)
             if manifest is not None and "action" in manifest:
-                self._validate_action_entry(manifest, modality="video", mode=mode, inputs=inputs)
-                raise CapabilityPreconditionError(
-                    "action-backed generation requires a Runtime-admitted parent; "
-                    "the tracked parent interface is not yet available"
+                registry = sdk_module._load_model_registry(
+                    project_root=project_root, extra_pack_roots=extra_pack_roots,
                 )
+                action_entry, inputs = self._resolve_public_entry(
+                    entry=model, model=model, mode=mode, modality="video", inputs=inputs, registry=registry,
+                )
+        if action_entry is not None:
+            if action_entry["action"] != "h3_av.transform":
+                raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
+            if target not in (None, "auto", "managed") or execution not in (None, "local"):
+                raise CapabilityValidationError("tracked H3 requires the default Runtime target")
+            if not inputs.get("request") or not inputs.get("asset_map"):
+                raise CapabilityValidationError("H3 requires request and asset_map")
+            invoke = client.invoke_result if client is not None else sdk_module.invoke_result
+            return invoke("h3_av.transform", kind="action", inputs=inputs, project=project, out=out,
+                          project_root=project_root, extra_pack_roots=extra_pack_roots,
+                          banodoco_config=banodoco_config, include_missing_roots=include_missing_roots,
+                          dry_run=dry_run, wait=True, read_managed_outputs=True,
+                          recovery_path=recovery_path, resume=resume)
+        if recovery_path is not None or resume:
+            raise CapabilityValidationError("video recovery is supported for the tracked H3 action")
         resolved_mode = sdk_module._infer_video_mode(mode, inputs)
         if registry is None:
             registry = sdk_module._load_model_registry(

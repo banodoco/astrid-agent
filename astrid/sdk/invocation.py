@@ -3812,18 +3812,21 @@ def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_s
 def _invoke_bridge_child(
     capability: Any, *, registries: Any, inputs: dict[str, Any], bridge: Any,
     child_key: str | None, wait: bool, timeout_seconds: float, poll_seconds: float,
+    stage: str | None = None, input_refs: list[Mapping[str, Any]] | None = None,
+    generation_intent: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
     from types import SimpleNamespace
     from astrid.core.foundation.hash import executor_definition_digest
     from ._child_bridge import (
         _BridgeRejected, _BridgeReplyTimeout, _BridgeTimeout, _ChildOutputBinding,
-        _child_request, _valid_id, _validate_output_page,
+        _child_request, _valid_id, _validate_output_page, _validate_publication_readback,
     )
 
     digest = executor_definition_digest(registries[0].get(capability.id))
     request = _child_request(capability, inputs, digest="sha256:" + digest, child_key=child_key,
-                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+                             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+                             stage=stage, input_refs=input_refs, generation_intent=generation_intent)
     try:
         data = bridge.submit(request)
     except _BridgeRejected as exc:
@@ -3901,6 +3904,16 @@ def _invoke_bridge_child(
             from .actions import validate_action_output_definition
 
             validate_action_output_definition(capability.definition, payload["action_result"])
+    base_outputs = _invocation_outputs(raw, manifest_path=None, capability_id=capability.id)
+    if wait and ok and stage is not None and "publication_readback" in latest_status:
+        try:
+            evidence = _validate_publication_readback(latest_status["publication_readback"],
+                task_id=task_id, run_id=run_id, attempt_id=attempt_id,
+                managed_outputs=base_outputs.get("managed_outputs", []))
+        except ValueError as exc:
+            bridge.close()
+            raise CapabilityInvocationError("child publication readback is invalid") from exc
+        raw.update({key: evidence[key] for key in ("task", "result", "managed_outputs")})
     raw["executor_version"] = digest
     error = raw.get("error")
     result = InvocationResult(
@@ -3908,9 +3921,8 @@ def _invoke_bridge_child(
         native_kind=capability.native_kind, ok=ok,
         error={**error, "sdk_error": "CapabilityRuntimeError", "sdk_category": "runtime"}
         if isinstance(error, Mapping) else None,
-        raw_result=raw, run_id=run_id, outputs=_invocation_outputs(
-            raw, manifest_path=None, capability_id=capability.id,
-        ), executor_version=digest, kernel_run_id=run_id,
+        raw_result=raw, run_id=run_id, outputs=base_outputs,
+        executor_version=digest, kernel_run_id=run_id,
         kernel_task_id=task_id, kernel_attempt_id=attempt_id,
     )
     if wait and ok:
@@ -4050,6 +4062,8 @@ def invoke(
     idempotency_key: str | None = None,
     child_delegation: Mapping[str, Any] | None = None,
     child_key: str | None = None,
+    stage: str | None = None,
+    input_refs: list[Mapping[str, Any]] | None = None,
     outputs: Mapping[str, Any] | None = None,
     brief: Path | str | None = None,
     dry_run: bool = False,
@@ -4083,6 +4097,8 @@ def invoke(
     if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
         raise CapabilityValidationError("idempotency_key must be a non-empty string")
     child_mode = _child_bridge._bridge is not None or child_key is not None
+    if not child_mode and (stage is not None or input_refs is not None):
+        raise CapabilityValidationError("staged invocation requires a live child bridge")
     if child_mode and child_delegation is not None:
         raise CapabilityValidationError("child invocation cannot set child_delegation")
     validated_child_policy = _child_bridge._validate_child_policy(child_delegation)
@@ -4169,15 +4185,8 @@ def invoke(
     if kind == "action":
         kind = capability.capability_type
 
-    if (not dry_run and capability.id == "h3_av.transform"
-            and capability.capability_type == "orchestrator"):
-        # This declaration still resolves to the local launcher. Until the
-        # authenticated bundle/publication adapter is installed, starting it
-        # would create independent children without a Runtime parent.
-        raise CapabilityPreconditionError(
-            "H3 transform requires a Runtime-admitted parent; "
-            "the managed-bundle and delegated-publication adapter is not yet available"
-        )
+    if capability.id == "h3_av.transform" and "host_output_root" in (inputs or {}):
+        raise CapabilityValidationError("H3 output custody is host-owned")
 
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
@@ -4232,7 +4241,7 @@ def invoke(
         variant_context = {"variant_of": variant_of, "primary": primary}
     generation_intent: dict[str, Any] | None = None
     if "generation_intent" in request_inputs:
-        if intent_modality is None and capability.id != "vibecomfy.run":
+        if intent_modality is None and capability.id not in {"vibecomfy.run", "h3_av.publication_finalizer"}:
             raise CapabilityValidationError(
                 "generation_intent is only accepted for generation capabilities"
             )
@@ -4265,9 +4274,30 @@ def invoke(
                 "output cardinality is not safely inferable at admission"
             )
 
+    if not dry_run and capability.id == "h3_av.transform" and not child_mode:
+        if capability.capability_type != "executor":
+            raise CapabilityPreconditionError("H3 requires a Runtime-admitted executor parent")
+        if validated_child_policy is not None or outputs or orchestrator_args:
+            raise CapabilityValidationError("tracked H3 parent owns its stage and output mapping")
+        if normalized_execution_request is not None:
+            target = normalized_execution_request.get("target", {"kind": "default"})
+            if target != {"kind": "default"} or normalized_execution_request.get("inputs"):
+                raise CapabilityValidationError("tracked H3 parent requires its default target and managed roots")
+        project = project or _runtime_selected_project(_client)
+        from astrid.packs.h3_av.actions.transform.run import project_parent
+        from astrid.core.contracts.errors import AstridError
+        try:
+            request_inputs, validated_child_policy = project_parent(
+                request_inputs, project=project, client=_client, registry=registries[0])
+            project = request_inputs["plan"]["project"]
+        except (AstridError, ValueError, OSError) as exc:
+            raise CapabilityPreconditionError(str(exc)) from exc
+
     from .actions import validate_action_inputs
 
     effective_inputs = dict(request_inputs)
+    if child_mode and capability.id == "h3_av.publication_finalizer" and generation_intent is not None:
+        effective_inputs["generation_intent"] = generation_intent
     for port in capability.inputs if hasattr(capability, "inputs") else ():
         if port.name not in effective_inputs and port.default is not None:
             effective_inputs[port.name] = port.default
@@ -4315,6 +4345,7 @@ def invoke(
             capability, registries=registries, inputs=effective_inputs,
             bridge=_child_bridge._bridge, child_key=child_key,
             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+            stage=stage, input_refs=input_refs, generation_intent=generation_intent if stage else None,
         )
 
     if isinstance(project, str) and not project.strip():
