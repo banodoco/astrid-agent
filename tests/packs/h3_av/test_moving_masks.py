@@ -11,7 +11,7 @@ from astrid.packs.h3_av.actions.verify.verify import VerificationError, verify_c
 from astrid.packs.h3_av.shared.compose import CompositionError, compose_candidate
 from astrid.packs.h3_av.shared.request import normalize_request
 
-W, H, SQ, FRAMES = 64, 48, 12, 24
+W, H, SQ, FRAMES = 1024, 576, 12, 24
 
 
 def _square_frame(index: int) -> bytes:
@@ -44,7 +44,7 @@ def _fixtures(tmp_path: Path, mask_name: str = "mask.mkv"):
     generated = tmp_path / "generated.mkv"
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=24",
+         "-f", "lavfi", "-i", "testsrc2=size=1024x576:rate=24",
          "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
          "-frames:v", "24", "-t", "1", "-c:v", "ffv1", "-pix_fmt", "yuv420p",
          "-c:a", "pcm_s16le", str(source)],
@@ -52,7 +52,7 @@ def _fixtures(tmp_path: Path, mask_name: str = "mask.mkv"):
     )
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "color=c=red:s=64x48:r=24",
+         "-f", "lavfi", "-i", "color=c=red:s=1024x576:r=24",
          "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000",
          "-frames:v", "24", "-t", "1", "-c:v", "ffv1", "-c:a", "pcm_s16le", str(generated)],
         check=True, capture_output=True,
@@ -70,7 +70,7 @@ def _prepare(source: Path, mask: Path):
         "changes": {
             "video": [{
                 "during": [0, 1],
-                "area": {"rectangle": [0, 0, 64, 48]},
+                "area": {"rectangle": [0, 0, W, H]},
                 "mask_asset": mask.name,
                 "action": "generate",
             }],

@@ -10,7 +10,7 @@ from astrid.packs.h3_av.shared.errors import PreparationError
 from astrid.packs.h3_av.shared.request import normalize_request
 from astrid.packs.h3_av.shared.request_v2 import H3RequestError
 
-W, H, FRAMES = 64, 48, 24
+W, H, FRAMES = 1024, 576, 24
 
 
 def _frame(value: int, *, on: bool = True) -> bytes:

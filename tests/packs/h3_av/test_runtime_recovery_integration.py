@@ -45,7 +45,7 @@ def _synthetic_av(path: Path, *, color: str) -> None:
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+            "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-c:a", "aac", str(path),

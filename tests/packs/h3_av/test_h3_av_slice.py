@@ -98,7 +98,7 @@ def test_prepare_does_not_claim_unmapped_managed_assets_are_local() -> None:
 def _media(path: Path, color: str = "blue") -> Path:
     # verify fails closed on ffprobe failure, so fixtures must be real media.
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24",
          "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "8",
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
         check=True,

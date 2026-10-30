@@ -37,7 +37,7 @@ def _request(*, protected_all: bool = False):
 
 def _av(path: Path, *, color: str, freq: int, seconds: int) -> None:
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24",
          "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000", "-t", str(seconds),
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
         check=True,
@@ -214,13 +214,13 @@ def regional(tmp_path: Path):
     mask = tmp_path / "region.png"
     _av(source, color="blue", freq=440, seconds=2)
     _av(generated, color="red", freq=880, seconds=2)
-    image = Image.new("L", (32, 32), 0)
-    image.paste(255, (0, 0, 16, 32))
+    image = Image.new("L", (1024, 576), 0)
+    image.paste(255, (0, 0, 512, 576))
     image.save(mask)
     raw = copy.deepcopy(_request().value)
     raw["source"]["range"] = [0, 2]
     raw["changes"] = {
-        "video": [{"during": [0, 2], "area": {"rectangle": [0, 0, 32, 32]},
+        "video": [{"during": [0, 2], "area": {"rectangle": [0, 0, 1024, 576]},
                    "mask_asset": "region.png", "action": "generate"}],
         "audio": [],
     }
@@ -259,7 +259,7 @@ def test_changed_mask_bytes_cannot_be_attested_by_changed_segment(regional) -> N
 
     preparation, composition, source, mask = regional
     # Making the mask all white would otherwise vacuously protect no pixels.
-    Image.new("L", (32, 32), 255).save(mask)
+    Image.new("L", (1024, 576), 255).save(mask)
     composition["composition"]["video_segments"][0]["mask_sha256"] = hashlib.sha256(mask.read_bytes()).hexdigest()
     with pytest.raises(VerificationError, match="mask provenance.*preparation asset"):
         verify_candidate(preparation=preparation, composition=composition, source=source)

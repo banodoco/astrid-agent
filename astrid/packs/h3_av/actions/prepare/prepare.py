@@ -18,9 +18,19 @@ from astrid.packs.h3_av.actions.prepare.masks import (
     merge_intervals,
 )
 from astrid.packs.h3_av.shared.errors import PreparationError
-from astrid.packs.h3_av.shared.request import H3Request, _asset_ids
+from astrid.packs.h3_av.shared.request import H3Request, H3RequestError, _asset_ids
 from astrid.packs.h3_av.shared.request_v2 import branch_for
 
+
+class _SourceAVError(H3RequestError, PreparationError):
+    """A G21-shaped source error that remains catchable as PreparationError."""
+
+
+def _missing_ffprobe(message: str) -> _SourceAVError:
+    return _SourceAVError(
+        message, code="H3_SOURCE_AV_FFPROBE", field="source.asset",
+        fix="Install ffprobe and ensure it is available on PATH",
+    )
 
 
 def _file_digest(path: Path) -> str:
@@ -36,7 +46,7 @@ def _video_stream_types(path: Path) -> set[str]:
     """Inspect timeline streams before composition permissions are sealed."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
-        raise PreparationError("Character Swap source inspection requires ffprobe")
+        raise _missing_ffprobe("Character Swap source inspection requires ffprobe")
     try:
         result = subprocess.run(
             [ffprobe, "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(path)],
@@ -146,7 +156,8 @@ def _mask_dimensions(path: Path, mask_id: str) -> tuple[int, int]:
 
 
 SOURCE_AV_RATE_CODE = "H3_SOURCE_AV_RATE"
-SOURCE_AV_CONFORM_HINT = "conform with: ffmpeg -i IN -vf fps=24 -c:v libx264 -crf 12 -c:a aac OUT"
+SOURCE_AV_CONFORM_COMMAND = 'ffmpeg -i IN -vf "fps=24,scale=1024:576,setsar=1" -c:v libx264 -crf 12 -c:a aac OUT'
+SOURCE_AV_CONFORM_HINT = f"conform with: {SOURCE_AV_CONFORM_COMMAND}"
 _SOURCE_AV_RATE = Fraction(24, 1)
 # One output frame at 24 fps, the same bound compose.py applies to continuation audio coverage.
 _SOURCE_AV_TOLERANCE_SECONDS = 1.0 / 24.0
@@ -177,12 +188,12 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     """Reject a source-backed video that is not exactly 24/1 CFR or whose audio and video diverge."""
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
-        raise PreparationError(f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rate check requires ffprobe")
+        raise _missing_ffprobe(f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rate check requires ffprobe")
     try:
         result = subprocess.run(
             [
                 ffprobe, "-v", "error", "-show_entries",
-                "stream=codec_type,codec_name,r_frame_rate,avg_frame_rate,duration:format=duration",
+                "stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration:format=duration",
                 "-of", "json", str(path),
             ],
             check=False,
@@ -192,7 +203,11 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
         )
         payload = json.loads(result.stdout) if result.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PreparationError(f"{SOURCE_AV_RATE_CODE}: cannot probe source {asset_id!r}: {exc}") from exc
+        raise _SourceAVError(
+            f"{SOURCE_AV_RATE_CODE}: cannot probe source {asset_id!r}: {exc}",
+            code="H3_SOURCE_AV_PROBE", field="source.asset",
+            fix="Check that ffprobe can read the source and retry",
+        ) from exc
     except json.JSONDecodeError:
         payload = None
     streams = payload.get("streams") if isinstance(payload, Mapping) else None
@@ -203,8 +218,9 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     video = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "video"), None)
     audio = next((row for row in streams if isinstance(row, Mapping) and row.get("codec_type") == "audio"), None)
     if video is None:
-        raise PreparationError(
-            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}"
+        raise _SourceAVError(
+            f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} has no video stream; {SOURCE_AV_CONFORM_HINT}",
+            code=SOURCE_AV_RATE_CODE, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
         )
     container = payload.get("format")
     container_duration = _seconds(container.get("duration")) if isinstance(container, Mapping) else None
@@ -222,6 +238,8 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     problems: list[str] = []
     if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE:
         problems.append("video is not exactly 24/1 CFR")
+    if (video.get("width"), video.get("height")) != (1024, 576):
+        problems.append("video dimensions are not 1024x576")
     if video_duration is None or (audio is not None and audio_duration is None):
         problems.append("durations could not be measured")
     elif audio is not None and abs(audio_duration - video_duration) > _SOURCE_AV_TOLERANCE_SECONDS:
@@ -236,15 +254,21 @@ def _check_source_av_rate(asset_id: str, path: Path) -> None:
     measured = (
         f"video r_frame_rate={video.get('r_frame_rate')} ({_fps_text(r_rate)}), "
         f"avg_frame_rate={video.get('avg_frame_rate')} ({_fps_text(avg_rate)}); "
+        f"dimensions {video.get('width')}x{video.get('height')}; "
         f"video duration {video_text}, audio duration {audio_text}"
     )
     hint = SOURCE_AV_CONFORM_HINT
     codec = audio.get("codec_name") if audio is not None else None
     if audio is not None and codec != "aac":
         hint += f" (audio codec is {codec}: the audio must be re-encoded to aac, as the command does)"
-    raise PreparationError(
+    code = SOURCE_AV_RATE_CODE if r_rate != _SOURCE_AV_RATE or avg_rate != _SOURCE_AV_RATE else (
+        "H3_SOURCE_AV_SIZE" if (video.get("width"), video.get("height")) != (1024, 576)
+        else SOURCE_AV_RATE_CODE
+    )
+    raise _SourceAVError(
         f"{SOURCE_AV_RATE_CODE}: source {asset_id!r} rejected before any pod is held: "
-        f"{'; '.join(problems)}. Measured {measured}. {hint}"
+        f"{'; '.join(problems)}. Measured {measured}. {hint}",
+        code=code, field="source.asset", fix=SOURCE_AV_CONFORM_COMMAND,
     )
 
 
