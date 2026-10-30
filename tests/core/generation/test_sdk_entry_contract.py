@@ -56,6 +56,8 @@ def test_sdk_entry_selector_conflict_precedes_target(isolated_catalog, monkeypat
 
 
 def test_h3_explicit_sdk_uses_shared_validation_and_retains_parent_boundary(monkeypatch):
+    import astrid.sdk as sdk
+    from astrid.sdk.client import AstridClient
     digest = "sha256:" + "1" * 64
     action = {"id": "h3", "kind": "video", "modes": ["transform"], "action": "h3_av.transform",
               "inputs": [{"name": name, "type": "file", "required": True}
@@ -64,6 +66,9 @@ def test_h3_explicit_sdk_uses_shared_validation_and_retains_parent_boundary(monk
     monkeypatch.setattr(entries, "action_entries", lambda: [action])
     monkeypatch.setattr(entries, "ready_entries", lambda: [])
     monkeypatch.setattr(GenerationFacade, "_invoke", lambda *a, **k: pytest.fail("untracked H3 invoke"))
+    monkeypatch.setattr(sdk, "invoke_result", lambda *a, **k: pytest.fail("H3 bypassed parent admission"))
+    monkeypatch.setattr(AstridClient, "open_from_launcher",
+                        lambda *a, **k: pytest.fail("H3 bootstrapped Runtime before parent admission"))
     with pytest.raises(CapabilityValidationError, match="managed Runtime object"):
         GenerationFacade().video(entry="h3", request="/tmp/local.json", asset_map=digest)
     with pytest.raises(CapabilityPreconditionError, match="Runtime-admitted parent"):
@@ -136,6 +141,7 @@ def test_actual_h3_cli_and_sdk_validate_same_files_and_stop_before_parent(monkey
     import json
     import astrid
     import astrid.sdk as sdk
+    from astrid.sdk.client import AstridClient
     from astrid.core.generation import cli
     from astrid.core.contracts.errors import AstridError
     monkeypatch.setattr(entries, "user_entries", lambda: [])
@@ -145,6 +151,8 @@ def test_actual_h3_cli_and_sdk_validate_same_files_and_stop_before_parent(monkey
         pytest.fail("H3 crossed the unavailable canonical parent boundary")
     monkeypatch.setattr(cli, "_open_client", forbidden)
     monkeypatch.setattr(GenerationFacade, "_invoke", forbidden)
+    monkeypatch.setattr(sdk, "invoke_result", forbidden)
+    monkeypatch.setattr(AstridClient, "open_from_launcher", forbidden)
     digest = "sha256:" + "c" * 64
     values = {"request": {"digest": digest}, "asset_map": digest}
     file = tmp_path / "h3-inputs.json"

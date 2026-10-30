@@ -918,6 +918,27 @@ class GenerationFacade:
             registry = sdk_module._load_model_registry(
                 project_root=project_root, extra_pack_roots=extra_pack_roots,
             )
+            if model is not None and model != entry:
+                raise CapabilityValidationError("model and entry select different generation entries")
+            # Action entries have no public execution route until the tracked
+            # parent adapter is available. Resolve them through the same entry
+            # contract as the CLI, then stop before any target or Runtime setup.
+            from astrid.core.generation.entries import describe_entry, resolve_entry_inputs
+            try:
+                entry_metadata = describe_entry(entry, mode=mode, registry=registry)
+            except (ValueError, KeyError) as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+            if entry_metadata.get("action"):
+                try:
+                    resolve_entry_inputs(
+                        entry, dict(inputs), mode=mode, kind="video", registry=registry,
+                    )
+                except (ValueError, KeyError) as exc:
+                    raise CapabilityValidationError(str(exc)) from exc
+                raise CapabilityPreconditionError(
+                    "action-backed generation requires a Runtime-admitted parent; "
+                    "the tracked parent interface is not yet available"
+                )
             description, inputs = self._resolve_public_entry(
                 entry=entry, model=model, mode=mode, modality="video",
                 inputs=inputs, registry=registry,
