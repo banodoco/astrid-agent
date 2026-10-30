@@ -2347,6 +2347,9 @@ def _write_transform_result(
 
 
 def main(argv: list[str] | None = None) -> int:
+    from astrid.core.execution._child_import_receipt import observe_action_entry
+
+    observe_action_entry()
     result = run_transform(build_parser().parse_args(argv))
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

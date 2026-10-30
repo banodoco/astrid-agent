@@ -28,6 +28,7 @@ import yaml
 
 from astrid.core.execution._child_bridge import ChildBridgeError, HostChildBridge, _child_wire_id, _snapshot, resource
 from astrid.core.execution.generic_host import GenericPackHost, HostError, RuntimeProtocolClient, _DiscoveryCollection, _prepare_review_resume_input
+from astrid.core.execution import generic_host as generic_host_module
 from astrid.sdk._child_bridge import ChildBridge, _BridgeRejected
 from astrid.sdk.execution_request import normalize_execution_request
 from astrid_runtime_client import ApiError, WorkspaceClient
@@ -1205,6 +1206,179 @@ def test_real_sdk_parent_routes_and_independent_child_progress(world, form, deri
     assert SECRET not in json.dumps(result)
     assert delegated[0]["task"].get("child_delegation") is None
     assert not any(call[1] == "/v1/tasks" and call[0] == "POST" for call in world.calls)
+
+
+def test_real_parent_bridge_dispatches_nested_validator_and_binds_receipt_to_child_attempt(world, tmp_path, monkeypatch):
+    """The parent SDK bridge admits a real validator task served by another host slot."""
+    # This in-process service fixture has no authenticated HTTP health identity.
+    # Read its actual epoch directly instead of using the HTTP Health decoder.
+    monkeypatch.setattr(world.client, "health", lambda **_kwargs: world.service.health())
+    from astrid.core.execution._child_import_receipt import _birth
+    monkeypatch.setattr(generic_host_module, "process_birth_identity", lambda pid=None: _birth(pid or os.getpid()))
+    # The sandbox cannot perform Darwin's post-exit descendant census. This
+    # fixture verifies the owned leader is waited and reaped; it does not alter
+    # production custody behavior.
+    monkeypatch.setattr(
+        generic_host_module, "_terminate_process_group",
+        lambda process, **_kwargs: process.wait(timeout=3),
+    )
+    pack_root = tmp_path / "vibecomfy"
+    pack_root.mkdir()
+    shipped = yaml.safe_load((Path(__file__).resolve().parents[3] / "astrid/packs/vibecomfy/PACK.yaml").read_text())
+    validate = copy.deepcopy(shipped["actions"]["validate"])
+    validate.pop("resources", None)
+    # This fixture dispatches the UI route only. Omitted optional canonical
+    # files must stay omitted instead of the SDK treating '' as an object ID.
+    for port in validate["inputs"]:
+        if port["name"] in {"python", "companion", "source"}:
+            port.pop("default", None)
+    workflow_bytes = b'{"nodes":[],"links":[]}'
+    workflow_id = digest(workflow_bytes)
+    world.service.ingest(world.project, workflow_bytes, media_type="application/json",
+                         original_name="workflow.json", idempotency_key="receipt-workflow")
+    descriptor = {"object_id": workflow_id, "digest": workflow_id, "filename": "workflow.json"}
+    parent_code = (
+        "from astrid.core.execution.executor import registry as er\n"
+        "from astrid.core.execution.orchestrator import registry as ore\n"
+        "from astrid.core.pack import discovery as pd\n"
+        "for module in (er, ore, pd): module.discover_packs = lambda *a, **kw: ()\n"
+        "from astrid import invoke\n"
+        "result = invoke('vibecomfy.validate', kind='action', "
+        f"extra_pack_roots=({str(pack_root)!r},), inputs={{'workflow': {descriptor!r}}}, "
+        "child_key='nested-validator', wait=True, timeout_seconds=4, poll_seconds=0.01)\n"
+        "assert not result.ok, result.error\n"
+        "assert result.kernel_task_id\n"
+    )
+    pack = {
+        "schema_version": 3,
+        "id": "vibecomfy",
+        "name": "Nested validator receipt fixture",
+        "version": "0.1.0",
+        "actions": {
+            "parent": {
+                "description": "Submit the validator through the real child bridge.",
+                "invocation": {"kind": "command", "command": {"argv": ["{python_exec}", "-c",
+                    "exec(__import__('base64').b64decode(" + repr(base64.b64encode(parent_code.encode()).decode()) + "))"]}},
+                "inputs": [],
+                "outputs": {},
+            },
+            "validate": validate,
+        },
+    }
+    (pack_root / "pack.yaml").write_text(yaml.safe_dump(pack, sort_keys=False), encoding="utf-8")
+    attempt_root = tmp_path / "attempts"
+    host = GenericPackHost(
+        pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+        attempt_root=attempt_root,
+    )
+    host.discover()
+    assert {"vibecomfy.parent", "vibecomfy.validate"} <= set(host.capabilities)
+    for record in host.capabilities.values():
+        world.service.register_capability({"capability_id": record.id, "definition_digest": record.capability_digest})
+    world.service.register_executor(
+        {"executor_id": "worker", "capabilities": ["vibecomfy.parent", "vibecomfy.validate"], "max_concurrency": 2},
+        idempotency_key="nested-validator-register",
+    )
+    policy = {
+        "capabilities": [{"capability_id": "vibecomfy.validate",
+                           "capability_digest": host.capabilities["vibecomfy.validate"].capability_digest}],
+        "targets": [{"kind": "default"}], "input_object_ids": [workflow_id],
+        "limits": {"max_children": 2},
+    }
+    world.service.create_task({
+        "project": world.project,
+        "capability_id": "vibecomfy.parent",
+        "capability_digest": host.capabilities["vibecomfy.parent"].capability_digest,
+        "input_object_ids": [workflow_id], "spec": {"inputs": {}}, "child_delegation": policy,
+        "idempotency_key": "nested-validator-parent",
+    }, enforce_readiness=True)
+    parent_claim = world.service.claim_next(
+        {"executor_id": "worker", "capability_ids": ["vibecomfy.parent"], "runtime_epoch": 1},
+        idempotency_key="claim-nested-validator-parent", identity=world.identity,
+    )
+    assert parent_claim
+    world.client._attempt_runtime_epochs[parent_claim["attempt_id"]] = parent_claim["runtime_epoch"]
+    parent_task = world.service.task(parent_claim["task_id"])["task"]
+    parent_task.update(
+        runtime_epoch=parent_claim["runtime_epoch"], fence=parent_claim["fence"],
+        project_id=world.project, spec=parent_claim["spec"],
+        input_object_ids=parent_claim["input_object_ids"],
+        execution_binding=parent_claim.get("execution_binding"),
+        lease_id=parent_claim["lease_id"], executor_id="worker",
+    )
+    support = tmp_path / "support"
+    support.mkdir()
+    child_ready = threading.Event()
+
+    def serve_validator():
+        worker = GenericPackHost(
+            pack_roots=[pack_root], client=world.client, executor_id="worker", max_concurrency=2,
+            attempt_root=attempt_root,
+        )
+        worker.evidence_status_path = support / "evidence-status.json"
+        worker.discover()
+        child_ready.set()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with world.lock:
+                body = {"executor_id": "worker", "capability_ids": ["vibecomfy.validate"], "runtime_epoch": 1}
+                row = world.service.store.conn.execute(
+                    "SELECT id FROM tasks WHERE capability=? AND status='queued' LIMIT 1", ("vibecomfy.validate",)).fetchone()
+                if row is not None:
+                    target = world.service.store.effective_execution_target(row["id"])
+                    if target is not None:
+                        body["target"] = target
+                claim = world.service.claim_next(body,
+                    idempotency_key="claim-nested-validator-" + str(time.monotonic_ns()), identity=world.identity)
+            if claim:
+                world.client._attempt_runtime_epochs[claim["attempt_id"]] = claim["runtime_epoch"]
+                task = world.service.task(claim["task_id"])["task"]
+                task.update(
+                    runtime_epoch=claim["runtime_epoch"], fence=claim["fence"], project_id=world.project,
+                    spec=claim["spec"], input_object_ids=claim["input_object_ids"],
+                    execution_binding=claim.get("execution_binding"), lease_id=claim["lease_id"],
+                    executor_id="worker",
+                )
+                try:
+                    worker.run_task(task, lease_token=claim["lease_id"],
+                                    attempt_id=claim["attempt_id"], fence=claim["fence"])
+                except Exception:
+                    current = world.service.task(claim["task_id"])["task"]
+                    if current.get("status") != "failed":
+                        raise
+                return world.service.task(claim["task_id"])["task"]
+            time.sleep(0.01)
+        raise AssertionError("parent did not dispatch nested validator task")
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        child_future = pool.submit(serve_validator)
+        assert child_ready.wait(timeout=3)
+        try:
+            with pytest.raises(ChildBridgeError, match="required child did not settle"):
+                host.run_task(parent_task, lease_token=parent_claim["lease_id"],
+                              attempt_id=parent_claim["attempt_id"], fence=parent_claim["fence"])
+        except BaseException:
+            child_future.result(timeout=12)  # Surface a fixture worker failure.
+            raise
+        child_result = child_future.result(timeout=12)
+
+    assert world.service.task(parent_claim["task_id"])["task"]["status"] == "failed"
+    assert child_result["status"] == "failed"  # empty workflow reaches the validator and fails structurally
+    receipts = list((support / "child-import-receipts").glob("*.json"))
+    assert len(receipts) == 1
+    stored = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert stored["capability_id"] == "vibecomfy.validate"
+    assert stored["binding"]["task_id"] == child_result.get("task_id", child_result.get("id"))
+    assert stored["binding"]["attempt_id"] == child_result["attempt_id"]
+    assert stored["binding"]["parent_task_id"] == parent_claim["task_id"]
+    assert stored["binding"]["parent_attempt_id"] == parent_claim["attempt_id"]
+    assert stored["observation"] == "recorded"
+    assert any(row["phase"] == "action_entry" for row in stored["observations"])
+    reference = child_result["result"]["error"]["diagnostic"]["child_import_receipt"]
+    assert reference["sha256"] == hashlib.sha256(receipts[0].read_bytes()).hexdigest()
+    assert set(reference) == {"schema_version", "launch_id", "sha256", "observation", "persistence"}
 
 
 def test_exact_replay_and_changed_input_rejection(world):
