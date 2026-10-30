@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import shlex
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -306,6 +307,140 @@ def is_active(descriptor: dict, system: str | None = None) -> bool:
     if state == "Running":
         return True
     raise RuntimeError(f"Unknown Scheduled Task update job state: {state}")
+
+
+def is_registered(descriptor: dict, command: list[str], system: str | None = None) -> bool:
+    """Prove absence or exact native action ownership for a named update job.
+
+    Return False only for a positively absent object. Existing objects with an
+    action that cannot be parsed or does not match raise, so callers never
+    retire a same-name registration based on the descriptor alone.
+    """
+    actual, name = _validate(descriptor, system)
+    command = _argv(command)
+    if actual == "linux":
+        load = _run(["systemctl", "--user", "show", "--property=LoadState", "--value", name])
+        if load.returncode:
+            if load.returncode == 4:
+                return False
+            raise _failure("inspect", load)
+        load_state = load.stdout.strip()
+        if load_state == "not-found":
+            return False
+        if load_state != "loaded":
+            raise RuntimeError(f"Unknown systemd update unit load state: {load_state}")
+        object_path = "/org/freedesktop/systemd1/unit/" + "".join(
+            char if char.isascii() and char.isalnum() else f"_{ord(char):02x}" for char in name)
+        result = _run(["busctl", "--user", "--no-pager", "get-property",
+                       "org.freedesktop.systemd1", object_path,
+                       "org.freedesktop.systemd1.Service", "ExecStart"])
+        if result.returncode:
+            raise _failure("inspect", result)
+        try:
+            fields = shlex.split(result.stdout.strip(), posix=True)
+            if len(fields) < 3 or fields[0] != "a(sasbttttuii)" or fields[1] != "1":
+                raise ValueError("unexpected ExecStart signature or count")
+            _type, _count, executable, argc, *tail = fields
+            argc_value = int(argc)
+            native_command = tail[:argc_value]
+            remaining = tail[argc_value:]
+            if (argc_value != len(command) or len(native_command) != argc_value
+                    or len(remaining) != 8 or remaining[0] not in {"true", "false"}
+                    or any(not item.isdecimal() for item in remaining[1:])):
+                raise ValueError("unexpected ExecStart struct")
+        except (ValueError, IndexError) as failure:
+            raise RuntimeError("The systemd update unit command is ambiguous.") from failure
+        if executable != command[0] or native_command != command:
+            raise RuntimeError("The systemd update unit command does not match its accepted operation.")
+        return True
+    if actual == "darwin":
+        result = _run(["launchctl", "print", f"{descriptor['domain']}/{name}"])
+        if result.returncode:
+            output = (result.stderr + result.stdout).lower()
+            if result.returncode in {3, 113} and any(message in output for message in (
+                    "could not find service", "could not find specified service", "no such process")):
+                return False
+            raise _failure("inspect", result)
+        plist_path = Path(descriptor["plist_path"])
+        from runtime_protocol import platform as runtime_platform
+        if (plist_path.is_symlink() or not plist_path.is_file()
+                or not runtime_platform.is_owner_only(plist_path)):
+            raise RuntimeError("The launchd update service has no owned command descriptor.")
+        expected_plist = _plist(descriptor, command, Path(descriptor["log_path"]))
+        if plist_path.read_bytes() != expected_plist:
+            raise RuntimeError("The launchd update plist does not match its accepted command.")
+        # launchctl print exposes the loaded executable and arguments. Require
+        # both fields so a same-label foreign service is never retired.
+        output = result.stdout
+        program = re.search(r"(?m)^\s*program\s*=\s*(.+?)\s*$", output)
+        arguments = re.search(r"(?ms)^\s*arguments\s*=\s*\{(.*?)^\s*\}", output)
+        if any("\n" in part or "\r" in part for part in command):
+            raise RuntimeError("The launchd update service command is ambiguous.")
+        try:
+            native_program = program.group(1).strip() if program else ""
+            program_values = [native_program] if native_program == command[0] else shlex.split(native_program)
+        except ValueError:
+            program_values = []
+        if not program_values or len(program_values) != 1 or program_values[0] != command[0] or not arguments:
+            raise RuntimeError("The launchd update service command is ambiguous.")
+        argument_lines = [line.strip() for line in arguments.group(1).splitlines() if line.strip()]
+        # launchctl prints each literal argument on its own line, including
+        # spaces and the Python -c source. Compare that complete representation
+        # before handling the quoted form; shell splitting loses raw arguments.
+        if argument_lines == command:
+            return True
+        parsed = []
+        try:
+            for line in argument_lines:
+                if line.endswith(","):
+                    line = line[:-1].rstrip()
+                values = shlex.split(line, posix=True)
+                if len(values) != 1:
+                    raise ValueError("argument line is ambiguous")
+                parsed.append(values[0])
+        except ValueError as failure:
+            raise RuntimeError("The launchd update service arguments are ambiguous.") from failure
+        if not parsed or parsed != command:
+            raise RuntimeError("The launchd update service command does not match its accepted operation.")
+        return True
+    sid = descriptor["user"]
+    script = ("$ErrorActionPreference = 'Stop'\n$all = @(Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object { $_.TaskName -eq "
+              + _ps_quote(name) + " }); if ($all.Count -eq 0) { Write-Output 'ASTRID_NOT_FOUND'; exit 0 }; "
+              + "if ($all.Count -ne 1) { throw 'Ambiguous task identity' }; $t=$all[0]; "
+              + "$actions = @($t.Actions | ForEach-Object { [ordered]@{ Execute=$_.Execute; Arguments=$_.Arguments; WorkingDirectory=$_.WorkingDirectory } }); "
+              + "$o = [ordered]@{ TaskPath=$t.TaskPath; TaskName=$t.TaskName; UserId=$t.Principal.UserId; "
+              + "LogonType=[string]$t.Principal.LogonType; RunLevel=[string]$t.Principal.RunLevel; "
+              + "TriggerCount=@($t.Triggers).Count; Actions=$actions }; $o | ConvertTo-Json -Compress -Depth 5\n")
+    result = _run(_encoded_ps(script))
+    if result.returncode:
+        raise _failure("inspect", result)
+    output = result.stdout.strip()
+    if output == "ASTRID_NOT_FOUND":
+        return False
+    try:
+        observed = __import__("json").loads(output)
+    except (TypeError, ValueError) as failure:
+        raise RuntimeError("The Scheduled Task update action is ambiguous.") from failure
+    worker_script = ("$ErrorActionPreference = 'Stop'\n"
+                     f"$exe = {_ps_quote(command[0])}\n"
+                     f"$workerArgs = @({', '.join(_ps_quote(x) for x in command[1:])})\n"
+                     f"$log = {_ps_quote(descriptor['log_path'])}\n"
+                     "try { & $exe @workerArgs *>> $log; exit $LASTEXITCODE } "
+                     "catch { $_ | Out-String | Add-Content -LiteralPath $log; exit 1 }\n")
+    encoded = base64.b64encode(worker_script.encode("utf-16le")).decode("ascii")
+    args = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded])
+    actions = observed.get("Actions") if isinstance(observed, dict) else None
+    if isinstance(actions, dict):
+        actions = [actions]
+    if (not isinstance(observed, dict) or observed.get("TaskPath") != "\\"
+            or observed.get("TaskName") != name or observed.get("UserId") != sid
+            or observed.get("LogonType") != "Interactive" or observed.get("RunLevel") != "Limited"
+            or observed.get("TriggerCount") != 0 or not isinstance(actions, list) or len(actions) != 1
+            or actions[0].get("Execute", "").casefold() != "powershell.exe"
+            or actions[0].get("Arguments") != args
+            or actions[0].get("WorkingDirectory") not in {None, ""}):
+        raise RuntimeError("The Scheduled Task action does not match its accepted operation.")
+    return True
 
 
 def cleanup(descriptor: dict, system: str | None = None, *, finishing: bool = False) -> None:
