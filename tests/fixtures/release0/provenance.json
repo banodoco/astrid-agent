@@ -1,5 +1,5 @@
 {
-  "format": "astrid-release0-fixture-provenance/v1",
+  "format": "astrid-release0-fixture-provenance/v2",
   "served_capture": {
     "captured_at_utc": "2026-10-30T02:05:12Z",
     "base_url": "https://astrid.haus",
@@ -34,8 +34,16 @@
     "runtime_repository": "astrid-runtime",
     "runtime_commit": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
     "renderer": "astrid.installer.service.render",
-    "driver": "work/coord/M4-2/generate_release0_service_fixtures.py",
-    "generation_command": "PYTHONPATH=\"$M42_OLD_CHECKOUT\" python3 work/coord/M4-2/generate_release0_service_fixtures.py \"$M42_OLD_CHECKOUT\" tests/fixtures/release0/services",
+    "driver": "work/coord/Q-manager/queue/running/M1-3-service-env/generate_registered_release0_service_fixtures.py",
+    "generation_command": "PYTHONPATH=\"$M42_OLD_CHECKOUT\" python3 work/coord/Q-manager/queue/running/M1-3-service-env/generate_registered_release0_service_fixtures.py \"$M42_OLD_CHECKOUT\" tests/fixtures/release0/services",
+    "registration": {
+      "method": "astrid.installer.service.Service.register",
+      "sidecar": "services/service-env.json",
+      "sidecar_bytes_sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "sidecar_value": {},
+      "renderer_env_file": true,
+      "source_lines": "astrid/installer/service.py:151-158,251-257"
+    },
     "normalized_inputs": {
       "unix_version_root": "/astrid/versions/v1",
       "unix_python_path": "/astrid/versions/v1/py/bin/python",
