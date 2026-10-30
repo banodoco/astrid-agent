@@ -228,15 +228,16 @@ def host_ready():
             ready.get("runtime_instance_id") == value["runtime_instance_id"])
 
 
-def task(project="windows-journey"):
+def task(project="windows-journey", *, create_project=True):
     # Exercise the installed SDK boundary against the profile written by the
     # real installer. This local SFX action has no external model/GPU needs.
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
     assert_installed_profile_binding()
-    created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
-                             "project.json"))
-    if created.get("ok") is not True:
-        raise RuntimeError("Project creation failed")
+    if create_project:
+        created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
+                                 "project.json"))
+        if created.get("ok") is not True:
+            raise RuntimeError("Project creation failed")
     request = {
         "capability_id": "chiptune.sfx",
         "kind": "executor",
@@ -304,6 +305,7 @@ def task(project="windows-journey"):
                 not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
                 outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
         raise RuntimeError("Task did not settle successfully with outputs")
+    return task_id
 
 
 def process_key(row):

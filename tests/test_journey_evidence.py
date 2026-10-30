@@ -15,12 +15,24 @@ def release1_receipts(tmp_path):
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
                    "foreground_fallback": False}
         row = {"receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
-               "mode": contract["mode"], "status": "pass", "runner_image": contract["runner"],
+               "mode": contract["mode"], "scenario": contract.get("leg", "fresh-install"),
+               "status": "pass", "runner_image": contract["runner"],
                "shell": contract["shell"], "source_override_test_mode": False, "final_cleanup": "pass",
                "candidate_checkouts": {name: {"sha": sha} for name, sha in candidate.items()},
-               "service_manager_prerequisite": service}
+               "service_manager_prerequisite": service,
+               "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
+            row["release_transition"] = {"from": 0, "to": 1,
+                                         "harness_override": "frozen-release0-direct-to-release1"}
+            row["release0_fixture"] = {
+                "fixture_sums_sha256": "e" * 64, "manifest_sha256": "f" * 64,
+                "provenance_sha256": "a" * 64,
+                "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                            "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"},
+            }
+            row["semantic_data"] = {"identical": True, "before_sha256": "b" * 64,
+                                    "after_sha256": "b" * 64}
         else:
             row["service_manager_prerequisite"] = {"required": False, "outcome": "explicit-owner",
                                                     "managed_by": "pinokio", "foreground_fallback": False}
@@ -138,6 +150,13 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     direct.write_text(json.dumps(data), encoding="utf-8")
     assert any("direct-macos: direct service ownership" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    direct = tmp_path / "direct-windows" / "journey-result.json"
+    data = json.loads(direct.read_text())
+    data["semantic_data"]["after_sha256"] = "c" * 64
+    direct.write_text(json.dumps(data), encoding="utf-8")
+    assert any("direct-windows: semantic data preservation" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
 def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
@@ -149,3 +168,5 @@ def test_workflow_declares_the_exact_release1_matrix_and_aggregate_gate():
     assert "--aggregate-release1" in workflow
     assert "journey-receipt-${{ matrix.job_id }}" in workflow
     assert "candidate-agent" in workflow and "pinokio" in workflow
+    assert '"leg":"release0-to-release1"' in workflow
+    assert "--release0-fixture" in workflow and "--allow-release0-to-release1" in workflow

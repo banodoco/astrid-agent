@@ -173,6 +173,8 @@ def evaluate_release1_matrix(candidate, results):
             errors.append(f"{job_id}: status {row.get('status')!r} is not pass")
         if row.get("mode") != contract["mode"]:
             errors.append(f"{job_id}: mode does not match the required matrix")
+        if row.get("scenario") != contract.get("leg", "fresh-install"):
+            errors.append(f"{job_id}: scenario does not match the required matrix leg")
         if row.get("runner_image") != contract["runner"]:
             errors.append(f"{job_id}: runner does not match the required matrix")
         if row.get("shell") != contract["shell"]:
@@ -200,6 +202,30 @@ def evaluate_release1_matrix(candidate, results):
             manager = row.get("service_manager")
             if not isinstance(manager, dict) or manager.get("foreground_fallback") is not False:
                 errors.append(f"{job_id}: direct service ownership/foreground assertion is absent")
+            if row.get("scenario") != "release0-to-release1":
+                errors.append(f"{job_id}: direct receipt did not run the authentic release-0 to release-1 leg")
+            transition = row.get("release_transition")
+            if (not isinstance(transition, dict) or transition.get("from") != 0 or transition.get("to") != 1
+                    or transition.get("harness_override") != "frozen-release0-direct-to-release1"):
+                errors.append(f"{job_id}: release-0 to release-1 transition is absent or wrong")
+            fixture = row.get("release0_fixture")
+            if (not isinstance(fixture, dict) or not all(
+                    isinstance(fixture.get(name), str) and DIGEST.fullmatch(fixture[name])
+                    for name in ("fixture_sums_sha256", "manifest_sha256", "provenance_sha256"))
+                    or fixture.get("sources") != {
+                        "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+                        "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+                    }):
+                errors.append(f"{job_id}: frozen release-0 fixture provenance is absent or wrong")
+            semantic = row.get("semantic_data")
+            if (not isinstance(semantic, dict) or semantic.get("identical") is not True
+                    or not all(isinstance(semantic.get(name), str) and DIGEST.fullmatch(semantic[name])
+                               for name in ("before_sha256", "after_sha256"))
+                    or semantic.get("before_sha256") != semantic.get("after_sha256")):
+                errors.append(f"{job_id}: semantic data preservation is absent or unequal")
+            for check in ("release", "service", "health", "semantic_data"):
+                if (row.get("checks") or {}).get(check) != "pass":
+                    errors.append(f"{job_id}: {check} assertion did not pass")
         elif (prerequisite.get("outcome") != "explicit-owner"
               or prerequisite.get("managed_by") != "pinokio"
               or prerequisite.get("foreground_fallback") is not False):
