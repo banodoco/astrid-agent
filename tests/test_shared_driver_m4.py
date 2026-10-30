@@ -206,4 +206,3 @@ def test_workflow_explicitly_wires_both_local_families_and_hosted_m4_6_gate():
         assert fragment in workflow
     assert "powershell.exe" in workflow or "powershell5_command" in workflow
     assert journey_failure_modes.candidate_errors(PROVISIONAL_CANDIDATE) == []
-
