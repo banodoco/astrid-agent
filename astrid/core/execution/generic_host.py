@@ -5633,6 +5633,7 @@ class GenericPackHost:
         self.cleanup_latch_path: Path | None = None
         self.evidence_status_path: Path | None = None
         self._evidence_observation_binding: dict[str, Any] = {}
+        self._child_import_host_context: dict[str, Any] = {}
         self._evidence_observation_lock = threading.RLock()
         # Idle release for everything this host keeps warm between tasks: the
         # session slot (Wan2GP, VibeComfy) and the Remotion frame owner.
@@ -8346,7 +8347,7 @@ class GenericPackHost:
             uploaded.append(uploaded_row)
         return uploaded
 
-    def _run_command_definition(self, record: CapabilityRecord, inputs: Mapping[str, Any], output_root: Path, attempt: Path, *, cancelled=None, authority_context: Mapping[str, Any] | None = None, admission: Mapping[str, Any] | None = None, network_broker: _NetworkBrokerContext | None = None, storage_estimate: Mapping[str, int] | None = None, child_bridge: Any | None = None, allow_runtime_connection: bool = True) -> Any:
+    def _run_command_definition(self, record: CapabilityRecord, inputs: Mapping[str, Any], output_root: Path, attempt: Path, *, cancelled=None, authority_context: Mapping[str, Any] | None = None, admission: Mapping[str, Any] | None = None, network_broker: _NetworkBrokerContext | None = None, storage_estimate: Mapping[str, int] | None = None, child_bridge: Any | None = None, allow_runtime_connection: bool = True, import_binding: Mapping[str, Any] | None = None) -> Any:
         """Run a manifest command without importing Astrid's project authority.
 
         Built-in pipeline steps and command capabilities are both runnable from
@@ -8544,6 +8545,12 @@ class GenericPackHost:
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
                 raise HostError("renderer command requires the admitted Python interpreter")
             remotion_lease = self._renderer_task_lease(env, attempt)
+        import_receipt = None
+        if record.id in {"h3_av.transform", "vibecomfy.validate"}:
+            from ._child_import_receipt import ChildImportReceipt
+
+            import_receipt = ChildImportReceipt(self, record.id, import_binding)
+            inherited_fds += import_receipt.prepare(env)
         try:
             if remotion_lease is not None:
                 inherited_fds += (remotion_lease.inherited_fd(),)
@@ -8563,6 +8570,11 @@ class GenericPackHost:
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=inherited_fds,
             )
         except BaseException as exc:
+            if import_receipt is not None:
+                exc.child_import_receipt = import_receipt.finish()
+                if exc.child_import_receipt["persistence"] == "failed":
+                    _LOGGER.warning("child import receipt persistence failed launch_id=%s",
+                                    exc.child_import_receipt["launch_id"])
             if remotion_lease is not None:
                 remotion_lease.close()
             retained = getattr(exc, "process", None)
@@ -8571,6 +8583,8 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        if import_receipt is not None:
+            import_receipt.launched(process)
         self._track_process(process)
         stream_secrets = dict(secrets)
         stream_secrets.update({
@@ -8696,6 +8710,8 @@ class GenericPackHost:
                     "returncode": returncode,
                     "capability_digest": record.capability_digest,
                     "process_id": process_id,
+                    **({"child_import_receipt": import_receipt.finish()}
+                       if import_receipt is not None else {}),
                 },
                 returncode=returncode,
                 process_id=process_id,
@@ -8717,6 +8733,16 @@ class GenericPackHost:
                     self._untrack_process(process)
                 if remotion_lease is not None:
                     remotion_lease.close()
+                if import_receipt is not None:
+                    reference = import_receipt.finish()
+                    if reference["persistence"] == "failed":
+                        _LOGGER.warning("child import receipt persistence failed launch_id=%s",
+                                        reference["launch_id"])
+                    error = sys.exc_info()[1]
+                    if error is not None:
+                        error.child_import_receipt = reference
+                    if execution_error is not None:
+                        execution_error.child_import_receipt = reference
                 env.clear()
                 secrets.clear()
 
@@ -9394,6 +9420,9 @@ class GenericPackHost:
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
+        import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
+        if import_reference is not None:
+            receipt["child_import_receipt"] = import_reference
         with terminal.get("completion_lock", threading.RLock()):
             # A slow harvest may have started before the observer's timeout.
             # Recheck at publication, without holding this lock over harvesting.
@@ -10659,6 +10688,15 @@ class GenericPackHost:
                         storage_estimate=storage_estimate,
                         child_bridge=child_bridge,
                         allow_runtime_connection=not private_runtime_context,
+                        import_binding={
+                            "task_id": task_id, "run_id": task_data.get("run_id"),
+                            "attempt_id": attempt_id, "fence": fence, "runtime_epoch": claim_epoch,
+                            **{key: task_data.get(key) or (
+                                spec.get("delegated_parent", {}).get(key)
+                                if isinstance(spec, Mapping) and isinstance(spec.get("delegated_parent"), Mapping)
+                                else None) for key in ("parent_task_id", "parent_attempt_id")},
+                            **{key: task_data.get(key) for key in ("operation_id", "submission_id")},
+                        },
                     )
                     # Checkout-server VibeComfy commands run inside the
                     # attested VibeComfy output root. Carry that effective root
@@ -11004,7 +11042,12 @@ class GenericPackHost:
                 retryable=False,
                 attempt_id=attempt_id,
                 fence=fence,
-                failure_diagnostic=storage_failure_receipt or evidence_failure_receipt,
+                failure_diagnostic=(
+                    {**(storage_failure_receipt or evidence_failure_receipt or {}),
+                     "child_import_receipt": original_error.child_import_receipt}
+                    if getattr(original_error, "child_import_receipt", None) is not None
+                    else storage_failure_receipt or evidence_failure_receipt
+                ),
                 **_structured_failure_kwargs(original_error),
             )
             raise
@@ -11591,6 +11634,7 @@ class GenericPackHost:
         slot._unresolved_task_scopes = self._unresolved_task_scopes
         slot.evidence_status_path = self.evidence_status_path
         slot._evidence_observation_binding = dict(self._evidence_observation_binding)
+        slot._child_import_host_context = dict(self._child_import_host_context)
         slot._evidence_observation_lock = self._evidence_observation_lock
         slot._handoff_accounting_owner = self
         # Parallel slots own private attempts, but claim/handoff accounting
@@ -14940,6 +14984,20 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         boot_manifest_hash=boot_manifest_hash,
     )
     _emit_startup_phase("host_constructor_done")
+    # Only verified host startup arguments populate this private context. A
+    # child's payload/environment is never accepted as launch/source identity.
+    host._child_import_host_context = {
+        "source_checkout": str(source_checkout) if source_checkout is not None else None,
+        "source_checkout_digest": identity_attestation["source"].get("checkout_digest"),
+        "source_closure_digest": identity_attestation["source"].get("closure_digest"),
+        "source_inventory_identity": host.source_inventory_identity,
+        "execution_profile": "source" if source_checkout is not None else None,
+        "boot_manifest_hash": boot_manifest_hash,
+        "executor_incarnation": activation.get("executor_incarnation") if activation else None,
+        "runtime_instance_id": args.runtime_instance_id,
+        "target_digest": identity_attestation.get("target_digest"),
+        "readiness_profile_hash": args.readiness_profile_hash,
+    }
     host._native_engine_graph = preparation.graph if preparation is not None else None
     if preparation is not None:
         preparation.attach_claim_host(host)
