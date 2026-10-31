@@ -46,6 +46,13 @@ def test_tst_b1_local_sources_require_explicit_test_mode(tmp_path, monkeypatch):
     assert shipped.read_bytes().startswith(b'{"schema_version":1')
 
 
+def test_release1_namespace_mode_contract_is_explicit():
+    assert journey.declared_mode(argparse.Namespace()) == "direct"
+    assert journey.declared_mode(argparse.Namespace(mode="pinokio-backend")) == "pinokio-backend"
+    with pytest.raises(ValueError, match="must declare mode"):
+        journey.declared_mode(argparse.Namespace(job_id="direct-linux"))
+
+
 def test_tst_b1_each_install_update_leg_calls_shared_verifier(tmp_path, monkeypatch):
     commands = []
     def fake_run(argv, log, **kwargs):
@@ -81,9 +88,10 @@ def test_tst_b1_failure_writes_small_result_with_unrun_checks(tmp_path, monkeypa
     args = argparse.Namespace(run_root=run_root, root=run_root / "program",
                               data_root=run_root / "data", app_checkout=tmp_path / "missing-app",
                               source_override=False, agent_checkout=None, runtime_checkout=None,
-                              leg="fresh-install", shell="sh")
+                              leg="fresh-install", shell="sh", mode="direct")
     # The unit check exercises only run custody; local login state is irrelevant.
     monkeypatch.setattr(journey, "assert_host_available", lambda *unused: None)
+    monkeypatch.setattr(journey, "process_birth", lambda _pid: "test-birth")
     with pytest.raises(FileNotFoundError):
         journey.execute(args)
     result = json.loads((run_root / "evidence" / "fresh-install" / "journey-result.json").read_text())
@@ -215,6 +223,7 @@ def test_tst_b1_final_cleanup_uses_exact_owned_roots_and_rechecks_manager(tmp_pa
     preflights = []
     monkeypatch.setattr(journey, "assert_host_available", lambda leg, *unused: preflights.append(leg))
     monkeypatch.setattr(journey, "runtime_processes", lambda *unused: [])
+    monkeypatch.setattr(journey, "process_birth", lambda _pid: "test-birth")
     def fake_journey(*unused):
         root.mkdir()
         (root / "current").write_text("v1")
