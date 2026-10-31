@@ -308,13 +308,31 @@ def _part_identity(record):
     return hashlib.sha256(request_bytes(value)).hexdigest()
 
 
-def _legacy_request_matches(record, flight):
-    """A missing part identity is usable only with the exact saved flight."""
-    saved = record.get("flight") if isinstance(record, dict) else None
-    if not isinstance(record, dict) or "parts" in record or not isinstance(saved, dict) or not isinstance(flight, dict):
+def _legacy_request_matches(record, flight, session):
+    """Match the complete saved legacy request, never just its group."""
+    from .retry import _request
+
+    if not isinstance(record, dict) or "parts" in record or not isinstance(flight, dict):
         return False
-    return all(isinstance(saved.get(key), str) and saved[key]
-               and saved[key] == flight.get(key) for key in ("path", "body", "key"))
+    try:
+        request = _request(record, record)
+        expected = {"api_version": 1, "project_id": session.project_id,
+                    "timeline_id": session.timeline_id,
+                    "base_revision_id": request["base_revision_id"],
+                    "base_publication_id": request["base_publication_id"],
+                    "commands": [_native_command(command) for command in request["commands"]],
+                    "source": {"via": "python"}, "dry_run": False,
+                    "label": request["label"], "steps": request.get("steps", []),
+                    "merge": request["merge"], "group_id": request.get("group_id", record["id"])}
+        if "reads" in request:
+            expected["reads"] = request["reads"]
+        if request.get("rationale") is not None:
+            expected["rationale"] = request["rationale"]
+        return (isinstance(flight.get("key"), str) and bool(flight["key"])
+                and flight.get("path") == session.path
+                and canonical_json(json.loads(flight["body"])) == canonical_json(expected))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _settle_pending(record, *, expected_part, actor_id, publication_id, how, base, receipt_id=None,
@@ -1181,7 +1199,7 @@ class TimelineSession:
                         if record is not None and record.get("state") == "pending":
                             _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
                                             publication_id=receipt["receipt_id"], expected_identity=(flight.get("pending_identity")
-                                                if _legacy_request_matches(record, flight) else flight.get("pending_identity") or ""),
+                                                if _legacy_request_matches(record, flight, self) else flight.get("pending_identity") or ""),
                                             how=flight.get("pending_how", "retry"), base=state["base"])
                 if pending_id is not None:
                     state.pop("pending_close", None)
@@ -1200,7 +1218,7 @@ class TimelineSession:
                     if record is not None and record.get("state") == "pending":
                         _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
                                         publication_id=receipt["receipt_id"], expected_identity=(flight.get("pending_identity")
-                                                if _legacy_request_matches(record, flight) else flight.get("pending_identity") or ""), how=how,
+                                                if _legacy_request_matches(record, flight, self) else flight.get("pending_identity") or ""), how=how,
                                         base={"revision_id": data["accepted_revision_id"],
                                               "publication_id": receipt["receipt_id"]})
                         target_outbox.write(target)

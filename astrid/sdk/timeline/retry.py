@@ -53,8 +53,12 @@ def _close(path, record, session, entry, how):
         saved = state.get("pending_changes", {}).get(record["id"]) if isinstance(state, dict) else None
         if saved is None:
             return record
-        if "parts" not in record and not _legacy_request_matches(saved, record.get("flight")):
-            return copy.deepcopy(saved)
+        if "parts" not in record:
+            try:
+                if "parts" in saved or _request(saved, saved) != _request(record, record):
+                    return copy.deepcopy(saved)
+            except (KeyError, TypeError, ValueError):
+                return copy.deepcopy(saved)
         if _settle_pending(saved, expected_part=record.get("part", 0), actor_id=actor,
                            publication_id=publication, receipt_id=receipt, how=how, base=base,
                            expected_identity=_part_identity(record)):
@@ -76,7 +80,7 @@ def _legacy_flight_entry(session, record, flights, entries):
                 continue
             part_matches = []
             if ("parts" not in record and flight.get("pending_part") in (None, 0)
-                    and _legacy_request_matches(record, flight)):
+                    and _legacy_request_matches(record, flight, session)):
                 part_matches.append(0)
             for index, part in enumerate(record.get("parts", [])):
                 request = _request(record, part)
@@ -166,9 +170,7 @@ def _landed(timeline, path, record):
                     "next": None, "record": closed}
     if "parts" not in record:
         try:
-            body = json.loads(record["flight"]["body"])
-            base = {"revision_id": body["base_revision_id"],
-                    "publication_id": body["base_publication_id"]}
+            base = _pin(record["base"])
         except (KeyError, TypeError, ValueError):
             return None
     else:
