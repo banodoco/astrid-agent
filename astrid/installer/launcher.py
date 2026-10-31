@@ -158,7 +158,7 @@ def publish_runtime_runner(root: Path) -> Path:
     """Durably publish current admission before an update can stop or migrate."""
     from runtime_protocol import platform
 
-    from . import foreground, service
+    from . import custody, foreground, service
 
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
@@ -177,12 +177,17 @@ def publish_runtime_runner(root: Path) -> Path:
             service.command,
         ))
     )
+    custody_source = "\n".join(inspect.getsource(function) for function in (
+        custody._receive, custody._send, custody._binding, custody.attach,
+    ))
     foreground_source = "\n".join(inspect.getsource(function) for function in (
         foreground._probe_operation_lock, foreground.launch, foreground._run,
     ))
     source = (
         service_source + '\n'
-        '# <Astrid foreground launcher>\n'
+        + 'import hashlib,hmac,secrets,socket\nfrom typing import Any\n'
+        + f'_CUSTODY_KEEPER_SOURCE={inspect.getsource(custody.keeper)!r}\n'
+        + custody_source + '\n_CUSTODY_ATTACH=attach\n'
         + foreground_source + '\n'
         + 'launch(Path(__file__).resolve().parent, sys.argv[1:])\n'
     )

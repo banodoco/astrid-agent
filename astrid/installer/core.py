@@ -375,6 +375,13 @@ class Installer:
             self.backend.open()
 
     def _save_update(self, transaction: dict, step: str, **details) -> None:
+        custody = getattr(self.backend, "_pinokio_custody", None)
+        if custody is not None:
+            custody.check()
+            context = transaction.setdefault("transaction_context", {})
+            if not isinstance(context, dict):
+                raise ValueError("Invalid stopped-update activation context.")
+            context["pinokio_lifetime_custody"] = True
         transaction.update(step=step, **details)
         write_json(absolute(self.root / "update-transaction.json"), transaction)
         binding = transaction.get("update_job")
