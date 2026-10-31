@@ -143,6 +143,23 @@ def test_backend_matrix_is_explicit_and_cannot_admit_other_modes():
         journey_matrix.validate_m4_4a_backend_job("pinokio-backend-linux", "direct")
 
 
+def test_shared_matrix_registers_m4_4b_5_and_6_without_merging_evidence_classes():
+    assert journey_matrix.M4_4B_LOCAL_SMOKE["evidence_class"] == "local_process"
+    assert journey_matrix.M4_4B_LOCAL_SMOKE["hosted"] is False
+    assert len(journey_matrix.M4_5_MATRIX) == 12
+    assert len(set(journey_matrix.M4_5_SCENARIO_IDS)) == 12
+    assert len(journey_matrix.M4_6_MATRIX) == 9
+    assert journey_matrix.validate_m4_5_scenario(
+        "release2-pinokio-update-pinokio-fully-local-windows")["shell"] == "powershell.exe"
+    assert journey_matrix.validate_m4_6_slot("pinokio-backend-linux")["runner"] == "ubuntu-24.04"
+
+
+def test_m4_4a_executor_fails_closed_when_config_is_not_explicit(tmp_path):
+    args = argparse.Namespace(pinokio_backend_config=None)
+    with pytest.raises(ValueError, match="requires --pinokio-backend-config"):
+        ci_journey.execute_pinokio_backend(args, tmp_path)
+
+
 def test_workflow_has_a_focused_backend_scope_and_explicit_provenance_inputs():
     workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text()
     assert "old_launcher_ref:" in workflow
@@ -150,6 +167,14 @@ def test_workflow_has_a_focused_backend_scope_and_explicit_provenance_inputs():
     assert "m4_4a_backend_only:" in workflow
     assert "if backend_only:" in workflow
     assert "--aggregate-m4-4a" in workflow
+    assert "m4_4a_executor_configs:" in workflow
+    assert "--pinokio-backend-config" in workflow
+    assert "github.workflow_sha" in workflow
+    assert "m4_5_enabled:" in workflow and "--aggregate-m4-5" in workflow
+    assert "m4_5_only:" in workflow
+    assert "m4_5_enabled and not m4_5_only" in workflow
+    assert "if: needs.config.outputs.m4_5_only != 'true'" in workflow
+    assert "m4_5_boundary_args:" in workflow
 
 
 def test_old_launcher_input_fails_closed_before_git_execution(tmp_path):
