@@ -334,8 +334,39 @@ def test_source_bound_installer_dispatch_and_identity(candidate, tmp_path, monke
     assert argv[argv.index("--root") + 1] == str(engine_root)
     assert argv[argv.index("--placement") + 1] == "local"
     if install_code:
-        assert done.stdout == "" and done.stderr.strip() == "H3 selected source installer verification failed"
+        assert done.stdout == ""
+        check, phase, generic = done.stderr.splitlines()
+        assert json.loads(check) == {"schema": "astrid.pod-h3-install-check.v1",
+                                     "code": "engine_error", "step": None}
+        assert json.loads(phase) == {"schema": "astrid.pod-h3-install-phase.v1",
+                                     "phase": "canonical-install", "reason": "check_failed"}
+        assert generic == "H3 selected source installer verification failed"
     else:
         result = json.loads(done.stdout)
         assert result["status"] == "ready" and result["root"] == str(engine_root)
         assert result["receipt_sha256"] == hashlib.sha256((engine_root / ".astrid-engine/install.json").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("invalid_source", [False, True])
+def test_receipt_diagnostic_checks_source_before_reading_and_never_creates_evidence(
+        candidate, tmp_path, invalid_source):
+    import base64
+    selected = dict(candidate)
+    if invalid_source:
+        selected["agent_head"] = "0" * 40
+    # The fake selected tree deliberately has no engine modules. A valid selection
+    # reaches the generic diagnostic error; an invalid one cannot reach imports.
+    blob = base64.b64encode(json.dumps(selected).encode()).decode()
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("ASTRID_") and not k.upper().startswith("GIT_")}
+    before = set(tmp_path.iterdir())
+    done = subprocess.run([sys.executable, "-I", str(Path(source.__file__)), blob, "-",
+                           "--diagnose-install"], cwd=tmp_path, env=env,
+                          capture_output=True, text=True, timeout=90)
+    assert done.returncode == 1 and done.stdout == ""
+    expected = ("H3 selected source identity verification failed" if invalid_source
+                else "H3 selected source installer diagnostic failed")
+    assert done.stderr.strip() == expected
+    assert set(tmp_path.iterdir()) == before
+    assert selected["agent_root"] not in done.stderr
+    assert selected["runtime_root"] not in done.stderr

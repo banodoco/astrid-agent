@@ -590,9 +590,36 @@ def test_deadline_propagates_to_every_context_operation(setup):
 
 def test_wrong_helper_identity_has_no_install_side_effect(setup):
     setup[1].wrong_identity = True
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError) as failed:
         install(setup)
+    assert failed.value.step_id == "helper-identity"
     assert not [e for e in setup[1].events if e[0] in {"write", "mkdir", "download"}]
+
+
+@pytest.mark.parametrize("step", [None, "existing-boundary"])
+def test_initial_helper_error_retains_code_identity_and_step_without_receipt(setup, step):
+    error = UnsafePathError("private path detail", step_id=step)
+
+    def fail(request):
+        raise error
+
+    setup[1].run = fail
+    with pytest.raises(UnsafePathError) as failed:
+        install(setup)
+    assert failed.value is error and failed.value.code == "unsafe_path"
+    assert failed.value.step_id == (step or "helper-identity")
+    assert not [e for e in setup[1].events if e[0] in {"write", "mkdir", "download"}]
+    assert not setup[1].held
+
+
+def test_exact_workspace_sibling_roots_are_lexically_supported(setup):
+    root = "/workspace/astrid/runtime/h3/vibecomfy-h3"
+    cache = "/workspace/astrid/engines/vibecomfy-h3/models"
+    plan = runner.plan_install(setup[1].recipe, root=root, placement="local")
+    assert plan.root == root
+    assert runner.validate_model_cache_root(cache, engine_root=plan.root,
+        platform=plan.platform, placement=plan.placement) == cache
+    assert not setup[1].events
 
 
 @pytest.mark.parametrize("condition", ["absent", "missing-node", "unhealthy", "wrong-owner", "unowned-port"])

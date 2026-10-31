@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from pathlib import Path
+import sys
 import time
 
 from ._engine_target_files import _TargetFiles, _check
@@ -10,6 +13,7 @@ from .engine_contracts import (CommandResult, IntegrityError, RecipeValidationEr
 
 _SERVICE_PREFIX = ("python3", "-I", "-m", "astrid.core.generation.engine_execution", "--engine-service")
 _SERVICE_SCHEMA = "astrid.engine-service.v1"
+_HELPER_PREFIX = ("python3", "-I", "-m", "astrid.core.generation.engine_runner_target")
 
 
 class LocalLinuxExecutionContext:
@@ -27,6 +31,17 @@ class LocalLinuxExecutionContext:
     def run(self, request):
         _check(request.deadline)
         argv = request.argv
+        if tuple(argv[:4]) == _HELPER_PREFIX:
+            if len(argv) != 6 or request.cwd != self.root:
+                raise RecipeValidationError("invalid target helper request")
+            # -I ignores PYTHONPATH. Bind finite helpers to this package and
+            # interpreter, as the local supervisor already does for itself.
+            # The helper still verifies the recipe and complete code digest.
+            source_root = str(Path(__file__).resolve().parents[3])
+            program = (f"import sys; sys.dont_write_bytecode=True; sys.path.insert(0, {source_root!r}); "
+                       "from astrid.core.generation.engine_runner_target import main; raise SystemExit(main())")
+            return self.service_client.run(replace(
+                request, argv=(sys.executable, "-I", "-c", program, *argv[4:])))
         if tuple(argv[:5]) != _SERVICE_PREFIX:
             return self.service_client.run(request)
         if len(argv) != 7 or argv[5] not in {"probe", "start", "health"} or request.cwd != self.root:
