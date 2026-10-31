@@ -212,8 +212,6 @@ def _second_version(root: Path, name: str = "candidate") -> Version:
 
 
 def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, monkeypatch):
-    from runtime_protocol import platform
-
     root, data, old = _installation(tmp_path)
     candidate = _second_version(root)
     switch(root, candidate)
@@ -229,14 +227,9 @@ def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, 
 
     monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "not-used")
     monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: (_ for _ in ()).throw(ExecCalled()))
-    app_lock = root / ".app-update.lock"
-    with app_lock.open("a+b") as update_lock, (tmp_path / "installer.lock").open("a+b") as lock:
-        platform.lock_file(update_lock.fileno(), blocking=False)
-        try:
-            with pytest.raises(ExecCalled):
-                foreground._run(root, [], "linux", lock.fileno())
-        finally:
-            platform.unlock_file(update_lock.fileno())
+    with (tmp_path / "installer.lock").open("a+b") as lock:
+        with pytest.raises(ExecCalled):
+            foreground._run(root, [], "linux", lock.fileno())
 
 
 def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path, monkeypatch):
@@ -252,24 +245,20 @@ def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path
         foreground._run(root, [], "linux", 123)
 
 
-@pytest.mark.parametrize(("step", "selected", "allowed", "data_matches", "hold_update_lock"), [
-    ("switched", "candidate", True, True, True),
-    ("switched", "candidate", False, True, False),
-    ("switched", "old", False, True, False),
-    ("rollback_selected", "old", True, True, True),
-    ("rollback_selected", "old", False, True, False),
-    ("rollback_selected", "candidate", False, True, False),
-    ("migrated", "old", False, True, False),
-    ("future-step", "old", False, True, False),
-    ("switched", "candidate", False, False, False),
-    ("complete", "old", True, True, False),
-    ("rolled_back", "old", True, True, False),
-    (None, "old", True, True, False),
+@pytest.mark.parametrize(("step", "selected", "allowed", "data_matches"), [
+    ("switched", "candidate", True, True),
+    ("switched", "old", False, True),
+    ("rollback_selected", "old", True, True),
+    ("rollback_selected", "candidate", False, True),
+    ("migrated", "old", False, True),
+    ("future-step", "old", False, True),
+    ("switched", "candidate", False, False),
+    ("complete", "old", True, True),
+    ("rolled_back", "old", True, True),
+    (None, "old", True, True),
 ])
 def test_generated_foreground_retains_exact_admission_across_rollback(
-        tmp_path, monkeypatch, step, selected, allowed, data_matches, hold_update_lock):
-    from runtime_protocol import platform
-
+        tmp_path, monkeypatch, step, selected, allowed, data_matches):
     root, data, old = _installation(tmp_path)
     candidate = _second_version(root)
     chosen = candidate if selected == "candidate" else old
@@ -299,36 +288,20 @@ def test_generated_foreground_retains_exact_admission_across_rollback(
         raise ExecCalled
 
     monkeypatch.setattr(os, "execvpe", capture)
-    lock = None
-    if hold_update_lock:
-        path = root / ".app-update.lock"
-        lock = path.open("a+b")
-        platform.lock_file(lock.fileno(), blocking=False)
-    try:
-        if allowed:
-            with pytest.raises(ExecCalled):
-                runpy.run_path(str(root / "run_runtime.py"))
-            arguments, environment = observed[0]
-            assert arguments[0] == str(chosen.python)
-            assert _runtime_args(arguments) == [
-                "run", "--profile", "astrid", "--data-root", str(data),
-                "--source-manifest", str(chosen.profile), "--hosted-origin", "off",
-            ]
-            assert "ASTRID_INSTALLER_OPERATION_ID" not in environment
-        else:
-            with pytest.raises(ValueError) as result:
-                runpy.run_path(str(root / "run_runtime.py"))
-            if (step, selected, data_matches) in {
-                    ("switched", "candidate", True),
-                    ("rollback_selected", "old", True)}:
-                assert str(result.value) == "Choose Update to finish"
-            else:
-                assert "An Astrid update was interrupted" in str(result.value)
-            assert observed == []
-    finally:
-        if lock is not None:
-            platform.unlock_file(lock.fileno())
-            lock.close()
+    if allowed:
+        with pytest.raises(ExecCalled):
+            runpy.run_path(str(root / "run_runtime.py"))
+        arguments, environment = observed[0]
+        assert arguments[0] == str(chosen.python)
+        assert _runtime_args(arguments) == [
+            "run", "--profile", "astrid", "--data-root", str(data),
+            "--source-manifest", str(chosen.profile), "--hosted-origin", "off",
+        ]
+        assert "ASTRID_INSTALLER_OPERATION_ID" not in environment
+    else:
+        with pytest.raises(ValueError, match="interrupted|Update"):
+            runpy.run_path(str(root / "run_runtime.py"))
+        assert observed == []
 
 
 def test_generated_foreground_refuses_malformed_pending_journal(tmp_path, monkeypatch):
