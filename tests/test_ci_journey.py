@@ -569,3 +569,33 @@ def test_linux_service_ownership_requires_exact_fragment_even_for_symlink(tmp_pa
     state.update(LoadState="loaded", FragmentPath=str(link), ActiveState="active")
     with pytest.raises(RuntimeError, match="not owned"):
         journey.assert_direct_service_ownership(data.parent / "program", data)
+
+
+def test_direct_evidence_stages_nested_bootstraps_and_installer_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    run = tmp_path / "run"
+    evidence = run / "evidence" / "release0-to-release1"
+    for relative in ("release0/release0-bootstrap.log", "release1/update-bootstrap.log"):
+        path = evidence / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative)
+    log_dir = run / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+    log_dir.mkdir(parents=True)
+    for name in ("install.log", "runtime-service.log"):
+        (log_dir / name).write_text(name)
+    journey.capture_runtime_service_logs(evidence, run, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+    retained = evidence.parent / "evidence-upload" / "before-cleanup"
+    for relative in ("release0/release0-bootstrap.log", "release1/update-bootstrap.log", "install.log", "runtime-service.log"):
+        assert (retained / relative).read_text() == relative.rsplit("/", 1)[-1] or (retained / relative).read_text() == relative
+
+
+def test_runpod_linux_records_its_own_provenance(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setenv("ASTRID_CI_EXPECTED_RUNNER", "runpod-cpu")
+    for name in ("RUNNER_OS", "ImageOS", "ImageVersion"):
+        monkeypatch.delenv(name, raising=False)
+    identity = journey.runner_identity()
+    journey.assert_runner_identity(identity)
+    assert identity["runner_provenance"]["venue"] == "runpod-cpu"
+    assert "ImageOS" not in identity["runner_provenance"]

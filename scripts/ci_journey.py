@@ -55,15 +55,16 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release0-to-release1")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
-                 "windows-2022": "win32", "macos-14": "darwin"}
+                 "windows-2022": "win32", "macos-14": "darwin", "runpod-cpu": "linux"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
     "install-bootstrap.log", "update-bootstrap.log", "start.log",
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
-    "runtime-owner-processes.json",
-    "runtime-service-runtime.log",
+    "runtime-owner-processes.json", "preflight-scheduled-task-fresh-install.json",
+    "preflight-scheduled-task-cleanup.json",
+    "runtime-service-runtime.log", "runtime-service.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
@@ -415,6 +416,8 @@ def runner_identity() -> dict:
     label = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") or "local"
     raw = {key: os.environ[key] for key in ("RUNNER_OS", "ImageOS", "ImageVersion")
            if os.environ.get(key)}
+    if label == "runpod-cpu":
+        raw.update(venue="runpod-cpu", kernel=platform.release(), platform=platform.platform())
     return {"runner_image": label,
             "runner_provenance": {"observed_os_family": sys.platform, **raw}}
 
@@ -426,8 +429,8 @@ def assert_runner_identity(identity: dict) -> None:
             raise ValueError(f"Unknown controlled runner label: {label}")
         if RUNNER_FAMILY[label] != sys.platform:
             raise RuntimeError(f"Runner label {label} disagrees with observed {sys.platform}")
-        missing = [key for key in ("RUNNER_OS", "ImageOS", "ImageVersion")
-                   if key not in identity["runner_provenance"]]
+        required = ("venue", "kernel", "platform") if label == "runpod-cpu" else ("RUNNER_OS", "ImageOS", "ImageVersion")
+        missing = [key for key in required if key not in identity["runner_provenance"]]
         if missing:
             raise RuntimeError(f"Hosted runner provenance is missing: {', '.join(missing)}")
     reported_os = identity["runner_provenance"].get("RUNNER_OS")
@@ -545,11 +548,13 @@ def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> 
         log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
     else:
         log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
-    paths = [log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    paths = [log_dir / "install.log", log_dir / "runtime-service.log", log_dir / "runtime.log",
+             *sorted(log_dir.glob("service-*.log"))]
     for source in paths:
         if source.is_symlink() or not source.is_file():
             continue
-        name = ("runtime-service-runtime.log" if source.name == "runtime.log"
+        name = (source.name if source.name in {"install.log", "runtime-service.log"}
+                else "runtime-service-runtime.log" if source.name == "runtime.log"
                 else f"runtime-service-{source.name}")
         target = evidence / name
         try:
@@ -570,15 +575,20 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
         return
-    for source in sorted(evidence.iterdir(), key=lambda path: path.name):
+    nested_names = {"release0/release0-bootstrap.log", "release1/update-bootstrap.log"}
+    sources = list(evidence.iterdir()) + [evidence / name for name in sorted(nested_names)]
+    for source in sorted(sources, key=lambda path: str(path)):
         name = source.name
-        if (name not in JOURNEY_EVIDENCE_NAMES and
-                not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+        relative = source.relative_to(evidence).as_posix()
+        if (relative not in nested_names and (source.parent != evidence or
+                (name not in JOURNEY_EVIDENCE_NAMES and not
+                 (name.startswith("runtime-service-service-") and name.endswith(".log"))))):
             continue
-        if not source.is_file() or source.is_symlink():
+        if not source.is_file() or source.is_symlink() or (source.parent != evidence and source.parent.is_symlink()):
             continue
-        target = destination / name
+        target = destination / relative
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             if source.suffix == ".log":
                 with source.open("rb") as stream:
                     stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
@@ -1410,7 +1420,8 @@ def execute(args: argparse.Namespace) -> dict:
         assert_runner_identity(identity)
         if getattr(args, "job_id", None):
             expected = validate_job(args.job_id, args.mode)
-            if expected["runner"] != identity["runner_image"]:
+            if (expected["runner"] != identity["runner_image"] and not
+                    (args.job_id == "direct-linux" and identity["runner_image"] == "runpod-cpu")):
                 raise RuntimeError(f"Release-1 job {args.job_id} requires {expected['runner']}, not {identity['runner_image']}")
             if expected["shell"] != args.shell:
                 raise RuntimeError(f"Release-1 job {args.job_id} requires shell {expected['shell']}")
