@@ -8,11 +8,13 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
+from astrid.core.receipts.canonical import canonical_json
+
 from . import clash
 from ._command_state import ABSENT, equal, present
 from ._commit_patch import canonical_site
 from ._doc_patch import value_at
-from .sync import _part_identity, _response, _settle_pending
+from .sync import _native_command, _part_identity, _response, _settle_pending
 from .outbox import Outbox
 
 
@@ -58,6 +60,58 @@ def _close(path, record, session, entry, how):
                 saved["attempts"] = int(saved.get("attempts", 1))
             outbox.write(state)
         return copy.deepcopy(saved)
+
+
+def _legacy_flight_entry(session, record, flights, entries):
+    """Confirm a legacy flight against one saved part and one history receipt."""
+    if len(flights) != 1:
+        return None
+    matches = []
+    for flight in flights:
+        try:
+            body = json.loads(flight["body"])
+            if not isinstance(body, dict) or not flight["key"] or flight["path"] != session.path:
+                continue
+            part_matches = []
+            for index, part in enumerate(record["parts"]):
+                request = _request(record, part)
+                expected = {"api_version": 1, "project_id": session.project_id,
+                            "timeline_id": session.timeline_id,
+                            "base_revision_id": request["base_revision_id"],
+                            "base_publication_id": request["base_publication_id"],
+                            "commands": [_native_command(command) for command in request["commands"]],
+                            "source": {"via": "python"}, "dry_run": False,
+                            "label": request["label"], "steps": request.get("steps", []),
+                            "merge": request["merge"],
+                            "group_id": request.get("group_id", record["id"])}
+                if "reads" in request:
+                    expected["reads"] = request["reads"]
+                if request.get("rationale") is not None:
+                    expected["rationale"] = request["rationale"]
+                if canonical_json(body) == canonical_json(expected):
+                    part_matches.append(index)
+            if part_matches != [record.get("part", 0)]:
+                continue
+            invocation = {"operation": "commitTimeline", "path": flight["path"],
+                          "publisher": session.identity["actor_id"], "request": body}
+            digest = hashlib.sha256(canonical_json(invocation).encode()).hexdigest()
+            found = [entry for entry in entries if isinstance(entry.get("receipt"), dict)
+                     and entry["receipt"].get("idempotency_key") == flight["key"]]
+            result = found[0]["receipt"].get("result") if len(found) == 1 else None
+            if (len(found) == 1 and isinstance(result, dict)
+                    and result.get("status") in {"accepted", "merged", "rebased"}
+                    and result.get("publisher") == session.identity["actor_id"]
+                    and result.get("accepted_revision_id") == found[0].get("revision_id")
+                    and found[0].get("publisher") == session.identity["actor_id"]
+                    and found[0]["receipt"].get("request_hash") == digest
+                    and found[0]["receipt"].get("command_kind") == "timeline.commit"
+                    and found[0]["receipt"].get("project_id") == session.project_id
+                    and found[0]["receipt"].get("receipt_id") == found[0].get("publication_id")
+                    and found[0].get("publication_id") and found[0].get("revision_id")):
+                matches.append(found[0])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return matches[0] if len(matches) == 1 else None
 
 
 def _landed(timeline, path, record):
@@ -111,7 +165,18 @@ def _landed(timeline, path, record):
         return None
     index = record.get("part", 0)
     entry = None
+    legacy_flights = [flight for flight in flights
+                      if flight.get("pending_id") == record["id"]
+                      and flight.get("pending_path")
+                      and Path(flight["pending_path"]).resolve() == Path(path).resolve()
+                      and flight.get("pending_part") is None]
+    if legacy_flights:
+        entry = _legacy_flight_entry(timeline.session, record, legacy_flights, entries)
+        if entry is None:
+            return None
     for flight in flights:
+        if entry is not None:
+            break
         owner = flight.get("pending_path")
         if (flight.get("pending_id") != record["id"] or not owner
                 or Path(owner).resolve() != Path(path).resolve()

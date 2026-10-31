@@ -261,6 +261,82 @@ def test_acknowledged_function_key_replays_original_request_read_only(connected)
     assert client is session.client
 
 
+def test_retry_recovers_accepted_legacy_flight_without_pending_part_for_assembly_group(
+    connected, monkeypatch,
+):
+    from astrid.sdk import timeline
+
+    from astrid.sdk.timeline.outbox import Outbox
+
+    client, generated, path = connected
+    editor = timeline.open("project-slug", "timeline-slug", client=client, outbox_path=path)
+    editor.session._explicit_outbox = False
+    owner_path = path.parent / "assembly-owner.json"
+    pending_id = "pc_assembly_owner"
+    group_id = "preexisting-assembly-group"
+    command = {"schema_version": 1, "op": "clip.move", "version": "1",
+               "select": "parent/clip:a", "args": {"on": 4}}
+    owner_record = {
+        "id": pending_id, "state": "pending", "key": "assembly-edit", "label": "Assembly edit",
+        "part": 0, "receipts": [], "closed_by": None,
+        "parts": [{"base": {"revision_id": "r0", "publication_id": "pub0"},
+                   "commands": [command], "group_id": group_id,
+                   "commit_options": {"label": "Assembly edit", "steps": [], "merge": "fields",
+                                      "reads": []}}],
+    }
+    Outbox(owner_path).write({
+        "scope": {**editor.session._state()["scope"], "actor_id": "assembly-owner"},
+        "pending_changes": {pending_id: owner_record},
+    })
+
+    original_write = Outbox.write
+    failures = []
+
+    def fail_owner_close_once(outbox, state):
+        if outbox.path.resolve() == owner_path.resolve() and not failures:
+            failures.append(True)
+            raise OSError("simulated owner outbox write failure")
+        return original_write(outbox, state)
+
+    monkeypatch.setattr(Outbox, "write", fail_owner_close_once)
+    result = editor.session.submit(
+        [command], label="Assembly edit", steps=[], reads=[], expected_state=editor.session._state(),
+        pending_id=pending_id, pending_path=str(owner_path), pending_part=0,
+        pending_how="retry", group_id=group_id,
+    )
+
+    assert result["status"] == "accepted"
+    assert failures == [True]
+    assert Outbox(owner_path).read()["pending_changes"][pending_id]["state"] == "pending"
+    assert len(generated.calls) == 1
+
+    with editor.session.outbox.locked():
+        state = editor.session._state()
+        acknowledged = next(flight for flight in state["acknowledged"].values()
+                            if flight.get("pending_id") == pending_id)
+        acknowledged.pop("pending_part")
+        editor.session.outbox.write(state)
+    history = copy.deepcopy(generated.entries)
+    history[0]["receipt"] = copy.deepcopy(generated.accepted[next(iter(generated.accepted))][1]["receipt"])
+    history[0]["publisher"] = "actor"
+    monkeypatch.setattr(generated, "list_timeline_commits", lambda project, timeline_id, *, cursor=None, limit: {
+        "head": copy.deepcopy(generated.head), "items": copy.deepcopy(history), "next_cursor": None,
+    })
+
+    reopened = timeline.open("project-slug", "timeline-slug", client=client, outbox_path=path)
+    reopened.session._explicit_outbox = False
+    recovered = reopened.retry(pending_id)
+
+    closed = Outbox(owner_path).read()["pending_changes"][pending_id]
+    assert recovered["status"] == "landed"
+    assert closed["state"] == "landed"
+    assert closed["closed_by"] == {
+        "actor_id": "actor", "publication_id": result["receipt"]["receipt_id"], "how": "retry",
+    }
+    assert closed["parts"][0]["group_id"] == group_id
+    assert len(generated.calls) == 1
+
+
 def test_function_key_replays_original_receipt_after_undo_without_evaluation(connected):
     from astrid.sdk import timeline
 
