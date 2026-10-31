@@ -10,13 +10,28 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 
 if __package__:
+    from . import check_journey_evidence as evidence_gate
     from . import ci_journey as journey, upgrade_release
 else:
+    import check_journey_evidence as evidence_gate
     import ci_journey as journey
     import upgrade_release
+
+
+RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
+RELEASE0_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
+RELEASE0_REFS = {
+    "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+    "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+}
+RELEASE0_REQUIRED = frozenset({
+    "provenance.json", "served/install", "served/install.ps1", "served/install-manifest.json",
+})
+CHECKSUM = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._/-]*)$")
 
 
 def workspace(version: dict, data: Path, evidence: Path, action: str, request: dict) -> dict:
@@ -33,6 +48,8 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
 
 def assert_preserved(before: dict, after: dict) -> None:
     for key in ("project", "timeline", "preferences", "task", "cas_sha256"):
+        if key not in before or key not in after:
+            raise RuntimeError("Update did not retain seeded workspace " + key)
         if before[key] != after[key]:
             raise RuntimeError("Update changed seeded workspace " + key)
     if after["schema_version"] != after["target_schema_version"]:
@@ -89,7 +106,225 @@ def selected_candidate(manifest: dict, version: dict, before: dict) -> dict:
     return selected
 
 
+def fixture_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verified_release0_fixture(fixture: Path) -> tuple[Path, Path, dict]:
+    """Authenticate M4-2's byte-frozen release-0 inputs before bootstrap."""
+    if fixture.is_symlink() or not fixture.is_dir():
+        raise ValueError("release-0 fixture must be a non-symlink directory")
+    root = fixture.resolve(strict=True)
+    if root != RELEASE0_FIXTURE.resolve(strict=True):
+        raise ValueError("release0-to-release1 requires the checked-in frozen release-0 fixture")
+    sums = root / "SHA256SUMS"
+    if sums.is_symlink() or not sums.is_file() or fixture_digest(sums) != RELEASE0_SUMS_SHA256:
+        raise ValueError("Frozen release-0 checksum manifest differs from the approved M4-2 bytes")
+    entries: dict[str, str] = {}
+    for line in sums.read_text(encoding="utf-8").splitlines():
+        matched = CHECKSUM.fullmatch(line)
+        if matched is None:
+            raise ValueError("Frozen release-0 checksum manifest has an invalid entry")
+        expected, relative = matched.groups()
+        target = root.joinpath(*Path(relative).parts)
+        if (relative in entries or ".." in Path(relative).parts or target.is_symlink()
+                or not target.is_file() or not target.resolve().is_relative_to(root)):
+            raise ValueError("Frozen release-0 checksum manifest has an unsafe entry")
+        if fixture_digest(target) != expected:
+            raise ValueError(f"Frozen release-0 fixture checksum mismatch: {relative}")
+        entries[relative] = expected
+    if not RELEASE0_REQUIRED <= set(entries):
+        raise ValueError("Frozen release-0 fixture is missing bootstrap provenance")
+    manifest_path = root / "served" / "install-manifest.json"
+    manifest = journey.read_json(manifest_path)
+    if manifest.get("release", 0) != 0 or {
+            name: (manifest.get(name) or {}).get("sha") for name in RELEASE0_REFS} != RELEASE0_REFS:
+        raise ValueError("Frozen release-0 manifest source refs differ from M4-2 provenance")
+    provenance = journey.read_json(root / "provenance.json")
+    refs = ((provenance.get("served_capture") or {}).get("manifest_refs"))
+    if refs != RELEASE0_REFS:
+        raise ValueError("Frozen release-0 provenance source refs differ from its manifest")
+    receipt = {
+        "fixture_sums_sha256": fixture_digest(sums),
+        "manifest_sha256": entries["served/install-manifest.json"],
+        "provenance_sha256": entries["provenance.json"],
+        "bootstrap_sha256": {"install": entries["served/install"],
+                              "install.ps1": entries["served/install.ps1"]},
+        "sources": RELEASE0_REFS,
+    }
+    return root, manifest_path, receipt
+
+
+def bootstrap_release0(fixture: Path, manifest: Path, shell: str, evidence: Path,
+                       root: Path, data: Path) -> None:
+    """Run the frozen public bootstrap bytes directly, with no live-URL fallback."""
+    flags: list[str | Path] = ["--manifest", manifest, "--root", root, "--data-root", data]
+    env = dict(os.environ)
+    env["BROWSER"] = f'"{sys.executable}" -c "pass" %s'
+    if sys.platform == "win32":
+        journey.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                     fixture / "served" / "install.ps1", *flags], evidence / "release0-bootstrap.log", env=env)
+    else:
+        journey.run([shell, fixture / "served" / "install", *flags],
+                    evidence / "release0-bootstrap.log", env=env)
+
+
+def start_direct_runtime(evidence: Path) -> None:
+    if sys.platform == "win32":
+        journey.windows.EVIDENCE = evidence
+        journey.windows.powershell("Start-ScheduledTask -TaskName 'Astrid Runtime' -TaskPath '\\'",
+                                   "start-scheduled-task.log", show=False, timeout=30)
+
+
+def installed_release(version: dict) -> int:
+    release = journey.read_json(Path(version["root"]) / "manifest.json").get("release", 0)
+    if type(release) is not int:
+        raise RuntimeError("Installed manifest has an invalid release identity")
+    return release
+
+
+def semantic_digest(value: dict) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def task_after_update(version: dict, evidence: Path, project: str) -> str:
+    if sys.platform == "win32":
+        journey.windows.EVIDENCE = evidence
+        journey.windows.wait_for("pack-host is running with its current ready file", journey.windows.host_ready)
+        journey.windows.snapshot("processes-host-ready.json")
+        return journey.windows.task(project, create_project=False)
+    return journey.task(version, evidence, project, create_project=False)
+
+
+def release0_admission(args) -> tuple[Path, Path, dict]:
+    """Make the harness exception uncallable outside its exact direct scope."""
+    if (getattr(args, "mode", None) != "direct" or not getattr(args, "job_id", None)
+            or not getattr(args, "candidate", None) or not getattr(args, "allow_release0_to_release1", False)
+            or getattr(args, "release0_fixture", None) is None):
+        raise ValueError("release0-to-release1 requires its scoped frozen-fixture direct admission")
+    if getattr(args, "source_override", False):
+        raise ValueError("release0-to-release1 never admits a source override")
+    return verified_release0_fixture(args.release0_fixture)
+
+
+def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    """Authentic release-0 direct install, API seed, and frozen release-1 update."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    result = {
+        "schema_version": 3, "receipt_kind": "release1-installed-lifecycle",
+        "job_id": args.job_id, "mode": args.mode, "scenario": args.leg, "status": "not-run",
+        "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),
+        "source_override_test_mode": False, "candidate_checkouts": getattr(args, "candidate_checkouts", None),
+        "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
+        "sources": None, "installed_tuple": None, "import_origins": None,
+        "run_roots": {"program": str(root), "data": str(data)},
+        "sentinel": {"pid": sentinel.pid, "birth": birth},
+        "release0_fixture": None, "release_transition": None, "semantic_data": None,
+        "checks": {key: "not-run" for key in (
+            "release", "service", "health", "semantic_data", "task_settled", "one_runtime",
+            "unrelated_sentinel")},
+    }
+    result_path = evidence / "journey-result.json"
+    journey.write_json(result_path, result)
+    try:
+        fixture, release0_manifest, fixture_receipt = release0_admission(args)
+        result["release0_fixture"] = fixture_receipt
+        app = args.app_checkout.resolve(strict=True)
+        candidate_path, manifest = journey.selected_manifest(
+            app, source_override=False, agent=None, runtime=None, evidence=evidence)
+        candidate = journey.read_json(args.candidate)
+        if evidence_gate.validate_tuple(candidate, app, candidate_path) != manifest or manifest.get("release") != 1:
+            raise RuntimeError("release0-to-release1 requires a frozen release-1 manifest")
+        result["candidate_bootstrap"] = {"manifest_sha256": candidate["manifest_sha256"],
+                                         "artifacts": candidate["artifacts"]}
+        result["sources"] = {"app": journey.git_source(app), "agent": manifest["agent"],
+                             "runtime": manifest["runtime"]}
+        before_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["before_lifecycle"] = before_sentinel
+        if not before_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel exited before the release-0 bootstrap")
+        bootstrap_release0(fixture, release0_manifest, args.shell, evidence / "release0", root, data)
+        start_direct_runtime(evidence / "release0")
+        journey.wait_ready(data)
+        old_path, old_data, old = journey.installation(root, data)
+        if old_data != data or installed_release(old) != 0:
+            # Release 0 predates identity-bearing version records; only its
+            # frozen manifest can attest the old release identity.
+            raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
+        old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
+        old_service = journey.assert_direct_service_ownership(root, data)
+        old_health = journey.healthy(data)
+        old_pid = int(old_health["pid"])
+        old_birth = journey.process_birth(old_pid)
+        if not old_birth:
+            raise RuntimeError("Cannot establish the release-0 Runtime process identity")
+        journey.assert_one_runtime(data)
+        baseline = evidence / "release0-api-seed"
+        journey.verify("observe", old_path, data, baseline)
+        project = "tst-m4-3b-release0"
+        keys = workspace(old, data, baseline, "seed", {
+            "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
+        before = workspace(old, data, baseline, "snapshot", keys)
+        journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
+        start_direct_runtime(evidence / "release1")
+        journey.wait_ready(data)
+        version_path, selected_data, version = journey.installation(root, data)
+        if selected_data != old_data or version_path == old_path:
+            raise RuntimeError("Release-1 update did not retain data and activate a new version")
+        selected = selected_candidate(manifest, version, old_tuple)
+        if installed_release(version) != 1:
+            raise RuntimeError("Release-1 update did not select release 1")
+        new_service = journey.assert_direct_service_ownership(root, data)
+        new_health = journey.healthy(data)
+        if new_health["runtime_instance_id"] == old_health["runtime_instance_id"]:
+            raise RuntimeError("Release-1 update retained the release-0 Runtime instance")
+        if journey.process_birth(old_pid) == old_birth:
+            raise RuntimeError("Release-0 Runtime survived the direct release-1 update")
+        result["release_transition"] = {"from": 0, "to": 1,
+                                        "harness_override": "frozen-release0-direct-to-release1"}
+        result["service_transition"] = {"release0": old_service, "release1": new_service}
+        result["health_transition"] = {
+            "release0_runtime_instance_id": old_health["runtime_instance_id"],
+            "release1_runtime_instance_id": new_health["runtime_instance_id"],
+        }
+        result["checks"].update(release="pass", service="pass", health="pass")
+        result["installed_tuple"] = {"app": result["sources"]["app"]["sha"], **selected}
+        journey.verify("update", version_path, data, evidence, before=baseline / "verify-observe.json")
+        journey.verify("install", version_path, data, evidence)
+        result["import_origins"] = (journey.read_json(evidence / "verify-install.json").get("details") or {}).get("origin.imports")
+        after = workspace(version, data, evidence / "release1-api-observe", "snapshot", keys)
+        assert_preserved(before, after)
+        before_sha, after_sha = semantic_digest(before), semantic_digest(after)
+        if before_sha != after_sha:
+            raise RuntimeError("Release-1 semantic snapshot digest differs after exact preservation")
+        result["semantic_data"] = {"identical": True, "before_sha256": before_sha, "after_sha256": after_sha}
+        result["checks"]["semantic_data"] = "pass"
+        task_after_update(version, evidence / "release1-working-task", project)
+        result["checks"]["task_settled"] = "pass"
+        journey.assert_one_runtime(data)
+        result["checks"]["one_runtime"] = "pass"
+        settled_sentinel = journey.sentinel_observation(sentinel, birth)
+        result["sentinel"]["at_settlement"] = settled_sentinel
+        if not settled_sentinel["alive"]:
+            raise RuntimeError("Unrelated sentinel did not survive the direct release-1 update")
+        result["checks"]["unrelated_sentinel"] = "pass"
+        result["status"] = "pass"
+    except Exception as exc:
+        result.update(status="fail", error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        journey.write_json(result_path, result)
+    return result
+
+
 def execute_owned(args, root: Path, data: Path, evidence: Path, sentinel, birth: str) -> dict:
+    if args.leg == "release0-to-release1":
+        # This lifts only the legacy C1 Windows harness refusal: the admitted
+        # path has exact release-0 bytes, an exact release-1 candidate, direct
+        # ownership and native-manager checks. The historical resolver below
+        # remains refused on Windows.
+        return execute_release0_to_release1(args, root, data, evidence, sentinel, birth)
     evidence.mkdir(parents=True, exist_ok=True)
     result = {"schema_version": 1, "scenario": args.leg, "status": "not-run",
               "os_build": platform.platform(), "shell": args.shell, **journey.runner_identity(),

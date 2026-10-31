@@ -84,6 +84,8 @@ class TimelineProductParserAliasTest(unittest.TestCase):
         self.assertEqual(
             tuple(spec.name for spec in COMMANDS),
             (
+                "import",
+                "export",
                 "checkout",
                 "edit",
                 "assets",
@@ -130,6 +132,8 @@ class TimelineProductParserAliasTest(unittest.TestCase):
         self.assertEqual(
             self._choices(),
             {
+                "import",
+                "export",
                 "checkout",
                 "edit",
                 "assets",
@@ -183,7 +187,6 @@ class TimelineProductParserAliasTest(unittest.TestCase):
             "tombstone",
             "purge",
             "set-default",
-            "export",
         ):
             with self.subTest(verb=verb):
                 self.assertNotIn(verb, choices)
