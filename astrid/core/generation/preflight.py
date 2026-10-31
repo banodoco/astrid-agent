@@ -284,3 +284,67 @@ def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> N
             fix=(readiness.recovery_command + "; use --target http://127.0.0.1:8188 "
                  "when your existing ComfyUI is running there"),
         )
+
+
+def require_managed_catalog_dry_run_readiness(
+    entry_id: str, mode: str, inputs: dict[str, Any], *, modality: str,
+) -> None:
+    """Fast-fail an explicit built-in managed dry-run when setup is absent.
+
+    Resolving a public entry normally performs full pack discovery before the
+    SDK can report that the managed ComfyUI runtime is missing.  This narrow
+    preflight reads the built-in model declaration directly, validates its
+    matrix and required inputs, and reuses the same structural readiness
+    check.  A ready installation continues through the regular registry,
+    workflow integrity, and admission path unchanged.
+
+    It returns without action for other entry sources/cells. A recognized
+    built-in local cell raises the usual actionable target error only when
+    readiness is missing; otherwise the caller continues normal resolution.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import yaml
+
+    registry_path = Path(__file__).resolve().parents[1] / "model_catalog" / "models.yaml"
+    try:
+        raw = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return
+    models = raw.get("models") if isinstance(raw, dict) else None
+    if not isinstance(models, list):
+        return
+    declaration = next((row for row in models
+                        if isinstance(row, dict) and row.get("id") == entry_id), None)
+    if declaration is None or declaration.get("modality") != modality:
+        return
+    modes = declaration.get("modes")
+    mode_spec = modes.get(mode) if isinstance(modes, dict) else None
+    backends = mode_spec.get("backends") if isinstance(mode_spec, dict) else None
+    local = backends.get("local") if isinstance(backends, dict) else None
+    if not isinstance(local, dict) or not isinstance(local.get("template"), str):
+        return
+    if set(inputs) - set(mode_spec.get("supports", ())):
+        return
+    candidate = SimpleNamespace(
+        id=entry_id,
+        modality=modality,
+        modes={mode: SimpleNamespace(
+            backends={"local": SimpleNamespace(template=local["template"])},
+            requires=tuple(mode_spec.get("requires", ())),
+        )},
+    )
+
+    class _Registry:
+        @staticmethod
+        def get_by_mode(model: str, selected_mode: str):
+            if model != entry_id or selected_mode != mode:
+                raise KeyError(f"unknown generation cell {model!r}/{selected_mode!r}")
+            return candidate, candidate.modes[mode]
+
+    validate_generation_request(
+        _Registry(), model=entry_id, mode=mode, execution="local",
+        inputs=inputs, modality=modality,
+    )
+    require_generation_target_readiness(candidate, mode, None)

@@ -50,6 +50,7 @@ def test_installed_module_generate_subprocesses(tmp_path):
         "from urllib.request import urlopen\n"
         "from astrid.sdk.generation import generate\n"
         "from astrid.core.generation import cli\n"
+        "from astrid.core.generation import preflight\n"
         "class Result:\n"
         "  ok = True\n"
         "  def __init__(self, values): self.values = values\n"
@@ -59,11 +60,29 @@ def test_installed_module_generate_subprocesses(tmp_path):
         "    urlopen(kwargs['target'] + '/system_stats', timeout=5).read()\n"
         "  return Result({'entry': kwargs['entry'], 'target': kwargs['target'], 'dry_run': kwargs['dry_run']})\n"
         "type(generate).image = image\n"
+        "preflight.require_managed_catalog_dry_run_readiness = lambda *args, **kwargs: True\n"
         "cli._open_client = lambda: nullcontext(object())\n"
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(target)))
     try:
+        clean_cwd = tmp_path / "clean"
+        clean_cwd.mkdir()
+        managed_env = env.copy()
+        managed_env["PYTHONPATH"] = str(target)
+        managed_dry = subprocess.run(
+            [sys.executable, "-m", "astrid", "generate", "image", "--entry", "z-image",
+             "--mode", "t2i", "--target", "managed", "--dry-run", "x"],
+            cwd=clean_cwd, env=managed_env, capture_output=True, text=True, timeout=10,
+        )
+        if managed_dry.returncode == 0:
+            plan = json.loads(managed_dry.stdout)
+            assert plan["target"] == "managed"
+        else:
+            assert managed_dry.returncode == 2, managed_dry.stdout + managed_dry.stderr
+            assert "COMFY_TARGET_NOT_READY" in managed_dry.stdout + managed_dry.stderr
+            assert "install the Astrid-managed ComfyUI runtime" in managed_dry.stdout + managed_dry.stderr
+
         dry = subprocess.run(
             [sys.executable, "-m", "astrid", "generate", "image", "--entry", "z-image",
              "--mode", "t2i", "--target", "managed", "--dry-run", "--json", "a studio test image"],

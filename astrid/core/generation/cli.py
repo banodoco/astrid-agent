@@ -252,6 +252,13 @@ def main(argv: list[str] | None = None) -> int:
         if duplicate:
             parser.error("duplicate input values: " + ", ".join(duplicate))
         values.update(structured)
+    if (parsed.dry_run and parsed.target == "managed" and parsed.entry
+            and parsed.mode and set(values) == {"prompt"}):
+        from astrid.core.generation.preflight import require_managed_catalog_dry_run_readiness
+
+        require_managed_catalog_dry_run_readiness(
+            parsed.entry, parsed.mode, values, modality=parsed.modality,
+        )
     if parsed.entry or parsed.inputs_json:
         from astrid.core.generation.entries import resolve_entry_inputs
         try:
