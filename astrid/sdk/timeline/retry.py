@@ -498,6 +498,21 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
         options = {"_overwrite": True} if overwrite else {}
         result = timeline.commit(fn, label=record.get("label"), key=record.get("key"),
                                  pending=record["id"], **options)
+        if isinstance(result, dict) and result.get("status") in {"accepted", "merged", "rebased"}:
+            saved = next((item for record_path, item in timeline._pending_records_with_paths("all")
+                          if item.get("id") == record["id"] and Path(record_path) == Path(path)), None)
+            if saved is None:
+                raise ValueError("saved retry record missing after function commit")
+            if saved.get("state") == "pending" and saved.get("part", 0) > record.get("part", 0):
+                summary = (f'Part of "{saved.get("label") or "Timeline edit"}" landed; '
+                           f'{record["id"]} still has saved work.')
+                response = dict(result, status="part_landed", pending_id=record["id"],
+                                summary=summary, next=f'tl.retry({record["id"]!r})', record=saved)
+                if isinstance(response.get("data"), dict):
+                    response["data"] = dict(response["data"], summary=summary)
+                return response
+            if saved.get("state") != "landed":
+                raise ValueError("function commit did not settle the saved retry part")
         receipt = result.get("receipt") if isinstance(result, dict) else None
         receipt_id = receipt.get("receipt_id") if isinstance(receipt, dict) else None
         if receipt_id and result.get("status") in {"accepted", "merged", "rebased"} \
