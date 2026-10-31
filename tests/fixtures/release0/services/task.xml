@@ -16,6 +16,11 @@
 from pathlib import Path
 os.environ.update({'PATH': 'C:\\Astrid\\tools;C:\\Windows\\System32', 'PYTHONUTF8': '1'})
 sys.stdout=sys.stderr=open('C:\\Astrid\\logs\\runtime-service.log','a',encoding='utf-8',buffering=1)
+path=Path('C:\\Astrid\\versions\\v1\\service-env.json')
+settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
+    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
+os.environ.update(settings)
 from astrid_runtime.cli import main
 sys.exit(main(['run', '--profile', 'astrid', '--data-root', 'C:\\Astrid Data', '--source-manifest', 'C:\\Astrid\\versions\\v1\\profile.json']))"</Arguments><WorkingDirectory>C:\Astrid\versions\v1</WorkingDirectory></Exec></Actions>
 </Task>
