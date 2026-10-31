@@ -4,6 +4,8 @@
 """Auto-generated ready_template — use python -m vibecomfy.cli copy-to-recipe <id> for hand-editing."""
 from __future__ import annotations
 
+from astrid.core.generation.engine_recipe import engine_source_revision
+
 from vibecomfy.templates import InputSpec, ModelAsset, OutputSpec, ReadyMetadata, new_workflow, node as raw_call, ref
 from vibecomfy.workflow import VibeWorkflow
 from vibecomfy.nodes.core import BasicGuider, BasicScheduler, CLIPLoader, ComfyMathExpression, KSamplerSelect, LoadAudio, LoadImage, LoraLoaderModelOnly, PreviewAny, RandomNoise, ResolutionSelector, SamplerCustomAdvanced, UNETLoader, VAEDecode, VAEDecodeAudio, VAELoader
@@ -75,8 +77,8 @@ READY_METADATA = ReadyMetadata.build(
     template_id='source',
     inputs=PUBLIC_INPUT_METADATA,
     models=MODEL_ASSETS,
-    requirements={'runtime': {'comfy_commit': 'ee71d5c4993f29086b27fde1629a945ae48425bf', 'comfy_version': '==0.36.0', 'packages': {'torch': '==2.10.0+cu130', 'comfy-kitchen': '==0.2.34', 'comfy-aimdo': '==0.5.3'}, 'launch_flags': ['--use-ck-attention', '--disable-comfy-compiler']}},
-    custom_node_packs={'ComfyUI-H3-Motion-Context-MultiRef': {'commit': '361624fb406b63eb6694442eac6c895fc1533a70', 'url': 'https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git', 'classes_used': ['MiniMaxH3AVExtensionController', 'MiniMaxH3AVSourceAudioModeParam', 'MiniMaxH3AVStartModeParam', 'MiniMaxH3AudioVAECompatibility', 'MiniMaxH3CropTo32', 'MiniMaxH3CustomKeyframes', 'MiniMaxH3FinalizeVHSOutput', 'MiniMaxH3GeneratedAVMaskedContext', 'MiniMaxH3LastActiveVHSPreviewBarrier', 'MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'MiniMaxH3SourceAudioPolicy', 'MiniMaxH3SourceAudioRegenLength', 'MiniMaxH3SourceAudioRegenMask', 'MiniMaxH3StartCanvasSelector', 'MiniMaxH3StartMaskedContext', 'MiniMaxH3StreamLiveExtensionAVToVHS', 'MiniMaxH3Validate24FPSVideo'], 'pip_packages': ['safetensors'], 'status': 'discovered'}, 'ComfyUI-VideoHelperSuite': {'commit': '4ee72c065db22c9d96c2427954dc69e7b908444b', 'url': 'https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git', 'class_schema_sha256': '8391e679554eecd5d324a3e34a713ff240e619e3a07476587845ba18c9fae310', 'classes_used': ['VHS_LoadVideoFFmpeg', 'VHS_VideoCombine'], 'pip_packages': [], 'status': 'discovered'}},
+    requirements={'runtime': {'comfy_commit': engine_source_revision('vibecomfy-h3', 'linux-x86_64-cu130', 'comfyui'), 'comfy_version': '==0.43.2', 'packages': {'torch': '==2.10.0+cu130', 'comfy-kitchen': '==0.2.40', 'comfy-aimdo': '==0.6.0'}, 'launch_flags': ['--use-ck-attention', '--disable-comfy-compiler']}},
+    custom_node_packs={'ComfyUI-H3-Motion-Context-MultiRef': {'commit': engine_source_revision('vibecomfy-h3', 'linux-x86_64-cu130', 'h3-motion-context'), 'url': 'https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git', 'classes_used': ['MiniMaxH3AVExtensionController', 'MiniMaxH3AVSourceAudioModeParam', 'MiniMaxH3AVStartModeParam', 'MiniMaxH3AudioVAECompatibility', 'MiniMaxH3CropTo32', 'MiniMaxH3CustomKeyframes', 'MiniMaxH3FinalizeVHSOutput', 'MiniMaxH3GeneratedAVMaskedContext', 'MiniMaxH3LastActiveVHSPreviewBarrier', 'MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'MiniMaxH3SourceAudioPolicy', 'MiniMaxH3SourceAudioRegenLength', 'MiniMaxH3SourceAudioRegenMask', 'MiniMaxH3StartCanvasSelector', 'MiniMaxH3StartMaskedContext', 'MiniMaxH3StreamLiveExtensionAVToVHS', 'MiniMaxH3Validate24FPSVideo'], 'pip_packages': ['safetensors'], 'status': 'discovered'}, 'ComfyUI-VideoHelperSuite': {'commit': engine_source_revision('vibecomfy-h3', 'linux-x86_64-cu130', 'videohelpersuite'), 'url': 'https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git', 'class_schema_sha256': '8391e679554eecd5d324a3e34a713ff240e619e3a07476587845ba18c9fae310', 'classes_used': ['VHS_LoadVideoFFmpeg', 'VHS_VideoCombine'], 'pip_packages': [], 'status': 'discovered'}},
     source_ref='source.json',
     source_kind='raw_json',
     source_path='source.json',
