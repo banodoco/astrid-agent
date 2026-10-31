@@ -67,15 +67,6 @@ jobs:
           ref: ${{ steps.launcher-ref.outputs.ref }}
           path: astrid-pinokio
 
-      - name: Fetch historical Agent archive object
-        run: git fetch --no-tags --depth=1 origin a53ef0c257e4b0bbc2a65959b9119e2cb4cff453
-
-      - name: Fetch historical Runtime archive objects
-        run: >-
-          git -C astrid-runtime fetch --no-tags --depth=1 origin
-          11443b0b5b34bd5b36725504fb083146192a759d
-          959ce04fcf91351903c361d03e6b19eb0bbe8587
-
       - name: Record checked-out refs
         shell: bash
         run: |
@@ -94,11 +85,6 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements/*.lock
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
 
       # The HyperFrames CLI needs Node 22 (tests/fixtures/renderer_packs/hyperframes/render.py finds it in the tool cache);
       # the step after this one puts the product's pinned Node first on PATH again.

@@ -2,7 +2,7 @@
 Description=Astrid Runtime
 
 [Service]
-ExecStart="/astrid/versions/v1/py/bin/python" "-X" "utf8" "-I" "-c" "import json,os,sys\nfrom pathlib import Path\npath=Path('/astrid/versions/v1/service-env.json')\nsettings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}\nif (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):\n    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')\nos.environ.update(settings)\nfrom astrid_runtime.cli import main\nsys.exit(main(['run', '--profile', 'astrid', '--data-root', '/astrid data', '--source-manifest', '/astrid/versions/v1/profile.json']))"
+ExecStart="/astrid/versions/v1/py/bin/python" "-X" "utf8" "-I" "-m" "astrid_runtime" "run" "--profile" "astrid" "--data-root" "/astrid data" "--source-manifest" "/astrid/versions/v1/profile.json"
 Environment="PATH=/astrid/tools:/usr/bin:/bin"
 Environment="PYTHONUTF8=1"
 Restart=always

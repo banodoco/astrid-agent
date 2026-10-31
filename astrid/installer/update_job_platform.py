@@ -270,11 +270,11 @@ def is_active(descriptor: dict, system: str | None = None) -> bool:
             raise ValueError("The systemd update job belongs to another user.")
         result = _run(["systemctl", "--user", "show", name, "--property=ActiveState", "--value"])
         if result.returncode:
-            if result.returncode == 4 or "not found" in (result.stderr + result.stdout).lower():
+            if result.returncode == 4:
                 return False
             raise _failure("query", result)
         state = result.stdout.strip()
-        if state in {"", "inactive", "failed", "dead", "not-found"}:
+        if state in {"inactive", "failed", "dead", "not-found"}:
             return False
         if state in {"active", "activating", "reloading"}:
             return True
