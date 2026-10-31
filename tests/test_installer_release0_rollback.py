@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from astrid.installer.app_update import locked
 from astrid.installer.core import (
     Installer,
     Version,
@@ -19,6 +20,7 @@ from astrid.installer.core import (
     switch,
     write_json,
 )
+from astrid.installer.service import activation_lock_held
 from tests.test_installer_self_contained_launchers import (
     LEGACY_VERSION,
     RELEASE0_MANIFEST,
@@ -133,18 +135,21 @@ def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) 
 
     def activate_old(version: Version, _data: Path, _realm: dict) -> None:
         assert current(root) == version
+        assert activation_lock_held(root, version)
         _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
 
-    recover_transaction(
-        root,
-        data,
-        SimpleNamespace(),
-        stop=lambda version, _data: stopped.append(version),
-        switch_old=select_old,
-        activate_old=activate_old,
-        restore_workspace=False,
-        say=lambda _message: None,
-    )
+    # Pinokio recovery owns this lock until the selected old Runtime starts.
+    with locked(root / ".app-update.lock"):
+        recover_transaction(
+            root,
+            data,
+            SimpleNamespace(),
+            stop=lambda version, _data: stopped.append(version),
+            switch_old=select_old,
+            activate_old=activate_old,
+            restore_workspace=False,
+            say=lambda _message: None,
+        )
 
     recovered = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
     assert stopped == [candidate]
@@ -225,18 +230,22 @@ def test_pre_stop_interruption_recovers_and_starts_authentic_release0_runtime(
 
     def activate_old(version: Version, _data: Path, _realm: dict) -> None:
         assert current(root) == version
+        assert activation_lock_held(root, version)
         _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
 
-    recover_transaction(
-        root,
-        data,
-        backend,
-        stop=lambda version, _data: stopped.append(version),
-        switch_old=select_old,
-        activate_old=activate_old,
-        restore_workspace=False,
-        say=lambda _message: None,
-    )
+    # A restarted Pinokio recovery reacquires its own operation lock before
+    # rolling back and activating the retained release-0 Runtime.
+    with locked(root / ".app-update.lock"):
+        recover_transaction(
+            root,
+            data,
+            backend,
+            stop=lambda version, _data: stopped.append(version),
+            switch_old=select_old,
+            activate_old=activate_old,
+            restore_workspace=False,
+            say=lambda _message: None,
+        )
 
     recovered = json.loads((root / "update-transaction.json").read_text(encoding="utf-8"))
     assert stopped == [old]

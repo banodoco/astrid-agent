@@ -58,6 +58,9 @@ def _launch_prelude_source() -> str:
         install_identity,
         Version,
         current,
+        default_program_root,
+        installer_lock_path,
+        activation_lock_held,
         launch_admission,
     )
     return (
@@ -116,6 +119,22 @@ def pinokio_owned(record: dict) -> bool:
     return record.get("owner") == LABEL and record.get("managed_by") == "pinokio"
 
 
+def activation_lock_held(root: Path, version: Version) -> bool:
+    """Return whether this unfinished update's activation lock is held."""
+    from runtime_protocol import platform
+
+    path = (root / ".app-update.lock" if version.managed_by == "pinokio"
+            else installer_lock_path(Path.home(), sys.platform))
+    platform.private_directory(path.parent)
+    with path.open("a+b") as lock:
+        try:
+            platform.lock_file(lock.fileno(), blocking=False)
+        except BlockingIOError:
+            return True
+        platform.unlock_file(lock.fileno())
+    return False
+
+
 def launch_admission(version: Version, data: Path) -> bool:
     """Validate the selected managed launch; return whether it is activating.
 
@@ -168,8 +187,12 @@ def launch_admission(version: Version, data: Path) -> bool:
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
+        if not activation_lock_held(root, version):
+            raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        if str(exc) == "Choose Update to finish":
+            raise
         action = ("Choose Pinokio's Update button to finish it."
                   if version.managed_by == "pinokio" else
                   "Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
@@ -245,6 +268,31 @@ def _release0_service_command(version: Version, data: Path, *, windows: bool, lo
 def systemd_quote(value: str) -> str:
     # systemd performs specifier expansion even inside double quotes.
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n") + '"'
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    """Publish service text without exposing a partially written definition."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+            mode="w", encoding="utf-8", newline="\n", delete=False,
+        ) as pending:
+            temporary = Path(pending.name)
+            pending.write(value)
+            pending.flush()
+            if mode is not None and hasattr(os, "fchmod"):
+                os.fchmod(pending.fileno(), mode)
+            os.fsync(pending.fileno())
+        platform.durable_replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def render(system: str, version: Version, data: Path, log: Path, *, user: str = "",
@@ -876,9 +924,9 @@ class Service:
             write_json(self.env_file, {})
         settings = self.settings()
         user = self.powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value").strip() if self.system == "win32" else ""
-        self.path.write_text(render(
+        _atomic_write_text(self.path, render(
             self.system, version, data, self.log, user=user, env_file=self.env_file,
-        ), encoding="utf-8", newline="\n")
+        ))
         if self.system == "darwin":
             self.run(["launchctl", "bootstrap", f"gui/{platform.current_user()}", self.path])
         elif self.system == "linux":

@@ -1,0 +1,808 @@
+name: M4-6 trusted artifact attestor (disabled)
+
+on:
+  workflow_dispatch:
+
+# This workflow is a reviewed, versioned upload/attestor wrapper. Every job is
+# intentionally unreachable until a later integration review changes source.
+# There is no dispatch input, environment value, or repository setting that can
+# enable a hosted release slot in this revision.
+permissions: {}
+
+env:
+  M4_6_MAX_ARTIFACT_BYTES: "67108864"
+  M4_6_PREDICATE_TYPE: https://astrid.dev/attestations/m4-6/trusted-artifact-set/v1
+  # These deliberately invalid sentinels prevent this disconnected revision
+  # from treating its own runtime github.workflow_sha/ref as review policy. A
+  # later integration must supply independently reviewed exact caller/signer
+  # identities and full SHAs from outside the run being verified.
+  M4_6_REVIEWED_CALLER_WORKFLOW_REF: UNCONFIGURED_INDEPENDENT_REVIEW_REQUIRED
+  M4_6_REVIEWED_CALLER_WORKFLOW_SHA: UNCONFIGURED_INDEPENDENT_REVIEW_REQUIRED
+  M4_6_REVIEWED_SIGNER_WORKFLOW_REF: UNCONFIGURED_INDEPENDENT_REVIEW_REQUIRED
+  M4_6_REVIEWED_SIGNER_WORKFLOW_SHA: UNCONFIGURED_INDEPENDENT_REVIEW_REQUIRED
+  M4_6_REVIEWED_SOURCE_REF: UNCONFIGURED_INDEPENDENT_REVIEW_REQUIRED
+  M4_6_REVIEWED_SOURCE_EVENT: workflow_dispatch
+
+jobs:
+  produce_direct_macos:
+    name: m4-6-producer-direct-macos
+    if: ${{ false }}
+    runs-on: macos-14
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed direct-macos upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/direct-macos
+          SLOT_ID: direct-macos
+          ARTIFACT_NAME: m4-6-direct-macos
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed direct-macos artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-direct-macos
+          path: .m4-6/trusted-input/direct-macos
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_direct_linux:
+    name: m4-6-producer-direct-linux
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed direct-linux upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/direct-linux
+          SLOT_ID: direct-linux
+          ARTIFACT_NAME: m4-6-direct-linux
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed direct-linux artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-direct-linux
+          path: .m4-6/trusted-input/direct-linux
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_direct_windows:
+    name: m4-6-producer-direct-windows
+    if: ${{ false }}
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed direct-windows upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/direct-windows
+          SLOT_ID: direct-windows
+          ARTIFACT_NAME: m4-6-direct-windows
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed direct-windows artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-direct-windows
+          path: .m4-6/trusted-input/direct-windows
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_pinokio_backend_macos:
+    name: m4-6-producer-pinokio-backend-macos
+    if: ${{ false }}
+    runs-on: macos-14
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed pinokio-backend-macos upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/pinokio-backend-macos
+          SLOT_ID: pinokio-backend-macos
+          ARTIFACT_NAME: m4-6-pinokio-backend-macos
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed pinokio-backend-macos artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-pinokio-backend-macos
+          path: .m4-6/trusted-input/pinokio-backend-macos
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_pinokio_backend_linux:
+    name: m4-6-producer-pinokio-backend-linux
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed pinokio-backend-linux upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/pinokio-backend-linux
+          SLOT_ID: pinokio-backend-linux
+          ARTIFACT_NAME: m4-6-pinokio-backend-linux
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed pinokio-backend-linux artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-pinokio-backend-linux
+          path: .m4-6/trusted-input/pinokio-backend-linux
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_pinokio_backend_windows:
+    name: m4-6-producer-pinokio-backend-windows
+    if: ${{ false }}
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed pinokio-backend-windows upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/pinokio-backend-windows
+          SLOT_ID: pinokio-backend-windows
+          ARTIFACT_NAME: m4-6-pinokio-backend-windows
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed pinokio-backend-windows artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-pinokio-backend-windows
+          path: .m4-6/trusted-input/pinokio-backend-windows
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_pinokio_fully_local_macos:
+    name: m4-6-producer-pinokio-fully-local-macos
+    if: ${{ false }}
+    runs-on: macos-14
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed pinokio-fully-local-macos upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/pinokio-fully-local-macos
+          SLOT_ID: pinokio-fully-local-macos
+          ARTIFACT_NAME: m4-6-pinokio-fully-local-macos
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed pinokio-fully-local-macos artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-pinokio-fully-local-macos
+          path: .m4-6/trusted-input/pinokio-fully-local-macos
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_pinokio_fully_local_linux:
+    name: m4-6-producer-pinokio-fully-local-linux
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed pinokio-fully-local-linux upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/pinokio-fully-local-linux
+          SLOT_ID: pinokio-fully-local-linux
+          ARTIFACT_NAME: m4-6-pinokio-fully-local-linux
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed pinokio-fully-local-linux artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-pinokio-fully-local-linux
+          path: .m4-6/trusted-input/pinokio-fully-local-linux
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  produce_pinokio_fully_local_windows:
+    name: m4-6-producer-pinokio-fully-local-windows
+    if: ${{ false }}
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_name: ${{ steps.contract.outputs.artifact_name }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      slot_id: ${{ steps.contract.outputs.slot_id }}
+      run_attempt: ${{ steps.contract.outputs.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Enforce fixed pinokio-fully-local-windows upload contract
+        id: contract
+        shell: bash
+        env:
+          INPUT_PATH: .m4-6/trusted-input/pinokio-fully-local-windows
+          SLOT_ID: pinokio-fully-local-windows
+          ARTIFACT_NAME: m4-6-pinokio-fully-local-windows
+        run: |
+          set -euo pipefail
+          python - "$INPUT_PATH" "$M4_6_MAX_ARTIFACT_BYTES" <<'PY'
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          limit = int(sys.argv[2])
+          if not root.is_dir():
+              raise SystemExit(f"missing fixed upload directory: {root}")
+          files = [path for path in root.rglob("*") if path.is_file()]
+          if not files:
+              raise SystemExit(f"empty fixed upload directory: {root}")
+          if any(path.is_symlink() for path in root.rglob("*")):
+              raise SystemExit(f"symlinks are forbidden in fixed upload directory: {root}")
+          size = sum(path.stat().st_size for path in files)
+          if size > limit:
+              raise SystemExit(f"fixed upload exceeds {limit} bytes: {size}")
+          PY
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "slot_id=$SLOT_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - name: Upload fixed pinokio-fully-local-windows artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m4-6-pinokio-fully-local-windows
+          path: .m4-6/trusted-input/pinokio-fully-local-windows
+          if-no-files-found: error
+          overwrite: false
+          compression-level: 0
+          include-hidden-files: false
+      - name: Reject missing immutable upload outputs
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+
+  trusted_attestor:
+    name: m4-6-trusted-attestor
+    if: ${{ false }}
+    needs:
+      - produce_direct_macos
+      - produce_direct_linux
+      - produce_direct_windows
+      - produce_pinokio_backend_macos
+      - produce_pinokio_backend_linux
+      - produce_pinokio_backend_windows
+      - produce_pinokio_fully_local_macos
+      - produce_pinokio_fully_local_linux
+      - produce_pinokio_fully_local_windows
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      attestation_id: ${{ steps.attest.outputs.attestation-id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Reconcile exact attempt and prepare exact-nine predicate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BINDING_DIRECT_MACOS: direct-macos|m4-6-producer-direct-macos|${{ needs.produce_direct_macos.outputs.slot_id }}|${{ needs.produce_direct_macos.outputs.artifact_name }}|${{ needs.produce_direct_macos.outputs.artifact_id }}|${{ needs.produce_direct_macos.outputs.artifact_digest }}|${{ needs.produce_direct_macos.outputs.run_attempt }}
+          BINDING_DIRECT_LINUX: direct-linux|m4-6-producer-direct-linux|${{ needs.produce_direct_linux.outputs.slot_id }}|${{ needs.produce_direct_linux.outputs.artifact_name }}|${{ needs.produce_direct_linux.outputs.artifact_id }}|${{ needs.produce_direct_linux.outputs.artifact_digest }}|${{ needs.produce_direct_linux.outputs.run_attempt }}
+          BINDING_DIRECT_WINDOWS: direct-windows|m4-6-producer-direct-windows|${{ needs.produce_direct_windows.outputs.slot_id }}|${{ needs.produce_direct_windows.outputs.artifact_name }}|${{ needs.produce_direct_windows.outputs.artifact_id }}|${{ needs.produce_direct_windows.outputs.artifact_digest }}|${{ needs.produce_direct_windows.outputs.run_attempt }}
+          BINDING_PINOKIO_BACKEND_MACOS: pinokio-backend-macos|m4-6-producer-pinokio-backend-macos|${{ needs.produce_pinokio_backend_macos.outputs.slot_id }}|${{ needs.produce_pinokio_backend_macos.outputs.artifact_name }}|${{ needs.produce_pinokio_backend_macos.outputs.artifact_id }}|${{ needs.produce_pinokio_backend_macos.outputs.artifact_digest }}|${{ needs.produce_pinokio_backend_macos.outputs.run_attempt }}
+          BINDING_PINOKIO_BACKEND_LINUX: pinokio-backend-linux|m4-6-producer-pinokio-backend-linux|${{ needs.produce_pinokio_backend_linux.outputs.slot_id }}|${{ needs.produce_pinokio_backend_linux.outputs.artifact_name }}|${{ needs.produce_pinokio_backend_linux.outputs.artifact_id }}|${{ needs.produce_pinokio_backend_linux.outputs.artifact_digest }}|${{ needs.produce_pinokio_backend_linux.outputs.run_attempt }}
+          BINDING_PINOKIO_BACKEND_WINDOWS: pinokio-backend-windows|m4-6-producer-pinokio-backend-windows|${{ needs.produce_pinokio_backend_windows.outputs.slot_id }}|${{ needs.produce_pinokio_backend_windows.outputs.artifact_name }}|${{ needs.produce_pinokio_backend_windows.outputs.artifact_id }}|${{ needs.produce_pinokio_backend_windows.outputs.artifact_digest }}|${{ needs.produce_pinokio_backend_windows.outputs.run_attempt }}
+          BINDING_PINOKIO_FULLY_LOCAL_MACOS: pinokio-fully-local-macos|m4-6-producer-pinokio-fully-local-macos|${{ needs.produce_pinokio_fully_local_macos.outputs.slot_id }}|${{ needs.produce_pinokio_fully_local_macos.outputs.artifact_name }}|${{ needs.produce_pinokio_fully_local_macos.outputs.artifact_id }}|${{ needs.produce_pinokio_fully_local_macos.outputs.artifact_digest }}|${{ needs.produce_pinokio_fully_local_macos.outputs.run_attempt }}
+          BINDING_PINOKIO_FULLY_LOCAL_LINUX: pinokio-fully-local-linux|m4-6-producer-pinokio-fully-local-linux|${{ needs.produce_pinokio_fully_local_linux.outputs.slot_id }}|${{ needs.produce_pinokio_fully_local_linux.outputs.artifact_name }}|${{ needs.produce_pinokio_fully_local_linux.outputs.artifact_id }}|${{ needs.produce_pinokio_fully_local_linux.outputs.artifact_digest }}|${{ needs.produce_pinokio_fully_local_linux.outputs.run_attempt }}
+          BINDING_PINOKIO_FULLY_LOCAL_WINDOWS: pinokio-fully-local-windows|m4-6-producer-pinokio-fully-local-windows|${{ needs.produce_pinokio_fully_local_windows.outputs.slot_id }}|${{ needs.produce_pinokio_fully_local_windows.outputs.artifact_name }}|${{ needs.produce_pinokio_fully_local_windows.outputs.artifact_id }}|${{ needs.produce_pinokio_fully_local_windows.outputs.artifact_digest }}|${{ needs.produce_pinokio_fully_local_windows.outputs.run_attempt }}
+        run: |
+          set -euo pipefail
+          # Each binding is expected-slot|expected-job|reported-slot|artifact-name|
+          # artifact-id|artifact-digest|reported-attempt. The preparation command
+          # must query the exact-attempt jobs endpoint and each immutable artifact
+          # ID, recheck the 64 MiB archive bound, and emit exactly nine subjects.
+          python scripts/m4_6_github_attestation.py prepare-predicate \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-id "$GITHUB_REPOSITORY_ID" \
+            --owner-id "$GITHUB_REPOSITORY_OWNER_ID" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --source-sha "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --workflow-ref "${{ github.workflow_ref }}" \
+            --workflow-sha "${{ github.workflow_sha }}" \
+            --max-artifact-bytes "$M4_6_MAX_ARTIFACT_BYTES" \
+            --predicate-type "$M4_6_PREDICATE_TYPE" \
+            --predicate-output .m4-6-attestation/predicate.json \
+            --subjects-output .m4-6-attestation/subjects.sha256 \
+            --binding "$BINDING_DIRECT_MACOS" \
+            --binding "$BINDING_DIRECT_LINUX" \
+            --binding "$BINDING_DIRECT_WINDOWS" \
+            --binding "$BINDING_PINOKIO_BACKEND_MACOS" \
+            --binding "$BINDING_PINOKIO_BACKEND_LINUX" \
+            --binding "$BINDING_PINOKIO_BACKEND_WINDOWS" \
+            --binding "$BINDING_PINOKIO_FULLY_LOCAL_MACOS" \
+            --binding "$BINDING_PINOKIO_FULLY_LOCAL_LINUX" \
+            --binding "$BINDING_PINOKIO_FULLY_LOCAL_WINDOWS"
+      - name: Sign exact-nine custom predicate
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: .m4-6-attestation/subjects.sha256
+          predicate-type: https://astrid.dev/attestations/m4-6/trusted-artifact-set/v1
+          predicate-path: .m4-6-attestation/predicate.json
+          show-summary: false
+
+  artifact_checker:
+    name: m4-6-artifact-checker
+    if: ${{ false }}
+    needs:
+      - produce_direct_macos
+      - produce_direct_linux
+      - produce_direct_windows
+      - produce_pinokio_backend_macos
+      - produce_pinokio_backend_linux
+      - produce_pinokio_backend_windows
+      - produce_pinokio_fully_local_macos
+      - produce_pinokio_fully_local_linux
+      - produce_pinokio_fully_local_windows
+      - trusted_attestor
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      checked_output_sha256: ${{ steps.verify.outputs.checked_output_sha256 }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify attestation and download exact immutable artifact IDs
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID_DIRECT_MACOS: ${{ needs.produce_direct_macos.outputs.artifact_id }}
+          ARTIFACT_ID_DIRECT_LINUX: ${{ needs.produce_direct_linux.outputs.artifact_id }}
+          ARTIFACT_ID_DIRECT_WINDOWS: ${{ needs.produce_direct_windows.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_BACKEND_MACOS: ${{ needs.produce_pinokio_backend_macos.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_BACKEND_LINUX: ${{ needs.produce_pinokio_backend_linux.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_BACKEND_WINDOWS: ${{ needs.produce_pinokio_backend_windows.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_FULLY_LOCAL_MACOS: ${{ needs.produce_pinokio_fully_local_macos.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_FULLY_LOCAL_LINUX: ${{ needs.produce_pinokio_fully_local_linux.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_FULLY_LOCAL_WINDOWS: ${{ needs.produce_pinokio_fully_local_windows.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          # The verifier exhausts every authenticated attestation REST page for
+          # every immutable subject digest, then cryptographically rejects zero
+          # or multiple acceptable attestations before parsing the predicate.
+          python scripts/m4_6_github_attestation.py verify \
+            --predicate-type "$M4_6_PREDICATE_TYPE" \
+            --issuer https://token.actions.githubusercontent.com \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-id "$GITHUB_REPOSITORY_ID" \
+            --owner-id "$GITHUB_REPOSITORY_OWNER_ID" \
+            --source-sha "$M4_6_REVIEWED_CALLER_WORKFLOW_SHA" \
+            --source-ref "$M4_6_REVIEWED_SOURCE_REF" \
+            --event-name "$M4_6_REVIEWED_SOURCE_EVENT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-path .github/workflows/m4-6-trusted-attestor.yml \
+            --workflow-ref "$M4_6_REVIEWED_CALLER_WORKFLOW_REF" \
+            --workflow-sha "$M4_6_REVIEWED_CALLER_WORKFLOW_SHA" \
+            --signer-workflow-ref "$M4_6_REVIEWED_SIGNER_WORKFLOW_REF" \
+            --signer-workflow-sha "$M4_6_REVIEWED_SIGNER_WORKFLOW_SHA" \
+            --max-artifact-bytes "$M4_6_MAX_ARTIFACT_BYTES" \
+            --artifact-id "$ARTIFACT_ID_DIRECT_MACOS" \
+            --artifact-id "$ARTIFACT_ID_DIRECT_LINUX" \
+            --artifact-id "$ARTIFACT_ID_DIRECT_WINDOWS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_BACKEND_MACOS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_BACKEND_LINUX" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_BACKEND_WINDOWS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_FULLY_LOCAL_MACOS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_FULLY_LOCAL_LINUX" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_FULLY_LOCAL_WINDOWS" \
+            --download-root .m4-6-checker-custody \
+            --github-output "$GITHUB_OUTPUT"
+
+  post_check_admission:
+    name: m4-6-post-check-admission
+    if: ${{ false }}
+    needs:
+      - produce_direct_macos
+      - produce_direct_linux
+      - produce_direct_windows
+      - produce_pinokio_backend_macos
+      - produce_pinokio_backend_linux
+      - produce_pinokio_backend_windows
+      - produce_pinokio_fully_local_macos
+      - produce_pinokio_fully_local_linux
+      - produce_pinokio_fully_local_windows
+      - trusted_attestor
+      - artifact_checker
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Authenticate terminal checker success and exact output binding
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKED_OUTPUT_SHA256: ${{ needs.artifact_checker.outputs.checked_output_sha256 }}
+          ARTIFACT_ID_DIRECT_MACOS: ${{ needs.produce_direct_macos.outputs.artifact_id }}
+          ARTIFACT_ID_DIRECT_LINUX: ${{ needs.produce_direct_linux.outputs.artifact_id }}
+          ARTIFACT_ID_DIRECT_WINDOWS: ${{ needs.produce_direct_windows.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_BACKEND_MACOS: ${{ needs.produce_pinokio_backend_macos.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_BACKEND_LINUX: ${{ needs.produce_pinokio_backend_linux.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_BACKEND_WINDOWS: ${{ needs.produce_pinokio_backend_windows.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_FULLY_LOCAL_MACOS: ${{ needs.produce_pinokio_fully_local_macos.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_FULLY_LOCAL_LINUX: ${{ needs.produce_pinokio_fully_local_linux.outputs.artifact_id }}
+          ARTIFACT_ID_PINOKIO_FULLY_LOCAL_WINDOWS: ${{ needs.produce_pinokio_fully_local_windows.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          # This later job independently repeats certificate/API/byte checks,
+          # resolves the checker through the exact-attempt Jobs API, and requires
+          # completed/success before binding the exact checker output.
+          python scripts/m4_6_github_attestation.py verify-post-check \
+            --predicate-type "$M4_6_PREDICATE_TYPE" \
+            --issuer https://token.actions.githubusercontent.com \
+            --repository "$GITHUB_REPOSITORY" \
+            --repository-id "$GITHUB_REPOSITORY_ID" \
+            --owner-id "$GITHUB_REPOSITORY_OWNER_ID" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --source-sha "$M4_6_REVIEWED_CALLER_WORKFLOW_SHA" \
+            --source-ref "$M4_6_REVIEWED_SOURCE_REF" \
+            --event-name "$M4_6_REVIEWED_SOURCE_EVENT" \
+            --workflow-path .github/workflows/m4-6-trusted-attestor.yml \
+            --workflow-ref "$M4_6_REVIEWED_CALLER_WORKFLOW_REF" \
+            --workflow-sha "$M4_6_REVIEWED_CALLER_WORKFLOW_SHA" \
+            --signer-workflow-ref "$M4_6_REVIEWED_SIGNER_WORKFLOW_REF" \
+            --signer-workflow-sha "$M4_6_REVIEWED_SIGNER_WORKFLOW_SHA" \
+            --max-artifact-bytes "$M4_6_MAX_ARTIFACT_BYTES" \
+            --artifact-id "$ARTIFACT_ID_DIRECT_MACOS" \
+            --artifact-id "$ARTIFACT_ID_DIRECT_LINUX" \
+            --artifact-id "$ARTIFACT_ID_DIRECT_WINDOWS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_BACKEND_MACOS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_BACKEND_LINUX" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_BACKEND_WINDOWS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_FULLY_LOCAL_MACOS" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_FULLY_LOCAL_LINUX" \
+            --artifact-id "$ARTIFACT_ID_PINOKIO_FULLY_LOCAL_WINDOWS" \
+            --download-root .m4-6-post-check-custody \
+            --checker-output-sha256 "$CHECKED_OUTPUT_SHA256"
