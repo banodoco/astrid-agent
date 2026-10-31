@@ -842,6 +842,119 @@ def test_rederived_refusal_replaces_current_part_and_keeps_suffix_ordered(connec
     assert saved["flight"]["key"] != "repeat-refusal"
 
 
+def test_late_external_ack_does_not_settle_replaced_saved_part(connected, monkeypatch):
+    owner = open_session(connected)
+    _, generated, owner_path = connected
+    rejected = owner.queue_move("parent/clip:a", 5)
+    generated.refusal = ApiError(409, "refused", "edit is not allowed",
+                                 details={"status": "refused", "reason": "policy"})
+    with pytest.raises(CommitRefused) as refused:
+        owner.flush(idempotency_key="saved-edit")
+
+    owner_state = json.loads(owner_path.read_bytes())
+    record = owner_state["pending_changes"][refused.value.pending_id]
+    record["parts"].append({"base": copy.deepcopy(owner_state["base"]),
+                            "commands": [capture_move(initial_bundle(), "parent/clip:b", 8)],
+                            "commit_options": {"label": "Follow-up", "steps": [], "merge": "fields"}})
+    owner.outbox.write(owner_state)
+    replacement = capture_move(initial_bundle(), "parent/clip:a", 6)
+    generated.refusal = None
+
+    retry_path = owner_path.parent / "retry-outbox.json"
+    retry = TimelineSession.open("project-slug", "timeline-slug", client=owner.client,
+                                 outbox_path=retry_path)
+    generated.path = retry_path
+    entered, release = Event(), Event()
+    send = generated.commit_timeline
+
+    def acknowledged_but_blocked(*args, **kwargs):
+        result = send(*args, **kwargs)
+        entered.set()
+        assert release.wait(10)
+        return result
+
+    monkeypatch.setattr(generated, "commit_timeline", acknowledged_but_blocked)
+    expected = retry._state()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        sending = pool.submit(
+            retry.submit, [rejected], label="Saved edit", steps=[],
+            expected_state=expected, base=owner_state["base"],
+            pending_id=refused.value.pending_id, pending_path=str(owner_path), pending_part=0,
+        )
+        try:
+            assert entered.wait(10)
+            owner_state = json.loads(owner_path.read_bytes())
+            owner_state["pending_changes"][refused.value.pending_id]["parts"][0]["commands"] = [replacement]
+            owner.outbox.write(owner_state)
+        finally:
+            release.set()
+        sending.result(timeout=10)
+
+    saved = json.loads(owner_path.read_bytes())["pending_changes"][refused.value.pending_id]
+    assert saved["state"] == "pending"
+    assert saved["part"] == 0
+    assert saved["parts"][0]["commands"] == [replacement]
+    assert len(saved["parts"]) == 2
+
+
+def test_external_refusal_replay_after_owner_write_keeps_suffix_once(connected, monkeypatch):
+    owner = open_session(connected)
+    _, generated, owner_path = connected
+    rejected = owner.queue_move("parent/clip:a", 5)
+    generated.refusal = ApiError(409, "refused", "edit is not allowed",
+                                 details={"status": "refused", "reason": "policy"})
+    with pytest.raises(CommitRefused) as refused:
+        owner.flush(idempotency_key="saved-edit")
+
+    retry_path = owner_path.parent / "retry-outbox.json"
+    retry = TimelineSession.open("project-slug", "timeline-slug", client=owner.client,
+                                 outbox_path=retry_path)
+    generated.path = retry_path
+    expected = retry._state()
+    entered, release = Event(), Event()
+
+    def refuse_after_suffix(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        raise generated.refusal
+
+    monkeypatch.setattr(generated, "commit_timeline", refuse_after_suffix)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        sending = pool.submit(
+            retry.submit, [rejected], label="Saved edit", steps=[],
+            expected_state=expected, base=owner._state()["base"],
+            pending_id=refused.value.pending_id, pending_path=str(owner_path), pending_part=0,
+        )
+        try:
+            assert entered.wait(10)
+            suffix = retry.queue_move("parent/clip:b", 8)
+            original_write = retry.outbox.write
+            failed = False
+
+            def fail_release(state):
+                nonlocal failed
+                if not failed and state.get("flight") is None and not state.get("pending"):
+                    failed = True
+                    raise OSError("caller release unavailable")
+                original_write(state)
+
+            monkeypatch.setattr(retry.outbox, "write", fail_release)
+        finally:
+            release.set()
+        with pytest.raises(OSError, match="caller release unavailable"):
+            sending.result(timeout=10)
+
+    saved = json.loads(owner_path.read_bytes())["pending_changes"][refused.value.pending_id]
+    assert [part["commands"] for part in saved["parts"]] == [[rejected], [suffix]]
+    monkeypatch.setattr(retry.outbox, "write", original_write)
+    with pytest.raises(CommitRefused):
+        retry.flush()
+    saved = json.loads(owner_path.read_bytes())["pending_changes"][refused.value.pending_id]
+    assert [part["commands"] for part in saved["parts"]] == [[rejected], [suffix]]
+    assert saved["part"] == 0
+    assert json.loads(retry_path.read_bytes())["pending"] == []
+
+
 def test_final_conflict_saves_flight_and_dependent_suffix_as_separate_parts(connected, monkeypatch):
     session = open_session(connected)
     _, generated, path = connected

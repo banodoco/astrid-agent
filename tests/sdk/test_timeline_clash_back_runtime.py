@@ -1363,11 +1363,12 @@ def test_runtime_multipart_conflict_retries_prefix_and_suffix_across_reopens(
     first_preview = reopened.retry(pending_id)
     assert first_preview["status"] == "preview", first_preview
     first = reopened.commit(first_preview)
-    assert first["status"] in {"accepted", "merged", "landed", "part_landed"}
+    assert first["status"] == "part_landed"
     after_prefix = reopened.pending_show(pending_id)
     assert after_prefix["state"] == "pending"
     assert after_prefix["part"] == 1
     assert len(after_prefix["receipts"]) == 1
+    assert after_prefix["parts"][1]["commands"] == [suffix]
 
     reopened = Timeline.open(project, "film", client=client, outbox_path=path)
     second_preview = reopened.retry(pending_id)

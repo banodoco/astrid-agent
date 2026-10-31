@@ -283,18 +283,33 @@ def _pending_clash(session, record):
         return copy.deepcopy(saved)
 
 
-def _settle_pending(record, *, expected_part, actor_id, publication_id, how, base, receipt_id=None):
+def _part_identity(record):
+    index = record.get("part", 0)
+    parts = record.get("parts", [])
+    if type(index) is not int or not 0 <= index < len(parts):
+        return None
+    value = [index, record.get("attempts", 1), parts[index]]
+    return hashlib.sha256(request_bytes(value)).hexdigest()
+
+
+def _settle_pending(record, *, expected_part, actor_id, publication_id, how, base, receipt_id=None,
+                    expected_identity=None):
     """Apply an acknowledged part while retaining any unsent suffix."""
     if record is None or record.get("state") != "pending":
         return False
     index = record.get("part", 0)
     receipt_id = receipt_id or publication_id
-    if expected_part is None or index != expected_part or receipt_id in record.get("receipts", []):
+    if (expected_part is None or index != expected_part or receipt_id in record.get("receipts", [])
+            or (expected_identity is not None and _part_identity(record) != expected_identity)):
         return False
     record.setdefault("receipts", []).append(receipt_id)
     if index + 1 < len(record.get("parts", [])):
         record["part"] = index + 1
         record["parts"][index + 1]["base"] = copy.deepcopy(base)
+        # The refusal described the completed part, not the remaining suffix.
+        record["failure"] = {}
+        record["diff"] = None
+        record.pop("clash", None)
     else:
         record["state"] = "landed"
         record["closed_by"] = {"actor_id": actor_id, "publication_id": publication_id, "how": how}
@@ -303,13 +318,19 @@ def _settle_pending(record, *, expected_part, actor_id, publication_id, how, bas
     return True
 
 
-def _retry_conflict(record, replacement, *, expected_part=None):
+def _retry_conflict(record, replacement, *, expected_part=None, expected_identity=None, request_identity=None):
+    if record is not None and request_identity and record.get("last_refusal_request") == request_identity:
+        return
+    if expected_identity is not None and (record is None or _part_identity(record) != expected_identity):
+        raise TimelineEditError("saved edit changed; original flight retained")
     if (record is None or record.get("state") != "pending"
             or (expected_part is not None and record.get("part", 0) != expected_part)):
         raise TimelineEditError("saved edit is unavailable or has advanced; original flight retained")
     index = record.get("part", 0)
     record.setdefault("versions", []).append({key: copy.deepcopy(record.get(key))
                                                for key in ("failure", "head", "diff", "attempts", "flight", "parts", "part", "label", "origin")})
+    if request_identity:
+        record["last_refusal_request"] = request_identity
     record["parts"][index] = copy.deepcopy(replacement["parts"][0])
     record["parts"].extend(copy.deepcopy(replacement["parts"][1:]))
     record["label"] = replacement["label"]
@@ -867,12 +888,21 @@ class TimelineSession:
     def submit(self, commands, *, label, steps, merge="fields", reads=None,
                idempotency_key=None, dry_run=False, expected_state, base=None, evaluation=None,
                pending_id=None, pending_path=None, pending_part=None, pending_how="retry", group_id=None,
+               pending_identity=None,
                logical_key=None, rationale=None, imports=()):
         """Freeze an already captured v2 batch, without recapturing its guards.
 
         A replacement is allowed only after an explicit conflict. Transport
         retries use flush(), which retains the entire original request.
         """
+        if pending_id is not None and pending_identity is None:
+            owner = self.outbox if not pending_path or Path(pending_path).resolve() == self.outbox.path.resolve() else Outbox(Path(pending_path))
+            with owner.locked():
+                owner_state = owner.read()
+                saved = owner_state.get("pending_changes", {}).get(pending_id)
+                if saved is None or saved.get("state") != "pending" or saved.get("part", 0) != pending_part:
+                    raise TimelineEditError("saved edit is unavailable or has advanced; original flight retained")
+                pending_identity = _part_identity(saved)
         commands = [_native_command(command) for command in commands]
         options = {"label": label, "steps": copy.deepcopy(steps), "merge": merge}
         if reads is not None:
@@ -916,6 +946,7 @@ class TimelineSession:
                 state["pending_close_path"] = pending_path
                 state["pending_how"] = pending_how
                 state["pending_part"] = pending_part
+                state["pending_identity"] = pending_identity
 
         release_conflict = (not isinstance(evaluation, dict)
                             or evaluation.get("kind") != "function"
@@ -962,6 +993,7 @@ class TimelineSession:
                         flight["pending_path"] = state["pending_close_path"]
                     flight["pending_how"] = state.get("pending_how", "retry")
                     flight["pending_part"] = state.get("pending_part")
+                    flight["pending_identity"] = state.get("pending_identity")
                 if logical_key is not None:
                     flight["logical_key"] = logical_key
                     if conflict_retry:
@@ -1020,28 +1052,35 @@ class TimelineSession:
                                 target_outbox = Outbox(Path(target_path))
                                 target = target_outbox.read()
                                 saved = target.get("pending_changes", {}).get(pending_id)
-                                if saved is None or saved.get("state") != "pending":
+                                if saved is None:
                                     raise TimelineEditError("saved edit is unavailable; original flight retained")
-                                _retry_conflict(saved, replacement, expected_part=flight.get("pending_part"))
-                                target_outbox.write(target)
+                                if saved.get("state") != "landed":
+                                    _retry_conflict(saved, replacement, expected_part=flight.get("pending_part"),
+                                                    expected_identity=flight.get("pending_identity") or "", request_identity=flight.get("fence"))
+                                    target_outbox.write(target)
                                 record = copy.deepcopy(saved)
                                 external_conflict = (target_path, pending_id, replacement)
                             elif pending_id and pending_id in state.get("pending_changes", {}):
                                 record = state["pending_changes"][pending_id]
-                                _retry_conflict(record, replacement, expected_part=flight.get("pending_part"))
+                                if record.get("state") != "landed":
+                                    _retry_conflict(record, replacement, expected_part=flight.get("pending_part"),
+                                                    expected_identity=flight.get("pending_identity") or "", request_identity=flight.get("fence"))
                                 record = copy.deepcopy(record)
                             elif pending_id:
                                 raise TimelineEditError("saved edit is unavailable; original flight retained")
                             else:
                                 record = replacement
                                 state.setdefault("pending_changes", {})[record["id"]] = record
-                            if record is not None and details.get("status") != "conflict":
+                            if record is not None and record.get("state") == "pending" and details.get("status") != "conflict":
                                 from ._pending import clash
                                 record["clash"] = clash(record)
                                 record["clash"]["next"] = f'tl.pending_show("{record["id"]}")'
                                 if external_conflict is None:
                                     state["pending_changes"][record["id"]] = copy.deepcopy(record)
-                            state["pending"] = []
+                            if record is not None and record.get("state") == "landed":
+                                del state["pending"][:flight["count"]]
+                            else:
+                                state["pending"] = []
                             state["flight"] = None
                             state.pop("conflict", None)
                             state.pop("commit_options", None)
@@ -1059,6 +1098,7 @@ class TimelineSession:
                             state.pop("pending_close_path", None)
                             state.pop("pending_how", None)
                             state.pop("pending_part", None)
+                            state.pop("pending_identity", None)
                         self.outbox.write(state)
                 if record is not None:
                     try:
@@ -1136,13 +1176,14 @@ class TimelineSession:
                         record = state.get("pending_changes", {}).get(pending_id)
                         if record is not None and record.get("state") == "pending":
                             _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
-                                            publication_id=receipt["receipt_id"],
+                                            publication_id=receipt["receipt_id"], expected_identity=flight.get("pending_identity") or "",
                                             how=flight.get("pending_how", "retry"), base=state["base"])
                 if pending_id is not None:
                     state.pop("pending_close", None)
                     state.pop("pending_close_path", None)
                     state.pop("pending_how", None)
                     state.pop("pending_part", None)
+                    state.pop("pending_identity", None)
                 self.outbox.write(state)
         if external_close is not None:
             target_path, pending_id, how = external_close
@@ -1153,7 +1194,7 @@ class TimelineSession:
                     record = target.get("pending_changes", {}).get(pending_id) if isinstance(target, dict) else None
                     if record is not None and record.get("state") == "pending":
                         _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
-                                        publication_id=receipt["receipt_id"], how=how,
+                                        publication_id=receipt["receipt_id"], expected_identity=flight.get("pending_identity") or "", how=how,
                                         base={"revision_id": data["accepted_revision_id"],
                                               "publication_id": receipt["receipt_id"]})
                         target_outbox.write(target)
