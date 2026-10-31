@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
-import subprocess
 import sys
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 from runtime_protocol import platform
@@ -76,139 +73,6 @@ def _startup_object_snapshot(root):
     service.path.parent.mkdir(parents=True, exist_ok=True)
     service.path.write_bytes(b"existing-startup-registration\n")
     return service.path, service.path.read_bytes()
-
-
-def test_non_linux_update_job_availability_remains_supported(monkeypatch):
-    run = Mock(side_effect=AssertionError("systemctl is Linux-only"))
-    monkeypatch.setattr(update_job.subprocess, "run", run)
-
-    assert update_job.update_job_availability(system="darwin") == {"available": True}
-    run.assert_not_called()
-
-
-@pytest.mark.parametrize("version_result", [
-    CompletedProcess([], 0, "systemd 253 (253.7)\n", ""),
-    CompletedProcess([], 0, "systemd ???\n", ""),
-    CompletedProcess([], 1, "", "systemctl: failed to connect"),
-    FileNotFoundError("systemctl missing"),
-    subprocess.TimeoutExpired(["systemctl"], 5),
-])
-def test_linux_update_job_availability_rejects_old_unknown_and_failed_systemd(
-        monkeypatch, version_result):
-    run = Mock(side_effect=version_result if isinstance(version_result, Exception)
-               else [version_result])
-    monkeypatch.setattr(update_job.subprocess, "run", run)
-
-    assert update_job.update_job_availability(system="linux") == {
-        "available": False, "reason": "unsupported-service-manager"}
-    run.assert_called_once_with(
-        ["systemctl", "--user", "--version"], capture_output=True,
-        text=True, timeout=5, check=False,
-    )
-
-
-def test_linux_systemd_254_with_unusable_user_manager_is_unsupported(monkeypatch):
-    run = Mock(side_effect=[
-        CompletedProcess([], 0, "systemd 254 (254.1)\n", ""),
-        CompletedProcess([], 1, "", "Failed to connect to bus"),
-    ])
-    monkeypatch.setattr(update_job.subprocess, "run", run)
-
-    assert update_job.update_job_availability(system="linux") == {
-        "available": False, "reason": "unsupported-service-manager"}
-    assert [call.args[0] for call in run.call_args_list] == [
-        ["systemctl", "--user", "--version"],
-        ["systemctl", "--user", "show-environment"],
-    ]
-
-
-def test_linux_systemd_254_with_usable_user_manager_is_supported(monkeypatch):
-    run = Mock(side_effect=[
-        CompletedProcess([], 0, "systemd 254 (254.1)\n", ""),
-        CompletedProcess([], 0, "PATH=/usr/bin\n", ""),
-    ])
-    monkeypatch.setattr(update_job.subprocess, "run", run)
-
-    assert update_job.update_job_availability(system="linux") == {"available": True}
-
-
-def test_update_job_availability_action_preserves_get_reason(monkeypatch):
-    availability = update_job.update_job_availability
-    monkeypatch.setattr(update_job, "update_job_availability",
-                        lambda: availability(system="linux"))
-    monkeypatch.setattr(update_job.subprocess, "run", Mock(side_effect=[
-        CompletedProcess([], 0, "systemd 254 (254.1)\n", ""),
-        CompletedProcess([], 1, "", "Failed to connect to bus"),
-    ]))
-    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO('{"action":"availability"}'))
-    stdout = io.StringIO()
-    monkeypatch.setattr("builtins.print", lambda value: stdout.write(value))
-
-    update_job.main()
-
-    assert json.loads(stdout.getvalue()) == {
-        "available": False, "reason": "unsupported-service-manager"}
-
-
-@pytest.mark.parametrize("probe_results", [
-    [CompletedProcess([], 0, "systemd 253 (253.7)\n", "")],
-    [CompletedProcess([], 0, "systemd 255 (255.4)\n", ""),
-     CompletedProcess([], 1, "", "Failed to connect to bus")],
-    FileNotFoundError("systemctl missing"),
-])
-def test_unsupported_post_keeps_reason_and_has_no_admission_or_launch_effects(
-        tmp_path, monkeypatch, probe_results):
-    root, _, _, request = _fixture(tmp_path, monkeypatch)
-    availability = update_job.update_job_availability
-    monkeypatch.setattr(update_job, "update_job_availability",
-                        lambda: availability(system="linux"))
-    run = Mock(side_effect=probe_results)
-    monkeypatch.setattr(update_job.subprocess, "run", run)
-    payload = {**request, "action": "accept"}
-    monkeypatch.setattr(update_job.sys, "stdin", io.StringIO(json.dumps(payload)))
-    stdout = io.StringIO()
-    monkeypatch.setattr("builtins.print", lambda value: stdout.write(value))
-    launch = Mock(side_effect=AssertionError("unsupported update must not launch"))
-    monkeypatch.setattr(update_job, "launch_job", launch)
-
-    with pytest.raises(SystemExit) as raised:
-        update_job.main()
-
-    assert raised.value.code == 1
-    assert json.loads(stdout.getvalue()) == {
-        "state": "recovery-needed", "reason": "unsupported-service-manager",
-        "message": "This update requires user systemd 254 or newer on Linux.",
-    }
-    assert "update_job" not in read_json(root / "install.json")
-    assert not (root / "update-transaction.json").exists()
-    launch.assert_not_called()
-
-
-def test_supported_update_post_still_admits(monkeypatch, tmp_path):
-    root, _, _, request = _fixture(tmp_path, monkeypatch)
-    availability = Mock(return_value={"available": True})
-    monkeypatch.setattr(update_job, "update_job_availability", availability)
-
-    job = update_job.accept(request)
-
-    availability.assert_called_once_with()
-    assert job["state"] == "accepted"
-    assert read_json(root / "install.json")["update_job"]["operation_id"] == request["operation_id"]
-
-
-def test_unsupported_native_launch_is_refused_before_lock_or_launch(monkeypatch, tmp_path):
-    availability = Mock(return_value={
-        "available": False, "reason": "unsupported-service-manager"})
-    monkeypatch.setattr(update_job, "update_job_availability", availability)
-    lock = Mock(side_effect=AssertionError("unsupported launch must not acquire the lock"))
-    monkeypatch.setattr(update_job, "_locked", lock)
-
-    with pytest.raises(update_job._UnsupportedServiceManager) as raised:
-        update_job.launch_job(tmp_path, "a" * 32)
-
-    assert str(raised.value) == "This update requires user systemd 254 or newer on Linux."
-    availability.assert_called_once_with()
-    lock.assert_not_called()
 
 
 def test_accept_persists_additive_job_and_private_log_under_real_installer_lock(tmp_path, monkeypatch):

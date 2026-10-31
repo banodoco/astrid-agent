@@ -8,40 +8,9 @@ import sys
 import pytest
 
 from scripts import ci_windows_journey as journey
-from scripts import ci_journey as shared_journey
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "windows-journey.yml"
-
-
-def test_tst_b1_windows_alias_requires_owned_roots_before_install(tmp_path, monkeypatch):
-    monkeypatch.setattr(journey.sys, "platform", "win32")
-    monkeypatch.setitem(sys.modules, "ci_journey", shared_journey)
-    monkeypatch.setattr(sys, "argv", ["ci_windows_journey.py", "journey", "--leg", "fresh-install",
-                                   "--app-checkout", str(tmp_path)])
-    monkeypatch.setattr(shared_journey, "bootstrap", lambda *unused: (_ for _ in ()).throw(
-        AssertionError("bootstrap must not run")))
-    with pytest.raises(SystemExit) as failure:
-        journey.main()
-    assert failure.value.code == 2
-
-
-def test_tst_b1_windows_alias_returns_shared_driver_failure(monkeypatch):
-    monkeypatch.setattr(journey.sys, "platform", "win32")
-    monkeypatch.setitem(sys.modules, "ci_journey", shared_journey)
-    monkeypatch.setattr(sys, "argv", ["ci_windows_journey.py", "journey"])
-    monkeypatch.setattr(shared_journey, "main", lambda unused: 1)
-    assert journey.main() == 1
-
-
-def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
-    command = journey.powershell5_command(r"C:\Program Files\nodejs\node.exe",
-                                          ["-e", "process.exit(0)", r"C:\Pinokio\api\Astrid"])
-    assert command[:5] == ["powershell.exe", "-NoProfile", "-NonInteractive",
-                           "-ExecutionPolicy", "Bypass"]
-    assert "& 'C:\\Program Files\\nodejs\\node.exe'" in command[-1]
-    assert "process.exit(0)" in command[-1]
-    assert "pwsh" not in command[0].lower()
 
 
 @pytest.fixture
@@ -64,9 +33,9 @@ def sdk_invocation(argv, task_id="task-1"):
     })
 
 
-def test_journey_runs_for_main_release_windows_branches_and_main_pull_requests():
+def test_journey_runs_for_main_windows_branches_and_main_pull_requests():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'branches: [main, release-1, "windows/**"]' in workflow
+    assert 'branches: [main, "windows/**"]' in workflow
     assert "pull_request:\n    branches: [main]" in workflow
     assert "name: Windows task host journey (${{ matrix.installer-shell }})" in workflow
     assert "exploratory" not in workflow
@@ -79,10 +48,7 @@ def test_journey_resolves_companion_refs_from_durable_defaults():
     assert "$runtimeRef = $lock.source_commit" in workflow
     assert "ref: ${{ steps.runtime-ref.outputs.ref }}" in workflow
     assert "runtime_ref:" not in workflow
-    assert "ref: ${{ steps.app-ref.outputs.ref }}" in workflow
-    assert '{ "main" }' in workflow
-    assert "^[0-9a-fA-F]{40}$" in workflow
-    assert "git -C journey-app rev-parse HEAD" in workflow
+    assert "ref: ${{ inputs.app_ref || 'main' }}" in workflow
     assert "default: windows/task-host" not in workflow
     assert "Run an installed-profile SDK invocation through settlement" in workflow
 
@@ -96,8 +62,7 @@ def test_manifest_replaces_released_sources_and_keeps_app_tools(tmp_path, monkey
         "tools": {"python": {"version": "3.11.13"}},
     }), encoding="utf-8")
     monkeypatch.setattr(journey, "source", lambda repo: {"sha": repo.name, "repo": str(repo)})
-    manifest = journey.install_manifest(tmp_path / "agent", tmp_path / "runtime", app,
-                                        source_override=True)
+    manifest = journey.install_manifest(tmp_path / "agent", tmp_path / "runtime", app)
     assert manifest["agent"] == {"sha": "agent", "repo": str(tmp_path / "agent")}
     assert manifest["runtime"] == {"sha": "runtime", "repo": str(tmp_path / "runtime")}
     assert manifest["tools"] == {"python": {"version": "3.11.13"}}

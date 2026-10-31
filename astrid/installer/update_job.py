@@ -45,49 +45,6 @@ def write_json(path, value):
     from .core import write_json as write
     return write(path, value)
 
-
-class _UnsupportedServiceManager(ValueError):
-    """The selected OS cannot safely run an installer update job."""
-
-    reason = "unsupported-service-manager"
-
-
-MINIMUM_SYSTEMD_VERSION = 254
-UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or newer on Linux."
-
-
-def update_job_availability(*, system: str | None = None) -> dict:
-    """Return whether the selected OS can safely run an update job."""
-    actual = sys.platform if system is None else system
-    if actual != "linux":
-        return {"available": True}
-    try:
-        version = subprocess.run(
-            ["systemctl", "--user", "--version"], capture_output=True,
-            text=True, timeout=5, check=False,
-        )
-        if version.returncode != 0:
-            raise ValueError("systemd version command failed")
-        output = version.stdout if isinstance(version.stdout, str) else ""
-        match = re.match(r"^systemd\s+(\d+)(?:\s|$)", output.strip())
-        if match is None or int(match.group(1)) < MINIMUM_SYSTEMD_VERSION:
-            raise ValueError("systemd version is unsupported or unknown")
-        manager = subprocess.run(
-            ["systemctl", "--user", "show-environment"], capture_output=True,
-            text=True, timeout=5, check=False,
-        )
-        if manager.returncode != 0:
-            raise ValueError("systemd user manager is unavailable")
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        return {"available": False, "reason": _UnsupportedServiceManager.reason}
-    return {"available": True}
-
-
-def _require_update_job_available() -> None:
-    if not update_job_availability()["available"]:
-        raise _UnsupportedServiceManager(UNSUPPORTED_SERVICE_MANAGER_MESSAGE)
-
-
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024
 JOB_FORMAT = "astrid-update-job/v1"
@@ -193,9 +150,7 @@ def fetch_update_inputs(directory: Path, *, manifest_url: str, bootstrap_url: st
         if name == "manifest":
             manifest = tools.validate_manifest(json.loads(raw))
             metadata["release"] = manifest.get("release", 0)
-            release = metadata["release"]
-            if (type(installed_release) is not int or installed_release < 0
-                    or type(release) is not int or release <= installed_release):
+            if type(installed_release) is not int or installed_release < 0 or metadata["release"] <= installed_release:
                 raise ValueError("The target release must be newer than the installed release.")
     return validate_update_inputs(directory, metadata, installed_release)
 
@@ -228,11 +183,6 @@ def _one_line(value: object) -> str:
                          for char in raw)
     line = " ".join(normalized.split()).strip()
     return line[:MAX_RESULT_LINE] or "Update did not complete."
-
-
-def _job_message(job: dict) -> str:
-    value = job.get("message")
-    return value if isinstance(value, str) else "Update did not complete."
 
 
 def autostart_off(value: object) -> bool:
@@ -330,10 +280,9 @@ def _validate_request(request: dict, root: Path) -> dict:
         "bootstrap_sha256": metadata.get("bootstrap_sha256"),
         "release": metadata.get("release"),
     }
-    for name in ("manifest_sha256", "bootstrap_sha256"):
-        digest = normalized[name]
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError("Selected update input identities are invalid.")
+    if any(not isinstance(normalized[name], str) or not re.fullmatch(r"[0-9a-f]{64}", normalized[name])
+           for name in ("manifest_sha256", "bootstrap_sha256")):
+        raise ValueError("Selected update input identities are invalid.")
     directory, _, _ = _validate_input_paths(normalized)
     validate_update_inputs(directory, {
         "manifest_sha256": normalized["manifest_sha256"],
@@ -362,7 +311,6 @@ def _validate_request(request: dict, root: Path) -> dict:
 
 def accept(request: dict) -> dict:
     """Durably accept one already-prepared request under the normal install lock."""
-    _require_update_job_available()
     root = absolute(request.get("root", ""))
     stream = _locked(root)
     try:
@@ -489,7 +437,7 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     selected_identity = selected.get("identity")
     if selected_identity is not None:
         expected = job.get("old_identity")
-        if not isinstance(selected_identity, dict) or not isinstance(expected, dict) or any(
+        if not isinstance(selected_identity, dict) or any(
                 selected_identity.get(key) != expected.get(key)
                 for key in ("release", "managed_by")):
             raise ValueError("The selected startup identity changed.")
@@ -584,7 +532,6 @@ def _owned_descriptor(descriptor: dict, operation_id: str) -> bool:
 
 def launch_job(root: Path, operation_id: str) -> dict:
     """Register and start the already accepted job exactly once."""
-    _require_update_job_available()
     root = absolute(root)
     stream = _locked(root)
     try:
@@ -656,7 +603,7 @@ def launch_job(root: Path, operation_id: str) -> dict:
             return _write_job(root, operation_id, state="launching", message="Update job launched.",
                               fields={"launch_status": "acknowledged"})
         if job.get("state") == "active" and job.get("launch_status") == "launching":
-            return _write_job(root, operation_id, state="active", message=_job_message(job),
+            return _write_job(root, operation_id, state="active", message=job.get("message"),
                               fields={"launch_status": "acknowledged"})
         return job
     finally:
@@ -673,14 +620,14 @@ def _cleanup_terminal(root: Path, operation_id: str, *, locked: bool = False,
             return job
         descriptor = job.get("platform")
         if not isinstance(descriptor, dict):
-            return _write_job(root, operation_id, state=job["state"], message=_job_message(job),
+            return _write_job(root, operation_id, state=job["state"], message=job.get("message"),
                               fields={"cleanup_status": "not-needed"})
         if not _owned_descriptor(descriptor, operation_id):
-            return _write_job(root, operation_id, state=job["state"], message=_job_message(job),
+            return _write_job(root, operation_id, state=job["state"], message=job.get("message"),
                               fields={"cleanup_status": "unknown",
                                       "cleanup_error": "Recorded platform object did not match this operation."})
         # Persist intent before cleanup: launchd bootout may stop this worker.
-        job = _write_job(root, operation_id, state=job["state"], message=_job_message(job),
+        job = _write_job(root, operation_id, state=job["state"], message=job.get("message"),
                          fields={"cleanup_status": "attempting", "residue": descriptor.get("name")})
     finally:
         if stream is not None:
@@ -709,7 +656,7 @@ def _cleanup_terminal(root: Path, operation_id: str, *, locked: bool = False,
         job = _read_job(root, operation_id)
         fields = {"cleanup_status": status, "cleanup_error": error,
                   "residue": descriptor.get("name") if status != "clean" else None}
-        job = _write_job(root, operation_id, state=job["state"], message=_job_message(job), fields=fields)
+        job = _write_job(root, operation_id, state=job["state"], message=job.get("message"), fields=fields)
         if not finishing:
             _cleanup_private_inputs(job, status)
         return job
@@ -1080,31 +1027,17 @@ def main():
         raise ValueError("The update helper request is too large.")
     value = json.loads(raw)
     action = value.get("action", "prepare")
-    if action == "availability":
-        print(json.dumps(update_job_availability()))
-    elif action == "prepare":
+    if action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
                                        bootstrap_url=value["bootstrap_url"],
                                        installed_release=value["installed_release"])
         print(json.dumps(metadata))
     elif action == "accept":
-        try:
-            result = accept(value)
-        except _UnsupportedServiceManager as failure:
-            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
-                              "message": _one_line(failure)}))
-            raise SystemExit(1)
-        print(json.dumps(result))
+        print(json.dumps(accept(value)))
     elif action == "fail":
         print(json.dumps(fail(Path(value["root"]), value["operation_id"], value.get("reason"))))
     elif action == "launch":
-        try:
-            result = launch_job(Path(value["root"]), value["operation_id"])
-        except _UnsupportedServiceManager as failure:
-            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
-                              "message": _one_line(failure)}))
-            raise SystemExit(1)
-        print(json.dumps(result))
+        print(json.dumps(launch_job(Path(value["root"]), value["operation_id"])))
     else:
         raise ValueError("Unknown update helper action.")
 

@@ -216,9 +216,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
-                pending_update = pending_transaction(root)
-                if mode in {"install", "update"} and pending_update:
-                    if pending_update.get("transaction_kind") == "app":
+                pending = pending_transaction(root)
+                if mode in {"install", "update"} and pending:
+                    if pending.get("transaction_kind") == "app":
                         # Pinokio recovery starts the retained foreground app.
                         # Drop the broad installer lock first; recover_app
                         # revalidates immutable selection under its own lock
@@ -246,12 +246,10 @@ def main(argv: list[str] | None = None) -> int:
                 installed = current(root)
                 if installed is not None and not installed.python.is_file():
                     installed = None
-                update_job_record: dict | None = None
+                update_job_record = None
                 if args.update_job:
                     update_job_record, accepted_old = update_job.admit_worker(
                         root, args.update_job, backend, installed, data, args.manifest)
-                    if update_job_record is None:
-                        raise ValueError("The update job could not be admitted.")
                     log = backend.log
                 if mode != "doctor":
                     if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
@@ -283,9 +281,7 @@ def main(argv: list[str] | None = None) -> int:
                 options = {"managed_by": managed_by} if managed_by else {}
                 installer = Installer(root, data, backend, **options)
                 if args.update_job:
-                    if update_job_record is None:
-                        raise ValueError("The update job could not be admitted.")
-                    setattr(backend, "_update_job_operation_id", args.update_job)
+                    backend._update_job_operation_id = args.update_job
                     try:
                         installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
                     except (Exception, KeyboardInterrupt) as update_failure:

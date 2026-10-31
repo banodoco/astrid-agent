@@ -21,16 +21,15 @@
 		<string>-X</string>
 		<string>utf8</string>
 		<string>-I</string>
-		<string>-c</string>
-		<string>import json,os,sys
-from pathlib import Path
-path=Path('/astrid/versions/v1/service-env.json')
-settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
-if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
-    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
-os.environ.update(settings)
-from astrid_runtime.cli import main
-sys.exit(main(['run', '--profile', 'astrid', '--data-root', '/astrid data', '--source-manifest', '/astrid/versions/v1/profile.json']))</string>
+		<string>-m</string>
+		<string>astrid_runtime</string>
+		<string>run</string>
+		<string>--profile</string>
+		<string>astrid</string>
+		<string>--data-root</string>
+		<string>/astrid data</string>
+		<string>--source-manifest</string>
+		<string>/astrid/versions/v1/profile.json</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
