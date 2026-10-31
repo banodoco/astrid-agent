@@ -1019,7 +1019,9 @@ def _legacy_ack_entry(timeline, body, *, key="flight-idempotency-key", **changes
         "publisher": "actor-1",
         "receipt": {"receipt_id": "pub-history", "idempotency_key": key,
                     "request_hash": digest, "command_kind": "timeline.commit",
-                    "project_id": "project"},
+                    "project_id": "project",
+                    "result": {"status": "accepted", "publisher": "actor-1",
+                               "accepted_revision_id": "r3"}},
     }
     entry.update(changes)
     return entry
@@ -1067,7 +1069,8 @@ def test_legacy_ack_without_pending_part_requires_exact_saved_request_and_receip
 @pytest.mark.parametrize("damage", [
     "ambiguous_parts", "ambiguous_receipts", "request_mismatch", "request_hash_mismatch",
     "receipt_key_mismatch", "receipt_owner_mismatch", "receipt_type_mismatch",
-    "receipt_project_mismatch", "publication_mismatch",
+    "receipt_project_mismatch", "publication_mismatch", "result_status_mismatch",
+    "result_publisher_mismatch", "result_revision_mismatch",
 ])
 def test_legacy_ack_without_pending_part_refuses_ambiguous_or_mismatched_evidence(
     monkeypatch, tmp_path, damage,
@@ -1096,6 +1099,12 @@ def test_legacy_ack_without_pending_part_refuses_ambiguous_or_mismatched_evidenc
         entry["receipt"]["project_id"] = "another-project"
     elif damage == "publication_mismatch":
         entry["receipt"]["receipt_id"] = "different-publication"
+    elif damage == "result_status_mismatch":
+        entry["receipt"]["result"]["status"] = "conflict"
+    elif damage == "result_publisher_mismatch":
+        entry["receipt"]["result"]["publisher"] = "actor-2"
+    elif damage == "result_revision_mismatch":
+        entry["receipt"]["result"]["accepted_revision_id"] = "r4"
     before = copy.deepcopy(timeline.session.state["pending_changes"]["pc_saved"])
     monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, entries))
 
