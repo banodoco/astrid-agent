@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from ._common import PARENT_SHOT, TimelineEditError
 from .checkout import Checkout
-from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _pending_clash, _pin
+from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _enrich_pending_diff, _pending_clash, _pin
 
 
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
@@ -1056,6 +1056,8 @@ class Timeline(Checkout):
         if len(matches) > 1:
             raise TimelineEditError(f"pending key {ref!r} is ambiguous; use a pending id")
         path, record = matches[0]
+        if path == self.session.outbox.path and record.get("state") == "pending" and record.get("diff") is None:
+            record = _enrich_pending_diff(self.session, record)
         if (path == self.session.outbox.path and record.get("state") == "pending"
                 and (record.get("failure", {}).get("details") or {}).get("status") == "conflict"
                 and (not record.get("clash") or record["clash"].get("receipts") is None)):

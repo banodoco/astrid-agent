@@ -1382,6 +1382,96 @@ def test_runtime_multipart_conflict_retries_prefix_and_suffix_across_reopens(
     assert reopened.clip("multipart-target").at == pytest.approx(7)
 
 
+def test_runtime_part_advance_clears_predecessor_conflict_before_same_value_suffix(
+    editing_case, tmp_path, monkeypatch,
+):
+    daemon, client, project, timeline = editing_case
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "multipart-same-value-data"))
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid_runtime_client import ApiError
+
+    source = _media_file(tmp_path / "multipart-same-value-target.png")
+    timeline.commit(
+        lambda t: t.add(source, at=0, hold=3, track="V1", id="multipart-same-value-target"),
+        label="Seed multipart same-value target", key="multipart-same-value-seed",
+    )
+    preview = timeline.commit(
+        lambda t: t.move("parent/clip:multipart-same-value-target", on=5),
+        label="Multipart same-value prefix", dry_run=True,
+    )
+    prefix = preview["data"]["commands"]
+    generated = client._remote._transport._generated
+    original = generated.commit_timeline
+
+    def refuse_prefix(project_id, timeline_id, body, **kwargs):
+        if body.get("label") == "Multipart same-value prefix":
+            raise ApiError(409, "conflict", "injected multipart conflict", details={
+                "status": "conflict", "reason": "value_conflict",
+                "conflicts": [{"ref": "parent/clip:multipart-same-value-target", "path": ["at"]}],
+                "current": dict(timeline.head),
+            })
+        return original(project_id, timeline_id, body, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", refuse_prefix)
+    with pytest.raises(CommitConflict) as caught:
+        timeline.commit(prefix, label="Multipart same-value prefix", key="multipart-same-value-prefix")
+    pending_id = caught.value.pending_id
+    assert pending_id
+
+    path = timeline.session.outbox.path
+    _, peer = _actor(
+        daemon, project, tmp_path, "multipart-same-value-peer",
+        outbox=tmp_path / "multipart-same-value-peer.json",
+    )
+    peer_result = peer.commit(
+        lambda t: t.move("parent/clip:multipart-same-value-target", on=5),
+        label="Peer lands multipart prefix value", key="multipart-same-value-peer",
+    )
+    assert peer_result["receipt"]["receipt_id"]
+
+    suffix_timeline = Timeline.open(
+        project, "film", client=client, outbox_path=tmp_path / "multipart-suffix-capture.json",
+    )
+    suffix = suffix_timeline.session.queue_move("parent/clip:multipart-same-value-target", 7)
+    with timeline.session.outbox.locked():
+        state = timeline.session._state()
+        record = state["pending_changes"][pending_id]
+        suffix_part = copy.deepcopy(record["parts"][0])
+        suffix_part["commands"] = [suffix]
+        record["parts"].append(suffix_part)
+        timeline.session.outbox.write(state)
+    assert [part["commands"] for part in timeline.pending_show(pending_id)["parts"]] == [
+        prefix, [suffix],
+    ]
+
+    monkeypatch.setattr(generated, "commit_timeline", original)
+    reopened = Timeline.open(project, "film", client=client, outbox_path=path)
+    advanced = reopened.retry(pending_id)
+    assert advanced["status"] == "part_landed", advanced
+    after_prefix = reopened.pending_show(pending_id)
+    assert after_prefix["state"] == "pending"
+    assert after_prefix["part"] == 1
+    assert after_prefix["failure"] == {}
+    assert after_prefix["head"] is None
+    assert after_prefix["diff"]
+    assert any(change.get("value") == 7 for change in after_prefix["diff"])
+    assert not any(change.get("value") == 5 for change in after_prefix["diff"])
+    assert "clash" not in after_prefix
+    assert after_prefix["parts"][1]["commands"] == [suffix]
+
+    suffix_preview = reopened.retry(pending_id)
+    assert suffix_preview["status"] == "preview", suffix_preview
+    landed = reopened.commit(suffix_preview)
+    assert landed["status"] in {"accepted", "merged", "landed"}
+    final = reopened.pending_show(pending_id)
+    assert final["state"] == "landed"
+    assert len(final["receipts"]) == 2
+    assert len(set(final["receipts"])) == 2
+    assert reopened.clip("multipart-same-value-target").at == pytest.approx(7)
+
+
 def test_cross_actor_history_recovers_saved_part_during_delayed_ack(
     editing_case, tmp_path, monkeypatch,
 ):

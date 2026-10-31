@@ -802,6 +802,105 @@ def test_pending_show_retries_missing_packet_enrichment(connected, monkeypatch):
     assert calls == [record["id"]]
 
 
+@pytest.mark.parametrize("field", ["diff", "clash"])
+def test_delayed_pending_enrichment_is_discarded_after_part_advances(connected, monkeypatch, field):
+    from astrid.sdk.timeline import sync
+
+    session = open_session(connected)
+    first = {"base": {"revision_id": "r0", "publication_id": "pub0"},
+             "commands": [capture_move(initial_bundle(), "parent/clip:a", 5)]}
+    suffix = {"base": copy.deepcopy(first["base"]),
+              "commands": [capture_move(initial_bundle(), "parent/clip:b", 8)]}
+    record = {"id": "pc_delayed", "state": "pending", "rev": 1, "attempts": 1,
+              "part": 0, "parts": [first, suffix], "receipts": [], "diff": None}
+    with session.outbox.locked():
+        state = session._state()
+        state["pending_changes"] = {record["id"]: copy.deepcopy(record)}
+        session.outbox.write(state)
+    stale = copy.deepcopy(record)
+    enrichment = ([{"path": "clips/a/at", "before": 0, "after": 5}] if field == "diff"
+                  else {"schema": "astrid.clash/2", "summary": "stale", "receipts": []})
+
+    def advance_part(*args):
+        with session.outbox.locked():
+            state = session._state()
+            saved = state["pending_changes"][record["id"]]
+            assert sync._settle_pending(
+                saved, expected_part=0, actor_id="actor", publication_id="pub1",
+                how="retry", base={"revision_id": "r1", "publication_id": "pub1"},
+            )
+            session.outbox.write(state)
+        return enrichment
+
+    if field == "diff":
+        monkeypatch.setattr(sync, "_pending_diff", advance_part)
+        result = sync._enrich_pending_diff(session, stale)
+    else:
+        from astrid.sdk.timeline import clash
+
+        monkeypatch.setattr(clash, "explain", advance_part)
+        result = sync._pending_clash(session, stale)
+
+    saved = json.loads(session.outbox.path.read_bytes())["pending_changes"][record["id"]]
+    assert saved["part"] == 1
+    assert saved["parts"][1]["base"] == {"revision_id": "r1", "publication_id": "pub1"}
+    assert saved["diff"] is None
+    assert "clash" not in saved
+    assert result["part"] == 1
+    assert result.get(field) is None
+
+
+@pytest.mark.parametrize("field", ["diff", "clash"])
+def test_delayed_pending_enrichment_preserves_replacement_of_same_part(connected, monkeypatch, field):
+    from astrid.sdk.timeline import sync
+
+    session = open_session(connected)
+    original = {"base": {"revision_id": "r0", "publication_id": "pub0"},
+                "commands": [capture_move(initial_bundle(), "parent/clip:a", 5)]}
+    record = {"id": "pc_replaced", "state": "pending", "rev": 1, "attempts": 1,
+              "part": 0, "parts": [original], "receipts": [], "diff": None}
+    with session.outbox.locked():
+        state = session._state()
+        state["pending_changes"] = {record["id"]: copy.deepcopy(record)}
+        session.outbox.write(state)
+    stale = copy.deepcopy(record)
+    stale_enrichment = ([{"path": "clips/a/at", "before": 0, "after": 5}] if field == "diff"
+                        else {"schema": "astrid.clash/2", "summary": "stale", "receipts": []})
+    current_enrichment = ([{"path": "clips/a/at", "before": 0, "after": 6}] if field == "diff"
+                          else {"schema": "astrid.clash/2", "summary": "replacement", "receipts": []})
+    replacement = copy.deepcopy(original)
+    replacement["commands"] = [capture_move(initial_bundle(), "parent/clip:a", 6)]
+
+    def replace_same_part(*args):
+        with session.outbox.locked():
+            state = session._state()
+            saved = state["pending_changes"][record["id"]]
+            saved["parts"][0] = replacement
+            saved["attempts"] += 1
+            saved["rev"] += 1
+            saved[field] = copy.deepcopy(current_enrichment)
+            session.outbox.write(state)
+        return stale_enrichment
+
+    if field == "diff":
+        monkeypatch.setattr(sync, "_pending_diff", replace_same_part)
+        result = sync._enrich_pending_diff(session, stale)
+    else:
+        from astrid.sdk.timeline import clash
+
+        monkeypatch.setattr(clash, "explain", replace_same_part)
+        result = sync._pending_clash(session, stale)
+
+    saved = json.loads(session.outbox.path.read_bytes())["pending_changes"][record["id"]]
+    assert saved["rev"] == stale["rev"] + 1
+    assert sync._part_identity(saved) != sync._part_identity(stale)
+    for observed in (saved, result):
+        assert observed["part"] == 0
+        assert observed["attempts"] == 2
+        assert observed["parts"][0] == replacement
+        assert observed[field] == current_enrichment
+
+
 @pytest.mark.parametrize(("status", "reason"), [("refused", "policy"), ("invalid", "bad_command")])
 def test_final_refusal_releases_flight_and_saves_pending_edit(connected, status, reason):
     session = open_session(connected)

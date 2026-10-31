@@ -622,6 +622,88 @@ def test_function_retry_preserves_caller_reads_and_explicit_atomic(tmp_path):
     assert request["steps"] == part["commit_options"]["steps"]
 
 
+def test_pending_show_retries_diff_enrichment_after_transient_failure(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    record = timeline.session.state["pending_changes"]["pc_saved"]
+    record["diff"] = None
+    record["failure"]["details"]["status"] = "refused"
+    attempts = []
+
+    def pending_diff(_session, _record):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary snapshot read failure")
+        return [{"op": "set", "ref": "parent/clip:a", "path": ["at"], "value": 4}]
+
+    from astrid.sdk.timeline import commit_session, sync
+
+    monkeypatch.setattr(sync, "_pending_diff", pending_diff)
+    first = commit_session.Timeline.pending_show(timeline, "pc_saved")
+
+    assert first["diff"] is None
+    assert timeline.session.state["pending_changes"]["pc_saved"]["diff"] is None
+
+    recovered = commit_session.Timeline.pending_show(timeline, "pc_saved")
+
+    assert recovered["diff"] == [
+        {"op": "set", "ref": "parent/clip:a", "path": ["at"], "value": 4}]
+    assert timeline.session.state["pending_changes"]["pc_saved"]["diff"] == recovered["diff"]
+    assert len(attempts) == 2
+
+
+def test_retry_same_value_conflict_uses_current_part_and_preserves_suffix(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    record = timeline.session.state["pending_changes"]["pc_saved"]
+    first_part = copy.deepcopy(record["parts"][0])
+    current_part = copy.deepcopy(first_part)
+    current_part["base"] = {"revision_id": "r3", "publication_id": "pub-prior"}
+    current_part["commands"] = [{"op": "clip.move", "select": "clip:a", "args": {"on": 8}}]
+    suffix = copy.deepcopy(current_part)
+    suffix["commands"] = [{"op": "clip.move", "select": "clip:b", "args": {"on": 10}}]
+    record["parts"] = [first_part, current_part, suffix]
+    record["part"] = 1
+    record["receipts"] = ["pub-prior"]
+    record["failure"]["details"]["status"] = "conflict"
+    record["failure"]["details"]["conflicts"] = [
+        {"ref": "parent/clip:a", "path": ["at"]}]
+    record["diff"] = [
+        {"op": "set", "ref": "parent/clip:a", "path": ["at"], "value": 8}]
+    entry = {"publication_id": "pub-peer", "revision_id": "r4", "publisher": "actor-2",
+             "receipt": {"receipt_id": "receipt-peer"}}
+    packet = {"receipts": [{"publication_id": "pub-peer", "publisher": "actor-2",
+                             "touches_conflict": True}]}
+
+    history_bases = []
+
+    def history(_session, base):
+        history_bases.append(base)
+        return HEAD, [entry]
+
+    monkeypatch.setattr(retry_module.clash, "_history", history)
+    monkeypatch.setattr(retry_module.clash, "_closures", lambda *args: (
+        SimpleNamespace(), SimpleNamespace(images={"parent": {"payload": {}}})))
+    monkeypatch.setattr(retry_module, "canonical_site",
+                        lambda _closure, ref, path: ("parent", [ref, *path]))
+    monkeypatch.setattr(retry_module, "value_at", lambda *_args:
+                        {"state": "present", "value": 8})
+    monkeypatch.setattr(retry_module.clash, "_target", lambda *_args: "clip a start time")
+    monkeypatch.setattr(retry_module.clash, "explain", lambda *args: copy.deepcopy(packet))
+    probe_calls = []
+    monkeypatch.setattr(retry_module, "_probe", lambda *args: probe_calls.append(args))
+
+    result = retry_module.retry(timeline, "pc_saved")
+
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert result["status"] == "part_landed"
+    assert result["data"] == {"publication_id": "pub-peer", "part": 2}
+    assert saved["state"] == "pending"
+    assert saved["part"] == 2
+    assert saved["parts"][2] == suffix
+    assert saved["receipts"] == ["pub-prior", "receipt-peer"]
+    assert history_bases[-1] == {"revision_id": "r3", "publication_id": "pub-prior"}
+    assert probe_calls == []
+
+
 def test_explicit_atomic_function_commit_stays_atomic_without_reads(tmp_path):
     record = _record()
     part = record["parts"][0]
