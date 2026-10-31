@@ -883,7 +883,10 @@ def test_held_reconcile_uncertain_operation_blocks_every_new_start(tmp_path, mon
         def wait(job, timeout):
             if job["id"] != target.get("id") or fault != "timeout":
                 return original_wait(job, timeout)
-            ticks = iter((0.0, 2.0))
+            # Admission now also tightens the transport caller deadline. Keep
+            # its monotonic epoch real and provide ticks for those checks too.
+            epoch = ps.time.monotonic()
+            ticks = iter(epoch + tick * 2 for tick in range(20))
             with monkeypatch.context() as patch:
                 patch.setattr(ps, "time", Namespace(time=ps.time.time,
                                                     monotonic=lambda: next(ticks)))
@@ -894,6 +897,8 @@ def test_held_reconcile_uncertain_operation_blocks_every_new_start(tmp_path, mon
                 control.run_held(command=command)
         else:
             assert control.run_held(command=command) == 1
+        if fault == "timeout":
+            assert any("did not exit within 1 s" in message for message in control.test_messages)
 
         held = json.loads(held_path.read_text())
         assert target.get("id"), control.test_messages
@@ -1092,28 +1097,28 @@ def test_held_reconcile_progress_start_response_loss_keeps_exact_operation(tmp_p
         progress_before = progress_path.read_bytes()
         packets_before = _packet_snapshot(session.workdir)
         transport = pod.transport
-        original_start, original_poll = transport.detached_start, transport.detached_poll
+        original_put, original_get = transport.put, transport.get
         target = {}
-        def start(command, *, root, job_id=None, launch_timeout=60):
+        def put(local, remote, **kwargs):
             durable = json.loads(held_path.read_text())
-            assert durable["operation"]["id"] == job_id
-            job = original_start(command, root=root, job_id=job_id, launch_timeout=launch_timeout)
-            if durable["operation"]["label"] == "progress":
-                target["id"] = job_id
-                raise TimeoutError("fixture progress response lost after remote launch")
-            return job
-        def poll(job_id, *, root):
-            if job_id == target.get("id"):
-                return {"id":job_id, "dir":root + "/" + job_id, "state":"running", "exit_code":None}
-            return original_poll(job_id, root=root)
-        monkeypatch.setattr(transport, "detached_start", start)
-        monkeypatch.setattr(transport, "detached_poll", poll)
+            assert durable["operation"]["label"] == "progress-put"
+            target["operation"] = durable["operation"]
+            original_put(local, remote, **kwargs)
+            raise TimeoutError("fixture progress response lost after atomic PUT")
+        def get(remote, local, **kwargs):
+            if remote == ps.PROGRESS_REMOTE and target:
+                raise TimeoutError("fixture publication readback remains unavailable")
+            return original_get(remote, local, **kwargs)
+        monkeypatch.setattr(transport, "put", put)
+        monkeypatch.setattr(transport, "get", get)
         control = held_control(session, pod, cli, transport_factory, command="printf followed-up")
         assert control.run_held(command="printf followed-up") == 1
         held = json.loads(held_path.read_text())
-        assert target.get("id"), control.test_messages
+        assert target.get("operation"), control.test_messages
         assert held["status"] == "in_use" and held["jobs"] == before["jobs"]
-        assert held["operation"] == {"id":target["id"], "label":"progress", "state":"starting", "exit_code":None}
+        assert held["operation"] == target["operation"]
+        assert held["operation"]["state"] == "starting" and held["operation"]["exit_code"] is None
+        assert held["charged_jobs"] - before.get("charged_jobs", before["jobs"]) == 3
         assert held["charged_jobs"] == control.budget.count == pod.record_count
         assert progress_path.read_bytes() == progress_before and _packet_snapshot(session.workdir) == packets_before
         records_before = pod.record_count
@@ -1846,17 +1851,17 @@ def test_source_bound_installer_then_h3_held_accounting(tmp_path, monkeypatch, f
         assert control.budget.count - held_before.get("charged_jobs", held_before["jobs"]) == len(labels)
         progress = json.loads((session.workdir / "held-session-joblist-progress.json").read_text())
         if failure is None:
-            expected = ["storage mount verification", "Runtime readiness", "progress", "job:recover", "progress",
-                        "progress", "h3:clip:s0", "progress", "job:clip", "progress", "remote sha256", "progress", "progress"]
+            expected = ["storage mount verification", "Runtime readiness", "job:recover",
+                        "h3:clip:s0", "job:clip", "remote sha256"]
             assert labels == expected
-            assert pod.record_count - before == len(labels) == 13
-            assert 86 + len(labels) == 99 < 100
+            assert pod.record_count - before == len(labels) == 6
+            assert 86 + len(labels) == 92 < 100
             assert held["status"] == "held" and progress == json.loads(
                 (session.workdir / "pod-session-progress.remote.json").read_text())
             assert [argv[:2] for argv in invocations] == [["engines", "install"], ["action", "run"], ["action", "run"]]
             assert json.loads((session.workdir / "packets/recover/machine-check.json").read_text())["status"] == "passed"
             print(json.dumps({"records": len(labels), "labels": labels, "charged_before_projection": 86,
-                              "charged_after_projection": 99, "remaining_before_strict_cap": 0}, sort_keys=True))
+                              "charged_after_projection": 92, "remaining_before_strict_cap": 7}, sort_keys=True))
         else:
             assert len(invocations) == 1 and "h3:clip:s0" not in labels
             assert any(r["step"] == "job:recover" and r["result"] == "failed" for r in progress["steps"])

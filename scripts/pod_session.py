@@ -679,12 +679,28 @@ class Session:
                         if k not in ("RUNPOD_STORAGE_NAME", "RUNPOD_STORAGE_VOLUMES", "RUNPOD_ATTACH_ONLY")}
 
     # -- agent jobs ---------------------------------------------------------------------------
+    def _require_held_admission(self, doc: dict | None = None) -> float:
+        """Bound existing custody; expiry never grants reconciliation or new work."""
+        doc = self._held_doc if doc is None else doc
+        now = time.time()
+        if doc is None or not now < doc["expires_at"] <= now + 3600:
+            raise SessionError("held state: admission expired or stale; custody requires supported recovery")
+        remaining = doc["expires_at"] - now
+        if self.transport is not None:
+            # Existing HTTPS transport supports a caller deadline for requests,
+            # route retries and upload verification. Never lengthen its bound.
+            deadline = time.monotonic() + remaining
+            prior = getattr(self.transport, "deadline", None)
+            self.transport.deadline = deadline if prior is None else min(prior, deadline)
+        return remaining
+
     def _persist_held_operation(self) -> None:
         self._write_held(self._held_doc)
         if self._read_held() != self._held_doc:
             raise SessionError("held state: operation publication differs")
 
     def _reserve_held_job(self, label: str) -> str:
+        self._require_held_admission()
         doc = self._held_doc
         prior = doc["operation"]
         if prior is not None and prior["state"] != "exited":
@@ -701,6 +717,7 @@ class Session:
     def _observe_held_terminal(self, job: dict, state: dict) -> bool:
         if self._held_doc is None:
             return False
+        self._require_held_admission()
         operation = self._held_doc["operation"]
         if (not isinstance(state, dict) or state.get("id") != job["id"]
                 or state.get("dir") != JOB_ROOT + "/" + job["id"]
@@ -713,9 +730,15 @@ class Session:
         return True
 
     def _reconcile_held_operation(self) -> bool:
+        self._require_held_admission()
         operation = self._held_doc["operation"]
         if operation is None:
             return False
+        if operation["label"] == "progress-put":
+            # A later invocation may prove publication by reading its pinned
+            # bytes. It must never replay an interrupted or uncertain PUT.
+            self._verify_held_progress_put()
+            return True
         # Even a saved terminal receipt is corroborated on a later invocation.
         # Missing/starting/running/cancelled are all uncertain. Cancellation's
         # shell writes its marker without verifying process-group death.
@@ -749,8 +772,12 @@ class Session:
         return text
 
     def wait_job(self, job: dict, timeout: float) -> int:
+        if self._held_doc is not None:
+            timeout = min(timeout, self._require_held_admission())
         deadline, errors = time.monotonic() + timeout, 0
         while True:
+            if self._held_doc is not None:
+                self._require_held_admission()
             try:
                 state = self.transport.detached_poll(job["id"], root=JOB_ROOT)
                 errors = 0
@@ -770,7 +797,10 @@ class Session:
                 raise SessionError(f"job {job['id']} was cancelled")
             if time.monotonic() >= deadline:
                 raise SessionError(f"job {job['id']} did not exit within {int(timeout)} s")
-            self.sleep(self.args.poll_interval)
+            interval = self.args.poll_interval
+            if self._held_doc is not None:
+                interval = min(interval, self._require_held_admission(), max(0, deadline - time.monotonic()))
+            self.sleep(interval)
 
     def run_job(self, label: str, command: str, timeout: float, *, want_stdout: bool = False,
                 strict_fetch: bool = False) -> tuple[int, str, dict]:
@@ -1310,22 +1340,20 @@ class Session:
                             "claim_attempt": self.state.get("claim_attempt")}, indent=2, sort_keys=True) + "\n").encode()
 
     def write_progress(self, *, strict: bool) -> None:
+        if self._held_doc is not None and self.transport is not None and not self.released:
+            try:
+                self._put_held_progress()
+            except Exception:
+                if strict:
+                    raise
+            return
         local = self.workdir / "pod-session-progress.json"
         local.write_bytes(self.progress_document())
         if self.transport is None or self.released:
             return
         try:
-            if self._held_doc is not None:
-                # Generate progress after reserving its own charged record.
-                job_id = self._reserve_held_job("progress")
-                job = self.transport.detached_start(progress_script(self.progress_document()),
-                                                    root=JOB_ROOT, job_id=job_id)
-                if (not isinstance(job, dict) or job.get("id") != job_id
-                        or job.get("dir") != JOB_ROOT + "/" + job_id):
-                    raise SessionError("held state: progress launch identity differs")
-            else:
-                self.budget.charge("progress")  # the progress job counts itself in the document
-                job = self.transport.detached_start(progress_script(self.progress_document()), root=JOB_ROOT)
+            self.budget.charge("progress")  # the progress job counts itself in the document
+            job = self.transport.detached_start(progress_script(self.progress_document()), root=JOB_ROOT)
             if self.wait_job(job, 300) != 0:
                 raise SessionError(f"progress: job {job['id']} failed")
             self.transport.get(PROGRESS_REMOTE, self.workdir / "pod-session-progress.remote.json")
@@ -1333,6 +1361,84 @@ class Session:
         except Exception:
             if strict:
                 raise
+
+    def _put_held_progress(self) -> None:
+        """Use the existing authenticated atomic upload, without a job charge."""
+        self._require_held_admission()
+        doc = self._held_doc
+        prior = doc["operation"]
+        if prior is not None and prior["state"] != "exited":
+            raise SessionError("held state: prior operation needs terminal proof")
+        if self.budget.count != doc["charged_jobs"]:
+            raise SessionError("held state: progress charge evidence differs")
+        data = self.progress_document()
+        operation = {"id": secrets.token_hex(16), "label": "progress-put", "state": "starting",
+                     "exit_code": None, "progress_sha256": hashlib.sha256(data).hexdigest()}
+        filename = f"held-session-progress-put-{operation['id']}.json"
+        # Pin and fsync the exact candidate before publishing durable transport
+        # intent. A crash can lose neither its identity nor its bytes.
+        self._preserve_held_progress(data, filename=filename)
+        doc.update(status="in_use", operation=operation)
+        self._persist_held_operation()
+        self._require_held_admission()
+        # The lifecycle server validates the digest, writes a same-directory
+        # temporary and replaces the destination atomically (reserved=False).
+        self.transport.put(self.workdir / filename, PROGRESS_REMOTE)
+        self._require_held_admission()
+        self._verify_held_progress_put()
+
+    def _verify_held_progress_put(self) -> None:
+        self._require_held_admission()
+        doc, operation = self._held_doc, self._held_doc["operation"]
+        candidate = self.workdir / f"held-session-progress-put-{operation['id']}.json"
+        data = self._read_held_evidence(candidate)
+        progress = self._held_json(data)
+        if (hashlib.sha256(data).hexdigest() != operation["progress_sha256"]
+                or not isinstance(progress, dict)
+                or progress.get("schema") != "astrid.pod-session-progress.v1"
+                or progress.get("session") != doc["session"] or progress.get("pod_id") != doc["pod_id"]
+                or type(progress.get("jobs")) is not int or progress["jobs"] != doc["charged_jobs"]
+                or not isinstance(progress.get("steps"), list)):
+            raise SessionError("held state: pinned progress publication differs")
+        readback = candidate.with_suffix(".remote.json")
+        self.transport.get(PROGRESS_REMOTE, readback)
+        self._require_held_admission()
+        remote = self._read_held_evidence(readback)
+        if (hashlib.sha256(remote).hexdigest() != operation["progress_sha256"] or remote != data):
+            raise SessionError("held state: authenticated progress readback differs")
+        # Leave custody in_use until both verified local copies and the terminal
+        # operation receipt are durable. A failed local commit needs later proof.
+        self._preserve_held_progress(data, filename="pod-session-progress.remote.json")
+        self._preserve_held_progress(data, filename="pod-session-progress.json")
+        self.records = progress["steps"]
+        for key in ("storage_diagnostic", "claim_attempt"):
+            self.state[key] = progress.get(key)
+        self._require_held_admission()
+        starting = dict(operation, state="starting", exit_code=None)
+        operation.update(state="exited", exit_code=0)
+        try:
+            self._persist_held_operation()
+        except BaseException:
+            doc["operation"] = starting
+            raise
+
+    @staticmethod
+    def _valid_held_operation(operation: Any) -> bool:
+        keys = {"id", "label", "state", "exit_code"}
+        if not isinstance(operation, dict):
+            return False
+        progress = operation.get("label") == "progress-put"
+        if (set(operation) != (keys | {"progress_sha256"} if progress else keys)
+                or not isinstance(operation["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", operation["id"])
+                or not isinstance(operation["label"], str) or not operation["label"]
+                or operation["state"] not in ("starting", "exited")
+                or (operation["state"] == "starting" and operation["exit_code"] is not None)
+                or (operation["state"] == "exited" and (type(operation["exit_code"]) is not int
+                                                         or not 0 <= operation["exit_code"] <= 255))):
+            return False
+        return not progress or (isinstance(operation["progress_sha256"], str)
+                                and re.fullmatch(r"[0-9a-f]{64}", operation["progress_sha256"]) is not None
+                                and (operation["state"] != "exited" or operation["exit_code"] == 0))
 
     # -- driver -------------------------------------------------------------------------------
     def record(self, step: str, result: str, detail: Any) -> None:
@@ -1594,16 +1700,13 @@ class Session:
             operation = doc["operation"]
             if (type(doc["charged_jobs"]) is not int or not doc["jobs"] <= doc["charged_jobs"] < JOB_LIMIT
                     or (operation is not None and (
-                        not isinstance(operation, dict)
-                        or set(operation) != {"id", "label", "state", "exit_code"}
-                        or not isinstance(operation["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", operation["id"])
-                        or not isinstance(operation["label"], str) or not operation["label"]
-                        or operation["state"] not in ("starting", "exited")
-                        or (operation["state"] == "starting" and operation["exit_code"] is not None)
-                        or (operation["state"] == "exited" and (type(operation["exit_code"]) is not int
-                                                               or not 0 <= operation["exit_code"] <= 255))
+                        not self._valid_held_operation(operation)
                         or (doc["status"] == "held" and operation["state"] != "exited")))):
                 raise SessionError("held state: malformed operation or charged-job count")
+            if (operation is not None and operation["label"] == "progress-put" and doc["status"] == "held"
+                    and (operation["progress_sha256"] != doc["progress_sha256"]
+                         or doc["jobs"] != doc["charged_jobs"])):
+                raise SessionError("held state: completed progress receipt differs")
         return doc
 
     def _read_held_evidence(self, path: Path) -> bytes:
@@ -1692,14 +1795,9 @@ class Session:
                     or not previous_jobs <= event["charged_jobs"] <= doc["charged_jobs"]):
                 raise SessionError("held state: malformed list failure ledger")
             operation = event["operation"]
-            if (not isinstance(operation, dict) or set(operation) != {"id", "label", "state", "exit_code"}
-                    or not isinstance(operation["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", operation["id"])
+            if (not self._valid_held_operation(operation)
                     or event["job_id"] != operation["id"]
-                    or not isinstance(operation["label"], str) or not operation["label"]
-                    or operation["state"] not in ("starting", "exited")
-                    or (operation["state"] == "starting" and (operation["exit_code"] is not None or event["retryable"]))
-                    or (operation["state"] == "exited" and (type(operation["exit_code"]) is not int
-                                                             or not 0 <= operation["exit_code"] <= 255))):
+                    or (operation["state"] == "starting" and event["retryable"])):
                 raise SessionError("held state: malformed list failure operation")
             previous_jobs = event["charged_jobs"]
 
@@ -1736,6 +1834,7 @@ class Session:
             try:
                 doc = self._read_held()
                 now = time.time()
+                self._require_held_admission(doc)
                 if (doc["status"] != "held" or doc["expires_at"] <= now
                         or doc["expires_at"] > now + 3600
                         or Path(self.args.token_dir).resolve() != Path(doc["token_dir"])
@@ -1773,9 +1872,11 @@ class Session:
                 old_doc = doc.copy()
                 doc["expires_at"] = now + 3600
                 try:
+                    self._require_held_admission(old_doc)
                     self._write_held(doc)
                     if self._read_held() != doc:
                         raise SessionError("held state: renewed document verification failed")
+                    self._require_held_admission(old_doc)
                 except BaseException:
                     # If publication failed after replacement, make a best-effort durable
                     # restoration. Never delete held custody on this path.
@@ -1860,6 +1961,7 @@ class Session:
             raise SessionError("held state: original progress could not be restored")
 
     def _restore_held_retry(self, original_progress: bytes) -> None:
+        self._require_held_admission()
         doc = self._held_doc
         if doc["operation"] is None or doc["operation"]["state"] != "exited":
             raise SessionError("held state: terminal proof is required for retry")
@@ -1867,6 +1969,7 @@ class Session:
         doc["status"] = "held"
         try:
             self._persist_held_operation()
+            self._require_held_admission()
         except BaseException:
             doc["status"] = "in_use"
             self._persist_held_operation()
@@ -1874,6 +1977,7 @@ class Session:
 
     def _finish_held_progress(self, *, job_list: bool = False) -> None:
         """Publish verified follow-up evidence without changing admission or identity."""
+        self._require_held_admission()
         progress_path = self.workdir / "pod-session-progress.json"
         remote_path = self.workdir / "pod-session-progress.remote.json"
         if remote_path.read_bytes() != progress_path.read_bytes():
@@ -1893,11 +1997,24 @@ class Session:
                 os.close(descriptor)
         completed_doc = dict(self._held_doc, status="held", jobs=self.budget.count,
                              progress_sha256=_file_sha256(progress_path))
-        self._write_held(completed_doc)
-        if self._read_held() != completed_doc:
-            raise SessionError("held state: completed follow-up publication differs")
+        self._require_held_admission()
+        try:
+            self._write_held(completed_doc)
+            if self._read_held() != completed_doc:
+                raise SessionError("held state: completed follow-up publication differs")
+            self._require_held_admission()
+        except BaseException:
+            # A failure after replace is still uncertain. Retain the original
+            # admission digest and operation so a later invocation must prove it.
+            self._held_doc["status"] = "in_use"
+            try:
+                self._persist_held_operation()
+            except Exception:
+                pass
+            raise
 
-    def run_held(self, command: str | None = None, *, job_list: bool = False) -> int:
+    def run_held(self, command: str | None = None, *, job_list: bool = False,
+                 publish_progress: bool = False) -> int:
         """One serialized, bounded follow-up, or an explicit verified release."""
         lock = self.workdir / ".held-session.lock"
         fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -1919,9 +2036,14 @@ class Session:
             self.sid, self.pod_id = doc["session"], doc["pod_id"]
             self.name = f"astrid-pod-session-{self.sid}"
             self.token_path = Path(doc["token_dir"]) / f"pod-session-{self.sid}.token"
+            if command is not None or job_list or publish_progress:
+                self._require_held_admission(doc)
+            if (publish_progress and doc["status"] == "in_use"
+                    and (doc.get("operation") or {}).get("label") != "progress-put"):
+                raise SessionError("held state: progress publication cannot bypass an uncertain job")
             self._verify_held_identity()
             custody_verified = True
-            if command is None and not job_list:
+            if command is None and not job_list and not publish_progress:
                 progress_path = self.workdir / "pod-session-progress.json"
                 try:
                     if _file_sha256(progress_path) == doc["progress_sha256"]:
@@ -1956,7 +2078,8 @@ class Session:
                     or Path(self.args.token_dir).resolve() != Path(doc["token_dir"])
                     or self.args.datacenters != [DATACENTER] or self.args.storage_name != STORAGE_NAME
                     or self.args.volume_gb != doc["volume_gb"]
-                    or (not job_list and (not command.strip() or not 1 <= self.args.followup_timeout <= 600))):
+                    or (not job_list and not publish_progress
+                        and (not command.strip() or not 1 <= self.args.followup_timeout <= 600))):
                 raise SessionError("held state: stale, incomplete or incompatible")
             if ("charged_jobs" not in doc
                     and (self.workdir / "held-session-followup-failures.jsonl").exists()):
@@ -1977,6 +2100,8 @@ class Session:
                     or json.loads((self.workdir / "source-identity.json").read_text()) != doc["source"]):
                 raise SessionError("held state: progress or source identity differs")
             self.records = progress["steps"]
+            for key in ("storage_diagnostic", "claim_attempt"):
+                self.state[key] = progress.get(key)
             self.budget.count = doc.get("charged_jobs", doc["jobs"])
             reconciling = doc["status"] == "in_use"
             if not reconciling:
@@ -1994,14 +2119,30 @@ class Session:
             self._persist_held_operation()
             from runpod_lifecycle.https import read_token_file
             self.transport = self.transport_factory(self.pod_id, read_token_file(self.token_path))
-            self.transport.wait_ready(timeout=600)
+            self.transport.wait_ready(timeout=min(600, self._require_held_admission()))
+            self._require_held_admission()
             if reconciling:
+                if json.loads(self.fetch(f"{SRC_DIR}/.pod-source.json")) != doc["source"]:
+                    raise SessionError("held state: transported source manifest differs")
                 if not self._reconcile_held_operation():
                     raise SessionError("held state: prior operation is not proven terminal")
                 self._record_held_failure("prior operation reconciled; command was not replayed", retryable=True)
-                self._restore_held_retry(original_progress)
+                if doc["operation"]["label"] == "progress-put":
+                    # Publish only the exact candidate just proven by GET. The
+                    # requested command/list is not admitted on this invocation.
+                    self._finish_held_progress(job_list=True)
+                else:
+                    self._restore_held_retry(original_progress)
                 self.say("HELD SESSION RECONCILED; terminal proof recorded; a later resume may retry")
                 return 1
+            if publish_progress:
+                if json.loads(self.fetch(f"{SRC_DIR}/.pod-source.json")) != doc["source"]:
+                    raise SessionError("held state: transported source manifest differs")
+                followup_started = True
+                self.write_progress(strict=True)
+                self._finish_held_progress()
+                self.say("HELD PROGRESS PUBLISHED; no charged job was started")
+                return 0
             storage = self.verify_storage(recipe_footprint_gb(), local_free_gb=20)
             if storage["volume_id"] != doc["volume_id"]:
                 raise SessionError("held state: volume identity differs")
@@ -2032,12 +2173,19 @@ class Session:
                         self._preserve_held_progress(self.progress_document(), filename="held-session-joblist-progress.json")
                     doc["status"] = "in_use"
                     self._persist_held_operation()
-                    terminal = (doc["operation"] is not None and doc["operation"]["state"] == "exited")
-                    if not terminal:
+                    progress_put = (doc["operation"] is not None
+                                    and doc["operation"]["label"] == "progress-put")
+                    terminal = (not progress_put and doc["operation"] is not None
+                                and doc["operation"]["state"] == "exited")
+                    if not terminal and not progress_put:
                         try:
                             terminal = self._reconcile_held_operation()
                         except Exception:
                             terminal = False
+                    try:
+                        self._require_held_admission()
+                    except SessionError:
+                        terminal = False
                     self._record_held_failure(detail, retryable=terminal)
                     if terminal:
                         if job_list:
@@ -2432,6 +2580,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="run a v1 job list (including selected-source h3-install) with fresh packet ids in existing held custody; never release")
     mode.add_argument("--release-held", action="store_true", help="terminate and verify the recorded held pod")
     mode.add_argument("--renew-held", action="store_true", help="extend a verified held admission without contacting the pod")
+    mode.add_argument("--publish-held-progress", action="store_true",
+                      help="atomically publish held progress by authenticated transfer, or reconcile its prior PUT; no job starts")
     p.add_argument("--hold-on-row-failure", action="store_true", help="hold a single-row session only after a recoverable row failure")
     p.add_argument("--followup-timeout", type=int, default=300, help="follow-up deadline in seconds (1–600)")
     p.add_argument("--asset-map", help="JSON map of request asset ids to local files")
@@ -2478,6 +2628,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     if args.renew_held:
         return session.renew_held()
+    if args.publish_held_progress:
+        return session.run_held(publish_progress=True)
     if args.resume_held_jobs:
         return session.run_held_jobs()
     if args.resume_held is not None or args.release_held:
