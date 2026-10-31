@@ -90,6 +90,123 @@ def test_function_retry_saves_explicit_read_conflicts_in_record_and_packet(
     assert any(row.get("touches_conflict") for row in packet["receipts"]), packet
 
 
+def test_explicit_read_change_after_refusal_requires_fresh_preview_before_commit(
+    editing_case, tmp_path, monkeypatch,
+):
+    daemon, client, project, timeline = editing_case
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "explicit-read-retry-data"))
+
+    from astrid.sdk.timeline import Timeline
+    from tests.editing_conformance.test_commit_runtime_m1 import open_client
+
+    _, credential = daemon.credentials.provision("explicit-read-retry-peer", [
+        "handshake", "projects:read", "projects:write", "objects:read", "objects:write",
+        "tasks:read", "tasks:write",
+    ])
+    peer_client = open_client(daemon, actor="explicit-read-retry-peer", credential=credential)
+    dependency = {"kind": "scope", "ref": "parent", "path": []}
+    generated = client._remote._transport._generated
+    original = generated.commit_timeline
+    peer_values = []
+
+    def advance_read_before_attempt(project_id, timeline_id, body, **kwargs):
+        if body.get("label") == "Function with explicit retry read":
+            value = f"Saved refusal peer {len(peer_values) + 1}"
+            peer = Timeline.open(
+                project, "film", client=peer_client,
+                outbox_path=tmp_path / f"explicit-retry-peer-{len(peer_values)}.json",
+            )
+            result = peer.commit(
+                lambda t, value=value: t.bundle["parent"].update({"name": value}),
+                label=value,
+                key=f"explicit-retry-peer-{len(peer_values)}",
+            )
+            assert result["receipt"]["receipt_id"]
+            peer_values.append(value)
+        return original(project_id, timeline_id, body, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", advance_read_before_attempt)
+    observed = []
+
+    def edit_from_read(t):
+        name = t.bundle["parent"]["name"]
+        observed.append(name)
+        t.bundle["parent"]["custom"] = {"derived_from": name}
+
+    with pytest.raises(CommitConflict) as caught:
+        timeline.commit(
+            edit_from_read,
+            label="Function with explicit retry read",
+            key="function-explicit-retry-read",
+            merge="fields",
+            reads=[dependency],
+        )
+    assert len(peer_values) == len(observed) == 3
+    pending_id = caught.value.pending_id
+    assert pending_id
+    saved = timeline.pending_show(pending_id)
+    assert saved["parts"][0]["commit_options"]["reads"] == [dependency]
+    assert saved["state"] == "pending"
+
+    peer = Timeline.open(
+        project, "film", client=peer_client, outbox_path=tmp_path / "explicit-retry-peer-after-refusal.json"
+    )
+    changed_value = "Read changed after saved refusal"
+    peer_result = peer.commit(
+        lambda t: t.bundle["parent"].update({"name": changed_value}),
+        label=changed_value,
+        key="explicit-retry-peer-after-refusal",
+    )
+    assert peer_result["receipt"]["receipt_id"]
+
+    reopened = Timeline.open(project, "film", client=client, outbox_path=timeline.session.outbox.path)
+    monkeypatch.setattr(generated, "commit_timeline", original)
+    retry_result = reopened.retry(pending_id)
+    assert retry_result["status"] == "re_derive"
+    assert retry_result["pending_id"] == pending_id
+    assert reopened.pending_show(pending_id)["state"] == "pending"
+
+    updated_observed = []
+
+    def derive_updated_edit(t):
+        name = t.bundle["parent"]["name"]
+        updated_observed.append(name)
+        t.bundle["parent"]["custom"] = {"derived_from": name}
+
+    preview = reopened.commit(
+        derive_updated_edit,
+        label="Function with explicit retry read",
+        dry_run=True,
+        merge="fields",
+        reads=[dependency],
+    )
+    assert preview["data"]["status"] == "preview"
+    assert updated_observed == [changed_value]
+    reviewed_commands = copy.deepcopy(preview["data"]["commands"])
+    assert reviewed_commands
+    assert any(command.get("op") == "doc.patch"
+               and any(change.get("ref") == "parent" and changed_value in json.dumps(change)
+                       for change in command.get("args", {}).get("changes", []))
+               for command in reviewed_commands)
+
+    committed = reopened.commit(
+        reviewed_commands,
+        label="Function with explicit retry read",
+        key="function-explicit-retry-read-rederived",
+        pending=pending_id,
+        merge="fields",
+        reads=[dependency],
+    )
+    assert committed["receipt"]["receipt_id"]
+    assert committed["data"]["status"] in {"accepted", "merged"}
+    assert committed["data"]["commands"] == reviewed_commands
+    current = Timeline.open(project, "film", client=client,
+                            outbox_path=tmp_path / "explicit-retry-landed.json")
+    assert current.bundle["parent"]["name"] == changed_value
+    assert current.bundle["parent"]["custom"] == {"derived_from": changed_value}
+    assert reopened.pending_show(pending_id)["state"] == "landed"
+
+
 def _record():
     return {"id": "pc_saved", "state": "pending", "key": "recut", "label": "Recut",
             "origin": "list", "part": 0, "attempts": 2,
