@@ -34,6 +34,16 @@ def test_tst_b1_windows_alias_returns_shared_driver_failure(monkeypatch):
     assert journey.main() == 1
 
 
+def test_m4_4a_backend_uses_windows_powershell_51_admission_route():
+    command = journey.powershell5_command(r"C:\Program Files\nodejs\node.exe",
+                                          ["-e", "process.exit(0)", r"C:\Pinokio\api\Astrid"])
+    assert command[:5] == ["powershell.exe", "-NoProfile", "-NonInteractive",
+                           "-ExecutionPolicy", "Bypass"]
+    assert "& 'C:\\Program Files\\nodejs\\node.exe'" in command[-1]
+    assert "process.exit(0)" in command[-1]
+    assert "pwsh" not in command[0].lower()
+
+
 @pytest.fixture
 def stub_installed_profile_binding(monkeypatch):
     monkeypatch.setattr(journey, "assert_installed_profile_binding", lambda: None)
