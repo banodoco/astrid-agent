@@ -93,12 +93,17 @@ def test_losing_multipart_retry_keeps_caller_suffix_after_winner_advances_part(
     assert peer_preview["_retry_path"] == str(outbox_path)
 
     winning = []
+    caller_suffix = []
     refused = ApiError(409, "refused", "losing multipart retry refused", details={
         "status": "refused", "reason": "injected_refusal",
     })
 
     def peer_wins_then_refuse_loser(*args, **kwargs):
         assert json.loads(outbox_path.read_text(encoding="utf-8"))["flight"] is not None
+        caller = Timeline.open(project, "film", client=client, outbox_path=outbox_path)
+        caller_suffix.append(caller.session.queue_move(
+            "parent/clip:multipart-race-target", 9,
+        ))
         winning.append(peer.commit(peer_preview))
         assert winning[0]["status"] == "part_landed"
         raise refused
@@ -115,6 +120,9 @@ def test_losing_multipart_retry_keeps_caller_suffix_after_winner_advances_part(
     assert saved["part"] == 1
     assert saved["receipts"] == [winning_receipt_id]
     assert [part["commands"] for part in saved["parts"]] == [[prefix], [suffix]]
+    assert state["pending"] == caller_suffix
+    assert len(caller_suffix) == 1
+    assert caller_suffix[0] != prefix and caller_suffix[0] != suffix
     assert loser["status"] == "part_landed"
     assert loser["record"]["receipts"] == [winning_receipt_id]
-    assert loser["data"]["receipt"] == {"receipt_id": winning_receipt_id}
+    assert loser["data"]["receipt"] == winning[0]["data"]["receipt"]
