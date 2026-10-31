@@ -366,7 +366,10 @@ def _cmd_list_recent(parsed: argparse.Namespace) -> int:
         listed = parsed.client.timelines.list(str(project_id))
         if not listed.ok:
             return print_result(listed, as_json=parsed.json)
-        for timeline in _list_rows(_follow_list_cursors(parsed, listed).data):
+        listed = _follow_list_cursors(parsed, listed)
+        if not listed.ok:
+            return print_result(listed, as_json=parsed.json)
+        for timeline in _list_rows(listed.data):
             ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
             if not ref:
                 continue

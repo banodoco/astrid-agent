@@ -184,6 +184,44 @@ def test_recent_all_projects_follows_project_cursor_pages(monkeypatch, capsys):
     assert "second  film-P-2" in output
 
 
+def test_recent_all_projects_surfaces_timeline_page_failure(monkeypatch, capsys):
+    class Projects:
+        def list(self, *, cursor=None, limit=50):
+            assert cursor is None
+            return DomainResult.success([[{"project_id": "P-1", "slug": "first"}], None])
+
+    class Timelines:
+        def list(self, project, *, cursor=None, **_kwargs):
+            assert project == "P-1"
+            if cursor is None:
+                return DomainResult.success([[{"timeline_id": "film", "name": "Film"}], "next"])
+            assert cursor == "next"
+            return DomainResult.failure(ErrorObject("unavailable", "later timeline page failed", {"cursor": cursor}))
+
+    monkeypatch.setattr(
+        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("revision lookup must not run")),
+    )
+    for as_json in (False, True):
+        parsed = SimpleNamespace(
+            client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
+            recent=True, all_projects=True, json=as_json, include_archived=False,
+        )
+        assert cli._cmd_list(parsed) == 1
+        captured = capsys.readouterr()
+        if as_json:
+            payload = json.loads(captured.out)
+            assert payload["ok"] is False
+            assert payload["error"] == {
+                "code": "unavailable",
+                "message": "later timeline page failed",
+                "details": {"cursor": "next"},
+            }
+        else:
+            assert "error unavailable: later timeline page failed" in captured.err
+            assert captured.out == ""
+
+
 def test_history_prints_the_head_and_says_earlier_revisions_cannot_be_listed(capsys):
     code = cli_history.run_history(_parsed(FakeTimelines(named=False)))
     out = capsys.readouterr().out.splitlines()
