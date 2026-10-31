@@ -68,6 +68,68 @@ def _close(path, record, session, entry, how):
         return copy.deepcopy(saved)
 
 
+def _part_result(record, accepted_part=None, *, result=None, summary=None, already=False,
+                 durable_status=False, include_receipt=True, sync_data_summary=False):
+    """Format a landed part from its durable transition and accepted receipt."""
+    record = copy.deepcopy(record)
+    accepted_part = accepted_part or {}
+    publication = accepted_part.get("publication_id")
+    receipt = accepted_part.get("receipt")
+    part_index = accepted_part.get("part", record.get("part", 0) - 1)
+    actor = accepted_part.get("publisher")
+    label = record.get("label") or "Timeline edit"
+    suffix = f" (by {actor})" if actor else ""
+    data = copy.deepcopy(result.get("data", {})) if isinstance(result, dict) else {}
+    if publication is not None:
+        data["publication_id"] = publication
+    if include_receipt and isinstance(receipt, dict):
+        data["receipt"] = copy.deepcopy(receipt)
+    elif include_receipt and isinstance(receipt, str):
+        data["receipt"] = {"receipt_id": receipt}
+
+    if record.get("state") == "landed":
+        status = ("landed" if durable_status or already or not isinstance(result, dict)
+                  else result.get("status", "landed"))
+        next_action = None
+        if summary is None:
+            if isinstance(result, dict) and result.get("summary"):
+                summary = result["summary"]
+            elif already:
+                summary = (f'"{label}" already landed as {publication}{suffix}; '
+                           f'{record["id"]} is closed. Nothing was sent.')
+            else:
+                summary = f'"{label}" landed as {publication}{suffix}; {record["id"]} is closed.'
+    else:
+        status = "part_landed"
+        next_action = f'tl.retry({record["id"]!r})'
+        if summary is None:
+            if isinstance(result, dict) and result.get("status") == "part_landed":
+                summary = result.get("summary")
+            if summary is None:
+                ordinal = f"Part {part_index + 1} of " if type(part_index) is int and part_index >= 0 else "Part of "
+                summary = (f'{ordinal}"{label}" landed as {publication}{suffix}; '
+                           f'{record["id"]} still has saved work.')
+        data["part"] = record.get("part")
+
+    formatted = result if isinstance(result, dict) else {}
+    formatted.update(status=status, pending_id=record.get("id"), data=data,
+                     summary=summary, next=next_action, record=record)
+    if sync_data_summary and isinstance(formatted.get("data"), dict) and summary is not None:
+        formatted["data"]["summary"] = summary
+    return formatted
+
+
+def format_cli_result(result):
+    """Format a completed retry for the CLI from its durable transition."""
+    record = result.get("record") if isinstance(result, dict) else None
+    if not isinstance(record, dict):
+        return result
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    return _part_result(record, {"publication_id": data.get("publication_id"),
+                                 "receipt": data.get("receipt")},
+                        result=result, durable_status=True)
+
+
 def _legacy_flight_entry(session, record, flights, entries):
     """Confirm a legacy flight against one saved part and one history receipt."""
     if len(flights) != 1:
@@ -128,18 +190,10 @@ def _legacy_flight_entry(session, record, flights, entries):
 def _landed(timeline, path, record):
     if record.get("state") == "landed":
         closed = record.get("closed_by") or {}
-        publication = closed.get("publication_id")
-        actor = closed.get("actor_id")
-        label = record.get("label") or "Timeline edit"
-        suffix = f" (by {actor})" if actor else ""
-        data = {"publication_id": publication} if publication is not None else {}
         receipts = record.get("receipts") or []
-        if receipts:
-            data["receipt"] = {"receipt_id": receipts[-1]}
-        return {"status": "landed", "pending_id": record["id"], "data": data,
-                "summary": f'"{label}" already landed as {publication}{suffix}; '
-                           f'{record["id"]} is closed. Nothing was sent.', "next": None,
-                "record": copy.deepcopy(record)}
+        return _part_result(record, {"publication_id": closed.get("publication_id"),
+                                     "publisher": closed.get("actor_id"),
+                                     "receipt": receipts[-1] if receipts else None}, already=True)
     # An acknowledged cross-actor flight identifies the exact owner and part;
     # its group may predate this pending record and is not a unique marker.
     with timeline.session.outbox.locked():
@@ -159,18 +213,10 @@ def _landed(timeline, path, record):
             publication = entry["publication_id"]
             if closed.get("state") == "pending" and closed.get("part", 0) == record.get("part", 0):
                 return None
-            if closed.get("state") != "landed":
-                return {"status": "part_landed", "pending_id": record["id"],
-                        "data": {"publication_id": publication, "part": closed.get("part"),
-                                 "receipt": copy.deepcopy(entry.get("receipt"))},
-                        "summary": f'Part of "{record.get("label") or "Timeline edit"}" landed as {publication}; '
-                                   f'{record["id"]} still has saved work.',
-                        "next": f'tl.retry({record["id"]!r})', "record": closed}
-            return {"status": "landed", "pending_id": record["id"],
-                    "data": {"publication_id": publication, "receipt": copy.deepcopy(entry["receipt"])},
-                    "summary": f'"{record.get("label") or "Timeline edit"}" already landed as {publication}; '
-                               f'{record["id"]} is closed. Nothing was sent.',
-                    "next": None, "record": closed}
+            return _part_result(closed, {"publication_id": publication,
+                                         "receipt": entry.get("receipt"),
+                                         "publisher": entry.get("publisher"),
+                                         "part": record.get("part", 0)}, already=True)
     if "parts" not in record:
         try:
             base = _pin(record["base"])
@@ -226,24 +272,10 @@ def _landed(timeline, path, record):
     closed = _close(path, record, timeline.session, entry, "retry")
     if closed.get("state") == "pending" and closed.get("part", 0) == index:
         return None
-    actor = entry.get("publisher")
-    label = record.get("label") or "Timeline edit"
-    suffix = f" (by {actor})" if actor else ""
-    if closed.get("state") != "landed":
-        return {"status": "part_landed", "pending_id": record["id"],
-                "data": {"publication_id": publication, "part": closed.get("part"),
-                         "receipt": copy.deepcopy(entry.get("receipt"))},
-                "summary": f'Part {index + 1} of "{label}" landed as {publication}{suffix}; '
-                           f'{record["id"]} still has saved work.',
-                "next": f'tl.retry({record["id"]!r})', "record": closed}
-    data = {"publication_id": publication}
-    receipt = entry.get("receipt")
-    if isinstance(receipt, dict):
-        data["receipt"] = copy.deepcopy(receipt)
-    return {"status": "landed", "pending_id": record["id"], "data": data,
-            "summary": f'"{label}" already landed as {publication}{suffix}; '
-                       f'{record["id"]} is closed. Nothing was sent.', "next": None,
-            "record": closed}
+    return _part_result(closed, {"publication_id": publication,
+                                 "receipt": entry.get("receipt"),
+                                 "publisher": entry.get("publisher"), "part": index},
+                        already=True)
 
 
 def _part(record):
@@ -449,18 +481,16 @@ def _already_applied(timeline, path, record, packet):
     if closed.get("state") != "landed":
         if closed.get("part", 0) == record.get("part", 0):
             return None
-        return {"status": "part_landed", "pending_id": record["id"],
-                "data": {"publication_id": publication_id, "part": closed.get("part")},
-                "record": closed,
-                "summary": f'Part of "{record.get("label") or "Timeline edit"}" already landed; {record["id"]} still has saved work.',
-                "next": f'tl.retry({record["id"]!r})'}
-    data = {"publication_id": publication_id}
-    if isinstance(entry.get("receipt"), dict):
-        data["receipt"] = copy.deepcopy(entry["receipt"])
-    return {"status": "landed", "pending_id": record["id"], "data": data, "record": closed,
-            "summary": (f"Nothing to do: {', '.join(matched_fields)} already has your value "
-                        f"(set by {next(iter(actors))}); {record['id']} is closed."),
-            "next": None}
+    return _part_result(
+        closed, {"publication_id": publication_id, "receipt": entry.get("receipt"),
+                 "publisher": entry.get("publisher"), "part": record.get("part", 0)},
+        summary=(f"Nothing to do: {', '.join(matched_fields)} already has your value "
+                 f"(set by {next(iter(actors))}); {record['id']} is closed."
+                 if closed.get("state") == "landed" else
+                 f'Part of "{record.get("label") or "Timeline edit"}" already landed; '
+                 f'{record["id"]} still has saved work.'),
+        already=True, include_receipt=closed.get("state") == "landed",
+    )
 
 
 def _refused(record, failure, data):
@@ -508,22 +538,22 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
             if saved is None:
                 raise ValueError("saved retry record missing after function commit")
             if saved.get("state") == "pending" and saved.get("part", 0) > record.get("part", 0):
-                summary = (f'Part of "{saved.get("label") or "Timeline edit"}" landed; '
-                           f'{record["id"]} still has saved work.')
-                response = dict(result, status="part_landed", pending_id=record["id"],
-                                summary=summary, next=f'tl.retry({record["id"]!r})', record=saved)
-                if isinstance(response.get("data"), dict):
-                    response["data"] = dict(response["data"], summary=summary)
-                return response
+                receipt = result.get("receipt") if isinstance(result, dict) else None
+                return _part_result(saved, {"publication_id": (receipt or {}).get("receipt_id"),
+                                            "receipt": receipt, "part": record.get("part", 0)},
+                                    result=result,
+                                    summary=(f'Part of "{saved.get("label") or "Timeline edit"}" landed; '
+                                             f'{record["id"]} still has saved work.'))
             if saved.get("state") != "landed":
                 raise ValueError("function commit did not settle the saved retry part")
         receipt = result.get("receipt") if isinstance(result, dict) else None
         receipt_id = receipt.get("receipt_id") if isinstance(receipt, dict) else None
-        if receipt_id and result.get("status") in {"accepted", "merged", "rebased"} \
-                and (refreshed or overwrite):
-            label = record.get("label") or "Timeline edit"
-            summary = (f'Committed "{label}" as {receipt_id} after re-running it on the '
-                       f'newest timeline; {record["id"]} is closed.')
+        if receipt_id and result.get("status") in {"accepted", "merged", "rebased"}:
+            summary = None
+            if refreshed or overwrite:
+                label = record.get("label") or "Timeline edit"
+                summary = (f'Committed "{label}" as {receipt_id} after re-running it on the '
+                           f'newest timeline; {record["id"]} is closed.')
             if overwrite:
                 result["status"] = "rebased"
                 conflicts = ((record.get("failure") or {}).get("details") or {}).get("conflicts", [])
@@ -532,9 +562,12 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
                 summary = (f'Rebased "{label}" as {receipt_id}; overwrote '
                            f'{", ".join(sites) if sites else "the saved conflicting edits"}. '
                            f'{record["id"]} is closed.')
-            result["summary"] = summary
-            if isinstance(result.get("data"), dict):
-                result["data"]["summary"] = result["summary"]
+            saved = next((item for record_path, item in timeline._pending_records_with_paths("all")
+                          if item.get("id") == record["id"] and Path(record_path) == Path(path)), None)
+            if saved is not None:
+                return _part_result(saved, {"publication_id": receipt_id, "receipt": receipt,
+                                            "part": record.get("part", 0)},
+                                    result=result, summary=summary, sync_data_summary=True)
         return result
 
     failure_details = ((record.get("failure") or {}).get("details") or {})
@@ -656,10 +689,17 @@ def commit_preview(timeline, result):
                       if record.get("id") == pending_id and str(record_path) == path), None)
         if (saved is not None and saved.get("state") == "pending"
                 and saved.get("part", 0) > current.get("part", 0)):
-            return {"status": "part_landed", "pending_id": pending_id,
-                    "data": {**accepted.get("data", {}), "receipt": copy.deepcopy(accepted.get("receipt"))},
-                    "summary": f'Part of "{saved.get("label") or "Timeline edit"}" landed; {pending_id} still has saved work.',
-                    "next": f'tl.retry({pending_id!r})', "record": saved}
+            receipt = accepted.get("receipt") if isinstance(accepted, dict) else None
+            return _part_result(saved, {"publication_id": (receipt or {}).get("receipt_id"),
+                                        "receipt": receipt, "part": current.get("part", 0)},
+                                result=accepted,
+                                summary=(f'Part of "{saved.get("label") or "Timeline edit"}" landed; '
+                                         f'{pending_id} still has saved work.'))
+        if saved is not None and saved.get("state") == "landed":
+            receipt = accepted.get("receipt") if isinstance(accepted, dict) else None
+            return _part_result(saved, {"publication_id": (receipt or {}).get("receipt_id"),
+                                        "receipt": receipt, "part": current.get("part", 0)},
+                                result=accepted)
         return accepted
     except Exception as exc:
         # Re-read the owner: another actor may have closed it while this request ran.
@@ -669,13 +709,13 @@ def commit_preview(timeline, result):
                        if record.get("id") == pending_id and str(record_path) == path), current)
         settled = _settled_part(latest, current.get("part", 0), _part_identity(current))
         if settled and latest.get("state") == "pending":
-            publication = settled["publication_id"]
-            return {"status": "part_landed", "pending_id": pending_id,
-                    "data": {"publication_id": publication,
-                             "receipt": copy.deepcopy(settled.get("receipt") or {"receipt_id": settled["receipt_id"]}),
-                             "part": latest.get("part")},
-                    "summary": f'Part of "{latest.get("label") or "Timeline edit"}" landed; {pending_id} still has saved work.',
-                    "next": f'tl.retry({pending_id!r})', "record": latest}
+            return _part_result(
+                latest, {"publication_id": settled["publication_id"],
+                         "receipt": settled.get("receipt") or {"receipt_id": settled["receipt_id"]},
+                         "part": current.get("part", 0)},
+                summary=(f'Part of "{latest.get("label") or "Timeline edit"}" landed; '
+                         f'{pending_id} still has saved work.'),
+            )
         landed = _landed(timeline, Path(path), latest)
         if landed is not None:
             return landed

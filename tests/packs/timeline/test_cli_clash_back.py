@@ -114,14 +114,19 @@ def test_retry_commit_token_commits_fresh_preview(monkeypatch, capsys):
     from astrid.sdk.timeline import retry as retry_module
 
     monkeypatch.setattr(retry_module, "commit_preview", lambda _timeline, preview: {
-        "status": "landed", "pending_id": preview["pending_id"], "summary": "Landed",
+        "status": "part_landed", "pending_id": preview["pending_id"],
+        "summary": 'Part of "Recut" landed; pc-one still has saved work.',
+        "data": {"publication_id": "pub-one"}, "receipt": {"receipt_id": "pub-one"},
+        "record": {"id": preview["pending_id"], "state": "pending", "part": 1,
+                   "label": "Recut"},
     })
     parsed = _parse(_Client(), ["retry", "film", "pc-one", "--project", "p", "--commit", "fresh-token", "--json"])
 
     assert parsed.handler(parsed) == 0
     data = json.loads(capsys.readouterr().out)["data"]
-    assert data["status"] == "landed"
+    assert data["status"] == "part_landed"
     assert data["pending_id"] == "pc-one"
+    assert data["summary"] == 'Part of "Recut" landed; pc-one still has saved work.'
 
 
 def test_retry_rejects_stale_token_without_sending(monkeypatch, capsys):

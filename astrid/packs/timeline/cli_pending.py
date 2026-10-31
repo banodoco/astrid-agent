@@ -150,19 +150,9 @@ def _cmd_retry(parsed):
                 f"run astrid timelines retry {parsed.ref} {parsed.ref_id} --project {parsed.project} again"
             )
         result = commit_preview(timeline, result)
-        status = result.get("status")
-        data = result.get("data") if isinstance(result.get("data"), Mapping) else {}
-        if status in {"accepted", "merged", "rebased"} or data.get("status") in {"accepted", "merged", "rebased"}:
-            record = timeline.pending_show(parsed.ref_id)
-            durable_status = {"landed": "landed", "pending": "part_landed"}.get(
-                record.get("state"), status,
-            )
-            result = {
-                **result,
-                "status": durable_status,
-                "pending_id": record.get("id", parsed.ref_id),
-                "summary": result.get("summary") or data.get("summary"),
-            }
+        from astrid.sdk.timeline.retry import format_cli_result
+
+        result = format_cli_result(result)
     data = _retry_data(result)
     if parsed.json:
         return print_result(DomainResult.success(data), as_json=True)
