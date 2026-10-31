@@ -361,29 +361,35 @@ def _already_applied(timeline, path, record, packet):
             "next": None}
 
 
+def _refused(record, failure, data):
+    from ._commit_wording import present_failure
+
+    presentation = present_failure(failure)
+    next_action = f'tl.pending_show({record["id"]!r})'
+    return {"status": "refused", "pending_id": record["id"], "data": copy.deepcopy(data),
+            "summary": (f'{presentation["headline"]}. {presentation["detail"]} '
+                        'Inspect the saved edit and fix it or drop it.'),
+            "next": next_action}
+
+
 def retry(timeline, ref, fn=None, *, overwrite=False):
     """Retry a saved record, returning a reviewable preview or terminal state."""
     if fn is None and callable(getattr(ref, "retry_fn", None)):
         fn = ref.retry_fn
     path, record = _record(timeline, ref)
-    if overwrite and fn is None:
-        raise ValueError("overwrite requires the original edit function")
     if record.get("state") not in {"pending", "landed"}:
         return {"status": "refused", "pending_id": record.get("id"),
                 "summary": f'Cannot retry a pending change in state {record.get("state")!r}.',
                 "next": None}
-    failure = record.get("failure") or {}
-    if ((failure.get("details") or {}).get("status") in {"refused", "invalid"}
-            and (record.get("origin") != "function" or fn is None)):
-        return {"status": "refused", "pending_id": record["id"],
-                "data": copy.deepcopy(failure),
-                "summary": "The Runtime refused this edit; fix the edit, then retry or drop it.",
-                "next": f'tl.pending_show("{record["id"]}")'}
     landed = _landed(timeline, path, record)
     if landed is not None:
         return landed
-    if record.get("state") == "landed":
-        return _landed(timeline, path, record)
+    if overwrite and fn is None:
+        raise ValueError("overwrite requires the original edit function")
+    failure = record.get("failure") or {}
+    if ((failure.get("details") or {}).get("status") in {"refused", "invalid"}
+            and (record.get("origin") != "function" or fn is None)):
+        return _refused(record, failure, failure)
     captured_function_list = record.get("origin") == "function" and fn is None
     if fn is not None:
         refreshed = _refresh_function_base(timeline, record)
@@ -475,9 +481,8 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
                 f'tl.retry({record["id"]!r}, your_function)'
             )
         return result
-    message = data.get("message") or details.get("message") or details.get("reason") or "The Runtime refused this edit."
-    return {"status": "refused", "pending_id": record["id"], "data": copy.deepcopy(data),
-            "summary": str(message), "next": f'tl.retry({record["id"]!r})'}
+    failure = {"message": data.get("message") or details.get("message"), "details": details}
+    return _refused(record, failure, data)
 
 
 def commit_preview(timeline, result):

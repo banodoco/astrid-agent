@@ -21,7 +21,7 @@ from astrid.sdk.timeline.capture import capture_move
 from astrid.sdk.timeline.commands import execute
 from astrid.sdk.timeline.outbox import Outbox, request_bytes
 from astrid.sdk.timeline.rebase import replay
-from astrid.sdk.timeline.sync import CommitConflict, TimelineSession
+from astrid.sdk.timeline.sync import CommitConflict, CommitRefused, TimelineSession
 from astrid.sdk.workspace_client import WorkspaceClient, WorkspaceClientError
 from astrid_runtime_client import ApiError
 
@@ -687,14 +687,15 @@ def test_pending_show_retries_missing_packet_enrichment(connected, monkeypatch):
     assert calls == [record["id"]]
 
 
-def test_final_refusal_releases_flight_and_saves_pending_edit(connected):
+@pytest.mark.parametrize(("status", "reason"), [("refused", "policy"), ("invalid", "bad_command")])
+def test_final_refusal_releases_flight_and_saves_pending_edit(connected, status, reason):
     session = open_session(connected)
     _, generated, path = connected
     rejected = session.queue_move("parent/clip:a", 5)
-    generated.refusal = ApiError(409, "refused", "edit is not allowed",
-                                 details={"status": "refused", "reason": "policy"})
+    generated.refusal = ApiError(409, status, "edit is not allowed",
+                                 details={"status": status, "reason": reason})
 
-    with pytest.raises(CommitConflict):
+    with pytest.raises(CommitRefused) as error:
         session.flush(idempotency_key="rejected-edit")
 
     state = json.loads(path.read_bytes())
@@ -707,7 +708,14 @@ def test_final_refusal_releases_flight_and_saves_pending_edit(connected):
     assert record["parts"][0]["commands"] == [rejected]
     assert record["flight"]["key"] == "rejected-edit"
     assert json.loads(record["flight"]["body"])["commands"] == [rejected]
-    assert record["failure"]["details"]["status"] == "refused"
+    assert record["failure"] == {
+        "code": status, "message": "edit is not allowed",
+        "details": {"status": status, "reason": reason},
+    }
+    assert error.value.failure == record["failure"]
+    assert error.value.fix == f'Inspect the saved edit with tl.pending_show("{record["id"]}"), fix the edit, then retry or drop it.'
+    assert record["clash"]["runtime"]["reason"] == reason
+    assert record["clash"]["next"] == f'tl.pending_show("{record["id"]}")'
 
     # A refusal no longer wedges the session; later intent gets its own request.
     generated.refusal = None
@@ -740,7 +748,7 @@ def test_final_refusal_saves_and_releases_dependent_queued_suffix(connected, mon
             suffix = open_session(connected).queue_move("parent/clip:a", 7)
         finally:
             release.set()
-        with pytest.raises(CommitConflict):
+        with pytest.raises(CommitRefused):
             sending.result(timeout=10)
 
     state = json.loads(path.read_bytes())
@@ -766,7 +774,7 @@ def test_rederived_refusal_replaces_current_part_and_keeps_suffix_ordered(connec
     session.queue_move("parent/clip:a", 5)
     generated.refusal = ApiError(409, "refused", "edit is not allowed",
                                  details={"status": "refused", "reason": "policy"})
-    with pytest.raises(CommitConflict) as refused:
+    with pytest.raises(CommitRefused) as refused:
         session.flush(idempotency_key="repeat-refusal")
 
     suffix = capture_move(initial_bundle(), "parent/clip:b", 8)
@@ -778,7 +786,7 @@ def test_rederived_refusal_replaces_current_part_and_keeps_suffix_ordered(connec
     session.outbox.write(state)
     pending_id = record["id"]
 
-    with pytest.raises(CommitConflict):
+    with pytest.raises(CommitRefused):
         session.submit(
             [current], label="Re-derived edit", steps=[], idempotency_key="repeat-refusal",
             expected_state=session._state(), base=session._state()["base"],
@@ -1199,7 +1207,8 @@ def test_duplicate_flush_and_late_completion_cannot_overwrite_new_flight(connect
             if late == "ack":
                 first.result(timeout=10)
             else:
-                with pytest.raises(CommitConflict if late in {"conflict", "refused"} else WorkspaceClientError):
+                with pytest.raises(CommitConflict if late == "conflict" else
+                                   CommitRefused if late == "refused" else WorkspaceClientError):
                     first.result(timeout=10)
             assert path.read_bytes() == newer
             assert json.loads(newer)["flight"]["key"] == "b"

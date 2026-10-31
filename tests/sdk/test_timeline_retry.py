@@ -590,7 +590,9 @@ def test_atomic_probe_omits_unset_reads(monkeypatch, tmp_path):
     result = retry_module.retry(timeline, "pc_saved")
 
     assert "reads" not in calls[0]
-    assert result["summary"] == "Runtime refusal"
+    assert "Runtime refusal" in result["summary"]
+    assert "Inspect the saved edit and fix it or drop it." in result["summary"]
+    assert result["next"] == "tl.pending_show('pc_saved')"
 
 
 def test_preview_rejects_stale_record_and_token(monkeypatch, tmp_path):
@@ -999,6 +1001,37 @@ def test_retry_returns_uniform_result_for_saved_landed_record(monkeypatch, tmp_p
     assert result["record"] == record
     assert result["next"] is None
     assert timeline.session.submissions == []
+
+
+def test_landed_state_wins_over_old_refusal_after_rederive(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    record = timeline.session.state["pending_changes"]["pc_saved"]
+    record["failure"]["details"]["status"] = "refused"
+
+    refused = retry_module.retry(timeline, "pc_saved")
+    assert refused["status"] == "refused"
+
+    record["failure"]["details"]["status"] = "conflict"
+    monkeypatch.setattr(retry_module, "_probe", lambda *args: {
+        "would_status": "conflict", "details": {"conflicts": []}})
+    monkeypatch.setattr(retry_module.clash, "explain", lambda *args: {"receipts": []})
+    rederived = retry_module.retry(timeline, "pc_saved")
+    assert rederived["status"] == "re_derive"
+
+    sent = timeline.session.submit([], pending_id="pc_saved", pending_how="retry", base=HEAD)
+    assert sent["status"] == "accepted"
+    record["failure"]["details"]["status"] = "refused"
+    submissions_before_retry = list(timeline.session.submissions)
+    monkeypatch.setattr(retry_module.clash, "_history",
+                        lambda *args: pytest.fail("saved landed state should be authoritative"))
+
+    landed = retry_module.retry(timeline, "pc_saved")
+
+    assert landed["status"] == "landed"
+    assert landed["data"] == {
+        "publication_id": "pub-accepted", "receipt": {"receipt_id": "pub-accepted"}}
+    assert landed["summary"].endswith("Nothing was sent.")
+    assert timeline.session.submissions == submissions_before_retry
 
 
 def _same_value_conflict_setup(monkeypatch, timeline, *, partial=False):

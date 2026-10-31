@@ -35,10 +35,12 @@ def _retry_outbox_locks(outbox, target_path):
             stack.enter_context(boxes[path].locked())
         yield
 
-class CommitConflict(TimelineEditError):
+class _CommitFailure(TimelineEditError):
     def __init__(self, failure, *, attempts=None, label=None, fixed_list=False,
                  timeline_id=None, project_id=None, pending_id=None, clash=None, retry_clash=False):
         self.failure = copy.deepcopy(failure)
+        self.code = failure.get("code")
+        self.details = copy.deepcopy(failure.get("details") or {})
         self.pending_id = pending_id
         self.clash = copy.deepcopy(clash)
         from ._commit_wording import present_failure
@@ -88,6 +90,14 @@ class CommitConflict(TimelineEditError):
         else:
             message = f"{self.headline.rstrip('.')}. {self.fix}"
         super().__init__(message)
+
+
+class CommitConflict(_CommitFailure):
+    """A Runtime conflict that may be resolved by retrying the edit."""
+
+
+class CommitRefused(_CommitFailure):
+    """A Runtime refusal that requires inspecting and correcting the edit."""
 
 
 class _OutboxChanged(TimelineEditError):
@@ -1057,11 +1067,12 @@ class TimelineSession:
                     if external_conflict is None and details.get("status") == "conflict":
                         record = _pending_clash(self, record)
                 from ._pending import clash
-                raise CommitConflict(failure, fixed_list=release_conflict and details.get("status") == "conflict",
+                error_type = CommitConflict if details.get("status") == "conflict" else CommitRefused
+                raise error_type(failure, fixed_list=release_conflict and details.get("status") == "conflict",
                                      timeline_id=self.timeline_id, project_id=self.project_id,
                                      label=record["label"] if record else None,
                                      pending_id=record["id"] if record else None,
-                                     retry_clash=bool(flight.get("pending_id") and record),
+                                     retry_clash=bool(details.get("status") == "conflict" and flight.get("pending_id") and record),
                                      clash=record.get("clash") or clash(record) if record else None) from exc
             raise CommitOutcomeUnknown(exc, key=_display_key(flight)) from exc  # Keep the durable flight byte-for-byte retryable.
         try:
