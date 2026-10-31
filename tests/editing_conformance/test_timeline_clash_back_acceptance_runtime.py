@@ -213,9 +213,9 @@ def test_function_swap_runtime_refusal_is_saved_and_retry_reruns(editing_case, t
 
     monkeypatch.setattr(generated, "commit_timeline", advance_head_before_function_swap)
 
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitRefused
 
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         stale.commit(
             edit, label="Function media swap", key="function-media-swap",
             merge="fields", reads=[],
@@ -312,9 +312,9 @@ def test_reviewed_list_runtime_refusal_is_saved_and_recovered(editing_case, tmp_
 
     monkeypatch.setattr(generated, "commit_timeline", advance_head_before_reviewed_list)
 
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitRefused
 
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         with stale.session.outbox.locked():
             expected_state = stale.session._state()
         steps = [
@@ -735,7 +735,7 @@ def test_f3_idempotency_mismatch_is_refused_and_saved(editing_case, tmp_path):
     timeline = type(timeline).open(
         project, "film", client=_client, outbox_path=tmp_path / "f3-target.json"
     )
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitRefused
 
     evaluations = []
 
@@ -743,7 +743,7 @@ def test_f3_idempotency_mismatch_is_refused_and_saved(editing_case, tmp_path):
         evaluations.append(True)
         t.move("parent/clip:b", on=8)
 
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         timeline.commit(edit, label="Different edit", key="f3-shared-key")
 
     error = caught.value
