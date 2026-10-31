@@ -306,6 +306,10 @@ def _settle_pending(record, *, expected_part, actor_id, publication_id, how, bas
     if index + 1 < len(record.get("parts", [])):
         record["part"] = index + 1
         record["parts"][index + 1]["base"] = copy.deepcopy(base)
+        # The refusal described the completed part, not the remaining suffix.
+        record["failure"] = None
+        record["diff"] = None
+        record.pop("clash", None)
     else:
         record["state"] = "landed"
         record["closed_by"] = {"actor_id": actor_id, "publication_id": publication_id, "how": how}
