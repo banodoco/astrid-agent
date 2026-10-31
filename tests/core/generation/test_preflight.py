@@ -63,16 +63,21 @@ def test_missing_comfyui_runtime_is_actionable(
     assert "pip" not in result.recovery_command
 
 
-def test_managed_dry_run_names_missing_runtime_setup_action(
+def test_managed_dry_run_names_missing_engine_install_action(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     import astrid
     from astrid.core.contracts.errors import AstridError
-    from astrid.core.generation import preflight
+    from astrid.core.generation.engine_local_endpoint import EngineNotInstalled
 
-    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
-    monkeypatch.setattr(preflight, "_comfyui_runtime_available", lambda: False)
+    def missing_engine(*_args: Any, **_kwargs: Any) -> Any:
+        raise EngineNotInstalled("vibecomfy-h3", "no install receipt")
+
+    monkeypatch.setattr(
+        "astrid.core.generation.engine_local_endpoint.local_engine_endpoint",
+        missing_engine,
+    )
 
     with pytest.raises(AstridError) as exc:
         astrid.generate.image(
@@ -86,9 +91,26 @@ def test_managed_dry_run_names_missing_runtime_setup_action(
             prompt="A red paper boat on a blue lake",
         )
 
-    assert exc.value.code == "COMFY_TARGET_NOT_READY"
-    assert "install the Astrid-managed ComfyUI runtime" in exc.value.fix
-    assert "comfy.cmd.main" in exc.value.fix
+    assert exc.value.code == "engine_not_installed"
+    assert "astrid engines install vibecomfy-h3" in exc.value.fix
+    assert "Start ComfyUI" not in exc.value.fix
+    assert "existing ComfyUI" not in exc.value.fix
+
+
+def test_managed_target_accepts_installed_engine_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from astrid.core.generation import preflight
+
+    observed = []
+    monkeypatch.setattr(
+        "astrid.core.generation.engine_local_endpoint.local_engine_endpoint",
+        lambda: observed.append("status") or object(),
+    )
+
+    preflight.require_generation_target_readiness(object(), "t2i", None)
+
+    assert observed == ["status"]
 
 
 def test_ready_structural_local_path_requires_no_network_probe(

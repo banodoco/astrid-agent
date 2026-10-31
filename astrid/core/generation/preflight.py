@@ -272,11 +272,25 @@ def select_generation_target(target: str):
 
 
 def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:
-    """Reuse package prerequisites while leaving server ownership to its owner."""
+    """Check the owning runtime for managed targets and package support for attached ones."""
     from astrid.core.contracts.errors import AstridError
 
+    if client is None:
+        from .engine_local_endpoint import EngineNotInstalled, local_engine_endpoint
+
+        try:
+            local_engine_endpoint()
+        except EngineNotInstalled as exc:
+            raise AstridError(
+                f"Managed generation engine is not installed: {exc}",
+                code=exc.code,
+                field="target",
+                fix=exc.next_action,
+            ) from exc
+        return
+
     readiness = check_local_generation_readiness(
-        entry, mode, require_managed_runtime=client is None,
+        entry, mode, require_managed_runtime=False,
     )
     if not readiness.ready:
         raise AstridError(
