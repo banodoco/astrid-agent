@@ -175,8 +175,8 @@ def _dispatch_status(args: list[str]) -> int:
                         print(f"project: {project_ref} (selected)")
                         from astrid.packs.timeline.cli import _follow_list_cursors, _list_rows
                         from astrid.sdk.timeline.revisions import RuntimeRevisions
-                        projects = client.projects.list()
-                        project_rows = _list_rows(projects.data) if projects.ok else [project]
+                        from astrid.sdk.pagination import paged_rows
+                        project_rows = paged_rows(client.projects.list) or [project]
                         parser = argparse.Namespace(client=client, include_archived=False)
                         recent = []
                         revisions = RuntimeRevisions(client.timelines)

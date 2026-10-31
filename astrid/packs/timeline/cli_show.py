@@ -278,10 +278,10 @@ def print_cut_table(parsed: argparse.Namespace, bundle_opener: Any) -> int:
     if working_info is not None:
         state = f"working copy {parsed.draft} · base revision {working['base_revision']}"
         revision = ""
-    title = f"Timeline {data.get('timeline_id')} · project {parsed.project or data.get('project_id')} · {state}"
+    project = str(data.get("project_slug") or parsed.project or data.get("project_id"))
+    title = f"Timeline {data.get('timeline_id')} · project {project} · {state}"
     if revision:
         title += f"\n  revision {revision}"
-    project = str(data.get("project_slug") or parsed.project or data.get("project_id"))
     timeline = str(parsed.ref or data.get("timeline_id"))
     show_base = ["python3", "-m", "astrid", "timelines", "show", timeline, "--project", project]
     source_args = (["--draft", str(parsed.draft)] if working_info is not None

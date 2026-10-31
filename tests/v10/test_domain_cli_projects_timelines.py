@@ -2643,6 +2643,30 @@ def test_timelines_show_footer_omits_retired_effect_and_checkout_routes(monkeypa
     assert "astrid-tools" not in output and "timeline_document" not in output
 
 
+def test_timelines_show_heading_uses_implicit_project_slug(monkeypatch, capsys) -> None:
+    from astrid.packs.timeline import cli, cli_show
+    from tests.sdk.test_timeline_reflow_golden import film
+
+    bundle = film()
+    opened = DomainResult.success({
+        "bundle": bundle,
+        "project_id": "project-id",
+        "project_slug": "demo-project",
+        "timeline_id": "timeline-id",
+        "revision_id": "revision-id",
+        "head_revision_id": "revision-id",
+    })
+    monkeypatch.setattr(cli_show, "_readback_error", lambda *_args: None)
+    monkeypatch.setattr(cli_show, "_loaded_revision", lambda _data: "revision-id")
+    parsed = cli.build_parser(object()).parse_args(["show", "timeline-id"])
+    parsed.project = None
+
+    assert cli_show.print_cut_table(parsed, lambda *_args, **_kwargs: opened) == 0
+    output = capsys.readouterr().out
+    assert "Timeline timeline-id · project demo-project · current head" in output
+    assert "project project-id" not in output
+
+
 def test_timelines_render_review_is_public_admitted_input(capsys):
     client = _FakeClient()
     assert _run('timelines', ['render', 'main', '--project', 'demo', '--review', '--json'], client=client) == 0
