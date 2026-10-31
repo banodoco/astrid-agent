@@ -86,13 +86,21 @@ def test_timeline_broken_link_scope_includes_extra_packs() -> None:
             {"file": "packs/timeline/SKILL.md"},
             {"file": "packs/timeline-series/SKILL.md"},
             {"file": "packs/timeline-narrated/docs/guide.md"},
+            {"file": "packs/timeline-review/SKILL.md"},
+            {"file": "packs/timeline-shots/SKILL.md"},
             {"file": "packs/timelineish/SKILL.md"},
             {"file": "packs/other/docs/timeline-reference.md"},
             {"file": "docs/timeline/SKILL.md"},
         ]
     }
 
-    assert _timeline_broken_links(report) == report["broken_links"][:3]
+    assert [link["file"] for link in _timeline_broken_links(report)] == [
+        "packs/timeline/SKILL.md",
+        "packs/timeline-series/SKILL.md",
+        "packs/timeline-narrated/docs/guide.md",
+        "packs/timeline-review/SKILL.md",
+        "packs/timeline-shots/SKILL.md",
+    ]
 
 
 def _add_runtime_protocol(harness: InstalledArtifactHarness) -> None:
