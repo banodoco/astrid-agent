@@ -310,7 +310,41 @@ def _cmd_list_recent(parsed: argparse.Namespace) -> int:
         projects_result = parsed.client.projects.list()
         if not projects_result.ok:
             return print_result(projects_result, as_json=parsed.json)
-        projects = _list_rows(projects_result.data)
+        from astrid.sdk.pagination import page_pair
+
+        page = page_pair(projects_result.data)
+        if page is None:
+            if isinstance(projects_result.data, list):
+                projects = _list_rows(projects_result.data)
+                cursor = None
+            else:
+                from astrid.sdk.contracts import DomainResult, ErrorObject
+                return print_result(DomainResult.failure(ErrorObject(
+                    "protocol_error", "project listing returned an invalid page", {}
+                )), as_json=parsed.json)
+        else:
+            projects, cursor = list(page[0]), page[1]
+        seen: set[str] = set()
+        pages_followed = 0
+        while cursor is not None and cursor not in seen and pages_followed < 10_000:
+            pages_followed += 1
+            seen.add(cursor)
+            following = parsed.client.projects.list(cursor=cursor, limit=50)
+            if not following.ok:
+                return print_result(following, as_json=parsed.json)
+            next_page = page_pair(following.data)
+            if next_page is None:
+                from astrid.sdk.contracts import DomainResult, ErrorObject
+                return print_result(DomainResult.failure(ErrorObject(
+                    "protocol_error", "project listing returned an invalid page", {}
+                )), as_json=parsed.json)
+            projects.extend(next_page[0])
+            cursor = next_page[1]
+        if cursor is not None:
+            from astrid.sdk.contracts import DomainResult, ErrorObject
+            return print_result(DomainResult.failure(ErrorObject(
+                "protocol_error", "project listing returned an invalid cursor chain", {}
+            )), as_json=parsed.json)
     else:
         current = parsed.client.projects.current()
         project = current.data.get("project") if current.ok and isinstance(current.data, Mapping) else None

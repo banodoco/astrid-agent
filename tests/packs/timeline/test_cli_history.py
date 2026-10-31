@@ -123,6 +123,34 @@ def test_recent_list_uses_latest_revision_and_prints_project(monkeypatch, capsys
     assert output.splitlines()[1] == "2026-10-30T12:00:00Z  demo  yesterday  Yesterday cut"
 
 
+def test_recent_all_projects_follows_project_cursor_pages(monkeypatch, capsys):
+    class Projects:
+        def list(self, *, cursor=None, limit=50):
+            assert limit == 50
+            if cursor is None:
+                return DomainResult.success([[{"project_id": "P-1", "slug": "first"}], "p2"])
+            assert cursor == "p2"
+            return DomainResult.success([[{"project_id": "P-2", "slug": "second"}], None])
+
+    class Timelines:
+        def list(self, project, **_kwargs):
+            return DomainResult.success([[{"timeline_id": f"film-{project}", "name": "Film"}], None])
+
+    monkeypatch.setattr(
+        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
+        lambda _self, project, _timeline, *, limit: [SimpleNamespace(created_at=project)],
+    )
+    parsed = SimpleNamespace(
+        client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
+        recent=True, all_projects=True, json=False, include_archived=False,
+    )
+
+    assert cli._cmd_list(parsed) == 0
+    output = capsys.readouterr().out
+    assert "first  film-P-1" in output
+    assert "second  film-P-2" in output
+
+
 def test_history_prints_the_head_and_says_earlier_revisions_cannot_be_listed(capsys):
     code = cli_history.run_history(_parsed(FakeTimelines(named=False)))
     out = capsys.readouterr().out.splitlines()
