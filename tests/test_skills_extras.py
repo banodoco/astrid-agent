@@ -7,6 +7,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+from astrid.core.pack.validate import validate_pack
 from astrid.core.pack.validate_layout import validate_pack_layout
 from astrid.skills.discovery import list_extras, list_skills, unit_digest
 from astrid.skills.registry import render_registry_block
@@ -65,6 +66,24 @@ def test_extra_discovery_rejects_paths_outside_the_declared_unit(tmp_path: Path)
     outside.write_text("---\nname: outside\ndescription: Outside.\n---\n", encoding="utf-8")
     (extra_dir / "SKILL.md").symlink_to(outside)
 
+    assert list_extras(list_skills(tmp_path)) == []
+
+
+def test_duplicate_extra_skill_resource_is_rejected_and_not_discovered(tmp_path: Path) -> None:
+    resource = "- kind: skill\n  path: docs/extra/SKILL.md\n"
+    pack = _make_pack(tmp_path, resources=resource + resource)
+    (pack / "docs" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Main skill.\n---\nMain.\n", encoding="utf-8"
+    )
+    extra_dir = pack / "docs" / "extra"
+    extra_dir.mkdir()
+    (extra_dir / "SKILL.md").write_text(
+        "---\nname: extra\ndescription: Extra skill.\n---\nExtra.\n", encoding="utf-8"
+    )
+
+    errors, _warnings = validate_pack(pack)
+
+    assert any("duplicate skill path 'docs/extra/SKILL.md'" in error for error in errors), errors
     assert list_extras(list_skills(tmp_path)) == []
 
 
