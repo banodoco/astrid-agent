@@ -296,7 +296,7 @@ jobs:
       - name: Check out frozen App candidate
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
@@ -413,7 +413,7 @@ jobs:
       - name: Check out frozen App candidate
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
@@ -669,7 +669,7 @@ jobs:
       - name: Check out frozen App candidate for aggregate validation
         uses: actions/checkout@v4
         with:
-          repository: banodoco/reigh-app
+          repository: banodoco/astrid-app
           ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
           path: app
           persist-credentials: false
