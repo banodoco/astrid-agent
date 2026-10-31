@@ -75,6 +75,27 @@ jobs:
           git -C astrid-runtime fetch --no-tags --depth=1 origin
           11443b0b5b34bd5b36725504fb083146192a759d
           959ce04fcf91351903c361d03e6b19eb0bbe8587
+          efcb3264e854fc312faa0bc6e702a9034edc2e06
+
+      - name: Verify Runtime sources before tests
+        shell: bash
+        env:
+          RUNTIME_LOCK_SHA: ${{ steps.runtime-pin.outputs.commit }}
+          HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
+        run: |
+          set -euo pipefail
+          locked_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
+          test "$locked_runtime" = "$RUNTIME_LOCK_SHA"
+          historical_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${HISTORICAL_RUNTIME_SHA}^{commit}")"
+          test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
+          historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
+          test "$historical_type" = commit
+          {
+            echo "## Effective Runtime sources"
+            echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
+            echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
+            echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record checked-out refs
         shell: bash
