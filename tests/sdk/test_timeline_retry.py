@@ -13,6 +13,15 @@ import pytest
 from astrid.sdk.timeline import retry as retry_module
 from astrid.sdk.timeline.sync import CommitConflict
 
+
+def test_commit_refused_is_exported_from_public_timeline_apis():
+    from astrid.sdk.timeline import CommitRefused as modular_commit_refused
+    from astrid.sdk.timeline.api import CommitRefused as api_commit_refused
+    from astrid.sdk.timeline.sync import CommitRefused
+
+    assert modular_commit_refused is CommitRefused
+    assert api_commit_refused is CommitRefused
+
 pytest_plugins = ("tests.sdk.test_timeline_editing_acceptance_runtime",)
 
 

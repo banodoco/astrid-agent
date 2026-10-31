@@ -2,16 +2,16 @@
 __all__ = ["Checkout", "Clip", "Cut", "Word", "Voice", "TimelineEditError", "EDITABLE_NOTE",
            "draft_path", "drafts_root", "find_draft", "resolve_ids", "build_producer_batch",
            "capture_assembled_media", "capture_clip_add_media", "capture_clip_replace_media",
-           "capture_parent_completion", "open", "Timeline", "CommitConflict"]
+           "capture_parent_completion", "open", "Timeline", "CommitConflict", "CommitRefused"]
 
 
 def __getattr__(name):
     if name in ("open", "Timeline"):
         from . import commit_session
         return getattr(commit_session, name)
-    if name == "CommitConflict":
-        from .sync import CommitConflict
-        return CommitConflict
+    if name in ("CommitConflict", "CommitRefused"):
+        from . import sync
+        return getattr(sync, name)
     if name == 'build_producer_batch':
         from .producer import build_producer_batch
         return build_producer_batch
