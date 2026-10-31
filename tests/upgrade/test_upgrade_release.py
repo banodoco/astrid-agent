@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.lanes import unavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("upgrade_release", ROOT / "scripts/upgrade_release.py")
@@ -17,10 +18,11 @@ spec.loader.exec_module(upgrade_release)
 def local_repo(name):
     value = os.environ.get(name)
     if not value:
-        pytest.skip(f"set {name} to the local source checkout to run this offline check")
+        unavailable(f"set {name} to the local source checkout to run this offline check")
     return Path(value)
 
 
+@pytest.mark.app_checkout
 def test_live_served_observation_resolves_exact_local_manifest_commit_offline(tmp_path):
     app = local_repo("ASTRID_APP_REPO")
     fixture = ROOT / "tests/upgrade/fixtures/served-observation.json"
@@ -35,6 +37,7 @@ def test_live_served_observation_resolves_exact_local_manifest_commit_offline(tm
     assert result["local_candidate_used"] is False
 
 
+@pytest.mark.app_checkout
 def test_pre_updater_resolves_from_local_app_history_and_exports_bootstraps(tmp_path):
     app = local_repo("ASTRID_APP_REPO")
     result = upgrade_release.resolve("pre-updater", tmp_path / "pre-updater", app_repo=app)
@@ -50,6 +53,7 @@ def test_equal_release_tuples_collapse_to_one_leg():
     assert upgrade_release.dedupe_legs([item, item]) == [item]
 
 
+@pytest.mark.app_checkout
 def test_unavailable_live_endpoint_stays_unverified_without_candidate_fallback(tmp_path, monkeypatch):
     app = local_repo("ASTRID_APP_REPO")
 
@@ -83,6 +87,7 @@ def _source_fixtures(tmp_path, runtime_repo, agent_repo):
     return runtime, agent
 
 
+@pytest.mark.integration
 def test_guard_accepts_authoritative_source_shapes():
     runtime = local_repo("ASTRID_RUNTIME_REPO")
     upgrade_release.check_format_review(runtime, ROOT)
@@ -93,6 +98,7 @@ def test_guard_accepts_authoritative_source_shapes():
     ("runtime_protocol/service.py", 'journal.get("version") != 1', 'journal.get("version") != 2', "runtime"),
     ("astrid/installer/core.py", '"identity": {"release": self.release, "managed_by": self.managed_by}', '"identity": {"release": self.release, "managed_by": self.managed_by}, "format": 2', "agent"),
 ])
+@pytest.mark.integration
 def test_production_source_format_change_requires_release_review(tmp_path, relative, old, new, repo_name):
     runtime_source = local_repo("ASTRID_RUNTIME_REPO")
     runtime, agent = _source_fixtures(tmp_path, runtime_source, ROOT)
