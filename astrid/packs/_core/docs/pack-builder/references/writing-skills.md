@@ -13,13 +13,15 @@ skills.
 The [Timeline pack](../../../../timeline/pack.yaml) uses one main skill and
 three extras: `series`, `narrated`, and `review`. Its guides live under
 `docs/references/` and link from the [main skill](../../../../timeline/docs/SKILL.md).
-These five lines are copied from its manifest:
+These six lines are copied from its manifest:
 
 ```yaml
   - kind: skill
     path: docs/series/SKILL.md
   - kind: skill
     path: docs/narrated/SKILL.md
+  - kind: skill
+    path: docs/review/SKILL.md
 ```
 
 - Put the normal path first; show exceptions after it.
