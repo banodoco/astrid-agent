@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import subprocess
 import sys
 import pickle
@@ -128,6 +129,7 @@ class OrchestratorRunResult:
     outputs: Mapping[str, Any] = field(default_factory=dict)
     errors: tuple[OrchestratorRunError, ...] = ()
     plan: OrchestratorPlan | None = None
+    child_import_receipt: Mapping[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -148,6 +150,8 @@ class OrchestratorRunResult:
             "errors": [error.to_dict() for error in self.errors],
             "plan": self.plan.to_dict() if self.plan is not None else None,
             "ok": self.ok,
+            **({"child_import_receipt": dict(self.child_import_receipt)}
+               if self.child_import_receipt is not None else {}),
         }
 
 
@@ -343,11 +347,40 @@ def _run_command_orchestrator(
         )
     effective_env = _command_subprocess_env(orchestrator, request, env)
     run_root = request.run_root
+    import_reference = None
     if orchestrator.metadata.get("local_orchestrator") is True:
         from astrid.core.execution.process_group import popen_owned_process, terminate_tree, verify_tree_absent
+        import_receipt = None
+        inherited_fds = ()
+        if orchestrator.id == "h3_av.transform":
+            from types import SimpleNamespace
+            from astrid.core.execution._child_import_receipt import ChildImportReceipt
+            from astrid.sdk.storage_root import resolve_runtime_data_root
+
+            # This parent is local, not a registered Runtime host. Do not
+            # invent Runtime task/attempt, closure or incarnation identity.
+            support_status = None
+            try:
+                support = resolve_runtime_data_root()
+                if support.is_dir():
+                    support_status = support / "evidence-status.json"
+            except Exception:
+                pass
+            context = SimpleNamespace(
+                evidence_status_path=support_status, executor_id="unavailable",
+                source_epoch="unavailable", runtime_state={},
+                pack_roots=((orchestrator.metadata["pack_root"],)
+                            if isinstance(orchestrator.metadata.get("pack_root"), str) else ()),
+                _child_import_host_context={"execution_profile": "local_orchestrator"},
+            )
+            import_receipt = ChildImportReceipt(context, orchestrator.id)
+            inherited_fds = import_receipt.prepare(effective_env)
         process = None
         try:
-            process = popen_owned_process(list(command), cwd=cwd, env=effective_env)
+            process = popen_owned_process(list(command), cwd=cwd, env=effective_env,
+                                          **({"pass_fds": inherited_fds} if inherited_fds else {}))
+            if import_receipt is not None:
+                import_receipt.launched(process)
             returncode = process.wait()
             verify_tree_absent(process)
         except BaseException as error:
@@ -359,6 +392,15 @@ def _run_command_orchestrator(
                 except BaseException as cleanup_error:
                     raise error from cleanup_error
             raise
+        finally:
+            if import_receipt is not None:
+                import_reference = import_receipt.finish()
+                if import_reference["persistence"] == "failed":
+                    logging.getLogger(__name__).warning(
+                        "child import receipt persistence failed launch_id=%s", import_reference["launch_id"])
+                error = sys.exc_info()[1]
+                if error is not None:
+                    error.child_import_receipt = import_reference
     elif run_root is not None and not request.project_was_auto_resolved:
         with open_run_log_capture(run_root) as logs:
             returncode = run_subprocess_with_capture(
@@ -386,6 +428,7 @@ def _run_command_orchestrator(
         cwd=cwd,
         env=env,
         returncode=returncode,
+        child_import_receipt=import_reference,
     )
 
 

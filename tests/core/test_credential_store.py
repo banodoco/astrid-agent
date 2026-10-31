@@ -118,3 +118,53 @@ def test_store_command_reads_secret_without_echoing_it(monkeypatch, tmp_path: Pa
     assert secret not in output.out
     assert secret not in output.err
     assert target.read_text(encoding="utf-8") == f"RUNPOD_API_KEY='{secret}'\n"
+
+
+@pytest.mark.parametrize('source', ['stdin', 'env'])
+def test_noninteractive_secret_sources_never_prompt_or_echo(source, monkeypatch, tmp_path, capsys):
+    from io import StringIO
+
+    secret = 'fixture-noninteractive-value'
+    target = tmp_path / 'astrid.env'
+    monkeypatch.setenv('ASTRID_ENV_FILE', str(target))
+    monkeypatch.setattr('astrid.core.util.credential_store.getpass.getpass',
+                        lambda prompt: pytest.fail('noninteractive mode prompted'))
+    if source == 'stdin':
+        stream = StringIO(secret + '\nsecond-line-must-remain\n')
+        monkeypatch.setattr('sys.stdin', stream)
+        args = ['--stdin']
+    else:
+        monkeypatch.setenv('CI_RUNPOD_KEY', secret)
+        args = ['--from-env', 'CI_RUNPOD_KEY']
+    assert main(['set', 'runpod', *args]) == 0
+    assert load_local_api_key_with_source('RUNPOD_API_KEY', environ={
+        'ASTRID_ENV_FILE': str(target),
+    }) == (secret, 'astrid_env_file')
+    output = capsys.readouterr()
+    assert secret not in output.out + output.err
+    if source == 'stdin':
+        assert stream.readline() == 'second-line-must-remain\n'
+
+
+@pytest.mark.parametrize('source', ['stdin_eof', 'stdin_empty', 'env_missing', 'env_multiline'])
+def test_noninteractive_invalid_input_creates_no_store(source, monkeypatch, tmp_path, capsys):
+    from io import StringIO
+
+    target = tmp_path / 'astrid.env'
+    monkeypatch.setenv('ASTRID_ENV_FILE', str(target))
+    if source.startswith('stdin'):
+        monkeypatch.setattr('sys.stdin', StringIO('' if source == 'stdin_eof' else '\n'))
+        args = ['--stdin']
+    else:
+        monkeypatch.delenv('CI_RUNPOD_KEY', raising=False)
+        if source == 'env_multiline':
+            monkeypatch.setenv('CI_RUNPOD_KEY', 'fixture-first\nfixture-second')
+        args = ['--from-env', 'CI_RUNPOD_KEY']
+    assert main(['set', 'runpod', *args]) == 1
+    assert not target.exists()
+    assert 'fixture-first' not in capsys.readouterr().err
+
+
+def test_noninteractive_sources_are_mutually_exclusive():
+    with pytest.raises(SystemExit, match='2'):
+        main(['set', 'runpod', '--stdin', '--from-env', 'CI_RUNPOD_KEY'])

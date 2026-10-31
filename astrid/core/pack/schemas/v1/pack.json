@@ -121,7 +121,24 @@
                   "label": {"type": "string", "minLength": 1},
                   "module": {"type": "string", "minLength": 1},
                   "class": {"type": "string", "minLength": 1},
-                  "init_kwargs": {"type": "object"}
+                  "init_kwargs": {"type": "object"},
+                  "placement": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["schema", "supported", "default", "engine", "requires_endpoint"],
+                    "properties": {
+                      "schema": {"const": "astrid.generation-placement.v1"},
+                      "supported": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["local", "runpod"]}},
+                      "default": {"enum": ["local", "runpod"]},
+                      "engine": {"anyOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9-]*(?![\\s\\S])"}]},
+                      "requires_endpoint": {"type": "boolean"}
+                    },
+                    "allOf": [
+                      {"if": {"properties": {"default": {"const": "local"}}}, "then": {"properties": {"supported": {"contains": {"const": "local"}}}}},
+                      {"if": {"properties": {"default": {"const": "runpod"}}}, "then": {"properties": {"supported": {"contains": {"const": "runpod"}}}}},
+                      {"if": {"properties": {"requires_endpoint": {"const": true}}}, "then": {"properties": {"engine": {"type": "string"}}}}
+                    ]
+                  }
                 },
                 "additionalProperties": false
               }

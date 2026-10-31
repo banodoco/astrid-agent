@@ -47,15 +47,46 @@ models:
               unit: image
               usd: 0.0025
 
+  # Qwen Image 2.1 Turbo: the official default paths use the same three
+  # pinned assets; prompt enhancement is disabled in these ready templates.
+  - id: qwen-image-2.1-turbo
+    modality: image
+    modes:
+      t2i:
+        supports: [prompt, negative_prompt, seed, count, size]
+        requires: [prompt]
+        backends:
+          local:
+            template: image/qwen_image_2_1_turbo
+            template_hash: "sha256:a47e24e6da4dfb7a41413e563fa90dd4e2d45a49a423ee132e5c00cbc27371b9"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['qwen_image_2.1_turbo_int8_convrot.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen3vl_8b_int8_convrot.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['qwen_image_2.1_vae_bf16.safetensors']}
+
+  - id: qwen-image-2.1-turbo-edit
+    modality: image
+    modes:
+      edit:
+        supports: [prompt, negative_prompt, seed, count, image_ref]
+        requires: [prompt, image_ref]
+        backends:
+          local:
+            template: edit/qwen_image_2_1_turbo_edit
+            template_hash: "sha256:502814cc614d147499768f81b9e6f68c705f0ef5902c71c19f4505539d62fa74"
+            param_map: {prompt: prompt, negative_prompt: negative_prompt, seed: seed, count: count, image_ref: image}
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['qwen_image_2.1_turbo_int8_convrot.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen3vl_8b_int8_convrot.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['qwen_image_2.1_vae_bf16.safetensors']}
+
   # =========================================================================
   # z-image — Z Image Turbo (text-to-image + image-to-image)
   #
   # Local templates (vibecomfy):
-  #   t2i: image/z_image — bind_input: prompt, negative_prompt, seed, steps,
-  #        width, height.  No count bind_input (adapter handles via loop).
-  #   i2i: image/z_image_img2img — NO bind_input calls (bare template).
-  #        Adapter uses wf.inputs name-matching fallback with logged warning
-  #        (FLAG-003).
+  #   t2i: image/z_image_turbo — public prompt, seed, sampling and size inputs.
+  #   i2i: image/z_image_img2img — public image, prompt and strength inputs.
+  #   image/z_image remains the distinct Z-Image Base template.
   #
   # Cloud endpoints (fal):
   #   t2i: fal-ai/z-image/turbo — confirmed via web search (T1 prep).
@@ -84,8 +115,12 @@ models:
           - prompt
         backends:
           local:
-            template: image/z_image
-            template_hash: "sha256:074ef3e2219d2a4ea3c9e1508d96a76ff578883d770b1ffd03ad1b5dd47dc6fc"
+            template: image/z_image_turbo
+            template_hash: "sha256:16302edf435877823f169b730d1f16f31a695fec5474e80a9dbec4db04c95647"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['z_image_turbo_bf16.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen_3_4b.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['ae.safetensors', 'FLUX1\ae.safetensors']}
           cloud:
             endpoint: fal-ai/z-image/turbo
             lora_endpoint: fal-ai/z-image/turbo/lora
@@ -115,7 +150,19 @@ models:
         backends:
           local:
             template: image/z_image_img2img
-            template_hash: "sha256:d3bb0b6c563d7f30874ace1e1181001444663ae3952b76adfcaa82017ab562a5"
+            template_hash: "sha256:1d82ec20255a47a5a57637eb0a06eb3342da66abde405b5dffa45bb17750e555"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['z_image_turbo_bf16.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen_3_4b.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['ae.safetensors', 'FLUX1\ae.safetensors']}
+            param_map:
+              prompt: prompt
+              seed: seed
+              image_ref: image
+              size: size
+              strength: strength
+              guidance_scale: guidance
+              steps: steps
           cloud:
             endpoint: fal-ai/z-image/turbo/image-to-image
           codex:
@@ -1006,3 +1053,208 @@ models:
             price:
               unit: second
               usd: 0.0002
+
+  # Explicit GPT Image IDs select the separately bounded OpenAI capability.
+  - id: gpt-image-2
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-2
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-2
+  - id: gpt-image-1.5
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-1.5
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-1.5
+  - id: gpt-image-1
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-1
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-1
+  - id: gpt-image-1-mini
+    modality: image
+    modes:
+      t2i:
+        supports:
+        - prompt
+        - count
+        - size
+        requires:
+        - prompt
+        backends:
+          openai:
+            endpoint: gpt-image-1-mini
+      edit:
+        supports:
+        - prompt
+        - count
+        - size
+        - image_ref
+        requires:
+        - prompt
+        - image_ref
+        backends:
+          openai:
+            endpoint: gpt-image-1-mini
+
+  # Existing fal pack actions share these catalog routes. These entries are
+  # hosted-only and do not change the facade's explicit local default.
+  - id: hunyuan-video-foley
+    modality: audio
+    modes:
+      sfx:
+        supports: [video_ref, prompt]
+        requires: [video_ref]
+        backends:
+          cloud:
+            endpoint: fal-ai/hunyuan-video-foley
+            param_map:
+              video_ref: video_url
+              prompt: text_prompt
+            hints:
+              video_ref_transport: inline
+              output_keys: [audio, output_audio, video]
+
+  - id: minimax-h3
+    modality: video
+    modes:
+      t2v:
+        supports: [prompt, duration, resolution, aspect_ratio]
+        requires: [prompt]
+        backends:
+          cloud:
+            endpoint: minimax/h3/text-to-video
+            hints:
+              output_keys: [video]
+            param_map:
+              prompt: prompt
+              duration: duration
+              resolution: resolution
+              aspect_ratio: aspect_ratio
+      v2v:
+        supports: [prompt, duration, resolution, aspect_ratio, image_refs, video_refs, audio_refs]
+        requires: [prompt]
+        backends:
+          cloud:
+            endpoint: minimax/h3/reference-to-video
+            hints:
+              output_keys: [video]
+            param_map:
+              prompt: prompt
+              duration: duration
+              resolution: resolution
+              aspect_ratio: aspect_ratio
+              image_refs: reference_image_urls
+              video_refs: reference_video_urls
+              audio_refs: reference_audio_urls
+
+  - id: seedance-2.0
+    modality: video
+    modes:
+      v2v:
+        supports: [prompt, resolution, duration, aspect_ratio, generate_audio, seed, image_refs, video_refs]
+        requires: [prompt]
+        backends:
+          cloud:
+            endpoint: bytedance/seedance-2.0/reference-to-video
+            param_map:
+              prompt: prompt
+              resolution: resolution
+              duration: duration
+              aspect_ratio: aspect_ratio
+              generate_audio: generate_audio
+              seed: seed
+              image_refs: image_urls
+              video_refs: video_urls
+            hints:
+              duration_as_string: true
+              output_keys: [video]
+
+  - id: lava-sr
+    modality: audio
+    modes:
+      sfx:
+        supports: [audio_ref, audio_format, bitrate]
+        requires: [audio_ref]
+        backends:
+          cloud:
+            endpoint: fal-ai/lava-sr
+            hints:
+              output_keys: [audio, audio_file]
+            param_map:
+              audio_ref: audio_url
+              audio_format: audio_format
+              bitrate: bitrate
+
+  - id: deepfilternet3
+    modality: audio
+    modes:
+      sfx:
+        supports: [audio_ref]
+        requires: [audio_ref]
+        backends:
+          cloud:
+            endpoint: fal-ai/deepfilternet3
+            hints:
+              output_keys: [audio_file, audio]
+            param_map:
+              audio_ref: audio_url

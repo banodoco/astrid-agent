@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from astrid_runtime_client import ManagedOutput, ObjectLocation, WorkspaceClient, generated
 from astrid_runtime_client.contract_metadata import (
     COMPONENT_MANIFEST_SHA256,
@@ -74,7 +76,16 @@ def test_astrid_event_wrapper_passes_latest_to_generated_client() -> None:
     assert calls == [{"cursor": None, "limit": 50, "aggregate_id": None, "from_": "latest"}]
 
 
-def test_vendored_health_preserves_runtime_identity() -> None:
+@pytest.mark.parametrize("identity", [
+    None,
+    {"release": 1, "managed_by": None},
+    {"release": 1, "managed_by": "pinokio"},
+    {
+        "release": 0, "managed_by": "source", "runtime_head": "a" * 40,
+        "agent_head": "b" * 64, "dirty": True, "dirty_hash": "c" * 64,
+    },
+])
+def test_vendored_health_preserves_runtime_identity(identity: object) -> None:
     health = generated.Health.from_json({
         "status": "ok",
         "protocol": "workspace.v1",
@@ -82,9 +93,17 @@ def test_vendored_health_preserves_runtime_identity() -> None:
         "runtime_epoch": 1,
         "runtime_session_id": "runtime-session-1",
         "runtime_instance_id": "runtime-instance-1",
+        "identity": identity,
     })
     assert health.runtime_session_id == "runtime-session-1"
     assert health.runtime_instance_id == "runtime-instance-1"
+    assert health.identity == identity
+    client = object.__new__(AstridWorkspaceClient)
+    client._generated = SimpleNamespace(health=lambda: health)
+    adapted = client.health()
+    assert adapted["runtime_session_id"] == "runtime-session-1"
+    assert adapted["runtime_instance_id"] == "runtime-instance-1"
+    assert adapted["identity"] == identity
 
 
 def test_frozen_mutation_signatures_require_idempotency_keys() -> None:

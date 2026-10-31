@@ -135,7 +135,7 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
         identity = health.get(field)
         if not isinstance(identity, str) or not identity.strip():
             raise _protocol_error(f"health.{field}", f"runtime health {field} is invalid")
-    _validate_startup_identity(health.get("identity"))
+    _validate_startup_identity(health["identity"])
     if "services" in health:
         services = health["services"]
         if not isinstance(services, list):

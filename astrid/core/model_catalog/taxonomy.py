@@ -53,6 +53,11 @@ VIDEO_FEATURES: tuple[Feature, ...] = (
     "image_ref",
     "image_end_ref",
     "video_ref",
+    "image_refs",
+    "video_refs",
+    "audio_refs",
+    "aspect_ratio",
+    "generate_audio",
     "strength",
     "guidance_scale",
     "steps",
@@ -85,6 +90,10 @@ AUDIO_FEATURES: tuple[Feature, ...] = (
     "lyrics_prompt",
     "instrumental",
     "output_format",
+    "audio_ref",
+    "video_ref",
+    "audio_format",
+    "bitrate",
 )
 
 CANONICAL_IMAGE_MODES: tuple[str, ...] = (

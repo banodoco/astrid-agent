@@ -583,9 +583,10 @@ def test_top_level_commands_include_product_and_operator_families() -> None:
             "backup",
             "dev",
             "skills",
+            "generate",
         }
     )
-    assert len(dispatch._top_level_commands()) == 11
+    assert len(dispatch._top_level_commands()) == 12
 
 
 def test_all_five_product_families_route_through_product_dispatch(

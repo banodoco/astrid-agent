@@ -2,6 +2,9 @@
 
 This module introduces the canonical Astrid recoverability envelope:
 
+* ``code`` / ``message`` — stable identifier and human-readable cause
+* ``field`` — affected input or response field, when known
+* ``fix`` — actionable advice, falling back to the recovery command
 * ``cause`` — what went wrong
 * ``valid_options`` — recovery-safe alternatives, when known
 * ``recovery_command`` — the next command the caller should run
@@ -15,10 +18,38 @@ objects such as ``ExecError``-bearing dataclasses.
 from __future__ import annotations
 
 import json
+import re
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from astrid.core.audit.util import SECRET_VALUE_RE, redact
+
+
+_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"""(?i)(\b(?:(?:[a-z0-9]+[_-])*api[_-]?key|[a-z0-9]+[_-]key|token|secret|password|authorization|credential)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:bearer\s+)?[^\s,;&}]+)"""
+)
+
+
+def _redact_credentials(text: str) -> str:
+    """Remove credential-shaped values from text without changing ordinary messages."""
+    text = SECRET_VALUE_RE.sub("<redacted>", text)
+    text = _CREDENTIAL_ASSIGNMENT.sub(r"\1<redacted>", text)
+    return re.sub(r"(?i)(\bbearer\s+)[^\s,;\"\'&}]+", r"\1<redacted>", text)
+
+
+_CREDENTIAL_KEY = re.compile(r"(?i)(?:api[_-]?key|(?:^|[_-])key$|token|secret|password|authorization|credential)")
+
+
+def _redact_credential_data(value: Any) -> Any:
+    value = redact(value)
+    if isinstance(value, dict):
+        return {key: "<redacted>" if _CREDENTIAL_KEY.search(str(key)) else _redact_credential_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_credential_data(item) for item in value]
+    return _redact_credentials(value) if isinstance(value, str) else value
 
 
 def _json_safe(value: Any) -> Any:
@@ -123,6 +154,8 @@ class AstridError(RuntimeError):
         recovery_command: str | None = None,
         state_snapshot: object | None = None,
         code: str | None = None,
+        field: str | None = None,
+        fix: str | None = None,
         degraded: bool = False,
         source_type: str | None = None,
     ) -> None:
@@ -132,12 +165,19 @@ class AstridError(RuntimeError):
         self.recovery_command = recovery_command or ""
         self.state_snapshot = build_state_snapshot(state_snapshot)
         self.code = code
+        self.field = field
+        self._fix = fix
         self.degraded = degraded
         self.source_type = source_type
         # Legacy field mappings retained for existing callers/tests.
         self.message = cause
         self.reason = cause
         self.recovery = self.recovery_command
+
+    @property
+    def fix(self) -> str:
+        """Actionable fix, falling back to the existing recovery command."""
+        return self._fix or self.recovery_command
 
     def to_envelope(self) -> dict[str, Any]:
         payload = {
@@ -148,12 +188,13 @@ class AstridError(RuntimeError):
             "state_snapshot": build_state_snapshot(self.state_snapshot),
             "degraded": self.degraded,
             # Legacy mirrored keys.
+            "code": self.code,
             "message": self.message,
+            "field": self.field,
+            "fix": self.fix,
             "reason": self.reason,
             "recovery": self.recovery,
         }
-        if self.code:
-            payload["code"] = self.code
         if self.source_type:
             payload["source_type"] = self.source_type
         return payload
@@ -197,6 +238,8 @@ def coerce_astrid_error(
             recovery_command=value.recovery_command,
             state_snapshot=_merge_state_snapshots(value.state_snapshot, state_snapshot),
             code=value.code,
+            field=value.field,
+            fix=value._fix,
             degraded=value.degraded or degraded,
             source_type=value.source_type,
         )
@@ -211,16 +254,40 @@ def coerce_astrid_error(
             degraded=degraded,
         )
 
-    cause = _first_text_attr(value, "cause", "message", "reason")
+    is_sdk_error = any(
+        cls.__name__ == "AstridSDKError" and cls.__module__ == "astrid.sdk.exceptions"
+        for cls in type(value).__mro__
+    )
+    # SDK reason can be a machine state, not the human exception message.
+    cause = _first_text_attr(value, "cause", "message")
     if cause is None:
-        cause = str(value)
-    recovery_command = _first_text_attr(value, "recovery_command", "recovery") or ""
+        cause = str(value) if is_sdk_error else _first_text_attr(value, "reason") or str(value)
+    details = getattr(value, "details", None)
+    details = details if isinstance(details, Mapping) else {}
+    recovery_command = (
+        _first_text_attr(value, "recovery_command", "recovery")
+        or _first_text_mapping(details, "recovery_command", "recovery")
+        or ""
+    )
+    field = _first_text_attr(value, "field") or _first_text_mapping(details, "field")
+    fix = _first_text_attr(value, "fix") or _first_text_mapping(details, "fix")
     options = normalize_valid_options(getattr(value, "valid_options", ()))
-    code = _first_text_attr(value, "code")
+    code = _first_text_attr(value, "code") or _first_text_mapping(details, "code")
+    if is_sdk_error:
+        if code is None:
+            code = _first_text_attr(value, "category") or "sdk_error"
+        code = _redact_credentials(code) if code else code
+        cause = _redact_credentials(cause)
+        recovery_command = _redact_credentials(recovery_command)
+        field = _redact_credentials(field) if field else field
+        fix = _redact_credentials(fix) if fix else fix
+        options = tuple(_redact_credentials(option) for option in options)
     source_type = type(value).__name__
     snapshot = build_state_snapshot(getattr(value, "state_snapshot", None))
     if state_snapshot is not None:
         snapshot.update(build_state_snapshot(state_snapshot))
+    if is_sdk_error:
+        snapshot = _redact_credential_data(snapshot)
     if degraded and "bug" not in recovery_command.lower():
         recovery_command = recovery_command or "retry the command; if it repeats, report this bug"
     return AstridError(
@@ -229,6 +296,8 @@ def coerce_astrid_error(
         recovery_command=recovery_command,
         state_snapshot=snapshot,
         code=code,
+        field=field,
+        fix=fix,
         degraded=degraded,
         source_type=source_type,
     )
@@ -270,6 +339,12 @@ def render_astrid_error(error: AstridError) -> int:
     if error.degraded:
         print("unstructured - this is a bug.", file=sys.stderr)
     print(error.cause, file=sys.stderr)
+    if error.code:
+        print(f"code: {error.code}", file=sys.stderr)
+    if error.field:
+        print(f"field: {error.field}", file=sys.stderr)
+    if error.fix:
+        print(f"fix: {error.fix}", file=sys.stderr)
     if error.valid_options:
         print(f"valid options: {', '.join(error.valid_options)}", file=sys.stderr)
     if error.recovery_command:
@@ -280,6 +355,14 @@ def render_astrid_error(error: AstridError) -> int:
             file=sys.stderr,
         )
     return 1 if error.degraded else 2
+
+
+def _first_text_mapping(value: Mapping[str, Any], *names: str) -> str | None:
+    for name in names:
+        candidate = value.get(name)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
 
 
 def _first_text_attr(value: object, *names: str) -> str | None:

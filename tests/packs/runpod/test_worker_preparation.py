@@ -905,3 +905,41 @@ def test_acquisition_owner_rejects_pending_journal_before_any_create(
         )
 
     assert launches == []
+
+
+@pytest.mark.parametrize('override', [
+    {'schema_version': 'astrid.runpod.claim.v1'},
+    {'state': 'claimed'},
+    {'acquisition_mode': 'attach'},
+    {'worker_activation': None},
+    {'request_name': None},
+    {'name': 'another-pod'},
+    {'managed_worker': {}},
+    {'managed_session': {}},
+    {'task_id': 'task'},
+    {'activation_id': 'activation'},
+])
+def test_unactivated_evidence_cannot_replace_worker_drain_gate(override):
+    from astrid.packs.runpod.worker_preparation import unactivated_target_quiescence
+    record = _claim_handle(
+        schema_version='astrid.runpod.allocation-attempt.v1',
+        state='allocated_unverified', worker_activation='not_started',
+    )
+    record.update(override)
+    with pytest.raises(TargetObservationError, match='unactivated allocation custody'):
+        unactivated_target_quiescence(record)
+
+
+def test_unactivated_evidence_must_bind_exact_claim_identity():
+    from astrid.packs.runpod.worker_preparation import (
+        _validate_release_quiescence, unactivated_target_quiescence,
+    )
+    record = _claim_handle(
+        schema_version='astrid.runpod.allocation-attempt.v1',
+        state='allocated_unverified', worker_activation='not_started',
+    )
+    evidence = unactivated_target_quiescence(record)
+    assert 'task_id' not in evidence
+    for field in ('operation_id', 'pod_id', 'provider_account_ref'):
+        with pytest.raises(TargetObservationError):
+            _validate_release_quiescence({**evidence, field: 'another'}, record)
