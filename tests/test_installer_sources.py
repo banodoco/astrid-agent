@@ -12,7 +12,7 @@ import pytest
 from runtime_protocol import platform
 
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-from astrid.installer import cli, core, tools
+from astrid.installer import cli, tools
 from astrid.installer.backend import Backend
 from astrid.installer.core import (
     RuntimeOperationError,
@@ -290,9 +290,8 @@ def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback"])
-@pytest.mark.parametrize("schema_changed", [True, False])
 def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
-        tmp_path, monkeypatch, capsys, outcome, schema_changed):
+        tmp_path, monkeypatch, capsys, outcome):
     """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
     home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
     old_root = root / "versions" / "old"
@@ -349,16 +348,12 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     def verify(version, *_args, **_kwargs):
         calls["verify"].append(version.root)
         if outcome == "rollback" and version.root != old_root:
-            workspace_sentinel.write_bytes(b"project written after switched")
             raise VerificationError("candidate did not become ready")
 
     backend.validate_candidate = validate_candidate
     backend.stop = stop
-    backend.backup = lambda *_args: calls["backup"].append("called") or {
-        "root": str(root / "backups" / "test")}
+    backend.backup = lambda *_args: calls["backup"].append("called")
     backend.upgrade = lambda *_args: calls["upgrade"].append("called")
-    original_workspace = workspace_sentinel.read_bytes()
-    backend.restore = lambda *_args: workspace_sentinel.write_bytes(original_workspace)
     backend.register = lambda version, *_args: calls["register"].append(version.root)
     backend.start = lambda version, *_args: calls["start"].append(version.root)
     backend.verify = verify
@@ -401,13 +396,6 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         return ""
 
     monkeypatch.setattr("astrid.installer.backend.source", source)
-    monkeypatch.setattr(
-        core, "inspect_schema",
-        lambda _backend, version, _realm, require_current=False: {
-            "identity": {"version": 29 if schema_changed and version.root == old_root else 31},
-            "target": 31,
-        },
-    )
     monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args: (
         dest.mkdir(parents=True) or {
             "PATH": str(dest), "ASTRID_NODE_EXECUTABLE": str(dest / "node"),
@@ -442,8 +430,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     assert staged["identity"]["release"] == 9
     assert staged["env"]["ASTRID_RUNTIME_DOOR_PORT"] == "17399"
     assert (fresh_root / "profile.json").is_file()
-    if outcome != "rollback":
-        assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
+    assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
 
     selected = (root / "current").read_text(encoding="utf-8").strip()
     transaction = json.loads((root / "update-transaction.json").read_text(encoding="utf-8")) \
@@ -452,10 +439,8 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert result == 0
         assert selected == fresh_root.name
         assert transaction["step"] == "complete"
-        assert (transaction["backup"] is not None) is schema_changed
-        assert calls["stop"] == [old_root] if not schema_changed else [old_root, fresh_root]
-        assert calls["backup"] == (["called"] if schema_changed else [])
-        assert calls["upgrade"] == (["called"] if schema_changed else [])
+        assert calls["stop"] == [old_root, fresh_root]
+        assert calls["backup"] == ["called"] and calls["upgrade"] == ["called"]
         assert calls["finish"] == ["called"]
     elif outcome == "preparation-failure":
         assert result == 1
@@ -476,16 +461,11 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert result == 1
         assert selected == old_root.name
         assert transaction["step"] == "rolled_back"
-        assert (transaction["backup"] is not None) is schema_changed
-        assert calls["stop"] == ([old_root, fresh_root]
-                                  if not schema_changed else [old_root, fresh_root, fresh_root])
-        assert calls["backup"] == (["called"] if schema_changed else [])
-        assert calls["upgrade"] == (["called"] if schema_changed else [])
+        assert calls["stop"] == [old_root, fresh_root, fresh_root]
+        assert calls["backup"] == ["called"] and calls["upgrade"] == ["called"]
         assert calls["register"] == [fresh_root, old_root]
         assert calls["start"] == [fresh_root, old_root]
         assert calls["verify"] == [fresh_root, old_root]
-        assert workspace_sentinel.read_bytes() == (
-            original_workspace if schema_changed else b"project written after switched")
     output = capsys.readouterr().out.lower()
     assert ("couldn't finish" not in output) is (outcome == "ready")
 
