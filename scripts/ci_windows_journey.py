@@ -26,6 +26,22 @@ TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
 
 
+def _powershell_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def powershell5_command(executable, args=()):
+    """Build the existing Windows PowerShell 5.1 admission command.
+
+    Backend action probes must enter Windows through this route; they may not
+    silently switch to ``pwsh`` or a foreground Runtime process.
+    """
+    command = "& " + " ".join([_powershell_quote(executable), *(_powershell_quote(arg) for arg in args)])
+    script = "$ErrorActionPreference='Stop'; " + command + "; " \
+        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]
+
+
 def save(name, value):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     (EVIDENCE / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
