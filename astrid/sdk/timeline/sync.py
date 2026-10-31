@@ -309,7 +309,7 @@ def _part_identity(record):
 
 
 def _settle_pending(record, *, expected_part, actor_id, publication_id, how, base, receipt_id=None,
-                    expected_identity=None):
+                    expected_identity=None, receipt=None):
     """Apply an acknowledged part while retaining any unsent suffix."""
     if record is None or record.get("state") != "pending":
         return False
@@ -319,7 +319,8 @@ def _settle_pending(record, *, expected_part, actor_id, publication_id, how, bas
             or (expected_identity is not None and _part_identity(record) != expected_identity)):
         return False
     record.setdefault("settled_parts", []).append({"part": index, "identity": _part_identity(record),
-                                             "receipt_id": receipt_id, "publication_id": publication_id})
+                                                  "receipt_id": receipt_id, "publication_id": publication_id,
+                                                  "receipt": copy.deepcopy(receipt)})
     record.setdefault("receipts", []).append(receipt_id)
     if index + 1 < len(record.get("parts", [])):
         record["part"] = index + 1
@@ -1185,7 +1186,7 @@ class TimelineSession:
                         if record is not None and record.get("state") == "pending":
                             _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
                                             publication_id=receipt["receipt_id"], expected_identity=flight.get("pending_identity") or "",
-                                            how=flight.get("pending_how", "retry"), base=state["base"])
+                                            how=flight.get("pending_how", "retry"), base=state["base"], receipt=receipt)
                 if pending_id is not None:
                     state.pop("pending_close", None)
                     state.pop("pending_close_path", None)
@@ -1204,7 +1205,7 @@ class TimelineSession:
                         _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
                                         publication_id=receipt["receipt_id"], expected_identity=flight.get("pending_identity") or "", how=how,
                                         base={"revision_id": data["accepted_revision_id"],
-                                              "publication_id": receipt["receipt_id"]})
+                                              "publication_id": receipt["receipt_id"]}, receipt=receipt)
                         target_outbox.write(target)
             except Exception:  # noqa: BLE001 - the accepted receipt stands if local close bookkeeping fails
                 pass

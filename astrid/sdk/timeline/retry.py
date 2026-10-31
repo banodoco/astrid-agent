@@ -55,7 +55,7 @@ def _close(path, record, session, entry, how):
             return record
         if _settle_pending(saved, expected_part=record.get("part", 0), actor_id=actor,
                            publication_id=publication, receipt_id=receipt, how=how, base=base,
-                           expected_identity=_part_identity(record)):
+                           expected_identity=_part_identity(record), receipt=entry.get("receipt")):
             if saved.get("state") == "pending":
                 saved["attempts"] = int(saved.get("attempts", 1))
             outbox.write(state)
@@ -149,7 +149,8 @@ def _landed(timeline, path, record):
                 return None
             if closed.get("state") != "landed":
                 return {"status": "part_landed", "pending_id": record["id"],
-                        "data": {"publication_id": publication, "part": closed.get("part")},
+                        "data": {"publication_id": publication, "part": closed.get("part"),
+                                 "receipt": copy.deepcopy(entry.get("receipt"))},
                         "summary": f'Part of "{record.get("label") or "Timeline edit"}" landed as {publication}; '
                                    f'{record["id"]} still has saved work.',
                         "next": f'tl.retry({record["id"]!r})', "record": closed}
@@ -210,7 +211,8 @@ def _landed(timeline, path, record):
     suffix = f" (by {actor})" if actor else ""
     if closed.get("state") != "landed":
         return {"status": "part_landed", "pending_id": record["id"],
-                "data": {"publication_id": publication, "part": closed.get("part")},
+                "data": {"publication_id": publication, "part": closed.get("part"),
+                                 "receipt": copy.deepcopy(entry.get("receipt"))},
                 "summary": f'Part {index + 1} of "{label}" landed as {publication}{suffix}; '
                            f'{record["id"]} still has saved work.',
                 "next": f'tl.retry({record["id"]!r})', "record": closed}
@@ -633,7 +635,7 @@ def commit_preview(timeline, result):
         if settled and latest.get("state") == "pending":
             publication = settled["publication_id"]
             return {"status": "part_landed", "pending_id": pending_id,
-                    "data": {"publication_id": publication, "receipt": {"receipt_id": settled["receipt_id"]},
+                    "data": {"publication_id": publication, "receipt": copy.deepcopy(settled.get("receipt") or {"receipt_id": settled["receipt_id"]}),
                              "part": latest.get("part")},
                     "summary": f'Part of "{latest.get("label") or "Timeline edit"}" landed; {pending_id} still has saved work.',
                     "next": f'tl.retry({pending_id!r})', "record": latest}
