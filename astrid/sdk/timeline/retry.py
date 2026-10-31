@@ -334,9 +334,6 @@ def _summary_rederive(record, packet, session):
     label = record.get("label") or "Timeline edit"
     receipts = packet.get("receipts") or []
     receipt = next((item for item in receipts if item.get("touches_conflict")), None)
-    if receipt is None and record.get("origin") == "function":
-        receipt = next((item for item in reversed(receipts)
-                        if item.get("publication_id")), None)
     conflicts = ((record.get("failure") or {}).get("details") or {}).get("conflicts", [])
     conflict = conflicts[0] if conflicts else {}
     try:
@@ -346,8 +343,9 @@ def _summary_rederive(record, packet, session):
     cause = "the timeline changed"
     if receipt:
         cause = f'"{receipt.get("label") or "Another edit"}"'
-        if receipt.get("publisher"):
-            cause += f' ({receipt["publisher"]})'
+        publisher = clash.publisher_name(receipt.get("publisher"))
+        if publisher:
+            cause += f' ({publisher})'
         cause += f' changed {site}'
     return (f'"{label}" can no longer apply as reviewed: {cause}. '
             f'Run what produced the list again on the newest timeline, preview it, then commit it '
