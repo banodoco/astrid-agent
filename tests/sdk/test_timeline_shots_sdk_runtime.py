@@ -69,3 +69,45 @@ def test_duplicate_prefers_exact_cut_spelling_and_keeps_ambiguous_alias():
     assert clips['a']['app']['astrid']['on'] == exact_c1
     assert clips['c']['app']['astrid']['on'] == exact_c2
     assert clips['d']['app']['astrid']['until'] == 'end of c001'
+
+
+def test_duplicate_retargets_microsecond_cut_offset_and_compiles():
+    from fractions import Fraction
+
+    from astrid.core.timeline import moments
+    from astrid.sdk.timeline.compiler import TimingInputs, compile_timing
+    from astrid.sdk.timeline.native_occurrence_duplicate import remap_copy_cuts
+
+    internal = {
+        'tracks': [{'id': 'plate', 'kind': 'visual'}, {'id': 'type', 'kind': 'visual'}],
+        'clips': [
+            {'id': 'one', 'track': 'plate', 'at': 0, 'hold': 1,
+             'app': {'astrid': {'cut': 'c1'}}},
+            {'id': 'two', 'track': 'plate', 'at': 1, 'hold': 1,
+             'app': {'astrid': {'cut': 'c2'}}},
+            {'id': 'layer', 'track': 'type', 'at': 0, 'hold': 0.5,
+             'app': {'astrid': {'on': 'c1 +0.000001s'}}},
+        ],
+    }
+    bundle = {
+        'project_id': 'project', 'timeline_id': 'timeline',
+        'parent': {'clips': [], 'config': {}},
+        'placements': [{'occurrence_id': 'o', 'shot_id': 's',
+                        'placement': {'start_ms': 0}, 'duration_ms': 10000}],
+        'shots': {'s': {'internal_timeline': internal}},
+    }
+
+    assert compile_timing(TimingInputs(bundle)).timings['o', 's', 'layer']
+    copied = remap_copy_cuts(internal, 'copy-occurrence')
+    copied_bundle = {
+        **bundle,
+        'placements': [{'occurrence_id': 'copy-occurrence', 'shot_id': 'copy-shot',
+                        'placement': {'start_ms': 0}, 'duration_ms': 10000}],
+        'shots': {'copy-shot': {'internal_timeline': copied}},
+    }
+    assert compile_timing(TimingInputs(copied_bundle)).timings['copy-occurrence', 'copy-shot', 'layer']
+
+    moment = moments.parse(copied['clips'][2]['app']['astrid']['on'])
+    assert moment.cut != 'c1'
+    assert moment.offset_s == 0.000001
+    assert Fraction(str(moment.offset_s)) == Fraction(1, 1_000_000)
