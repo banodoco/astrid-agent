@@ -50,3 +50,12 @@ def test_special_leg_lifts_only_its_windows_historical_refusal(monkeypatch, tmp_
     monkeypatch.setattr(jumps, "execute_release0_to_release1", lambda *unused: {"status": "special-windows-admitted"})
     assert jumps.execute_owned(args, tmp_path / "program", tmp_path / "data", tmp_path / "evidence",
                                argparse.Namespace(pid=1), "birth") == {"status": "special-windows-admitted"}
+
+
+def test_semantic_snapshot_requires_every_seeded_data_class():
+    before = {"project": "project", "timeline": "timeline", "preferences": "preferences",
+              "task": "task", "cas_sha256": "cas"}
+    after = {**before, "schema_version": 2, "target_schema_version": 2}
+    jumps.assert_preserved(before, after)
+    with pytest.raises(RuntimeError, match="seeded workspace task"):
+        jumps.assert_preserved({key: value for key, value in before.items() if key != "task"}, after)

@@ -48,8 +48,8 @@ def workspace(version: dict, data: Path, evidence: Path, action: str, request: d
 
 def assert_preserved(before: dict, after: dict) -> None:
     for key in ("project", "timeline", "preferences", "task", "cas_sha256"):
-        if key not in before:
-            continue
+        if key not in before or key not in after:
+            raise RuntimeError("Update did not retain seeded workspace " + key)
         if before[key] != after[key]:
             raise RuntimeError("Update changed seeded workspace " + key)
     if after["schema_version"] != after["target_schema_version"]:
@@ -247,9 +247,10 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         start_direct_runtime(evidence / "release0")
         journey.wait_ready(data)
         old_path, old_data, old = journey.installation(root, data)
-        if (old_data != data or installed_release(old) != 0
-                or old.get("identity") != {"release": 0, "managed_by": None}):
-            raise RuntimeError("Frozen release-0 bootstrap did not select the expected release-0 identity")
+        if old_data != data or installed_release(old) != 0:
+            # Release 0 predates identity-bearing version records; only its
+            # frozen manifest can attest the old release identity.
+            raise RuntimeError("Frozen release-0 bootstrap did not select release 0")
         old_tuple = journey.selected_tuple(journey.read_json(release0_manifest), old)
         old_service = journey.assert_direct_service_ownership(root, data)
         old_health = journey.healthy(data)

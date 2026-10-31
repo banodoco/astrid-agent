@@ -12,22 +12,31 @@ spec.loader.exec_module(gate)
 def release1_receipts(tmp_path):
     candidate = {key: letter * 40 for key, letter in zip(("app", "agent", "runtime", "pinokio"), "abcd")}
     for contract in gate.RELEASE1_MATRIX:
+        runner_os, image_os = gate.RUNNER_PROVENANCE[contract["runner"]]
         service = {"required": True, "outcome": "pass", "manager": "native", "version": "1",
                    "foreground_fallback": False}
         row = {"receipt_kind": "release1-installed-lifecycle", "job_id": contract["job_id"],
                "mode": contract["mode"], "scenario": contract.get("leg", "fresh-install"),
                "status": "pass", "runner_image": contract["runner"],
                "shell": contract["shell"], "source_override_test_mode": False, "final_cleanup": "pass",
+               "os_build": runner_os + "-test", "runner_provenance": {"RUNNER_OS": runner_os,
+                                                                            "ImageOS": image_os,
+                                                                            "ImageVersion": "test"},
                "candidate_checkouts": {name: {"sha": sha} for name, sha in candidate.items()},
+               "sources": {name: {"sha": candidate[name]} for name in ("app", "agent", "runtime")},
+               "installed_tuple": {name: candidate[name] for name in ("app", "agent", "runtime")},
+               "import_origins": {"runtime": "/owned/runtime"},
                "service_manager_prerequisite": service,
-               "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass"}}
+               "checks": {"semantic_data": "pass", "release": "pass", "service": "pass", "health": "pass",
+                          "task_settled": "pass", "one_runtime": "pass", "unrelated_sentinel": "pass"}}
         if contract["mode"] == "direct":
             row["service_manager"] = {"manager": "native", "foreground_fallback": False}
             row["release_transition"] = {"from": 0, "to": 1,
                                          "harness_override": "frozen-release0-direct-to-release1"}
             row["release0_fixture"] = {
-                "fixture_sums_sha256": "e" * 64, "manifest_sha256": "f" * 64,
+                "fixture_sums_sha256": gate.RELEASE0_SUMS_SHA256, "manifest_sha256": "f" * 64,
                 "provenance_sha256": "a" * 64,
+                "bootstrap_sha256": gate.RELEASE0_BOOTSTRAP_SHA256,
                 "sources": {"agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
                             "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"},
             }
@@ -156,6 +165,20 @@ def test_release1_aggregate_rejects_missing_skipped_and_ambiguous_receipts(tmp_p
     data["semantic_data"]["after_sha256"] = "c" * 64
     direct.write_text(json.dumps(data), encoding="utf-8")
     assert any("direct-windows: semantic data preservation" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    direct = tmp_path / "direct-linux" / "journey-result.json"
+    data = json.loads(direct.read_text())
+    data["checks"]["task_settled"] = "not-run"
+    direct.write_text(json.dumps(data), encoding="utf-8")
+    assert any("direct-linux: task_settled assertion did not pass" in error
+               for error in gate.evaluate_release1_matrix(candidate, tmp_path))
+    candidate = release1_receipts(tmp_path)
+    direct = tmp_path / "direct-macos" / "journey-result.json"
+    data = json.loads(direct.read_text())
+    data["installed_tuple"]["runtime"] = "e" * 40
+    direct.write_text(json.dumps(data), encoding="utf-8")
+    assert any("direct-macos: runtime installed/source identity differs" in error
                for error in gate.evaluate_release1_matrix(candidate, tmp_path))
 
 
