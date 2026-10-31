@@ -1182,6 +1182,76 @@ def _legacy_no_parts_acknowledged_setup(timeline, *, flight_changes=None):
     return path, record, body
 
 
+def _identity_acknowledged_setup(timeline, *, flight_changes=None, with_ack=True):
+    path, record, body = _legacy_acknowledged_setup(timeline)
+    from astrid.sdk.timeline.sync import _part_identity
+
+    flight = timeline.session.state["acknowledged"]["logical-key"]
+    flight["pending_identity"] = _part_identity(record)
+    flight["pending_part"] = None
+    flight.update(flight_changes or {})
+    if with_ack:
+        flight["pending_ack"] = {
+            "publication_id": "pub-ack",
+            "revision_id": "r3",
+            "publisher": "actor-1",
+            "receipt": {"receipt_id": "pub-ack"},
+        }
+    return path, record, body
+
+
+def test_ack_without_pending_part_recovers_exact_pending_identity(tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, _ = _identity_acknowledged_setup(timeline)
+
+    landed = retry_module._landed(timeline, path, record)
+
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert landed["status"] == "landed"
+    assert landed["data"]["publication_id"] == "pub-ack"
+    assert saved["state"] == "landed"
+    assert saved["receipts"] == ["pub-ack"]
+
+
+@pytest.mark.parametrize("damage", ["saved_command", "identity", "wrong_part"])
+def test_ack_without_pending_part_refuses_changed_identity_or_explicit_wrong_part(
+    monkeypatch, tmp_path, damage,
+):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, _ = _identity_acknowledged_setup(timeline)
+    flight = timeline.session.state["acknowledged"]["logical-key"]
+    if damage == "saved_command":
+        record["parts"][0]["commands"][0]["args"]["on"] = 5
+    elif damage == "identity":
+        flight["pending_identity"] = "different-part-identity"
+    else:
+        flight["pending_part"] = 1
+    before = copy.deepcopy(timeline.session.state["pending_changes"]["pc_saved"])
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, []))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    assert landed is None
+    assert timeline.session.state["pending_changes"]["pc_saved"] == before
+
+
+def test_history_recovers_ack_without_pending_part_by_exact_pending_identity(
+    monkeypatch, tmp_path,
+):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _identity_acknowledged_setup(timeline, with_ack=False)
+    entry = _legacy_ack_entry(timeline, body)
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, [entry]))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert landed["status"] == "landed"
+    assert landed["data"]["publication_id"] == "pub-history"
+    assert saved["state"] == "landed"
+    assert saved["receipts"] == ["pub-history"]
+
+
 def test_legacy_ack_without_pending_part_requires_exact_saved_request_and_receipt(
     monkeypatch, tmp_path,
 ):
