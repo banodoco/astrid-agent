@@ -4,9 +4,6 @@ description: Edit a group of timelines safely, record each outcome, and recover 
 ---
 # Edit a timeline series
 
-Load this skill when the task applies one edit to many timelines. Keep one
-idempotency key per timeline and record every outcome before continuing.
-
 ```python
 from astrid.sdk.timeline.api import CommitConflict, Timeline
 
@@ -31,18 +28,15 @@ for episode in episodes:
             print(episode, "not landed:", err)
 ```
 
-The key makes a repeated request safe for that episode; the loop continues
-after a timeline refuses the edit.
+One key per timeline makes a rerun safe; the loop moves on when one timeline
+refuses the edit.
 
-Check for an item before editing and record it as skipped when it is already
-done. Do not retry a saved result that needs approval or re-derivation until
-that follow-up is complete. Keep a durable ledger outside the loop when a run
-must resume after a process stops.
+Record every outcome before moving on, and record an item that is already done
+as skipped. Do not retry a saved edit that needs approval or re-derivation
+until that is resolved (see `timeline-review`). If the run must survive a
+process restart, keep the record in a file outside the loop.
 
-Make a variant with `tl.duplicate(as_="variant-a")`, then open the returned
-destination with `Timeline.open(project, "variant-a")`. Archive an unwanted
-copy with `python3 -m astrid timelines archive variant-a --project <project>`;
-`recover` brings an archived timeline back.
-
-For saved-edit states and recovery steps, load `timeline-review` and
-`timeline`.
+Make a variant with `tl.duplicate(as_="variant-a")`, then open it with
+`Timeline.open(project, "variant-a")`. Archive an unwanted copy with
+`python3 -m astrid timelines archive variant-a --project <project>`;
+`timelines recover` brings it back.
