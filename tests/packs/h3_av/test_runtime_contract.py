@@ -721,6 +721,7 @@ def test_generation_prompt_socket_type_survives_canonical_reload(tmp_path: Path,
     ("character", "passed", "runpod", None),
     ("generate", "passed", "local", None),
     *[("generate", "passed", "local", fault) for fault in (
+        "ffprobe_missing", "candidate",
         "forged_verify_status", "forged_verify_request", "forged_verify_candidate",
         "candidate_after_verify",
     )],
@@ -1446,6 +1447,20 @@ def test_transform_managed_handoffs_survive_removal_of_every_previous_attempt(
     ]
     if placement == "runpod":
         arguments.extend(["--execution-request", str(execution_request)])
+    if operation == "generate" and placement == "local" and verification_fault is None:
+        # Exercise planning and execution in the same operation directory.
+        # Planning must leave execution and its durable journal untouched.
+        plan = transform.run_transform(transform.build_parser().parse_args([
+            *arguments, "--dry-run",
+        ]))
+        assert plan["status"] == "planned"
+        assert plan["runtime_submission"] == "eligible"
+        assert plan["request_digest"] == normalize_request(raw).digest
+        assert plan["pass_count"] == 1
+        assert json.loads((tmp_path / "parent/plan.json").read_text())["request_digest"] == plan["request_digest"]
+        assert calls == []
+        assert not (tmp_path / "parent/operation-state.json").exists()
+        assert not (tmp_path / "parent/result.json").exists()
     if verification_fault:
         expected_error = {
             "forged_witness_method": "cannot be recomputed",
