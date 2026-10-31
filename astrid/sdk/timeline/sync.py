@@ -262,6 +262,32 @@ def _pending_diff(session, record):
     return changes
 
 
+def _save_enrichment(session, record, field, value):
+    """Persist enrichment only for the exact pending version that was read."""
+    with session.outbox.locked():
+        state = session._state()
+        saved = state.get("pending_changes", {}).get(record["id"])
+        if (saved is None or saved.get("id") != record.get("id")
+                or saved.get("state") != "pending"
+                or saved.get("rev") != record.get("rev")
+                or _part_identity(saved) != _part_identity(record)):
+            return copy.deepcopy(saved or record)
+        if value is not None and saved.get(field) != value:
+            saved[field] = copy.deepcopy(value)
+            saved["rev"] = int(saved.get("rev", 0)) + 1
+            saved["updated_at"] = datetime.now(timezone.utc).isoformat()
+            session.outbox.write(state)
+        return copy.deepcopy(saved)
+
+
+def _enrich_pending_diff(session, record):
+    try:
+        diff = _pending_diff(session, record)
+    except Exception:  # noqa: BLE001 - enrichment must not disturb the saved edit
+        diff = None
+    return _save_enrichment(session, record, "diff", diff)
+
+
 def _pending_clash(session, record):
     """Best-effort history enrichment for a durable pending conflict."""
     try:
@@ -269,18 +295,8 @@ def _pending_clash(session, record):
 
         packet = explain(session, record)
     except Exception:  # noqa: BLE001 - enrichment must not disturb the saved edit
-        return copy.deepcopy(record)
-    with session.outbox.locked():
-        state = session._state()
-        saved = state.get("pending_changes", {}).get(record["id"])
-        if saved is None or saved.get("state") != "pending":
-            return copy.deepcopy(saved or record)
-        if saved.get("clash") != packet:
-            saved["clash"] = copy.deepcopy(packet)
-            saved["rev"] = int(saved.get("rev", 0)) + 1
-            saved["updated_at"] = datetime.now(timezone.utc).isoformat()
-            session.outbox.write(state)
-        return copy.deepcopy(saved)
+        packet = None
+    return _save_enrichment(session, record, "clash", packet)
 
 
 def _part_identity(record):
@@ -308,6 +324,7 @@ def _settle_pending(record, *, expected_part, actor_id, publication_id, how, bas
         record["parts"][index + 1]["base"] = copy.deepcopy(base)
         # The refusal described the completed part, not the remaining suffix.
         record["failure"] = {}
+        record["head"] = None
         record["diff"] = None
         record.pop("clash", None)
     else:
@@ -865,20 +882,7 @@ class TimelineSession:
                               "media_input", "media_imports", "pending_close", "pending_close_path", "pending_how", "pending_part"):
                     state.pop(field, None)
             self.outbox.write(state)
-        try:
-            diff = _pending_diff(self, record)
-        except Exception:  # noqa: BLE001 - the saved intent remains usable without enrichment
-            diff = None
-        if diff is not None:
-            with self.outbox.locked():
-                state = self._state()
-                saved = state.get("pending_changes", {}).get(record["id"])
-                if saved is not None and saved.get("state") == "pending":
-                    saved["diff"] = diff
-                    saved["rev"] = int(saved.get("rev", 0)) + 1
-                    saved["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    self.outbox.write(state)
-                    record = copy.deepcopy(saved)
+        record = _enrich_pending_diff(self, record)
         record = _pending_clash(self, record)
         error = CommitConflict(failure, label=label, timeline_id=self.timeline_id,
                                project_id=self.project_id, pending_id=record["id"],
@@ -1101,20 +1105,8 @@ class TimelineSession:
                             state.pop("pending_identity", None)
                         self.outbox.write(state)
                 if record is not None:
-                    try:
-                        diff = _pending_diff(self, record)
-                    except Exception:  # noqa: BLE001 - enrichment failure must not undo the saved record
-                        diff = None
-                    if diff is not None:
-                        with self.outbox.locked():
-                            latest = self._state()
-                            saved = latest.get("pending_changes", {}).get(record["id"])
-                            if saved is not None and saved.get("state") == "pending" and saved.get("diff") is None:
-                                saved["diff"] = diff
-                                saved["rev"] = int(saved.get("rev", 0)) + 1
-                                saved["updated_at"] = datetime.now(timezone.utc).isoformat()
-                                self.outbox.write(latest)
-                                record = copy.deepcopy(saved)
+                    if external_conflict is None:
+                        record = _enrich_pending_diff(self, record)
                     if external_conflict is None and details.get("status") == "conflict":
                         record = _pending_clash(self, record)
                 from ._pending import clash
