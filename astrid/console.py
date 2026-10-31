@@ -10,6 +10,11 @@ def main(argv: list[str] | None = None) -> int:
         from .packs.h3_av.cli import main as h3_main
 
         return h3_main(rest[1:])
+
+    if rest and rest[0] == "generate":
+        from .core.gateway import main as gateway_main
+
+        return gateway_main(rest)
     if rest and rest[0] == "engines":
         from .core.engine_cli import main as engines_main
 

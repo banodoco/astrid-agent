@@ -266,7 +266,6 @@ class CanonicalPackDefinition:
             result["astrid_version"] = self.astrid_version
         if self.schema_version == 3:
             result.pop("content")
-            result.pop("extensions")
             result.update({
                 name: _thaw(getattr(self, name))
                 for name in ("actions", "ui", "rendering", "documents")

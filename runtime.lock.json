@@ -10,11 +10,11 @@
     },
     "astrid_runtime_client/contract_metadata.py": {
       "from": "packages/python/astrid_runtime_client/contract_metadata.py",
-      "sha256": "sha256:29aed272e741e526d080b11f3a785c2adc95f2a4bdde4b188345f05fc0f1affc"
+      "sha256": "sha256:63ffb6ff41a70f621eb017865257730ba99e719268c926c1d2d0bd7586b86b45"
     },
     "astrid_runtime_client/generated.py": {
       "from": "packages/python/astrid_runtime_client/generated.py",
-      "sha256": "sha256:1f2b168abf3a27f70136b9049738a1ae5f39b9c06f11539a12567a8740ef00c1"
+      "sha256": "sha256:2482c8cb791f2b82404ffad8481535e638231e4992a0f56af279929ab580e1af"
     },
     "tests/fixtures/runtime-responses/events_page_1_200.json": {
       "from": "conformance/responses/events_page_1_200.json",
@@ -59,6 +59,6 @@
   },
   "manifest": "contract/artifacts.json",
   "producer": "astrid-runtime",
-  "producer_version": "sha256:360800da9f4cd08cacf15afbb3b49386df295501473de7c024e1a2636559c083",
-  "source_commit": "df3d4ddac7bf73cd858106cc51a802521a4d3552"
+  "producer_version": "sha256:0ea29424b8e99a94dbda2e8960fe3b2ba49e71904198ce1e071f5481c1d71f85",
+  "source_commit": "2c4917af059f1b4f9e48899cb5fced450b660f42"
 }

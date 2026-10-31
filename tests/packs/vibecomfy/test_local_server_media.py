@@ -8,6 +8,7 @@ import importlib
 import json
 import threading
 import zipfile
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -270,6 +271,14 @@ def comfy_video(tmp_path, monkeypatch):
                 self.send({self.path.rsplit("/", 1)[1]: state.histories[self.path.rsplit("/", 1)[1]]})
             elif self.path == "/queue":
                 self.send({"queue_running": [], "queue_pending": []})
+            elif self.path.startswith("/view?"):
+                name = parse_qs(urlsplit(self.path).query)["filename"][0]
+                data = (user_output / name).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             else:
                 self.send({})
 

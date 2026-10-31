@@ -77,6 +77,15 @@ def _dispatch_skills(args: list[str]) -> int:
     return int(main(args))
 
 
+def _dispatch_generate(args: list[str]) -> int:
+    if args and args[0] in {"image", "video"}:
+        from astrid.core.generation.cli import main
+    else:
+        from astrid.core.generation.listing import main
+
+    return main(args)
+
+
 def _dispatch_status(args: list[str]) -> int:
     """Observe workspace/Runtime/readiness without launcher or provisioning."""
     import argparse
@@ -575,6 +584,7 @@ _TOP_LEVEL_HANDLERS = {
     "media": _dispatch_media,
     "tasks": lambda args: _dispatch_product(["tasks", *args]),
     "runs": lambda args: _dispatch_product(["runs", *args]),
+    "generate": _dispatch_generate,
     "dev": lambda args: _dispatch_dev(args),
     "doctor": _dispatch_doctor,
     "backup": _dispatch_backup,

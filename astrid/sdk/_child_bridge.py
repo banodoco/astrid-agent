@@ -39,6 +39,9 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\Z")
 _OUTPUT_FIELDS = {"association_id", "run_id", "task_id", "attempt_id", "object_id",
                   "digest", "size", "filename", "media_type", "output_port", "ordinal"}
 
+_PUBLICATION_OUTPUT_FIELDS = _OUTPUT_FIELDS | {"project_id", "generation_id", "group_key", "variant_key", "provenance"}
+_PUBLICATION_TYPED_FIELDS = frozenset({"kind", "name", "digest", "object_id", "size", "filename",
+    "media_type", "output_port", "ordinal", "group_key", "variant_key", "durability", "role", "is_primary"})
 
 
 _BRIDGE_OPERATIONS = frozenset({"submit", "status", "outputs", "publish_snapshot", "materialize_output"})
@@ -140,7 +143,8 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def _validate_output(value: Any, *, task_id: str, run_id: str | None = None,
                      attempt_id: str | None = None) -> dict[str, Any]:
     """Validate the exact public host projection, never authority or bytes."""
-    if (type(value) is not dict or set(value) != _OUTPUT_FIELDS
+    if (type(value) is not dict or not _OUTPUT_FIELDS <= set(value) or set(value) - _OUTPUT_FIELDS - {"group_key", "variant_key", "producer"}
+            or ("group_key" in value) != ("variant_key" in value)
             or any(not _valid_id(value[name]) for name in
                    ("association_id", "run_id", "task_id", "attempt_id"))
             or value["task_id"] != task_id
@@ -151,6 +155,10 @@ def _validate_output(value: Any, *, task_id: str, run_id: str | None = None,
             or type(value["object_id"]) is not str or value["object_id"] != value["digest"]
             or type(value["size"]) is not int or not 0 <= value["size"] <= 5 * 1024 ** 3
             or type(value["ordinal"]) is not int or value["ordinal"] < 0
+            or any(type(value[k]) is not str or not value[k] for k in ("group_key", "variant_key") if k in value)
+            or ("producer" in value and (type(value["producer"]) is not dict
+                or not value["producer"] or set(value["producer"]) - {"output_port", "producer_output_id"}
+                or any(type(v) is not str or not v or len(v) > 255 for v in value["producer"].values())))
             or not _relative_filename(value["filename"])
             or any(type(value[name]) is not str or not value[name]
                    or any(ord(char) < 32 or ord(char) == 127 for char in value[name])
@@ -168,6 +176,89 @@ def _validate_output_page(value: Any, *, task_id: str, run_id: str | None = None
     if len({row["association_id"] for row in rows}) != len(rows):
         raise ValueError("duplicate child output association")
     return rows
+
+
+def _validate_publication_readback(value: Any, *, task_id: str, run_id: str,
+                                   attempt_id: str,
+                                   managed_outputs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate the named-publication supplement; ordinary output ABI stays exact.
+
+    The supplement is carried only by an authenticated staged host reply. It is
+    receipt evidence, never an input binding or a materialization credential.
+    """
+    if (type(value) is not dict or set(value) != {"version", "task", "result", "managed_outputs"}
+            or type(value["version"]) is not int or value["version"] != 1):
+        raise ValueError("invalid publication readback version or shape")
+    task, settled, rows = value["task"], value["result"], value["managed_outputs"]
+    if (type(task) is not dict or set(task) != {"task_id", "run_id", "attempt_id", "state",
+            "project_id", "generation_intent", "expected_effect", "result"}
+            or (task["task_id"], task["run_id"], task["attempt_id"]) != (task_id, run_id, attempt_id)
+            or task["state"] not in {"completed", "succeeded"}
+            or not _valid_id(task["project_id"])
+            or type(task["generation_intent"]) is not dict or type(task["expected_effect"]) is not dict
+            or task["expected_effect"].get("effect_type") != "generation.publish_v1"
+            or task["expected_effect"].get("target_id") != task["project_id"]
+            or task["result"] != settled):
+        raise ValueError("invalid publication task readback")
+    if (type(settled) is not dict or set(settled) != {"payload", "outputs", "generation_publish_v1"}
+            or type(settled["payload"]) is not dict or set(settled["payload"]) - {"action_result"}
+            or type(settled["outputs"]) is not list or len(settled["outputs"]) > 256
+            or any(type(row) is not dict or set(row) - _PUBLICATION_TYPED_FIELDS
+                   for row in settled["outputs"])):
+        raise ValueError("invalid publication settlement readback")
+    applied = settled["generation_publish_v1"]
+    if (type(applied) is not dict or set(applied) != {"effect_type", "publications"}
+            or applied["effect_type"] != "generation.publish_v1"
+            or type(applied["publications"]) is not list or len(applied["publications"]) > 32):
+        raise ValueError("invalid publication effect readback")
+    for publication in applied["publications"]:
+        if (type(publication) is not dict
+                or set(publication) != {"group_key", "generation_id", "variants", "missing_selectors"}
+                or type(publication["variants"]) is not list or len(publication["variants"]) > 256
+                or publication["missing_selectors"] != []):
+            raise ValueError("invalid publication group readback")
+        for variant in publication["variants"]:
+            if (type(variant) is not dict or set(variant) != {"variant_id", "generation_id", "object_id",
+                    "variant_key", "ordinal", "output_port"}):
+                raise ValueError("invalid publication variant readback")
+    if type(rows) is not list or len(rows) > 256:
+        raise ValueError("invalid publication managed output readback")
+    base = []
+    for row in rows:
+        if (type(row) is not dict or set(row) - {"producer"} != _PUBLICATION_OUTPUT_FIELDS
+                or row["project_id"] != task["project_id"] or type(row["provenance"]) is not dict):
+            raise ValueError("invalid publication managed output fields")
+        provenance = row["provenance"]
+        if set(provenance) - {"task_id", "attempt_id", "capability_id", "executor_id", "fence", "runtime_epoch", "delegated_publication"}:
+            raise ValueError("unsupported publication provenance")
+        delegated = provenance.get("delegated_publication")
+        if delegated is not None:
+            if (type(delegated) is not dict or set(delegated) - {"name", "parent_task_id", "parent_attempt_id",
+                    "parent_fence", "runtime_epoch", "source_association_id", "source_task_id", "source_attempt_id",
+                    "candidate", "verification", "raw", "raw_publication"}):
+                raise ValueError("unsupported delegated publication provenance")
+            for name in ("candidate", "verification", "raw"):
+                if name in delegated and (type(delegated[name]) is not dict or set(delegated[name]) - {
+                        "producer_task_id", "producer_attempt_id", "association_id", "object_id", "output_port"}):
+                    raise ValueError("unsupported publication source provenance")
+            raw = delegated.get("raw_publication")
+            if raw is not None and (type(raw) is not dict or set(raw) != {"effect_type", "publications"}
+                    or raw["effect_type"] != "generation.publish_v1" or type(raw["publications"]) is not list):
+                raise ValueError("invalid raw publication provenance")
+            # Validate raw lineage with the same finite publication group and
+            # variant schema as the current canonical effect result.
+            if raw is not None:
+                for group in raw["publications"]:
+                    if (type(group) is not dict or set(group) != {"group_key", "generation_id", "variants", "missing_selectors"}
+                            or group["missing_selectors"] != [] or type(group["variants"]) is not list
+                            or any(type(variant) is not dict or set(variant) != {"variant_id", "generation_id", "object_id",
+                                "variant_key", "ordinal", "output_port"} for variant in group["variants"])):
+                        raise ValueError("invalid raw publication provenance group")
+        base.append({key: row[key] for key in _OUTPUT_FIELDS})
+    if (_validate_output_page(base, task_id=task_id, run_id=run_id, attempt_id=attempt_id)
+            != _validate_output_page([{key: row[key] for key in _OUTPUT_FIELDS} for row in managed_outputs], task_id=task_id, run_id=run_id, attempt_id=attempt_id)):
+        raise ValueError("publication readback disagrees with verified managed outputs")
+    return json.loads(_strict_json(value))
 
 
 class _ChildOutputBinding:
@@ -249,7 +340,7 @@ def _validate_child_policy(value: Mapping[str, Any] | None) -> dict[str, Any] | 
         raise CapabilityValidationError("child_delegation must be an object")
     copied = dict(value)
     required = {"capabilities", "targets", "input_object_ids"}
-    if not required <= copied.keys() or copied.keys() - required - {"limits", "stages", "final_publication", "recoverable_outputs", "discovery_grant"}:
+    if not required <= copied.keys() or copied.keys() - required - {"limits", "stages", "final_publication", "publications", "recoverable_outputs", "discovery_grant"}:
         raise CapabilityValidationError("child_delegation requires a finite policy shape")
     for name, maximum, nonempty in (("capabilities", 32, True), ("targets", 32, True),
                                     ("input_object_ids", 256, False), ("stages", 32, True)):
@@ -261,6 +352,18 @@ def _validate_child_policy(value: Mapping[str, Any] | None) -> dict[str, Any] | 
     limits = copied.get("limits", {})
     if type(limits) is not dict or any(type(n) is not int or n <= 0 for n in limits.values()):
         raise CapabilityValidationError("child_delegation.limits must contain positive finite integers")
+    if "publications" in copied:
+        publications = copied["publications"]
+        if ("final_publication" in copied or "stages" not in copied
+                or type(publications) is not dict or set(publications) != {"raw", "final"}
+                or type(publications["raw"]) is not dict
+                or set(publications["raw"]) != {"stage", "output_port", "effect"}
+                or type(publications["final"]) is not dict
+                or set(publications["final"]) != {"stage", "output_port", "candidate_stage",
+                    "candidate_output_port", "verify_stage", "verify_output_port", "effect"}):
+            raise CapabilityValidationError("publications requires exact raw/final declarations and stages, without final_publication")
+        # Runtime validates stage order, effect selectors, project authority and
+        # actual publication lineage. This is only the finite transport envelope.
     if "discovery_grant" in copied:
         grant = copied["discovery_grant"]
         identities = {"project_id", "run_id", "task_id", "attempt_id", "capability_id"}
@@ -482,7 +585,10 @@ def _install_child_bridge(channel: socket.socket) -> ChildBridge:
 
 def _child_request(capability: Any, inputs: dict[str, Any], *, digest: str,
                    child_key: str | None, wait: bool, timeout_seconds: float,
-                   poll_seconds: float, execution_request: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                   poll_seconds: float, execution_request: Mapping[str, Any] | None = None,
+                   stage: str | None = None,
+                   input_refs: list[Mapping[str, Any]] | None = None,
+                   generation_intent: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from astrid.core.execution.managed_inputs import managed_file_digest
     descriptors = []
     values = dict(inputs)
@@ -511,6 +617,14 @@ def _child_request(capability: Any, inputs: dict[str, Any], *, digest: str,
              "inputs": values, "input_descriptors": descriptors}
     if execution_request is not None:
         exact["execution_request"] = dict(execution_request)
+    if stage is not None or input_refs is not None:
+        if not isinstance(stage, str) or type(input_refs) is not list:
+            raise CapabilityValidationError("staged child requires stage and input_refs")
+        exact.update(stage=stage, input_refs=input_refs)
+    if generation_intent is not None:
+        if stage is None or not isinstance(generation_intent, Mapping):
+            raise CapabilityValidationError("generation intent requires a staged child")
+        exact["generation_intent"] = dict(generation_intent)
     encoded = _strict_json(exact)
     if child_key is None:
         child_key = "sdk-child-" + hashlib.sha256(encoded).hexdigest()

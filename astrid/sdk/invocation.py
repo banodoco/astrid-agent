@@ -56,7 +56,13 @@ _INTERNAL_DISPATCH_TOKEN = object()
 
 
 def _validate_generation_metadata(value: Any) -> dict[str, Any]:
-    """Return a small JSON metadata object safe to persist with a generation."""
+    """Copy extensible generation metadata, including the optional ``gen`` contract.
+
+    ``gen`` carries kind, origin, generator, model, mode, backend, target,
+    machine, workflow_digest, task_id, run_id, seed, cost_usd, duration_ms,
+    and tags. Preserve caller metadata and imported provenance as supplied;
+    unavailable facts need not be invented to publish an older record.
+    """
     if value is None:
         return {}
     if not isinstance(value, Mapping):
@@ -2080,10 +2086,6 @@ def _generation_capability_modality(capability: Any) -> str | None:
         return "video"
     if capability_id.startswith("generation.generate_audio"):
         return "audio"
-    if capability_id in {"wan2gp.generate_video", "fal.h3_video", "vibecomfy.character_animation", "vibecomfy.video_enhance"}:
-        return "video"
-    if capability_id == "fal.fal_foley":
-        return "audio"
     definition = getattr(capability, "definition", None)
     metadata = definition.get("metadata", {}) if isinstance(definition, Mapping) else {}
     publication = metadata.get("generation_publication") if isinstance(metadata, Mapping) else None
@@ -2170,10 +2172,11 @@ def _automatic_generation_intent(
     """
     if modality is None or getattr(capability, "capability_type", None) != "executor":
         return None
-    capability_id = str(getattr(capability, "id", ""))
-    if capability_id == "generation.generate_image_openai":
+    if (str(getattr(capability, "id", "")) == "generation.generate_image_openai"
+            and not isinstance(inputs.get("jobs"), str)):
+        # OpenAI prompt files must already have expanded from authenticated
+        # bytes. A manifest count default is not an output cardinality witness.
         return None
-
     count_value: Any = inputs.get("count")
     if count_value is None:
         for port in getattr(capability, "inputs", ()) or ():
@@ -2608,7 +2611,7 @@ def _kernel_invoke(
                 raise CapabilityValidationError(
                     f"VibeComfy invocation preflight failed: {exc}"
                 ) from exc
-    if str(capability.id) == "generation.generate_image_codex":
+    if str(capability.id) in {"generation.generate_image_codex", "generation.generate_image_openai"}:
         # Bounded host profiles consume typed params as their single input
         # authority, including the ordered CAS descriptors.
         spec["params"] = spec.pop("inputs")
@@ -2633,13 +2636,15 @@ def _kernel_invoke(
     # manifest; otherwise a remote GenericPackHost can see the descriptor but
     # is correctly forbidden from fetching it.  This was especially easy to
     # miss for VibeComfy's canonical sibling bundle and managed source video.
-    file_input_names = {
+    file_input_names = [
         str(port.name)
         for port in (getattr(capability, "inputs", ()) or ())
         if getattr(port, "name", None)
         and str(getattr(port, "type", "")).lower() == "file"
-    }
-    for name in sorted(file_input_names):
+    ]
+    ordered_file_names = (file_input_names if str(capability.id) == "generation.generate_image_openai"
+                          else sorted(file_input_names))
+    for name in ordered_file_names:
         value = spec.get("inputs", request_inputs).get(name)
         if value is None:
             continue
@@ -3244,6 +3249,7 @@ def _wait_for_kernel_task(
     poll_seconds: float,
     read_managed_outputs: bool = False,
     expects_outputs: bool = False,
+    owner_tick: Any | None = None,
 ) -> tuple[dict[str, Any], bool, str]:
     """Follow one admitted task until completion, failure, or requested cancellation."""
     if not math.isfinite(float(timeout_seconds)) or timeout_seconds <= 0:
@@ -3292,6 +3298,8 @@ def _wait_for_kernel_task(
             }, False, ""
 
         task = dict(data)
+        if owner_tick is not None:
+            owner_tick(task)
         state = str(task.get("state") or task.get("status") or "").lower()
         attempt_id = str(task.get("attempt_id") or "")
         if state in {"succeeded", "completed"}:
@@ -3398,6 +3406,7 @@ def _observe_task_invocation(
     manifest_path: Path | str | None = None,
     expects_outputs: bool = False,
     replay_info: Mapping[str, Any] | None = None,
+    owner_tick: Any | None = None,
 ) -> InvocationResult:
     """Observe a known Runtime task and build the existing SDK result shape.
 
@@ -3487,6 +3496,7 @@ def _observe_task_invocation(
             poll_seconds=poll_seconds,
             read_managed_outputs=read_managed_outputs,
             expects_outputs=expects_outputs,
+            owner_tick=owner_tick,
         )
         if waited_attempt_id:
             attempt_id = waited_attempt_id
@@ -3774,7 +3784,7 @@ def observe_task_invocation(
     return observed
 
 
-def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_seconds):
+def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_seconds, owner_tick=None):
     """Observe a frozen admission before any live manifest/preflight resolution."""
     result = receipt.recover_task()
     metadata = receipt.data["metadata"]
@@ -3807,12 +3817,15 @@ def _resume_receipt_invocation(receipt, *, client, wait, timeout_seconds, poll_s
         out=metadata.get("out"),
         project=metadata.get("project"),
         authority_context=metadata.get("authority_context"),
+        owner_tick=owner_tick,
     )
 
 
 def _invoke_bridge_child(
     capability: Any, *, registries: Any, inputs: dict[str, Any], bridge: Any,
     child_key: str | None, wait: bool, timeout_seconds: float, poll_seconds: float,
+    stage: str | None = None, input_refs: list[Mapping[str, Any]] | None = None,
+    generation_intent: Mapping[str, Any] | None = None,
     execution_request: Mapping[str, Any] | None = None,
 ) -> InvocationResult:
     """Use only attempt-scoped admission/readback, preserving SDK result DTOs."""
@@ -3820,12 +3833,13 @@ def _invoke_bridge_child(
     from astrid.core.foundation.hash import executor_definition_digest
     from ._child_bridge import (
         _BridgeRejected, _BridgeReplyTimeout, _BridgeTimeout, _ChildOutputBinding,
-        _child_request, _valid_id, _validate_output_page,
+        _child_request, _valid_id, _validate_output_page, _validate_publication_readback,
     )
 
     digest = executor_definition_digest(registries[0].get(capability.id))
     request = _child_request(capability, inputs, digest="sha256:" + digest, child_key=child_key,
                              wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+                             stage=stage, input_refs=input_refs, generation_intent=generation_intent,
                              execution_request=execution_request)
     try:
         data = bridge.submit(request)
@@ -3904,6 +3918,16 @@ def _invoke_bridge_child(
             from .actions import validate_action_output_definition
 
             validate_action_output_definition(capability.definition, payload["action_result"])
+    base_outputs = _invocation_outputs(raw, manifest_path=None, capability_id=capability.id)
+    if wait and ok and stage is not None and "publication_readback" in latest_status:
+        try:
+            evidence = _validate_publication_readback(latest_status["publication_readback"],
+                task_id=task_id, run_id=run_id, attempt_id=attempt_id,
+                managed_outputs=base_outputs.get("managed_outputs", []))
+        except ValueError as exc:
+            bridge.close()
+            raise CapabilityInvocationError("child publication readback is invalid") from exc
+        raw.update({key: evidence[key] for key in ("task", "result", "managed_outputs")})
     raw["executor_version"] = digest
     error = raw.get("error")
     result = InvocationResult(
@@ -3911,9 +3935,8 @@ def _invoke_bridge_child(
         native_kind=capability.native_kind, ok=ok,
         error={**error, "sdk_error": "CapabilityRuntimeError", "sdk_category": "runtime"}
         if isinstance(error, Mapping) else None,
-        raw_result=raw, run_id=run_id, outputs=_invocation_outputs(
-            raw, manifest_path=None, capability_id=capability.id,
-        ), executor_version=digest, kernel_run_id=run_id,
+        raw_result=raw, run_id=run_id, outputs=base_outputs,
+        executor_version=digest, kernel_run_id=run_id,
         kernel_task_id=task_id, kernel_attempt_id=attempt_id,
     )
     if wait and ok:
@@ -3924,6 +3947,88 @@ def _invoke_bridge_child(
 
 _AUDIO_TTS_PASSTHROUGH_INPUTS = frozenset({"voice", "rate", "volume", "pitch", "provider"})
 _AUDIO_TTS_IGNORED_INPUTS = frozenset({"mode", "model", "execution"})
+
+
+def _openai_image_reference_ports(inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze the public reference order into existing scalar CAS file ports."""
+    values = dict(inputs)
+    reference = values.pop("image_ref", None)
+    if reference is None:
+        return values
+    references = reference if isinstance(reference, (list, tuple)) else [reference]
+    if not 1 <= len(references) <= 16:
+        raise CapabilityValidationError("OpenAI image_ref requires between 1 and 16 references")
+    if any(f"image_ref_{index:02d}" in values for index in range(16)):
+        raise CapabilityValidationError("OpenAI image_ref cannot be mixed with scalar reference ports")
+    for index, item in enumerate(references):
+        if item is None:
+            raise CapabilityValidationError("OpenAI references must not contain null values")
+        values[f"image_ref_{index:02d}"] = item
+    return values
+
+
+def _prepare_openai_image_inputs(
+    capability: Any, inputs: Mapping[str, Any], *, client: Any,
+) -> dict[str, Any]:
+    """Authenticate managed bytes before expanding jobs or deriving admission intent."""
+    from astrid.core.execution.managed_inputs import managed_file_digest
+    from astrid.core.generation.backends.openai import normalize_request, validate_reference_bytes
+
+    values = dict(inputs)
+    unknown = set(values) - {str(port.name) for port in capability.inputs}
+    if unknown:
+        raise CapabilityValidationError(f"OpenAI request contains undeclared inputs: {', '.join(sorted(unknown))}")
+    if values.get("execution", "openai") != "openai":
+        raise CapabilityValidationError("OpenAI image execution must be openai")
+    metadata = capability.definition.get("metadata", {})
+    limits = metadata.get("storage_input_max_bytes", {})
+    files: list[tuple[str, str, int, Mapping[str, Any]]] = []
+    seen_references: set[str] = set()
+    for port in capability.inputs:
+        name = str(port.name)
+        if str(port.type).lower() != "file" or values.get(name) is None:
+            continue
+        descriptor = values[name]
+        if not isinstance(descriptor, Mapping):
+            raise CapabilityValidationError(f"OpenAI {name} requires a managed descriptor with size_bytes")
+        try:
+            digest = managed_file_digest(descriptor, name)
+        except ValueError as exc:
+            raise CapabilityValidationError(str(exc)) from exc
+        size = descriptor.get("size_bytes")
+        limit = limits.get(name)
+        if (type(size) is not int or size < 1 or type(limit) is not int
+                or size > limit):
+            raise CapabilityValidationError(f"OpenAI {name} has an invalid or oversized size_bytes")
+        if name.startswith("image_ref_"):
+            if digest in seen_references:
+                raise CapabilityValidationError("OpenAI references must use distinct managed objects")
+            seen_references.add(digest)
+        files.append((name, digest, size, descriptor))
+
+    reader = getattr(getattr(client, "media", None), "read_bytes", None)
+    if files and not callable(reader):
+        raise CapabilityValidationError("OpenAI managed inputs require the Runtime object reader")
+    prompt_bytes = None
+    for name, digest, size, descriptor in files:
+        try:
+            data = reader(digest)
+        except Exception as exc:
+            raise CapabilityValidationError(f"OpenAI managed input {name!r} could not be authenticated") from exc
+        if (type(data) is not bytes or len(data) != size
+                or hashlib.sha256(data).hexdigest() != digest.removeprefix("sha256:")):
+            raise CapabilityValidationError(f"OpenAI managed input {name!r} differs from its digest or size")
+        if name == "prompts_file":
+            prompt_bytes = data
+        else:
+            try:
+                validate_reference_bytes(data, index=int(name.rsplit("_", 1)[1]))
+            except ValueError as exc:
+                raise CapabilityValidationError(str(exc)) from exc
+    try:
+        return normalize_request(values, prompt_bytes=prompt_bytes)
+    except ValueError as exc:
+        raise CapabilityValidationError(str(exc)) from exc
 
 
 def _speech_inputs_from_audio_request(inputs: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -3971,6 +4076,8 @@ def invoke(
     idempotency_key: str | None = None,
     child_delegation: Mapping[str, Any] | None = None,
     child_key: str | None = None,
+    stage: str | None = None,
+    input_refs: list[Mapping[str, Any]] | None = None,
     outputs: Mapping[str, Any] | None = None,
     brief: Path | str | None = None,
     dry_run: bool = False,
@@ -4004,6 +4111,8 @@ def invoke(
     if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key):
         raise CapabilityValidationError("idempotency_key must be a non-empty string")
     child_mode = _child_bridge._bridge is not None or child_key is not None
+    if not child_mode and (stage is not None or input_refs is not None):
+        raise CapabilityValidationError("staged invocation requires a live child bridge")
     if child_mode and child_delegation is not None:
         raise CapabilityValidationError("child invocation cannot set child_delegation")
     validated_child_policy = _child_bridge._validate_child_policy(child_delegation)
@@ -4017,8 +4126,26 @@ def invoke(
         raise TypeError("private capabilities can only be invoked through internal dispatch")
     if not isinstance(read_managed_outputs, bool):
         raise CapabilityValidationError("read_managed_outputs must be a boolean")
-    if resume and recovery_path is None:
+    if resume and recovery_path is None and capability_id != "h3_av.transform":
         raise CapabilityValidationError("resume requires recovery_path")
+    owner_tick = None
+    if capability_id == "h3_av.transform" and not child_mode:
+        public_inputs = dict(inputs or {})
+        for name in ("resume", "dry_run"):
+            if name in public_inputs and type(public_inputs[name]) is not bool:
+                raise CapabilityValidationError(f"H3 {name} must be an explicit boolean")
+        resume = public_inputs.pop("resume", resume)
+        dry_run = public_inputs.pop("dry_run", dry_run)
+        inputs = public_inputs
+        if recovery_path is None and out is not None and (resume or public_inputs.get("prepared_worker") is not None):
+            recovery_path = Path(out) / "h3-parent-recovery.json"
+        if resume and recovery_path is None:
+            raise CapabilityValidationError("resume requires recovery_path")
+        if public_inputs.get("prepared_worker") is not None and not dry_run:
+            if not wait or recovery_path is None:
+                raise CapabilityValidationError("prepared H3 requires wait=True and a parent recovery receipt")
+            from astrid.packs.runpod.prepared_task import PreparedH3OwnerMonitor
+            owner_tick = PreparedH3OwnerMonitor(client, public_inputs["prepared_worker"])
     if recovery_path is not None and _recovery is None:
         if dry_run:
             raise CapabilityValidationError("recovery is unavailable for dry-run previews")
@@ -4037,7 +4164,7 @@ def invoke(
             with AdmissionReceipt(recovery_path, request=request, client=client, resume=resume) as receipt:
                 if resume:
                     return _resume_receipt_invocation(receipt, client=client, wait=wait,
-                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+                        timeout_seconds=timeout_seconds, poll_seconds=poll_seconds, owner_tick=owner_tick)
                 forwarded["_recovery"] = receipt
                 forwarded.pop("capability_id")
                 return invoke(capability_id, **forwarded)
@@ -4062,6 +4189,12 @@ def invoke(
     # bounded runtime profile for Codex (the cloud profile remains closed).
     if capability_id == "generation.generate_image" and (inputs or {}).get("execution") == "codex":
         capability_id = "generation.generate_image_codex"
+    if capability_id == "generation.generate_image" and (
+        (inputs or {}).get("execution") == "openai"
+        or isinstance((inputs or {}).get("model"), str)
+        and (inputs or {})["model"].startswith("gpt-image")
+    ):
+        capability_id = "generation.generate_image_openai"
     # generation.generate_audio mode=tts is the speech route: it is served by
     # the exact-text Edge TTS executor, not by the music backend.
     if capability_id == "generation.generate_audio" and (inputs or {}).get("mode") == "tts":
@@ -4084,8 +4217,37 @@ def invoke(
     if kind == "action":
         kind = capability.capability_type
 
+    if capability.id == "h3_av.transform" and "host_output_root" in (inputs or {}):
+        raise CapabilityValidationError("H3 output custody is host-owned")
+
     intent_modality = _generation_capability_modality(capability)
     request_inputs = dict(inputs or {})
+    if capability.id == "generation.generate_image_openai":
+        request_inputs = _openai_image_reference_ports(request_inputs)
+        request_inputs.setdefault("model", "gpt-image-2")
+        request_inputs.setdefault("execution", "openai")
+        request_inputs.setdefault("mode", "edit" if any(
+            request_inputs.get(f"image_ref_{index:02d}") is not None for index in range(16)
+        ) else "t2i")
+        if child_mode and any(name in request_inputs for name in (
+            "generation_intent", "variant_of", "primary",
+        )):
+            raise CapabilityValidationError(
+                "OpenAI child publication intent is host-derived; publication controls are not accepted"
+            )
+        if child_mode:
+            # Child object custody uses the existing scalar identity protocol.
+            # The host authenticates the retained bytes and checks their size;
+            # media display metadata is not part of that wire descriptor.
+            for name in ("prompts_file", *(f"image_ref_{index:02d}" for index in range(16))):
+                value = request_inputs.get(name)
+                if isinstance(value, Mapping) and ({"digest", "object_id"} & value.keys()):
+                    if set(value) - {"digest", "object_id", "filename", "media_type", "size_bytes"}:
+                        raise CapabilityValidationError(f"OpenAI child file {name!r} contains unsupported fields")
+                    request_inputs[name] = {
+                        key: item for key, item in value.items()
+                        if key in {"digest", "object_id", "filename"}
+                    }
     if capability.id == "rendering.render":
         # Apply caller/mode checks before delegated child dispatch as well as
         # top-level preflight. Child file custody still belongs to the bridge.
@@ -4111,7 +4273,7 @@ def invoke(
         variant_context = {"variant_of": variant_of, "primary": primary}
     generation_intent: dict[str, Any] | None = None
     if "generation_intent" in request_inputs:
-        if intent_modality is None and capability.id != "vibecomfy.run":
+        if intent_modality is None and capability.id not in {"vibecomfy.run", "h3_av.publication_finalizer"}:
             raise CapabilityValidationError(
                 "generation_intent is only accepted for generation capabilities"
             )
@@ -4132,7 +4294,7 @@ def invoke(
         )
         # Intent is admission metadata, not an executor-facing input port.
         request_inputs.pop("generation_intent")
-    elif not dry_run:
+    elif not dry_run and capability.id != "generation.generate_image_openai":
         generation_intent = _automatic_generation_intent(
             capability,
             request_inputs,
@@ -4144,12 +4306,44 @@ def invoke(
                 "output cardinality is not safely inferable at admission"
             )
 
+    h3_preview_controls = None
+    if dry_run and capability.id == "h3_av.transform" and not child_mode:
+        from astrid.packs.h3_av.actions.transform.run import PUBLIC_CONTROLS, public_controls
+        h3_preview_controls = public_controls(request_inputs)
+        request_inputs = {key: value for key, value in request_inputs.items() if key not in PUBLIC_CONTROLS}
+    if not dry_run and capability.id == "h3_av.transform" and not child_mode:
+        if capability.capability_type != "executor":
+            raise CapabilityPreconditionError("H3 requires a Runtime-admitted executor parent")
+        if validated_child_policy is not None or outputs or orchestrator_args:
+            raise CapabilityValidationError("tracked H3 parent owns its stage and output mapping")
+        if normalized_execution_request is not None:
+            target = normalized_execution_request.get("target", {"kind": "default"})
+            if target != {"kind": "default"} or normalized_execution_request.get("inputs"):
+                raise CapabilityValidationError("tracked H3 parent requires its default target and managed roots")
+        project = project or _runtime_selected_project(_client)
+        from astrid.packs.h3_av.actions.transform.run import project_parent
+        from astrid.core.contracts.errors import AstridError
+        try:
+            request_inputs, validated_child_policy = project_parent(
+                request_inputs, project=project, client=_client, registry=registries[0])
+            project = request_inputs["plan"]["project"]
+        except (AstridError, ValueError, OSError) as exc:
+            raise CapabilityPreconditionError(str(exc)) from exc
+
     from .actions import validate_action_inputs
 
     effective_inputs = dict(request_inputs)
+    if child_mode and capability.id == "h3_av.publication_finalizer" and generation_intent is not None:
+        effective_inputs["generation_intent"] = generation_intent
     for port in capability.inputs if hasattr(capability, "inputs") else ():
         if port.name not in effective_inputs and port.default is not None:
             effective_inputs[port.name] = port.default
+    if capability.id == "generation.generate_image_openai" and child_mode:
+        # ``count`` becomes total output cardinality only after host-side
+        # expansion. Do not turn a manifest default into a caller count/n.
+        for name in ("count", "n"):
+            if name not in request_inputs:
+                effective_inputs.pop(name, None)
     validate_action_inputs(capability, effective_inputs)
 
     if child_mode:
@@ -4188,6 +4382,7 @@ def invoke(
             capability, registries=registries, inputs=effective_inputs,
             bridge=_child_bridge._bridge, child_key=child_key,
             wait=wait, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+            stage=stage, input_refs=input_refs, generation_intent=generation_intent if stage else None,
             execution_request=normalized_execution_request,
         )
 
@@ -4237,6 +4432,21 @@ def invoke(
         if not isinstance(idempotency_context, Mapping):
             raise CapabilityValidationError("idempotency_context must be an object")
         invocation_authority_context = _json_safe_mapping(dict(idempotency_context))
+    if capability.id == "generation.generate_image_openai" and not dry_run:
+        from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+
+        request_inputs = _prepare_openai_image_inputs(capability, request_inputs, client=_client)
+        invocation_storage_estimate = OPENAI_IMAGE_STORAGE_POLICY.estimate
+        if generation_intent is None:
+            generation_intent = _automatic_generation_intent(
+                capability, request_inputs, modality=intent_modality,
+            )
+        if generation_intent is None:
+            raise CapabilityValidationError("OpenAI output cardinality is not safely inferable")
+        selectors = [selector for group in generation_intent["groups"] for selector in group["selectors"]]
+        if (len(selectors) != request_inputs["count"]
+                or sorted(selector["ordinal"] for selector in selectors) != list(range(request_inputs["count"]))):
+            raise CapabilityValidationError("OpenAI generation_intent differs from the expanded output cardinality")
     if capability.id == "generation.generate_image_codex":
         count = request_inputs.get("count", 1)
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 4:
@@ -4368,6 +4578,7 @@ def invoke(
     modality = {
         "generation.generate_image": "image",
         "generation.generate_image_codex": "image",
+        "generation.generate_image_openai": "image",
         "generation.generate_video": "video",
         "generation.generate_audio": "audio",
     }.get(str(capability.id))
@@ -4407,6 +4618,7 @@ def invoke(
             execution=request_inputs.get("execution"),
             inputs=request_inputs,
             modality=modality,
+            **({"required_features": ()} if capability.id == "generation.generate_image_openai" else {}),
         )
         if request_inputs.get("execution") == "local":
             require_local_generation_readiness(
@@ -4419,6 +4631,13 @@ def invoke(
     # already resolved manifest DTO and does not import either runner or any
     # local project/run authority.
     if dry_run:
+        if h3_preview_controls is not None:
+            from astrid.packs.h3_av.actions.transform.run import STAGES
+            return InvocationResult(capability_id=capability.id, capability_type=capability.capability_type,
+                native_kind=capability.native_kind, ok=True, outputs={}, raw_result={
+                    "status": "planned", "parent_target": {"kind": "default"},
+                    "run_execution_request": h3_preview_controls["run_execution_request"],
+                    "stages": [{"stage": name, "capability_id": child} for name, child in STAGES]})
         try:
             raw_result, preview_ok = _manifest_dry_run_result(
                 capability,
@@ -4583,6 +4802,7 @@ def invoke(
             project=project,
             authority_context=invocation_authority_context,
             manifest_path=mpath,
+            owner_tick=owner_tick,
         )
     except AstridSDKError:
         raise

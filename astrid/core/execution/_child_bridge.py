@@ -28,8 +28,11 @@ from astrid.sdk._child_bridge import (
     _bridge_io_failure_frame,
     _strict_json,
     _validate_output,
+    _validate_publication_readback,
+    _PUBLICATION_TYPED_FIELDS,
     _write_bridge_io_failure,
 )
+
 from astrid.sdk.execution_request import ExecutionRequestError, normalize_execution_request
 
 from .generic_host import (
@@ -83,6 +86,97 @@ def resource(value: Any) -> dict[str, Any]:
 def task_resource(value: Any) -> dict[str, Any]:
     result = resource(value)
     return resource(result.get("task", result))
+
+
+def _staged_child_task(*, child: Mapping[str, Any], inputs: Mapping[str, Any],
+                       ordered_inputs: list[Mapping[str, Any]], stage: str,
+                       input_refs: list[Mapping[str, Any]],
+                       execution_request: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Build the typed transport; Runtime alone resolves managed lineage.
+
+    This private host seam does not accept producer filenames as input refs or
+    add Runtime-owned spec fields, publication sources or settlement effects.
+    """
+    from astrid.sdk.execution_request import normalize_execution_request
+
+    if (not isinstance(child, Mapping)
+            or set(child) != {"child_id", "capability_id", "capability_digest"}
+            or type(child["child_id"]) is not str or not _KEY.fullmatch(child["child_id"])
+            or type(child["capability_id"]) is not str or not child["capability_id"]
+            or type(child["capability_digest"]) is not str or not _DIGEST.fullmatch(child["capability_digest"])):
+        raise ChildBridgeError("staged child requires one exact pinned identity")
+    if (type(stage) is not str or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", stage) is None
+            or type(input_refs) is not list or len(input_refs) > 256
+            or type(ordered_inputs) is not list or len(ordered_inputs) != len(input_refs)
+            or not isinstance(inputs, Mapping)):
+        raise ChildBridgeError("staged child requires stage and ordered managed input refs")
+    refs = []
+    for ref in input_refs:
+        if not isinstance(ref, Mapping):
+            raise ChildBridgeError("staged input ref must be a managed root or association")
+        ref = dict(ref)
+        if (type(ref.get("name")) is not str or not ref["name"] or len(ref["name"]) > 128
+                or set(ref) not in ({"name", "root_object_id"},
+                                    {"name", "producer_task_id", "association_id", "output_port"})):
+            raise ChildBridgeError("staged input ref must be a managed root or association")
+        if "root_object_id" in ref:
+            if type(ref["root_object_id"]) is not str or not _DIGEST.fullmatch(ref["root_object_id"]):
+                raise ChildBridgeError("staged root input requires a managed object ID")
+        elif any(type(ref[key]) is not str or not ref[key]
+                 for key in ("producer_task_id", "association_id", "output_port")):
+            raise ChildBridgeError("staged producer input requires an actual managed association")
+        refs.append(ref)
+    names = [ref["name"] for ref in refs]
+    if (len(set(names)) != len(names)
+            or any(not isinstance(item, Mapping) for item in ordered_inputs)
+            or [item.get("name") for item in ordered_inputs] != names):
+        raise ChildBridgeError("staged descriptors must match managed input ref order")
+    descriptors = []
+    for original in ordered_inputs:
+        if (type(original.get("required")) is not bool
+                or not {"name", "object_id", "filename"} <= original.keys()
+                or type(original["object_id"]) is not str or not _DIGEST.fullmatch(original["object_id"])
+                or original.get("digest", original["object_id"]) != original["object_id"]):
+            raise ChildBridgeError("staged managed input descriptor is incomplete")
+        descriptors.append({key: original[key] for key in ("name", "object_id", "filename", "required")})
+    if execution_request is not None and execution_request.get("inputs"):
+        raise ChildBridgeError("staged execution controls cannot supply managed inputs")
+    request = normalize_execution_request({
+        **dict(execution_request or {"schema_version": 1, "target": {"kind": "default"}}), "inputs": descriptors,
+    })
+    child_inputs = dict(inputs)
+    for descriptor in request.pop("inputs", []):
+        child_inputs[descriptor["name"]] = {
+            key: descriptor[key] for key in ("object_id", "filename", "required")}
+    task = {"capability_id": child["capability_id"], "capability_digest": child["capability_digest"],
+            "stage": stage, "input_refs": refs,
+            "spec": {"capability_id": child["capability_id"], "kind": "action", "inputs": child_inputs},
+            "execution_request": request}
+    # Snapshot mutable producer data before authority issuance or network I/O.
+    return json.loads(_strict_json(task))
+
+
+def _validate_compose_evidence(inputs: Mapping[str, Any], stage_refs: list[Mapping[str, Any]],
+                               verified_outputs: Mapping[tuple[str, str], Mapping[str, Any]]) -> None:
+    try:
+        from astrid.sdk._child_bridge import _unique_json_object
+        evidence = json.loads(inputs["generation_provenance"], object_pairs_hook=_unique_json_object)
+        roles = {"video": "generated", "audio": "generated_audio"} if any(ref.get("name") == "generated_audio" for ref in stage_refs) else {"muxed_av": "generated"}
+        if (type(evidence) is not dict or set(evidence) != {"run_id", "task_id", "attempt_id", "output_contract", "generated_outputs"}
+                or type(evidence["generated_outputs"]) is not dict or set(evidence["generated_outputs"]) != set(roles)):
+            raise ValueError("invalid association evidence")
+        expected_contract = "separate_av_full_timeline" if any(ref.get("name") == "generated_audio" for ref in stage_refs) else "muxed_av_full_timeline"
+        if evidence["output_contract"] != expected_contract:
+            raise ValueError("output contract differs from staged inputs")
+        for role, name in roles.items():
+            ref = next(item for item in stage_refs if item["name"] == name)
+            output = verified_outputs[(ref["producer_task_id"], ref["association_id"])]
+            if (evidence["generated_outputs"][role] != output
+                    or (evidence["run_id"], evidence["task_id"], evidence["attempt_id"]) !=
+                       (output["run_id"], output["task_id"], output["attempt_id"])):
+                raise ValueError("association evidence differs from verified producer")
+    except (KeyError, TypeError, ValueError, StopIteration) as exc:
+        raise ChildBridgeError("compose association evidence is not host-verified") from exc
 
 
 def _snapshot_grant(task: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -423,6 +517,13 @@ class HostChildBridge:
         with self._admission_lock:
             self._revoked.set()
         self.close_channel()
+        with self._admission_lock:
+            slots = [bound["claim_slot"] for bound in self._children.values() if "claim_slot" in bound]
+        for slot in slots:
+            # The child's own run_task finalizer owns cleanup. In particular,
+            # _live may revoke from that same child thread; shutdown() would
+            # wait for the active parent/child accounting to reach zero.
+            slot._shutdown.set()
         # Revocation can race the monitor and caller finalizer.
         with self._fd_lock:
             fd, self._attempt_fd = self._attempt_fd, None
@@ -508,7 +609,14 @@ class HostChildBridge:
             live()
         if self.policy is None:
             raise ChildBridgeError("child submission requires persisted child policy")
+        staged_request = "stage" in request or "input_refs" in request
         execution_request = self._child_execution_request(request.get("execution_request"))
+        if staged_request:
+            if request.get("execution_request") is not None:
+                raise ChildBridgeError("staged execution request is frozen by parent policy")
+            # The trusted named stage declaration carries its own target and
+            # controls; ordinary children retain explicit/inherited selection.
+            execution_request = None
         child, inputs, bindings = request["child"], request["inputs"], request["input_descriptors"]
         if (type(child) is not dict or set(child) != {"capability_id", "capability_digest"}
                 or type(inputs) is not dict or type(bindings) is not list):
@@ -526,6 +634,10 @@ class HostChildBridge:
                                   noun="executor", error_cls=ChildBridgeError)
         from astrid.sdk.actions import validate_action_inputs_definition
         validate_action_inputs_definition(record.definition, inputs)
+        if record.id == "generation.generate_image_openai":
+            unknown = set(inputs) - {port.name for port in record.definition.inputs}
+            if unknown:
+                raise ChildBridgeError("OpenAI child contains undeclared inputs")
         file_ports = {port.name: port for port in record.definition.inputs if port.type == "file"}
         names = [name for name in file_ports if name in inputs]
         if [b.get("name") for b in bindings if isinstance(b, dict)] != names or len(bindings) != len(names):
@@ -539,13 +651,77 @@ class HostChildBridge:
         bound = self._children.get(key)
         if bound is None and len(self._children) >= self.policy["limits"]["max_children"]:
             raise ChildBridgeError("child bridge count exceeds persisted limit")
+        staged = "stage" in request or "input_refs" in request
+        stage_refs = request.get("input_refs")
+        if staged:
+            if (not self.policy.get("stages") or type(request.get("stage")) is not str
+                    or type(stage_refs) is not list or len(stage_refs) != len(bindings)
+                    or [r.get("name") if isinstance(r, dict) else None for r in stage_refs] != names):
+                raise ChildBridgeError("invalid staged input references")
+        intent = request.get("generation_intent")
+        if intent is not None:
+            publications = self.policy.get("publications", {})
+            declarations = [value for value in publications.values()
+                            if isinstance(value, Mapping) and value.get("stage") == request.get("stage")]
+            if not staged or len(declarations) != 1 or not isinstance(intent, dict):
+                raise ChildBridgeError("generation intent requires a named publication stage")
+            payload = declarations[0]["effect"]["payload"]
+            groups = intent.get("groups")
+            declared_groups = payload.get("groups")
+            if (intent.get("modality") != payload.get("modality")
+                    or intent.get("partial_success_policy") != payload.get("partial_success_policy")
+                    or not isinstance(groups, list) or len(groups) != len(declared_groups)):
+                raise ChildBridgeError("generation intent disagrees with publication policy")
+            for supplied, declared in zip(groups, declared_groups):
+                if (not isinstance(supplied, Mapping) or supplied.get("group_key") != declared.get("group_key")
+                        or not isinstance(supplied.get("selectors"), list)
+                        or len(supplied["selectors"]) != len(declared["selectors"])):
+                    raise ChildBridgeError("generation selectors disagree with publication policy")
+                for actual, expected in zip(supplied["selectors"], declared["selectors"]):
+                    if (not isinstance(actual, Mapping) or any(actual.get(key) != expected.get(key)
+                            for key in ("selector", "ordinal", "variant_key", "required"))
+                            or actual.get("output_port", expected["output_port"]) != expected["output_port"]):
+                        raise ChildBridgeError("generation selector disagrees with publication policy")
         refs, ordered = [], []
+        openai_request = record.id == "generation.generate_image_openai"
+        if openai_request:
+            inputs = dict(inputs)
+        authenticated = {}
+        input_limits = record.definition.metadata.get("storage_input_max_bytes", {}) if openai_request else {}
         uploads = []
         snapshot_bytes = 0
         child_bytes = 0
-        for binding in bindings:
+        for index, binding in enumerate(bindings):
             name = binding["name"]
-            if binding.get("kind") == "producer_file":
+            if staged:
+                ref = stage_refs[index]
+                if binding.get("kind") != "object" or not isinstance(ref, dict):
+                    raise ChildBridgeError("staged inputs must be managed objects")
+                oid = binding.get("object_id")
+                if type(oid) is not str or not _DIGEST.fullmatch(oid):
+                    raise ChildBridgeError("invalid staged object identity")
+                if set(ref) == {"name", "root_object_id"}:
+                    if ref["root_object_id"] != oid or oid not in self.policy["input_object_ids"]:
+                        raise ChildBridgeError("staged root outside parent custody")
+                elif set(ref) == {"name", "producer_task_id", "association_id", "output_port"}:
+                    output = self._verified_outputs.get((ref["producer_task_id"], ref["association_id"]))
+                    if (output is None or output["object_id"] != oid
+                            or output["output_port"] != ref["output_port"]):
+                        raise ChildBridgeError("staged association is not a verified child output")
+                else:
+                    raise ChildBridgeError("invalid staged input reference")
+                value = inputs[name]
+                if (not isinstance(value, dict) or set(value) - {"object_id", "digest", "filename"}
+                        or value.get("object_id", value.get("digest")) != oid or value.get("digest", oid) != oid):
+                    raise ChildBridgeError("staged object binding disagrees with input")
+                data = self.client.get_object(oid.removeprefix("sha256:"))
+                if len(data) > _MAX_OBJECT or "sha256:" + hashlib.sha256(data).hexdigest() != oid:
+                    raise ChildBridgeError("staged object bytes failed verification")
+                child_bytes += len(data)
+                ordered.append({"name": name, "object_id": oid,
+                                "filename": _filename(value.get("filename", name)),
+                                "required": file_ports[name].required})
+            elif binding.get("kind") == "producer_file":
                 if set(binding) != {"name", "kind", "filename", "output_port", "media_type"}:
                     raise ChildBridgeError("invalid producer file binding")
                 if inputs[name] != {k: binding[k] for k in ("filename", "output_port", "media_type")}:
@@ -554,6 +730,8 @@ class HostChildBridge:
                     raise ChildBridgeError("invalid producer metadata")
                 maximum = min(_MAX_OBJECT, self.policy["limits"]["max_child_bytes"],
                               self.policy["limits"]["max_derived_bytes"])
+                if openai_request:
+                    maximum = min(maximum, input_limits[name])
                 data = _snapshot(self.output_root, binding["filename"], maximum, attempt_fd=self._attempt_fd)
                 if prepared is not None and name in prepared:
                     self._verify_prepared_snapshot(prepared[name], binding, data)
@@ -589,6 +767,49 @@ class HostChildBridge:
                                 "required": file_ports[name].required})
             else:
                 raise ChildBridgeError("unsupported input binding")
+            if openai_request:
+                if not isinstance(data, bytes) or not data or len(data) > input_limits[name]:
+                    raise ChildBridgeError("OpenAI input exceeds its declared byte limit")
+                authenticated[name] = data
+                # Keep actual authenticated size alongside the digest in the
+                # frozen request; caller metadata never supplies this witness.
+                ordered[-1]["size"] = len(data)
+                inputs[name] = {"object_id": ordered[-1]["object_id"],
+                                "digest": ordered[-1]["object_id"],
+                                "filename": ordered[-1]["filename"], "size_bytes": len(data)}
+        if staged and record.id == "h3_av.compose":
+            _validate_compose_evidence(inputs, stage_refs, self._verified_outputs)
+        admission_extras = {}
+        if openai_request:
+            # Consume only retained authenticated bytes. Never re-open a
+            # producer pathname or trust caller-expanded work/selector counts.
+            from types import SimpleNamespace
+            from astrid.core.generation.backends.openai import normalize_request
+            from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+            from astrid.sdk.invocation import _automatic_generation_intent
+
+            if (child_bytes > self.policy["limits"]["max_child_bytes"]
+                    or len(refs) > self.policy["limits"]["max_derived_objects"]
+                    or snapshot_bytes > self.policy["limits"]["max_derived_bytes"]):
+                raise ChildBridgeError("OpenAI child input budget exceeded")
+            try:
+                inputs = normalize_request(inputs, prompt_bytes=authenticated.get("prompts_file"))
+                reference_digests = set()
+                for name, data in authenticated.items():
+                    if name.startswith("image_ref_"):
+                        digest = hashlib.sha256(data).hexdigest()
+                        if digest in reference_digests:
+                            raise ValueError("OpenAI references must use distinct managed objects")
+                        reference_digests.add(digest)
+                        OPENAI_IMAGE_STORAGE_POLICY.validate_reference_bytes(data, index=int(name[-2:]))
+            except ValueError as exc:
+                raise ChildBridgeError(str(exc)) from exc
+            intent = _automatic_generation_intent(
+                SimpleNamespace(id=record.id, capability_type="executor"), inputs, modality="image")
+            if intent is None:
+                raise ChildBridgeError("OpenAI output cardinality is not bound")
+            admission_extras = {"generation_intent": intent,
+                                "storage_estimate": OPENAI_IMAGE_STORAGE_POLICY.estimate}
         if prepared is not None:
             if (set(prepared) - {ref["name"] for ref in refs}
                     or len(refs) > self.policy["limits"]["max_derived_objects"]
@@ -598,11 +819,17 @@ class HostChildBridge:
             if (not isinstance(grant, Mapping) or len(prepared) > grant["limits"]["max_child_media_bindings"]
                     or sum(value["size"] for value in prepared.values()) > grant["limits"]["max_child_media_bytes"]):
                 raise ChildBridgeError("prepared child media budget exceeded")
+        if staged and child_bytes > self.policy["limits"]["max_child_bytes"]:
+            raise ChildBridgeError("staged child byte budget exceeded")
         if len({ref["filename"] for ref in ordered}) != len(ordered):
             raise ChildBridgeError("child input registration filenames collide")
         identity_values = {"child": child, "inputs": inputs, "ordered": ordered}
         if execution_request is not None:
             identity_values["execution_request"] = execution_request
+        if staged:
+            identity_values.update(stage=request["stage"], input_refs=stage_refs, generation_intent=intent)
+        if admission_extras:
+            identity_values["admission"] = admission_extras
         if prepared is not None:
             identity_values["discovery_provenance"] = dict(prepared)
         identity = hashlib.sha256(_strict_json(identity_values)).hexdigest()
@@ -612,6 +839,8 @@ class HostChildBridge:
         # the identity after a partially successful Runtime mutation.
         if bound is None:
             bound = {"identity": identity, "task": None, "deadline": None}
+            if staged:
+                bound["stage"] = request["stage"]
             self._children[key] = bound
         if bound["task"] is not None:
             if prepared is not None:
@@ -628,7 +857,10 @@ class HostChildBridge:
         live()
         admitted = self.client.admit_child(
             child={"child_id": wire_id, **child}, inputs=inputs, ordered_inputs=ordered,
-            derived_inputs=refs, **self.context,
+            derived_inputs=refs, **({"stage": request["stage"], "input_refs": stage_refs, "generation_intent": intent,
+                "stage_execution_request": next(item for item in self.policy["stages"]
+                    if item["name"] == request["stage"]).get("execution_request")} if staged else {}),
+            **admission_extras, **self.context,
             **({"execution_request": execution_request} if execution_request is not None else {}))
         task = task_resource(admitted)
         self._assert_lineage(task)
@@ -636,7 +868,7 @@ class HostChildBridge:
                 or task.get("capability_digest") != child["capability_digest"]
                 or task.get("idempotency_key") != wire_id):
             raise ChildBridgeError("admitted child identity disagrees with request")
-        if execution_request is not None:
+        if execution_request is not None and not staged:
             observed = normalize_execution_request(task.get("execution_request"))
             if observed is None or observed["target"] != execution_request["target"]:
                 raise ChildBridgeError("admitted child target disagrees with request")
@@ -651,7 +883,59 @@ class HostChildBridge:
             if self._channel_closed or self._revoked.is_set():
                 raise ChildBridgeError("child bridge closed during admission")
             self._admitted_children[key] = snapshot
+        if staged:
+            self._dispatch_local_stage(bound, task)
         return _public_task(task)
+
+    def _dispatch_local_stage(self, bound: dict[str, Any], task: dict[str, Any]) -> None:
+        """Serve local H3 stages without blocking their admission/status socket.
+
+        Other staged callers retain their existing serving lifecycle. Remote
+        H3 stages still belong to the selected placement's existing worker.
+        """
+        if self.task.get("capability_id", self.task.get("capability")) != "h3_av.transform":
+            return
+        contract = normalize_execution_request(task.get("execution_request"))
+        if contract is None:
+            raise ChildBridgeError("staged child has no explicit target")
+        target = contract["target"]
+        lineage = task["spec"]["delegated_parent"]
+        placement = lineage.get("parent_placement")
+        actual = placement.get("actual") if isinstance(placement, Mapping) else None
+        if target != {"kind": "default"} and target != actual:
+            return
+        if not isinstance(actual, Mapping) or actual.get("kind") != "machine":
+            raise ChildBridgeError("local staged child requires verified parent machine")
+
+        def execute() -> None:
+            slot = None
+            try:
+                slot = self.host._new_claim_slot()
+                with self._admission_lock:
+                    if self._revoked.is_set():
+                        return
+                    bound["claim_slot"] = slot
+                slot.run_delegated_child(task, parent=self.context, authority_client=self.client,
+                                         target=target, live=self._live)
+            except Exception:
+                # Do not expose signed authority, bearer or transport exception
+                # text through the child socket. Runtime state remains readable.
+                with self._admission_lock:
+                    bound["claim_failed"] = True
+            finally:
+                if slot is not None:
+                    try:
+                        slot.shutdown()
+                    except Exception:
+                        with self._admission_lock:
+                            bound["claim_failed"] = True
+
+        thread = threading.Thread(target=execute, name="astrid-h3-delegated-child", daemon=True)
+        with self._admission_lock:
+            if self._revoked.is_set():
+                raise ChildBridgeError("parent authority ended before child dispatch")
+            bound["claim_thread"] = thread
+        thread.start()
 
     def _publish_snapshot(self, request: dict[str, Any]) -> dict[str, Any]:
         grant = self.snapshot_grant
@@ -720,12 +1004,80 @@ class HostChildBridge:
         if _public_task(task)["run_id"] != _public_task(bound["task"])["run_id"]:
             raise ChildBridgeError("foreign child run")
         self._assert_lineage(task)
+        if bound.get("claim_failed") and task.get("state", task.get("status")) in {"queued", "waiting"}:
+            raise ChildBridgeError("exact delegated child claim failed")
         if any(task.get(k) != bound["task"].get(k) for k in (
                 "capability_id", "capability_digest", "idempotency_key", "execution_request")):
             raise ChildBridgeError("child identity changed after admission")
         return task
 
-    def _outputs(self, task: dict[str, Any], *, capture: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _public_child_task(self, task: dict[str, Any], *, key: str,
+                           outputs: list[dict[str, Any]] | None = None,
+                           publication_rows: list[dict[str, Any]] | None = None,
+                           read_outputs: bool = False) -> dict[str, Any]:
+        public = _public_task(task)
+        if public.get("state") not in {"completed", "succeeded"}:
+            return public
+        bound = self._children[key]
+        publications = self.policy.get("publications") if self.policy is not None else None
+        named = (isinstance(publications, Mapping) and set(publications) == {"raw", "final"}
+                 and bound.get("stage") is not None
+                 and any(isinstance(declaration, Mapping) and declaration.get("stage") == bound["stage"]
+                         for declaration in publications.values()))
+        if not named and not read_outputs:
+            return public
+        if outputs is None:
+            publication_rows = [] if named else None
+            outputs = self._outputs(task, publication_rows=publication_rows)
+        public["result"]["outputs"] = outputs
+        if not named:
+            return public
+        settled = task["result"]
+        canonical = {
+            "payload": {"action_result": settled["payload"]["action_result"]}
+                if isinstance(settled.get("payload"), Mapping) and "action_result" in settled["payload"] else {},
+            "outputs": [{field: row[field] for field in _PUBLICATION_TYPED_FIELDS if field in row}
+                        for row in settled["outputs"]],
+            "generation_publish_v1": settled.get("generation_publish_v1"),
+        }
+        evidence_task = {field: task.get(field) for field in
+                         ("project_id", "generation_intent", "expected_effect")}
+        evidence_task.update({field: public[field] for field in ("task_id", "run_id", "attempt_id", "state")})
+        evidence_task["result"] = canonical
+        public["publication_readback"] = _validate_publication_readback(
+            {"version": 1, "task": evidence_task, "result": canonical,
+             "managed_outputs": publication_rows}, task_id=public["task_id"], run_id=public["run_id"],
+            attempt_id=public["attempt_id"], managed_outputs=outputs)
+        return public
+
+    @staticmethod
+    def _publication_provenance(value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+        # Deliberately finite public lineage. No delegated_parent, lease, spec,
+        # placement authority or arbitrary producer-supplied provenance crosses.
+        result = {key: value[key] for key in ("task_id", "attempt_id", "capability_id", "executor_id",
+                                             "fence", "runtime_epoch") if key in value}
+        delegated = value.get("delegated_publication")
+        if isinstance(delegated, Mapping):
+            public = {key: delegated[key] for key in ("name", "parent_task_id", "parent_attempt_id",
+                "parent_fence", "runtime_epoch", "source_association_id", "source_task_id", "source_attempt_id")
+                      if key in delegated}
+            for name in ("candidate", "verification", "raw"):
+                source = delegated.get(name)
+                if isinstance(source, Mapping):
+                    public[name] = {key: source[key] for key in ("producer_task_id", "producer_attempt_id",
+                        "association_id", "object_id", "output_port") if key in source}
+            # The raw publication result has the same finite schema checked by
+            # _validate_publication_readback, never a private task resource.
+            raw = delegated.get("raw_publication")
+            if isinstance(raw, Mapping):
+                public["raw_publication"] = {key: raw[key] for key in ("effect_type", "publications") if key in raw}
+            result["delegated_publication"] = public
+        return result
+
+    def _outputs(self, task: dict[str, Any], *, capture: dict[str, Any] | None = None,
+                 publication_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         if task.get("state", task.get("status")) not in {"completed", "succeeded"}:
             raise ChildBridgeError("child is not successfully settled")
         public = _public_task(task)
@@ -738,6 +1090,7 @@ class HostChildBridge:
             raise ChildBridgeError("child output associations disagree with settlement")
         remaining = list(expected_outputs)
         outputs = []
+        public_associations = []
         seen = set()
         for raw in rows:
             row = resource(raw)
@@ -782,12 +1135,23 @@ class HostChildBridge:
                 if resource(self.client.child_output(association)) != row:
                     raise ChildBridgeError("snapshot association changed during readback")
                 continue
+            if self.policy and self.policy.get("stages"):
+                producer = row.get("producer", {})
+                if (not isinstance(producer, Mapping)
+                        or producer.get("capability_id") != task["capability_id"]):
+                    raise ChildBridgeError("child output descriptor disagrees with settlement")
             matches = [expected for expected in remaining if isinstance(expected, Mapping)
                        and expected.get("kind") == "object" and expected.get("digest") == oid
                        and expected.get("size") == size and expected.get("media_type") == row.get("media_type")
                        and expected.get("output_port", expected.get("name", "output")) == row.get("output_port")
                        and all(k not in expected or expected[k] == row.get(k)
-                               for k in ("filename", "ordinal", "group_key", "variant_key"))]
+                               for k in ("filename", "ordinal", "group_key", "variant_key"))
+                       and (not self.policy or not self.policy.get("stages")
+                            # Runtime fills only an omitted capability from the
+                            # authenticated child; every declared field stays exact.
+                            or (isinstance(expected.get("producer", {}), Mapping)
+                                and {"capability_id": task["capability_id"],
+                                     **expected.get("producer", {})} == producer))]
             if not matches:
                 raise ChildBridgeError("child output descriptor disagrees with settlement")
             remaining.remove(matches[0])
@@ -797,15 +1161,28 @@ class HostChildBridge:
             if resource(self.client.child_output(association)) != row:
                 raise ChildBridgeError("child output association changed during readback")
             # Return managed CAS descriptors, never private lineage or lease.
-            descriptor = _validate_output({k: row[k] for k in (
+            projected = {k: row[k] for k in (
                 "association_id", "run_id", "task_id", "attempt_id", "object_id", "digest",
-                "size", "filename", "media_type", "output_port", "ordinal")},
+                "size", "filename", "media_type", "output_port", "ordinal")}
+            if (self.policy and self.policy.get("stages") and row.get("group_key") is not None
+                    and row.get("variant_key") is not None):
+                projected.update(group_key=row["group_key"], variant_key=row["variant_key"])
+            if self.policy and self.policy.get("stages") and isinstance(row.get("producer"), Mapping):
+                producer = {key: row["producer"][key] for key in ("output_port", "producer_output_id")
+                            if key in row["producer"]}
+                if producer:
+                    projected["producer"] = producer
+            descriptor = _validate_output(projected,
                 task_id=public["task_id"], run_id=public["run_id"], attempt_id=public["attempt_id"])
             binding = (public["task_id"], association)
             original = self._verified_outputs.get(binding)
             if original is not None and original != descriptor:
                 raise ChildBridgeError("child output descriptor changed after verified readback")
             outputs.append(descriptor)
+            if publication_rows is not None:
+                public_associations.append({**descriptor,
+                    **{key: row.get(key) for key in ("project_id", "generation_id", "group_key", "variant_key")},
+                    "provenance": self._publication_provenance(row.get("provenance"))})
             if capture is not None and capture["association_id"] == association:
                 capture["data"] = data
         if remaining:
@@ -813,6 +1190,8 @@ class HostChildBridge:
         self._live()
         for descriptor in outputs:
             self._verified_outputs.setdefault((public["task_id"], descriptor["association_id"]), dict(descriptor))
+        if publication_rows is not None:
+            publication_rows.extend(public_associations)
         return outputs
 
     @staticmethod
@@ -1098,6 +1477,10 @@ class HostChildBridge:
                              if op == "materialize_output" else {"child_key", "task_id"})
         if op == "submit" and "execution_request" in request:
             expected.add("execution_request")
+        if op == "submit" and ("stage" in request or "input_refs" in request):
+            expected |= {"stage", "input_refs"}
+            if "generation_intent" in request:
+                expected.add("generation_intent")
         if (set(request) != expected or request.get("v") != 1 or type(request.get("v")) is not int
                 or type(request.get("request_id")) is not int or request["request_id"] <= self._sequence
                 or op not in {"submit", "status", "outputs", "publish_snapshot", "materialize_output"}
@@ -1122,10 +1505,7 @@ class HostChildBridge:
             return self._outputs(task)
         if op == "materialize_output":
             return self._materialize_output(request, task)
-        public = _public_task(task)
-        if public.get("state") in {"completed", "succeeded"}:
-            public["result"]["outputs"] = self._outputs(task)
-        return public
+        return self._public_child_task(task, key=request["child_key"], read_outputs=True)
 
     def finish(self) -> None:
         """No new admissions after process exit; fence success on every child."""

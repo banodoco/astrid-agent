@@ -1497,6 +1497,9 @@ class AdapterRegistry:
 
     _specs = {
         "cpu": AdapterSpec("cpu", ("cpu",)),
+        # Tracked parents coordinate children; each child reserves its own
+        # execution resources while the parent retains an ordinary task lease.
+        "orchestration": AdapterSpec("orchestration"),
         "provider": AdapterSpec("provider", ("provider",), requires_network=True),
         "render": AdapterSpec("render", ("render",), ("node", "ffmpeg")),
         "local_generation": AdapterSpec("local_generation", ("gpu",), ()),
@@ -2448,6 +2451,7 @@ def _execution_contract(
     task_data: Mapping[str, Any],
     *,
     runtime_session_id: str | None = None,
+    allow_runtime_empty_inputs: bool = False,
 ) -> dict[str, Any] | None:
     """Validate the carried request before the worker spends or opens a session."""
     envelope = task_data.get("spec")
@@ -2478,7 +2482,13 @@ def _execution_contract(
         raise HostError(f"invalid execution_request: {exc}") from exc
     if normalized is None or not isinstance(request, Mapping):
         raise HostError("invalid execution_request")
-    if _canonical_digest(dict(request)) != _canonical_digest(normalized):
+    carried_request = dict(request)
+    # Exact delegated claims receive Runtime's canonical empty input manifest.
+    # The SDK omits that empty member; permit this one representation only on
+    # the authenticated exact handoff, preserving ordinary claim validation.
+    if allow_runtime_empty_inputs and type(carried_request.get("inputs")) is list and carried_request["inputs"] == []:
+        carried_request.pop("inputs")
+    if _canonical_digest(carried_request) != _canonical_digest(normalized):
         raise HostError("runtime task execution_request is not normalized")
 
     declared = normalized.get("inputs", [])
@@ -4876,6 +4886,36 @@ class RuntimeProtocolClient:
             self._attempt_runtime_epochs[attempt_id] = int(raw_epoch if raw_epoch is not None else claim_epoch)
         return claim
 
+    def claim_delegated_child(self, task_id: str, *, executor_id: str,
+                              capability_ids: list[str], target: Mapping[str, Any],
+                              parent: Mapping[str, Any], idempotency_key: str):
+        """Claim one child under fresh parent authority; never select queue work.
+
+        The parent lease deadline is part of signed authority. Issuance and
+        exact claim share its lease lock without renewing parent authority.
+        """
+        from ._child_bridge import ChildBridgeError, resource
+
+        attempt_id = parent["attempt_id"]
+        epoch = parent["runtime_epoch"]
+        with self._heartbeat_lock:
+            if self._claimed_runtime_epoch(attempt_id) != epoch:
+                raise HostError("delegated child claim epoch disagrees with parent")
+            receipt = resource(self.generated.issue_child_authority(
+                attempt_id, lease_id=parent["lease_id"], fence=parent["fence"], runtime_epoch=epoch))
+            if (receipt.get("parent_task_id") != parent["task_id"]
+                    or receipt.get("parent_attempt_id") != attempt_id
+                    or not isinstance(receipt.get("authority"), str) or not receipt["authority"]):
+                raise ChildBridgeError("foreign delegated child claim authority")
+            claim = self.generated.claim_delegated_child(
+                task_id, executor_id=executor_id, capability_ids=capability_ids,
+                target=dict(target), runtime_epoch=epoch, authority=receipt["authority"],
+                idempotency_key=idempotency_key)
+            child_attempt = self._claim_attempt_id(claim)
+            if child_attempt is not None:
+                self._attempt_runtime_epochs[child_attempt] = int(_claim_field(claim, "runtime_epoch"))
+            return claim
+
     def task(self, task_id: str, *, deadline: float | None = None):
         return self._lifecycle_client(deadline=deadline).get_task(task_id)
 
@@ -4903,21 +4943,72 @@ class RuntimeProtocolClient:
     def admit_child(self, *, child: Mapping[str, Any], inputs: Mapping[str, Any],
                     ordered_inputs: list[Mapping[str, Any]], derived_inputs: list[Mapping[str, Any]],
                     task_id: str, attempt_id: str, lease_id: str, fence: int, runtime_epoch: int,
-                    run_id: str, project_id: str | None,
+                    run_id: str, project_id: str | None, stage: str | None = None,
+                    input_refs: list[Mapping[str, Any]] | None = None,
+                    generation_intent: Mapping[str, Any] | None = None,
+                    stage_execution_request: Mapping[str, Any] | None = None,
+                    storage_estimate: Mapping[str, int] | None = None,
                     execution_request: Mapping[str, Any] | None = None):
-        """Exact issuance/admission pair; signed receipt stays in this frame."""
-        from ._child_bridge import ChildBridgeError, resource
+        """Fenced delegated transport; signed authority stays in this frame.
+
+        Stages and managed input refs are explicit trusted-host arguments. The
+        Runtime resolves them and injects any publication settlement effect.
+        """
+        from ._child_bridge import ChildBridgeError, _staged_child_task, resource
+        from astrid.sdk._child_bridge import _strict_json
+
+        request = normalize_execution_request(execution_request)
+        staged = stage is not None or input_refs is not None
+        openai_request = child["capability_id"] == "generation.generate_image_openai"
+        if openai_request:
+            from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+
+            if (storage_estimate != OPENAI_IMAGE_STORAGE_POLICY.estimate
+                    or generation_intent is None or staged):
+                raise ChildBridgeError("OpenAI child requires bound publication and storage intent")
+        elif storage_estimate is not None:
+            raise ChildBridgeError("storage estimate transport is reserved for the bounded OpenAI child")
+        staged_task = None
+        child_id = child["child_id"]
+        if staged:
+            if request is not None:
+                raise ChildBridgeError("staged execution request is frozen by parent policy")
+            if stage is None or input_refs is None or derived_inputs:
+                raise ChildBridgeError("staged child requires stage/input_refs without derived inputs")
+            staged_task = _staged_child_task(
+                child=child, inputs=inputs, ordered_inputs=ordered_inputs,
+                stage=stage, input_refs=input_refs, execution_request=stage_execution_request)
+        if generation_intent is not None:
+            if not isinstance(generation_intent, Mapping):
+                raise ChildBridgeError("generation_intent must be an object")
+            generation_intent = json.loads(_strict_json(dict(generation_intent)))
 
         # The bridge selects explicit/inherited controls; receipts remain the
         # authority for managed inputs, independent of those controls.
         request = normalize_execution_request(execution_request)
         with self._heartbeat_lock:
+            # Reject stale admission context before any lease mutation, while
+            # retaining the check after heartbeat for epoch drift during RPC.
+            if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
+                raise HostError("child admission epoch disagrees with claim")
             self.heartbeat(task_id, lease_id, attempt_id=attempt_id, fence=fence)
             if self._claimed_runtime_epoch(attempt_id) != runtime_epoch:
                 raise HostError("child admission epoch disagrees with claim")
+            authority_args = {} if staged else {
+                "child": dict(child), "derived_inputs": [dict(ref) for ref in derived_inputs]}
             receipt = resource(self.generated.issue_child_authority(
                 attempt_id, lease_id=lease_id, fence=fence, runtime_epoch=runtime_epoch,
-                child=dict(child), derived_inputs=[dict(ref) for ref in derived_inputs]))
+                **authority_args))
+            if (receipt.get("parent_task_id") != task_id or receipt.get("parent_attempt_id") != attempt_id
+                    or not isinstance(receipt.get("authority"), str) or not receipt["authority"]):
+                raise ChildBridgeError("foreign child authority receipt")
+            if staged:
+                if "child" in receipt or "derived_inputs" in receipt:
+                    raise ChildBridgeError("staged authority cannot contain derived input grants")
+                if generation_intent is not None:
+                    staged_task["generation_intent"] = generation_intent
+                return self.generated.admit_delegated_task(
+                    authority=receipt["authority"], task=staged_task, idempotency_key=child_id)
             refs = receipt.get("derived_inputs")
             if (receipt.get("child") != child or receipt.get("parent_task_id") != task_id
                     or receipt.get("parent_attempt_id") != attempt_id or type(refs) is not list
@@ -4940,9 +5031,16 @@ class RuntimeProtocolClient:
                 descriptor["required"] = required
                 descriptors.append(descriptor)
                 child_inputs[ref["name"]] = {k: descriptor[k] for k in ("object_id", "digest", "filename")}
+                if openai_request:
+                    if type(original.get("size")) is not int or original["size"] < 1:
+                        raise ChildBridgeError("OpenAI input requires an authenticated size witness")
+                    child_inputs[ref["name"]]["size_bytes"] = original["size"]
             task = {"capability_id": child["capability_id"], "capability_digest": child["capability_digest"],
                     "input_object_ids": [ref["object_id"] for ref in descriptors],
-                    "spec": {"capability_id": child["capability_id"], "kind": "action", "inputs": child_inputs}}
+                    "spec": {"capability_id": child["capability_id"], "kind": "action",
+                             "params" if openai_request else "inputs": child_inputs}}
+            if openai_request:
+                task["storage_estimate"] = dict(storage_estimate)
             if request is not None and request.get("inputs"):
                 supplied = [{**item, "digest": item.get("digest", item["object_id"])}
                             for item in request["inputs"]]
@@ -4955,6 +5053,8 @@ class RuntimeProtocolClient:
                     }),
                     "inputs": descriptors,
                 })
+            if generation_intent is not None:
+                task["generation_intent"] = generation_intent
             return self.generated.admit_delegated_task(
                 authority=receipt["authority"], task=task, idempotency_key=child["child_id"])
 
@@ -7250,6 +7350,7 @@ class GenericPackHost:
         managed_root.mkdir(parents=True, exist_ok=True)
         materialized_objects: dict[str, str] = {}
         materialized_input_metadata: dict[str, dict[str, str | None]] = {}
+        openai_authenticated: dict[str, bytes] = {}
         fetched_objects: dict[tuple[str, str], Path] = {}
         scratch_limit = (
             int(storage_estimate["scratch_bytes"])
@@ -7396,6 +7497,11 @@ class GenericPackHost:
                     data = getattr(data, "data", None)
                 if not isinstance(data, (bytes, bytearray)) or hashlib.sha256(bytes(data)).hexdigest() != normalized:
                     raise HostError(f"input object hash mismatch for {name}")
+                if storage_policy_version == "astrid.openai-image.v1":
+                    if (not isinstance(value, Mapping) or type(value.get("size_bytes")) is not int
+                            or len(data) != value["size_bytes"]):
+                        raise HostError(f"OpenAI input object size mismatch for {name}")
+                    openai_authenticated[str(name)] = bytes(data)
                 write_scratch(path, bytes(data), name=str(name))
                 values[name] = str(path)
 
@@ -7431,6 +7537,20 @@ class GenericPackHost:
             derived_path.parent.mkdir(parents=True, exist_ok=True)
             derived_path.write_text(json.dumps(derived, sort_keys=True), encoding="utf-8")
             values[name] = str(derived_path)
+        if storage_policy_version == "astrid.openai-image.v1":
+            from astrid.core.generation.backends.openai import normalize_request
+            from astrid.core.generation.storage_policy import OPENAI_IMAGE_STORAGE_POLICY
+
+            if not isinstance(params, Mapping) or input_spec.get("inputs"):
+                raise HostError("OpenAI image admission requires sole typed params authority")
+            try:
+                normalize_request(params, prompt_bytes=openai_authenticated.get("prompts_file"),
+                                  require_frozen=True)
+                for name, data in openai_authenticated.items():
+                    if name.startswith("image_ref_"):
+                        OPENAI_IMAGE_STORAGE_POLICY.validate_reference_bytes(data, index=int(name[-2:]))
+            except ValueError as exc:
+                raise HostError(str(exc)) from exc
         if materialized_objects:
             values["materialized_root"] = str(managed_root)
             values["materialized_objects"] = materialized_objects
@@ -7557,6 +7677,7 @@ class GenericPackHost:
         descriptors: Sequence[Mapping[str, Any]],
         attempt: Path,
         generation_intent: Mapping[str, Any] | None = None,
+        unselected_generation_port: str | None = None,
     ) -> list[dict[str, Any]]:
         """Bind validated harvest descriptors to their declared output ports."""
         outputs: list[dict[str, Any]] = []
@@ -7597,6 +7718,14 @@ class GenericPackHost:
                 raise HostError(
                     f"harvested output {name!r} has invalid ordinal {ordinal!r}"
                 )
+            # A Runtime-admitted named raw stage may have other durable
+            # results on the same port.  Only declared ordinals are bound to
+            # publication; the others remain ordinary producer associations.
+            if (is_generation_result and name == unselected_generation_port
+                    and not any(item["ordinal"] == ordinal for item in declarations)
+                    and harvested.get("output_port", name) == name
+                    and not any(field in harvested for field in ("group_key", "variant_key", "selector"))):
+                is_generation_result = False
             identity = (name, ordinal)
             if identity in seen_identities and not is_generation_result:
                 raise HostError(
@@ -7895,6 +8024,7 @@ class GenericPackHost:
                 "artifact_type": "image/jpeg",
                 "media_type": "image/jpeg",
                 "size": result.path.stat().st_size,
+                "digest": thumbnail_digest,
                 "role": "thumbnail",
                 "durability": "durable",
                 "provenance": {
@@ -9348,8 +9478,8 @@ class GenericPackHost:
                         output_root, definition=record.definition, values=values, require=False)
                     staged = self._typed_outputs(
                         record, harvested, root,
-                        generation_intent=task.get("generation_intent")
-                        if isinstance(task.get("generation_intent"), Mapping) else None)
+                        generation_intent=_task_generation_intent(task),
+                        unselected_generation_port=_named_raw_publication_port(task))
             except Exception as exc:
                 warnings.append(f"terminal output collection unavailable: {error_text(exc)}")
         outputs = []
@@ -10327,6 +10457,10 @@ class GenericPackHost:
                     if port.type == "file"
                 ),
             )
+            if capability_id == "h3_av.transform":
+                if "host_output_root" in inputs or child_bridge is None:
+                    raise HostError("H3 parent requires host-owned output custody and delegated admission")
+                inputs["host_output_root"] = str(root / "outputs")
             _terminal["inputs"] = inputs
             if capability_id == "vibecomfy.run" and inputs.get("comfy_url"):
                 from astrid.core.generation.backends.vibecomfy_local_server import (
@@ -10729,6 +10863,10 @@ class GenericPackHost:
                     worker_env, worker_secrets = self._child_environment(
                         record, root, admission=network_admission, network_broker=network_broker,
                         allow_runtime_connection=not private_runtime_context)
+                    if capability_id == "h3_av.transform":
+                        # Presence is an entrypoint guard only. Parent authority
+                        # comes exclusively from the authenticated child bridge.
+                        worker_env["ASTRID_TASK_RUN_ID"] = task_id
                     try:
                         result = self.invoke_capability(
                             capability_kind="executor",
@@ -10822,12 +10960,10 @@ class GenericPackHost:
                 record,
                 harvested,
                 root,
-                generation_intent=(
-                    task_data.get("generation_intent")
-                    if isinstance(task_data.get("generation_intent"), Mapping)
-                    else None
-                ),
+                generation_intent=_task_generation_intent(task_data),
+                unselected_generation_port=_named_raw_publication_port(task_data),
             )
+            _bind_named_parent_output(task_data, typed_outputs)
             _terminal["outputs"] = typed_outputs
             thumbnail_outputs, thumbnail_diagnostics = self._generation_thumbnail_outputs(
                 typed_outputs,
@@ -10920,6 +11056,13 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            if capability_id == "h3_av.transform" and child_bridge is not None:
+                action_result = payload.get("action_result")
+                if not isinstance(action_result, Mapping):
+                    raise HostError("H3 parent did not return its publication outcome")
+                for field in ("status", "overall_status", "states"):
+                    if field in action_result:
+                        payload[field] = action_result[field]
             _terminal["payload"] = payload
             if renderer_selection is not None:
                 payload["renderer_selection"] = dict(renderer_selection)
@@ -11394,6 +11537,10 @@ class GenericPackHost:
             self._handoff_leave_claim_rpc(handoff_thread_id, claimed=claimed_attempt)
         if claim is None or (_claim_field(claim, "waiting_reason") and not _claim_field(claim, "attempt_id")):
             return None
+        return self._execute_claimed_task(claim)
+
+    def _execute_claimed_task(self, claim: Any, *, delegated_child: bool = False) -> Mapping[str, Any] | None:
+        """Validate and execute the canonical immutable claim handoff."""
         claim_data = dict(claim) if isinstance(claim, Mapping) else {
             "attempt_id": getattr(claim, "attempt_id", None),
             "task_id": getattr(claim, "task_id", None),
@@ -11466,9 +11613,11 @@ class GenericPackHost:
             # Falsy malformed requests are present-invalid, never a fallback.
             try:
                 claim_request = _execution_contract(
-                    claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+                    claim_data, runtime_session_id=self.runtime_state.get("runtime_session_id"),
+                    allow_runtime_empty_inputs=delegated_child)
                 read_request = _execution_contract(
-                    task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
+                    task_data, runtime_session_id=self.runtime_state.get("runtime_session_id"),
+                    allow_runtime_empty_inputs=delegated_child)
             except Exception as exc:
                 fail_claim_handoff(str(exc))
             if _canonical_digest(claim_request) != _canonical_digest(read_request):
@@ -11617,6 +11766,57 @@ class GenericPackHost:
                 break
             self._shutdown.wait(max(0.0, float(poll_seconds)))
         return results
+
+    def run_delegated_child(self, task: Mapping[str, Any], *, parent: Mapping[str, Any],
+                            authority_client: Any, target: Mapping[str, Any], live: Any) -> Mapping[str, Any] | None:
+        """Serve exactly one delegated child in an isolated host slot.
+
+        Runtime performs all authority and capacity checks atomically. This
+        entry has one exact RPC and never enters the ordinary claim loop.
+        """
+        thread_id = threading.get_ident()
+        try:
+            if self._shutdown.is_set():
+                raise HostError("host shutdown before delegated child claim")
+            reason = self._registration_admission_reason()
+            if reason:
+                raise HostError(reason)
+            if not self.capabilities:
+                self.discover()
+            capability = str(task.get("capability_id", task.get("capability", "")))
+            if capability not in self.capabilities:
+                raise HostError("delegated child capability is not served")
+            ready = self._preflight(capability, full_remotion=False)
+            if not any(record.id == capability and record.ready and not _is_withdrawn(record) for record in ready):
+                raise HostError("delegated child capability is not ready")
+            self.execution_policy.assert_budget_available()
+            live()
+            if not self._handoff_enter_claim_rpc():
+                raise HostError("host claim gate is closed")
+            claim = None
+            try:
+                claim = authority_client.claim_delegated_child(
+                    str(task.get("task_id", task.get("id"))), executor_id=self.executor_id,
+                    capability_ids=[capability], target=target, parent=parent,
+                    idempotency_key="delegated-claim-" + _canonical_digest({
+                        "task_id": task.get("task_id", task.get("id")), "target": dict(target),
+                        "parent": dict(parent)}))
+            finally:
+                self._handoff_leave_claim_rpc(thread_id, claimed=bool(_claim_field(claim, "attempt_id")))
+            attempt_id = _claim_field(claim, "attempt_id")
+            if not attempt_id or _claim_field(claim, "task_id") != task.get("task_id", task.get("id")):
+                raise HostError("exact delegated child claim returned foreign or missing attempt")
+            self.client._attempt_runtime_epochs[str(attempt_id)] = int(_claim_field(claim, "runtime_epoch"))
+            try:
+                live()
+            except Exception:
+                self.client.fail(str(_claim_field(claim, "task_id")), str(_claim_field(claim, "lease_id")),
+                    "parent authority ended before delegated child execution", retryable=False,
+                    attempt_id=str(attempt_id), fence=int(_claim_field(claim, "fence")))
+                raise
+            return self._execute_claimed_task(claim, delegated_child=True)
+        finally:
+            self._handoff_leave_attempt(thread_id)
 
     def _new_claim_slot(self) -> GenericPackHost:
         """Retain session warmth in a slot without sharing attempt custody."""
@@ -12334,6 +12534,10 @@ def _validate_local_engine_profile(profile: Mapping[str, Any]) -> dict[str, Any]
     return json.loads(json.dumps(dict(profile), sort_keys=True, allow_nan=False))
 
 
+_PRODUCER_PREPARATION_VERSION = "runtime.local-image-recipe/v1"
+_PRODUCER_FRAME_LIMIT = 1024 * 1024
+
+
 class LocalExecutionPreparation:
     """Private preparation state; no client, claims or credential consumption."""
 
@@ -12358,9 +12562,15 @@ class LocalExecutionPreparation:
         self._lock = threading.RLock()
         self._prepare_done = threading.Event()
         self._prepare_done.set()
+        # The claim loop may stop as soon as shutdown starts.  The private
+        # control reply must be sent before the process can exit.
+        self._control_cleanup_done = threading.Event()
+        self._control_cleanup_done.set()
         self._claim_host: GenericPackHost | None = None
         self._activation_grant: dict[str, Any] | None = None
         self._retained_relay_actor: Any | None = None
+        self._producer_profile_json: bytes | None = None
+        self._producer_source_closure: str | None = None
         self._handoff_binding: dict[str, Any] | None = None
         self._handoff_binding_digest: str | None = None
         self._handoff_phase = "owned"
@@ -12439,6 +12649,192 @@ class LocalExecutionPreparation:
             if self._activation_grant is not None and self._activation_grant != accepted:
                 raise HostError("retained activation grant changed")
             self._activation_grant = accepted
+
+    def _retain_producer_profile(self, profile: Mapping[str, Any], *, source_closure_digest: str) -> None:
+        """Snapshot startup-selected facts, never fields from a recipe request.
+
+        The existing verified launcher owns source selection. This method does
+        not certify a launch; Runtime must retain/verify its exact child and use
+        that child's existing private control descriptor for this operation.
+        """
+        encoded = _handoff_canonical(profile)
+        if len(encoded) > _PRODUCER_FRAME_LIMIT or not re.fullmatch(r"[0-9a-f]{64}", source_closure_digest):
+            raise HostError("producer startup binding is invalid")
+        with self._lock:
+            if (self._producer_profile_json not in (None, encoded)
+                    or self._producer_source_closure not in (None, source_closure_digest)):
+                raise HostError("producer startup binding changed")
+            self._producer_profile_json = encoded
+            self._producer_source_closure = source_closure_digest
+
+    def _producer_binding(self) -> dict[str, Any]:
+        """Reject unsupported search paths before any recipe production."""
+        from astrid.core.generation.engine_endpoint import read_private_endpoint_file
+
+        retained = self._request
+        if (retained is None or self._aborted or self.error is not None or self.control_error is not None
+                or not self._prepare_done.is_set() or self.result is None or self.result.get("status") != "prepared"
+                or self.graph is None or self._claim_host is None or self._activation_grant is None
+                or self._producer_profile_json is None or self._retained_relay_actor is None):
+            raise HostError("producer has no retained active host preparation")
+        peer = self._retained_relay_actor.verify()
+        if any(peer.get(k) != retained["runtime_owner"].get(k) for k in ("pid", "uid", "birth_id")):
+            raise HostError("producer Runtime peer changed")
+        profile = _validate_local_engine_profile(retained["profile"])
+        protocol = profile.get("host_protocol")
+        if protocol != {"version": CURRENT_ROLES_VERSION, "module": "astrid.core.execution.generic_host",
+                        "source_closure_digest": self._producer_source_closure}:
+            raise HostError("producer requires the retained verified host protocol")
+        readiness = json.loads(self._producer_profile_json)
+        root = model_root_binding_from_profile(readiness, verify_files=True)
+        session = readiness.get("vibecomfy_session")
+        launch = profile["engine_launch"]
+        config = launch["config"]
+        if (not isinstance(session, dict) or not session.get("launch_token")
+                or session.get("session_dir") != launch["session_root"]
+                or session.get("server_url") != profile["engine_endpoint"]
+                or session.get("config_digest") != profile["session_config_digest"]
+                or session.get("source_revision") != launch["source_revision"]
+                or session.get("source_content_digest") != launch["source_content_digest"]
+                or session != (self.graph.readiness_profile or {}).get("vibecomfy_session")):
+            raise HostError("producer session differs from retained owner selection")
+        observed = self.graph.report()  # Existing owned-process/socket/config observation.
+        expected_processes = self.result.get("processes")
+        if (not isinstance(expected_processes, Mapping)
+                or observed.get("processes") != expected_processes
+                or observed.get("session_config_digest") != profile["session_config_digest"]
+                or expected_processes.get("host") != {"pid": os.getpid(), "birth_id": process_birth_identity()}
+                or expected_processes.get("engine") != {"pid": session.get("pid"), "birth_id": session.get("process_birth_id")}
+                or expected_processes.get("engine_listener") != {"pid": session.get("comfy_pid"), "birth_id": session.get("comfy_process_birth_id")}):
+            raise HostError("producer session incarnation changed")
+        # First supported configuration: one default model directory, with
+        # custom nodes disabled and no additional model-path configuration.
+        # A matching filename inventory alone is never model-root authority.
+        base = root.path.parent
+        allowed_config = {"memory_profile", "vram_policy", "reserve_vram_gb", "cache_policy", "disable_smart_memory",
+                          "warm_policy", "auto_flush_vram_threshold_gb", "port", "strict_drift", "runtime_root", "cwd",
+                          "models_root", "models_root_normalized", "base_directory", "launch_flags", "input_directory",
+                          "output_directory", "temp_directory", "server_log_path", "ready_timeout_sec", "locality",
+                          "extra_model_paths_config", "extra"}
+        if (root.path.name != "models" or config.get("base_directory") != str(base)
+                or set(config) - allowed_config
+                or config.get("models_root") != str(root.path)
+                or config.get("models_root_normalized") != str(root.path)
+                or config.get("extra_model_paths_config") not in (None, [])
+                or config.get("launch_flags") != ["--disable-all-custom-nodes"]
+                or config.get("extra") not in (None, {})):
+            raise HostError("producer model search root is not uniquely bound")
+        for directory in (base, Path(config["cwd"])):
+            extra = directory / "extra_model_paths.yaml"
+            if extra.exists() or extra.is_symlink():
+                raise HostError("producer additional model search paths are unsupported")
+        def read(path: Path) -> bytes:
+            return read_private_endpoint_file(str(path), deadline=time.monotonic() + 20, private=False)
+        session_dir = Path(launch["session_root"])
+        config_bytes = read(session_dir / "config.json")
+        if ("sha256:" + hashlib.sha256(config_bytes).hexdigest() != profile["session_config_digest"]
+                or json.loads(config_bytes) != config):
+            raise HostError("producer actual session configuration changed")
+        argv_bytes = read(session_dir / "server_argv.json")
+        argv = json.loads(argv_bytes)
+        if (not isinstance(argv, list) or argv != launch["listener_argv"]
+                or any(not isinstance(arg, str) for arg in argv)
+                or argv.count("--base-directory") != 1 or argv.count("--disable-all-custom-nodes") != 1
+                or "--extra-model-paths-config" in argv
+                or argv[argv.index("--base-directory") + 1:argv.index("--base-directory") + 2] != [str(base)]
+                or any(arg.startswith(("--base-directory=", "--extra-model-paths-config=", "--enable-custom-nodes")) for arg in argv)):
+            raise HostError("producer actual model search arguments differ")
+        return {"owner_epoch": retained["owner_epoch"], "profile_id": profile["profile_id"],
+                "profile_digest": profile["profile_digest"], "profile_binding_digest": _handoff_digest(profile),
+                "release_digest": profile["release_digest"], "source_closure_digest": self._producer_source_closure,
+                "readiness_profile_digest": "sha256:" + hashlib.sha256(self._producer_profile_json).hexdigest(),
+                "session_config_digest": profile["session_config_digest"],
+                "session_config_base64": base64.b64encode(config_bytes).decode("ascii"),
+                "server_argv_base64": base64.b64encode(argv_bytes).decode("ascii"),
+                "processes": expected_processes, "session": session, "model_root": root.as_dict()}
+
+    def _prepare_image_recipe(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Fixed private socket operation; contains no client/admission route.
+
+        v1 accepts exactly one managed UTF-8 prompt and image/t2i scalar
+        controls. Authority fields and file/code/template selection are absent.
+        Runtime must validate associations/bytes and retain this result before
+        ordinary admission; receiving it grants no execution authorization.
+        """
+        from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+        from astrid.core.generation.model_root import validate_model_root_binding
+        from astrid.sdk.generation import _prepare_verified_image_recipe
+
+        encoded_request = _handoff_canonical(request)
+        fields = {"version", "command", "operation_id", "channel_id", "owner_epoch", "request_id", "inputs", "controls"}
+        if (len(encoded_request) > _PRODUCER_FRAME_LIMIT or set(request) != fields
+                or request.get("version") != _PRODUCER_PREPARATION_VERSION or request.get("command") != "prepare_image_recipe"
+                or request.get("operation_id") != self.operation_id or request.get("channel_id") != self.channel_id
+                or self._request is None or request.get("owner_epoch") != self._request["owner_epoch"]
+                or not isinstance(request.get("request_id"), str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request["request_id"])):
+            raise HostError("producer request private binding is invalid")
+        # Detach before use: no mutable caller object survives preparation.
+        request = json.loads(encoded_request)
+        inputs, controls = request["inputs"], request["controls"]
+        if (not isinstance(inputs, list) or len(inputs) != 1 or not isinstance(inputs[0], dict)
+                or set(inputs[0]) != {"name", "object_id", "digest", "filename", "bytes_base64"}
+                or inputs[0].get("name") != "prompt" or inputs[0].get("filename") != "prompt.txt"
+                or not isinstance(controls, dict)
+                or set(controls) - {"seed", "size", "steps", "guidance_scale", "negative_prompt"}):
+            raise HostError("producer managed inputs or controls are invalid")
+        try:
+            prompt_bytes = base64.b64decode(inputs[0]["bytes_base64"], validate=True)
+            prompt = prompt_bytes.decode("utf-8")
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise HostError("producer prompt bytes are invalid") from exc
+        digest = "sha256:" + hashlib.sha256(prompt_bytes).hexdigest()
+        if (not 0 < len(prompt_bytes) <= 65536 or not prompt.strip() or "\0" in prompt
+                or inputs[0]["digest"] != digest or inputs[0]["object_id"] != digest
+                or base64.b64encode(prompt_bytes).decode("ascii") != inputs[0]["bytes_base64"]):
+            raise HostError("producer managed prompt byte identity differs")
+        for name, value in controls.items():
+            if name == "negative_prompt":
+                valid = isinstance(value, str) and len(value.encode("utf-8")) <= 65536 and "\0" not in value
+            elif name == "size":
+                valid = isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,3}x[1-9][0-9]{0,3}", value) is not None
+            elif name == "guidance_scale":
+                valid = type(value) in (int, float) and 0 <= value <= 100
+            else:
+                bound = (1 << 64) - 1 if name == "seed" else 1000
+                valid = type(value) is int and (0 if name == "seed" else 1) <= value <= bound
+            if not valid:
+                raise HostError("producer scalar control is invalid")
+        # Serialize with existing abort ownership; never hold the replay lock
+        # over schema/compile I/O. No new ledger or public readiness assertion.
+        if not self._abort_dispatch_lock.acquire(blocking=False):
+            raise HostError("producer host preparation is busy")
+        try:
+            binding = self._producer_binding()
+            model_root = validate_model_root_binding(binding["model_root"], verify_files=False)
+            recipe = _prepare_verified_image_recipe(
+                inputs={"prompt": prompt, **controls},
+                target_client=ComfyTargetClient(ComfyTarget(binding["session"]["server_url"], "attached")),
+                model_root=model_root,
+            )
+            if type(recipe) is not bytes or _handoff_canonical(json.loads(recipe)) != recipe:
+                raise HostError("producer returned an invalid frozen recipe")
+            if self._producer_binding() != binding:
+                raise HostError("producer authority changed during preparation")
+            result = {"version": _PRODUCER_PREPARATION_VERSION, "status": "prepared",
+                      "operation_id": self.operation_id, "channel_id": self.channel_id,
+                      "owner_epoch": request["owner_epoch"], "request_id": request["request_id"],
+                      "request_digest": "sha256:" + hashlib.sha256(encoded_request).hexdigest(),
+                      "inputs": inputs, "binding": binding,
+                      "recipe_digest": "sha256:" + hashlib.sha256(recipe).hexdigest(),
+                      "recipe_base64": base64.b64encode(recipe).decode("ascii")}
+            frozen = _handoff_canonical(result)
+            # Match the existing wire encoder (ASCII escapes may be larger).
+            if len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")) >= _PRODUCER_FRAME_LIMIT:
+                raise HostError("producer frozen result exceeds the private frame bound")
+            return json.loads(frozen)
+        finally:
+            self._abort_dispatch_lock.release()
 
     def _validate_retained_binding(self, binding: Mapping[str, Any]) -> bool:
         request = self._request
@@ -13444,6 +13840,7 @@ class LocalExecutionPreparation:
             if self._abort_ack is not None:
                 return json.loads(json.dumps(self._abort_ack))
         try:
+            self._control_cleanup_done.clear()
             if self._claim_host is not None:
                 self._claim_host.shutdown()
             # Positive acknowledgement follows actual owned-child, bridge and
@@ -13780,6 +14177,8 @@ class LocalExecutionPreparation:
             self._abort_dispatch_lock.release()
 
     def _dispatch_bound(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if request.get("command") == "prepare_image_recipe":
+            return self._prepare_image_recipe(request)
         if (self._request or {}).get("profile", {}).get("execution_mode") == "host_only_cpu":
             if request.get("command") == "prepare_local_execution":
                 return self.prepare_local_execution(request)
@@ -13870,6 +14269,15 @@ class LocalExecutionPreparation:
                     except BaseException as exc:
                         self.control_error = exc
                         command = frame.get("command")
+                        if command == "prepare_image_recipe":
+                            # No recipe or caller data is returned on failure.
+                            # Preserve the ordinary lifecycle channel for abort.
+                            reply = {"version": _PRODUCER_PREPARATION_VERSION, "status": "unresolved",
+                                     "operation_id": self.operation_id, "channel_id": self.channel_id,
+                                     "owner_epoch": (self._request or {}).get("owner_epoch"),
+                                     "error_code": "recipe_preparation_unresolved"}
+                            _send_activation_frame(control, reply)
+                            continue
                         if command not in {"prepare_local_execution", "report_local_execution"}:
                             raise
                         reply = {"version": _LOCAL_PREPARATION_VERSION, "status": "unresolved",
@@ -13878,6 +14286,10 @@ class LocalExecutionPreparation:
                                  "error_code": "preparation_unresolved" if command == "prepare_local_execution" else "report_unresolved",
                                  "custody_capabilities": self.known_custody_capabilities()}
                     _send_activation_frame(control, reply)
+                    if frame.get("command") == "abort_local_execution":
+                        # A failed write is not an acknowledgement. Retain the
+                        # process until Runtime resolves the broken channel.
+                        self._control_cleanup_done.set()
             except BaseException as exc:
                 self.control_error = exc
             finally:
@@ -13886,6 +14298,83 @@ class LocalExecutionPreparation:
         thread.start()
         return thread
 
+    def wait_for_shutdown_cleanup(self) -> None:
+        self._control_cleanup_done.wait()
+
+
+
+def _named_raw_publication_port(task: Mapping[str, Any]) -> str | None:
+    """Read the raw-stage marker reserved and populated by Runtime admission."""
+    spec = task.get("spec")
+    if not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping):
+        return None
+    source = spec.get("verified_publication_source")
+    if (not isinstance(spec.get("delegated_stage"), str) or not isinstance(source, Mapping)
+            or set(source) != {"publication_name", "output_port"}
+            or source.get("publication_name") != "raw"):
+        return None
+    port = source.get("output_port")
+    return port if isinstance(port, str) and port else None
+
+
+def _task_generation_intent(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    intent = task.get("generation_intent")
+    # Named child effects are frozen by Runtime from the parent's policy.
+    # Reconstruct the host's existing selector view from that effect, not
+    # from the worker or from the ordering or media type of its outputs.
+    spec = task.get("spec")
+    source = spec.get("verified_publication_source") if isinstance(spec, Mapping) else None
+    effect = task.get("expected_effect")
+    if (not isinstance(spec, Mapping) or not isinstance(spec.get("delegated_parent"), Mapping)
+            or not isinstance(source, Mapping) or source.get("publication_name") not in {"raw", "final"}):
+        return intent if isinstance(intent, Mapping) else None
+    if (not isinstance(effect, Mapping) or effect.get("effect_type") != "generation.publish_v1"
+            or not isinstance(effect.get("payload"), Mapping)):
+        raise HostError("named publication has no admitted generation effect")
+    payload = effect["payload"]
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        raise HostError("named publication effect has no selector groups")
+    from astrid.sdk.invocation import _validate_generation_intent
+    from astrid.sdk.exceptions import CapabilityValidationError
+    try:
+        projected = [{"group_key": group["group_key"], "selectors": [
+            {key: value for key, value in selector.items() if key != "output_port"}
+            for selector in group["selectors"]]} for group in groups]
+        if any(selector.get("output_port") != source.get("output_port")
+               for group in groups for selector in group["selectors"]):
+            raise HostError("named publication effect selects another port")
+        return _validate_generation_intent({"version": payload["version"], "modality": payload["modality"],
+            "partial_success_policy": payload["partial_success_policy"], "groups": projected},
+            modality=payload["modality"])
+    except (KeyError, TypeError, ValueError, CapabilityValidationError) as exc:
+        raise HostError("named publication effect has an invalid selector") from exc
+
+
+def _bind_named_parent_output(task: Mapping[str, Any], outputs: list[dict[str, Any]]) -> None:
+    spec = task.get("spec")
+    policy = spec.get("child_delegation") if isinstance(spec, Mapping) else None
+    publications = policy.get("publications") if isinstance(policy, Mapping) else None
+    if publications is None:
+        return
+    try:
+        final = publications["final"]
+        groups = final["effect"]["payload"]["groups"]
+        if len(groups) != 1 or len(groups[0]["selectors"]) != 1:
+            raise ValueError("expected one final selector")
+        group, selector = groups[0], groups[0]["selectors"][0]
+        port = final["output_port"]
+        if selector["output_port"] != port:
+            raise ValueError("final selector port differs")
+        matches = [row for row in outputs if row.get("name") == port
+                   and row.get("ordinal") == selector["ordinal"]]
+        if len(matches) != 1:
+            raise ValueError("final output missing or ambiguous")
+        matches[0].update(output_port=port, group_key=group["group_key"],
+                          variant_key=selector["variant_key"],
+                          selector={"group_key": group["group_key"], "variant_key": selector["variant_key"]})
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HostError("named parent final selector cannot be bound") from exc
 
 
 def _selected_birth_matches(observed: Any, retained: Any) -> bool:
@@ -14656,7 +15145,7 @@ def _log_cli_exit_failure(error: BaseException) -> None:
 
 
 def _cli() -> int:
-    managed_shutdowns: list[_ManagedStdinShutdown] = []
+    managed_shutdowns: list[Any] = []
     try:
         return _cli_impl(managed_shutdowns)
     finally:
@@ -14666,7 +15155,7 @@ def _cli() -> int:
             lifecycle.wait_for_shutdown_cleanup()
 
 
-def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
+def _cli_impl(managed_shutdowns: list[Any]) -> int:
 
     parser = argparse.ArgumentParser(prog="astrid-generic-host")
     parser.add_argument("command", nargs="?", choices=("run", "supervise"), help="run the worker loop or JSONL supervisor")
@@ -14736,6 +15225,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         if not has_activation_transport or args.host_control_fd < 3 or args.host_control_fd == args.activation_fd:
             parser.error("local host-control requires a distinct parked activation transport")
         preparation = LocalExecutionPreparation(operation_id=args.activation_operation_id, channel_id=args.activation_channel_id)
+        managed_shutdowns.append(preparation)
         preparation.control_thread = preparation.serve_control(args.host_control_fd)
         def parked_shutdown(signum, _frame):
             try:
@@ -14796,6 +15286,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
         args.readiness_profile_path = str(generated)
         args.readiness_profile_hash = "sha256:" + hashlib.sha256(generated.read_bytes()).hexdigest()
     verified_model_root: ModelRootBinding | None = None
+    producer_profile: dict[str, Any] | None = None
     if args.readiness_profile_path is not None:
         readiness_path = Path(args.readiness_profile_path).expanduser()
         if (
@@ -14841,6 +15332,7 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
             )
         except ModelRootBindingError as exc:
             parser.error(f"readiness profile model-root binding is invalid: {exc}")
+        producer_profile = profile
         os.environ[MODEL_ROOT_ENV] = str(verified_model_root.path)
         os.environ[MODEL_ROOT_BINDING_ENV] = json.dumps(
             verified_model_root.as_dict(), sort_keys=True, separators=(",", ":")
@@ -15013,6 +15505,9 @@ def _cli_impl(managed_shutdowns: list[_ManagedStdinShutdown]) -> int:
     host._native_engine_graph = preparation.graph if preparation is not None else None
     if preparation is not None:
         preparation.attach_claim_host(host)
+        closure = identity_attestation["source"].get("closure_digest")
+        if producer_profile is not None and isinstance(closure, str) and re.fullmatch(r"[0-9a-f]{64}", closure):
+            preparation._retain_producer_profile(producer_profile, source_closure_digest=closure)
     if support_root is not None:
         host.cleanup_latch_path = support_root / CLEANUP_LATCH_NAME
         host.busy_path = support_root / BUSY_NAME

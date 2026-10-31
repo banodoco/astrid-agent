@@ -311,11 +311,12 @@ class PackValidator:
             )
 
             try:
-                validate_canonical_pack(self.pack_root)
+                canonical = validate_canonical_pack(self.pack_root)
             except CanonicalPackValidationError as exc:
                 self.errors.append(str(exc))
                 return self.errors
 
+            self._validate_v3_authoring_metadata(canonical.definition)
             self._validate_v3_documentation()
             self._validate_v3_contract_schemas()
             self._validate_layout_contract(version=version)
@@ -971,6 +972,113 @@ class PackValidator:
     # -----------------------------------------------------------------------
     # Canonical v3 author checks
     # -----------------------------------------------------------------------
+
+    def _validate_v3_authoring_metadata(self, definition: Any) -> None:
+        """Report optional v3 authoring conventions as warnings only."""
+        agent = definition.agent
+        purpose = agent.get("purpose")
+        has_purpose = isinstance(purpose, str) and bool(purpose.strip())
+        if purpose is not None and (
+            not has_purpose
+        ):
+            self.warnings.append(
+                "pack.yaml: agent.purpose should be non-blank text; describe when this pack is useful"
+            )
+        if not definition.description.strip() and not has_purpose:
+            self.warnings.append(
+                "pack.yaml: add a useful pack.yaml description or agent.purpose so authors can tell when to use this pack"
+            )
+
+        do_not_use_for = agent.get("do_not_use_for")
+        if do_not_use_for is not None and (
+            not isinstance(do_not_use_for, str) or not do_not_use_for.strip()
+        ):
+            self.warnings.append(
+                "pack.yaml: agent.do_not_use_for should be non-blank text when present; describe a real case where this pack is the wrong choice"
+            )
+
+        entrypoints = agent.get("normal_entrypoints")
+        valid_entrypoints: list[tuple[int, str]] = []
+        if entrypoints is not None:
+            if not isinstance(entrypoints, (list, tuple)):
+                self.warnings.append(
+                    "pack.yaml: agent.normal_entrypoints should be a list of declared public contribution ids or supported aliases"
+                )
+            else:
+                for index, entrypoint in enumerate(entrypoints):
+                    if not isinstance(entrypoint, str) or not entrypoint.strip():
+                        self.warnings.append(
+                            f"pack.yaml: agent.normal_entrypoints[{index}] should be a non-blank public contribution id"
+                        )
+                    else:
+                        valid_entrypoints.append((index, entrypoint.strip()))
+
+        # Resolve v3 aliases with the same kind-scoped resolvers used by pack
+        # discovery, then require the target to be a declared contribution of
+        # that kind. Canonical validation owns alias admission; these checks
+        # remain advisory even if an unexpected resolver error occurs.
+        resolvers = {kind: AliasResolver() for kind in PACK_ALIAS_KINDS}
+        aliases_by_kind: dict[str, list[dict[str, Any]]] = {
+            kind: [] for kind in PACK_ALIAS_KINDS
+        }
+        for alias in definition.aliases:
+            kind = str(alias["kind"])
+            if kind in aliases_by_kind:
+                aliases_by_kind[kind].append(dict(alias))
+        for kind, aliases in aliases_by_kind.items():
+            try:
+                resolvers[kind].register_pack_aliases(definition.id, aliases)
+            except AliasResolutionError:
+                resolvers[kind] = AliasResolver()
+        declared_ids = {
+            definition.declaration_id(section, key)
+            for section in ("actions", "ui", "rendering", "documents")
+            for key in getattr(definition, section)
+        }
+        alias_target_ids = {
+            kind: {
+                definition.declaration_id("rendering", key)
+                for key, item in definition.rendering.items()
+                if item.get("type") == kind
+            }
+            for kind in ("renderer", "planner", "finalizer")
+        }
+        for index, entrypoint in valid_entrypoints:
+            resolved = entrypoint if entrypoint in declared_ids else None
+            for kind in ("renderer", "planner", "finalizer"):
+                try:
+                    candidate = resolvers[kind].resolve(entrypoint)
+                except AliasResolutionError:
+                    continue
+                if candidate in alias_target_ids[kind]:
+                    resolved = candidate
+                    break
+            if resolved is None:
+                self.warnings.append(
+                    f"pack.yaml: agent.normal_entrypoints[{index}] {entrypoint!r} does not resolve to a declared public contribution; update it or remove it"
+                )
+
+        for action_id, action in self._mapping_items("actions"):
+            for slot in ("inputs", "outputs"):
+                ports = action.get(slot)
+                if not isinstance(ports, list):
+                    continue  # JSON Schema objects, booleans and references keep their own contract.
+                for index, port in enumerate(ports):
+                    if not isinstance(port, dict):
+                        continue  # Schema validation already reports malformed authored entries.
+                    location = f"actions.{action_id}.{slot}[{index}]"
+                    if not isinstance(port.get("type"), str) or not port["type"].strip():
+                        self.warnings.append(
+                            f"pack.yaml: {location}.type is missing; document the port's existing type"
+                        )
+                    if not isinstance(port.get("description"), str) or not port["description"].strip():
+                        self.warnings.append(
+                            f"pack.yaml: {location}.description is missing; describe what this port means"
+                        )
+                    if slot == "inputs" and not isinstance(port.get("required"), bool):
+                        self.warnings.append(
+                            f"pack.yaml: {location}.required is missing; state whether callers must provide this input without changing its behavior"
+                        )
 
     def _validate_v3_documentation(self) -> None:
         """Validate the authored metadata of the one declared pack skill."""

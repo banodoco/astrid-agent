@@ -35,9 +35,22 @@ python3 -m astrid.core.pack.cli new my_pack
 cd my_pack
 ```
 
-Describe the pack in `pack.yaml`. Add the declared implementation and explain
-when and how to use it in the pack's ordinary `docs/SKILL.md`, referenced by
-`documentation: {kind: skill, path: docs/SKILL.md}`.
+Declare actual public actions, UI, rendering, or document contributions in
+`pack.yaml`; support-only packs are valid, and a folder by itself does not
+publish anything. Give the pack a useful description or `agent.purpose`, then
+explain when and how to use its contribution in the one ordinary
+`docs/SKILL.md`, referenced by `documentation: {kind: skill, path: docs/SKILL.md}`.
+Add `agent.normal_entrypoints` only as a preferred subset of declared public
+contributions or supported aliases. It is optional and does not need to name
+actions for UI, rendering, document, or support-only packs. Keep
+`agent.required_context` optional and limited to files an agent needs to read.
+
+For authored input/output port lists, include a type and useful description on
+each port, and set requiredness on each input. Preserve actual defaults. If a
+contract uses inline JSON Schema or a schema reference, retain its own
+descriptions, required properties, and defaults instead of flattening it into
+ports. Static validation reports incomplete authoring metadata as advisory
+warnings; the warnings do not block validation.
 
 Follow [Creating Astrid Packs](../packs/creating-packs.md) for the complete
 layouts and examples. For mutable settings that belong to a pack in one

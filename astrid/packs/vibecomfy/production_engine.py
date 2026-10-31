@@ -289,6 +289,7 @@ def _canonicalize_ui_workflow(
             source_bytes,
             workflow_id=_ui_workflow_identity(raw_workflow, source_bytes),
             schema_provider=schema_provider,
+            infer_inputs=True,
         )
     except ImportError as exc:
         raise ProductionEngineError(

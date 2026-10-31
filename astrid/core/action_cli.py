@@ -1,13 +1,14 @@
-"""``astrid action run``: run one public action once in an ephemeral local Runtime.
+"""``astrid action run``: invoke a public action in a connected or ephemeral Runtime.
 
     astrid action run h3_av.transform --request request.json --asset-map asset-map.json \\
         --placement local --out OUT
 
-The verb creates a throw-away workspace under a private temporary directory, starts a
+Without ``--project``, the verb creates a throw-away workspace under a private temporary directory, starts a
 Runtime and pack host for it, invokes the public action through the SDK
 (``AstridClient.invoke_result``), and stops the Runtime again.  The action writes its
 outputs, manifest, receipt and operation journal under ``--out``; nothing durable is
-kept outside it.  The exit status is 0 only when the action completed.
+kept outside it. With ``--project``, it uses the connected user workspace and
+requires a completed Runtime parent. The exit status is 0 only when the action completed.
 """
 from __future__ import annotations
 
@@ -48,12 +49,12 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="astrid action", description="Run a public action in an ephemeral local Runtime.")
+    parser = _Parser(prog="astrid action", description="Run a public action in the connected or an ephemeral Runtime.")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     run = commands.add_parser(
-        "run", help="start a throw-away Runtime, run one public action, stop the Runtime",
+        "run", help="invoke one public action, optionally in a connected project",
         description=(
-            "Start an ephemeral local Astrid Runtime and workspace, run the public action with the "
+            "Use --project for the connected workspace, or start an ephemeral local Runtime. Invoke the public action with the "
             "given request and asset map, write outputs, manifest, receipt and journal under --out, "
             "then stop the Runtime. Exit 0 only when the action completes."
         ),
@@ -63,6 +64,8 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--asset-map", type=Path, required=True, help="JSON map of request asset ids to local files")
     run.add_argument("--placement", choices=PLACEMENTS, required=True, help="where the engine runs (local only)")
     run.add_argument("--out", type=Path, required=True, help="directory that receives the action's outputs")
+    run.add_argument("--project", help="use this project in the connected Runtime instead of a throw-away workspace")
+    run.add_argument("--idempotency-key", help="reuse the same Runtime admission key when retrying this submission")
     run.add_argument("--timeout", type=float, default=3600.0, metavar="SECONDS",
                      help="time limit for the action (default: 3600)")
     return parser
@@ -182,8 +185,8 @@ def _local_engine_environment() -> Mapping[str, str]:
     return {LOCAL_ENGINE_HOST_ENV: LOCAL_ENGINE}
 
 
-def run_action(args: argparse.Namespace, *, workspace: Path) -> dict[str, Any]:
-    """Run ``args.action_id`` in a fresh Runtime under ``workspace``; return the JSON summary."""
+def run_action(args: argparse.Namespace, *, workspace: Path | None) -> dict[str, Any]:
+    """Invoke once; project mode requires a completed, Runtime-identified parent."""
     from astrid.sdk.client import AstridClient
 
     files = {"request": args.request.resolve(), "asset_map": args.asset_map.resolve()}
@@ -194,17 +197,28 @@ def run_action(args: argparse.Namespace, *, workspace: Path) -> dict[str, Any]:
     out.mkdir(parents=True, exist_ok=True)
     ports = ACTIONS[args.action_id]
     engine_env = _local_engine_environment() if args.placement == "local" else {}
-    with ephemeral_runtime(workspace) as env, _environment(
-        {**{key: env[key] for key in ("ASTRID_RUNTIME_DATA_ROOT", "ASTRID_RUNTIME_SOURCE_MANIFEST")}, **engine_env}
-    ):
+    requested_project = getattr(args, "project", None)
+    with contextlib.ExitStack() as stack:
+        runtime_env = {}
+        if requested_project is None:
+            if workspace is None:
+                raise ActionRunError("ephemeral action requires a temporary workspace")
+            env = stack.enter_context(ephemeral_runtime(workspace))
+            runtime_env = {key: env[key] for key in ("ASTRID_RUNTIME_DATA_ROOT", "ASTRID_RUNTIME_SOURCE_MANIFEST")}
+        stack.enter_context(_environment({**runtime_env, **engine_env}))
         client = AstridClient.open_from_launcher(client_name="astrid-action", client_version="1")
-        project = client.projects.create(slug=PROJECT_SLUG, name="Action run", idempotency_key="action-run-project")
-        if not project.ok:
-            raise ActionRunError(f"could not create the workspace project: {project.error}")
-        project_id = str(project.data["project_id"])
+        project_id = requested_project
+        if project_id is None:
+            project = client.projects.create(slug=PROJECT_SLUG, name="Action run", idempotency_key="action-run-project")
+            if not project.ok:
+                raise ActionRunError(f"could not create the workspace project: {project.error}")
+            project_id = str(project.data["project_id"])
+        admission = {}
+        if getattr(args, "idempotency_key", None) is not None:
+            admission["idempotency_key"] = args.idempotency_key
         result = client.invoke_result(
             args.action_id,
-            kind="orchestrator",
+            kind="action",
             python_exec=sys.executable,
             project=project_id,
             out=out,
@@ -213,33 +227,52 @@ def run_action(args: argparse.Namespace, *, workspace: Path) -> dict[str, Any]:
             wait=True,
             timeout_seconds=args.timeout,
             poll_seconds=0.25,
+            **admission,
         )
+    ok, error = bool(result.ok), result.error
+    if requested_project is not None and ok:
+        if not all((result.kernel_run_id, result.kernel_task_id, result.kernel_attempt_id)):
+            ok = False
+            error = {"code": "tracked_parent_unavailable",
+                     "message": "the action did not return a Runtime parent task/attempt; tracked H3 adapter is required"}
+        elif result.raw_result.get("state") != "completed":
+            ok = False
+            error = {"code": "task_settlement_unproven",
+                     "message": "the Runtime parent has no confirmed completed result"}
     receipt = out / RECEIPT_NAME
     summary: dict[str, Any] = {
         "action": args.action_id,
-        "ok": bool(result.ok),
+        "ok": ok,
         "placement": args.placement,
         "out": str(out),
-        "receipt": str(receipt) if receipt.is_file() else None,
+        "receipt": str(receipt) if requested_project is None and receipt.is_file() else None,
         "manifest": result.manifest_path,
         "run_id": result.run_id,
     }
-    if not result.ok:
-        summary["error"] = result.error
+    if requested_project is not None:
+        summary.update(project=project_id, kernel_run_id=result.kernel_run_id,
+                       kernel_task_id=result.kernel_task_id, kernel_attempt_id=result.kernel_attempt_id,
+                       state=result.raw_result.get("state", "unknown"), outputs=dict(result.outputs),
+                       result=result.raw_result.get("result"))
+    if not ok:
+        summary["error"] = error
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
+    from astrid.sdk.exceptions import AstridSDKError
+
     args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
     # AF_UNIX paths are short; keep the throw-away workspace in a short private temp directory.
-    workspace = Path(tempfile.mkdtemp(prefix="astrid-action-"))
+    workspace = None if args.project is not None else Path(tempfile.mkdtemp(prefix="astrid-action-"))
     try:
         summary = run_action(args, workspace=workspace)
-    except ActionRunError as exc:
+    except (ActionRunError, AstridSDKError) as exc:
         print(json.dumps({"action": args.action_id, "ok": False, "error": str(exc)}, indent=2, sort_keys=True))
         return 1
     finally:
-        shutil.rmtree(workspace, ignore_errors=True)
+        if workspace is not None:
+            shutil.rmtree(workspace, ignore_errors=True)
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     return 0 if summary["ok"] else 1
 

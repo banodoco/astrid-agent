@@ -2,21 +2,86 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import json
-import mimetypes
-import re
-import urllib.request
-import uuid
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
+from .comfy_target import (
+    ComfyTarget,
+    ComfyTargetClient,
+    validate_identity,
+)
+from .comfy_target import (
+    validate_attached_url as validate_comfy_url,
+)
 
-def validate_comfy_url(value: str) -> str:
-    match = re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):([0-9]+)/?", value)
-    if match is None or not 1 <= int(match[1]) <= 65535:
-        raise ValueError("comfy_url must be http://127.0.0.1:<port> or http://localhost:<port>")
-    return f"http://127.0.0.1:{int(match[1])}"
+__all__ = [
+    "cleanup_prompts", "upload_image", "upload_media", "validate_comfy_url",
+    "validate_identity", "validate_output_directory",
+    "TargetRuntimeClient", "AttachedArtifacts",
+]
+
+
+class TargetRuntimeClient:
+    """Adapt the selected G22 client to VibeComfy's existing async runner."""
+
+    def __init__(self, client: ComfyTargetClient) -> None:
+        self.client = client
+        self.server_url = client.http_origin
+
+    async def _post_prompt(self, prompt: dict[str, Any]) -> Any:
+        return await asyncio.to_thread(self.client.submit_prompt, {"prompt": prompt})
+
+    async def history(self, prompt_id: str) -> Any:
+        return await asyncio.to_thread(self.client.history, prompt_id)
+
+
+class AttachedArtifacts:
+    """Use the runner's existing attributed-artifact seam with G22 /view custody."""
+
+    def __init__(self, client: ComfyTargetClient, *, legacy_output_directory: str = "") -> None:
+        if client.target.kind != "attached":
+            raise ValueError("attached artifact custody requires an attached target")
+        self.client = client
+        self.server_url = client.http_origin
+        self.legacy_output_directory = Path(legacy_output_directory) if legacy_output_directory else None
+
+    def describe(self) -> dict[str, Any]:
+        return {"transport": "comfy-http-view", "target_kind": "attached",
+                "endpoint_url": self.client.target.url}
+
+    async def download_artifacts(self, *, local_root: Path) -> dict[str, Any]:
+        from .comfy_target import validate_output_descriptor
+
+        root = Path(local_root)
+        attempt = json.loads((root.parent / "attempt.json").read_text(encoding="utf-8"))
+        prompt_id = attempt.get("prompt_id")
+        if (not isinstance(prompt_id, str)
+                or prompt_id not in self.client._witnessed_prompts):
+            raise ValueError("artifact custody requires this attempt's witnessed prompt")
+        artifacts = attempt.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            raise ValueError("accepted history has no attributed artifacts")
+        root.mkdir(parents=True, exist_ok=False)
+        seen = set()
+        for artifact in artifacts:
+            descriptor = artifact.get("descriptor") if isinstance(artifact, dict) else None
+            filename, subfolder, kind = validate_output_descriptor(descriptor)
+            if self.legacy_output_directory is not None and kind == "output":
+                # Preserve the legacy caller's safety constraint, without
+                # treating its shared folder as artifact custody or reading
+                # any bytes from it. New attached callers need no folder.
+                candidate = self.legacy_output_directory / subfolder / filename
+                if (any(part.is_symlink() for part in (candidate, *candidate.parents))
+                        or not candidate.resolve().is_relative_to(self.legacy_output_directory)):
+                    raise ValueError("legacy output descriptor is an unsafe symlink or escaped path")
+            relative = Path(kind) / subfolder / filename
+            if relative in seen:
+                raise ValueError("accepted output descriptors are ambiguous")
+            seen.add(relative)
+            await asyncio.to_thread(self.client.download_output, descriptor, root / relative)
+        return {"status": "retrieved", "local_root": str(root), **self.describe()}
 
 
 def validate_output_directory(value: str, attempt_root: Path) -> str:
@@ -32,35 +97,13 @@ def validate_output_directory(value: str, attempt_root: Path) -> str:
     return str(resolved)
 
 
-def validate_identity(value: str) -> str:
-    # VibeComfy normalizes identifiers. Reject lossy values so task/attempt
-    # fencing and the upload namespace retain the exact host-issued identity.
-    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9._:-]+", value) is None or value.strip("-") != value:
-        raise ValueError("local_server requires an identity preserved by VibeComfy normalization")
-    if value in {".", ".."}:
-        raise ValueError("local_server requires a safe task identity")
-    return value
-
-
 def _request(url: str, path: str, payload: Any = None) -> Any:
-    request = urllib.request.Request(
-        validate_comfy_url(url) + path,
-        data=None if payload is None else json.dumps(payload).encode(),
-        headers={} if payload is None else {"Content-Type": "application/json"},
-    )
-    # Never inherit proxies or follow a redirect to another destination.
-    with _opener().open(request, timeout=5) as response:
-        data = response.read()
-    return json.loads(data) if data else {}
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def _opener():
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    if path == "/prompt" and payload is not None:
+        return client.submit_prompt(payload)
+    if path.startswith("/history/") and payload is None:
+        return client.history(path.removeprefix("/history/"))
+    return client.request_json(path, payload, timeout=5)
 
 
 def upload_image(url: str, source: Path, *, task_id: str) -> str:
@@ -71,46 +114,10 @@ def upload_media(
     url: str, source: Path, *, task_id: str, kind: str = "image",
     expected_sha256: str | None = None,
 ) -> str:
-    """Upload one managed asset into ComfyUI's namespaced input subfolder.
-
-    Images keep their original contract. Video and audio use the same endpoint,
-    namespace and returned-reference checks, and additionally require the bytes
-    sent to match the digest verified when the managed-assets archive was read.
-    """
-    if kind not in {"image", "video", "audio"}:
-        raise ValueError(f"unsupported local_server managed asset kind: {kind}")
-    subfolder = f"astrid/{validate_identity(task_id)}"
-    if source.is_symlink() or not source.is_file():
-        raise ValueError(f"managed {kind} is not a regular file: {source}")
-    media_type = mimetypes.guess_type(source.name)[0] or ""
-    if not media_type.startswith(f"{kind}/"):
-        if kind == "image":
-            raise ValueError("local_server managed assets must be images")
-        raise ValueError(f"local_server managed {kind} asset must have a {kind}/* media type")
-    data = source.read_bytes()
-    if kind != "image" or expected_sha256 is not None:
-        if expected_sha256 is None or hashlib.sha256(data).hexdigest() != expected_sha256:
-            raise ValueError(f"managed {kind} failed hash verification: {source.name}")
-    boundary = uuid.uuid4().hex
-    body = bytearray()
-    for name, value in (("subfolder", subfolder), ("type", "input")):
-        body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
-    filename = source.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
-    body.extend(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode())
-    body.extend(data)
-    body.extend(f"\r\n--{boundary}--\r\n".encode())
-    request = urllib.request.Request(
-        validate_comfy_url(url) + "/upload/image", data=bytes(body),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    """Upload verified media using the shared attach-only HTTP client."""
+    return ComfyTargetClient(ComfyTarget(url, "attached")).upload_media(
+        source, task_id=task_id, kind=kind, expected_sha256=expected_sha256,
     )
-    with _opener().open(request, timeout=30) as response:
-        result = json.load(response)
-    name = result.get("name")
-    if (not isinstance(name, str) or PurePosixPath(name).name != name
-            or name in {"", ".", ".."} or "\\" in name
-            or result.get("subfolder") != subfolder or result.get("type") != "input"):
-        raise ValueError("ComfyUI returned an unsafe uploaded image reference")
-    return f"{subfolder}/{name}"
 
 
 def cleanup_prompts(url: str, destination: Path) -> None:
@@ -120,7 +127,7 @@ def cleanup_prompts(url: str, destination: Path) -> None:
     nor frees models. The host repeats it after the child has stopped, covering
     SIGKILL/crashes and acceptance that raced with an earlier cancel request.
     """
-    url = validate_comfy_url(url)
+    client = ComfyTargetClient(ComfyTarget(url, "attached"))
     runs = destination / ".vibecomfy-runtime" / "out" / "runs"
     for path in runs.glob("*/attempt.json"):
         if path.is_symlink() or not path.resolve().is_relative_to(destination.resolve()):
@@ -130,9 +137,5 @@ def cleanup_prompts(url: str, destination: Path) -> None:
         prompt_id = acceptance.get("prompt_id")
         if acceptance.get("status") != "accepted" or not isinstance(prompt_id, str) or not prompt_id:
             continue
-        _request(url, "/queue", {"delete": [prompt_id]})
-        queue = _request(url, "/queue")
-        running = queue.get("queue_running", [])
-        if any(isinstance(item, list) and len(item) > 1 and item[1] == prompt_id for item in running):
-            # Recent ComfyUI also guards the check/interrupt race server-side.
-            _request(url, "/interrupt", {"prompt_id": prompt_id})
+        client.witness_prompt(prompt_id)
+        client.cancel_prompt(prompt_id)

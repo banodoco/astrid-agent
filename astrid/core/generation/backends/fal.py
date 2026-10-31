@@ -8,10 +8,15 @@ via :func:`~astrid.core.util.http.fal_submit_and_poll`.
 
 from __future__ import annotations
 
+import base64
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlsplit
+
+from astrid.core.contracts.errors import AstridValueError
 
 from astrid.core.generation.backends.base import (
     BackendAdapter,
@@ -227,61 +232,64 @@ class FalBackend(BackendAdapter):
             self._client.register_secret(self._api_key)
         return self._api_key
 
-    def generate(
+    def submit(
         self,
         entry: ModelEntry,
         mode: str,
         params: dict[str, Any],
-        out_dir: Path,
-    ) -> GenerationResult:
-        mode_spec = entry.modes[mode]
-        backend_spec: BackendSpec = mode_spec.backends["cloud"]
+        *,
+        api_key: str | None = None,
+        uploader: Callable[..., str] | None = None,
+        submitter: Callable[..., dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Build and submit one catalog-selected fal request.
+
+        Compatibility actions retain their own staging and result manifests;
+        this is their shared provider boundary with ``generate``. References
+        must already be local files materialized by the verified host path.
+        Every reference is checked before credentials, uploads or submission.
+        """
+        if params.get("execution") not in (None, "cloud"):
+            raise AstridValueError(
+                "fal requests require explicit cloud execution",
+                code="FAL_EXECUTION_UNSUPPORTED", field="execution",
+                fix="Select cloud explicitly when using a fal catalog model.",
+            )
+        try:
+            mode_spec = entry.modes[mode]
+            backend_spec: BackendSpec = mode_spec.backends["cloud"]
+        except KeyError as exc:
+            raise AstridValueError(
+                "model mode has no fal cloud backend",
+                code="FAL_BACKEND_UNAVAILABLE", field="mode",
+                fix="Select a catalog mode with a cloud backend.",
+            ) from exc
         endpoint = backend_spec.endpoint
-        param_map: dict[str, str] = dict(backend_spec.param_map)
-        if not param_map:
-            param_map = dict(self.DEFAULT_PARAM_MAP.get(mode, {}))
-
-        api_key = self._resolve_api_key()
-
-        bounded_policy = None
-        if (
-            mode == "t2i"
-            and params.get("execution") == "cloud"
-            and params.get("storage_policy_version") == CLOUD_T2I_STORAGE_POLICY.version
-        ):
-            bounded_policy = CLOUD_T2I_STORAGE_POLICY
-        elif (
-            entry.id == "z-image"
-            and mode == "i2i"
-            and params.get("execution") == "cloud"
-            and params.get("storage_policy_version") == CLOUD_I2I_STORAGE_POLICY.version
-        ):
-            bounded_policy = CLOUD_I2I_STORAGE_POLICY
-        elif (
-            entry.id == "qwen-image-edit-2511"
-            and mode == "edit"
-            and params.get("execution") == "cloud"
-            and params.get("storage_policy_version") == CLOUD_EDIT_STORAGE_POLICY.version
-        ):
-            bounded_policy = CLOUD_EDIT_STORAGE_POLICY
-        elif (
-            params.get("execution") == "cloud"
-            and params.get("storage_policy_version") == CLOUD_UNIFIED_EDIT_STORAGE_POLICY.version
-        ):
-            bounded_policy = CLOUD_UNIFIED_EDIT_STORAGE_POLICY
+        if not isinstance(endpoint, str) or not re.fullmatch(r"[A-Za-z0-9_./-]+", endpoint):
+            raise AstridValueError(
+                "invalid fal catalog endpoint", code="FAL_ENDPOINT_INVALID", field="endpoint",
+                fix="Use a registered fal endpoint slug.",
+            )
+        param_map = dict(backend_spec.param_map or self.DEFAULT_PARAM_MAP.get(mode, {}))
+        _validate_references(params, param_map)
+        wait = params.get("timeout_seconds", params.get("max_wait_sec"))
+        if wait is not None and (type(wait) is not int or wait <= 0):
+            raise AstridValueError(
+                "fal timeout must be a positive integer", code="FAL_TIMEOUT_INVALID",
+                field="timeout_seconds", fix="Use a positive integer timeout in seconds.",
+            )
+        bounded_policy = _bounded_policy(entry, mode, params)
         if bounded_policy is not None:
             try:
-                bounded_policy.validate_request(
-                    model=entry.id,
-                    mode=mode,
-                    execution="cloud",
-                    params=params,
-                )
+                bounded_policy.validate_request(model=entry.id, mode=mode, execution="cloud", params=params)
             except ImageStoragePolicyError as exc:
                 raise ValueError(str(exc)) from exc
-
-        # --- compute applied / dropped feature lists -------------------------
-        applied_features, dropped_features = split_feature_support(params, mode_spec.supports)
+        if api_key is None:
+            api_key = self._resolve_api_key()
+        else:
+            self._client.register_secret(api_key)
+        uploader = uploader or fal_storage_upload
+        submitter = submitter or fal_submit_and_poll
 
         # --- derive frame count deterministically ----------------------------
         # If duration is supplied without frames, and fps is known, derive frames.
@@ -414,6 +422,19 @@ class FalBackend(BackendAdapter):
                         payload[remote_param] = normalized
                 continue
 
+            # Plural references preserve their host-admitted order and always
+            # use CDN upload, matching the legacy multimodal action contracts.
+            if canon in {"image_refs", "video_refs", "audio_refs"}:
+                if value:
+                    payload[remote_param] = [uploader(self._client, Path(ref), api_key) for ref in value]
+                continue
+            if canon == "audio_ref":
+                payload[remote_param] = uploader(self._client, Path(value), api_key)
+                continue
+            if canon == "duration" and backend_spec.hints.get("duration_as_string"):
+                payload[remote_param] = str(value)
+                continue
+
             # Special handling for image_ref / image_end_ref — upload if local path
             if canon in ("image_ref", "mask_ref", "image_end_ref"):
                 uploaded_ref = _upload_ref_if_local(
@@ -439,17 +460,17 @@ class FalBackend(BackendAdapter):
                 )
                 continue
 
-            # Special handling for video_ref — upload to fal CDN (videos are too
-            # large for base64 data URIs and the API prefers CDN URLs).
             if canon == "video_ref":
-                ref_path = Path(str(value))
-                if ref_path.is_file():
-                    logger.info("Uploading %s to fal CDN: %s", remote_param, ref_path)
-                    payload[remote_param] = fal_storage_upload(
-                        self._client, ref_path, api_key
+                ref_path = Path(value)
+                if backend_spec.hints.get("video_ref_transport") == "inline":
+                    suffix = ref_path.suffix.lower()
+                    mime = {".mov": "video/quicktime", ".webm": "video/webm",
+                            ".m4v": "video/x-m4v", ".gif": "image/gif"}.get(suffix, "video/mp4")
+                    payload[remote_param] = (
+                        f"data:{mime};base64," + base64.b64encode(ref_path.read_bytes()).decode("ascii")
                     )
                 else:
-                    payload[remote_param] = str(value)
+                    payload[remote_param] = uploader(self._client, ref_path, api_key)
                 continue
 
             # Special handling for resolution — parse WxH, split into
@@ -480,6 +501,8 @@ class FalBackend(BackendAdapter):
         #   value (if ever wired) still wins.
         if backend_spec.hints:
             for hint_key, hint_value in backend_spec.hints.items():
+                if hint_key in {"video_ref_transport", "duration_as_string", "output_keys"}:
+                    continue
                 if hint_key == "guidance_scale_override":
                     payload["guidance_scale"] = hint_value
                 else:
@@ -490,23 +513,63 @@ class FalBackend(BackendAdapter):
             payload["loras"] = fal_loras
 
         # --- submit + poll ---------------------------------------------------
-        t0 = time.monotonic()
         submit_kwargs = (
             {"max_response_bytes": bounded_policy.control_max_bytes}
             if bounded_policy is not None
             else {}
         )
-        result = fal_submit_and_poll(
+        if wait is not None:
+            submit_kwargs["max_wait_sec"] = wait
+        result = submitter(
             self._client,
             endpoint,
             payload,
             api_key,
             **submit_kwargs,
         )
+        if not isinstance(result, dict):
+            raise AstridValueError(
+                "fal.ai returned a non-object result", code="FAL_RESULT_INVALID", field="result",
+                fix="Retry the request or inspect the provider response.",
+            )
+        return result
+
+    @staticmethod
+    def download(
+        client: HttpClient,
+        url: str,
+        destination: Path,
+        timeout_seconds: int,
+        *,
+        fallback_suffix: str = ".mp4",
+        infer_suffix: bool = False,
+    ) -> tuple[Path, bytes]:
+        """Persist one bounded HTTPS fal output through the shared writer."""
+        _validate_output_url(url)
+        return download_output(
+            client, url, destination, timeout=timeout_seconds,
+            max_bytes=DEFAULT_OUTPUT_MAX_BYTES, fallback_suffix=fallback_suffix,
+            infer_suffix=infer_suffix,
+        )
+
+    def generate(
+        self,
+        entry: ModelEntry,
+        mode: str,
+        params: dict[str, Any],
+        out_dir: Path,
+    ) -> GenerationResult:
+        mode_spec = entry.modes[mode]
+        backend_spec = mode_spec.backends["cloud"]
+        endpoint = backend_spec.lora_endpoint if params.get("loras") else backend_spec.endpoint
+        bounded_policy = _bounded_policy(entry, mode, params)
+        applied_features, dropped_features = split_feature_support(params, mode_spec.supports)
+        t0 = time.monotonic()
+        result = self.submit(entry, mode, params)
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # --- extract metadata ------------------------------------------------
-        seed_used: int = params.get("seed", 0)
+        seed_used: int = params.get("seed") or 0
         cost_usd: float | None = None
         request_id: str | None = result.get("request_id")
         source_urls: list[str] | None = None
@@ -522,7 +585,14 @@ class FalBackend(BackendAdapter):
 
         # fal returns results in various shapes: {"images": [{"url": ...}, ...]}
         # or {"image": {"url": ...}} or {"video": {"url": ...}} etc.
-        asset_urls = _extract_asset_urls(result)
+        output_keys = backend_spec.hints.get("output_keys")
+        asset_urls = _extract_asset_urls(result, output_keys=output_keys)
+        if output_keys and not asset_urls:
+            raise AstridValueError(
+                "fal.ai result did not include the expected output URL",
+                code="FAL_OUTPUT_MISSING", field="result",
+                fix="Retry the request or inspect the provider result shape.",
+            )
         source_urls = list(asset_urls)
         expected_provider_outputs = (
             bounded_policy.provider_outputs_per_call
@@ -551,6 +621,8 @@ class FalBackend(BackendAdapter):
 
         for idx, url in enumerate(asset_urls):
             try:
+                if output_keys:
+                    _validate_output_url(url)
                 data_max_bytes = (
                     bounded_policy.output_max_bytes
                     if bounded_policy is not None
@@ -564,12 +636,16 @@ class FalBackend(BackendAdapter):
                 suffix = _guess_suffix(url)
                 dst = out_dir / f"output_{idx:03d}{suffix}"
                 dst, data = download_output(
-                    self._client, url, dst, timeout=120,
+                    self._client, url, dst, timeout=(
+                        params.get("timeout_seconds") or params.get("max_wait_sec") or 120
+                    ),
                     max_bytes=data_max_bytes, fallback_suffix=".png",
                     unique=True, validate=validate,
                 )
             except ImageStoragePolicyError as exc:
                 raise ValueError(str(exc)) from exc
+            except AstridValueError:
+                raise
             except Exception as exc:
                 raise ValueError(
                     f"Failed to download fal result output {idx}: {exc}"
@@ -593,6 +669,71 @@ class FalBackend(BackendAdapter):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_output_url(url: str) -> None:
+    if not isinstance(url, str) or urlsplit(url).scheme != "https" or not urlsplit(url).netloc:
+        raise AstridValueError(
+            "fal output URL must be HTTPS", code="FAL_OUTPUT_URL_INVALID", field="output.url",
+            fix="Retry the request and inspect the provider output URL.",
+        )
+
+
+def _bounded_policy(entry: ModelEntry, mode: str, params: dict[str, Any]) -> Any:
+    bounded_policy = None
+    if (
+        mode == "t2i"
+        and params.get("execution") == "cloud"
+        and params.get("storage_policy_version") == CLOUD_T2I_STORAGE_POLICY.version
+    ):
+        bounded_policy = CLOUD_T2I_STORAGE_POLICY
+    elif (
+        entry.id == "z-image"
+        and mode == "i2i"
+        and params.get("execution") == "cloud"
+        and params.get("storage_policy_version") == CLOUD_I2I_STORAGE_POLICY.version
+    ):
+        bounded_policy = CLOUD_I2I_STORAGE_POLICY
+    elif (
+        entry.id == "qwen-image-edit-2511"
+        and mode == "edit"
+        and params.get("execution") == "cloud"
+        and params.get("storage_policy_version") == CLOUD_EDIT_STORAGE_POLICY.version
+    ):
+        bounded_policy = CLOUD_EDIT_STORAGE_POLICY
+    elif (
+        params.get("execution") == "cloud"
+        and params.get("storage_policy_version") == CLOUD_UNIFIED_EDIT_STORAGE_POLICY.version
+    ):
+        bounded_policy = CLOUD_UNIFIED_EDIT_STORAGE_POLICY
+    return bounded_policy
+
+
+def _validate_references(params: dict[str, Any], param_map: dict[str, str]) -> None:
+    for field in param_map:
+        if field not in {"image_ref", "mask_ref", "image_end_ref", "video_ref", "audio_ref",
+                         "image_refs", "video_refs", "audio_refs"}:
+            continue
+        value = params.get(field)
+        if value is None:
+            continue
+        if field.endswith("_refs"):
+            if not isinstance(value, (list, tuple)):
+                raise AstridValueError(
+                    f"{field} must be an ordered list of host-materialized local files",
+                    code="FAL_REFERENCE_INVALID", field=field,
+                    fix="Materialize references through the verified host file path before submission.",
+                )
+            refs = value
+        else:
+            refs = (value,)
+        for ref in refs:
+            if not isinstance(ref, (str, Path)) or not Path(ref).is_file():
+                raise AstridValueError(
+                    f"{field} must be a host-materialized local file",
+                    code="FAL_REFERENCE_INVALID", field=field,
+                    fix="Materialize references through the verified host file path before submission.",
+                )
 
 
 def _upload_ref_if_local(
@@ -626,7 +767,9 @@ def _upload_ref_if_local(
     return fal_upload(client, ref_path, api_key)
 
 
-def _extract_asset_urls(result: dict[str, Any]) -> list[str]:
+def _extract_asset_urls(
+    result: dict[str, Any], *, output_keys: list[str] | None = None,
+) -> list[str]:
     """Extract image, video, or audio URLs from a fal result dict.
 
     Handles common fal response shapes:
@@ -647,6 +790,16 @@ def _extract_asset_urls(result: dict[str, Any]) -> list[str]:
     - ``{"audios": [{"url": "..."}, ...]}`` — audio list
     - ``{"output": {"audio": {"url": "..."}}}`` — nested output.audio
     """
+    # New action aliases specify their existing response-key priority in
+    # catalog data. Existing generation profiles retain their extraction order.
+    if output_keys is not None:
+        for key in output_keys:
+            value = result.get(key)
+            if isinstance(value, dict):
+                value = value.get("url")
+            if isinstance(value, str) and value:
+                return [value]
+        return []
     urls: list[str] = []
 
     # Direct images array
@@ -672,6 +825,9 @@ def _extract_asset_urls(result: dict[str, Any]) -> list[str]:
         urls.append(video["url"])
         return urls
 
+    if isinstance(video, str) and video:
+        return [video]
+
     # Video list
     videos = result.get("videos")
     if isinstance(videos, list):
@@ -694,6 +850,10 @@ def _extract_asset_urls(result: dict[str, Any]) -> list[str]:
     if isinstance(audio_file, dict) and "url" in audio_file:
         urls.append(audio_file["url"])
         return urls
+
+    output_audio = result.get("output_audio")
+    if isinstance(output_audio, dict) and isinstance(output_audio.get("url"), str):
+        return [output_audio["url"]]
 
     # Audio list
     audios = result.get("audios")

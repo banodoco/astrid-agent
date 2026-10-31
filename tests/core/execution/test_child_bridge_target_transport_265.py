@@ -262,3 +262,123 @@ def test_public_child_rejects_invalid_or_forbidden_controls(world, monkeypatch, 
         assert source.admitted_children_snapshot().children == ()
     finally:
         sdk.close()
+
+
+
+@pytest.mark.parametrize("configured, trusted", [(False, True), (True, True), (True, False)])
+def test_staged_child_actual_host_claim_selector(world, monkeypatch, configured, trusted):
+    """Observe the real host wire against Runtime's staged-child filtering.
+
+    This is an offline staged transport fixture, not a replay of session10827.
+    """
+    import json
+
+    from astrid.core.execution.generic_host import GenericPackHost
+    from tests.core.execution.test_generic_host_child_bridge_d18 import PARENT, digest
+
+    monkeypatch.delenv("ASTRID_EXECUTION_TARGET_JSON", raising=False)
+    setup(world, derived=True)
+    service = world.service
+    host = world.host
+    # setup has one parent already running. Allow a second, staged parent and
+    # retain exactly one spare slot for its child.
+    service.register_executor({"executor_id": "worker", "capabilities": [PARENT, CHILD],
+                               "max_concurrency": 3, "runtime_epoch": service.health()["runtime_epoch"]}, idempotency_key="stage-register")
+    oid = service.ingest(world.project, b"staged frame", original_name="frame.bin",
+                         idempotency_key="stage-frame")["data"]["digest"]
+    refs = [{"name": "value", "root_object_id": oid}]
+    child_digest = host.capabilities[CHILD].capability_digest
+    policy = {"capabilities": [{"capability_id": CHILD, "capability_digest": child_digest}],
+              "targets": [{"kind": "default"}], "input_object_ids": [oid],
+              "stages": [{"name": "generate", "capability_id": CHILD,
+                          "capability_digest": child_digest, "target": {"kind": "default"},
+                          "inputs": refs}]}
+    service.create_task({"project": world.project, "capability_id": PARENT,
+                         "capability_digest": host.capabilities[PARENT].capability_digest,
+                         "input_object_ids": [oid], "spec": {}, "child_delegation": policy,
+                         "idempotency_key": "stage-parent"}, enforce_readiness=True)
+    parent = service.claim_next({"executor_id": "worker", "capability_ids": [PARENT],
+                                 "runtime_epoch": 1}, idempotency_key="stage-parent-claim",
+                                identity=world.identity)
+    world.client._attempt_runtime_epochs[parent["attempt_id"]] = parent["runtime_epoch"]
+    admitted = world.client.admit_child(
+        child={"child_id": "stage-child", "capability_id": CHILD, "capability_digest": child_digest},
+        inputs={}, ordered_inputs=[{"name": "value", "object_id": oid, "filename": "frame.bin", "required": True}],
+        derived_inputs=[], stage="generate", input_refs=refs, task_id=parent["task_id"],
+        attempt_id=parent["attempt_id"], lease_id=parent["lease_id"], fence=parent["fence"],
+        runtime_epoch=parent["runtime_epoch"], run_id=parent["run_id"], project_id=world.project)
+    child_id = task_resource(admitted)["task_id"]
+    wire = next(body["task"] for _, path, body in world.calls if path == "/v1/delegated-tasks")
+    assert wire["stage"] == "generate" and wire["input_refs"] == refs
+    assert wire["execution_request"]["target"] == {"kind": "default"}
+    assert service.store.execution_binding(child_id)["resolved_target"] == {"kind": "default"}
+    assert service._local_claim_actor != "worker"
+    assert service._trusted_execution_placement(world.identity)["actual"]["kind"] == "machine"
+
+    if configured:
+        monkeypatch.setenv("ASTRID_EXECUTION_TARGET_JSON", '{"kind":"default"}')
+    if not trusted:
+        world.identity.pop("execution_binding")
+    calls = []
+    store_calls = []
+    original_store_claim = service.store._claim_task
+    def observe_store(*args, **kwargs):
+        store_calls.append(args[0])
+        return original_store_claim(*args, **kwargs)
+    monkeypatch.setattr(service.store, "_claim_task", observe_store)
+    original_transport = world.client.generated._transport
+    def claim_transport(method, path, headers, body):
+        if path != "/v1/tasks/claim":
+            return original_transport(method, path, headers, body)
+        payload = json.loads(body)
+        calls.append(payload)
+        value = service.claim_next(payload, idempotency_key=headers["Idempotency-Key"], identity=world.identity)
+        return (204, {}, b"") if value is None else (200, {}, json.dumps(value).encode())
+    monkeypatch.setattr(world.client.generated, "_transport", claim_transport)
+    # Keep the real selection, wire, Runtime claim, heartbeat and task read;
+    # provider execution is outside this diagnostic.
+    monkeypatch.setattr(GenericPackHost, "run_task", lambda self, task, **kw: {"task_id": child_id})
+    result = host.claim_once()
+    assert len(calls) == (2 if configured and not trusted else 1)
+    assert all(call.get("target") == ({"kind": "default"} if configured else None) for call in calls)
+    assert all(("target" in call) is configured for call in calls)
+    if configured and trusted:
+        assert result == {"task_id": child_id}
+        assert store_calls == [child_id]
+        assert service.task(child_id)["task"]["status"] == "running"
+    else:
+        assert result is None and store_calls == []
+        assert service.task(child_id)["task"]["status"] == "queued"
+        if configured:
+            assert service.task(child_id)["task"]["waiting_reason"] == "execution_binding_missing"
+
+
+def test_ordinary_untargeted_child_claim_remains_queue_wide(world, monkeypatch):
+    """The unconfigured host's actual request still consumes untargeted work."""
+    import json
+    from astrid.core.execution.generic_host import GenericPackHost
+
+    monkeypatch.delenv("ASTRID_EXECUTION_TARGET_JSON", raising=False)
+    _, sdk = install(world, monkeypatch, file_input=False)
+    try:
+        admitted = call(world, file_input=False)
+        assert admitted.ok, admitted.error
+        child_id = admitted.kernel_task_id
+        wire_child = next(body["task"] for _, path, body in world.calls if path == "/v1/delegated-tasks")
+        assert "execution_request" not in wire_child
+        calls = []
+        original_transport = world.client.generated._transport
+        def claim_transport(method, path, headers, body):
+            if path != "/v1/tasks/claim":
+                return original_transport(method, path, headers, body)
+            payload = json.loads(body)
+            calls.append(payload)
+            value = world.service.claim_next(payload, idempotency_key=headers["Idempotency-Key"], identity=world.identity)
+            return (204, {}, b"") if value is None else (200, {}, json.dumps(value).encode())
+        monkeypatch.setattr(world.client.generated, "_transport", claim_transport)
+        monkeypatch.setattr(GenericPackHost, "run_task", lambda self, task, **kw: {"task_id": child_id})
+        assert world.host.claim_once() == {"task_id": child_id}
+        assert len(calls) == 1 and "target" not in calls[0]
+        assert world.service.task(child_id)["task"]["status"] == "running"
+    finally:
+        sdk.close()

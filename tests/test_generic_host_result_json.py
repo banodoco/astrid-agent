@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from astrid.core._shared.result_manifest import build_manifest, write_manifest
 from astrid.core.contracts.errors import AstridError
@@ -550,3 +551,66 @@ def test_forced_receipt_wins_over_inflight_output_collection(host_case, monkeypa
     terminal.update(status="succeeded", payload={"cost": 99})
     case.host._write_task_result(terminal)
     assert (case.root / "result.json").read_bytes() == final_bytes
+
+
+def test_full_terminal_receipt_includes_generated_thumbnail(host_case, monkeypatch):
+    case = host_case
+    output_root = case.root / "outputs"
+    _legacy_output(case, output_root, warnings=["manifest warning"])
+    image_path = output_root / "generated.png"
+    Image.new("RGB", (64, 36), (10, 40, 90)).save(image_path)
+    image_bytes = image_path.read_bytes()
+    creative = {
+        "name": "generated", "path": str(image_path), "filename": image_path.name,
+        "media_type": "image/png", "digest": "sha256:" + hashlib.sha256(image_bytes).hexdigest(),
+        "size": len(image_bytes), "role": "result",
+    }
+    thumbnails, diagnostics = case.host._generation_thumbnail_outputs(
+        [creative], attempt_root=case.root,
+        task_data={"expected_effect": {"effect_type": "generation.publish_v1"}},
+    )
+    assert diagnostics == []
+    assert len(thumbnails) == 1
+    thumbnail_path = Path(thumbnails[0]["path"])
+    thumbnail_digest = "sha256:" + hashlib.sha256(thumbnail_path.read_bytes()).hexdigest()
+    terminal = {
+        "root": case.root, "task": case.task["task"], "attempt_id": "attempt-result",
+        "output_root": output_root, "status": "succeeded",
+        "payload": {"message": "generation complete", "warnings": ["child warning"]},
+        "outputs": [creative, *thumbnails], "settled": True,
+        "settlement": {"status": "accepted"},
+    }
+
+    writes = []
+    write_json_atomic = generic_host.write_json_atomic
+
+    def record_write(path, payload):
+        writes.append(payload)
+        write_json_atomic(path, payload)
+
+    monkeypatch.setattr(generic_host, "write_json_atomic", record_write)
+    case.host._write_task_result(terminal)
+
+    assert len(writes) == 2
+    assert writes[0]["outputs"]["artifacts"] == []
+    assert writes[0]["raw_result"] == {}
+    assert writes[0]["manifest_path"] is None
+    receipt = json.loads((case.root / "result.json").read_text(encoding="utf-8"))
+    serialized_keys = set(InvocationResult(
+        capability_id="test.echo", capability_type="executor", native_kind="external", ok=False,
+    ).to_dict())
+    assert serialized_keys <= receipt.keys()
+    assert receipt["status"] == "succeeded" and receipt["ok"] is True
+    assert receipt["manifest_path"] == str(output_root / "manifest.json")
+    assert (output_root / "manifest.json").read_bytes() == case.legacy_bytes
+    assert receipt["raw_result"] == terminal["payload"]
+    assert {"child warning", "manifest warning"} <= set(receipt["warnings"])
+    assert receipt["publication"] == {"status": "settled", "receipt": {"status": "accepted"}, "effect": None}
+    artifacts = receipt["outputs"]["artifacts"]
+    assert len(artifacts) == 2
+    assert artifacts[0]["digest"] == creative["digest"]
+    assert artifacts[0]["role"] == "result"
+    assert artifacts[1]["role"] == "thumbnail"
+    assert artifacts[1]["digest"] == thumbnail_digest
+    assert artifacts[1]["path"] == str(thumbnail_path)
+    assert artifacts[1]["size"] == thumbnail_path.stat().st_size

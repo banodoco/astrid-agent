@@ -1253,11 +1253,17 @@ class RoleCustodyAuthority:
             if (record["state"] != "active" or self._reference(record) != dict(reference)
                     or record["actor"] != dict(expected_actor) or record["owner_epoch"] != owner_epoch):
                 raise CustodyError("custody designation differs from selected owner/reference")
-            for identity in (record["actor"], reference["target"]):
+            for subject, identity in (("actor", record["actor"]), ("target", reference["target"])):
                 observed = identity_provider(int(identity["pid"]))
-                if (observed is None
-                        or _incarnation(observed, token_provider(int(identity["pid"]))) != dict(identity)):
-                    raise CustodyError("custody designation has unavailable or changed kernel identity")
+                incarnation = (None if observed is None else
+                               _incarnation(observed, token_provider(int(identity["pid"]))))
+                if incarnation != dict(identity):
+                    # Report the exact failed comparison, never kernel token words.
+                    # These observations grant no authority or token refresh.
+                    evidence = {"role": self.role, "subject": subject,
+                                "expected": dict(identity), "observed": incarnation}
+                    raise CustodyError("custody designation has unavailable or changed kernel identity: "
+                                       + _canonical(evidence).decode("utf-8"))
             return self._reference(record)
 
     def signal(self, *, actor: AuthenticatedCleanupActor, generation: int,

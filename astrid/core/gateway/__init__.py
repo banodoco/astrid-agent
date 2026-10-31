@@ -34,6 +34,7 @@ from astrid.core.gateway.dispatch import (
     _build_dispatch_parser,
     _dispatch_backup,
     _dispatch_doctor,
+    _dispatch_generate,
     _dispatch_product,
     _dispatch_status,
     _top_level_commands,
@@ -101,6 +102,9 @@ def _main_impl(raw: list[str]) -> int:
         from astrid.packs.h3_av.cli import main as h3_main
 
         return h3_main(raw[1:])
+
+    if first_arg == "generate":
+        return _dispatch_generate(raw[1:])
     if first_arg == "engines":
         from astrid.core.engine_cli import main as engines_main
 

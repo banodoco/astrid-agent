@@ -15,20 +15,23 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         for capability_id in host.matrix
         if capability_id.startswith("hivemind.")
     }
-    # h3_av.transform declares metadata.local_orchestrator, so the action
-    # loader rejects it as a host executor; it is owned by the orchestrator
-    # registry and its stale matrix row is reported, not discovered.
-    local_orchestrators = {"h3_av.transform"}
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
     assert {record.id for record in records} == (
-        set(host.matrix) - uninstalled_external_contracts - local_orchestrators
+        set(host.matrix) - uninstalled_external_contracts
     )
     assert {record.matrix["disposition"] for record in records} <= {"required", "optional", "unsupported", "retired"}
     for record in records:
         assert record.matrix["evidence_reason"]
         assert record.matrix["adapter_family"] == record.adapter.family
-        assert isinstance(record.resource_keys, tuple) and record.resource_keys
+        assert isinstance(record.resource_keys, tuple)
+        if record.id == "h3_av.transform":
+            assert record.definition.metadata["tracked_h3_parent"] is True
+            assert record.adapter.family == "orchestration"
+            assert record.resource_keys == ()
+            assert not record.adapter.requires_network
+        else:
+            assert record.resource_keys
         assert record.capability_digest and record.source_digest
         assert isinstance(record.manifest()["inputs"], list)
         assert isinstance(record.manifest()["outputs"], list)
