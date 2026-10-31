@@ -375,7 +375,7 @@ def test_function_commit_keeps_overlap_as_pending_clash_after_shared_outbox_adva
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "shared-overlap-data"))
 
     from astrid.sdk.timeline import Timeline
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitConflict, CommitRefused
 
     stale = Timeline.open(project, "film", client=client)
     peer = Timeline.open(project, "film", client=client)
@@ -418,6 +418,96 @@ def test_function_commit_keeps_overlap_as_pending_clash_after_shared_outbox_adva
     saved = Timeline.open(project, "film", client=client).pending_show(pending_id)
     assert saved["state"] == "landed"
     assert saved["closed_by"]["publication_id"] == landed["receipt"]["receipt_id"]
+
+
+def test_function_pending_retry_rereads_shared_outbox_and_keeps_original_suffix(
+    editing_case, tmp_path, monkeypatch,
+):
+    _daemon, client, project, setup = editing_case
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "shared-pending-retry-data"))
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitConflict, CommitRefused
+    from astrid_runtime_client import ApiError
+
+    source = _media_file(tmp_path / "pending-retry-seed.png")
+    setup.commit(
+        lambda t: t.add(source, at=0, hold=3, track="V1", id="pending-retry-target"),
+        label="Seed pending retry target", key="pending-retry-seed",
+    )
+    timeline = Timeline.open(project, "film", client=client)
+    peer = Timeline.open(project, "film", client=client)
+    assert timeline.session.outbox.path == peer.session.outbox.path
+    original_base = dict(timeline.head)
+    starting_name = timeline.bundle["parent"]["name"]
+
+    generated = client._remote._transport._generated
+    commit_timeline = generated.commit_timeline
+
+    def refuse_initial_function(project_id, timeline_id, body, **kwargs):
+        if body.get("label") == "Pending retry with suffix":
+            raise ApiError(422, "invalid_records", "seed pending function retry", details={
+                "status": "refused", "reason": "invalid_records", "current": dict(timeline.head),
+            })
+        return commit_timeline(project_id, timeline_id, body, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", refuse_initial_function)
+
+    def initial_edit(working):
+        working.bundle["parent"]["name"] = "initial function value"
+
+    with pytest.raises(CommitRefused) as initial:
+        timeline.commit(initial_edit, label="Pending retry with suffix", key="pending-retry-key",
+                        reads=[])
+
+    pending_id = initial.value.pending_id
+    assert pending_id
+    saved = timeline.pending_show(pending_id)
+    assert saved["origin"] == "function"
+    assert saved["parts"][0]["base"] == original_base
+
+    # Model a durable dependent suffix on this function-origin record. Queue it
+    # through the real capture path, then move it into the saved record as a
+    # later pending part, leaving the shared outbox ready for the retry race.
+    suffix_commands = peer.session.queue_move("parent/clip:pending-retry-target", 7)
+    with peer.session.outbox.locked():
+        state = peer.session._state()
+        state["pending"] = []
+        suffix = copy.deepcopy(saved["parts"][0])
+        suffix["base"] = original_base
+        suffix["commands"] = suffix_commands
+        state["pending_changes"][pending_id]["parts"].append(suffix)
+        peer.session.outbox.write(state)
+    saved = timeline.pending_show(pending_id)
+    assert saved["parts"][1]["commands"] == suffix_commands
+
+    evaluations = []
+
+    def retry_edit(working):
+        current_name = working.bundle["parent"]["name"]
+        evaluations.append(current_name)
+        working.bundle["parent"]["name"] = f"function based on {current_name}"
+        if len(evaluations) == 1:
+            result = peer.commit(
+                lambda other: other.bundle["parent"].update({"name": "peer during retry"}),
+                label="Same actor advances during pending retry", key="pending-retry-peer",
+            )
+            assert result["status"] in {"accepted", "merged", "landed"}
+
+    with pytest.raises(CommitConflict) as retried:
+        timeline.retry(pending_id, fn=retry_edit)
+
+    assert retried.value.pending_id == pending_id
+    assert retried.value.failure["details"]["reason"] == "intervening_write"
+    assert evaluations == [starting_name, "peer during retry"]
+    saved = Timeline.open(project, "film", client=client).pending_show(pending_id)
+    assert saved["state"] == "pending"
+    assert saved["origin"] == "function"
+    assert saved["attempts"] <= 3
+    assert saved["parts"][0]["base"] == original_base
+    assert saved["parts"][1]["commands"] == suffix_commands
+    assert "function based on peer during retry" in json.dumps(saved["parts"][0]["commands"])
+    assert peer.bundle["parent"]["name"] == "peer during retry"
 
 
 def test_pending_rederive_lost_reply_replays_exact_commit_once(editing_case, tmp_path, monkeypatch):
