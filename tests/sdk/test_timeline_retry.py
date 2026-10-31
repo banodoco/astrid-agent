@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import uuid
 from contextlib import nullcontext
@@ -976,6 +977,132 @@ def _legacy_ack_history_setup(timeline, *, flight_changes=None, entry_changes=No
     }
     entry.update(entry_changes or {})
     return path, record, entry
+
+
+def _legacy_ack_request_body(timeline, record):
+    from astrid.sdk.timeline.sync import _native_command
+
+    part = record["parts"][record.get("part", 0)]
+    request = retry_module._request(record, part)
+    body = {
+        "api_version": 1,
+        "project_id": timeline.session.project_id,
+        "timeline_id": timeline.session.timeline_id,
+        "base_revision_id": request["base_revision_id"],
+        "base_publication_id": request["base_publication_id"],
+        "commands": [_native_command(command) for command in request["commands"]],
+        "source": {"via": "python"},
+        "dry_run": False,
+        "label": request["label"],
+        "steps": request.get("steps", []),
+        "merge": request["merge"],
+        "group_id": request.get("group_id", record["id"]),
+    }
+    if "reads" in request:
+        body["reads"] = request["reads"]
+    if request.get("rationale") is not None:
+        body["rationale"] = request["rationale"]
+    return body
+
+
+def _legacy_ack_entry(timeline, body, *, key="flight-idempotency-key", **changes):
+    from astrid.core.receipts.canonical import canonical_json
+
+    path = f"/v1/projects/{timeline.session.project_id}/timelines/{timeline.session.timeline_id}/commit"
+    invocation = {"operation": "commitTimeline", "path": path,
+                  "publisher": timeline.session.identity["actor_id"], "request": body}
+    digest = hashlib.sha256(canonical_json(invocation).encode()).hexdigest()
+    entry = {
+        "group_id": "assembly-existing",
+        "publication_id": "pub-history",
+        "revision_id": "r3",
+        "publisher": "actor-1",
+        "receipt": {"receipt_id": "pub-history", "idempotency_key": key,
+                    "request_hash": digest, "command_kind": "timeline.commit",
+                    "project_id": "project"},
+    }
+    entry.update(changes)
+    return entry
+
+
+def _legacy_acknowledged_setup(timeline, *, part_changes=None, flight_changes=None):
+    path, record, _ = _legacy_ack_history_setup(timeline)
+    part = record["parts"][0]
+    part["commands"][0].update(schema_version=1, version="1", select="parent/clip:a")
+    part.update(part_changes or {})
+    request_path = f"/v1/projects/{timeline.session.project_id}/timelines/{timeline.session.timeline_id}/commit"
+    timeline.session.path = request_path
+    body = _legacy_ack_request_body(timeline, record)
+    flight = {"key": "flight-idempotency-key", "pending_id": record["id"],
+              "pending_path": str(path), "pending_part": None, "path": request_path,
+              "body": json.dumps(body)}
+    flight.update(flight_changes or {})
+    timeline.session.state["acknowledged"] = {"logical-key": flight}
+    return path, record, body
+
+
+def test_legacy_ack_without_pending_part_requires_exact_saved_request_and_receipt(
+    monkeypatch, tmp_path,
+):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _legacy_acknowledged_setup(timeline)
+    # The assembly group existed before this pending record; it cannot identify
+    # which grouped commit landed. Only the flight's exact request receipt can.
+    earlier = {"group_id": "assembly-existing", "publication_id": "pub-earlier",
+               "revision_id": "r2", "publisher": "actor-1",
+               "receipt": {"receipt_id": "receipt-earlier"}}
+    landed_entry = _legacy_ack_entry(timeline, body)
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, [earlier, landed_entry]))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert landed["status"] == "landed"
+    assert landed["data"]["publication_id"] == "pub-history"
+    assert landed["data"]["receipt"] == landed_entry["receipt"]
+    assert saved["state"] == "landed"
+    assert saved["receipts"] == ["pub-history"]
+
+
+@pytest.mark.parametrize("damage", [
+    "ambiguous_parts", "ambiguous_receipts", "request_mismatch", "request_hash_mismatch",
+    "receipt_key_mismatch", "receipt_owner_mismatch", "receipt_type_mismatch",
+    "receipt_project_mismatch", "publication_mismatch",
+])
+def test_legacy_ack_without_pending_part_refuses_ambiguous_or_mismatched_evidence(
+    monkeypatch, tmp_path, damage,
+):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _legacy_acknowledged_setup(timeline)
+    entry = _legacy_ack_entry(timeline, body)
+    entries = [entry]
+    if damage == "ambiguous_parts":
+        record["parts"].append(copy.deepcopy(record["parts"][0]))
+    elif damage == "ambiguous_receipts":
+        entries.append(copy.deepcopy(entry))
+    elif damage == "request_mismatch":
+        changed = copy.deepcopy(body)
+        changed["label"] = "Different saved request"
+        timeline.session.state["acknowledged"]["logical-key"]["body"] = json.dumps(changed)
+    elif damage == "request_hash_mismatch":
+        entry["receipt"]["request_hash"] = "wrong-request-hash"
+    elif damage == "receipt_key_mismatch":
+        entry["receipt"]["idempotency_key"] = "another-key"
+    elif damage == "receipt_owner_mismatch":
+        entry["publisher"] = "actor-2"
+    elif damage == "receipt_type_mismatch":
+        entry["receipt"]["command_kind"] = "timeline.other"
+    elif damage == "receipt_project_mismatch":
+        entry["receipt"]["project_id"] = "another-project"
+    elif damage == "publication_mismatch":
+        entry["receipt"]["receipt_id"] = "different-publication"
+    before = copy.deepcopy(timeline.session.state["pending_changes"]["pc_saved"])
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, entries))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    assert landed is None
+    assert timeline.session.state["pending_changes"]["pc_saved"] == before
 
 
 def test_landed_recovers_legacy_cross_actor_flight_by_exact_history_identity(
