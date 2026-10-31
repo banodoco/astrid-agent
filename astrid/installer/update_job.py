@@ -52,61 +52,14 @@ class _BusyRefusal(ValueError):
     reason = "busy"
 
 
-class _UnsupportedServiceManager(ValueError):
-    """The selected OS cannot safely run an installer update job."""
-
-    reason = "unsupported-service-manager"
-
-
-MINIMUM_SYSTEMD_VERSION = 254
-
-
 def _busy(message: str = "An update operation is already active or unresolved; try again after it finishes.") -> NoReturn:
     raise _BusyRefusal(message)
-
-
-def update_job_availability(*, system: str | None = None) -> dict:
-    """Return the existing availability envelope for update-job admission.
-
-    Linux requires both a responding user manager and systemd >= 254. Other
-    platforms retain their existing support behavior.
-    """
-    actual = sys.platform if system is None else system
-    if actual != "linux":
-        return {"available": True}
-    try:
-        version = subprocess.run(
-            ["systemctl", "--user", "--version"], capture_output=True,
-            text=True, timeout=5, check=False,
-        )
-        if version.returncode != 0:
-            raise ValueError("systemd version command failed")
-        output = version.stdout if isinstance(version.stdout, str) else ""
-        match = re.match(r"^systemd\s+(\d+)(?:\s|$)", output.strip())
-        if match is None or int(match.group(1)) < MINIMUM_SYSTEMD_VERSION:
-            raise ValueError("systemd version is unsupported or unknown")
-        manager = subprocess.run(
-            ["systemctl", "--user", "show-environment"], capture_output=True,
-            text=True, timeout=5, check=False,
-        )
-        if manager.returncode != 0:
-            raise ValueError("systemd user manager is unavailable")
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
-        return {"available": False, "reason": _UnsupportedServiceManager.reason}
-    return {"available": True}
-
-
-def _require_update_job_available() -> None:
-    availability = update_job_availability()
-    if not availability["available"]:
-        raise _UnsupportedServiceManager(
-            "In-app updates require a usable systemd user manager version 254 or later."
-        )
 
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024
 JOB_FORMAT = "astrid-update-job/v1"
 JOB_STATES = {"accepted", "launching", "active", "updated", "rolled_back", "failed", "recovery-needed"}
+BOOTSTRAP_PROOF_FORMAT = "astrid-update-bootstrap-proof/v1"
 MAX_RESULT_LINE = 240
 
 
@@ -175,6 +128,26 @@ def _windows_bootstrap_script(metadata: dict, operation_id: str) -> Path:
         target.unlink(missing_ok=True)
         raise ValueError("The PowerShell bootstrap handoff changed before execution.")
     return target
+
+
+def _validate_existing_windows_worker(old: Version, job: dict) -> None:
+    """Reuse an existing Windows worker only when its exact private bytes match."""
+    if sys.platform != "win32":
+        return
+    metadata = job.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("The accepted update job has no private worker directory.")
+    directory, _, _ = _validate_input_paths(metadata)
+    worker_script = directory / f"worker-{job['operation_id']}.py"
+    if worker_script.is_symlink():
+        raise ValueError("The private update worker script is a link.")
+    if not worker_script.exists():
+        return
+    if not worker_script.is_file() or not platform.is_owner_only(worker_script):
+        raise ValueError("The existing private update worker script is not owner-only regular data.")
+    expected = (_worker_command_source(old, job) + "\n").encode("utf-8")
+    if worker_script.read_bytes() != expected:
+        raise ValueError("The existing private update worker script does not match the accepted command.")
 
 
 def _bootstrap_command(bootstrap: Path, args: list[str], *, system: str | None = None) -> list[str]:
@@ -371,6 +344,10 @@ def _validate_request(request: dict, root: Path) -> dict:
         "data_root": str(data_root), "old_instance_id": old_instance_id,
         "old_identity": dict(old_identity), "old_version": old.document(),
         "target_release": normalized["release"], "metadata": normalized,
+        "bootstrap_proof": {"format": BOOTSTRAP_PROOF_FORMAT,
+                            "operation_id": operation_id, "program_root": str(root),
+                            "data_root": str(data_root), "owner": LABEL,
+                            "state": "never-entered", "claim_state": "unclaimed"},
         "accepted_at": int(time.time()), "message": "Update accepted.",
     }
 
@@ -399,7 +376,7 @@ def _reconcile_request_binding(request: dict, root: Path, job: dict) -> Path:
         raise _BusyRefusal("The selected installation ownership cannot be proved.") from failure
 
 
-def _validate_reconcile_job(root: Path, job: dict, request: dict) -> tuple[Path, dict]:
+def _validate_reconcile_job(root: Path, job: dict, request: dict, api=None) -> tuple[Path, dict]:
     data_root = _reconcile_request_binding(request, root, job)
     operation_id = job.get("operation_id")
     if (job.get("format") != JOB_FORMAT or not isinstance(operation_id, str)
@@ -409,26 +386,141 @@ def _validate_reconcile_job(root: Path, job: dict, request: dict) -> tuple[Path,
             or absolute(job.get("data_root", "")) != data_root):
         _busy("The unresolved update is not bound to this installation.")
     descriptor = job.get("platform")
+    api = api or _platform_api()
     try:
-        if not isinstance(descriptor, dict) or not _owned_descriptor(descriptor, operation_id):
-            _busy("An update operation is already active; its native job owner cannot be proved.")
         from .core import Version
         old = Version.load(job["old_version"])
         expected_command = _expected_worker_command(old, job)
-        expected = _platform_api().describe(job, expected_command)
+        if (job.get("worker_command_sha256") is not None
+                and job["worker_command_sha256"] != _worker_binding_digest(old, job)):
+            _busy("The accepted update worker command changed after acceptance.")
+        expected = api.describe(job, expected_command)
     except _BusyRefusal:
         raise
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
         raise _BusyRefusal("The unresolved update native command cannot be proved.") from failure
-    if descriptor != expected:
+    if descriptor is not None and (not _owned_descriptor(descriptor, operation_id) or descriptor != expected):
         _busy("The unresolved update native descriptor does not match its accepted command.")
+    return data_root, expected
+
+
+def _bootstrap_proof_valid(job: dict) -> bool:
+    proof = job.get("bootstrap_proof")
+    if not isinstance(proof, dict):
+        return False
+    valid = (proof.get("format") == BOOTSTRAP_PROOF_FORMAT
+            and proof.get("operation_id") == job.get("operation_id")
+            and proof.get("program_root") == job.get("program_root")
+            and proof.get("data_root") == job.get("data_root")
+            and proof.get("owner") == LABEL
+            and proof.get("state") == "never-entered"
+            and isinstance(proof.get("claim_state"), str)
+            and proof.get("claim_state") in {"unclaimed", "claimed"})
+    if not valid:
+        return False
+    if proof.get("claim_state") == "unclaimed":
+        return proof.get("native_claim") is None
+    claim = proof.get("native_claim")
+    return (isinstance(claim, dict)
+            and claim.get("operation_id") == job.get("operation_id")
+            and claim.get("program_root") == job.get("program_root")
+            and claim.get("data_root") == job.get("data_root")
+            and claim.get("owner") == LABEL
+            and isinstance(claim.get("descriptor"), dict)
+            and claim.get("descriptor") == job.get("platform"))
+
+
+def _journal_is_accepted_preexisting(job: dict, journal: dict | None) -> bool:
+    """Recognize only the exact journal snapshot observed during acceptance."""
+    if journal is None:
+        return (job.get("prior_transaction_present") is False
+                and "prior_transaction_id" in job and "prior_transaction_sha256" in job
+                and job.get("prior_transaction_id") is None
+                and job.get("prior_transaction_sha256") is None)
     try:
-        active = _platform_api().is_active(descriptor)
+        encoded = json.dumps(journal, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    digest = hashlib.sha256(encoded).hexdigest()
+    return (job.get("prior_transaction_present") is True
+            and job.get("prior_transaction_id") == journal.get("operation_id")
+            and job.get("prior_transaction_sha256") == digest)
+
+
+def _validate_prebootstrap(root: Path, job: dict, data_root: Path) -> Version:
+    """Revalidate accepted old owner and private inputs before replacing a native job."""
+    from .core import current
+    if not _bootstrap_proof_valid(job):
+        _busy("The update bootstrap-entry proof is missing or unresolved.")
+    try:
+        old, selected_data = _validate_worker_binding(root, job)
+        if selected_data != data_root or current(root) is None:
+            _busy("The accepted old installation is no longer selected.")
+        proof = job["bootstrap_proof"]
+        if (job.get("state") == "active" and proof.get("claim_state") != "claimed"
+                or proof.get("claim_state") == "claimed"
+                and job.get("state") not in {"active", "recovery-needed"}):
+            _busy("The update claim state does not match its durable bootstrap proof.")
+        if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
+            _busy("The accepted update worker command cannot be proved.")
+        selection = read_json(_selection_path())
+        preferences = selection.get("preferences")
+        autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
+        if autostart_off(autostart) or autostart_off(job.get("autostart_snapshot")):
+            _busy("Saved autostart prevents this update from continuing.")
+        metadata = job.get("metadata")
+        if (not isinstance(metadata, dict)
+                or metadata.get("release") != job.get("target_release")):
+            _busy("The accepted update inputs cannot be proved.")
+        validate_update_inputs(_validate_input_paths(metadata)[0], metadata, old.release)
+        log_path = Path(job.get("log_path", ""))
+        if (not log_path.is_absolute() or not log_path.is_relative_to(root)
+                or log_path.is_symlink() or not log_path.is_file()
+                or not platform.is_owner_only(log_path)
+                or log_path.parent.is_symlink()
+                or not platform.is_owner_only(log_path.parent, directory=True)):
+            _busy("The accepted update log is not private regular data inside the installation.")
+        _validate_existing_windows_worker(old, job)
+        return old
+    except _BusyRefusal:
+        raise
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as failure:
+        raise _BusyRefusal("The accepted old version, live Runtime, or private update inputs changed.") from failure
+
+
+def _continue_prebootstrap(root: Path, job: dict, descriptor: dict,
+                           old: Version, registration_present: bool, api=None) -> dict:
+    """Retire and relaunch one proved-never-entered operation under accept's lock."""
+    api = api or _platform_api()
+    operation_id = job["operation_id"]
+    try:
+        command = _worker_command(old, job, inactive_reconciliation=True)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
-        raise _BusyRefusal("The unresolved update's native liveness is unknown.") from failure
-    if active is not False:
-        _busy("The unresolved update is still active.")
-    return data_root, descriptor
+        raise _BusyRefusal("The private update worker command cannot be safely prepared.") from failure
+    if registration_present:
+        try:
+            api.cleanup(descriptor)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+            raise _BusyRefusal("The inactive update registration could not be safely retired.") from failure
+    proof = dict(job["bootstrap_proof"])
+    proof.pop("native_claim", None)
+    proof.update({"claim_state": "unclaimed", "continuation_at": int(time.time())})
+    job = _write_job(root, operation_id, state="launching",
+                     message="Continuing the accepted update operation.",
+                     fields={"platform": descriptor, "launch_status": "launching",
+                             "cleanup_status": "not-needed", "cleanup_error": None,
+                             "bootstrap_proof": proof,
+                             "continuation_attempted_at": int(time.time())}, allow_reconcile=True)
+    try:
+        api.launch(descriptor, command, Path(job["log_path"]))
+    except (Exception, KeyboardInterrupt) as failure:
+        _write_job(root, operation_id, state="recovery-needed",
+                   message="Recovery needed. Update launch acknowledgement was lost; run Update again.",
+                   fields={"launch_status": "unknown", "launch_error": _one_line(failure)},
+                   allow_reconcile=True)
+        raise _BusyRefusal("The update continuation launch could not be acknowledged.") from failure
+    return _write_job(root, operation_id, state="launching", message="Update job launched.",
+                      fields={"launch_status": "acknowledged", "launch_error": None}, allow_reconcile=True)
 
 
 def _matching_journal(job: dict, journal: dict) -> bool:
@@ -687,24 +779,54 @@ def _recover_matching_transaction(root: Path, job: dict, journal: dict) -> dict:
     return _set_reconciled_job(root, job, state, message)
 
 
-def _reconcile_existing(root: Path, marker: dict, request: dict) -> dict | None:
-    """Resolve only an evidenced operation already owned by the selected install."""
+def _reconcile_existing(root: Path, marker: dict, request: dict) -> tuple[dict | None, bool]:
+    """Resolve an existing operation, returning whether this request continued it."""
     job = marker.get("update_job")
     if not isinstance(job, dict) or job.get("state") not in {
             "accepted", "launching", "active", "recovery-needed"}:
-        return None
+        return None, False
     try:
-        data_root, _descriptor = _validate_reconcile_job(root, job, request)
-        journal = read_json(root / "update-transaction.json")
-        if not _matching_journal(job, journal):
-            # M1-9b's pre-bootstrap continuation needs extra durable evidence and
-            # is deliberately not inferred from an absent or unrelated journal.
-            _busy("The unresolved update has no matching transaction and cannot be resumed safely.")
-        if journal.get("step") not in TERMINAL_STEPS:
-            return _recover_matching_transaction(root, job, journal)
-        expected, identity, state, message = _journal_result(job, journal)
-        _verify_journal_result_ready(root, data_root, job, journal, expected, identity, state)
-        return _set_reconciled_job(root, job, state, message)
+        api = _platform_api()
+        data_root, _descriptor = _validate_reconcile_job(root, job, request, api)
+        journal_path = root / "update-transaction.json"
+        if journal_path.is_symlink():
+            _busy("The unresolved update journal path cannot be trusted.")
+        journal = read_json(journal_path) if journal_path.exists() else None
+        if journal is not None and _matching_journal(job, journal):
+            if job.get("platform") is None:
+                _busy("The matching update transaction has no recorded native descriptor.")
+            try:
+                if api.is_active(_descriptor) is not False:
+                    _busy("The unresolved update is still active.")
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+                raise _BusyRefusal("The unresolved update's native liveness is unknown.") from failure
+            if journal.get("step") not in TERMINAL_STEPS:
+                return _recover_matching_transaction(root, job, journal), False
+            expected, identity, state, message = _journal_result(job, journal)
+            _verify_journal_result_ready(root, data_root, job, journal, expected, identity, state)
+            return _set_reconciled_job(root, job, state, message), False
+        if not _journal_is_accepted_preexisting(job, journal):
+            _busy("The unresolved update journal is new, missing, or unrelated to its accepted snapshot.")
+        old = _validate_prebootstrap(root, job, data_root)
+        expected = api.describe(job, _expected_worker_command(old, job))
+        if job.get("platform") is not None and job["platform"] != expected:
+            _busy("The unresolved update native descriptor does not match its accepted command.")
+        expected_command = _expected_worker_command(old, job)
+        try:
+            registered = api.is_registered(expected, expected_command)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+            raise _BusyRefusal("The unresolved update registration ownership is unknown.") from failure
+        if type(registered) is not bool:
+            _busy("The unresolved update registration ownership is unknown.")
+        if job.get("transaction_id") is not None:
+            _busy("The unresolved update records a transaction without a matching journal.")
+        if registered:
+            try:
+                if api.is_active(expected) is not False:
+                    _busy("The unresolved update is still active.")
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+                raise _BusyRefusal("The unresolved update's native liveness is unknown.") from failure
+        return _continue_prebootstrap(root, job, expected, old, registered, api), True
     except _BusyRefusal:
         raise
     except (Exception, KeyboardInterrupt) as failure:
@@ -713,7 +835,6 @@ def _reconcile_existing(root: Path, marker: dict, request: dict) -> dict | None:
 
 def accept(request: dict) -> dict:
     """Durably accept one already-prepared request under the normal install lock."""
-    _require_update_job_available()
     root = absolute(request.get("root", ""))
     stream = _locked(root)
     try:
@@ -727,15 +848,26 @@ def accept(request: dict) -> dict:
             _busy("The prior update operation is unreadable or has an unknown state.")
         unresolved = (isinstance(prior, dict) and prior.get("state") in
                       {"accepted", "launching", "active", "recovery-needed"})
+        pending_path = root / "update-transaction.json"
+        if pending_path.is_symlink():
+            if unresolved:
+                _busy("The unresolved update journal path cannot be trusted.")
+            raise ValueError("The installer journal path cannot be trusted.")
         try:
-            pending = read_json(root / "update-transaction.json")
+            pending = read_json(pending_path) if pending_path.exists() else None
+        except FileNotFoundError:
+            pending = None
         except (OSError, ValueError, TypeError) as failure:
             if unresolved:
                 raise _BusyRefusal("The unresolved update journal cannot be read.") from failure
             raise
         recovered_unfinished = bool(unresolved and isinstance(pending, dict)
                                     and pending.get("step") not in TERMINAL_STEPS)
-        reconciled = _reconcile_existing(root, marker, request)
+        reconciled, continued = _reconcile_existing(root, marker, request)
+        if continued:
+            if reconciled is None:
+                _busy("The accepted update continuation could not be confirmed.")
+            return reconciled
         if recovered_unfinished:
             # A request that performs rollback/completion is recovery-only. It
             # cannot admit another operation until a later explicit click.
@@ -756,11 +888,17 @@ def accept(request: dict) -> dict:
         if isinstance(prior, dict) and request.get("operation_id") == prior.get("operation_id"):
             _busy("A new update requires a new operation identifier; the previous operation was preserved.")
         job = _validate_request(request, root)
+        from .core import Version
+        job["worker_command_sha256"] = _worker_binding_digest(Version.load(job["old_version"]), job)
         # Capture the journal observed under the installer lock. A later direct
         # transaction has a different operation ID; an unchanged journal predates
         # this acceptance even if the bootstrap never reaches staging.
-        if not pending or isinstance(pending.get("operation_id"), str):
-            job["prior_transaction_id"] = pending.get("operation_id")
+        if pending is None or isinstance(pending, dict):
+            job["prior_transaction_present"] = pending is not None
+            job["prior_transaction_id"] = pending.get("operation_id") if isinstance(pending, dict) else None
+            job["prior_transaction_sha256"] = (
+                hashlib.sha256(json.dumps(pending, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                if isinstance(pending, dict) else None)
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart):
@@ -817,10 +955,11 @@ def read_job(root: Path) -> dict:
 
 
 def _write_job(root: Path, operation_id: str, *, state: str, message: str,
-               transaction_id: str | None = None, fields: dict | None = None) -> dict:
+               transaction_id: str | None = None, fields: dict | None = None,
+               allow_reconcile: bool = False) -> dict:
     job = _read_job(root, operation_id)
     terminal = {"updated", "rolled_back", "failed", "recovery-needed"}
-    if job.get("state") in terminal and state != job.get("state"):
+    if job.get("state") in terminal and state != job.get("state") and not allow_reconcile:
         return job
     if state not in JOB_STATES:
         raise ValueError("The update job result state is invalid.")
@@ -870,6 +1009,8 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     old = current(root)
     if old is None or old.document() != job.get("old_version"):
         raise ValueError("The selected installation has no current version.")
+    if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
+        raise ValueError("The accepted worker command changed after acceptance.")
     selected_identity = selected.get("identity")
     if selected_identity is not None:
         expected = job.get("old_identity")
@@ -917,7 +1058,18 @@ def _expected_worker_command(old: Version, job: dict) -> list[str]:
     return [str(old.python), "-B", "-X", "utf8", "-I", "-c", script]
 
 
-def _worker_command(old: Version, job: dict) -> list[str]:
+def _worker_command_digest(command: list[str]) -> str:
+    encoded = json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _worker_binding_digest(old: Version, job: dict) -> str:
+    # Windows argv names a private script. Bind its intended contents too,
+    # including before that script exists in the descriptorless case.
+    return _worker_command_digest([*_expected_worker_command(old, job), _worker_command_source(old, job)])
+
+
+def _worker_command(old: Version, job: dict, *, inactive_reconciliation: bool = False) -> list[str]:
     """Run run_job with the selected old interpreter and its recorded sources."""
     script = _worker_command_source(old, job)
     if sys.platform == "win32":
@@ -932,18 +1084,26 @@ def _worker_command(old: Version, job: dict) -> list[str]:
                 or not platform.is_owner_only(directory, directory=True)):
             raise ValueError("The accepted update worker directory is not private.")
         worker_script = directory / f"worker-{job['operation_id']}.py"
-        if worker_script.exists() or worker_script.is_symlink():
-            raise ValueError("The private update worker script already exists.")
-        try:
-            with worker_script.open("xb") as stream:
-                platform.owner_only(stream.fileno())
-                stream.write((script + "\n").encode("utf-8"))
-                stream.flush()
-                os.fsync(stream.fileno())
-        except BaseException:
-            with contextlib.suppress(OSError):
-                worker_script.unlink(missing_ok=True)
-            raise
+        expected_bytes = (script + "\n").encode("utf-8")
+        if worker_script.is_symlink():
+            raise ValueError("The private update worker script already exists as a link.")
+        if worker_script.exists():
+            if (not inactive_reconciliation or not worker_script.is_file()
+                    or not platform.is_owner_only(worker_script)):
+                raise ValueError("The private update worker script already exists.")
+            if worker_script.read_bytes() != expected_bytes:
+                raise ValueError("The private update worker script already exists with changed content.")
+        if not worker_script.exists():
+            try:
+                with worker_script.open("xb") as stream:
+                    platform.owner_only(stream.fileno())
+                    stream.write(expected_bytes)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    worker_script.unlink(missing_ok=True)
+                raise
         if worker_script.is_symlink() or not platform.is_owner_only(worker_script):
             with contextlib.suppress(OSError):
                 worker_script.unlink(missing_ok=True)
@@ -984,8 +1144,7 @@ def _owned_descriptor(descriptor: dict, operation_id: str) -> bool:
 
 
 def launch_job(root: Path, operation_id: str) -> dict:
-    """Register and start the already accepted job exactly once."""
-    _require_update_job_available()
+    """Register and start the accepted job while retaining the installer lock."""
     root = absolute(root)
     stream = _locked(root)
     try:
@@ -1010,6 +1169,8 @@ def launch_job(root: Path, operation_id: str) -> dict:
         old = Version.load(job["old_version"])
         try:
             command = _worker_command(old, job)
+            if job.get("worker_command_sha256") != _worker_binding_digest(old, job):
+                raise ValueError("The accepted worker command changed after acceptance.")
             api = _platform_api()
             descriptor = api.describe(job, command)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
@@ -1022,13 +1183,9 @@ def launch_job(root: Path, operation_id: str) -> dict:
         job = _write_job(root, operation_id, state="launching", message="Update job registration is pending.",
                          fields={"platform": descriptor, "launch_status": "launching",
                                  "cleanup_status": "pending"})
-    finally:
-        _unlock(stream)
-    try:
-        api.launch(descriptor, command, Path(job["log_path"]))
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
-        stream = _locked(root)
         try:
+            api.launch(descriptor, command, Path(job["log_path"]))
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
             rejected = (type(failure).__name__ == "UpdateJobLaunchError"
                         or isinstance(failure, subprocess.CalledProcessError))
             current = _read_job(root, operation_id)
@@ -1048,17 +1205,13 @@ def launch_job(root: Path, operation_id: str) -> dict:
                 failed = _write_job(root, operation_id, state="launching",
                                     message="Update launch acknowledgement was lost; repair will inspect the owned job.",
                                     fields={"launch_status": "unknown", "launch_error": _one_line(failure)})
-        finally:
-            _unlock(stream)
-        if failed.get("state") == "failed":
-            return _cleanup_terminal(root, operation_id)
-        return failed
-    stream = _locked(root)
-    try:
+            if failed.get("state") == "failed":
+                return _cleanup_terminal(root, operation_id, locked=True)
+            return failed
         job = _read_job(root, operation_id)
         if job.get("state") == "launching":
             # Keep state launching until the worker claims it. If launch starts
-            # immediately, the worker must not mistake our ack for a claim.
+            # immediately, the worker waits on this lock until the ack is durable.
             return _write_job(root, operation_id, state="launching", message="Update job launched.",
                               fields={"launch_status": "acknowledged"})
         if job.get("state") == "active" and job.get("launch_status") == "launching":
@@ -1387,7 +1540,20 @@ def run_job(root: Path, operation_id: str) -> dict:
         # This process owns the one-shot launch now. Persist the claim before
         # validation so a second invocation cannot run and terminal errors can
         # safely clean up from inside the OS job's own kill domain.
-        _write_job(root, operation_id, state="active", message="Update worker is validating the accepted operation.")
+        proof = job.get("bootstrap_proof")
+        if not isinstance(proof, dict) or not _bootstrap_proof_valid(job):
+            raise ValueError("The accepted update has no valid bootstrap-entry proof.")
+        proof = dict(proof)
+        proof["claim_state"] = "claimed"
+        proof["claimed_at"] = int(time.time())
+        descriptor = job.get("platform")
+        if not isinstance(descriptor, dict) or not _owned_descriptor(descriptor, operation_id):
+            raise ValueError("The accepted update native claim is not bound to this operation.")
+        proof["native_claim"] = {"operation_id": operation_id,
+                                 "program_root": str(root), "data_root": job["data_root"],
+                                 "owner": LABEL, "descriptor": descriptor}
+        _write_job(root, operation_id, state="active", message="Update worker is validating the accepted operation.",
+                   fields={"bootstrap_proof": proof})
         claimed = True
         if pending_transaction(root):
             from .backend import Backend
@@ -1412,6 +1578,13 @@ def run_job(root: Path, operation_id: str) -> dict:
         if inputs["release"] != job["target_release"] or inputs["release"] <= old.release:
             raise ValueError("The selected update release is no longer newer.")
         _write_job(root, operation_id, state="active", message="Update is running.")
+        # This durable transition is the boundary after which a fresh bootstrap
+        # must never be launched, even if the next process call loses its ack.
+        proof = dict(_read_job(root, operation_id)["bootstrap_proof"])
+        proof["state"] = "entered"
+        proof["entered_at"] = int(time.time())
+        _write_job(root, operation_id, state="active", message="Update is running.",
+                   fields={"bootstrap_proof": proof})
         # The worker must release the installer lock before bootstrap launches
         # fresh `astrid install`, which reacquires it and owns all C2 writes.
         _unlock(stream)
@@ -1486,9 +1659,7 @@ def main():
         raise ValueError("The update helper request is too large.")
     value = json.loads(raw)
     action = value.get("action", "prepare")
-    if action == "availability":
-        print(json.dumps(update_job_availability()))
-    elif action == "prepare":
+    if action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
                                        bootstrap_url=value["bootstrap_url"],
                                        installed_release=value["installed_release"])
@@ -1496,10 +1667,6 @@ def main():
     elif action == "accept":
         try:
             result = accept(value)
-        except _UnsupportedServiceManager as failure:
-            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
-                              "message": _one_line(failure)}))
-            raise SystemExit(1)
         except _BusyRefusal as failure:
             print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
                               "message": _one_line(failure)}))
@@ -1511,10 +1678,6 @@ def main():
     elif action == "launch":
         try:
             result = launch_job(Path(value["root"]), value["operation_id"])
-        except _UnsupportedServiceManager as failure:
-            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
-                              "message": _one_line(failure)}))
-            raise SystemExit(1)
         except _BusyRefusal as failure:
             print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
                               "message": _one_line(failure)}))
