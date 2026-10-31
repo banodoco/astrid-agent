@@ -1136,7 +1136,7 @@ def test_e14_final_refusal_releases_outbox_for_new_intent_and_exact_undo(
     editing_case, tmp_path,
 ):
     _daemon, client, project, timeline = editing_case
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitRefused
     from tests.editing_conformance.test_doc_patch_v2 import change, patch
 
     setup_history = _history(client, project)
@@ -1155,7 +1155,7 @@ def test_e14_final_refusal_releases_outbox_for_new_intent_and_exact_undo(
         history_before = _history(client, project)
         fps = before["parent_revision"]["payload"]["config"]["output"]["fps"]
     removal = change(["config", "output", "fps"], {"state": "present", "value": fps}, op="remove")
-    with pytest.raises(CommitConflict):
+    with pytest.raises(CommitRefused):
         timeline.commit([patch(removal)], label="Refused arbitrary FPS removal", key="e14-refused-fps")
     assert len(_history(client, project)) == len(history_before)
     after_refusal = _snapshot(timeline)
