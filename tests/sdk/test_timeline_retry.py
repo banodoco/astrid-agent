@@ -558,10 +558,10 @@ def test_function_record_probe_preserves_original_base_and_guards(monkeypatch, t
     )
 
 
-def test_function_retry_preserves_synthetic_scope_and_saved_record(tmp_path):
+def test_function_retry_preserves_saved_atomic_steps_and_record(tmp_path):
     record = _record()
     part = record["parts"][0]
-    part["evaluation"] = {"kind": "function", "synthetic_function_scope": True}
+    part["evaluation"] = {"kind": "function"}
     part["commit_options"] = {
         "merge": "atomic",
         "steps": [
@@ -585,13 +585,13 @@ def test_function_retry_preserves_all_step_reads_and_omits_batch_reads(tmp_path)
     record = _record()
     part = record["parts"][0]
     caller_read = {"kind": "scope", "ref": "clip:a", "path": ["start"]}
-    synthetic_scope = {"kind": "scope", "ref": "timeline", "path": []}
-    part["evaluation"] = {"kind": "function", "synthetic_function_scope": True}
+    scope_read = {"kind": "scope", "ref": "timeline", "path": []}
+    part["evaluation"] = {"kind": "function"}
     part["commit_options"] = {
         "merge": "atomic",
         "steps": [
-            {"id": "s1", "reads": [caller_read, synthetic_scope]},
-            {"id": "s2", "reads": [synthetic_scope]},
+            {"id": "s1", "reads": [caller_read, scope_read]},
+            {"id": "s2", "reads": [scope_read]},
         ],
     }
     before = copy.deepcopy(record)
@@ -608,7 +608,7 @@ def test_function_retry_preserves_caller_reads_and_explicit_atomic(tmp_path):
     record = _record()
     part = record["parts"][0]
     caller_reads = [{"kind": "scope", "ref": "timeline", "path": ["clips"]}]
-    part["evaluation"] = {"kind": "function", "synthetic_function_scope": True}
+    part["evaluation"] = {"kind": "function"}
     part["commit_options"] = {
         "merge": "atomic",
         "reads": caller_reads,
@@ -707,7 +707,7 @@ def test_retry_same_value_conflict_uses_current_part_and_preserves_suffix(monkey
 def test_explicit_atomic_function_commit_stays_atomic_without_reads(tmp_path):
     record = _record()
     part = record["parts"][0]
-    part["evaluation"] = {"kind": "function", "synthetic_function_scope": False}
+    part["evaluation"] = {"kind": "function"}
     part["commit_options"] = {
         "merge": "atomic",
         "steps": [{"id": "s1", "reads": [

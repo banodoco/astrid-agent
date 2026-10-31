@@ -493,7 +493,6 @@ def test_explicit_atomic_function_fallback_rederives_after_disjoint_edit(
     assert part["evaluation"] == {
         "kind": "function",
         "count": 3,
-        "synthetic_function_scope": False,
         "media_cache": {},
         "identity_cache": {},
     }

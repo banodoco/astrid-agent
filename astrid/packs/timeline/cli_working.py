@@ -123,7 +123,10 @@ def _connected_outbox(parsed: argparse.Namespace, project_id: str, timeline_id: 
                          if known_conflict else {})}
         else:
             status = {"status": "clear"}
-        status["pending_changes"] = len(pending_changes)
+        status["pending_changes"] = sum(
+            isinstance(record, Mapping) and record.get("state") == "pending"
+            for record in pending_changes.values()
+        )
         if rejected and status["status"] != "rejected":
             status["rejected_command_count"] = len(rejected["commands"])
         return outbox, status, scope

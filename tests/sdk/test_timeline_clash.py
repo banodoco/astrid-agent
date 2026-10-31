@@ -135,17 +135,23 @@ def test_conflict_summary_uses_clip_facing_target():
     assert 'parent/config/clips/id:' not in packet['summary']
 
 
-def test_function_clash_summary_names_peer_receipt_without_field_match():
-    from astrid.sdk.timeline.clash import _summary
-
+def test_packet_does_not_attribute_nonconflicting_receipt():
     receipt = {'label': 'Peer move', 'publisher': 'peer-1',
                'publication_id': 'pub-peer', 'touches_conflict': False}
-    record = {'id': 'pc-function', 'label': 'Arrange', 'origin': 'function'}
+    realm = DetachedRealm()
+    base = copy.deepcopy(realm.head)
+    realm.call([realm.move('parent/clip:clip-a', 6.006)])
+    realm.entries[-1]['records']['label'] = receipt['label']
+    realm.entries[-1]['publisher'] = receipt['publisher']
+    conflict = {'kind': 'value_conflict', 'ref': 'parent/clip:clip-b', 'path': ['at'],
+                'base': {'state': 'absent'}, 'theirs': {'state': 'absent'},
+                'ours': {'state': 'absent'}}
 
-    summary = _summary(record, [], [receipt])
+    packet = explain(PacketSession(realm), _pending(base, realm.head, conflict))
 
-    assert 'Peer move' in summary
-    assert 'peer-1' in summary
+    assert packet['receipts'][0]['touches_conflict'] is False
+    assert 'Peer move' not in packet['summary']
+    assert 'peer-1' not in packet['summary']
 
 
 def test_conflict_target_describes_verified_removal_and_equal_values():

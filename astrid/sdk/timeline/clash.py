@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import re
-import uuid
 
 from ._command_state import CommandError
 from ._commit_patch import _prefix, canonical_site, record_sites
@@ -205,26 +204,25 @@ def friendly_target(session, record, conflict):
     return _target(conflict, base_closure, head_closure)
 
 
-def _summary(record, conflicts, receipts, targets=()):
+def publisher_name(publisher):
+    """Avoid showing generated local actor ids in user-facing summaries."""
+    if isinstance(publisher, str) and re.fullmatch(r'astrid-[0-9a-fA-F]+', publisher):
+        return 'another writer'
+    return publisher
+
+
+def _summary(record, receipts, targets=()):
     label = record.get('label') or 'Timeline edit'
     pending_id = record.get('id') or 'unknown'
     match = next((receipt for receipt in receipts if receipt.get('touches_conflict')), None)
-    if not match and record.get('origin') == 'function':
-        match = next((receipt for receipt in reversed(receipts)
-                      if receipt.get('publication_id')), None)
     target = targets[0] if targets else None
     where = f' ({target})' if target else ''
     if match:
-        publisher = match.get('publisher')
-        if isinstance(publisher, str) and re.fullmatch(r'astrid-[0-9a-fA-F]+', publisher):
-            publisher = 'another writer'
+        publisher = publisher_name(match.get('publisher'))
         who = f' ({publisher})' if publisher else ''
         return (f'"{label}" was not committed: "{match.get("label") or "Another edit"}"{who} '
                 f'changed a conflicting part{where} after your edit was made. Your edit is saved as '
                 f'{pending_id}; nothing is lost.')
-    if conflicts and receipts:
-        return (f'"{label}" was not committed: the timeline changed{where} after your edit was made. '
-                f'Your edit is saved as {pending_id}; nothing is lost.')
     return (f'"{label}" was not committed: the timeline changed{where} after your edit was made. '
             f'Your edit is saved as {pending_id}; nothing is lost.')
 
@@ -263,26 +261,8 @@ def explain(session, record):
         targets = [_target(conflict, base_closure, head_closure) for conflict in conflicts]
     except Exception:  # noqa: BLE001 - summaries remain available without friendly enrichment
         targets = []
-    packet['summary'] = _summary(record, conflicts, packet['receipts'] or [], targets)
+    packet['summary'] = _summary(record, packet['receipts'] or [], targets)
     pending_id = record.get('id')
     packet['next'] = (f'tl.retry({pending_id!r}, your_function)' if record.get('origin') == 'function'
                       else f'tl.retry({pending_id!r})') if pending_id else 'tl.pending_list()'
     return packet
-
-
-def _probe(session, request, merge, reads):
-    """Send a dry-run probe without changing the saved request's merge contract."""
-    body = {key: copy.deepcopy(value) for key, value in request.items()
-            if key not in {'base', 'reads', 'merge', 'commands', 'key', 'origin'}}
-    body.update(api_version=1, project_id=session.project_id, timeline_id=session.timeline_id,
-                commands=copy.deepcopy(request['commands']), merge=merge,
-                reads=copy.deepcopy(reads), dry_run=True)
-    body.setdefault('source', {'via': 'python'})
-    try:
-        return _response(session.client.timelines.commit(
-            session.project_id, session.timeline_id, body,
-            idempotency_key='clash-probe-' + uuid.uuid4().hex))['data']
-    except Exception as exc:  # noqa: BLE001 - retain wire details for J2's probe case
-        if isinstance(getattr(exc, 'details', None), dict):
-            return exc.details
-        raise

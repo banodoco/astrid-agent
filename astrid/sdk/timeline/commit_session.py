@@ -84,6 +84,14 @@ def _imports_in_commands(commands):
     return imports
 
 
+def _list_steps(commands, label):
+    return [{"id": f"step-{ordinal + 1}", "label": label, "intent": "", "tags": [],
+             "command_ordinals": [ordinal],
+             "patch": copy.deepcopy(command.get("args", {}).get("changes", []))
+             if isinstance(command, Mapping) and command.get("op") == "doc.patch" else []}
+            for ordinal, command in enumerate(commands)]
+
+
 def _clip_interval(clip):
     """Return a clip's timeline interval in seconds when its timing is known."""
     start = clip.get("at", clip.get("start"))
@@ -620,29 +628,6 @@ class Timeline(Checkout):
             raise TimelineEditError("pass only one of key or idempotency_key")
         if key is not None:
             idempotency_key = key
-        if pending is not None and idempotency_key is not None and isinstance(label_or_fn, list):
-            actors = "self" if getattr(self.session, "_explicit_outbox", False) else "all"
-            landed = [(path, record) for path, record in self._pending_records_with_paths(actors)
-                      if (record.get("id") == pending or record.get("key") == pending)
-                      and record.get("state") == "landed"]
-            if len(landed) == 1:
-                record = landed[0][1]
-                replay_label = label or "Timeline edit"
-                list_reads = [] if reads is None and merge == "fields" else reads
-
-                def matches(body):
-                    return (body.get("group_id") == record["id"]
-                            and body.get("commands") == label_or_fn
-                            and body.get("label") == replay_label
-                            and body.get("merge") == merge
-                            and body.get("reads") == list_reads)
-
-                replay = self.session.retry(idempotency_key, matches=matches, dry_run=dry_run)
-                if replay is not None:
-                    return replay
-        pending_target = (self._resolve_pending(pending) if pending is not None else
-                          self._resolve_pending_key(idempotency_key) if idempotency_key is not None else None)
-        pending_id, pending_path, pending_part = pending_target if pending_target is not None else (None, None, None)
         if merge not in {"fields", "atomic"}:
             raise TimelineEditError("merge must be fields or atomic")
         if dry_run:
@@ -659,14 +644,40 @@ class Timeline(Checkout):
             commit_label = label or label_or_fn
         if not isinstance(commit_label, str) or not commit_label.strip():
             raise TimelineEditError("commit requires a nonempty label or a function")
-        if commands is not None:
-            return self._commit_commands(commands, label=commit_label, merge=merge, dry_run=dry_run,
-                                         reads=reads, idempotency_key=idempotency_key,
-                                         pending_id=pending_id, pending_path=pending_path, pending_part=pending_part)
+        if commands is not None and idempotency_key is not None and not dry_run:
+            actors = "self" if getattr(self.session, "_explicit_outbox", False) else "all"
+            landed = [record for _, record in self._pending_records_with_paths(actors)
+                      if pending is not None
+                      and (record.get("id") == pending or record.get("key") == pending)
+                      and record.get("state") == "landed"]
+            landed_group_id = landed[0].get("id") if len(landed) == 1 else None
+            steps = _list_steps(commands, commit_label)
+            list_reads = [] if reads is None and merge == "fields" else reads
+            with self.session.outbox.locked():
+                active_flight = self.session._state().get("flight") is not None
+            replay = self.session.retry(
+                idempotency_key,
+                matches=lambda body: ((landed_group_id is None
+                                      or body.get("group_id") == landed_group_id)
+                                      and body.get("commands") == commands
+                                      and body.get("label") == commit_label
+                                      and body.get("steps") == steps
+                                      and body.get("merge") == merge
+                                      and body.get("reads") == list_reads),
+            )
+            if replay is not None:
+                return self._accepted(replay) if active_flight else replay
+        pending_target = (self._resolve_pending(pending) if pending is not None else
+                          self._resolve_pending_key(idempotency_key) if idempotency_key is not None else None)
+        pending_id, pending_path, pending_part = pending_target if pending_target is not None else (None, None, None)
         if function:
             replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run)
             if replay is not None:
                 return replay
+        if commands is not None:
+            return self._commit_commands(commands, label=commit_label, merge=merge, dry_run=dry_run,
+                                         reads=reads, idempotency_key=idempotency_key,
+                                         pending_id=pending_id, pending_path=pending_path, pending_part=pending_part)
         with self.session.outbox.locked():
             state = self.session._state()
         if _original_base is None and pending_id is not None:
@@ -762,7 +773,6 @@ class Timeline(Checkout):
                 for step in steps:
                     step.setdefault("reads", []).append({"kind": "scope", "ref": "timeline", "path": []})
             evaluation = {"kind": "function" if function else "label", "count": count,
-                          "synthetic_function_scope": bool(function and reads is None and merge != "atomic"),
                           "media_cache": copy.deepcopy(working._media_cache),
                           "identity_cache": copy.deepcopy(working._identity_cache)}
             if function and not _overwrite:
@@ -939,28 +949,10 @@ class Timeline(Checkout):
             raise TimelineEditError("commit(command_list) requires a clean local session")
         with self.session.outbox.locked():
             state = self.session._state()
-        steps = []
-        for ordinal, command in enumerate(commands):
-            patch = (copy.deepcopy(command.get("args", {}).get("changes", []))
-                     if isinstance(command, Mapping) and command.get("op") == "doc.patch" else [])
-            steps.append({"id": f"step-{ordinal + 1}", "label": label, "intent": "", "tags": [],
-                          "command_ordinals": [ordinal], "patch": patch})
+        steps = _list_steps(commands, label)
         try:
             list_reads = [] if reads is None and merge == "fields" else reads
             flight = state.get("flight")
-            replay = None
-            if flight is None or flight.get("pending_id") == pending_id:
-                replay = self.session.retry(
-                    idempotency_key,
-                    matches=lambda body: (body.get("commands") == commands
-                                          and body.get("label") == label
-                                          and body.get("steps") == steps
-                                          and body.get("merge") == merge
-                                          and body.get("reads") == list_reads),
-                    dry_run=dry_run,
-                )
-            if replay is not None:
-                return self._accepted(replay) if flight is not None else replay
             if flight is not None and pending_id is not None:
                 body = json.loads(flight["body"])
                 if (flight.get("pending_id") != pending_id or body.get("commands") != commands

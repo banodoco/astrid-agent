@@ -465,7 +465,10 @@ def test_status_counts_and_discard_migrates_legacy_conflicts(command, capsys):
         }},
         "commit_options": {"label": "Recover this edit"}, "evaluation": None,
     }
-    state["pending_changes"] = {"pc_existing": {"id": "pc_existing", "state": "pending"}}
+    state["pending_changes"] = {
+        "pc_existing": {"id": "pc_existing", "state": "pending"},
+        "pc_landed": {"id": "pc_landed", "state": "landed"},
+    }
     generated.path.write_text(json.dumps(state), encoding="utf-8")
 
     assert run("status", "t", "--project", "p", "--json") == 0
@@ -477,9 +480,9 @@ def test_status_counts_and_discard_migrates_legacy_conflicts(command, capsys):
     saved = json.loads(generated.path.read_bytes())
     assert saved.get("rejected") is None
     assert saved["pending"] == [] and saved["flight"] is None
-    assert len(saved["pending_changes"]) == 2
+    assert len(saved["pending_changes"]) == 3
     migrated = saved["pending_changes"]
-    record_id = next(key for key in migrated if key != "pc_existing")
+    record_id = next(key for key in migrated if key not in {"pc_existing", "pc_landed"})
     record = migrated[record_id]
     assert record["id"] == record_id and record["state"] == "pending"
     assert record["parts"][0]["base"] == {
@@ -487,7 +490,7 @@ def test_status_counts_and_discard_migrates_legacy_conflicts(command, capsys):
         "publication_id": state["base"]["publication_id"],
     }
     assert record["parts"][0]["commands"] == [rejected_command]
-    assert "kept 2 pending change(s)" in output
+    assert "kept 3 pending change(s)" in output
 
 
 def test_ordinary_edit_symbolic_move_keeps_legacy_moment_resolution(command, monkeypatch):
