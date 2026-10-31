@@ -53,6 +53,7 @@
           "runtime": "d8704b7a590bf0e74d2ab410f8fceab989cbee6d"
         },
         "installed_manifest_sha256": "41d33bd6cbe886fdf6958e11182f131d4c9e3d7e88fa5604c1998c36a499c92b",
+        "installed_manifest_vibecomfy_default_sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
         "install_manifest_schema_version": 1,
         "manifest_release": 1,
         "protocol": "workspace.v1",
@@ -72,6 +73,7 @@
           "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f"
         },
         "installed_manifest_sha256": "4610f44b4dfe39d932753115668779390ed2287d15e2bd8c9568e62bbb6d60ff",
+        "installed_manifest_vibecomfy_default_sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
         "install_manifest_schema_version": 1,
         "manifest_release": 0,
         "protocol": "workspace.v1",

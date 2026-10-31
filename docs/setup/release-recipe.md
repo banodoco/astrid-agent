@@ -403,6 +403,11 @@ The release-recipe evidence root is:
 
 `receiving/coordination/evidence/v3-manager-dispatch-20261009/release-recipe`
 
+Publisher-only deployment is controlled by the parameterized M4-8 publisher
+run sheet in the release coordination record. It remains fail-closed until its
+qualified evidence packet and release-owner gates are recorded; it does not
+turn pending values above into an install or publication instruction.
+
 The route/session evidence is authoritative from the launch record and
 `turn_context` model/effort fields. Model self-description is not metadata and
 no nested model probe is used. The integration index, root README and Makefile
