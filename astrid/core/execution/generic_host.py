@@ -5126,42 +5126,79 @@ class RuntimeProtocolClient:
             evidence["outputs"] = [dict(row) for row in outputs]
         if result is not None:
             evidence["result"] = dict(result)
-        response = completion_client.fail_attempt(
-            attempt_id,
-            lease_id=lease_token,
-            fence=int(fence),
-            error=payload,
-            runtime_epoch=epoch,
-            idempotency_key=f"fail-{attempt_id}-{fence}",
-            **evidence,
+        idempotency_key = f"fail-{attempt_id}-{fence}"
+        request = dict(
+            lease_id=lease_token, fence=int(fence), error=payload,
+            runtime_epoch=epoch, idempotency_key=idempotency_key, **evidence,
         )
-        if result is not None:
-            self._verify_terminal_evidence_readback(task_id, result, response)
-        return response
+        return self._terminal_evidence_mutation(
+            task_id, result,
+            lambda: completion_client.fail_attempt(attempt_id, **request),
+        )
+
+    def _terminal_evidence_mutation(
+        self, task_id: str, expected_result: Mapping[str, Any] | None,
+        mutation: Callable[[], Any],
+    ) -> Any:
+        """Retry the same fenced write after checking whether its ACK was lost."""
+        last_error: BaseException | None = None
+        for attempt in range(2):
+            try:
+                response = mutation()
+            except Exception as exc:
+                last_error = exc
+                if expected_result is not None:
+                    try:
+                        return self._verify_terminal_evidence_readback(task_id, expected_result, None)
+                    except Exception:
+                        pass
+                if attempt == 0:
+                    continue
+                raise
+            if expected_result is None:
+                return response
+            try:
+                self._verify_terminal_evidence_readback(task_id, expected_result, response)
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+                raise
+            return response
+        assert last_error is not None
+        raise last_error
 
     def _verify_terminal_evidence_readback(
         self, task_id: str, expected_result: Mapping[str, Any], response: Any,
-    ) -> None:
+    ) -> Any:
         """Require a Runtime task readback to contain the submitted durable result."""
-        task = response.get("task") if isinstance(response, Mapping) else getattr(response, "task", None)
-        result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
-        if not isinstance(result, Mapping):
-            task = self.generated.get_task(task_id)
-            task = task.get("task", task) if isinstance(task, Mapping) else task
-            result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
         def contains(actual: Any, expected: Mapping[str, Any]) -> bool:
             if not isinstance(actual, Mapping):
                 return False
-            if all(
+            return all(
                 (contains(actual.get(key), value) if isinstance(value, Mapping)
                  else actual.get(key) == value)
                 for key, value in expected.items()
-            ):
-                return True
-            return any(contains(value, expected) for value in actual.values() if isinstance(value, Mapping))
+            )
 
-        if not contains(result, expected_result):
-            raise HostError("Runtime terminal evidence is not present in durable task readback")
+        task = response.get("task") if isinstance(response, Mapping) else getattr(response, "task", None)
+        task_id_value = (
+            task.get("task_id", task.get("id")) if isinstance(task, Mapping)
+            else getattr(task, "task_id", getattr(task, "id", None))
+        )
+        result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+        if (task_id_value is not None and str(task_id_value) != task_id) or not contains(result, expected_result):
+            task = self.generated.get_task(task_id)
+            task = task.get("task", task) if isinstance(task, Mapping) else task
+            task_id_value = (
+                task.get("task_id", task.get("id")) if isinstance(task, Mapping)
+                else getattr(task, "task_id", getattr(task, "id", None))
+            )
+            result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+            if ((task_id_value is not None and str(task_id_value) != task_id)
+                    or not contains(result, expected_result)):
+                raise HostError("Runtime terminal evidence is not present in durable task readback")
+        return {"task": task} if task is not None else {"result": result}
 
     def cancel(
         self,
@@ -5209,15 +5246,18 @@ class RuntimeProtocolClient:
                 **({"result": dict(result)} if result is not None else {}),
                 stop_observed=stop_observed,
             )
-        response = self._lifecycle_client().cancel_task(
-            task_id,
+        idempotency_key = f"cancel-{task_id}-{attempt_id}-{int(fence)}"
+        if stop_observed is not None:
+            idempotency_key += f"-stop-{int(stop_observed)}"
+        request = dict(
             expected_version=version,
-            idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
+            idempotency_key=idempotency_key,
             **kwargs,
         )
-        if result is not None:
-            self._verify_terminal_evidence_readback(task_id, result, response)
-        return response
+        return self._terminal_evidence_mutation(
+            task_id, result,
+            lambda: self._lifecycle_client().cancel_task(task_id, **request),
+        )
 
     def get_object(self, digest: str) -> bytes:
         response = self.generated.get_object(digest)
@@ -9809,6 +9849,8 @@ class GenericPackHost:
                        if terminal.get("forced") == "lease_lost" else {}),
                 )
             except Exception:
+                if pending_evidence:
+                    terminal["evidence_pending"] = True
                 # Observe cancellation only after attempting the original
                 # failure mutation; a broken read cannot suppress that write.
                 if task_snapshot()["status"] != "cancelled":
@@ -10471,11 +10513,22 @@ class GenericPackHost:
                     _, values = _bind_host_owned_command_outputs(
                         record, values, output_root=Path(output_root)
                     )
-                harvested = harvest_staged_outputs(
-                    output_root, definition=record.definition,
-                    declared_outputs=record.definition.outputs, values=values, require=False,
-                )
                 manifest_path = Path(output_root) / "manifest.json"
+                # A result manifest is mandatory for a successful run, but a
+                # failure before the producer writes one is still publishable
+                # as a terminal result with no outputs. Do not guess output
+                # identities from loose files in that spool.
+                receipt_required = bool(
+                    isinstance(record.definition.metadata, Mapping)
+                    and record.definition.metadata.get("output_result_manifest")
+                )
+                if receipt_required and not manifest_path.exists():
+                    harvested = []
+                else:
+                    harvested = harvest_staged_outputs(
+                        output_root, definition=record.definition,
+                        declared_outputs=record.definition.outputs, values=values, require=False,
+                    )
                 if manifest_path.is_file() and not manifest_path.is_symlink():
                     manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
                     if manifest_value.get("kind") == "managed-generation-result.v1":
@@ -10541,11 +10594,17 @@ class GenericPackHost:
                 evidence_outputs, evidence_result = collect_terminal_evidence(
                     "cancelled", AstridError("execution cancelled", code="cancelled")
                 )
-                completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
-                                fence=fence, lease_id=lease_token,
-                                runtime_epoch=task_data.get("runtime_epoch"),
-                                outputs=evidence_outputs, result=evidence_result,
-                                stop_observed=False)
+                cancel_kwargs = {
+                    "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
+                    "runtime_epoch": task_data.get("runtime_epoch"),
+                    "outputs": evidence_outputs, "result": evidence_result,
+                    "stop_observed": False,
+                }
+                try:
+                    completion_call(self.client.cancel, task_id, **cancel_kwargs)
+                except BaseException:
+                    _terminal["evidence_pending"] = True
+                    raise
 
         read_progress = _terminal["read_progress"]
         try:

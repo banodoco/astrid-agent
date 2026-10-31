@@ -9,13 +9,15 @@ class Generated:
     def __init__(self, result):
         self.result = result
         self.calls = []
+        self.task_result = None
 
     def fail_attempt(self, attempt_id, **kwargs):
         self.calls.append(("fail", attempt_id, kwargs))
         return {"task": {"result": self.result}}
 
     def get_task(self, task_id):
-        return {"id": task_id, "attempt_id": "attempt-1", "version": 4}
+        return {"id": task_id, "attempt_id": "attempt-1", "version": 4,
+                "result": self.task_result}
 
     def cancel_task(self, task_id, **kwargs):
         self.calls.append(("cancel", task_id, kwargs))
@@ -63,3 +65,45 @@ def test_cancel_evidence_carries_complete_fence_and_unknown_stop():
     assert payload["outputs"] == outputs
     assert payload["result"] == result
     assert payload["stop_observed"] is False
+    pending_key = payload["idempotency_key"]
+
+    client.cancel("task-1", attempt_id="attempt-1", fence=3, lease_id="lease-1",
+                  outputs=outputs, result=result, stop_observed=True)
+    observed_key = client.generated.calls[1][2]["idempotency_key"]
+    assert observed_key != pending_key
+
+
+def test_failure_lost_ack_uses_durable_readback_without_replaying():
+    result = {"status": "failed", "manifest_ref": {"object_id": "sha256:" + "c" * 64, "size": 8}}
+    client = _client({"status": "failed"})
+
+    def commit_then_lose_ack(attempt_id, **kwargs):
+        client.generated.calls.append(("fail", attempt_id, kwargs))
+        client.generated.task_result = result
+        raise OSError("response lost after commit")
+
+    client.generated.fail_attempt = commit_then_lose_ack
+    response = client.fail("task-1", "lease-1", "producer failed", attempt_id="attempt-1",
+                           fence=3, result=result)
+
+    assert len(client.generated.calls) == 1
+    assert response["task"]["result"] == result
+
+
+def test_failure_retries_same_idempotent_write_if_readback_is_not_yet_visible():
+    result = {"status": "failed", "manifest_ref": {"object_id": "sha256:" + "d" * 64, "size": 9}}
+    client = _client({"status": "failed"})
+
+    def delayed_visibility(attempt_id, **kwargs):
+        client.generated.calls.append(("fail", attempt_id, kwargs))
+        if len(client.generated.calls) == 2:
+            client.generated.task_result = result
+            return {"task": {"result": result}}
+        raise OSError("response lost before readback visibility")
+
+    client.generated.fail_attempt = delayed_visibility
+    client.fail("task-1", "lease-1", "producer failed", attempt_id="attempt-1",
+                fence=3, result=result)
+
+    assert len(client.generated.calls) == 2
+    assert client.generated.calls[0][2]["idempotency_key"] == client.generated.calls[1][2]["idempotency_key"]

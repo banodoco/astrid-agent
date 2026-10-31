@@ -23,6 +23,7 @@ def case(host_case, monkeypatch):
     case = host_case
     data = case.task["task"]
     data["status"] = "running"
+    data.setdefault("runtime_epoch", 7)
     original_fail = case.runtime.fail
 
     def fail(*args, **kwargs):
@@ -32,7 +33,13 @@ def case(host_case, monkeypatch):
 
     def cancel(task_id, **kwargs):
         assert task_id == data["id"]
-        assert kwargs == {"attempt_id": data["attempt_id"], "fence": data["fence"], "lease_id": "lease-result"}
+        assert kwargs["attempt_id"] == data["attempt_id"]
+        assert kwargs["fence"] == data["fence"]
+        assert kwargs["lease_id"] == "lease-result"
+        assert kwargs["runtime_epoch"] == data["runtime_epoch"]
+        assert kwargs["stop_observed"] is False
+        assert isinstance(kwargs["outputs"], list)
+        assert isinstance(kwargs["result"], dict)
         data["status"] = "cancelled"
         return {"task": dict(data)}
 
