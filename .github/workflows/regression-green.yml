@@ -1,0 +1,51 @@
+name: Regression evidence aggregate
+
+on:
+  workflow_call:
+    inputs:
+      freshness_result:
+        description: Result of the C-07 job in the calling workflow
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  regression-green:
+    name: int/regression-green
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install schema validator
+        run: python -m pip install jsonschema==4.26.0
+      - name: Download current run evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: regression-evidence
+          path: regression-evidence
+      - name: Evaluate evidence
+        if: ${{ always() }}
+        env:
+          FRESHNESS_RESULT: ${{ inputs.freshness_result }}
+          COORDINATOR_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          test "$FRESHNESS_RESULT" = success
+          python -c 'import json,os; assert json.load(open("regression-evidence/tuple.json"))["repos"]["agent"]["sha"] == os.environ["COORDINATOR_SHA"]'
+          python scripts/ci/regression_green.py \
+            --tuple regression-evidence/tuple.json \
+            --inventory .github/integration/inventory.json \
+            --ledger .github/integration/ledger.jsonl \
+            --evidence regression-evidence/lanes \
+            --freshness regression-evidence/freshness.json
