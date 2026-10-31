@@ -107,7 +107,7 @@ def _journal(root: Path, data: Path, old: Version, candidate: Version, step: str
     }
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX generated runner execution")
+@pytest.mark.posix_native
 def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) -> None:
     """A failed candidate uses the immutable release-0 package after rollback."""
     python, _site_packages = _release0_environment(
@@ -162,7 +162,7 @@ def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) 
     assert {name: (RELEASE0_FIXTURES / name).read_bytes() for name in RELEASE0_SERVICES} == frozen_services
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX generated runner execution")
+@pytest.mark.posix_native
 def test_pre_stop_interruption_recovers_and_starts_authentic_release0_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
