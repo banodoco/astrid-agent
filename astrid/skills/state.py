@@ -78,9 +78,15 @@ def load(path: Path | None = None) -> dict[str, Any]:
 
 def save(data: dict[str, Any], path: Path | None = None) -> None:
     target = path or state_path()
+    content = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    try:
+        if target.read_text(encoding="utf-8") == content:
+            return
+    except OSError:
+        pass
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as tmp:
-        tmp.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        tmp.write(content)
         name = tmp.name
     os.replace(name, target)
 
@@ -101,14 +107,18 @@ def record_install(
     target: str,
     mechanism: str,
 ) -> None:
-    state["installs"].setdefault(harness, {})[pack_id] = {
+    installs = state["installs"].setdefault(harness, {})
+    disabled = state.setdefault("disabled_defaults", {}).setdefault(harness, [])
+    if pack_id in disabled:
+        disabled.remove(pack_id)
+    previous = installs.get(pack_id)
+    if previous and previous.get("target") == target and previous.get("mechanism") == mechanism:
+        return
+    installs[pack_id] = {
         "target": target,
         "installed_at": now_iso(),
         "mechanism": mechanism,
     }
-    disabled = state.setdefault("disabled_defaults", {}).setdefault(harness, [])
-    if pack_id in disabled:
-        disabled.remove(pack_id)
 
 
 def record_uninstall(
