@@ -1,7 +1,0 @@
-{
-  "format": "astrid-install-update/v1",
-  "operation_id": "44444444444444444444444444444444",
-  "transaction_id": "tx-malformed-4444",
-  "step": "complete",
-  "target_release": 2
-}

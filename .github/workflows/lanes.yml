@@ -1,5 +1,5 @@
 # The heavy lanes the per-push run (ci.yml) deselects: integration (real Runtime daemons, subprocesses, the network)
-# and opt_in. Nightly, on request, and on pushes to main/release-1, so regressions are seen promptly.
+# and opt_in. Nightly, on request, and on every push to main, so a regression here is seen within a day.
 # Lanes with no job (workstation, omp, gpu, app_checkout: a GPU, the owner's workstation files or another repo's checkout) are listed by name in every run (tests/lanes.py).
 name: Lanes
 
@@ -7,13 +7,8 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
-    inputs:
-      launcher_ref:
-        description: Optional full 40-character astrid-pinokio commit SHA; defaults to main
-        required: false
-        type: string
   push:
-    branches: [main, release-1]
+    branches: [main]
 
 jobs:
   integration:
@@ -34,19 +29,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Resolve launcher ref
-        id: launcher-ref
-        shell: bash
-        env:
-          INPUT_LAUNCHER_REF: ${{ inputs.launcher_ref }}
-        run: |
-          ref="${INPUT_LAUNCHER_REF:-main}"
-          if [[ -n "$INPUT_LAUNCHER_REF" && ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "launcher_ref must be a full 40-character commit SHA (or empty for main)" >&2
-            exit 1
-          fi
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-
       - name: Read the pinned Runtime commit
         id: runtime-pin
         run: echo "commit=$(python3 -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
@@ -59,53 +41,15 @@ jobs:
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
 
-      # The canonical Pinokio checkout the Pinokio integration tests read (ASTRID_PINOKIO_CHECKOUT).
+      # The canonical Pinokio checkout the Pinokio integration tests read (ASTRID_PINOKIO_CHECKOUT). There is no Pinokio
+      # pin file yet, so it follows main, as the astrid-app checkout in windows-journey.yml does. Pin it like the Runtime
+      # once the owner picks a commit.
       - name: Check out Pinokio (astrid-pinokio)
         uses: actions/checkout@v4
         with:
           repository: banodoco/astrid-pinokio
-          ref: ${{ steps.launcher-ref.outputs.ref }}
+          ref: main
           path: astrid-pinokio
-
-      - name: Fetch historical Agent archive object
-        run: git fetch --no-tags --depth=1 origin a53ef0c257e4b0bbc2a65959b9119e2cb4cff453
-
-      - name: Fetch historical Runtime archive objects
-        run: >-
-          git -C astrid-runtime fetch --no-tags --depth=1 origin
-          11443b0b5b34bd5b36725504fb083146192a759d
-          959ce04fcf91351903c361d03e6b19eb0bbe8587
-          efcb3264e854fc312faa0bc6e702a9034edc2e06
-
-      - name: Verify Runtime sources before tests
-        shell: bash
-        env:
-          RUNTIME_LOCK_SHA: ${{ steps.runtime-pin.outputs.commit }}
-          HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
-        run: |
-          set -euo pipefail
-          locked_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)"
-          test "$locked_runtime" = "$RUNTIME_LOCK_SHA"
-          historical_runtime="$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse "${HISTORICAL_RUNTIME_SHA}^{commit}")"
-          test "$historical_runtime" = "$HISTORICAL_RUNTIME_SHA"
-          historical_type="$(git -C "$ASTRID_RUNTIME_CHECKOUT" cat-file -t "$HISTORICAL_RUNTIME_SHA")"
-          test "$historical_type" = commit
-          {
-            echo "## Effective Runtime sources"
-            echo "- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT"
-            echo "- Runtime lock source: $RUNTIME_LOCK_SHA (checkout HEAD: $locked_runtime)"
-            echo "- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime; object: $historical_type)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Record checked-out refs
-        shell: bash
-        run: |
-          {
-            echo "## Effective checked-out refs"
-            echo "- Agent: $(git rev-parse HEAD)"
-            echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
-            echo "- Pinokio: $(git -C astrid-pinokio rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -115,11 +59,6 @@ jobs:
           cache-dependency-path: |
             pyproject.toml
             requirements/*.lock
-
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
 
       # The HyperFrames CLI needs Node 22 (tests/fixtures/renderer_packs/hyperframes/render.py finds it in the tool cache);
       # the step after this one puts the product's pinned Node first on PATH again.
@@ -156,10 +95,6 @@ jobs:
           repository: peteromallet/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        run: |
-          echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
@@ -198,15 +133,6 @@ jobs:
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
 
-      - name: Record checked-out refs
-        shell: bash
-        run: |
-          {
-            echo "## Effective checked-out refs"
-            echo "- Agent: $(git rev-parse HEAD)"
-            echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -251,10 +177,6 @@ jobs:
           repository: peteromallet/VibeComfy
           ref: ${{ steps.vibecomfy-pin.outputs.revision }}
           path: vibecomfy-checkout
-
-      - name: Record VibeComfy checkout
-        run: |
-          echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install VibeComfy
         run: python -m pip install -e ./vibecomfy-checkout
@@ -296,15 +218,6 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
-
-      - name: Record checked-out refs
-        shell: bash
-        run: |
-          {
-            echo "## Effective checked-out refs"
-            echo "- Agent: $(git rev-parse HEAD)"
-            echo "- Runtime: $(git -C astrid-runtime rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Python
         uses: actions/setup-python@v5

@@ -119,11 +119,6 @@ jobs:
             pyproject.toml
             requirements/*.lock
 
-      - name: Set up pinned uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.32"
-
       # The product's pinned Node (.node-version), the one the installer ships: the tests run the same Node the product does.
       - name: Set up Node.js from .node-version
         uses: actions/setup-node@v4
