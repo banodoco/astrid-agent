@@ -35,8 +35,7 @@ HEALTH_URL = windows.HEALTH_URL
 TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 OWNER_FILE = "tst-b1-owner.json"
 VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
-                     "update-over-old-declaration", "old-runtime-busy",
-                     "release0-to-release1")
+                     "update-over-old-declaration", "old-runtime-busy")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
@@ -362,9 +361,6 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
                 "foreground_fallback": False, "checkout": str(checkout.resolve())}
     if sys.platform == "linux":
         version = _manager_probe(["systemctl", "--user", "--version"], label="systemd --user")
-        matched = re.search(r"\bsystemd\s+(\d+)\b", version)
-        if matched is None or int(matched.group(1)) < 254:
-            raise RuntimeError("Required native service manager systemd --user must be version 254 or newer")
         _manager_probe(["systemctl", "--user", "show-environment"], label="systemd --user session")
         manager = "systemd-user"
     elif sys.platform == "darwin":
@@ -569,14 +565,13 @@ def wait_ready(data: Path, *, timeout: int = 900) -> None:
             time.sleep(5)
 
 
-def task(version: dict, evidence: Path, project: str, *, create_project: bool = True) -> str:
+def task(version: dict, evidence: Path, project: str) -> None:
     """Exercise the installed SDK through a settled, materialized SFX output."""
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
-    if create_project:
-        created = json.loads(installed_cli(version, ["projects", "create", project, "--name", project,
-                                                   "--json"], evidence, "project.json"))
-        if created.get("ok") is not True:
-            raise RuntimeError("Installed project creation failed")
+    created = json.loads(installed_cli(version, ["projects", "create", project, "--name", project,
+                                               "--json"], evidence, "project.json"))
+    if created.get("ok") is not True:
+        raise RuntimeError("Installed project creation failed")
     request = {"capability_id": "chiptune.sfx", "kind": "executor", "project": project,
                "inputs": {"kind": "blip", "variant": 1, "pitch": 0, "duration_s": 0.1}}
     invocation = json.loads(installed_cli(version, [json.dumps(request)], evidence,
@@ -615,7 +610,6 @@ def task(version: dict, evidence: Path, project: str, *, create_project: bool = 
                 not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
                 outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
         raise RuntimeError("Task did not settle successfully with materialized outputs")
-    return task_id
 
 
 def workspace_root(data: Path) -> Path:
@@ -876,10 +870,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate-agent-checkout", type=Path)
     parser.add_argument("--candidate-runtime-checkout", type=Path)
     parser.add_argument("--pinokio-checkout", type=Path)
-    parser.add_argument("--release0-fixture", type=Path,
-                        help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
-    parser.add_argument("--allow-release0-to-release1", action="store_true",
-                        help="admit only the exact frozen release-0 direct journey to release 1")
     parser.add_argument("--source-override", action="store_true", help="TEST MODE: install Agent and Runtime from local Git commits")
     parser.add_argument("--agent-checkout", type=Path)
     parser.add_argument("--runtime-checkout", type=Path)
@@ -897,13 +887,6 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         if not all((args.candidate_agent_checkout, args.candidate_runtime_checkout, args.pinokio_checkout)):
             parser.error("Release-1 receipts require candidate Agent, Runtime and Pinokio checkouts")
-    if args.leg == "release0-to-release1":
-        if not (args.job_id and args.mode == "direct" and args.candidate):
-            parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
-        if args.release0_fixture is None or not args.allow_release0_to_release1:
-            parser.error("release0-to-release1 requires --release0-fixture and --allow-release0-to-release1")
-    elif args.release0_fixture is not None or args.allow_release0_to_release1:
-        parser.error("release-0 fixture admission is only valid for release0-to-release1")
     if sys.platform not in {"linux", "darwin", "win32"}:
         parser.error("unsupported journey operating system")
     if sys.platform == "win32" and args.shell not in {"powershell.exe", "pwsh.exe"}:

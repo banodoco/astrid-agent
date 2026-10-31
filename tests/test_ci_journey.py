@@ -245,15 +245,6 @@ def test_tst_b1_cli_requires_owned_roots_before_any_bootstrap(tmp_path, monkeypa
     assert failure.value.code == 2
 
 
-def test_tst_b1_release0_fixture_flags_are_scoped_to_the_direct_release0_leg(tmp_path, monkeypatch):
-    monkeypatch.setattr(journey, "execute", lambda *unused: pytest.fail("must reject CLI before execution"))
-    base = ["--app-checkout", str(tmp_path), "--run-root", str(tmp_path / "run"),
-            "--root", str(tmp_path / "run" / "program"), "--data-root", str(tmp_path / "run" / "data")]
-    with pytest.raises(SystemExit) as error:
-        journey.main(["--leg", "fresh-install", *base, "--release0-fixture", str(tmp_path)])
-    assert error.value.code == 2
-
-
 def test_tst_b1_local_runner_is_explicitly_unqualified(monkeypatch):
     for key in ("ASTRID_CI_EXPECTED_RUNNER", "RUNNER_OS", "ImageOS", "ImageVersion"):
         monkeypatch.delenv(key, raising=False)
