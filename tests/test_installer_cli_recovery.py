@@ -431,6 +431,7 @@ def _prepare_gateway_lifecycle(tmp_path, monkeypatch, *, installed=9):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setattr("astrid.installer.core.install_launcher", lambda *_args: None)
+    monkeypatch.setattr("astrid.installer.core.inspect_schema", lambda *_args, **_kwargs: 1)
     return root, data, old, backend
 
 
