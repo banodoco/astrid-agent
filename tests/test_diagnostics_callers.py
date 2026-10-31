@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 AGENT = Path(__file__).resolve().parents[1]
-RUNTIME = Path(os.environ.get('ASTRID_RUNTIME_CHECKOUT', AGENT.parent / 'astrid-runtime'))
+RUNTIME = AGENT.parent / 'astrid-runtime'
 
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)

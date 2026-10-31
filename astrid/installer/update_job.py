@@ -150,9 +150,7 @@ def fetch_update_inputs(directory: Path, *, manifest_url: str, bootstrap_url: st
         if name == "manifest":
             manifest = tools.validate_manifest(json.loads(raw))
             metadata["release"] = manifest.get("release", 0)
-            release = metadata["release"]
-            if (type(installed_release) is not int or installed_release < 0
-                    or type(release) is not int or release <= installed_release):
+            if type(installed_release) is not int or installed_release < 0 or metadata["release"] <= installed_release:
                 raise ValueError("The target release must be newer than the installed release.")
     return validate_update_inputs(directory, metadata, installed_release)
 
@@ -185,11 +183,6 @@ def _one_line(value: object) -> str:
                          for char in raw)
     line = " ".join(normalized.split()).strip()
     return line[:MAX_RESULT_LINE] or "Update did not complete."
-
-
-def _job_message(job: dict) -> str:
-    value = job.get("message")
-    return value if isinstance(value, str) else "Update did not complete."
 
 
 def autostart_off(value: object) -> bool:
@@ -287,10 +280,9 @@ def _validate_request(request: dict, root: Path) -> dict:
         "bootstrap_sha256": metadata.get("bootstrap_sha256"),
         "release": metadata.get("release"),
     }
-    for name in ("manifest_sha256", "bootstrap_sha256"):
-        digest = normalized[name]
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError("Selected update input identities are invalid.")
+    if any(not isinstance(normalized[name], str) or not re.fullmatch(r"[0-9a-f]{64}", normalized[name])
+           for name in ("manifest_sha256", "bootstrap_sha256")):
+        raise ValueError("Selected update input identities are invalid.")
     directory, _, _ = _validate_input_paths(normalized)
     validate_update_inputs(directory, {
         "manifest_sha256": normalized["manifest_sha256"],
@@ -445,7 +437,7 @@ def _validate_worker_binding(root: Path, job: dict) -> tuple[Version, Path]:
     selected_identity = selected.get("identity")
     if selected_identity is not None:
         expected = job.get("old_identity")
-        if not isinstance(selected_identity, dict) or not isinstance(expected, dict) or any(
+        if not isinstance(selected_identity, dict) or any(
                 selected_identity.get(key) != expected.get(key)
                 for key in ("release", "managed_by")):
             raise ValueError("The selected startup identity changed.")
@@ -611,7 +603,7 @@ def launch_job(root: Path, operation_id: str) -> dict:
             return _write_job(root, operation_id, state="launching", message="Update job launched.",
                               fields={"launch_status": "acknowledged"})
         if job.get("state") == "active" and job.get("launch_status") == "launching":
-            return _write_job(root, operation_id, state="active", message=_job_message(job),
+            return _write_job(root, operation_id, state="active", message=job.get("message"),
                               fields={"launch_status": "acknowledged"})
         return job
     finally:
@@ -628,14 +620,14 @@ def _cleanup_terminal(root: Path, operation_id: str, *, locked: bool = False,
             return job
         descriptor = job.get("platform")
         if not isinstance(descriptor, dict):
-            return _write_job(root, operation_id, state=job["state"], message=_job_message(job),
+            return _write_job(root, operation_id, state=job["state"], message=job.get("message"),
                               fields={"cleanup_status": "not-needed"})
         if not _owned_descriptor(descriptor, operation_id):
-            return _write_job(root, operation_id, state=job["state"], message=_job_message(job),
+            return _write_job(root, operation_id, state=job["state"], message=job.get("message"),
                               fields={"cleanup_status": "unknown",
                                       "cleanup_error": "Recorded platform object did not match this operation."})
         # Persist intent before cleanup: launchd bootout may stop this worker.
-        job = _write_job(root, operation_id, state=job["state"], message=_job_message(job),
+        job = _write_job(root, operation_id, state=job["state"], message=job.get("message"),
                          fields={"cleanup_status": "attempting", "residue": descriptor.get("name")})
     finally:
         if stream is not None:
@@ -664,7 +656,7 @@ def _cleanup_terminal(root: Path, operation_id: str, *, locked: bool = False,
         job = _read_job(root, operation_id)
         fields = {"cleanup_status": status, "cleanup_error": error,
                   "residue": descriptor.get("name") if status != "clean" else None}
-        job = _write_job(root, operation_id, state=job["state"], message=_job_message(job), fields=fields)
+        job = _write_job(root, operation_id, state=job["state"], message=job.get("message"), fields=fields)
         if not finishing:
             _cleanup_private_inputs(job, status)
         return job

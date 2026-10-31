@@ -285,12 +285,6 @@ class AstridClient:
                 "runtime realm, actor, and client identity are required; run the Astrid install line again",
                 details={"next_action": "run the Astrid install line again"},
             )
-        # The aggregate validation above establishes these invariants, but
-        # mypy cannot narrow optional values through ``all``.
-        assert realm_id is not None
-        assert actor_id is not None
-        assert client_name is not None
-        assert client_version is not None
 
         def unavailable(exc: Exception, *, operation: str | None = None) -> ServiceUnavailableError:
             from astrid.core.audit.util import redact

@@ -60,8 +60,8 @@ def _run(root: Path, argv: list[str], system: str, lock_fd: int) -> None:
     # Use the console interpreter on Windows. pythonw is specific to the
     # hidden Scheduled Task; the same Runtime command/settings run here in
     # the console owner so Ctrl+Break and console-close reach its handlers.
-    arguments = command(version, data, env_file=root / "service-env.json", extra_args=argv,
-                        lock_fd=lock_fd if system != "win32" else None)
+    command_options = {"extra_args": argv, "lock_fd": lock_fd if system != "win32" else None}
+    arguments = command(version, data, env_file=root / "service-env.json", **command_options)
     if system != "win32":
         # The kernel lock follows this descriptor into the Runtime owner. Its
         # command prelude restores close-on-exec before Runtime starts children.
