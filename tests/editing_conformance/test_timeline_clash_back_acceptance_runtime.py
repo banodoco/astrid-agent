@@ -404,7 +404,7 @@ def test_j3_exhausted_function_retry_lands_and_closes_record(
         if body.get("label") == "J3 function" and len(peer_writes) < peer_limit:
             peer_writes.append(
                 peer_session[0].commit(
-                    lambda t: t.move("parent/clip:b", on=10 + len(peer_writes)),
+                    lambda t: t.clip("b").hold_for(4 + len(peer_writes)),
                     label=f"J3 peer {len(peer_writes) + 1}",
                     key=f"j3-peer-{len(peer_writes)}",
                 )
