@@ -123,7 +123,7 @@ jobs:
             'bootstrap.log', 'install-manifest.json', 'sources.json', 'start.log',
             'down.json', 'disable-scheduled-task.log', 'processes-before-down.json',
             'processes-after-down.json', 'processes-final.json', 'health.json',
-            'health-final.json', 'collection.json', 'service-pack-host.log',
+            'health-final.json', 'collection.json', 'runtime.log', 'service-pack-host.log',
             'service-worker.log'
           )
           New-Item -ItemType Directory -Path $target -Force | Out-Null

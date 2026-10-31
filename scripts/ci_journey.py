@@ -63,6 +63,7 @@ JOURNEY_EVIDENCE_NAMES = frozenset({
     "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
     "service-manager-prerequisite.log", "direct-service-ownership.log",
     "runtime-owner-processes.json",
+    "runtime-service-runtime.log",
     "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
     "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
     "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
@@ -536,6 +537,30 @@ def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
               file=sys.stderr, flush=True)
 
 
+def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
+    """Retain bounded tails of the run-owned Runtime and named service logs."""
+    if sys.platform == "darwin":
+        log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    elif sys.platform == "win32":
+        log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    else:
+        log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+    paths = [log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    for source in paths:
+        if source.is_symlink() or not source.is_file():
+            continue
+        name = ("runtime-service-runtime.log" if source.name == "runtime.log"
+                else f"runtime-service-{source.name}")
+        target = evidence / name
+        try:
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+        except Exception as exc:
+            print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
 def retain_named_evidence(evidence: Path, phase: str) -> None:
     """Copy only the allowlisted journey evidence, clipping verbose text logs."""
     destination = evidence.parent / "evidence-upload" / phase
@@ -545,8 +570,11 @@ def retain_named_evidence(evidence: Path, phase: str) -> None:
         print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
               file=sys.stderr, flush=True)
         return
-    for name in sorted(JOURNEY_EVIDENCE_NAMES):
-        source = evidence / name
+    for source in sorted(evidence.iterdir(), key=lambda path: path.name):
+        name = source.name
+        if (name not in JOURNEY_EVIDENCE_NAMES and
+                not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+            continue
         if not source.is_file() or source.is_symlink():
             continue
         target = destination / name
@@ -1299,6 +1327,7 @@ def execute(args: argparse.Namespace) -> dict:
             try:
                 result = _execute_owned(args, root, data, evidence, sentinel, birth)
             finally:
+                capture_runtime_service_logs(evidence, run_root, "before-cleanup")
                 capture_manager_state(evidence, data, "before-cleanup")
                 retain_named_evidence(evidence, "before-cleanup")
                 if not getattr(args, "retain_for_next_leg", False):
@@ -1333,6 +1362,7 @@ def execute(args: argparse.Namespace) -> dict:
                         write_json(result_path, recorded)
                         print(f"Journey cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
                               file=sys.stderr, flush=True)
+                        capture_runtime_service_logs(evidence, run_root, "after-cleanup")
                         capture_manager_state(evidence, data, "after-cleanup")
                         retain_named_evidence(evidence, "after-cleanup")
                         raise
@@ -1344,6 +1374,7 @@ def execute(args: argparse.Namespace) -> dict:
                         write_json(result_path, recorded)
                     if "result" in locals():
                         result["final_cleanup"] = "retained-for-next-leg"
+                capture_runtime_service_logs(evidence, run_root, "after-cleanup")
                 capture_manager_state(evidence, data, "after-cleanup")
                 retain_named_evidence(evidence, "after-cleanup")
             return result
