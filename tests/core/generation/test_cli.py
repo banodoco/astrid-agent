@@ -12,8 +12,6 @@ from astrid.core.generation import cli
 
 
 def _facade(monkeypatch):
-    import astrid
-
     calls = []
 
     def invoke(**kwargs):
@@ -21,7 +19,7 @@ def _facade(monkeypatch):
         return SimpleNamespace(ok=True, to_dict=lambda: {"image_paths": ["dog.png"]})
 
     facade = SimpleNamespace(image=invoke, video=invoke)
-    monkeypatch.setitem(astrid.__dict__, "generate", facade)
+    monkeypatch.setattr(cli, "_generate_facade", lambda: facade)
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
     return calls
 
@@ -98,8 +96,6 @@ def test_invalid_request_does_not_invoke(monkeypatch, capsys, args):
 def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
     from astrid.core import gateway
     from astrid.sdk.exceptions import CapabilityPreconditionError
-    import astrid
-
     def fail(**_kwargs):
         error = CapabilityPreconditionError("No Comfy target is ready.")
         error.code = "COMFY_TARGET_UNAVAILABLE"
@@ -107,7 +103,7 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
         error.fix = "Use --target http://127.0.0.1:8188 after starting ComfyUI."
         raise error
 
-    monkeypatch.setitem(astrid.__dict__, "generate", SimpleNamespace(image=fail))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=fail))
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
     assert gateway.main(["generate", "image", "a dog"]) == 2
     captured = capsys.readouterr()
@@ -120,8 +116,6 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
 def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypatch, capsys):
     from astrid.core import gateway
     from astrid.sdk.exceptions import CapabilityPreconditionError
-    import astrid
-
     events = []
 
     def fail(**_kwargs):
@@ -140,7 +134,7 @@ def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypat
         finally:
             events.append("client-close")
 
-    monkeypatch.setitem(astrid.__dict__, "generate", SimpleNamespace(image=fail))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=fail))
     monkeypatch.setattr(cli, "_open_client", open_client)
 
     assert gateway.main(["generate", "image", "a dog", "--entry", "flux-schnell"]) == 2
@@ -154,8 +148,6 @@ def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypat
 
 
 def test_runtime_connection_stays_open_until_generation_finishes(monkeypatch, capsys):
-    import astrid
-
     events = []
     client = object()
 
@@ -174,7 +166,7 @@ def test_runtime_connection_stays_open_until_generation_finishes(monkeypatch, ca
         return SimpleNamespace(ok=True, to_dict=lambda: {"image_paths": ["dog.png"]})
 
     monkeypatch.setattr(cli, "_open_client", open_client)
-    monkeypatch.setitem(astrid.__dict__, "generate", SimpleNamespace(image=generate))
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=generate))
     assert cli.main(["image", "a dog", "--project", "demo"]) == 0
     assert events == ["connect", "complete", "close"]
 

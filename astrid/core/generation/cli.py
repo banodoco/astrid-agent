@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Any
 
 
+def _generate_facade() -> Any:
+    """Load the SDK facade directly, avoiding astrid package lazy exports."""
+    from astrid.sdk.generation import generate
+
+    return generate
+
+
 def _open_client() -> Any:
     """Acquire the Runtime connection at the explicit public CLI boundary."""
     from astrid.sdk.client import AstridClient
@@ -244,7 +251,6 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
     elif parsed.prompt is None:
         parser.error("prompt is required unless declared entry inputs are supplied")
-    import astrid
     from astrid.core.contracts.errors import (
         AstridError,
         coerce_astrid_error,
@@ -272,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         kwargs.pop("height")
         kwargs["size" if parsed.modality == "image" else "resolution"] = f"{parsed.width}x{parsed.height}"
     try:
-        generate = getattr(astrid.generate, parsed.modality)
+        generate = getattr(_generate_facade(), parsed.modality)
         if parsed.dry_run or (description is not None and description["source"] == "action"):
             result = generate(**kwargs)
         else:
