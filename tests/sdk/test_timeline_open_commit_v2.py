@@ -94,7 +94,10 @@ def test_native_edits_commit_once_with_label_and_steps(connected):
 def test_commit_with_pending_closes_record(connected, ref):
     tl = opened(connected)
     record = {"id": "pc_close_me", "state": "pending", "rev": 2,
-              "created_at": "2026-10-30T00:00:00Z", "key": "old-edit"}
+              "created_at": "2026-10-30T00:00:00Z", "key": "old-edit",
+              "parts": [{"base": {"revision_id": "r0", "publication_id": "pub0"},
+                         "commands": [{"schema_version": 1, "op": "clip.move", "version": "1",
+                                       "select": "parent/clip:a", "args": {"on": 2}}]}]}
     with tl.session.outbox.locked():
         state = tl.session._state()
         state["pending_changes"] = {record["id"]: record}
@@ -113,7 +116,10 @@ def test_commit_with_pending_closes_record(connected, ref):
 def test_commit_key_rederives_and_closes_matching_pending_record(connected):
     tl = opened(connected)
     record = {"id": "pc_key_close", "state": "pending", "rev": 2,
-              "created_at": "2026-10-30T00:00:00Z", "key": "saved-edit-key"}
+              "created_at": "2026-10-30T00:00:00Z", "key": "saved-edit-key",
+              "parts": [{"base": {"revision_id": "r0", "publication_id": "pub0"},
+                         "commands": [{"schema_version": 1, "op": "clip.move", "version": "1",
+                                       "select": "parent/clip:a", "args": {"on": 2}}]}]}
     with tl.session.outbox.locked():
         state = tl.session._state()
         state["pending_changes"] = {record["id"]: record}
@@ -135,7 +141,10 @@ def test_commit_with_pending_closes_matching_other_actor_record(connected):
     tl.session._explicit_outbox = False
     peer_path = tl.session.outbox.path.parent / "peer.json"
     record = {"id": "pc_peer_close", "state": "pending", "rev": 2,
-              "created_at": "2026-10-30T00:00:00Z", "key": "peer-edit"}
+              "created_at": "2026-10-30T00:00:00Z", "key": "peer-edit",
+              "parts": [{"base": {"revision_id": "r0", "publication_id": "pub0"},
+                         "commands": [{"schema_version": 1, "op": "clip.move", "version": "1",
+                                       "select": "parent/clip:a", "args": {"on": 2}}]}]}
     Outbox(peer_path).write({
         "scope": {**tl.session._state()["scope"], "actor_id": "peer"},
         "pending_changes": {record["id"]: record},
@@ -156,7 +165,10 @@ def test_commit_key_closes_unique_matching_pending_record_across_actors(connecte
     tl.session._explicit_outbox = False
     peer_path = tl.session.outbox.path.parent / "peer.json"
     record = {"id": "pc_peer_key_close", "state": "pending", "rev": 2,
-              "created_at": "2026-10-30T00:00:00Z", "key": "peer-saved-key"}
+              "created_at": "2026-10-30T00:00:00Z", "key": "peer-saved-key",
+              "parts": [{"base": {"revision_id": "r0", "publication_id": "pub0"},
+                         "commands": [{"schema_version": 1, "op": "clip.move", "version": "1",
+                                       "select": "parent/clip:a", "args": {"on": 2}}]}]}
     Outbox(peer_path).write({
         "scope": {**tl.session._state()["scope"], "actor_id": "peer"},
         "pending_changes": {record["id"]: record},
