@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -8,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from astrid.core.generation import listing
+from astrid.core.generation import entries, listing
 from astrid.core.model_catalog.registry import ModelRegistry
 from scripts.gen_capability_index import _in_repo_packs_only
 
@@ -29,14 +33,18 @@ def _row(**changes):
 def catalog_snapshot():
     """Capture real registry and repo-local pack discovery once for this suite."""
     with _in_repo_packs_only():
-        return ModelRegistry.load_default(), listing.discover()
+        packs = listing._discover_pack_inventory()
+        registry = ModelRegistry.load_default(discovered_packs=packs)
+        return registry, listing.discover(_discovered_packs=packs), entries.ready_entries(registry=registry)
 
 
 @pytest.fixture(autouse=True)
 def use_catalog_snapshot(monkeypatch, catalog_snapshot):
-    registry, discovery = catalog_snapshot
-    monkeypatch.setattr(ModelRegistry, "load_default", classmethod(lambda cls: registry))
-    monkeypatch.setattr(listing, "discover", lambda: discovery)
+    registry, discovery, ready_templates = catalog_snapshot
+    monkeypatch.setattr(ModelRegistry, "load_default", classmethod(lambda cls, **kwargs: registry))
+    monkeypatch.setattr(listing, "discover", lambda **kwargs: discovery)
+    monkeypatch.setattr(listing, "_discover_pack_inventory", lambda: ())
+    monkeypatch.setattr(entries, "ready_entries", lambda **kwargs: ready_templates)
 
 
 def _target_info(mode="t2i", *, vaes=(EXACT_VAE,), unets=(TURBO_UNET,)):
@@ -209,7 +217,7 @@ def test_unknown_model_roles_fail_closed_without_claiming_readiness(comfy, monke
     rows = _turbo_rows()
     target = next(row for row in rows if row["mode"] == "t2i")
     changed = dict(target, registry_id="unknown-model", id="unknown-model")
-    monkeypatch.setattr(listing, "catalog_rows", lambda: [changed])
+    monkeypatch.setattr(listing, "catalog_rows", lambda **kwargs: [changed])
     row = listing.generation_rows("image")[0]
     assert row["ready"] is False
     assert row.get("model_roles", {}) == {}
@@ -245,7 +253,7 @@ def test_probe_failure_keeps_target_without_echoing_endpoint_error(comfy, monkey
 
 
 def test_cloud_presence_only_json_and_filter(monkeypatch, capsys):
-    monkeypatch.setattr(listing, "catalog_rows", lambda: [
+    monkeypatch.setattr(listing, "catalog_rows", lambda **kwargs: [
         _row(id="cloud-model"), _row(kind="video", id="video-model"),
     ])
     monkeypatch.setattr(listing, "_targets", Mock(side_effect=AssertionError("cloud listing probed targets")))
@@ -288,7 +296,7 @@ def test_cloud_readiness_checks_names_without_reading_credentials(monkeypatch, b
         def values(self):
             raise AssertionError("credential values enumerated")
 
-    monkeypatch.setattr(listing, "catalog_rows", lambda: [_row(id="provider", backend=backend)])
+    monkeypatch.setattr(listing, "catalog_rows", lambda **kwargs: [_row(id="provider", backend=backend)])
     monkeypatch.setattr(listing, "os", SimpleNamespace(environ=NamesOnlyEnvironment([key_name])))
     present = listing.generation_rows("image")[0]
     assert present["ready"] is True
@@ -311,7 +319,7 @@ def test_unavailable_and_fixture_declarations(monkeypatch):
         _row(id="unavailable", backend="", availability="unavailable", reason="not implemented"),
         _row(id="fixture", kind="fixture", backend="", availability="fixture-only", reason="fixture-only route"),
     ]
-    monkeypatch.setattr(listing, "catalog_rows", lambda: records)
+    monkeypatch.setattr(listing, "catalog_rows", lambda **kwargs: records)
     rows = listing.generation_rows()
     assert all(not row["ready"] and row["fix"] for row in rows)
     assert {row["availability"] for row in rows} == {"unavailable", "fixture-only"}
@@ -346,7 +354,7 @@ def test_real_registry_consumes_availability_and_cloud(monkeypatch):
 
 def test_text_and_json_listings_are_deterministic(monkeypatch, capsys):
     rows = [_row(id="z-model"), _row(id="a-model")]
-    monkeypatch.setattr(listing, "catalog_rows", lambda: rows)
+    monkeypatch.setattr(listing, "catalog_rows", lambda **kwargs: rows)
     monkeypatch.setattr(listing, "_targets", lambda: [])
     listing.main(["list", "--json"])
     first_json = capsys.readouterr().out
@@ -358,3 +366,63 @@ def test_text_and_json_listings_are_deterministic(monkeypatch, capsys):
     first_text = capsys.readouterr().out
     listing.main(["list"])
     assert capsys.readouterr().out == first_text
+
+
+def test_real_list_subprocess_returns_complete_json_within_ten_seconds():
+    env = os.environ.copy()
+    for name in ("ASTRID_REPO", "ASTRID_LOOP_LOCKED"):
+        env.pop(name, None)
+    result = subprocess.run(
+        [sys.executable, "-m", "astrid", "generate", "list", "--json"],
+        cwd=Path(__file__).resolve().parents[3], env=env,
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = json.loads(result.stdout)
+    assert isinstance(rows, list) and rows
+    identities = {(row["id"], row["mode"], row["source"], row["template"]) for row in rows}
+    assert {
+        ("z-image-turbo", "t2i", "catalog-alias", "image/z_image_turbo"),
+        ("z-image-turbo", "i2i", "catalog-alias", "image/z_image_img2img"),
+        ("qwen-image-2.1-turbo", "t2i", "catalog", "image/qwen_image_2_1_turbo"),
+        ("qwen-image-2.1-turbo-edit", "edit", "catalog", "edit/qwen_image_2_1_turbo_edit"),
+    } <= identities
+    assert {"catalog", "catalog-alias", "direct-image", "action", "action-entry",
+            "ready-template", "fixture"} <= {row["source"] for row in rows}
+    order = lambda row: tuple(row[key] for key in ("id", "kind", "mode", "backend", "source", "target", "template"))
+    assert rows == sorted(rows, key=order)
+
+
+def test_listing_reuses_one_pack_model_and_ready_template_snapshot(monkeypatch, catalog_snapshot):
+    registry, discovery, ready_templates = catalog_snapshot
+    packs = (object(),)
+    pack_load = Mock(return_value=packs)
+    model_load = Mock(return_value=registry)
+    action_discovery = Mock(return_value=discovery)
+    ready_load = Mock(return_value=ready_templates)
+    readiness = Mock(return_value={"target": "attached", "ready": False})
+    monkeypatch.setattr(listing, "_discover_pack_inventory", pack_load)
+    monkeypatch.setattr(ModelRegistry, "load_default", model_load)
+    monkeypatch.setattr(listing, "discover", action_discovery)
+    monkeypatch.setattr(entries, "ready_entries", ready_load)
+    monkeypatch.setattr(listing, "_targets", lambda: [])
+    monkeypatch.setattr(listing, "_local_readiness", readiness)
+    rows = listing.generation_rows()
+    assert rows and readiness.called
+    pack_load.assert_called_once_with()
+    model_load.assert_called_once_with(discovered_packs=packs)
+    action_discovery.assert_called_once_with(_discovered_packs=packs)
+    ready_load.assert_called_once_with(registry=registry)
+    assert all(call.args[1] is registry and call.kwargs["ready_templates"] is ready_templates
+               for call in readiness.call_args_list)
+
+
+def test_listing_propagates_pack_admission_failure(monkeypatch):
+    from astrid.core.pack import PackValidationError
+
+    monkeypatch.setattr(listing, "_discover_pack_inventory", Mock(side_effect=PackValidationError("invalid manifest")))
+    discovery = Mock(side_effect=AssertionError("partial inventory returned after admission failure"))
+    monkeypatch.setattr(listing, "discover", discovery)
+    with pytest.raises(PackValidationError, match="invalid manifest"):
+        listing.generation_rows()
+    discovery.assert_not_called()

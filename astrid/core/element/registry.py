@@ -22,7 +22,7 @@ from astrid.core.pack.alias_resolver import (
     _register_pack_aliases,
     create_shared_alias_resolver,
 )
-from astrid.core.pack.discovery import discover_pack_metadata
+from astrid.core.pack.discovery import DiscoveredPack, discover_pack_metadata
 from astrid.core.pack.walkers import iter_element_manifest_paths
 from astrid.core.registry import CapabilityRegistry
 
@@ -206,6 +206,14 @@ def _load_default_registry_data(
             discover_packs_fn=discover_packs,
         )
     )
+    return _load_registry_data_from_packs(project_root, include_missing_roots, pack_defs)
+
+
+def _load_registry_data_from_packs(
+    project_root: Path,
+    include_missing_roots: bool,
+    pack_defs: tuple[PackDefinition, ...],
+) -> tuple[tuple[ElementDefinition, ...], ElementKindRegistry, tuple[SkippedElement, ...]]:
     element_kind_registry = _element_kind_registry_for_packs(pack_defs)
     pack_elements, diagnostics = _load_pack_elements_with_diagnostics(
         pack_defs,
@@ -242,17 +250,25 @@ def load_default_registry(
     project_root: str | Path = REPO_ROOT,
     include_missing_roots: bool = False,
     extra_pack_roots: tuple[str, ...] = (),
+    discovered_packs: tuple[DiscoveredPack, ...] | None = None,
 ) -> ElementRegistry:
     """Load the default element registry (corpus parse is cached).
 
     Registry assembly stays per-call so callers may register additional
     elements without polluting the shared corpus cache.
     """
-    elements, element_kind_registry, diagnostics = _load_default_registry_data(
-        str(Path(project_root).resolve()),
-        include_missing_roots,
-        tuple(str(Path(root).resolve()) for root in extra_pack_roots),
-    )
+    if discovered_packs is None:
+        elements, element_kind_registry, diagnostics = _load_default_registry_data(
+            str(Path(project_root).resolve()),
+            include_missing_roots,
+            tuple(str(Path(root).resolve()) for root in extra_pack_roots),
+        )
+    else:
+        # Per-call snapshots must not enter the process-wide corpus cache.
+        elements, element_kind_registry, diagnostics = _load_registry_data_from_packs(
+            Path(project_root).resolve(), include_missing_roots,
+            tuple(item.pack for item in discovered_packs),
+        )
     resolver = create_shared_alias_resolver()
     _register_pack_aliases(resolver, {})  # no aliases yet
     registry = ElementRegistry(

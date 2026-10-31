@@ -11,7 +11,7 @@ Schema v2: model → mode → backend taxonomy.  Lookups are keyed by
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from astrid.core.contracts.errors import AstridError
 from astrid.core.foundation.paths import REPO_ROOT
@@ -22,6 +22,9 @@ from astrid.core.model_catalog.schema import (
     validate_lora_registry,
     validate_registry_with_backends,
 )
+
+if TYPE_CHECKING:
+    from astrid.core.pack.discovery import DiscoveredPack
 
 
 class ModelRegistry:
@@ -108,6 +111,7 @@ class ModelRegistry:
         *,
         project_root: str | Path = REPO_ROOT,
         extra_pack_roots: tuple[str, ...] = (),
+        discovered_packs: tuple[DiscoveredPack, ...] | None = None,
     ) -> ModelRegistry:
         """Load the shipped ``models.yaml`` from the catalog directory."""
         yaml_path = Path(__file__).resolve().parent / "models.yaml"
@@ -127,23 +131,31 @@ class ModelRegistry:
         # registry-collapse layer — see W7 in the restructure plan.)
         import importlib
 
-        load_default_generation_backend_registry = getattr(
-            importlib.import_module("astrid.core.generation.backends.registry"),
-            "load_default_generation_backend_registry",
-        )
-        load_default_generation_taxonomy_registry = getattr(
-            importlib.import_module("astrid.core.generation.features"),
-            "load_default_generation_taxonomy_registry",
-        )
+        backends = importlib.import_module("astrid.core.generation.backends.registry")
+        features = importlib.import_module("astrid.core.generation.features")
+        if discovered_packs is None:
+            taxonomy_registry = features.load_default_generation_taxonomy_registry(
+                project_root=project_root,
+                extra_pack_roots=extra_pack_roots,
+            )
+            backend_registry = backends.load_default_generation_backend_registry(
+                project_root=project_root,
+                extra_pack_roots=extra_pack_roots,
+            )
+        else:
+            # Use the same admitted, ordered snapshot as capability discovery.
+            # Descriptor parsing and duplicate/taxonomy validation still run.
+            from astrid.core.model_catalog.taxonomy import GenerationTaxonomyRegistry
 
-        taxonomy_registry = load_default_generation_taxonomy_registry(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-        )
-        backend_registry = load_default_generation_backend_registry(
-            project_root=project_root,
-            extra_pack_roots=extra_pack_roots,
-        )
+            packs = tuple(item.pack for item in discovered_packs)
+            taxonomy_registry = GenerationTaxonomyRegistry(
+                feature_descriptors=tuple(d for pack in packs for d in features.feature_descriptors_from_pack(pack)),
+                mode_descriptors=tuple(d for pack in packs for d in features.mode_descriptors_from_pack(pack)),
+                backend_descriptors=tuple(d for pack in packs for d in features.backend_descriptors_from_pack(pack)),
+            )
+            backend_registry = backends.GenerationBackendRegistry(
+                descriptors=tuple(d for pack in packs for d in backends.descriptors_from_pack(pack)),
+            )
         entries = validate_registry_with_backends(
             raw,
             allowed_backend_ids=tuple(

@@ -18,7 +18,7 @@ def user_entries() -> list[dict[str, Any]]:
     return discover_entries()
 
 
-def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
+def _ready_entries_for(entry_id: str | None = None, *, registry: Any | None = None) -> list[dict[str, Any]]:
     """Project repository metadata, leaving unclassified modes explicit."""
     try:
         import vibecomfy
@@ -38,7 +38,9 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
     from astrid.core.model_catalog.registry import ModelRegistry
     discovery = _discover_ready_templates(include_dynamic=False, include_json_references=False)
     catalog_by_template = {}
-    for model in ModelRegistry.load_default().list_all(include_closed=True):
+    if registry is None:
+        registry = ModelRegistry.load_default()
+    for model in registry.list_all(include_closed=True):
         for mode, spec in model.modes.items():
             local = spec.backends.get('local')
             if local and local.template:
@@ -84,8 +86,15 @@ def _ready_entries_for(entry_id: str | None = None) -> list[dict[str, Any]]:
 
 
 @lru_cache(maxsize=1)
-def ready_entries() -> list[dict[str, Any]]:
+def _cached_ready_entries() -> list[dict[str, Any]]:
     return _ready_entries_for()
+
+
+def ready_entries(*, registry: Any | None = None) -> list[dict[str, Any]]:
+    if registry is None:
+        return _cached_ready_entries()
+    # The caller owns this registry snapshot; do not retain it in a global cache.
+    return _ready_entries_for(registry=registry)
 
 
 def action_entries(discovery: Any | None = None) -> list[dict[str, Any]]:

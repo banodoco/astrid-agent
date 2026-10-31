@@ -15,7 +15,7 @@ from astrid.core.pack import (
     iter_executor_roots,
     validate_content_id_in_pack,
 )
-from astrid.core.pack.discovery import discover_packs_ordered
+from astrid.core.pack.discovery import DiscoveredPack, discover_packs_ordered
 from astrid.core.pack.manifest import (
     ManifestParseError,
 )
@@ -144,6 +144,7 @@ def load_default_registry(
     project_root: str | Path = REPO_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
     additional_executors: Iterable[ExecutorDefinition | dict[str, Any]] = (),
+    discovered_packs: tuple[DiscoveredPack, ...] | None = None,
 ) -> ExecutorRegistry:
     """Compose admitted definitions before validating the complete graph.
 
@@ -151,10 +152,12 @@ def load_default_registry(
     the same discovered inventory retain the established registration order.
     Explicit additional definitions follow those sources. Existing priority
     and winner rules apply; the complete graph is validated once.
+    ``discovered_packs`` reuses an admitted per-call snapshot without rescanning.
     """
-    packs = _discover_executor_packs(
-        project_root=project_root,
-        extra_pack_roots=extra_pack_roots,
+    packs = (
+        tuple(item.pack for item in discovered_packs)
+        if discovered_packs is not None
+        else _discover_executor_packs(project_root=project_root, extra_pack_roots=extra_pack_roots)
     )
     registry = ExecutorRegistry()
     local_parent_ids: set[str] = set()

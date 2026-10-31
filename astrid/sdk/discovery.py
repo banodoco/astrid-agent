@@ -24,12 +24,15 @@ def _registry_load_kwargs(
     *,
     project_root: str | Path | None,
     extra_pack_roots: tuple[str, ...],
+    discovered_packs: tuple[Any, ...] | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "extra_pack_roots": extra_pack_roots,
     }
     if project_root is not None:
         kwargs["project_root"] = project_root
+    if discovered_packs is not None:
+        kwargs["discovered_packs"] = discovered_packs
     return kwargs
 
 
@@ -39,6 +42,7 @@ def _load_executor_registry(
     extra_pack_roots: tuple[str, ...] = (),
     banodoco_config: Any | None = None,
     include_internal: bool = False,
+    discovered_packs: tuple[Any, ...] | None = None,
 ) -> Any:
     from astrid.core.execution.executor.registry import (
         ExecutorRegistry,
@@ -50,6 +54,7 @@ def _load_executor_registry(
         **_registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
+            discovered_packs=discovered_packs,
         ),
     )
     if include_internal:
@@ -70,6 +75,7 @@ def _load_orchestrator_registry(
     project_root: str | Path | None = None,
     extra_pack_roots: tuple[str, ...] = (),
     banodoco_config: Any | None = None,
+    discovered_packs: tuple[Any, ...] | None = None,
 ) -> Any:
     from astrid.core.execution.orchestrator.registry import load_default_registry
 
@@ -79,6 +85,7 @@ def _load_orchestrator_registry(
         **_registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
+            discovered_packs=discovered_packs,
         ),
     )
 
@@ -88,6 +95,7 @@ def _load_element_registry(
     project_root: str | Path | None = None,
     extra_pack_roots: tuple[str, ...] = (),
     include_missing_roots: bool = False,
+    discovered_packs: tuple[Any, ...] | None = None,
 ) -> Any:
     from astrid.core.element.registry import load_default_registry
 
@@ -96,6 +104,7 @@ def _load_element_registry(
         **_registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
+            discovered_packs=discovered_packs,
         ),
     )
 
@@ -108,19 +117,23 @@ def _load_registries(
     include_missing_roots: bool = False,
     include_elements: bool = False,
     include_internal: bool = False,
+    discovered_packs: tuple[Any, ...] | None = None,
 ) -> tuple[Any, Any, Any | None]:
     sdk_module = _sdk_module()
+    inventory_kwargs = {"discovered_packs": discovered_packs} if discovered_packs is not None else {}
     executor_registry = sdk_module._load_executor_registry(
         project_root=project_root,
         extra_pack_roots=extra_pack_roots,
         banodoco_config=banodoco_config,
         include_internal=include_internal,
+        **inventory_kwargs,
     )
     orchestrator_registry = sdk_module._load_orchestrator_registry(
         executor_registry=executor_registry,
         project_root=project_root,
         extra_pack_roots=extra_pack_roots,
         banodoco_config=banodoco_config,
+        **inventory_kwargs,
     )
     element_registry = None
     if include_elements:
@@ -128,6 +141,7 @@ def _load_registries(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
             include_missing_roots=include_missing_roots,
+            **inventory_kwargs,
         )
     return executor_registry, orchestrator_registry, element_registry
 
@@ -137,9 +151,23 @@ def _discover_pack_inventory(
     project_root: str | Path | None = None,
     extra_pack_roots: tuple[str, ...] = (),
 ) -> tuple[Any, ...]:
+    from astrid.core.pack import packs_root
+    from astrid.core.pack import discovery as pack_discovery
     from astrid.core.pack.discovery import discover_pack_metadata
 
+    # The source and project-local layers can scan the same physical root.
+    # Reuse that strict scan within this discovery only; distinct project roots
+    # still scan independently, and later calls observe filesystem changes.
+    scans: dict[Path, tuple[Any, ...]] = {}
+
+    def scan(root: str | Path | None = None) -> tuple[Any, ...]:
+        key = (Path(root) if root is not None else packs_root()).resolve()
+        if key not in scans:
+            scans[key] = pack_discovery.discover_packs() if root is None else pack_discovery.discover_packs(root)
+        return scans[key]
+
     return discover_pack_metadata(
+        discover_packs_fn=scan,
         **_registry_load_kwargs(
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,

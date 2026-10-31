@@ -41,8 +41,8 @@ def test_empty_modes_and_directory_bundle_are_reported(monkeypatch, tmp_path):
     entry = {'id': 'review', 'kind': 'audio', 'modes': [], 'bundle': str(tmp_path),
              'needs': [{'ambiguity': 'choose an audio mode'}], 'binds': {}, 'defaults': {}}
     monkeypatch.setattr(entries, 'user_entries', lambda: [entry])
-    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
-    monkeypatch.setattr(listing, 'discover', lambda: SimpleNamespace(actions=[]))
+    monkeypatch.setattr(entries, 'ready_entries', lambda **kwargs: [])
+    monkeypatch.setattr(listing, 'discover', lambda **kwargs: SimpleNamespace(actions=[]))
     monkeypatch.setattr(listing, 'availability_declaration', lambda: {})
     row = next(row for row in listing.catalog_rows() if row['id'] == 'review')
     assert row['mode'] == '' and 'review' in row['reason']

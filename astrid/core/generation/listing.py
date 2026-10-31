@@ -12,11 +12,15 @@ from astrid.core.generation.backends.comfy_target import (
     resolve_comfy_models,
 )
 from astrid.core.model_catalog.registry import ModelRegistry
+from astrid.core.pack.discovery import DiscoveredPack
 from astrid.packs.vibecomfy.direct_image.compiler import CANONICAL_CAPABILITIES
 from astrid.sdk.invocation import discover
+from astrid.sdk.discovery import _discover_pack_inventory
 
 
-def catalog_rows() -> list[dict[str, Any]]:
+def catalog_rows(*, registry: ModelRegistry | None = None,
+                 discovered_packs: tuple[DiscoveredPack, ...] | None = None,
+                 ready_templates: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Static inventory shared by the CLI and the generated capability index.
 
     The caller controls pack discovery scope; this function never probes a host
@@ -27,7 +31,10 @@ def catalog_rows() -> list[dict[str, Any]]:
         rows.append(dict(id=id, kind=kind, mode=mode, backend=backend, template=template,
                          source=source, availability=availability, reason=reason))
 
-    registry = ModelRegistry.load_default()
+    if discovered_packs is None:
+        discovered_packs = _discover_pack_inventory()
+    if registry is None:
+        registry = ModelRegistry.load_default(discovered_packs=discovered_packs)
     for entry in registry.list_all(include_closed=True):
         for mode, spec in entry.modes.items():
             for backend, target in spec.backends.items():
@@ -46,7 +53,7 @@ def catalog_rows() -> list[dict[str, Any]]:
             add(spec.model_id, "image", spec.mode, "local", spec.template_id, "direct-image")
     declaration = availability_declaration()
     actions = declaration.get("actions", {})
-    discovery = discover()
+    discovery = discover(_discovered_packs=discovered_packs)
     for capability in discovery.actions:
         if not capability.id.startswith("generation.") and capability.id not in actions:
             continue
@@ -74,7 +81,9 @@ def catalog_rows() -> list[dict[str, Any]]:
             ambiguity = next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), "")
             add(entry["id"], entry["kind"], mode, "local", entry["bundle"], "user-entry",
                 reason="entry mode requires review" if not mode else ambiguity)
-    for entry in ready_entries():
+    if ready_templates is None:
+        ready_templates = ready_entries(registry=registry)
+    for entry in ready_templates:
         for mode in entry["modes"] or [""]:
             add(entry["id"], entry["kind"] or "generation", mode, "local", entry["bundle"], "ready-template",
                 reason=entry["ambiguity"] or next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), ""))
@@ -115,7 +124,8 @@ class _InventoryClient(ComfyTargetClient):
 
 
 def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
-                     target: ComfyTarget | None, schema: dict[str, Any] | None) -> dict[str, Any]:
+                     target: ComfyTarget | None, schema: dict[str, Any] | None,
+                     *, ready_templates: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     result = {"target": target.url if target else "attached", "target_kind": "attached",
               "ready": False, "readiness_scope": "target_inventory", "models_present": []}
     if row["source"] in {"user-entry", "ready-template"} and row.get("reason"):
@@ -137,7 +147,9 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
             return {**result, "ready": True, "reason": "required model roles present (model bytes unverified)",
                     "fix": "", "models_present": sorted(plan["roles"].values()),
                     "model_roles": plan["roles"], "model_bytes": plan["model_bytes"]}
-        candidates = entries.user_entries() if row["source"] == "user-entry" else entries.ready_entries()
+        candidates = entries.user_entries() if row["source"] == "user-entry" else (
+            ready_templates if ready_templates is not None else entries.ready_entries(registry=registry)
+        )
         entry = next((item for item in candidates if item["id"] == row["id"]), None)
         if entry is None:
             return {**result, "reason": "workflow entry unavailable", "fix": "Import the entry again."}
@@ -175,9 +187,15 @@ def _local_readiness(row: dict[str, Any], registry: ModelRegistry,
 
 
 def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
-    rows = [row for row in catalog_rows() if kind is None or row["kind"] == kind]
+    from astrid.core.generation.entries import ready_entries
+
+    discovered_packs = _discover_pack_inventory()
+    registry = ModelRegistry.load_default(discovered_packs=discovered_packs)
+    ready_templates = ready_entries(registry=registry)
+    rows = [row for row in catalog_rows(registry=registry, discovered_packs=discovered_packs,
+                                       ready_templates=ready_templates)
+            if kind is None or row["kind"] == kind]
     targets = _targets() if any(row["backend"] == "local" for row in rows) else []
-    registry = ModelRegistry.load_default() if any(row["backend"] == "local" for row in rows) else None
     output = []
     for row in rows:
         base = dict(row)
@@ -190,9 +208,9 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
                            "fix": "Inspect the action requirements and use a tracked Runtime parent when available.",
                            "models_present": []})
         elif row["backend"] == "local":
-            assert registry is not None
             for target, schema in targets or [(None, None)]:
-                output.append({**base, **_local_readiness(row, registry, target, schema)})
+                output.append({**base, **_local_readiness(row, registry, target, schema,
+                                                        ready_templates=ready_templates)})
         elif row["backend"] in {"cloud", "wavespeed"}:
             key_name = "FAL_KEY" if row["backend"] == "cloud" else "WAVESPEED_API_KEY"
             # os._Environ.__contains__ can fetch a value via __getitem__.

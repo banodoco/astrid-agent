@@ -135,11 +135,12 @@ def discover(
     active_theme: str | Path | None = None,
     include_missing_roots: bool = False,
     kind: str | None = None,
+    _discovered_packs: tuple[Any, ...] | None = None,
 ) -> DiscoveryResult:
     sdk_module = _sdk_module()
-    discovered_packs = sdk_module._discover_pack_inventory(
-        project_root=project_root,
-        extra_pack_roots=extra_pack_roots,
+    discovered_packs = (
+        _discovered_packs if _discovered_packs is not None
+        else sdk_module._discover_pack_inventory(project_root=project_root, extra_pack_roots=extra_pack_roots)
     )
     pack_permission_ids_by_pack_id = sdk_module._pack_permission_ids_by_pack_id(discovered_packs)
     executor_registry, orchestrator_registry, element_registry = sdk_module._load_registries(
@@ -148,6 +149,7 @@ def discover(
         banodoco_config=banodoco_config,
         include_missing_roots=include_missing_roots,
         include_elements=True,
+        discovered_packs=discovered_packs,
     )
     if element_registry is None:
         raise CapabilityInvocationError("element registry was not loaded")

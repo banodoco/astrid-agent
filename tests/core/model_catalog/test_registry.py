@@ -1835,3 +1835,30 @@ def test_default_qwen_inpaint_registry_accepts_shipped_image_mask_feature():
     assert model.id == "qwen-image-edit-inpaint"
     assert "mask_ref" in mode.supports
     assert "mask_ref" in mode.requires
+
+
+@pytest.mark.parametrize("backend_id", ["studio", "undeclared"])
+def test_shared_pack_snapshot_preserves_model_backend_validation(tmp_path, monkeypatch, backend_id):
+    from astrid.core.generation import features
+    from astrid.core.generation.backends import registry as backends
+    from astrid.core.pack.discovery import discover_pack_metadata
+
+    _write_extension_pack(tmp_path / "packs", backend_id="studio")
+    packs = discover_pack_metadata(
+        project_root=tmp_path, extra_pack_roots=(str(tmp_path / "packs"),),
+        discover_packs_fn=lambda: (),
+    )
+    raw = _make_v2_payload(modes={"t2i": {
+        "supports": ["prompt"], "requires": ["prompt"],
+        "backends": {backend_id: {"param_map": {"prompt": "prompt"}}},
+    }})
+    monkeypatch.setattr("astrid.core.model_catalog.registry._load_yaml", lambda path: raw)
+    def forbid_scan(*args, **kwargs):
+        pytest.fail("model validation rediscovered an admitted pack snapshot")
+    monkeypatch.setattr(features, "discover_pack_metadata", forbid_scan)
+    monkeypatch.setattr(backends, "discover_pack_metadata", forbid_scan)
+    if backend_id == "studio":
+        assert ModelRegistry.load_default(discovered_packs=packs).backend_available("test-model", "t2i", "studio")
+    else:
+        with pytest.raises(ValueError, match="undeclared"):
+            ModelRegistry.load_default(discovered_packs=packs)

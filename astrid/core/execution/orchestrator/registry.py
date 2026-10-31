@@ -20,7 +20,7 @@ from astrid.core.pack import (
     iter_orchestrator_roots,
     validate_content_id_in_pack,
 )
-from astrid.core.pack.discovery import discover_packs_ordered
+from astrid.core.pack.discovery import DiscoveredPack, discover_packs_ordered
 from astrid.core.pack.manifest import (
     ManifestParseError,
 )
@@ -256,17 +256,21 @@ def load_default_registry(
     banodoco_config: Any | None = None,
     project_root: str | Path = REPO_ROOT,
     extra_pack_roots: tuple[str, ...] = (),
+    discovered_packs: tuple[DiscoveredPack, ...] | None = None,
 ) -> OrchestratorRegistry:
+    """Assemble and validate, optionally reusing an admitted per-call snapshot."""
     active_executor_registry = executor_registry
     if active_executor_registry is None:
         active_executor_registry = load_default_executor_registry(
             banodoco_config=banodoco_config,
             project_root=project_root,
             extra_pack_roots=extra_pack_roots,
+            **({"discovered_packs": discovered_packs} if discovered_packs is not None else {}),
         )
-    packs = _discover_orchestrator_packs(
-        project_root=project_root,
-        extra_pack_roots=extra_pack_roots,
+    packs = (
+        tuple(item.pack for item in discovered_packs)
+        if discovered_packs is not None
+        else _discover_orchestrator_packs(project_root=project_root, extra_pack_roots=extra_pack_roots)
     )
     registry = OrchestratorRegistry(
         executor_registry=active_executor_registry,

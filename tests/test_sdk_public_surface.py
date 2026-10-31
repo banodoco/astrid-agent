@@ -379,7 +379,8 @@ def test_discover_loads_registries_in_dependency_order_and_flattens_results(
     monkeypatch.setattr(sdk, "_load_executor_registry", fake_load_executor_registry)
     monkeypatch.setattr(sdk, "_load_orchestrator_registry", fake_load_orchestrator_registry)
     monkeypatch.setattr(sdk, "_load_element_registry", fake_load_element_registry)
-    monkeypatch.setattr(sdk, "_discover_pack_inventory", lambda **kwargs: ("discovered-pack",))
+    discovered_packs = ("discovered-pack",)
+    monkeypatch.setattr(sdk, "_discover_pack_inventory", lambda **kwargs: discovered_packs)
     monkeypatch.setattr(
         sdk,
         "_build_discovery_metadata",
@@ -420,19 +421,23 @@ def test_discover_loads_registries_in_dependency_order_and_flattens_results(
         "include_internal": False,
         "project_root": tmp_path,
         "extra_pack_roots": ("extra/packs",),
+        "discovered_packs": discovered_packs,
         "banodoco_config": banodoco_config,
     }
     assert calls[1][1] == {
         "executor_registry": executor_registry,
         "project_root": tmp_path,
         "extra_pack_roots": ("extra/packs",),
+        "discovered_packs": discovered_packs,
         "banodoco_config": banodoco_config,
     }
     assert calls[2][1] == {
         "project_root": tmp_path,
         "extra_pack_roots": ("extra/packs",),
+        "discovered_packs": discovered_packs,
         "include_missing_roots": True,
     }
+    assert all(kwargs["discovered_packs"] is discovered_packs for _, kwargs in calls)
     assert tuple(capability.id for capability in inventory.executors) == ("editorial.inspect_cut",)
     assert tuple(capability.id for capability in inventory.orchestrators) == ("video_editing.hype",)
     assert tuple(capability.id for capability in inventory.elements) == ("effects/text-card",)
