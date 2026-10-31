@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
 from astrid.sdk.timeline._common import TimelineEditError
-from astrid.sdk.timeline._pending import clash
+from astrid.sdk.timeline._pending import clash, snapshot
 from astrid.sdk.timeline.outbox import Outbox
 from astrid.sdk.timeline.sync import CommitConflict, TimelineSession
 
@@ -96,6 +97,41 @@ def test_function_clash_guidance_keeps_the_function_retry_parameter():
     assert packet["next"] == 'tl.retry("pc_function", your_function)'
     assert 'tl.retry("pc_function", your_function)' in error.fix
     assert error.outcome == "not_applied"
+
+
+def test_pending_suffix_repartitions_mixed_commands_for_provider_validation():
+    from astrid.sdk.timeline._command_state import ABSENT
+    from astrid.sdk.timeline._commit_patch import CommitPatch
+    from tests.editing_conformance.test_doc_patch_v2 import change, patch
+
+    prefix = {"schema_version": 1, "op": "clip.move", "version": "1",
+              "select": "clip:prefix", "args": {"on": 1}}
+    suffix_patch = patch(change(["custom", "suffix"], ABSENT, True))
+    suffix_native = {"schema_version": 1, "op": "clip.move", "version": "1",
+                     "select": "clip:suffix", "args": {"on": 2}}
+    commands = [prefix, suffix_patch, suffix_native]
+    reads = [{"kind": "scope", "ref": "parent", "path": []}]
+    options = {"label": "Mixed edit", "merge": "fields", "reads": reads,
+               "steps": [{"id": "prefix", "label": "Prefix", "intent": "", "tags": [],
+                          "command_ordinals": [0], "patch": []}]}
+    body = {"base_revision_id": BASE["revision_id"],
+            "base_publication_id": BASE["publication_id"], "commands": [prefix],
+            "label": "Mixed edit", "merge": "fields", "reads": reads,
+            "steps": options["steps"]}
+    state = {"base": BASE, "pending": commands, "commit_options": options}
+    flight = {"body": json.dumps(body), "count": 1}
+
+    record = snapshot(state, flight, _failure())
+    suffix = record["parts"][1]
+    assert len(record["parts"][0]["commands"]) != len(suffix["commands"])
+    assert suffix["commit_options"]["merge"] == "fields"
+    assert suffix["commit_options"]["reads"] == reads
+    assert suffix["commit_options"]["steps"][0]["command_ordinals"] == [0, 1]
+    assert suffix["commit_options"]["steps"][0]["patch"] == suffix_patch["args"]["changes"]
+
+    # The provider's production step validator accepts the derived suffix.
+    CommitPatch(suffix["commit_options"] | {"commands": suffix["commands"]},
+                suffix["commands"], {"base_parent": {"revision_id": "r1"}})
 
 
 def test_function_clash_is_retained_in_shared_outbox(tmp_path, monkeypatch):

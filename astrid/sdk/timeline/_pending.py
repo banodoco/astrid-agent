@@ -7,6 +7,20 @@ import uuid
 from datetime import datetime, timezone
 
 
+def _suffix_options(state, commands):
+    """Keep commit controls for a queued suffix, but partition its own commands."""
+    options = copy.deepcopy(state.get("commit_options") or {})
+    steps = options.get("steps")
+    if steps is not None:
+        label = options.get("label") or "Timeline edit"
+        patch = [copy.deepcopy(change) for command in commands
+                 if command.get("op") == "doc.patch"
+                 for change in command.get("args", {}).get("changes", [])]
+        options["steps"] = [{"id": "edit", "label": label, "intent": "", "tags": [],
+                             "command_ordinals": list(range(len(commands))), "patch": patch}]
+    return options
+
+
 def snapshot(state, flight, failure):
     body = json.loads(flight["body"])
     options = {key: copy.deepcopy(body[key]) for key in ("label", "steps", "merge", "reads") if key in body}
@@ -21,7 +35,7 @@ def snapshot(state, flight, failure):
     suffix = state["pending"][flight["count"]:]
     if suffix:
         parts.append({"base": copy.deepcopy(state["base"]), "commands": copy.deepcopy(suffix),
-                      "commit_options": copy.deepcopy(state.get("commit_options")),
+                      "commit_options": _suffix_options(state, suffix),
                       "rationale": copy.deepcopy(state.get("rationale")),
                       "media_input": copy.deepcopy(state.get("media_input")),
                       "imports": copy.deepcopy(state.get("media_imports", [])),
