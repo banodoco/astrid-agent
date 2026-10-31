@@ -499,8 +499,8 @@ def test_root_marker_retains_pinokio_manager_for_update_and_uninstall(tmp_path, 
     class BackendStub:
         def __init__(self, *_args, **_kwargs):
             self.managed_by = None
-            self.service = SimpleNamespace(selection=selection, home=Path.home(), system=sys.platform,
-                                           recorded=lambda: record.copy(), login_service_exists=lambda: False)
+            self.service = SimpleNamespace(selection=selection, recorded=lambda: record.copy(),
+                                           login_service_exists=lambda: False)
 
         def preflight_stop(self, _data):
             captured["preflight"] = True

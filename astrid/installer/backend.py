@@ -541,31 +541,6 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         except Exception as exc:
             raise self._stop_failure(exc) from exc
 
-    def pinokio_stopped(self, data: Path) -> bool:
-        """Admit a receipt-free old Stop only under stopped-update custody.
-
-        Old Runtimes remove both owner publications on successful Stop. C1's
-        newer completed-stop receipt is neither required nor manufactured here.
-        Any remaining publication/foreground claim keeps the normal C1 path.
-        """
-        custody = getattr(self, "_pinokio_custody", None)
-        if self.managed_by != "pinokio" or custody is None:
-            return False
-        custody.check()
-        if self._pending_restore_selection(data) is not None:
-            return False  # Restore gaps retain C1's final selection fence.
-        from astrid_runtime.paths import RuntimePaths
-
-        paths = RuntimePaths.current(data_root=data)
-        if (os.path.lexists(paths.discovery_path) or os.path.lexists(paths.instance_lock_path)
-                or self.service.recorded().get("foreground") is not None):
-            return False
-        # Repeat the read-only durable work/refusal checks at the stop boundary.
-        # Custody excludes canonical Start throughout this check and activation.
-        self.preflight_stop(data)
-        custody.check()
-        return True
-
     def publish_launch_admission(self, version: Version, data: Path) -> None:
         """Refresh the selected install's launch action before its first C1 stop."""
         if self.managed_by == "pinokio":

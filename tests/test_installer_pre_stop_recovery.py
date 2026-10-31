@@ -212,7 +212,7 @@ def test_pinokio_update_recovers_crash_after_stopping_save_after_busy_refusal(
         def __init__(self, root, backend):
             self.root, self.backend = root, backend
 
-        def validate(self, _version, **_kwargs):
+        def validate(self, _version):
             pass
 
         def start(self, version, _data, _realm_id):
