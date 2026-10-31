@@ -5194,6 +5194,8 @@ class RuntimeProtocolClient:
         if isinstance(fence, bool):
             raise HostError("runtime cancellation fence must be an integer")
         evidence = outputs is not None or result is not None or stop_observed is not None
+        if stop_observed is not None and not isinstance(stop_observed, bool):
+            raise HostError("runtime stop_observed must be a boolean")
         if evidence and (lease_id is None or epoch is None):
             raise HostError("runtime cancellation evidence requires a complete attempt fence")
         kwargs = {}
