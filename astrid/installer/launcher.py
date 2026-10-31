@@ -188,7 +188,7 @@ def publish_runtime_runner(root: Path) -> Path:
         + 'import hashlib,hmac,secrets,socket\nfrom typing import Any\n'
         + f'_CUSTODY_KEEPER_SOURCE={inspect.getsource(custody.keeper)!r}\n'
         + custody_source + '\n_CUSTODY_ATTACH=attach\n'
-        + foreground_source + '\n'
+        + '# <Astrid foreground launcher>\n' + foreground_source + '\n'
         + 'launch(Path(__file__).resolve().parent, sys.argv[1:])\n'
     )
     fd, temporary = platform.private_temporary(root, ".run_runtime.py.")
