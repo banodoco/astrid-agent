@@ -1,0 +1,109 @@
+name: G3 agent chat
+'on':
+  workflow_call:
+    inputs:
+      runtime_sha:
+        required: true
+        type: string
+      agent_sha:
+        required: true
+        type: string
+      app_sha:
+        required: true
+        type: string
+      pinokio_sha:
+        required: true
+        type: string
+      vibecomfy_sha:
+        required: true
+        type: string
+    secrets:
+      RUNTIME_READ_TOKEN:
+        required: false
+      ASTRID_READ_TOKEN:
+        required: false
+permissions:
+  contents: read
+jobs:
+  windows-launchers:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ inputs.agent_sha }}
+        persist-credentials: false
+    - name: Assert and record agent checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.agent_sha }}
+        CHECKOUT_PATH: .
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "agent" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - uses: oven-sh/setup-bun@v2
+      with:
+        no-cache: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/int/') }}
+        bun-version: 1.3.14
+    - run: npm ci --ignore-scripts
+    - name: Exercise native Windows chat child launches
+      run: bun test ./astrid/chat/discoveryProbe.test.ts ./astrid/chat/astridAcpLauncher.windows.test.ts ./astrid/chat/acpProcessHost.test.ts
+    - name: Allow slow Windows model discovery through HTTP
+      run: bun test ./astrid/chat/astrid-agent-models.test.ts -t "model discovery allows sequential OMP startup"
+    - name: Parse the operator diagnostic with Windows PowerShell
+      shell: powershell
+      run: "$tokens = $null\n$errors = $null\nforeach ($script in Get-ChildItem scripts/diagnostics/windows_acp_*.ps1) {\n\
+        \  [System.Management.Automation.Language.Parser]::ParseFile(\n    $script.FullName, [ref]$tokens, [ref]$errors) |\
+        \ Out-Null\n  if ($errors.Count) { throw ($errors | Out-String) }\n}\n"
+    - name: Parse the operator diagnostic with PowerShell Core
+      shell: pwsh
+      run: "$tokens = $null\n$errors = $null\nforeach ($script in Get-ChildItem scripts/diagnostics/windows_acp_*.ps1) {\n\
+        \  [System.Management.Automation.Language.Parser]::ParseFile(\n    $script.FullName, [ref]$tokens, [ref]$errors) |\
+        \ Out-Null\n  if ($errors.Count) { throw ($errors | Out-String) }\n}\n"
+  chat:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ inputs.agent_sha }}
+        persist-credentials: false
+    - name: Assert and record agent checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.agent_sha }}
+        CHECKOUT_PATH: .
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "agent" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20.19.4
+    - uses: oven-sh/setup-bun@v2
+      with:
+        no-cache: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/int/') }}
+        bun-version: 1.4.2
+    - run: npm ci --ignore-scripts
+    - run: bun run check:chat-bundle
+    - uses: oven-sh/setup-bun@v2
+      with:
+        no-cache: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/int/') }}
+        bun-version: 1.3.14
+    - run: bun run test:chat
+    - run: bun run astrid/chat/astrid-local-agent-adapters-smoke.ts

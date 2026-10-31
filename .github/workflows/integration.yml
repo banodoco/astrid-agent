@@ -1,0 +1,201 @@
+name: Exact tuple G3 integration
+'on':
+  workflow_dispatch: {}
+  push:
+    branches:
+    - lane/M-CI/C-05
+    paths:
+    - .github/workflows/c05-run-request
+permissions:
+  contents: read
+jobs:
+  tuple:
+    runs-on: ubuntu-latest
+    outputs:
+      runtime_sha: ${{ steps.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ steps.tuple.outputs.agent_sha }}
+      app_sha: ${{ steps.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ steps.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ steps.tuple.outputs.vibecomfy_sha }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ github.workflow_sha }}
+        persist-credentials: false
+    - name: Record coordinator checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ github.workflow_sha }}
+      run: 'set -euo pipefail
+
+        actual=$(git rev-parse HEAD)
+
+        printf "Coordinator checkout: %s\n" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Bind tuple and workflow revisions
+      id: tuple
+      env:
+        WORKFLOW_SHA: ${{ github.workflow_sha }}
+      run: "python - <<'PY'\nimport hashlib, json, os, re\nfrom pathlib import Path\np = Path('.github/workflows/tuple.json')\n\
+        t = json.loads(p.read_text())\nrevision = os.environ['WORKFLOW_SHA']\nif not re.fullmatch(r'[0-9a-f]{40}', revision):\n\
+        \    raise SystemExit('workflow revision must be a full commit SHA')\nt['workflow_revisions']['agent'] = revision\n\
+        for name in ('runtime', 'agent', 'app', 'pinokio', 'vibecomfy'):\n    sha = t['repos'][name]['sha']\n    if not re.fullmatch(r'[0-9a-f]{40}',\
+        \ sha):\n        raise SystemExit(f'invalid {name} SHA')\n    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:\n\
+        \        f.write(f'{name}_sha={sha}\\n')\nt.pop('digest', None)\nt['digest'] = hashlib.sha256(json.dumps(t, sort_keys=True,\
+        \ separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()\nPath('effective-tuple.json').write_text(json.dumps(t,\
+        \ indent=2) + '\\n')\nwith open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:\n    f.write('## Effective integration\
+        \ tuple\\n\\n```json\\n' + json.dumps(t, indent=2) + '\\n```\\n')\nPY\n"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: effective-tuple
+        path: effective-tuple.json
+        if-no-files-found: error
+        retention-days: 14
+  agent-ci:
+    needs: tuple
+    uses: ./.github/workflows/g3-ci.yml
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  agent-chat:
+    needs: tuple
+    uses: ./.github/workflows/g3-chat.yml
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  agent-lanes:
+    needs: tuple
+    uses: ./.github/workflows/g3-lanes.yml
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  runtime-ci:
+    needs: tuple
+    uses: banodoco/astrid-runtime/.github/workflows/g3-ci.yml@7eb8c133ca56c35c3f8c45b81e63aa4f5793b163
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  runtime-nightly:
+    needs: tuple
+    uses: banodoco/astrid-runtime/.github/workflows/g3-nightly.yml@7eb8c133ca56c35c3f8c45b81e63aa4f5793b163
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  app-test:
+    needs: tuple
+    uses: banodoco/astrid-app/.github/workflows/g3-test.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  app-e2e:
+    needs: tuple
+    uses: banodoco/astrid-app/.github/workflows/g3-e2e.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  app-lanes:
+    needs: tuple
+    uses: banodoco/astrid-app/.github/workflows/g3-lanes.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  app-installer-windows:
+    needs: tuple
+    uses: banodoco/astrid-app/.github/workflows/g3-installer-windows.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  app-direct-journey:
+    needs: tuple
+    uses: banodoco/astrid-app/.github/workflows/g3-direct-journey.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  app-dockerfile-check:
+    needs: tuple
+    uses: banodoco/astrid-app/.github/workflows/g3-dockerfile-check.yml@26e0a5ef5045be4d5224eae2521ddbdade9b72fd
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  pinokio-ci:
+    needs: tuple
+    uses: banodoco/astrid-pinokio/.github/workflows/g3-ci.yml@e7bd4e3a31f74b6f43e035480acfd3c523eec19e
+    with:
+      runtime_sha: ${{ needs.tuple.outputs.runtime_sha }}
+      agent_sha: ${{ needs.tuple.outputs.agent_sha }}
+      app_sha: ${{ needs.tuple.outputs.app_sha }}
+      pinokio_sha: ${{ needs.tuple.outputs.pinokio_sha }}
+      vibecomfy_sha: ${{ needs.tuple.outputs.vibecomfy_sha }}
+    secrets: inherit
+  g3-result:
+    if: ${{ always() }}
+    needs:
+    - tuple
+    - agent-ci
+    - agent-chat
+    - agent-lanes
+    - runtime-ci
+    - runtime-nightly
+    - app-test
+    - app-e2e
+    - app-lanes
+    - app-installer-windows
+    - app-direct-journey
+    - app-dockerfile-check
+    - pinokio-ci
+    runs-on: ubuntu-latest
+    steps:
+    - name: Require every G3 workflow to succeed
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: "python - <<'PY'\nimport json, os\nresults = json.loads(os.environ[\"RESULTS\"])\nfor name, value in results.items():\n\
+        \    print(f\"{name}: {value['result']}\")\nif any(value[\"result\"] != \"success\" for value in results.values()):\n\
+        \    raise SystemExit(\"G3 failed or did not run\")\nPY\n"

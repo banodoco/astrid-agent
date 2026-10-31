@@ -1,0 +1,469 @@
+name: G3 agent lanes
+'on':
+  workflow_call:
+    inputs:
+      runtime_sha:
+        required: true
+        type: string
+      agent_sha:
+        required: true
+        type: string
+      app_sha:
+        required: true
+        type: string
+      pinokio_sha:
+        required: true
+        type: string
+      vibecomfy_sha:
+        required: true
+        type: string
+    secrets:
+      RUNTIME_READ_TOKEN:
+        required: false
+      ASTRID_READ_TOKEN:
+        required: false
+permissions:
+  contents: read
+jobs:
+  integration:
+    name: integration shard ${{ matrix.group }} / 4
+    runs-on: ubuntu-latest
+    env:
+      ASTRID_CI_JOB: lanes-integration
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+      ASTRID_PINOKIO_CHECKOUT: ${{ github.workspace }}/astrid-pinokio
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+        - 1
+        - 2
+        - 3
+        - 4
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ inputs.agent_sha }}
+        persist-credentials: false
+    - name: Assert and record agent checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.agent_sha }}
+        CHECKOUT_PATH: .
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "agent" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Check out the Runtime (astrid-runtime)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-runtime
+        ref: ${{ inputs.runtime_sha }}
+        path: astrid-runtime
+        persist-credentials: false
+    - name: Assert and record runtime checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.runtime_sha }}
+        CHECKOUT_PATH: astrid-runtime
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "runtime" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Check out Pinokio (astrid-pinokio)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-pinokio
+        ref: ${{ inputs.pinokio_sha }}
+        path: astrid-pinokio
+        persist-credentials: false
+    - name: Assert and record pinokio checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.pinokio_sha }}
+        CHECKOUT_PATH: astrid-pinokio
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "pinokio" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Fetch historical Agent archive object
+      run: git fetch --no-tags --depth=1 origin a53ef0c257e4b0bbc2a65959b9119e2cb4cff453
+    - name: Fetch historical Runtime archive objects
+      run: git -C astrid-runtime fetch --no-tags --depth=1 origin 11443b0b5b34bd5b36725504fb083146192a759d 959ce04fcf91351903c361d03e6b19eb0bbe8587
+        efcb3264e854fc312faa0bc6e702a9034edc2e06
+    - name: Verify Runtime sources before tests
+      shell: bash
+      env:
+        RUNTIME_LOCK_SHA: ${{ inputs.runtime_sha }}
+        HISTORICAL_RUNTIME_SHA: efcb3264e854fc312faa0bc6e702a9034edc2e06
+      run: "set -euo pipefail\nlocked_runtime=\"$(git -C \"$ASTRID_RUNTIME_CHECKOUT\" rev-parse HEAD)\"\ntest \"$locked_runtime\"\
+        \ = \"$RUNTIME_LOCK_SHA\"\nhistorical_runtime=\"$(git -C \"$ASTRID_RUNTIME_CHECKOUT\" rev-parse \"${HISTORICAL_RUNTIME_SHA}^{commit}\"\
+        )\"\ntest \"$historical_runtime\" = \"$HISTORICAL_RUNTIME_SHA\"\nhistorical_type=\"$(git -C \"$ASTRID_RUNTIME_CHECKOUT\"\
+        \ cat-file -t \"$HISTORICAL_RUNTIME_SHA\")\"\ntest \"$historical_type\" = commit\n{\n  echo \"## Effective Runtime\
+        \ sources\"\n  echo \"- Runtime checkout: $ASTRID_RUNTIME_CHECKOUT\"\n  echo \"- Runtime tuple source: $RUNTIME_LOCK_SHA\
+        \ (checkout HEAD: $locked_runtime)\"\n  echo \"- Runtime historical source: $HISTORICAL_RUNTIME_SHA (resolved: $historical_runtime;\
+        \ object: $historical_type)\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+    - name: Record checked-out refs
+      shell: bash
+      run: "{\n  echo \"## Effective checked-out refs\"\n  echo \"- Agent: $(git rev-parse HEAD)\"\n  echo \"- Runtime: $(git\
+        \ -C astrid-runtime rev-parse HEAD)\"\n  echo \"- Pinokio: $(git -C astrid-pinokio rev-parse HEAD)\"\n} >> \"$GITHUB_STEP_SUMMARY\"\
+        \n"
+    - name: Restore pip cache (C-08)
+      id: c08-agent-lanes-2
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip'
+          || '~/.cache/pip' }}
+        key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Set up pinned uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: 0.11.32
+    - name: Set up Node.js 22 (HyperFrames CLI)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Set up Node.js from .node-version
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: .node-version
+    - name: Install system media tools and a system font
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+        '
+    - name: Install package with dev extras
+      run: python -m pip install -e '.[dev]'
+    - name: Install the Runtime and client from the checkout
+      run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
+    - name: Read the pinned VibeComfy revision
+      id: vibecomfy-pin
+      run: rev=$(python3 scripts/vibecomfy_pin.py) && echo "revision=$rev" >> "$GITHUB_OUTPUT"
+    - name: Assert VibeComfy tuple matches Agent pin
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.vibecomfy_sha }}
+        PIN: ${{ steps.vibecomfy-pin.outputs.revision }}
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" == "$PIN" ]]
+
+        '
+    - name: Check out VibeComfy at the pinned engine revision
+      uses: actions/checkout@v4
+      with:
+        repository: peteromallet/VibeComfy
+        ref: ${{ inputs.vibecomfy_sha }}
+        path: vibecomfy-checkout
+        persist-credentials: false
+    - name: Assert and record vibecomfy checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.vibecomfy_sha }}
+        CHECKOUT_PATH: vibecomfy-checkout
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "vibecomfy" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Record VibeComfy checkout
+      run: 'echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+        '
+    - name: Install VibeComfy
+      run: python -m pip install -e ./vibecomfy-checkout
+    - name: Install the Remotion dependencies
+      run: 'sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0
+        libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
+
+        npm ci --prefix remotion
+
+        '
+    - name: Provision the Remotion browser
+      run: npx remotion browser ensure
+      working-directory: remotion
+    - name: Integration tests (shard)
+      run: python -m pytest -q -m "integration and not opt_in and not app_checkout" --splits 4 --group ${{ matrix.group }}
+    - name: Save pip cache on main or int branches (C-08)
+      if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-2.outputs.cache-hit
+        != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip'
+          || '~/.cache/pip' }}
+        key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+  opt-in:
+    name: opt-in
+    runs-on: ubuntu-latest
+    env:
+      ASTRID_CI_JOB: lanes-opt-in
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_VIBECOMFY_CHECKOUT: ${{ github.workspace }}/vibecomfy-checkout
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ inputs.agent_sha }}
+        persist-credentials: false
+    - name: Assert and record agent checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.agent_sha }}
+        CHECKOUT_PATH: .
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "agent" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Check out the Runtime (astrid-runtime)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-runtime
+        ref: ${{ inputs.runtime_sha }}
+        path: astrid-runtime
+        persist-credentials: false
+    - name: Assert and record runtime checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.runtime_sha }}
+        CHECKOUT_PATH: astrid-runtime
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "runtime" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Record checked-out refs
+      shell: bash
+      run: "{\n  echo \"## Effective checked-out refs\"\n  echo \"- Agent: $(git rev-parse HEAD)\"\n  echo \"- Runtime: $(git\
+        \ -C astrid-runtime rev-parse HEAD)\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+    - name: Restore pip cache (C-08)
+      id: c08-agent-lanes-1
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip'
+          || '~/.cache/pip' }}
+        key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Set up Node.js 22 (HyperFrames CLI)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Set up Node.js from .node-version
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: .node-version
+    - name: Install system media tools and a system font
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+        '
+    - name: Install package with dev extras
+      run: python -m pip install -e '.[dev]'
+    - name: Install the Runtime and client from the checkout
+      run: python -m pip install --no-deps -e ./astrid-runtime -e ./astrid-runtime/packages/python
+    - name: Read the pinned VibeComfy revision
+      id: vibecomfy-pin
+      run: rev=$(python3 scripts/vibecomfy_pin.py) && echo "revision=$rev" >> "$GITHUB_OUTPUT"
+    - name: Assert VibeComfy tuple matches Agent pin
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.vibecomfy_sha }}
+        PIN: ${{ steps.vibecomfy-pin.outputs.revision }}
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" == "$PIN" ]]
+
+        '
+    - name: Check out VibeComfy at the pinned engine revision
+      uses: actions/checkout@v4
+      with:
+        repository: peteromallet/VibeComfy
+        ref: ${{ inputs.vibecomfy_sha }}
+        path: vibecomfy-checkout
+        persist-credentials: false
+    - name: Assert and record vibecomfy checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.vibecomfy_sha }}
+        CHECKOUT_PATH: vibecomfy-checkout
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "vibecomfy" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Record VibeComfy checkout
+      run: 'echo "- VibeComfy: $(git -C vibecomfy-checkout rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+        '
+    - name: Install VibeComfy
+      run: python -m pip install -e ./vibecomfy-checkout
+    - name: Install the Remotion dependencies
+      run: 'sudo apt-get install -y libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2t64 libxrandr2 libxkbcommon0
+        libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2 libcups2
+
+        npm ci --prefix remotion
+
+        '
+    - name: Provision the Remotion browser
+      run: npx remotion browser ensure
+      working-directory: remotion
+    - name: Opt-in tests
+      run: python -m pytest -q -m opt_in
+    - name: Save pip cache on main or int branches (C-08)
+      if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-lanes-1.outputs.cache-hit
+        != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip'
+          || '~/.cache/pip' }}
+        key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+  installed:
+    name: installed wheel
+    runs-on: ubuntu-latest
+    env:
+      ASTRID_CI_JOB: lanes-installed
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+      ASTRID_HOST_EXECUTION_PROFILE: installed
+      ASTRID_REMOTION_PROJECT_DIR: ${{ github.workspace }}/remotion
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ inputs.agent_sha }}
+        persist-credentials: false
+    - name: Assert and record agent checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.agent_sha }}
+        CHECKOUT_PATH: .
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "agent" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Check out the Runtime (astrid-runtime)
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-runtime
+        ref: ${{ inputs.runtime_sha }}
+        path: astrid-runtime
+        persist-credentials: false
+    - name: Assert and record runtime checkout
+      shell: bash
+      env:
+        EXPECTED: ${{ inputs.runtime_sha }}
+        CHECKOUT_PATH: astrid-runtime
+      run: 'set -euo pipefail
+
+        [[ "$EXPECTED" =~ ^[0-9a-f]{40}$ ]]
+
+        actual=$(git -C "$GITHUB_WORKSPACE/$CHECKOUT_PATH" rev-parse HEAD)
+
+        printf "%s: %s\n" "runtime" "$actual" | tee -a "$GITHUB_STEP_SUMMARY"
+
+        [[ "$actual" == "$EXPECTED" ]]
+
+        '
+    - name: Record checked-out refs
+      shell: bash
+      run: "{\n  echo \"## Effective checked-out refs\"\n  echo \"- Agent: $(git rev-parse HEAD)\"\n  echo \"- Runtime: $(git\
+        \ -C astrid-runtime rev-parse HEAD)\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Set up Node.js from .node-version
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: .node-version
+    - name: Install system media tools
+      run: 'sudo apt-get update
+
+        sudo apt-get install -y ffmpeg
+
+        '
+    - name: Build exactly one wheel
+      run: 'python -m pip install --disable-pip-version-check --no-input --require-hashes -r requirements/build.lock
+
+        python -m build --wheel --no-isolation --outdir dist
+
+        test "$(ls dist/*.whl | wc -l)" -eq 1
+
+        '
+    - name: Install the wheel and the Runtime into a venv
+      run: 'python -m venv "$RUNNER_TEMP/installed-venv"
+
+        "$RUNNER_TEMP/installed-venv/bin/python" -m pip install "$(ls dist/*.whl)[dev]"
+
+        "$RUNNER_TEMP/installed-venv/bin/python" -m pip install --no-deps ./astrid-runtime ./astrid-runtime/packages/python
+
+        '
+    - name: Install the Remotion dependencies
+      run: npm ci --prefix remotion
+    - name: Installed tests
+      run: '"$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py'

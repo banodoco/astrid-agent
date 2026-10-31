@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "name": "int/r1 published C-05",
+  "repos": {
+    "runtime": {
+      "url": "https://github.com/banodoco/astrid-runtime",
+      "sha": "3b12fface79a3be029f3b6623765a7f3e1e5e24f"
+    },
+    "agent": {
+      "url": "https://github.com/banodoco/astrid-agent",
+      "sha": "3f6264d8878e754c1a5a4f1d11d0f768eb5cf28f"
+    },
+    "app": {
+      "url": "https://github.com/banodoco/astrid-app",
+      "sha": "8a05d31ae702ad83d8e61867d82f0fc2feb52ce3"
+    },
+    "pinokio": {
+      "url": "https://github.com/banodoco/astrid-pinokio",
+      "sha": "c5b42701641889ecb916c60cde09a717f83d62ff"
+    },
+    "vibecomfy": {
+      "url": "https://github.com/peteromallet/VibeComfy",
+      "sha": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+    }
+  },
+  "generated": {},
+  "toolchain": {
+    "node": "20.19.4"
+  },
+  "workflow_revisions": {
+    "runtime": "7eb8c133ca56c35c3f8c45b81e63aa4f5793b163",
+    "app": "26e0a5ef5045be4d5224eae2521ddbdade9b72fd",
+    "pinokio": "e7bd4e3a31f74b6f43e035480acfd3c523eec19e"
+  },
+  "created_at": "2026-10-31T21:54:35.291737Z"
+}
