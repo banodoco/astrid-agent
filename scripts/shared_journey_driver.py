@@ -8,9 +8,8 @@ The class in this module has three deliberately separate responsibilities:
 * drive the M4-6 native adapter through a pinned product command, one live
   action at a time.
 
-It does not authenticate hosted evidence. It exposes immutable command/artifact
-bindings to the native adapter's source-fixed B/platform live session, which must
-authorize removal and finalize from live re-observation before the driver returns.
+It does not authenticate hosted evidence.  The native adapter keeps that
+separate B/platform-owned admission boundary and fails closed without it.
 """
 
 from __future__ import annotations
@@ -363,7 +362,6 @@ class JourneyDriver:
         self._command_cwd: Path | None = None
         self._timeout = 0
         self._artifacts: dict[Path, str] = {}
-        self._artifact_roles: dict[str, Path] = {}
         if config_path is None and context is None:
             return
         if config_path is None or context is None:
@@ -678,7 +676,6 @@ class JourneyDriver:
         if not artifacts:
             raise JourneyDriverError("native config artifacts must not be empty")
         pinned: dict[Path, str] = {}
-        roles: dict[str, Path] = {}
         for name, value in artifacts.items():
             _text(name, "native artifact name")
             artifact = _exact_fields(value, {"path", "sha256"}, f"native config artifacts.{name}")
@@ -689,7 +686,6 @@ class JourneyDriver:
             if artifact_path in pinned:
                 raise JourneyDriverError("native config artifacts contain a duplicate path")
             pinned[artifact_path] = expected
-            roles[name] = artifact_path
         command = _exact_fields(
             config["product_command"],
             {"argv", "cwd", "timeout_seconds"},
@@ -733,7 +729,6 @@ class JourneyDriver:
         self._command_cwd = _directory(command["cwd"], "native product_command.cwd")
         self._timeout = timeout
         self._artifacts = pinned
-        self._artifact_roles = roles
 
     def _verify_artifact(self, path: Path, label: str) -> None:
         expected = self._artifacts.get(path)
@@ -889,7 +884,6 @@ class JourneyDriver:
                 "principal",
                 "definition_owner",
                 "working_directory",
-                "removal_plan",
             },
             "product service_spec",
         )
@@ -909,45 +903,6 @@ class JourneyDriver:
         if action_executable not in self._artifacts:
             raise JourneyDriverError("product service action executable is not pinned")
         self._verify_artifact(action_executable, "product service action executable")
-        removal_value = _exact_fields(
-            row["removal_plan"],
-            {
-                "operation",
-                "keep_data",
-                "remove_paths",
-                "preserve_paths",
-                "expected_postconditions",
-            },
-            "product removal_plan",
-        )
-
-        def path_tuple(name: str) -> tuple[str, ...]:
-            values = removal_value[name]
-            if (
-                not isinstance(values, list)
-                or not values
-                or not all(isinstance(value, str) and value for value in values)
-            ):
-                raise JourneyDriverError(f"product removal_plan.{name} must be a string list")
-            return tuple(values)
-
-        postconditions = removal_value["expected_postconditions"]
-        if not isinstance(postconditions, list) or any(
-            not isinstance(value, str) or not value for value in postconditions
-        ):
-            raise JourneyDriverError(
-                "product removal_plan.expected_postconditions must be a string list"
-            )
-        try:
-            removal_plan = native_service_adapter.RemovalPlan(
-                operation=_text(removal_value["operation"], "product removal operation"),
-                keep_data=removal_value["keep_data"],
-                remove_paths=path_tuple("remove_paths"),
-                preserve_paths=path_tuple("preserve_paths"),
-                expected_postconditions=tuple(postconditions),
-            )
-        except ValueError as exc:
-            raise JourneyDriverError(f"product removal_plan is invalid: {exc}") from exc
         return native_service_adapter.ServiceSpec(
             definition_path=definition,
             definition_sha256=definition_sha,
@@ -957,31 +912,7 @@ class JourneyDriver:
             working_directory=_text(row["working_directory"], "product service working directory")
             if row["working_directory"]
             else "",
-            removal_plan=removal_plan,
         )
-
-    def immutable_platform_artifacts(self, context: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Return the closed, revalidated phase-1 command/artifact binding."""
-        self._check_context(context)
-        assert self._command is not None
-        assert self._command_cwd is not None
-        for artifact_path in self._artifacts:
-            self._verify_artifact(artifact_path, f"native artifact {artifact_path.name}")
-        return {
-            "protocol": PRODUCT_PROTOCOL,
-            "product_command": {
-                "argv": list(self._command),
-                "cwd": str(self._command_cwd),
-            },
-            "artifacts": [
-                {
-                    "role": role,
-                    "path": str(path),
-                    "sha256": self._artifacts[path],
-                }
-                for role, path in sorted(self._artifact_roles.items())
-            ],
-        }
 
     def run(
         self,
@@ -1042,7 +973,7 @@ class JourneyDriver:
 
         removal_discovery, _ = self._discovery_action("keep-data-uninstall-before")
         current = session.observe("keep_data_uninstall", "before", removal_discovery)
-        session.before_product_removal(current, removal_discovery)
+        removal_authorization = session.before_product_removal(current, removal_discovery)
         removal_response = self._invoke("remove-product", fields={"scenario"})
         removal_scenario = _exact_fields(
             removal_response["scenario"],
@@ -1054,7 +985,7 @@ class JourneyDriver:
         values["keep_data_uninstall"] = copy.deepcopy(
             _mapping(removal_scenario["value"], "remove-product scenario.value")
         )
-        session.observe_product_removal()
+        session.observe_product_removal(removal_authorization)
         return values
 
 

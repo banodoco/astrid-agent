@@ -6,10 +6,9 @@ hosted driver must create the real product-owned service definition and execute
 the four scenarios through :class:`NativeSession`.
 
 Serialized observations contain structural hashes, never authentication. Hosted
-collection therefore requires the source-fixed B/platform live-session provider:
-it authenticates and binds phase 1 before mutation, authorizes exact removal, and
-finalizes phase 2 from live re-observation before return. Injected collectors remain
-structural fixtures and never enter that hosted session.
+publication therefore requires a separately registered B/platform-owned verifier;
+this adapter has no default verifier and cannot authenticate itself. Injected
+collectors remain structural fixtures and are never submitted for hosted admission.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ import copy
 import ctypes
 import errno
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -31,7 +29,6 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Final, Mapping, Protocol, Sequence
 
@@ -58,9 +55,6 @@ MANAGERS: Final = {
     "windows": "task-scheduler",
 }
 SYNTHETIC_IMAGE = re.compile(r"(?:local|fixture|fake|synthetic|test)", re.IGNORECASE)
-WINDOWS_PROCESS_BIRTH_ID = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{7}Z"
-)
 REQUIRED_NATIVE_SLOT_IDS: Final = (
     "direct-macos",
     "direct-linux",
@@ -121,16 +115,6 @@ def _mapping(value: object) -> Mapping[str, Any]:
 
 def _nonempty(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
-
-
-def _valid_windows_process_birth_id(value: object) -> bool:
-    if not isinstance(value, str) or WINDOWS_PROCESS_BIRTH_ID.fullmatch(value) is None:
-        return False
-    try:
-        datetime.fromisoformat(value[:-1] + "+00:00")
-    except ValueError:
-        return False
-    return True
 
 
 def _digest(value: object) -> bool:
@@ -269,17 +253,9 @@ class DataProbe:
     """Adapter-owned reader for the product's precise data-identity manifest."""
 
     def __init__(self, allowed_root: Path) -> None:
-        # Hosted collection validates this private root before authentication but
-        # deliberately creates it only after the fixed platform session opens.
-        self.allowed_root = allowed_root.resolve(strict=False)
+        self.allowed_root = allowed_root.resolve(strict=True)
 
     def observe(self, discovery: Mapping[str, Any]) -> dict[str, Any]:
-        if (
-            self.allowed_root.is_symlink()
-            or not self.allowed_root.is_dir()
-            or self.allowed_root.resolve(strict=True) != self.allowed_root
-        ):
-            raise RuntimeError("run-owned data root is absent or unsafe")
         try:
             root = Path(discovery["data_root"])
             manifest_path = Path(discovery["data_manifest_path"])
@@ -348,17 +324,9 @@ class DurableJournalProbe:
     """Adapter-owned bounded reader for the durable update journal."""
 
     def __init__(self, allowed_root: Path) -> None:
-        # See DataProbe: the canonical path is fixed before authentication and
-        # becomes a directory only after the authenticated session exists.
-        self.allowed_root = allowed_root.resolve(strict=False)
+        self.allowed_root = allowed_root.resolve(strict=True)
 
     def observe(self, discovery: Mapping[str, Any]) -> dict[str, str]:
-        if (
-            self.allowed_root.is_symlink()
-            or not self.allowed_root.is_dir()
-            or self.allowed_root.resolve(strict=True) != self.allowed_root
-        ):
-            raise RuntimeError("run-owned journal root is absent or unsafe")
         try:
             path = Path(discovery["durable_journal_path"])
         except (KeyError, TypeError) as exc:
@@ -414,103 +382,20 @@ class LiveProcessProbe:
         )
         if result.returncode:
             raise RuntimeError("Windows process observation failed")
-        if not result.stdout.strip():
-            raise RuntimeError("Windows process observation is empty")
-
-        def object_without_duplicate_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-            row: dict[str, Any] = {}
-            for name, value in pairs:
-                if name in row:
-                    raise ValueError(f"duplicate field: {name}")
-                row[name] = value
-            return row
-
-        def reject_json_constant(value: str) -> None:
-            raise ValueError(f"invalid JSON constant: {value}")
-
         try:
-            value = json.loads(
-                result.stdout,
-                object_pairs_hook=object_without_duplicate_fields,
-                parse_constant=reject_json_constant,
-            )
-        except (json.JSONDecodeError, ValueError) as exc:
+            value = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
             raise RuntimeError("Windows process observation is malformed") from exc
-        if not isinstance(value, list):
+        if isinstance(value, dict):
+            return [value]
+        if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
             raise RuntimeError("Windows process observation is ambiguous")
-
-        required = {"ProcessId", "CreationDate", "ExecutablePath"}
-        rows: list[dict[str, Any]] = []
-        by_pid: dict[int, tuple[str, str]] = {}
-        identities: set[tuple[int, str, str]] = set()
-        for provider_row in value:
-            if not isinstance(provider_row, dict) or set(provider_row) != required:
-                raise RuntimeError("Windows process observation row fields differ")
-            pid = provider_row["ProcessId"]
-            birth = provider_row["CreationDate"]
-            raw_executable = provider_row["ExecutablePath"]
-            if type(pid) is not int or pid <= 0 or pid > 0xFFFFFFFF:
-                raise RuntimeError("Windows process observation PID is invalid")
-            if not _valid_windows_process_birth_id(birth):
-                raise RuntimeError("Windows process observation birth identity is invalid")
-            if (
-                not _nonempty(raw_executable)
-                or raw_executable != raw_executable.strip()
-                or not Path(raw_executable).is_absolute()
-            ):
-                raise RuntimeError("Windows process observation executable path is invalid")
-            try:
-                executable = Path(raw_executable).resolve(strict=True)
-            except (OSError, RuntimeError, ValueError) as exc:
-                raise RuntimeError(
-                    "Windows process observation executable path cannot be resolved"
-                ) from exc
-            if not executable.is_file():
-                raise RuntimeError("Windows process observation executable is not a file")
-            identity = (pid, birth, str(executable))
-            if identity in identities:
-                raise RuntimeError("Windows process observation contains a duplicate row")
-            prior = by_pid.get(pid)
-            if prior is not None and prior != identity[1:]:
-                raise RuntimeError("Windows process observation has inconsistent PID rows")
-            identities.add(identity)
-            by_pid[pid] = identity[1:]
-            rows.append(
-                {
-                    "pid": pid,
-                    "process_birth_id": birth,
-                    "executable_path": str(executable),
-                }
-            )
-        return rows
-
-    @staticmethod
-    def _windows_json(script: str) -> str:
-        """Force PowerShell to serialize the provider result as one JSON array."""
-        return (
-            "$ErrorActionPreference='Stop';"
-            f"$rows=@({script});"
-            "ConvertTo-Json -InputObject $rows -Compress"
-        )
-
-    @staticmethod
-    def _windows_process_projection() -> str:
-        return (
-            "Select-Object ProcessId,"
-            "@{Name='CreationDate';Expression={"
-            "$_.CreationDate.ToUniversalTime().ToString('o')}},"
-            "ExecutablePath"
-        )
+        return value
 
     def observe(self, pid: int, *, os_name: str, expected_executable: Path) -> Mapping[str, Any]:
-        if type(pid) is not int or pid <= 0 or (os_name == "windows" and pid > 0xFFFFFFFF):
+        if type(pid) is not int or pid <= 0:
             raise RuntimeError("positive native Runtime PID is required")
-        try:
-            expected = expected_executable.resolve(strict=True)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise RuntimeError("expected Runtime executable cannot be resolved") from exc
-        if not expected.is_file():
-            raise RuntimeError("expected Runtime executable is not a file")
+        expected = expected_executable.resolve(strict=True)
         try:
             if os_name == "linux":
                 birth, executable = self._linux_identity(pid)
@@ -522,19 +407,14 @@ class LiveProcessProbe:
                 birth = result.stdout.strip()
             elif os_name == "windows":
                 rows = self._windows_rows(
-                    self._windows_json(
-                        f'Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | '
-                        f"{self._windows_process_projection()}"
-                    )
+                    "$ErrorActionPreference='Stop';"
+                    f'@(Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | '
+                    "Select-Object ProcessId,CreationDate,ExecutablePath) | ConvertTo-Json -Compress"
                 )
                 if len(rows) != 1:
-                    raise RuntimeError(
-                        "Windows Runtime process observation requires exactly one row"
-                    )
-                if rows[0]["pid"] != pid:
-                    raise RuntimeError("Windows Runtime process PID differs")
-                birth = rows[0]["process_birth_id"]
-                executable = Path(rows[0]["executable_path"])
+                    raise RuntimeError("Windows Runtime process identity is unavailable")
+                birth = str(rows[0].get("CreationDate", ""))
+                executable = Path(str(rows[0].get("ExecutablePath", ""))).resolve(strict=True)
             else:
                 raise RuntimeError(f"unsupported process platform: {os_name}")
         except (OSError, IndexError) as exc:
@@ -549,22 +429,6 @@ class LiveProcessProbe:
         }
 
     def incarnation_absent(self, pid: int, birth_id: str, *, os_name: str) -> bool:
-        birth_is_invalid = (
-            not _valid_windows_process_birth_id(birth_id)
-            if os_name == "windows"
-            else (
-                not _nonempty(birth_id)
-                or birth_id != birth_id.strip()
-                or any(ord(character) < 0x20 for character in birth_id)
-            )
-        )
-        if (
-            type(pid) is not int
-            or pid <= 0
-            or (os_name == "windows" and pid > 0xFFFFFFFF)
-            or birth_is_invalid
-        ):
-            raise RuntimeError("positive native process PID/birth identity is required")
         if os_name == "linux":
             try:
                 current, _path = self._linux_identity(pid)
@@ -580,21 +444,11 @@ class LiveProcessProbe:
             if result.returncode or not result.stdout.strip():
                 raise RuntimeError("macOS process absence is not observable")
             return result.stdout.strip() != birth_id
-        if os_name != "windows":
-            raise RuntimeError(f"unsupported process platform: {os_name}")
         rows = self._windows_rows(
-            self._windows_json(
-                f'Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | '
-                f"{self._windows_process_projection()}"
-            )
+            f'@(Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | '
+            "Select-Object ProcessId,CreationDate) | ConvertTo-Json -Compress"
         )
-        if not rows:
-            return True
-        if len(rows) != 1:
-            raise RuntimeError("Windows process absence observation requires at most one row")
-        if rows[0]["pid"] != pid:
-            raise RuntimeError("Windows process absence PID differs")
-        return rows[0]["process_birth_id"] != birth_id
+        return not rows or str(rows[0].get("CreationDate", "")) != birth_id
 
     def owned_action_processes(
         self, action: Sequence[str], *, os_name: str
@@ -636,59 +490,12 @@ class LiveProcessProbe:
                         continue
                     raise RuntimeError("macOS owned-process enumeration was denied") from exc
             return rows
-        executable_name = executable.name.replace("'", "''")
-        observed = self._windows_rows(
-            self._windows_json(
-                "Get-CimInstance Win32_Process | "
-                "Where-Object {(($null -ne $_.ExecutablePath -and "
-                "$_.ExecutablePath -ne '') -or "
-                f"$_.Name -eq '{executable_name}')}} | "
-                f"{self._windows_process_projection()}"
-            )
+        escaped = str(executable).replace("'", "''")
+        return self._windows_rows(
+            "$ErrorActionPreference='Stop';"
+            f"@(Get-CimInstance Win32_Process | Where-Object {{$_.ExecutablePath -eq '{escaped}'}} | "
+            "Select-Object ProcessId,CreationDate,ExecutablePath) | ConvertTo-Json -Compress"
         )
-        # Path equality follows the target filesystem: case-insensitive on hosted
-        # Windows, while POSIX fixture paths retain their native case semantics.
-        return [row for row in observed if Path(row["executable_path"]) == executable]
-
-
-@dataclass(frozen=True)
-class RemovalPlan:
-    operation: str
-    keep_data: bool
-    remove_paths: tuple[str, ...]
-    preserve_paths: tuple[str, ...]
-    expected_postconditions: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if self.operation != "product-uninstall" or self.keep_data is not True:
-            raise ValueError("exact keep-data product-uninstall plan is required")
-        if not self.remove_paths or not self.preserve_paths:
-            raise ValueError("closed non-empty remove/preserve path sets are required")
-        declared_paths = (*self.remove_paths, *self.preserve_paths)
-        if (
-            len(set(self.remove_paths)) != len(self.remove_paths)
-            or len(set(self.preserve_paths)) != len(self.preserve_paths)
-            or any(not Path(value).is_absolute() for value in declared_paths)
-        ):
-            raise ValueError("removal plan paths must be absolute and unique")
-        normalized = tuple(Path(value).resolve(strict=False) for value in declared_paths)
-        if tuple(str(path) for path in normalized) != declared_paths:
-            raise ValueError("removal plan paths must be canonical and normalized")
-        remove_roots = normalized[: len(self.remove_paths)]
-        preserve_roots = normalized[len(self.remove_paths) :]
-        if any(
-            remove == preserve or remove.is_relative_to(preserve) or preserve.is_relative_to(remove)
-            for remove in remove_roots
-            for preserve in preserve_roots
-        ):
-            raise ValueError("removal and preservation scopes must not overlap by ancestry")
-        if self.expected_postconditions != (
-            "owner-target-absent",
-            "all-authorized-incarnations-absent",
-            "no-owned-action-processes",
-            "preserved-data-identity-unchanged",
-        ):
-            raise ValueError("exact removal postconditions are required")
 
 
 @dataclass(frozen=True)
@@ -701,7 +508,6 @@ class ServiceSpec:
     principal: str
     definition_owner: str
     working_directory: str = ""
-    removal_plan: RemovalPlan | None = None
 
     def __post_init__(self) -> None:
         if not _digest(self.definition_sha256):
@@ -717,468 +523,25 @@ class ServiceSpec:
 class JourneyDriver(Protocol):
     def service_spec(self, context: Mapping[str, Any]) -> ServiceSpec: ...
 
-    def immutable_platform_artifacts(self, context: Mapping[str, Any]) -> Mapping[str, Any]: ...
-
     def run(self, context: Mapping[str, Any], session: "NativeSession") -> Mapping[str, Any]: ...
 
 
-@dataclass(frozen=True)
-class PlatformArtifactBinding:
-    role: str
-    path: str
-    sha256: str
+class HostedAdmissionCapability(Protocol):
+    """Opaque, one-use capability implemented by the external platform owner."""
+
+    def consume(self, observation_sha256: str) -> bool: ...
 
 
-@dataclass(frozen=True)
-class PlatformSessionBinding:
-    """Immutable phase-1 inputs; origin claims are not themselves authority."""
+class HostedAdmissionVerifier(Protocol):
+    """B/platform-owned trust boundary; never implemented by this adapter."""
 
-    slot_id: str
-    mode: str
-    owner_kind: str
-    os_name: str
-    runner_image: str
-    shell: str
-    runner_os: str
-    image_os: str
-    os_build: str
-    repository_claim: str
-    workflow_claim: str
-    job_claim: str
-    run_id_claim: str
-    run_attempt_claim: str
-    candidate: tuple[tuple[str, str], ...]
-    checkouts: tuple[tuple[str, str, str], ...]
-    collector_pid: int
-    collector_executable: str
-    collector_executable_sha256: str
-    product_protocol: str
-    product_command: tuple[str, ...]
-    product_command_cwd: str
-    artifacts: tuple[PlatformArtifactBinding, ...]
-    owner_principal: str
-    owner_target: str
-
-
-@dataclass(frozen=True)
-class CustodyBinding:
-    slot_id: str
-    owner_kind: str
-    principal: str
-    target: str
-    definition_path: str
-    definition_sha256: str
-    action: tuple[str, ...]
-    action_sha256: str
-    immutable_actions: tuple[PlatformArtifactBinding, ...]
-    resolved_action_identity_sha256: str
-    removal_plan: RemovalPlan | None
-
-
-@dataclass(frozen=True)
-class RemovalProcessBinding:
-    role: str
-    target: str
-    pid: int
-    process_birth_id: str
-    parent_role: str
-    parent_pid: int | None
-    parent_process_birth_id: str | None
-    executable_path: str
-    executable_sha256: str
-    action: tuple[str, ...]
-    discovery_identity: tuple[tuple[str, Any], ...]
-    removal_targets: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if (
-            not _nonempty(self.role)
-            or not _nonempty(self.target)
-            or type(self.pid) is not int
-            or self.pid <= 0
-            or not _nonempty(self.process_birth_id)
-            or not _nonempty(self.parent_role)
-            or not Path(self.executable_path).is_absolute()
-            or not _digest(self.executable_sha256)
-            or not self.action
-            or not all(_nonempty(value) for value in self.action)
-            or not self.discovery_identity
-            or not self.removal_targets
-            or not all(_nonempty(value) for value in self.removal_targets)
-        ):
-            raise ValueError("complete live removal-process identity is required")
-        if (self.parent_pid is None) != (self.parent_process_birth_id is None):
-            raise ValueError("parent PID and non-reusable birth identity must be paired")
-        if self.parent_pid is not None and (
-            type(self.parent_pid) is not int
-            or self.parent_pid <= 0
-            or not _nonempty(self.parent_process_birth_id)
-        ):
-            raise ValueError("valid parent process identity is required")
-        keys = [name for name, _value in self.discovery_identity]
-        if len(set(keys)) != len(keys) or not all(_nonempty(name) for name in keys):
-            raise ValueError("closed discovery identity fields are required")
-
-
-@dataclass(frozen=True)
-class RemovalCensus:
-    manager_target: str
-    manager_instance_id: str
-    registration: tuple[tuple[str, Any], ...]
-    controller_identity: tuple[tuple[str, Any], ...]
-    processes: tuple[RemovalProcessBinding, ...]
-    prior_incarnations: tuple[RemovalProcessBinding, ...]
-    removal_targets: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if (
-            not _nonempty(self.manager_target)
-            or not _nonempty(self.manager_instance_id)
-            or not self.registration
-            or not self.controller_identity
-            or not self.processes
-            or not self.removal_targets
-            or not all(_nonempty(value) for value in self.removal_targets)
-            or len(set(self.removal_targets)) != len(self.removal_targets)
-        ):
-            raise ValueError("complete manager/controller/registration census is required")
-        for label, values in (
-            ("registration", self.registration),
-            ("controller", self.controller_identity),
-        ):
-            keys = [name for name, _value in values]
-            if len(set(keys)) != len(keys) or not all(_nonempty(name) for name in keys):
-                raise ValueError(f"closed {label} census fields are required")
-        all_processes = (*self.processes, *self.prior_incarnations)
-        identities = [(row.pid, row.process_birth_id) for row in all_processes]
-        if len(set(identities)) != len(identities):
-            raise ValueError("removal process incarnations must be unique")
-        if any(row.target not in self.removal_targets for row in all_processes):
-            raise ValueError("each live process must bind one exact removal target")
-
-
-def _removal_census_payload(census: RemovalCensus) -> dict[str, Any]:
-    return {
-        "manager_target": census.manager_target,
-        "manager_instance_id": census.manager_instance_id,
-        "registration": dict(census.registration),
-        "controller_identity": dict(census.controller_identity),
-        "processes": [
-            {
-                "role": row.role,
-                "target": row.target,
-                "pid": row.pid,
-                "process_birth_id": row.process_birth_id,
-                "parent_role": row.parent_role,
-                "parent_pid": row.parent_pid,
-                "parent_process_birth_id": row.parent_process_birth_id,
-                "executable_path": row.executable_path,
-                "executable_sha256": row.executable_sha256,
-                "action": list(row.action),
-                "discovery_identity": dict(row.discovery_identity),
-                "removal_targets": list(row.removal_targets),
-            }
-            for row in census.processes
-        ],
-        "prior_incarnations": [
-            {
-                "role": row.role,
-                "target": row.target,
-                "pid": row.pid,
-                "process_birth_id": row.process_birth_id,
-                "parent_role": row.parent_role,
-                "parent_pid": row.parent_pid,
-                "parent_process_birth_id": row.parent_process_birth_id,
-                "executable_path": row.executable_path,
-                "executable_sha256": row.executable_sha256,
-                "action": list(row.action),
-                "discovery_identity": dict(row.discovery_identity),
-                "removal_targets": list(row.removal_targets),
-            }
-            for row in census.prior_incarnations
-        ],
-        "removal_targets": list(census.removal_targets),
-    }
-
-
-@dataclass(frozen=True)
-class RemovalRequest:
-    session: PlatformSessionBinding
-    custody: CustodyBinding
-    operation: str
-    keep_data: bool
-    remove_paths: tuple[str, ...]
-    preserve_paths: tuple[str, ...]
-    expected_postconditions: tuple[str, ...]
-    identity: tuple[tuple[str, Any], ...]
-    registration_sha256: str
-    live_census: RemovalCensus
-    observed_actions: tuple[tuple[str, ...], ...]
-    observed_incarnations: tuple[tuple[int, str], ...]
-    data_identity: tuple[tuple[str, Any], ...]
-
-
-@dataclass(frozen=True)
-class FinalRemovalObservation:
-    slot_id: str
-    owner_kind: str
-    absence: tuple[tuple[str, Any], ...]
-
-
-class AuthenticatedPlatformSession(Protocol):
-    """Fixed B/platform phase-1/phase-2 live session; never serialized."""
-
-    def bind_exact_custody(self, binding: CustodyBinding, owner: object) -> None: ...
-
-    def authorize_exact_removal(self, request: RemovalRequest, owner: object) -> None: ...
-
-    def finalize_after_removal(
-        self,
-        observation: FinalRemovalObservation,
-        owner: object,
-    ) -> None: ...
-
-    def abort(self, reason: str) -> None: ...
-
-
-class PlatformSessionProvider(Protocol):
-    def open_authenticated_session(
-        self, binding: PlatformSessionBinding, owner: object
-    ) -> AuthenticatedPlatformSession: ...
-
-
-class PinokioCustodyProvider(Protocol):
-    """B-owned direct Pinokio custody factory for all six Pinokio slots."""
-
-    def create_owner(
-        self,
-        context: Mapping[str, Any],
-        *,
-        runner: CommandRunner,
-        process_probe: ProcessProbe,
-        data_probe: DataProbe,
-        durable_journal_probe: DurableJournalProbe,
-    ) -> object: ...
-
-
-FIXED_PLATFORM_SESSION_MODULE: Final = "scripts.m4_6_platform_session_provider"
-FIXED_PINOKIO_CUSTODY_MODULE: Final = "scripts.m4_6_pinokio_custody_provider"
-
-
-def _fixed_provider(module_name: str, export: str, method: str, *, need: str) -> object:
-    """Load one source-selected provider; callers cannot register or name one."""
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError as exc:
-        if exc.name == module_name:
-            raise RuntimeError(need) from exc
-        raise RuntimeError(f"{need}; fixed provider dependency is absent") from exc
-    expected_source = Path(__file__).with_name(f"{module_name.rsplit('.', 1)[-1]}.py")
-    source_value = getattr(module, "__file__", None)
-    if (
-        not _nonempty(source_value)
-        or expected_source.is_symlink()
-        or not expected_source.is_file()
-        or Path(str(source_value)).resolve(strict=True) != expected_source.resolve(strict=True)
-    ):
-        raise RuntimeError(f"{need}; provider is not the fixed repository source module")
-    provider = getattr(module, export, None)
-    if provider is None or not callable(getattr(provider, method, None)):
-        raise RuntimeError(f"{need}; fixed provider export is invalid")
-    return provider
-
-
-def _platform_session_provider() -> PlatformSessionProvider:
-    return _fixed_provider(
-        FIXED_PLATFORM_SESSION_MODULE,
-        "PLATFORM_SESSION_PROVIDER",
-        "open_authenticated_session",
-        need="NEEDS B/platform fixed authenticated live-session provider",
-    )  # type: ignore[return-value]
-
-
-def _pinokio_custody_provider() -> PinokioCustodyProvider:
-    return _fixed_provider(
-        FIXED_PINOKIO_CUSTODY_MODULE,
-        "PINOKIO_CUSTODY_PROVIDER",
-        "create_owner",
-        need="NEEDS B/platform direct-Pinokio custody provider",
-    )  # type: ignore[return-value]
-
-
-def _authenticated_session(value: object) -> AuthenticatedPlatformSession:
-    methods = (
-        "bind_exact_custody",
-        "authorize_exact_removal",
-        "finalize_after_removal",
-        "abort",
-    )
-    if value is None or any(not callable(getattr(value, name, None)) for name in methods):
-        raise RuntimeError("fixed platform provider returned an invalid live session")
-    return value  # type: ignore[return-value]
-
-
-def _open_platform_session_and_create_work_root(
-    provider: PlatformSessionProvider,
-    binding: PlatformSessionBinding,
-    owner: object,
-    work_root: Path,
-) -> AuthenticatedPlatformSession:
-    """Authenticate first, then allocate the already validated private scratch root."""
-    session = _authenticated_session(provider.open_authenticated_session(binding, owner))
-    try:
-        _create_work_root(work_root)
-    except BaseException as exc:
-        _abort_platform_session(session, exc)
-        raise
-    return session
-
-
-def _abort_platform_session(
-    session: AuthenticatedPlatformSession, failure_value: BaseException
-) -> None:
-    try:
-        result = session.abort(type(failure_value).__name__)
-    except Exception as abort_exc:  # noqa: BLE001 - fixed external provider fails closed
-        raise RuntimeError(
-            f"platform session abort failed ({type(abort_exc).__name__})"
-        ) from failure_value
-    if result is not None:
-        raise RuntimeError(
-            "platform session abort must return no verdict or flag"
-        ) from failure_value
-
-
-def _driver_artifact_binding(
-    driver: JourneyDriver, context: Mapping[str, Any]
-) -> tuple[str, tuple[str, ...], str, tuple[PlatformArtifactBinding, ...]]:
-    method = getattr(driver, "immutable_platform_artifacts", None)
-    if not callable(method):
-        raise RuntimeError("journey driver does not expose immutable platform artifacts")
-    value = method(context)
-    if not isinstance(value, Mapping) or set(value) != {
-        "protocol",
-        "product_command",
-        "artifacts",
-    }:
-        raise RuntimeError("journey driver platform-artifact fields differ")
-    protocol = value.get("protocol")
-    command = value.get("product_command")
-    artifacts = value.get("artifacts")
-    if (
-        not _nonempty(protocol)
-        or not isinstance(command, Mapping)
-        or set(command)
-        != {
-            "argv",
-            "cwd",
-        }
-    ):
-        raise RuntimeError("journey driver product-command binding differs")
-    argv = command.get("argv")
-    cwd = command.get("cwd")
-    if (
-        not isinstance(argv, (list, tuple))
-        or not argv
-        or not all(_nonempty(item) for item in argv)
-        or not _nonempty(cwd)
-        or not Path(str(cwd)).is_absolute()
-    ):
-        raise RuntimeError("journey driver product-command binding is incomplete")
-    if not isinstance(artifacts, (list, tuple)) or not artifacts:
-        raise RuntimeError("journey driver immutable artifact binding is absent")
-    bound: list[PlatformArtifactBinding] = []
-    roles: set[str] = set()
-    paths: set[str] = set()
-    for index, row_value in enumerate(artifacts):
-        row = _mapping(row_value)
-        if set(row) != {"role", "path", "sha256"}:
-            raise RuntimeError(f"journey driver artifact {index} fields differ")
-        role = row.get("role")
-        path_text = row.get("path")
-        sha256 = row.get("sha256")
-        if not _nonempty(role) or not _nonempty(path_text) or not _digest(sha256):
-            raise RuntimeError(f"journey driver artifact {index} binding is incomplete")
-        path = Path(str(path_text))
-        if (
-            not path.is_absolute()
-            or path.is_symlink()
-            or not path.is_file()
-            or path.resolve(strict=True) != path.absolute()
-            or _sha256_file(path) != sha256
-        ):
-            raise RuntimeError(f"journey driver artifact {index} changed before phase 1")
-        if str(role) in roles or str(path) in paths:
-            raise RuntimeError("journey driver artifact roles/paths must be unique")
-        roles.add(str(role))
-        paths.add(str(path))
-        bound.append(PlatformArtifactBinding(str(role), str(path), str(sha256)))
-    mode = _mapping(context.get("contract")).get("mode")
-    required_roles = (
-        {"service-definition"}
-        if mode == "direct"
-        else {"pinokio/start.js", "pinokio/stop.js", "pinokio/update.js"}
-    )
-    if not required_roles.issubset(roles):
-        raise RuntimeError("required immutable custody artifacts are absent")
-    return str(protocol), tuple(str(item) for item in argv), str(cwd), tuple(bound)
-
-
-def _platform_binding(
-    *,
-    slot_id: str,
-    owner_kind: str,
-    os_name: str,
-    contract: Mapping[str, Any],
-    auth: Mapping[str, Any],
-    os_build: str,
-    candidate: Mapping[str, str],
-    checkouts: Mapping[str, Mapping[str, str]],
-    driver_artifacts: tuple[str, tuple[str, ...], str, tuple[PlatformArtifactBinding, ...]],
-    owner: object,
-    environment: Mapping[str, str],
-) -> PlatformSessionBinding:
-    executable = Path(sys.executable).resolve(strict=True)
-    protocol, command, command_cwd, artifacts = driver_artifacts
-    return PlatformSessionBinding(
-        slot_id=slot_id,
-        mode=str(contract["mode"]),
-        owner_kind=owner_kind,
-        os_name=os_name,
-        runner_image=str(contract["runner"]),
-        shell=str(contract["shell"]),
-        runner_os=str(auth["RUNNER_OS"]),
-        image_os=str(auth["ImageOS"]),
-        os_build=os_build,
-        repository_claim=environment["GITHUB_REPOSITORY"],
-        workflow_claim=environment["GITHUB_WORKFLOW"],
-        job_claim=environment["GITHUB_JOB"],
-        run_id_claim=environment["GITHUB_RUN_ID"],
-        run_attempt_claim=environment["GITHUB_RUN_ATTEMPT"],
-        candidate=tuple(sorted((str(name), str(value)) for name, value in candidate.items())),
-        checkouts=tuple(
-            sorted(
-                (
-                    str(name),
-                    str(_mapping(row).get("sha")),
-                    str(_mapping(row).get("path")),
-                )
-                for name, row in checkouts.items()
-            )
-        ),
-        collector_pid=os.getpid(),
-        collector_executable=str(executable),
-        collector_executable_sha256=_sha256_file(executable),
-        product_protocol=protocol,
-        product_command=command,
-        product_command_cwd=command_cwd,
-        artifacts=artifacts,
-        owner_principal=str(getattr(owner, "principal", "")),
-        owner_target=str(getattr(owner, "target", "")),
-    )
+    def verify_live_observation(
+        self, observation: Mapping[str, Any]
+    ) -> HostedAdmissionCapability: ...
 
 
 JOURNEY_DRIVER_FACTORY: Callable[[Mapping[str, Any]], JourneyDriver] | None = None
+HOSTED_ADMISSION_VERIFIER: HostedAdmissionVerifier | None = None
 
 
 def register_journey_driver(factory: Callable[[Mapping[str, Any]], JourneyDriver]) -> None:
@@ -1186,6 +549,16 @@ def register_journey_driver(factory: Callable[[Mapping[str, Any]], JourneyDriver
     if JOURNEY_DRIVER_FACTORY is not None:
         raise RuntimeError("native journey driver is already registered")
     JOURNEY_DRIVER_FACTORY = factory
+
+
+def register_hosted_admission_verifier(verifier: HostedAdmissionVerifier) -> None:
+    """Register the single external trust provider during B/platform integration."""
+    global HOSTED_ADMISSION_VERIFIER
+    if HOSTED_ADMISSION_VERIFIER is not None:
+        raise RuntimeError("hosted admission verifier is already registered")
+    if not callable(getattr(verifier, "verify_live_observation", None)):
+        raise TypeError("hosted admission verifier does not implement the protocol")
+    HOSTED_ADMISSION_VERIFIER = verifier
 
 
 def _parse_assignments(output: str) -> dict[str, str]:
@@ -1395,14 +768,12 @@ class NativeOwner:
         instances = row.get("Instances", [])
         if isinstance(instances, dict):
             instances = [instances]
-        if not isinstance(instances, list) or any(
-            not isinstance(item, dict) or set(item) != {"InstanceGuid", "EnginePID"}
-            for item in instances
-        ):
+        if not isinstance(instances, list):
             raise RuntimeError("Task Scheduler instance list is ambiguous")
         safe_instances = [
             {"manager_instance_id": item.get("InstanceGuid"), "pid": item.get("EnginePID")}
             for item in instances
+            if isinstance(item, dict)
         ]
         exported_xml = str(row.get("ExportedXml", ""))
         semantics = _task_xml_semantics(exported_xml)
@@ -1630,122 +1001,6 @@ class NativeOwner:
             )
         return registration
 
-    def removal_census(
-        self,
-        current: Mapping[str, Any],
-        instances: Sequence[Mapping[str, Any]],
-        custody: CustodyBinding | None,
-    ) -> RemovalCensus:
-        """Return the exact live direct-service census without argv inference."""
-        registration = self.registration()
-        try:
-            manager_instance_id = current["manager_instance_id"]
-        except KeyError as exc:
-            raise RuntimeError("live native removal census is incomplete") from exc
-        if not _nonempty(manager_instance_id):
-            raise RuntimeError("live native manager instance identity is unavailable")
-        removal_targets = (
-            (self.target, *custody.removal_plan.remove_paths)
-            if custody is not None and custody.removal_plan is not None
-            else (self.target, str(self.definition_path))
-        )
-
-        def process_binding(row: Mapping[str, Any], *, role: str) -> RemovalProcessBinding:
-            try:
-                pid = row["pid"]
-                birth = row["process_birth_id"]
-                executable_path = row["executable_path"]
-                executable_sha256 = row["executable_sha256"]
-            except KeyError as exc:
-                raise RuntimeError("observed removal process identity is incomplete") from exc
-            if (
-                type(pid) is not int
-                or pid <= 0
-                or (self.os_name == "windows" and pid > 0xFFFFFFFF)
-                or not _nonempty(executable_path)
-                or not _digest(executable_sha256)
-                or (
-                    not _valid_windows_process_birth_id(birth)
-                    if self.os_name == "windows"
-                    else not _nonempty(birth)
-                )
-            ):
-                raise RuntimeError("complete observed native removal scope is unavailable")
-            return RemovalProcessBinding(
-                role=role,
-                target=self.target,
-                pid=pid,
-                process_birth_id=birth,
-                parent_role=f"{self.manager}-owned-service",
-                parent_pid=None,
-                parent_process_birth_id=None,
-                executable_path=executable_path,
-                executable_sha256=executable_sha256,
-                action=(executable_path,),
-                discovery_identity=tuple(
-                    (name, row.get(name)) for name in INSTANCE_IDENTITY_FIELDS
-                ),
-                removal_targets=removal_targets,
-            )
-
-        live_process = process_binding(current, role="live-native-runtime-service")
-        live_identity = (live_process.pid, live_process.process_birth_id)
-        prior_rows: dict[tuple[int, str], RemovalProcessBinding] = {}
-        for row in instances:
-            if row.get("state") != "running":
-                continue
-            process = process_binding(row, role="prior-native-runtime-incarnation")
-            identity = (process.pid, process.process_birth_id)
-            if identity == live_identity:
-                continue
-            prior = prior_rows.get(identity)
-            if prior is not None and prior != process:
-                raise RuntimeError("one process incarnation has conflicting observed identities")
-            if not self.process_probe.incarnation_absent(
-                process.pid,
-                process.process_birth_id,
-                os_name=self.os_name,
-            ):
-                raise RuntimeError("prior owned process incarnation is unexpectedly still live")
-            prior_rows[identity] = process
-        enumerated: set[tuple[int, str]] = set()
-        for executable in {row.executable_path for row in (live_process, *prior_rows.values())}:
-            for observed in self.process_probe.owned_action_processes(
-                (executable,), os_name=self.os_name
-            ):
-                row = _mapping(observed)
-                pid = row.get("pid")
-                birth = row.get("process_birth_id")
-                if (
-                    type(pid) is not int
-                    or pid <= 0
-                    or (self.os_name == "windows" and pid > 0xFFFFFFFF)
-                    or (
-                        not _valid_windows_process_birth_id(birth)
-                        if self.os_name == "windows"
-                        else not _nonempty(birth)
-                    )
-                ):
-                    raise RuntimeError("fresh owned-process enumeration is malformed")
-                enumerated.add((pid, birth))
-        if enumerated != {live_identity}:
-            raise RuntimeError("fresh owned-process enumeration differs from the live census")
-        return RemovalCensus(
-            manager_target=self.target,
-            manager_instance_id=manager_instance_id,
-            registration=tuple(sorted(registration.items())),
-            controller_identity=(
-                ("owner_kind", "native-service"),
-                ("manager", self.manager),
-                ("target", self.target),
-                ("manager_instance_id", manager_instance_id),
-                ("principal", self.principal),
-            ),
-            processes=(live_process,),
-            prior_incarnations=tuple(prior_rows[key] for key in sorted(prior_rows)),
-            removal_targets=removal_targets,
-        )
-
     def _validate_query(self, query: Mapping[str, Any], *, require_running: bool) -> None:
         if self.spec is None:
             raise RuntimeError("native registration authority is absent")
@@ -1942,27 +1197,10 @@ class NativeOwner:
             raise RuntimeError("authorized native incarnation set is absent")
         if not isinstance(actions, list) or not actions:
             raise RuntimeError("authorized native action set is absent")
-        if any(
-            type(row) is not dict
-            or set(row) != {"pid", "process_birth_id"}
-            or type(row.get("pid")) is not int
-            or row["pid"] <= 0
-            or (self.os_name == "windows" and row["pid"] > 0xFFFFFFFF)
-            or (
-                not _valid_windows_process_birth_id(row.get("process_birth_id"))
-                if self.os_name == "windows"
-                else not _nonempty(row.get("process_birth_id"))
-            )
-            for row in incarnations
-        ):
-            raise RuntimeError("authorized native incarnation record is malformed")
-        incarnation_identities = [(row["pid"], row["process_birth_id"]) for row in incarnations]
-        if len(set(incarnation_identities)) != len(incarnation_identities):
-            raise RuntimeError("authorized native incarnation record is duplicated")
         all_incarnations_absent = all(
             self.process_probe.incarnation_absent(
-                row["pid"],
-                row["process_birth_id"],
+                int(_mapping(row)["pid"]),
+                str(_mapping(row)["process_birth_id"]),
                 os_name=self.os_name,
             )
             for row in incarnations
@@ -2026,24 +1264,8 @@ class NativeOwner:
 
 
 class NativeSession:
-    def __init__(
-        self,
-        owner: NativeOwner,
-        *,
-        platform_session: AuthenticatedPlatformSession | None = None,
-        platform_binding: PlatformSessionBinding | None = None,
-        custody_binding: CustodyBinding | None = None,
-    ) -> None:
-        if platform_session is None:
-            if platform_binding is not None or custody_binding is not None:
-                raise ValueError("platform session bindings require a live session")
-        elif platform_binding is None or custody_binding is None:
-            raise ValueError("platform session requires phase-1 and custody bindings")
+    def __init__(self, owner: NativeOwner) -> None:
         self.owner = owner
-        self.platform_session = platform_session
-        self.platform_binding = platform_binding
-        self.custody_binding = custody_binding
-        self.platform_finalized = False
         self.instances: list[dict[str, Any]] = []
         self.removal: Mapping[str, Any] | None = None
         self.controller_interruption: Mapping[str, Any] | None = None
@@ -2051,63 +1273,22 @@ class NativeSession:
         self._controller_authorizations: dict[str, dict[str, Any]] = {}
 
     def _removal_scope(self, current: Mapping[str, Any]) -> dict[str, Any]:
-        census_method = getattr(self.owner, "removal_census", None)
-        if not callable(census_method):
-            raise RuntimeError("owner does not expose a complete live removal census")
-        census = census_method(current, tuple(self.instances), self.custody_binding)
-        if not isinstance(census, RemovalCensus):
-            raise RuntimeError("owner returned an invalid live removal census")
-        if self.custody_binding is not None:
-            plan = self.custody_binding.removal_plan
-            if (
-                census.manager_target != self.custody_binding.target
-                or plan is None
-                or not set(plan.remove_paths).issubset(census.removal_targets)
-            ):
-                raise RuntimeError("live removal census differs from exact custody/removal targets")
-        authorization_processes = (*census.processes, *census.prior_incarnations)
-        census_processes = {(row.pid, row.process_birth_id): row for row in authorization_processes}
-        recorded_processes: dict[tuple[int, str], tuple[tuple[str, Any], ...]] = {}
-        for row in self.instances:
-            pid = row.get("pid")
-            birth = row.get("process_birth_id")
-            if pid is None and birth is None:
-                continue
-            if (
-                row.get("state") != "running"
-                or type(pid) is not int
-                or pid <= 0
-                or (self.owner.os_name == "windows" and pid > 0xFFFFFFFF)
-                or not _nonempty(row.get("executable_path"))
-                or (
-                    not _valid_windows_process_birth_id(birth)
-                    if self.owner.os_name == "windows"
-                    else not _nonempty(birth)
-                )
-            ):
-                raise RuntimeError("complete observed native removal scope is unavailable")
-            identity = (pid, birth)
-            recorded = tuple((name, row.get(name)) for name in INSTANCE_IDENTITY_FIELDS)
-            prior = recorded_processes.get(identity)
-            if prior is not None and prior != recorded:
-                raise RuntimeError("one recorded process incarnation has conflicting identities")
-            recorded_processes[identity] = recorded
-        if not recorded_processes or not set(recorded_processes).issubset(census_processes):
-            raise RuntimeError(
-                "live removal census does not account for every recorded process incarnation"
-            )
-        for identity, recorded in recorded_processes.items():
-            process = census_processes[identity]
-            discovery = process.discovery_identity
-            if (
-                tuple(name for name, _value in discovery) != INSTANCE_IDENTITY_FIELDS
-                or discovery != recorded
-            ):
-                raise RuntimeError(
-                    "live removal census identity differs from the recorded lifecycle"
-                )
-        actions = {row.action for row in authorization_processes}
-        incarnations = {(row.pid, row.process_birth_id) for row in authorization_processes}
+        registration = self.owner.registration()
+        registered_action = tuple(str(item) for item in registration["action"])
+        suffix = registered_action[1:]
+        actions = {
+            (str(row["executable_path"]), *suffix)
+            for row in self.instances
+            if row.get("state") == "running" and _nonempty(row.get("executable_path"))
+        }
+        actions.add(registered_action)
+        incarnations = {
+            (int(row["pid"]), str(row["process_birth_id"]))
+            for row in self.instances
+            if row.get("state") == "running"
+            and type(row.get("pid")) is int
+            and _nonempty(row.get("process_birth_id"))
+        }
         if not actions or not incarnations:
             raise RuntimeError("complete observed native removal scope is unavailable")
         observed_actions = [list(action) for action in sorted(actions)]
@@ -2115,10 +1296,7 @@ class NativeSession:
             {"pid": pid, "process_birth_id": birth} for pid, birth in sorted(incarnations)
         ]
         data_identity = _data_identity(current)
-        live_census = _removal_census_payload(census)
         return {
-            "live_census": census,
-            "live_census_sha256": _sha256_bytes(_canonical(live_census)),
             "observed_actions": observed_actions,
             "observed_actions_sha256": _sha256_bytes(_canonical(observed_actions)),
             "observed_incarnations": observed_incarnations,
@@ -2246,9 +1424,7 @@ class NativeSession:
 
     def before_product_removal(
         self, expected: Mapping[str, Any], discovery: Mapping[str, Any]
-    ) -> None:
-        if self._removal_authorization is not None:
-            raise RuntimeError("product-removal authorization is already issued")
+    ) -> str:
         current = self.owner.revalidate(expected, discovery)
         before = next(
             (
@@ -2261,100 +1437,38 @@ class NativeSession:
         if before is None or not self.owner._same_instance(before, current):
             raise RuntimeError("removal authority differs from keep-data before identity")
         scope = self._removal_scope(current)
-        if self.platform_session is not None:
-            assert self.platform_binding is not None
-            assert self.custody_binding is not None
-            plan = self.custody_binding.removal_plan
-            if plan is None:
-                raise RuntimeError("exact product/owner removal plan is absent")
-            data_root = Path(str(scope["data_identity"]["data_root"]))
-            data_manifest = Path(str(scope["data_identity"]["data_manifest_path"]))
-            preserved_roots = [Path(path) for path in plan.preserve_paths]
-            if not any(
-                data_root == root or data_root.is_relative_to(root) for root in preserved_roots
-            ) or not any(
-                data_manifest == root or data_manifest.is_relative_to(root)
-                for root in preserved_roots
-            ):
-                raise RuntimeError("removal plan does not preserve the observed data identity")
-            if self.platform_binding.owner_kind == "native-service" and (
-                self.custody_binding.definition_path not in plan.remove_paths
-            ):
-                raise RuntimeError("native removal plan omits the canonical service definition")
-            if self.platform_binding.owner_kind == "pinokio" and any(
-                artifact.path not in plan.preserve_paths
-                for artifact in self.custody_binding.immutable_actions
-            ):
-                raise RuntimeError("Pinokio removal plan does not preserve its action graph")
-            request = RemovalRequest(
-                session=self.platform_binding,
-                custody=self.custody_binding,
-                operation=plan.operation,
-                keep_data=plan.keep_data,
-                remove_paths=plan.remove_paths,
-                preserve_paths=plan.preserve_paths,
-                expected_postconditions=plan.expected_postconditions,
-                identity=tuple(_instance_identity(current).items()),
-                registration_sha256=_sha256_bytes(_canonical(self.owner.registration())),
-                live_census=scope["live_census"],
-                observed_actions=tuple(tuple(row) for row in scope["observed_actions"]),
-                observed_incarnations=tuple(
-                    (int(row["pid"]), str(row["process_birth_id"]))
-                    for row in scope["observed_incarnations"]
-                ),
-                data_identity=tuple(scope["data_identity"].items()),
-            )
-            if self.platform_session.authorize_exact_removal(request, self.owner) is not None:
-                raise RuntimeError(
-                    "platform removal authorization must return no handle or verdict"
-                )
+        token = secrets.token_urlsafe(32)
         self._removal_authorization = {
-            "consumed": False,
+            "token_sha256": _sha256_bytes(token.encode()),
             "identity": _instance_identity(current),
             "identity_sha256": _sha256_bytes(_canonical(_instance_identity(current))),
             "registration_sha256": _sha256_bytes(_canonical(self.owner.registration())),
             "authorization_raw_index": len(self.owner.raw) - 1,
             **scope,
         }
+        return token
 
-    def observe_product_removal(self) -> Mapping[str, Any]:
+    def observe_product_removal(self, authorization: str) -> Mapping[str, Any]:
         auth = self._removal_authorization
-        if auth is None:
-            raise RuntimeError("product-removal authorization is absent")
-        if auth["consumed"] is not False:
-            raise RuntimeError("product-removal authorization is already consumed")
-        auth["consumed"] = True
+        if auth is None or _sha256_bytes(authorization.encode()) != auth["token_sha256"]:
+            raise RuntimeError("product-removal authorization is absent or foreign")
         if self.removal is not None:
             raise RuntimeError("native removal is already recorded")
         absence = self.owner.observe_absent(auth)
-        removal = {
+        self.removal = {
             **absence,
             "requested": True,
             "owned_target_revalidated": True,
             "performed_by": "product-uninstall",
+            "authorization_sha256": auth["token_sha256"],
             "authorized_identity_sha256": auth["identity_sha256"],
             "authorized_registration_sha256": auth["registration_sha256"],
-            "authorized_live_census_sha256": auth["live_census_sha256"],
             "authorized_actions_sha256": auth["observed_actions_sha256"],
             "authorized_incarnations_sha256": auth["observed_incarnations_sha256"],
             "authorized_data_identity_sha256": auth["data_identity_sha256"],
             "authorization_raw_index": auth["authorization_raw_index"],
             "absence_raw_index": len(self.owner.raw) - 1,
         }
-        if self.platform_session is not None:
-            assert self.platform_binding is not None
-            result = self.platform_session.finalize_after_removal(
-                FinalRemovalObservation(
-                    slot_id=self.platform_binding.slot_id,
-                    owner_kind=self.platform_binding.owner_kind,
-                    absence=tuple(sorted(absence.items())),
-                ),
-                self.owner,
-            )
-            if result is not None:
-                raise RuntimeError("platform finalization must return no verdict or admission flag")
-            self.platform_finalized = True
-        self.removal = removal
         self.instances.append(
             {
                 "scenario": "keep_data_uninstall",
@@ -2374,10 +1488,6 @@ class NativeSession:
     def safe_finalize(self) -> Mapping[str, Any]:
         if self.removal is not None:
             return self.removal
-        if self.platform_session is not None:
-            raise RuntimeError(
-                "hosted cleanup has no exact platform authorization; residue is preserved"
-            )
         current = next(
             (row for row in reversed(self.instances) if row.get("state") == "running"), None
         )
@@ -2429,27 +1539,17 @@ def _canonical_definition_path(os_name: str, environment: Mapping[str, str]) -> 
     return None
 
 
-def _validated_work_root(work_root: Path, environment: Mapping[str, str]) -> Path:
-    """Validate the private scratch location without creating filesystem state."""
+def _work_root(work_root: Path, environment: Mapping[str, str]) -> Path:
     runner_temp = environment.get("RUNNER_TEMP")
     if not _nonempty(runner_temp):
         raise ValueError("RUNNER_TEMP is required")
     temp = Path(runner_temp).resolve(strict=True)
-    root = work_root.resolve(strict=False)
+    root = work_root.resolve()
     if root == temp or not root.is_relative_to(temp):
         raise ValueError("work root must be a unique child of resolved RUNNER_TEMP")
-    if root.exists() or root.is_symlink():
-        raise ValueError("work root must not already exist")
-    return root
-
-
-def _create_work_root(root: Path) -> Path:
-    """Create a validated private scratch root after hosted authentication."""
-    if root.exists() or root.is_symlink():
+    if root.exists():
         raise ValueError("work root must not already exist")
     root.mkdir(parents=True)
-    if root.is_symlink() or root.resolve(strict=True) != root:
-        raise RuntimeError("created work root is noncanonical or unsafe")
     return root
 
 
@@ -2479,7 +1579,6 @@ def _host_authentication(
         "GITHUB_RUN_ATTEMPT",
         "GITHUB_JOB",
         "GITHUB_REPOSITORY",
-        "GITHUB_WORKFLOW",
     ):
         if not _nonempty(environment.get(name)):
             raise RuntimeError(f"hosted runner provenance {name} is absent")
@@ -3327,15 +2426,7 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
         "definition_owner",
         "working_directory",
     }
-    pinokio_mode = observation.get("mode") in {"pinokio-backend", "pinokio-fully-local"}
-    if pinokio_mode:
-        registration_keys |= {
-            "checkout_path",
-            "checkout_sha",
-            "action_files",
-            "resolved_action_identity_sha256",
-        }
-    if observation.get("os") == "windows" and not pinokio_mode:
+    if observation.get("os") == "windows":
         registration_keys |= {
             "source_xml_sha256",
             "exported_xml_sha256",
@@ -3360,7 +2451,7 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
     )
     _string_fields(
         registration,
-        registration_keys - {"action", "action_files", "task_semantics"},
+        registration_keys - {"action", "task_semantics"},
         "native_service.registration",
         errors,
     )
@@ -3369,27 +2460,7 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
         not isinstance(action, list) or any(type(item) is not str for item in action)
     ):
         errors.append("native_service.registration.action: exact string list required")
-    if pinokio_mode:
-        action_files = _exact_keys(
-            registration.get("action_files"),
-            {"pinokio/start.js", "pinokio/stop.js", "pinokio/update.js"},
-            "native_service.registration.action_files",
-            errors,
-        )
-        for relative in ("pinokio/start.js", "pinokio/stop.js", "pinokio/update.js"):
-            action_file = _exact_keys(
-                action_files.get(relative),
-                {"path", "sha256"},
-                f"native_service.registration.action_files.{relative}",
-                errors,
-            )
-            _string_fields(
-                action_file,
-                {"path", "sha256"},
-                f"native_service.registration.action_files.{relative}",
-                errors,
-            )
-    if observation.get("os") == "windows" and not pinokio_mode:
+    if observation.get("os") == "windows":
         semantics = _exact_keys(
             registration.get("task_semantics"),
             {
@@ -3460,9 +2531,9 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
         "requested",
         "owned_target_revalidated",
         "performed_by",
+        "authorization_sha256",
         "authorized_identity_sha256",
         "authorized_registration_sha256",
-        "authorized_live_census_sha256",
         "authorized_actions_sha256",
         "authorized_incarnations_sha256",
         "authorized_data_identity_sha256",
@@ -3520,8 +2591,6 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
         "native_service.removal",
         errors,
     )
-    if not _digest(removal.get("authorized_live_census_sha256")):
-        errors.append("native_service.removal.authorized_live_census_sha256: digest required")
     post_identity = _exact_keys(
         removal.get("post_data_identity"),
         set(DATA_IDENTITY_FIELDS),
@@ -3662,162 +2731,6 @@ def _adapter_closed_world_errors(observation: Mapping[str, Any]) -> list[str]:
     return errors
 
 
-def _pinokio_custody_structural_errors(observation: Mapping[str, Any]) -> list[str]:
-    """Validate the distinct direct-Pinokio custody evidence shape."""
-    errors: list[str] = []
-    native = _mapping(observation.get("native_service"))
-    registration = _mapping(native.get("registration"))
-    checkouts = _mapping(observation.get("candidate_checkouts"))
-    pinokio_checkout = _mapping(checkouts.get("pinokio"))
-    checkout_path = str(pinokio_checkout.get("path", ""))
-    checkout_sha = pinokio_checkout.get("sha")
-    if (
-        native.get("manager") != "pinokio"
-        or native.get("capability") != "pass"
-        or not _nonempty(native.get("manager_version"))
-        or not _nonempty(native.get("target"))
-        or native.get("principal") != registration.get("principal")
-        or registration.get("target") != native.get("target")
-    ):
-        errors.append("pinokio_custody: live controller/principal binding differs")
-    action = registration.get("action")
-    action_files = _mapping(registration.get("action_files"))
-    expected_files: dict[str, dict[str, str]] = {}
-    for relative in ("pinokio/start.js", "pinokio/stop.js", "pinokio/update.js"):
-        row = _mapping(action_files.get(relative))
-        expected_path = str(Path(checkout_path) / relative) if checkout_path else ""
-        if row.get("path") != expected_path or not _digest(row.get("sha256")):
-            errors.append(
-                f"pinokio_custody.action_files.{relative}: exact candidate action required"
-            )
-        expected_files[relative] = {"path": expected_path, "sha256": str(row.get("sha256"))}
-    start = expected_files["pinokio/start.js"]
-    if (
-        registration.get("checkout_path") != checkout_path
-        or registration.get("checkout_sha") != checkout_sha
-        or registration.get("definition_owner") != "pinokio"
-        or registration.get("definition_path") != start["path"]
-        or registration.get("definition_sha256") != start["sha256"]
-        or registration.get("manager_definition_sha256") != start["sha256"]
-        or not _digest(registration.get("resolved_action_identity_sha256"))
-        or not isinstance(action, list)
-        or not action
-        or not all(_nonempty(item) for item in action)
-        or registration.get("action_sha256") != _sha256_bytes(_canonical(action))
-    ):
-        errors.append("pinokio_custody.registration: exact checkout/action closure differs")
-
-    rows = native.get("instances")
-    keep_before: Mapping[str, Any] = {}
-    if isinstance(rows, list):
-        keep_before = next(
-            (
-                _mapping(row)
-                for row in rows
-                if _mapping(row).get("scenario") == "keep_data_uninstall"
-                and _mapping(row).get("phase") == "before"
-            ),
-            {},
-        )
-    removal = _mapping(native.get("removal"))
-    serialized_incarnations = {
-        (int(_mapping(row)["pid"]), str(_mapping(row)["process_birth_id"]))
-        for row in rows or []
-        if _mapping(row).get("state") == "running"
-        and type(_mapping(row).get("pid")) is int
-        and _nonempty(_mapping(row).get("process_birth_id"))
-    }
-    action_count = removal.get("observed_action_count")
-    incarnation_count = removal.get("observed_incarnation_count")
-    census_binding_valid = all(
-        _digest(removal.get(name))
-        for name in (
-            "authorized_live_census_sha256",
-            "authorized_actions_sha256",
-            "authorized_incarnations_sha256",
-        )
-    )
-    census_counts_valid = (
-        type(action_count) is int
-        and type(incarnation_count) is int
-        and 0 < action_count <= incarnation_count
-        and incarnation_count >= len(serialized_incarnations)
-    )
-    expected_data_identity = _data_identity(keep_before)
-    for name in (
-        "requested",
-        "owned_target_revalidated",
-        "manager_target_absent",
-        "all_authorized_incarnations_absent",
-        "data_identity_unchanged",
-        "observed",
-    ):
-        if removal.get(name) is not True:
-            errors.append(f"pinokio_custody.removal.{name}: true required")
-    if removal.get("definition_absent") is not False:
-        errors.append("pinokio_custody.removal.definition_absent: action files must remain")
-    if (
-        removal.get("owned_processes_after") != 0
-        or removal.get("performed_by") != "product-uninstall"
-        or removal.get("authorized_registration_sha256") != _sha256_bytes(_canonical(registration))
-        or removal.get("authorized_identity_sha256")
-        != _sha256_bytes(_canonical(_instance_identity(keep_before)))
-        or not census_binding_valid
-        or not census_counts_valid
-        or removal.get("authorized_data_identity_sha256")
-        != _sha256_bytes(_canonical(expected_data_identity))
-        or _mapping(removal.get("post_data_identity")) != expected_data_identity
-    ):
-        errors.append("pinokio_custody.removal: exact authorization/absence binding differs")
-
-    raw = native.get("raw_observations")
-    if not isinstance(raw, list) or not raw:
-        errors.append("pinokio_custody.raw_observations: sanitized live metadata required")
-        raw = []
-    if native.get("raw_observations_sha256") != _sha256_bytes(_canonical(raw)):
-        errors.append("pinokio_custody.raw_observations_sha256: metadata binding differs")
-    for index, row_value in enumerate(raw):
-        row = _mapping(row_value)
-        if any(name in row for name in ("argv", "stdout", "stderr")):
-            errors.append(f"pinokio_custody.raw_observations[{index}]: raw command data forbidden")
-        for name in ("argv_sha256", "stdout_sha256", "stderr_sha256"):
-            if not _digest(row.get(name)):
-                errors.append(f"pinokio_custody.raw_observations[{index}].{name}: digest required")
-    auth_index = removal.get("authorization_raw_index")
-    absence_index = removal.get("absence_raw_index")
-    if (
-        type(auth_index) is not int
-        or type(absence_index) is not int
-        or auth_index < 0
-        or absence_index != auth_index + 1
-        or absence_index >= len(raw)
-        or _mapping(raw[auth_index]).get("label") != "pinokio-controller-query"
-        or _mapping(raw[absence_index]).get("label") != "pinokio-controller-query"
-    ):
-        errors.append("pinokio_custody.removal: controller re-observation indexes differ")
-
-    collector = _mapping(observation.get("collector_provenance"))
-    collector_sha = observation.get("collector_structural_sha256")
-    evidence = observation.get("evidence_files")
-    if not isinstance(evidence, list) or len(evidence) != len(failure.SCENARIOS):
-        errors.append("evidence_files: exact scenario evidence entries required")
-    else:
-        for index, scenario in enumerate(failure.SCENARIOS):
-            item = _mapping(evidence[index])
-            if (
-                item.get("path") != f"evidence/{scenario}.json"
-                or item.get("scenario") != scenario
-                or item.get("kind") != "machine-observation"
-                or not _digest(item.get("sha256"))
-                or item.get("collector_kind") != collector.get("kind")
-                or item.get("collector_structural_sha256") != collector_sha
-                or item.get("execution_scope") != observation.get("execution_scope")
-            ):
-                errors.append(f"evidence_files[{index}]: collector/scope/scenario binding differs")
-    errors.extend(_scenario_instance_errors(observation))
-    return errors
-
-
 def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
     errors = _adapter_closed_world_errors(observation)
     if tuple(failure.REQUIRED_SLOT_IDS) != REQUIRED_NATIVE_SLOT_IDS:
@@ -3840,6 +2753,8 @@ def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
             errors.append(f"{name}: slot contract differs")
     if observation.get("source_override_test_mode") is not False:
         errors.append("source_override_test_mode: false required")
+    if contract["mode"] != "direct":
+        errors.append("owner.policy: NEEDS approved Pinokio custody policy")
     runner_provenance = _mapping(observation.get("runner_provenance"))
     expected_runner_provenance = {
         "RUNNER_OS": runner_os,
@@ -3932,19 +2847,15 @@ def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
             errors.append(f"candidate_checkouts.{name}.path: required")
     owner = _mapping(observation.get("owner"))
     expected_checkout_sha = _sha256_bytes(_canonical(checkout_values))
-    expected_owner = "native-service" if contract["mode"] == "direct" else "pinokio"
     for name, expected in (
         ("slot_id", slot_id),
         ("mode", contract["mode"]),
-        ("managed_by", expected_owner),
+        ("managed_by", "native-service"),
         ("foreground_fallback", False),
         ("checkout_sha256", expected_checkout_sha),
     ):
         if owner.get(name) != expected:
             errors.append(f"owner.{name}: exact owner binding differs")
-    if contract["mode"] != "direct":
-        errors.extend(_pinokio_custody_structural_errors(observation))
-        return errors
     native = _mapping(observation.get("native_service"))
     if native.get("manager") != MANAGERS[os_name]:
         errors.append("native_service.manager: platform manager differs")
@@ -4019,16 +2930,24 @@ def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
             {},
         )
     removal = _mapping(native.get("removal"))
+    registered_action = registration.get("action")
+    action_suffix = (
+        tuple(str(item) for item in registered_action[1:])
+        if isinstance(registered_action, list)
+        else ()
+    )
     expected_actions = {
-        (str(_mapping(row).get("executable_path")),)
+        (str(_mapping(row).get("executable_path")), *action_suffix)
         for row in rows or []
         if _mapping(row).get("state") == "running"
         and _nonempty(_mapping(row).get("executable_path"))
     }
+    if isinstance(registered_action, list) and registered_action:
+        expected_actions.add(tuple(str(item) for item in registered_action))
     expected_action_rows = [list(action) for action in sorted(expected_actions)]
     expected_incarnations = sorted(
         {
-            (_mapping(row)["pid"], _mapping(row)["process_birth_id"])
+            (int(_mapping(row)["pid"]), str(_mapping(row)["process_birth_id"]))
             for row in rows or []
             if _mapping(row).get("state") == "running"
             and type(_mapping(row).get("pid")) is int
@@ -4053,6 +2972,7 @@ def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
     if (
         removal.get("owned_processes_after") != 0
         or removal.get("performed_by") != "product-uninstall"
+        or not _digest(removal.get("authorization_sha256"))
         or removal.get("authorized_registration_sha256") != _sha256_bytes(_canonical(registration))
         or removal.get("authorized_identity_sha256")
         != _sha256_bytes(_canonical(_instance_identity(keep_before)))
@@ -4370,7 +3290,7 @@ def _native_structural_errors(observation: Mapping[str, Any]) -> list[str]:
 def native_observation_errors(observation: Mapping[str, Any]) -> list[str]:
     """Validate serialized structure; serialized data can never admit itself."""
     errors = _native_structural_errors(observation)
-    errors.append("platform_session: serialized observations cannot authenticate hosted admission")
+    errors.append("hosted_admission_verifier: NEEDS B/platform-owned external authentication")
     return errors
 
 
@@ -4487,7 +3407,11 @@ def _execute_structural_collection(
         raise ValueError(f"unknown failure-mode slot: {slot_id}")
     if failure.candidate_errors(candidate):
         raise ValueError("candidate is not a fully pinned tuple")
+    if contract["mode"] != "direct":
+        raise RuntimeError(f"{slot_id}: NEEDS B/platform approval for Pinokio custody")
     driver = _journey_driver
+    if driver is None and JOURNEY_DRIVER_FACTORY is None:
+        raise RuntimeError("NEEDS approved shared hosted journey-driver registration")
     fixture_mode = any(
         value is not None
         for value in (
@@ -4500,12 +3424,6 @@ def _execute_structural_collection(
     )
     if fixture_mode and not _allow_platform_fixture:
         raise RuntimeError("injected collectors are inadmissible at hosted entry point")
-    pinokio_provider: PinokioCustodyProvider | None = None
-    if contract["mode"] != "direct":
-        pinokio_provider = _pinokio_custody_provider()
-    platform_provider = None if fixture_mode else _platform_session_provider()
-    if driver is None and JOURNEY_DRIVER_FACTORY is None:
-        raise RuntimeError("NEEDS approved shared hosted journey-driver registration")
     env = dict(os.environ if environment is None else environment)
     runner = _runner or SubprocessCommandRunner()
     os_name, runner_os, image_os = failure.RUNNER_PROVENANCE[contract["runner"]]
@@ -4531,10 +3449,8 @@ def _execute_structural_collection(
     auth, os_build = _host_authentication(
         env, contract, runner, fixture_mode=fixture_mode, powershell=powershell
     )
-    root = _validated_work_root(Path(work_root), env)
-    canonical_definition = (
-        _canonical_definition_path(os_name, env) if contract["mode"] == "direct" else None
-    )
+    root = _work_root(Path(work_root), env)
+    canonical_definition = _canonical_definition_path(os_name, env)
     repos = {
         "app": Path(app_repo),
         "agent": Path(agent_repo),
@@ -4544,6 +3460,17 @@ def _execute_structural_collection(
     checkouts = _checkout_heads(candidate, repos, runner)
     fixture_path, _manifest, fixture_receipt = _verified_release0_fixture(Path(fixture))
     fixture_receipt = {**fixture_receipt, "launcher_refs": dict(failure.RELEASE0_LAUNCHERS)}
+    owner = NativeOwner(
+        os_name=os_name,
+        canonical_definition_path=canonical_definition,
+        runner=runner,
+        process_probe=process_probe,
+        data_probe=DataProbe(root),
+        durable_journal_probe=DurableJournalProbe(root),
+        powershell=powershell,
+    )
+    capability = owner.probe()
+    owner.assert_absent()
     context: dict[str, Any] = {
         "slot_id": slot_id,
         "contract": dict(contract),
@@ -4558,183 +3485,14 @@ def _execute_structural_collection(
             if os_name == "windows"
             else "platform-canonical-product-definition"
         ),
+        "principal": owner.principal,
     }
-    if contract["mode"] == "direct":
-        owner: Any = NativeOwner(
-            os_name=os_name,
-            canonical_definition_path=canonical_definition,
-            runner=runner,
-            process_probe=process_probe,
-            data_probe=DataProbe(root),
-            durable_journal_probe=DurableJournalProbe(root),
-            powershell=powershell,
-        )
-        owner_kind = "native-service"
-    else:
-        assert pinokio_provider is not None
-        owner = pinokio_provider.create_owner(
-            context,
-            runner=runner,
-            process_probe=process_probe,
-            data_probe=DataProbe(root),
-            durable_journal_probe=DurableJournalProbe(root),
-        )
-        owner_kind = "pinokio"
-        required_owner_methods = (
-            "probe",
-            "assert_absent",
-            "custody_binding",
-            "register_start",
-            "registration",
-            "observe",
-            "revalidate",
-            "removal_census",
-            "_same_instance",
-            "observe_external_controller",
-            "terminate_owned_runtime",
-            "observe_absent",
-            "remove_cleanup",
-        )
-        if any(not callable(getattr(owner, name, None)) for name in required_owner_methods):
-            raise RuntimeError("fixed Pinokio custody provider returned an invalid owner")
-        if getattr(owner, "os_name", None) != os_name:
-            raise RuntimeError("fixed Pinokio custody owner OS differs from the slot")
-    capability = owner.probe()
-    if contract["mode"] != "direct" and (
-        not _nonempty(getattr(owner, "principal", None))
-        or not _nonempty(getattr(owner, "target", None))
-        or not isinstance(getattr(owner, "raw", None), list)
-        or getattr(owner, "process_probe", None) is not process_probe
-    ):
-        raise RuntimeError("fixed Pinokio custody owner proof is incomplete")
-    owner.assert_absent()
-    context["principal"] = owner.principal
     if driver is None:
         assert JOURNEY_DRIVER_FACTORY is not None
         driver = JOURNEY_DRIVER_FACTORY(context)
-    platform_session: AuthenticatedPlatformSession | None = None
-    platform_binding: PlatformSessionBinding | None = None
-    if not fixture_mode:
-        assert platform_provider is not None
-        artifacts = _driver_artifact_binding(driver, context)
-        platform_binding = _platform_binding(
-            slot_id=slot_id,
-            owner_kind=owner_kind,
-            os_name=os_name,
-            contract=contract,
-            auth=auth,
-            os_build=os_build,
-            candidate=candidate,
-            checkouts=checkouts,
-            driver_artifacts=artifacts,
-            owner=owner,
-            environment=env,
-        )
-        platform_session = _open_platform_session_and_create_work_root(
-            platform_provider,
-            platform_binding,
-            owner,
-            root,
-        )
-    else:
-        _create_work_root(root)
-
-    def prepare_custody() -> tuple[CustodyBinding, Mapping[str, Any]]:
-        if contract["mode"] == "direct":
-            spec = driver.service_spec(context)
-            binding = CustodyBinding(
-                slot_id=slot_id,
-                owner_kind=owner_kind,
-                principal=spec.principal,
-                target=owner.target,
-                definition_path=str(spec.definition_path),
-                definition_sha256=spec.definition_sha256,
-                action=spec.action,
-                action_sha256=_sha256_bytes(_canonical(list(spec.action))),
-                immutable_actions=(
-                    tuple(
-                        artifact
-                        for artifact in platform_binding.artifacts
-                        if artifact.role in {"service-definition", "service-executable"}
-                    )
-                    if platform_binding is not None
-                    else ()
-                ),
-                resolved_action_identity_sha256=_sha256_bytes(_canonical(list(spec.action))),
-                removal_plan=spec.removal_plan,
-            )
-            if platform_binding is not None:
-                phase_artifacts = {item.role: item for item in platform_binding.artifacts}
-                definition_artifact = phase_artifacts.get("service-definition")
-                action_artifact = phase_artifacts.get("service-executable")
-                if (
-                    definition_artifact is None
-                    or definition_artifact.path != binding.definition_path
-                    or definition_artifact.sha256 != binding.definition_sha256
-                    or action_artifact is None
-                    or action_artifact.path != binding.action[0]
-                ):
-                    raise RuntimeError("phase-1 product definition/action binding differs")
-                if binding.removal_plan is None:
-                    raise RuntimeError("hosted product removal plan is absent")
-            if platform_session is not None:
-                if platform_session.bind_exact_custody(binding, owner) is not None:
-                    raise RuntimeError("platform custody binding must return no verdict or flag")
-            return binding, owner.register_start(spec)
-
-        binding = owner.custody_binding()
-        if not isinstance(binding, CustodyBinding):
-            raise RuntimeError("fixed Pinokio owner returned an invalid custody binding")
-        if (
-            binding.slot_id != slot_id
-            or binding.owner_kind != "pinokio"
-            or binding.principal != owner.principal
-            or binding.removal_plan is None
-        ):
-            raise RuntimeError("fixed Pinokio custody binding differs from the exact slot owner")
-        checkout_root = Path(checkouts["pinokio"]["path"])
-        action_artifacts = {item.role: item for item in binding.immutable_actions}
-        phase_artifacts = (
-            {item.role: item for item in platform_binding.artifacts}
-            if platform_binding is not None
-            else action_artifacts
-        )
-        required_pinokio_actions = {
-            "pinokio/start.js",
-            "pinokio/stop.js",
-            "pinokio/update.js",
-        }
-        if (
-            not required_pinokio_actions.issubset(action_artifacts)
-            or any(phase_artifacts.get(role) != item for role, item in action_artifacts.items())
-            or not _digest(binding.resolved_action_identity_sha256)
-            or any(
-                item.path != str(checkout_root / role)
-                or not _digest(item.sha256)
-                or not Path(item.path).is_file()
-                or _sha256_file(Path(item.path)) != item.sha256
-                for role, item in action_artifacts.items()
-                if role in required_pinokio_actions
-            )
-        ):
-            raise RuntimeError("fixed Pinokio custody action/helper graph is incomplete or mutable")
-        if platform_session is not None:
-            if platform_session.bind_exact_custody(binding, owner) is not None:
-                raise RuntimeError("platform custody binding must return no verdict or flag")
-        return binding, owner.register_start()
-
-    try:
-        custody_binding, registration = prepare_custody()
-    except BaseException as exc:
-        if platform_session is not None:
-            _abort_platform_session(platform_session, exc)
-        raise
-    session = NativeSession(
-        owner,
-        platform_session=platform_session,
-        platform_binding=platform_binding,
-        custody_binding=custody_binding if platform_session is not None else None,
-    )
+    spec = driver.service_spec(context)
+    registration = owner.register_start(spec)
+    session = NativeSession(owner)
     try:
         values = dict(driver.run(context, session))
         if set(values) != set(failure.SCENARIOS):
@@ -4775,7 +3533,7 @@ def _execute_structural_collection(
             "owner": {
                 "slot_id": slot_id,
                 "mode": contract["mode"],
-                "managed_by": owner_kind,
+                "managed_by": "native-service",
                 "foreground_fallback": False,
                 "checkout_sha256": owner_checkout_sha,
             },
@@ -4799,14 +3557,27 @@ def _execute_structural_collection(
         native_errors = _native_structural_errors(observation)
         if base_errors or native_errors:
             raise RuntimeError("; ".join([*base_errors, *native_errors]))
+        if not fixture_mode:
+            verifier = HOSTED_ADMISSION_VERIFIER
+            if verifier is None:
+                raise RuntimeError(
+                    "hosted_admission_verifier: NEEDS B/platform-owned external authentication"
+                )
+            try:
+                capability = verifier.verify_live_observation(observation)
+                consume = getattr(capability, "consume", None)
+                digest = _sha256_bytes(_canonical(observation))
+                if not callable(consume) or consume(digest) is not True:
+                    raise RuntimeError("hosted_admission_verifier: external capability was denied")
+            except RuntimeError:
+                raise
+            except Exception as verifier_exc:  # noqa: BLE001 - external verifier fails closed
+                raise RuntimeError(
+                    "hosted_admission_verifier: external authentication failed "
+                    f"({type(verifier_exc).__name__})"
+                ) from verifier_exc
         return observation
     except BaseException as exc:
-        if platform_session is not None and not session.platform_finalized:
-            _abort_platform_session(platform_session, exc)
-            raise RuntimeError(
-                f"native journey failed ({type(exc).__name__}); platform session aborted; "
-                "cleanup refused; residue may remain"
-            ) from exc
         try:
             cleanup = session.safe_finalize()
         except (OSError, RuntimeError, ValueError) as cleanup_exc:

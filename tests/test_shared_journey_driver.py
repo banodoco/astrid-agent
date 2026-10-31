@@ -583,18 +583,6 @@ if action == "service-spec":
         "principal": principal,
         "definition_owner": "product-installer",
         "working_directory": str(pathlib.Path(service_path).parent),
-        "removal_plan": {
-            "operation": "product-uninstall",
-            "keep_data": True,
-            "remove_paths": [definition_path, service_path],
-            "preserve_paths": [str(pathlib.Path(service_path).parent / "data")],
-            "expected_postconditions": [
-                "owner-target-absent",
-                "all-authorized-incarnations-absent",
-                "no-owned-action-processes",
-                "preserved-data-identity-unchanged",
-            ],
-        },
     }
     if mode == "promote":
         response["observation"] = {"hosted": True, "verdict": "pass"}
@@ -649,9 +637,10 @@ class RecordingSession:
 
     def before_product_removal(self, expected, discovery):
         self.calls.append(("before-removal", expected["scenario"], discovery["action"]))
+        return "removal-token"
 
-    def observe_product_removal(self):
-        self.calls.append(("removed",))
+    def observe_product_removal(self, authorization):
+        self.calls.append(("removed", authorization))
         return {"removed": True}
 
 
@@ -726,9 +715,6 @@ def test_native_driver_uses_live_action_sequence_and_native_session(tmp_path):
     values = driver.run(context, session)
 
     assert spec.definition_owner == "product-installer"
-    assert spec.removal_plan is not None
-    assert spec.removal_plan.operation == "product-uninstall"
-    assert spec.removal_plan.keep_data is True
     assert set(values) == {
         "interruption_recovery",
         "failed_candidate_rollback",
@@ -754,24 +740,7 @@ def test_native_driver_uses_live_action_sequence_and_native_session(tmp_path):
     ]
     assert ("interrupted", "interrupt-token") in session.calls
     assert ("recovery-complete", "recovery-token") in session.calls
-    assert ("removed",) in session.calls
-
-
-def test_native_driver_exposes_closed_immutable_phase_one_artifacts(tmp_path):
-    driver, context, state = _native_driver(tmp_path)
-
-    binding = driver.immutable_platform_artifacts(context)
-
-    assert set(binding) == {"protocol", "product_command", "artifacts"}
-    assert binding["protocol"] == shared.PRODUCT_PROTOCOL
-    assert binding["product_command"]["argv"][0].endswith("product-driver")
-    assert {row["role"] for row in binding["artifacts"]} == {
-        "product-driver",
-        "service-definition",
-        "service-executable",
-    }
-    assert all(len(row["sha256"]) == 64 for row in binding["artifacts"])
-    assert not state.exists(), "phase-1 artifact binding must not invoke the product command"
+    assert ("removed", "removal-token") in session.calls
 
 
 def test_native_driver_rejects_serialized_observation_promotion(tmp_path):
