@@ -6,7 +6,7 @@
       "platform": "windows-x86_64-cu130",
       "recipe": {
         "path": "packs/vibecomfy/recipe.windows-cu130.json",
-        "sha256": "2bda030319a06c1a5b3d2997047712948d98349baf60e36aa3a00c2d8f22d612"
+        "sha256": "3e6c8b0dc2809686507604c831422f58824417361911ddd1e0c672b3e2a57bba"
       }
     },
     {
