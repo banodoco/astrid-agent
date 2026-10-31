@@ -7,9 +7,8 @@ description: >-
 # Store and reuse shots
 
 Start with a timeline that has a picture track, one authored picture clip, and
-two picture cuts at the section boundaries. The example labels the sections,
-stores them as shots, places the opening shot again, and arranges the three
-occurrences.
+two picture cuts at 0 and 2 seconds. Label the sections, store them as shots,
+place the opening shot again, and arrange the three occurrences.
 
 ```python
 from astrid.sdk.timeline.api import Checkout, Timeline
