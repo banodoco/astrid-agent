@@ -33,9 +33,9 @@ def sdk_invocation(argv, task_id="task-1"):
     })
 
 
-def test_journey_runs_for_main_windows_branches_and_main_pull_requests():
+def test_journey_runs_for_main_release_windows_branches_and_main_pull_requests():
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'branches: [main, "windows/**"]' in workflow
+    assert 'branches: [main, release-1, "windows/**"]' in workflow
     assert "pull_request:\n    branches: [main]" in workflow
     assert "name: Windows task host journey (${{ matrix.installer-shell }})" in workflow
     assert "exploratory" not in workflow
@@ -48,7 +48,10 @@ def test_journey_resolves_companion_refs_from_durable_defaults():
     assert "$runtimeRef = $lock.source_commit" in workflow
     assert "ref: ${{ steps.runtime-ref.outputs.ref }}" in workflow
     assert "runtime_ref:" not in workflow
-    assert "ref: ${{ inputs.app_ref || 'main' }}" in workflow
+    assert "ref: ${{ steps.app-ref.outputs.ref }}" in workflow
+    assert '{ "main" }' in workflow
+    assert "^[0-9a-fA-F]{40}$" in workflow
+    assert "git -C journey-app rev-parse HEAD" in workflow
     assert "default: windows/task-host" not in workflow
     assert "Run an installed-profile SDK invocation through settlement" in workflow
 

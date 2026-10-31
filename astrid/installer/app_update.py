@@ -30,6 +30,7 @@ from .core import (
     switch,
     update_required,
 )
+from .custody import operation, stopped_custody
 from .launcher import publish_runtime_runner
 from .service import installer_lock_path, pinokio_owned
 
@@ -49,7 +50,7 @@ from urllib.request import url2pathname
 def qualified():
     runtime = importlib.import_module('astrid_runtime.bootstrap')
     capability = getattr(runtime, 'PINOKIO_STOP_HANDOFF_VERSION', None)
-    if type(capability) is not int or capability != 1:
+    if (len(sys.argv) < 3 or sys.argv[2] != 'provenance') and (type(capability) is not int or capability != 1):
         return False
     profile = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
     checkout = Path(profile['runtime_checkout']).resolve()
@@ -84,6 +85,15 @@ if not accepted:
              'Update the Runtime through a qualified release first.')
 """
 
+_PINOKIO_HANDOFF_CAPABILITY = """
+import importlib
+import sys
+runtime = importlib.import_module('astrid_runtime.bootstrap')
+capability = getattr(runtime, 'PINOKIO_STOP_HANDOFF_VERSION', None)
+if type(capability) is not int or capability != 1:
+    sys.exit(1)
+"""
+
 
 @contextlib.contextmanager
 def locked(path: Path, *, timeout: float = 0):
@@ -104,6 +114,19 @@ def locked(path: Path, *, timeout: float = 0):
             yield
         finally:
             platform.unlock_file(stream.fileno())
+
+
+
+@contextlib.contextmanager
+def selection_lock(path: Path, backend):
+    custody = getattr(backend, "_pinokio_custody", None)
+    if custody is not None:
+        custody.check()
+        yield
+        custody.check()
+    else:
+        with locked(path, timeout=10):
+            yield
 
 
 def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[Version, Path, dict]:
@@ -127,9 +150,47 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
     return old, data, identity
 
 
+def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
+    """Preserve C1 preflight; give a running incapable Runtime its contract refusal."""
+    from runtime_protocol import platform
+
+    lock_path = installer_lock_path(backend.service.home, backend.service.system)
+    held = False
+    if lock_path.exists():
+        try:
+            with lock_path.open("r+b") as stream:
+                try:
+                    platform.lock_file(stream.fileno(), blocking=False)
+                except BlockingIOError:
+                    held = True
+                else:
+                    platform.unlock_file(stream.fileno())
+        except FileNotFoundError:
+            pass
+
+    if held:
+        qualify_running(root, backend, data)
+    backend.preflight_stop(absolute(data))
+
+
+def qualify_running(root: Path, backend, data: Path, *, allow_transaction: bool = False) -> None:
+    """Recheck contention without writes, including a Start racing preflight."""
+    old, selected_data, _identity = selection(root, backend, allow_transaction=allow_transaction)
+    if selected_data != absolute(data):
+        raise ValueError("The selected Pinokio workspace changed before stop preflight.")
+    backend.run([old.python, "-I", "-B", "-c", _PINOKIO_RUNTIME_QUALIFICATION,
+                 old.profile, "provenance"], timeout=30, clean_bun_env=True)
+    try:
+        backend.run([old.python, "-I", "-B", "-c", _PINOKIO_HANDOFF_CAPABILITY],
+                    timeout=30, clean_bun_env=True)
+    except subprocess.CalledProcessError:
+        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.") from None
+
+
 class PinokioLifecycle:
     def __init__(self, root: Path, backend):
         self.root, self.backend = root, backend
+        self._selected_mode: str | None = None
         if root.name != "astrid" or root.parent.name != "app":
             raise ValueError("The app update requires Pinokio's app/astrid installation layout.")
         self.repo = absolute(root.parent.parent)
@@ -140,7 +201,7 @@ class PinokioLifecycle:
             raise ValueError("The canonical Pinokio launcher is missing; update the launcher first.")
 
     def mode(self) -> str:
-        if hasattr(self, "_selected_mode"):
+        if self._selected_mode is not None:
             return self._selected_mode
         # Older backend-only installations predate this launcher receipt.
         receipt = read_json(self.root.parent / "install-mode.json")
@@ -158,7 +219,7 @@ class PinokioLifecycle:
             raise ValueError("The selected app has no owned, pinned Node executable.")
         return node
 
-    def validate(self, version: Version) -> None:
+    def validate(self, version: Version, *, provenance_only: bool = False) -> None:
         # Exercise the canonical launcher's actual installation validation for
         # each version without changing the on-disk current pointer.
         mode = self.mode()
@@ -176,13 +237,27 @@ class PinokioLifecycle:
                           self.session.as_uri(), self.root, version.root.name,
                           self.root.parent / "editor", mode], timeout=30,
                          clean_bun_env=True)
-        # Both activation and rollback must invalidate a completed Stop before
-        # launching another owner. Qualify the selected interpreter's actual
-        # Runtime, rather than the candidate controller's imported package.
-        self.backend.run([version.python, "-I", "-c", _PINOKIO_RUNTIME_QUALIFICATION, version.profile],
+        # Qualify each interpreter's actual installed Runtime. A stopped update
+        # already owns lifetime admission and needs provenance, without a newer
+        # stop-handoff capability. The running adapter keeps that capability gate.
+        qualification = [version.python, "-I", "-B", "-c", _PINOKIO_RUNTIME_QUALIFICATION, version.profile]
+        if provenance_only or getattr(self.backend, "_pinokio_custody", None) is not None:
+            qualification.append("provenance")
+        self.backend.run(qualification,
                          timeout=30, clean_bun_env=True)
 
+    def validate_recovery(self, previous: Version, data: Path) -> None:
+        if getattr(self.backend, "_pinokio_custody", None) is None:
+            # An interrupted activation can have left its candidate running.
+            # Qualify that current owner for C1, then validate rollback provenance
+            # separately. Recovery takes fresh custody immediately after C1.
+            qualify_running(self.root, self.backend, data, allow_transaction=True)
+        self.validate(previous, provenance_only=True)
+
     def stop(self, version: Version, data: Path) -> None:
+        custody = getattr(self.backend, "_pinokio_custody", None)
+        if custody is not None:
+            custody.check()
         # C1 (Backend.stop) is the only Runtime stop. Before it, this adapter
         # only reads the controller record file: no signal, liveness probe or
         # controller request may precede C1 admission (Windows os.kill(pid, 0)
@@ -205,6 +280,20 @@ class PinokioLifecycle:
             return raw, record
 
         bound = snapshot()
+        stopped = getattr(self.backend, "pinokio_stopped", None)
+        if custody is not None and stopped is not None and stopped(data):
+            if bound is not None:
+                try:
+                    owner = runtime_platform.process_identity(bound[1]["pid"])
+                except OSError as exc:
+                    raise ValueError("The Pinokio controller process could not be observed.") from exc
+                if owner is not None:
+                    raise ValueError("The Pinokio supervisor has not finished stopping.")
+                if snapshot() != bound:
+                    raise ValueError("The Pinokio controller changed during stop.")
+            # No Runtime or controller stop is needed: the old successful Stop
+            # left no publications. Do not demand its newer handoff receipt.
+            return
         result = self.backend.stop(version, data)
         if not isinstance(result, dict) or result.get("status") != "stopped":
             # Unknown outcome: report nothing; the session keeps its down gate.
@@ -282,7 +371,7 @@ class PinokioLifecycle:
         # The existing session selects current/version.json and passes its exact
         # source profile to the foreground Runtime. It owns its whole process tree.
         env = {key: value for key, value in os.environ.items()
-               if key not in {"NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME"}}
+               if key not in {"NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME", "ASTRID_INSTALL_CUSTODY"}}
         mode = self.mode()
         log = self.root / "app-update-session.log"
         session_script = (
@@ -291,9 +380,25 @@ class PinokioLifecycle:
             f"const editor={json.dumps(str(self.root.parent / 'editor'))};\n"
             "const installed=installation(root);\n"
         )
+        custody = getattr(self.backend, "_pinokio_custody", None)
+        if custody is not None:
+            env["ASTRID_INSTALL_CUSTODY"] = json.dumps(custody.arm(version, data))
+            # Interpose only on this exact Runtime spawn. Status, down, editor
+            # and dependency commands keep the canonical environment unchanged.
+            session_script += (
+                "const {spawn}=await import('node:child_process');\n"
+                "const ticket=process.env.ASTRID_INSTALL_CUSTODY;\n"
+                "delete process.env.ASTRID_INSTALL_CUSTODY;\n"
+                "delete installed.env.ASTRID_INSTALL_CUSTODY;\n"
+                "const spawnProcess=(command,args,options)=>spawn(command,args,"
+                "command===root+'/run' || (process.platform==='win32' && "
+                "args.some(arg=>arg.includes(root+'\\\\run.cmd'))) ? "
+                "{...options,env:{...options.env,ASTRID_INSTALL_CUSTODY:ticket}} : options);\n"
+            )
         session_script += (
             f"runSession({{action:'serve',root,editor,mode:{json.dumps(mode)},installed,"
-            f"prepareEditor:{str(mode == 'local').lower()}}})"
+            f"prepareEditor:{str(mode == 'local').lower()}"
+            + (",spawnProcess" if custody is not None else "") + "})"
             ".catch(error=>{console.error(`Astrid: ${error.message}`);process.exitCode=1;});\n"
         )
         with log.open("ab") as stream:
@@ -334,14 +439,20 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
     if selected not in (previous, candidate):
         raise ValueError("The interrupted app update does not match the selected app version.")
     lifecycle = lifecycle or PinokioLifecycle(root, backend)
-    lifecycle.validate(previous)  # Recovery must be able to relaunch the retained app.
+    validate_recovery = getattr(lifecycle, "validate_recovery", None)
+    if validate_recovery is not None:
+        validate_recovery(previous, data)
+    else:
+        lifecycle.validate(previous)  # Custom adapters retain their validation contract.
     # Interrupted older controllers may have left pre-transaction admission.
     # Publish before recovery's first C1 stop, while the operation lock is held.
+    custody = getattr(backend, "_pinokio_custody", None)
+    if custody is not None:
+        custody.check()
     publish_runtime_runner(root)
     installer = Installer(root, data, backend, say=say, managed_by="pinokio")
-
     def recover_selection(previous: Version, candidate: Version | None) -> None:
-        with locked(lock, timeout=10):
+        with selection_lock(lock, backend):
             selected = current(root)
             if selected == candidate:
                 switch(root, previous)
@@ -351,21 +462,34 @@ def _recover_app_locked(root: Path, backend, *, lifecycle=None, say=print) -> bo
             # crashed before updating its selection identity.
             backend.persist_identity(previous)
 
-    recover_transaction(
-        root, data, backend,
-        stop=lifecycle.stop, switch_old=recover_selection,
-        activate_old=lambda previous, workspace, realm: lifecycle.start(
-            previous, workspace, realm["realm_id"]),
-        restore_workspace=pending.get("transaction_kind") != "app", say=say,
-        save=lambda step, **details: installer._save_update(
-            pending, step, **details),
-    )
+    original_custody = getattr(backend, "_pinokio_custody", None)
+    with contextlib.ExitStack() as recovery_authority:
+        def stop_recovery(version, workspace):
+            lifecycle.stop(version, workspace)
+            if getattr(backend, "_pinokio_custody", None) is None:
+                acquired = recovery_authority.enter_context(stopped_custody(root, backend))
+                if acquired is None:
+                    raise ValueError("Another Astrid operation still owns the installation lock.")
+                backend._pinokio_custody = acquired
+
+        try:
+            recover_transaction(
+                root, data, backend,
+                stop=stop_recovery, switch_old=recover_selection,
+                activate_old=lambda previous, workspace, realm: lifecycle.start(
+                    previous, workspace, realm["realm_id"]),
+                restore_workspace=pending.get("transaction_kind") != "app", say=say,
+                save=lambda step, **details: installer._save_update(
+                    pending, step, **details),
+            )
+        finally:
+            backend._pinokio_custody = original_custody
     return True
 
 
 def recover_app(root: Path, backend, *, lifecycle=None, say=print) -> bool:
     """Recover Pinokio's journal without requiring a manifest or uv executable."""
-    with locked(root / ".app-update.lock"):
+    with operation(root, backend), locked(root / ".app-update.lock"):
         return _recover_app_locked(root, backend, lifecycle=lifecycle, say=say)
 
 
@@ -379,7 +503,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
                    force: bool = False, no_migration: bool = False) -> None:
     """Apply C2 release dispatch and transaction using the retained session owner."""
     lock = installer_lock_path(backend.service.home, backend.service.system)
-    with locked(root / ".app-update.lock"):
+    with operation(root, backend), locked(root / ".app-update.lock"):
         _recover_app_locked(root, backend, lifecycle=lifecycle, say=say)
         old, data, identity = selection(root, backend)
         lifecycle = lifecycle or PinokioLifecycle(root, backend)
@@ -392,6 +516,9 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
         say("Preparing the new app while Astrid keeps running.")
 
         def prepare() -> Version:
+            custody = getattr(backend, "_pinokio_custody", None)
+            if custody is not None:
+                custody.check()
             candidate = old if repair else backend.stage(manifest, root, data)
             backend.validate_candidate(candidate, data, realm)
             lifecycle.validate(candidate)
@@ -409,7 +536,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             return candidate
 
         def select(candidate: Version) -> None:
-            with locked(lock, timeout=10):
+            with selection_lock(lock, backend):
                 if selection(root, backend, allow_transaction=True) != (old, data, identity):
                     raise ValueError("The selected installation changed before activation.")
                 backend.persist_identity(old)
@@ -421,7 +548,7 @@ def update_pinokio(root: Path, backend, manifest: dict, *, lifecycle=None, say=p
             if selected not in (old, candidate):
                 raise ValueError("Another operation selected a different app; refusing to replace it.")
             if selected == candidate:
-                with locked(lock, timeout=10):
+                with selection_lock(lock, backend):
                     if current(root) != candidate:
                         raise ValueError("The app selection changed during rollback.")
                     switch(root, previous)

@@ -89,7 +89,7 @@ def pinokio_owned(record: dict) -> bool:
     return record.get("owner") == LABEL and record.get("managed_by") == "pinokio"
 
 
-def launch_admission(version: Version, data: Path) -> bool:
+def launch_admission(version: Version, data: Path, *, custody: bool = False) -> bool:
     """Validate the selected managed launch; return whether it is activating.
 
     The pending journal selects a version, never a process or stop authority.
@@ -141,6 +141,20 @@ def launch_admission(version: Version, data: Path) -> bool:
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
+        context = transaction.get("transaction_context") or {}
+        if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
+            raise ValueError("The stopped update requires its authenticated activation lease.")
+        if version.managed_by == "pinokio":
+            from runtime_protocol import platform
+
+            with (root / ".app-update.lock").open("r+b") as operation_lock:
+                try:
+                    platform.lock_file(operation_lock.fileno(), blocking=False)
+                except BlockingIOError:
+                    pass
+                else:
+                    platform.unlock_file(operation_lock.fileno())
+                    raise ValueError("The Pinokio updater no longer owns activation admission.")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         action = ("Choose Pinokio's Update button to finish it."
@@ -153,7 +167,7 @@ def launch_admission(version: Version, data: Path) -> bool:
 
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
-            lock_fd: int | None = None) -> list[str]:
+            lock_fd: int | None = None, custody_fd: int | None = None) -> list[str]:
     version = Version(version.root, version.python, version.profile,
                       dict(sorted(version.env.items())), version.release, version.managed_by)
     python = version.python.with_name("pythonw.exe") if windows else version.python
@@ -165,10 +179,17 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
               "from astrid.installer.core import Version,absolute,current,read_json,version_id\n"
               + source + "\n"
               + f"launch_admission(Version(Path({str(version.root)!r}),Path({str(version.python)!r}),"
-              + f"Path({str(version.profile)!r}),{version.env!r},{version.release!r},{version.managed_by!r}),Path({str(data)!r}))\n"
+              + f"Path({str(version.profile)!r}),{version.env!r},{version.release!r},{version.managed_by!r}),Path({str(data)!r}),custody={custody_fd is not None!r})\n"
               + f"os.environ.update({version.env!r})\n")
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
+    if custody_fd is not None:
+        keeper_source = globals().get("_CUSTODY_KEEPER_SOURCE")
+        if keeper_source is None:
+            from . import custody
+
+            keeper_source = inspect.getsource(custody.keeper)
+        script += "import socket,threading\n" + keeper_source + f"\n_custody=keeper({custody_fd})\n"
     if windows:
         if log is None:
             raise ValueError("A log path is required for the Windows Runtime service.")
@@ -292,7 +313,10 @@ class Service:
         starts = list(re.finditer(r"^[ \t]*arguments = \{[ \t]*$", value, re.MULTILINE))
         if len(starts) != 1:
             raise ValueError("The launchd service identity is malformed.")
-        opening_indent = re.match(r"^([ \t]*)", value[starts[0].start():]).group(1)
+        opening_match = re.match(r"^([ \t]*)", value[starts[0].start():])
+        if opening_match is None:
+            raise ValueError("The launchd service arguments are malformed.")
+        opening_indent = opening_match.group(1)
         tail = value[starts[0].end():]
         closing = re.search(r"^" + re.escape(opening_indent) + r"\}[ \t]*$", tail, re.MULTILINE)
         if closing is None:
@@ -346,7 +370,8 @@ class Service:
             raise ValueError("The launchd service configuration is malformed.") from exc
         if loaded_argv is None:
             first_line = next((line for line in raw_arguments.splitlines() if line.strip()), "")
-            arg_indent = re.match(r"^[ \t]*", first_line).group(0)
+            indent_match = re.match(r"^[ \t]*", first_line)
+            arg_indent = indent_match.group(0) if indent_match is not None else ""
             argument_forms = {raw_arguments}
             if arg_indent:
                 argument_forms.add("\n".join(
@@ -407,18 +432,18 @@ class Service:
                     or (owner_pid is not None and foreground.get("pid") != owner_pid)
                 ):
                     raise ValueError("Cannot validate the registered systemd manager; refusing to stop it.")
-                return  # The retained foreground child is Runtime's to validate.
+                return None  # The retained foreground child is Runtime's to validate.
             value = self.run(["systemctl", "--user", "show", "astrid.service",
                               "--property=MainPID,FragmentPath,LoadState"])
             fields = dict(line.split("=", 1) for line in value.splitlines() if "=" in line)
             pid = int(fields["MainPID"])
             if fields.get("LoadState") == "not-found" and pid == 0:
-                return
+                return None
             if (fields.get("FragmentPath") != str(self.path)
                     or pid not in {0, owner_pid}):
                 raise ValueError("The systemd service does not match the selected Runtime owner.")
             self._validated_systemd_stop = True
-            return
+            return None
         if self.system == "darwin":
             target = f"gui/{platform.current_user()}/{LABEL}"
             try:
@@ -450,7 +475,7 @@ class Service:
         # owner PID. Compare it with the command for an owned retained version.
         value = self.powershell(TASK_QUERY + "if ($t) { ConvertTo-Json -Compress -InputObject @($t.Actions | Select-Object Execute,Arguments) }")
         if not value.strip():
-            return
+            return None
         actions = json.loads(value)
         candidates = [version] if version is not None else []
         for folder in (self.root / "versions").glob("*"):
@@ -466,6 +491,7 @@ class Service:
                 allowed.append([{"Execute": argv[0], "Arguments": subprocess.list2cmdline(argv[1:])}])
         if actions not in allowed:
             raise ValueError("The scheduled task does not match the selected installation.")
+        return None
 
     def _known_launch_action(self, action, data: Path, *, windows: bool, script: str | None) -> bool:
         """Compare historical generated bytes without executing retained code."""
@@ -866,8 +892,8 @@ class Service:
         record = self.recorded()
         catalog = read_json(data / "runtime" / "catalog.json")
         realm_id = catalog.get("selected_realm_id")
-        realm = next((row for row in catalog.get("realms", [])
-                      if row.get("realm_id") == realm_id), {})
+        realm: dict = next((row for row in catalog.get("realms", [])
+                            if row.get("realm_id") == realm_id), {})
         foreground = {"pid": process.pid, "birth_id": identity["birth_id"]}
         if realm_id and realm.get("data_root"):
             foreground.update(realm_id=realm_id, realm_root=realm["data_root"])

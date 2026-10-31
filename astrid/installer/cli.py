@@ -97,31 +97,40 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Click-created update jobs require a login-managed Astrid installation.")
         if (args.update_app or (mode in {"install", "update"} and args.root
                 and marker.get("managed_by") == "pinokio")):
-            from .app_update import recover_app, selection, update_app, update_pinokio
+            from .app_update import (
+                preflight_pinokio_update,
+                recover_app,
+                selection,
+                update_app,
+                update_pinokio,
+            )
 
             backend.managed_by = "pinokio"
             pending = read_json(root / "update-transaction.json")
-            # The session holds the lifetime installer lock. The shared update
-            # adapter serializes the journal separately and takes that lock
-            # only for pointer writes, then hands it to the journal-admitted foreground.
+            # A running session holds lifetime admission. A stopped operation
+            # retains its own custody across manifest preparation and activation.
             selection(root, backend, allow_transaction=bool(pending))
-            if pending and pending.get("step") not in TERMINAL_STEPS:
-                recover_app(root, backend)
+            from .custody import operation
+
+            if not pending or pending.get("step") in TERMINAL_STEPS:
+                preflight_pinokio_update(root, backend, absolute(marker["data_root"]))
+            with operation(root, backend):
+                if pending and pending.get("step") not in TERMINAL_STEPS:
+                    recover_app(root, backend)
+                    return 0
+                # Recovery-only invocations return above; fresh operations preflight
+                # once here before downloads or staging. C1 remains stop authority.
+                if not uv.is_absolute() or not uv.is_file():
+                    raise ValueError("Run the install line to provide the pinned user-local uv.")
+                manifest_path = args.manifest or root / "install-manifest.json"
+                if not args.manifest:
+                    download("https://astrid.haus/install-manifest.json", manifest_path)
+                manifest = validate_manifest(read_json(manifest_path))
+                if args.update_app:
+                    update_app(root, backend, manifest)
+                else:
+                    update_pinokio(root, backend, manifest, force=args.update)
                 return 0
-            # Recovery-only invocations return above; fresh operations preflight
-            # once here before downloads or staging. C1 remains stop authority.
-            backend.preflight_stop(absolute(marker["data_root"]))
-            if not uv.is_absolute() or not uv.is_file():
-                raise ValueError("Run the install line to provide the pinned user-local uv.")
-            manifest_path = args.manifest or root / "install-manifest.json"
-            if not args.manifest:
-                download("https://astrid.haus/install-manifest.json", manifest_path)
-            manifest = validate_manifest(read_json(manifest_path))
-            if args.update_app:
-                update_app(root, backend, manifest)
-            else:
-                update_pinokio(root, backend, manifest, force=args.update)
-            return 0
         lock_path = installer_lock_path(Path.home(), sys.platform)
         platform.private_directory(lock_path.parent)
         with lock_path.open("a+b") as lock:
@@ -216,9 +225,9 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("The program directory belongs to another installer.")
                 if not marker and root.exists() and any(p.name != "bootstrap" for p in root.iterdir()):
                     raise ValueError("The program directory contains files Astrid does not own.")
-                pending = pending_transaction(root)
-                if mode in {"install", "update"} and pending:
-                    if pending.get("transaction_kind") == "app":
+                pending_update = pending_transaction(root)
+                if mode in {"install", "update"} and pending_update:
+                    if pending_update.get("transaction_kind") == "app":
                         # Pinokio recovery starts the retained foreground app.
                         # Drop the broad installer lock first; recover_app
                         # revalidates immutable selection under its own lock
@@ -246,10 +255,12 @@ def main(argv: list[str] | None = None) -> int:
                 installed = current(root)
                 if installed is not None and not installed.python.is_file():
                     installed = None
-                update_job_record = None
+                update_job_record: dict | None = None
                 if args.update_job:
                     update_job_record, accepted_old = update_job.admit_worker(
                         root, args.update_job, backend, installed, data, args.manifest)
+                    if update_job_record is None:
+                        raise ValueError("The update job could not be admitted.")
                     log = backend.log
                 if mode != "doctor":
                     if managed_by != "pinokio" and backend.source_checkout_ownership(data, installed):
@@ -281,7 +292,9 @@ def main(argv: list[str] | None = None) -> int:
                 options = {"managed_by": managed_by} if managed_by else {}
                 installer = Installer(root, data, backend, **options)
                 if args.update_job:
-                    backend._update_job_operation_id = args.update_job
+                    if update_job_record is None:
+                        raise ValueError("The update job could not be admitted.")
+                    setattr(backend, "_update_job_operation_id", args.update_job)
                     try:
                         installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
                     except (Exception, KeyboardInterrupt) as update_failure:
