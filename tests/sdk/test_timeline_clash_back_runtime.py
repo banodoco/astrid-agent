@@ -64,7 +64,7 @@ def test_new_file_swap_recovery_reimports_after_saved_runtime_refusal(
 ):
     daemon, client, project, timeline = editing_case
     from astrid.sdk.timeline import Timeline
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitRefused
 
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "swap-recovery-data"))
     source = _media_file(tmp_path / "swap-seed.png")
@@ -98,7 +98,7 @@ def test_new_file_swap_recovery_reimports_after_saved_runtime_refusal(
         return original(project_id, timeline_id, body, **kwargs)
 
     monkeypatch.setattr(generated, "commit_timeline", refuse_first_attempt)
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         stale.commit(edit, label="Recover new file swap", key="swap-new-file-recovery")
 
     pending_id = caught.value.pending_id
@@ -106,6 +106,9 @@ def test_new_file_swap_recovery_reimports_after_saved_runtime_refusal(
     saved = stale.pending_show(pending_id)
     assert saved["state"] == "pending"
     assert saved["origin"] == "function"
+    assert saved["failure"] == caught.value.failure
+    assert saved["failure"]["details"]["status"] == "refused"
+    assert saved["failure"]["details"]["reason"] == "invalid_records"
     assert saved["parts"][0]["imports"][0]["object_id"] == replacement_digest
     assert len(evaluations) == 1
 
@@ -684,7 +687,7 @@ def _reciprocal_retry_process(endpoint, credential, realm, project, actor, pendi
     """Retry a peer's saved conflict and refuse both requests at the same barrier."""
     from astrid.sdk.client import AstridClient
     from astrid.sdk.timeline import Timeline
-    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid.sdk.timeline.sync import CommitRefused
 
     client = AstridClient.open(
         endpoint=endpoint,
@@ -710,9 +713,12 @@ def _reciprocal_retry_process(endpoint, credential, realm, project, actor, pendi
     try:
         preview = timeline.retry(pending_id)
         result = timeline.commit(preview)
-    except CommitConflict as caught:
+    except CommitRefused as caught:
+        saved = timeline.pending_show(caught.pending_id)
+        assert saved["failure"] == caught.failure
         result_queue.put({"pending_id": pending_id, "status": "refused",
-                          "saved_pending_id": caught.pending_id})
+                          "saved_pending_id": caught.pending_id,
+                          "failure": caught.failure})
     except Exception as caught:  # Return child failures to the parent as test evidence.
         import traceback
         result_queue.put({"pending_id": pending_id, "error": repr(caught),
@@ -906,6 +912,9 @@ def test_reciprocal_refused_retries_finish_and_persist(editing_case, tmp_path, m
             timeline.commit(preview["data"]["commands"], label=f"{name} saved edit")
         pending_ids[name] = caught.value.pending_id
         assert pending_ids[name]
+        saved = timeline.pending_show(pending_ids[name])
+        assert saved["failure"] == caught.value.failure
+        assert saved["failure"]["details"]["status"] == "conflict"
 
     context = multiprocessing.get_context("spawn")
     barrier, result_queue = context.Barrier(2), context.Queue()
@@ -936,6 +945,8 @@ def test_reciprocal_refused_retries_finish_and_persist(editing_case, tmp_path, m
 
     assert all(result.get("status") == "refused" for result in results), results
     assert all(result.get("saved_pending_id") == result["pending_id"] for result in results), results
+    assert all(result["failure"]["details"]["status"] == "refused" for result in results), results
+    assert all(result["failure"]["details"]["reason"] == "invalid_records" for result in results), results
     for actor, (_credential, _client, timeline) in actors.items():
         state = json.loads(timeline.session.outbox.path.read_text(encoding="utf-8"))
         record = state["pending_changes"][pending_ids[actor]]
