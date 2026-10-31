@@ -11,9 +11,10 @@ References are ordinary files; link to them, but do not declare them as
 skills.
 
 The [Timeline pack](../../../../timeline/pack.yaml) uses one main skill and
-three extras: `series`, `narrated`, and `review`. Its guides live under
+four extras: `timeline-series`, `timeline-narrated`, `timeline-review`, and
+`timeline-shots`. Its guides live under
 `docs/references/` and link from the [main skill](../../../../timeline/docs/SKILL.md).
-These six lines are copied from its manifest:
+These eight lines are copied from its manifest:
 
 ```yaml
   - kind: skill
@@ -22,6 +23,8 @@ These six lines are copied from its manifest:
     path: docs/narrated/SKILL.md
   - kind: skill
     path: docs/review/SKILL.md
+  - kind: skill
+    path: docs/shots/SKILL.md
 ```
 
 - Put the normal path first; show exceptions after it.

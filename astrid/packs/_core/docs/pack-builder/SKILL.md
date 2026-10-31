@@ -37,8 +37,9 @@ as a `kind: skill` resource. References are files linked from a skill, not
 skill resources. See the [skill-writing guide](references/writing-skills.md).
 
 The [Timeline pack](../../../timeline/pack.yaml) shows this layout: its main
-skill is `docs/SKILL.md`, its extras are `series`, `narrated`, and `review`,
-and its helper guides live in `docs/references/`.
+skill is `docs/SKILL.md`, its extras are `timeline-series`,
+`timeline-narrated`, `timeline-review`, and `timeline-shots`, and its helper
+guides live in `docs/references/`.
 
 Validate and inspect declarations with the pack CLI. Use the
 [pack testing guide](../pack-testing/SKILL.md) for test lanes. Regenerate the
