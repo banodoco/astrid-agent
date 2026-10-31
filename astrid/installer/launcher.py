@@ -162,34 +162,29 @@ def publish_runtime_runner(root: Path) -> Path:
 
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
-    # Retained packages supply the interpreter and core. Carry the current
-    # command builder and admission together so their older service cannot
-    # reintroduce an ordinary-launch bypass after rollback.
+    # The retained version supplies only the interpreter and Runtime. Carry the
+    # complete current launcher so an older installed Agent is never imported.
     import inspect
 
-    admission_source = inspect.getsource(service.launch_admission)
+    prelude_source = service._launch_prelude_source()
     service_source = (
-        'import inspect,json,os,re,sys\nfrom pathlib import Path\n'
-        'from astrid.installer.core import Version,absolute,current,read_json,version_id\n'
+        prelude_source + '\n'
+        'from runtime_protocol import platform\n'
         f'LABEL={service.LABEL!r}\nSERVICE_SETTINGS=frozenset({sorted(service.SERVICE_SETTINGS)!r})\n'
+        f'_EMBEDDED_LAUNCH_PRELUDE={prelude_source!r}\n'
         + "\n".join(inspect.getsource(function) for function in (
             service.default_program_root, service.installer_lock_path,
-            service.launch_admission, service.command,
+            service.command,
         ))
     )
-    foreground_source = Path(foreground.__file__).read_text(encoding="utf-8")
+    foreground_source = "\n".join(inspect.getsource(function) for function in (
+        foreground._probe_operation_lock, foreground.launch, foreground._run,
+    ))
     source = (
-        'import sys, importlib, types\nfrom pathlib import Path\n'
-        '_retained_service = importlib.import_module("astrid.installer.service")\n'
-        '_service = types.ModuleType("astrid.installer.service")\n'
-        '_service.__dict__.update(_retained_service.__dict__)\n'
-        f'exec(compile({service_source!r}, "<Astrid service launcher>", "exec"), _service.__dict__)\n'
-        f'_service._ADMISSION_SOURCE = {admission_source!r}\n'
-        'sys.modules["astrid.installer.service"] = _service\n'
-        '_foreground = {"__name__": "astrid.installer.foreground", '
-        '"__package__": "astrid.installer"}\n'
-        f'exec(compile({foreground_source!r}, "<Astrid foreground launcher>", "exec"), _foreground)\n'
-        '_foreground["launch"](Path(__file__).resolve().parent, sys.argv[1:])\n'
+        service_source + '\n'
+        '# <Astrid foreground launcher>\n'
+        + foreground_source + '\n'
+        + 'launch(Path(__file__).resolve().parent, sys.argv[1:])\n'
     )
     fd, temporary = platform.private_temporary(root, ".run_runtime.py.")
     temporary = Path(temporary)

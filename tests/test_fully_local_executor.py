@@ -151,10 +151,6 @@ def test_source_fake_only_evidence_is_rejected() -> None:
         validate_execution_receipt(run_journey(DeterministicFakeAdapter()))
 
 
-@pytest.mark.skipif(
-    not LOCAL_PORTS_AVAILABLE,
-    reason="the strict local route ports are occupied by an existing process",
-)
 def _validator_fixture() -> dict:
     receipt = run_journey(DeterministicFakeAdapter())
     receipt["evidence_class"] = "local_process"

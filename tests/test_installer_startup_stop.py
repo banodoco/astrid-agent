@@ -292,6 +292,30 @@ def test_completed_stop_retires_only_matching_foreground_record_before_candidate
     assert calls.count('runtime-stop') == 2
 
 
+def test_no_systemd_second_stop_after_foreground_retirement_is_idempotent(tmp_path, monkeypatch):
+    from astrid.installer.service import Service
+
+    backend, old, data, paths, realm, _calls = realm_fixture(tmp_path, monkeypatch, blocker=None)
+    backend.service.systemd = lambda: False
+    record = backend.service.recorded()
+    record['foreground'] = {'pid': 123, 'birth_id': 'birth', 'realm_id': 'selected',
+                            'realm_root': str(realm)}
+    write_json(backend.service.selection, record)
+    backend.service.stop_foreground = lambda **kwargs: Service.stop_foreground(
+        backend.service, **kwargs)
+    boundary = Boundary(paths, [])
+    monkeypatch.setattr('astrid_runtime.runtime_boundary.LocalRuntimeBoundary', lambda: boundary)
+
+    backend.stop(old, data)
+    assert 'foreground' not in backend.service.recorded()
+
+    # Restore the real ownership check: the idempotent retry must not mistake
+    # the stale service definition for a live systemd owner.
+    backend.service.validate_stop_target = Service.validate_stop_target.__get__(backend.service)
+    backend.stop(old, data)
+    assert backend._foreground_stop_retired is True
+
+
 def test_manager_failure_after_owner_removes_advertisements_allows_installer_recovery(tmp_path, monkeypatch):
     from astrid.installer.core import Installer, read_json
     backend, old, data, paths, realm, calls = realm_fixture(tmp_path, monkeypatch, blocker=None)

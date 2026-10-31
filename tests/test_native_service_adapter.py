@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from scripts import journey_failure_modes as failure
+from scripts import m4_6_pinokio_custody_provider as pinokio_custody
 from scripts import native_service_adapter as native
 from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE, valid_observation
 
@@ -516,6 +517,7 @@ def hosted_environment(tmp_path: Path, os_name: str, powershell: Path | None) ->
         "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_JOB": "m4-6-native",
         "GITHUB_REPOSITORY": "haus/astrid",
+        "GITHUB_WORKFLOW": "journey",
         "RUNNER_TEMP": str(tmp_path),
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(home / ".config"),
@@ -720,7 +722,7 @@ class FakeJourneyDriver:
             session.instances[-1]["pid"] = str(session.instances[-1]["pid"])
         if self.fail_at == "filtered-removal-instance":
             session.instances[-1]["state"] = "unknown"
-        authorization = session.before_product_removal(current, current_discovery)
+        session.before_product_removal(current, current_discovery)
         removal_scope = session._removal_authorization
         assert removal_scope is not None
         if self.fail_at == "malformed-removal-authorization":
@@ -732,7 +734,7 @@ class FakeJourneyDriver:
                 dict(removal_scope["observed_incarnations"][0])
             )
         self.runner.product_uninstall(self.definition_path)
-        session.observe_product_removal(authorization)
+        session.observe_product_removal()
         return values
 
 
@@ -853,7 +855,7 @@ def test_product_canonical_native_lifecycle_is_collected_but_fixture_is_inadmiss
     assert not (tmp_path / "run" / "evidence").exists()
     assert native._native_structural_errors(observation) == []
     errors = native.native_observation_errors(observation)
-    assert any("hosted_admission_verifier" in error for error in errors)
+    assert any("platform_session" in error for error in errors)
     assert runner.registered is False
 
 
@@ -879,23 +881,21 @@ def test_fixture_cannot_be_promoted_by_editing_scope_and_authentication(tmp_path
         item["collector_structural_sha256"] = observation["collector_structural_sha256"]
         item["execution_scope"] = native.HOSTED_SCOPE
     errors = native.native_observation_errors(observation)
-    assert any("hosted_admission_verifier" in error for error in errors)
+    assert any("platform_session" in error for error in errors)
 
 
-def test_injected_collection_never_reaches_registered_external_verifier(
+def test_injected_collection_never_loads_fixed_platform_session_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class UnexpectedVerifier:
-        calls = 0
+    original_import = native.importlib.import_module
 
-        def verify_live_observation(self, _observation):
-            self.calls += 1
-            raise AssertionError("fixture reached external verifier")
+    def guarded_import(name):
+        if name == native.FIXED_PLATFORM_SESSION_MODULE:
+            raise AssertionError("fixture loaded hosted platform-session provider")
+        return original_import(name)
 
-    verifier = UnexpectedVerifier()
-    monkeypatch.setattr(native, "HOSTED_ADMISSION_VERIFIER", verifier)
+    monkeypatch.setattr(native.importlib, "import_module", guarded_import)
     observation, _runner, _process = collect(tmp_path, "direct-linux")
-    assert verifier.calls == 0
     collector = observation["collector_provenance"]
     collector.update(
         {
@@ -916,24 +916,586 @@ def test_injected_collection_never_reaches_registered_external_verifier(
         item["collector_structural_sha256"] = observation["collector_structural_sha256"]
         item["execution_scope"] = native.HOSTED_SCOPE
     errors = native.native_observation_errors(observation)
-    assert any("hosted_admission_verifier" in error for error in errors)
-    assert verifier.calls == 0
-    assert not hasattr(native, "_external_hosted_admission_errors")
+    assert any("platform_session" in error for error in errors)
 
 
-def test_external_verifier_registration_is_single_owner(
+def test_no_public_post_hoc_verifier_or_registrar_exists() -> None:
+    assert not hasattr(native, "HOSTED_ADMISSION_VERIFIER")
+    assert not hasattr(native, "register_hosted_admission_verifier")
+    assert not hasattr(native, "HostedAdmissionVerifier")
+    assert native.FIXED_PLATFORM_SESSION_MODULE == "scripts.m4_6_platform_session_provider"
+    assert native.FIXED_PINOKIO_CUSTODY_MODULE == "scripts.m4_6_pinokio_custody_provider"
+
+
+def _session_binding() -> native.PlatformSessionBinding:
+    return native.PlatformSessionBinding(
+        slot_id="direct-linux",
+        mode="direct",
+        owner_kind="native-service",
+        os_name="linux",
+        runner_image="ubuntu-24.04",
+        shell="sh",
+        runner_os="Linux",
+        image_os="ubuntu24",
+        os_build="Linux-test",
+        repository_claim="haus/astrid",
+        workflow_claim="journey",
+        job_claim="m4-6-native",
+        run_id_claim="1",
+        run_attempt_claim="1",
+        candidate=tuple(sorted(PROVISIONAL_CANDIDATE.items())),
+        checkouts=(),
+        collector_pid=123,
+        collector_executable="/usr/bin/python3",
+        collector_executable_sha256="a" * 64,
+        product_protocol="astrid-m4-6-product-driver/v1",
+        product_command=("/product-driver",),
+        product_command_cwd="/work",
+        artifacts=(),
+        owner_principal="runner",
+        owner_target="astrid.service",
+    )
+
+
+def _custody_binding() -> native.CustodyBinding:
+    return native.CustodyBinding(
+        slot_id="direct-linux",
+        owner_kind="native-service",
+        principal="runner",
+        target="astrid.service",
+        definition_path="/astrid.service",
+        definition_sha256="6" * 64,
+        action=("/runtime", "--service"),
+        action_sha256="7" * 64,
+        immutable_actions=(),
+        resolved_action_identity_sha256="8" * 64,
+        removal_plan=native.RemovalPlan(
+            operation="product-uninstall",
+            keep_data=True,
+            remove_paths=("/astrid.service", "/runtime"),
+            preserve_paths=("/data",),
+            expected_postconditions=(
+                "owner-target-absent",
+                "all-authorized-incarnations-absent",
+                "no-owned-action-processes",
+                "preserved-data-identity-unchanged",
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "remove_paths,preserve_paths,error",
+    [
+        (("/program",), ("/program/data",), "overlap by ancestry"),
+        (("/program/../program",), ("/data",), "canonical and normalized"),
+    ],
+)
+def test_removal_plan_rejects_ancestry_overlap_and_lexical_aliases(
+    remove_paths: tuple[str, ...], preserve_paths: tuple[str, ...], error: str
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        native.RemovalPlan(
+            operation="product-uninstall",
+            keep_data=True,
+            remove_paths=remove_paths,
+            preserve_paths=preserve_paths,
+            expected_postconditions=(
+                "owner-target-absent",
+                "all-authorized-incarnations-absent",
+                "no-owned-action-processes",
+                "preserved-data-identity-unchanged",
+            ),
+        )
+
+
+def test_pinokio_removal_census_preserves_controller_descendant_relationships() -> None:
+    targets = ("pinokio-controller", "/pinokio/install")
+    controller = native.RemovalProcessBinding(
+        role="pinokio-controller",
+        target="pinokio-controller",
+        pid=41,
+        process_birth_id="controller-birth",
+        parent_role="pinokio-direct-custody",
+        parent_pid=None,
+        parent_process_birth_id=None,
+        executable_path="/usr/bin/node",
+        executable_sha256="a" * 64,
+        action=("/usr/bin/node", "/pinokio/start.js"),
+        discovery_identity=(("controller_instance_id", "controller-1"),),
+        removal_targets=targets,
+    )
+    runtime = native.RemovalProcessBinding(
+        role="runtime-descendant",
+        target="pinokio-controller",
+        pid=42,
+        process_birth_id="runtime-birth",
+        parent_role="pinokio-controller",
+        parent_pid=41,
+        parent_process_birth_id="controller-birth",
+        executable_path="/pinokio/install/runtime",
+        executable_sha256="b" * 64,
+        action=("/pinokio/install/runtime", "--service"),
+        discovery_identity=(("runtime_instance_id", "runtime-1"),),
+        removal_targets=targets,
+    )
+    census = native.RemovalCensus(
+        manager_target="pinokio-controller",
+        manager_instance_id="pinokio-session-1",
+        registration=(("checkout_sha256", "c" * 64),),
+        controller_identity=(
+            ("pid", 41),
+            ("process_birth_id", "controller-birth"),
+            ("executable_sha256", "a" * 64),
+        ),
+        processes=(controller, runtime),
+        prior_incarnations=(),
+        removal_targets=targets,
+    )
+
+    payload = native._removal_census_payload(census)
+    assert [row["role"] for row in payload["processes"]] == [
+        "pinokio-controller",
+        "runtime-descendant",
+    ]
+    assert payload["processes"][1]["parent_pid"] == 41
+    assert payload["processes"][1]["parent_process_birth_id"] == "controller-birth"
+    assert payload["processes"][1]["executable_sha256"] == "b" * 64
+
+
+def test_pinokio_structural_validation_accepts_multi_argv_census_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Verifier:
-        def verify_live_observation(self, _observation):
-            raise AssertionError("registration test must not authenticate")
+    monkeypatch.setattr(native, "_scenario_instance_errors", lambda _observation: [])
+    checkout = "/candidate/pinokio"
+    action_files = {
+        relative: {
+            "path": str(Path(checkout) / relative),
+            "sha256": digest * 64,
+        }
+        for relative, digest in (
+            ("pinokio/start.js", "a"),
+            ("pinokio/stop.js", "b"),
+            ("pinokio/update.js", "c"),
+        )
+    }
+    controller_action = ["/usr/bin/node", action_files["pinokio/start.js"]["path"], "--headless"]
+    runtime_action = ["/pinokio/install/runtime", "--service"]
+    registration = {
+        "principal": "runner",
+        "target": "pinokio-controller",
+        "checkout_path": checkout,
+        "checkout_sha": "d" * 40,
+        "definition_owner": "pinokio",
+        "definition_path": action_files["pinokio/start.js"]["path"],
+        "definition_sha256": "a" * 64,
+        "manager_definition_sha256": "a" * 64,
+        "resolved_action_identity_sha256": "e" * 64,
+        "action": controller_action,
+        "action_sha256": native._sha256_bytes(native._canonical(controller_action)),
+        "action_files": action_files,
+    }
+    current = _removal_current()
+    keep_before = {
+        "scenario": "keep_data_uninstall",
+        "phase": "before",
+        **current,
+    }
+    action_rows = [controller_action, runtime_action]
+    incarnation_rows = [
+        {"pid": 41, "process_birth_id": "controller-birth"},
+        {"pid": 42, "process_birth_id": "runtime-birth"},
+    ]
+    data_identity = native._data_identity(current)
+    raw = [
+        {
+            "label": "pinokio-controller-query",
+            "argv_sha256": "1" * 64,
+            "stdout_sha256": "2" * 64,
+            "stderr_sha256": "3" * 64,
+        },
+        {
+            "label": "pinokio-controller-query",
+            "argv_sha256": "4" * 64,
+            "stdout_sha256": "5" * 64,
+            "stderr_sha256": "6" * 64,
+        },
+    ]
+    collector = {"kind": "live-platform"}
+    collector_sha = "7" * 64
+    observation = {
+        "candidate_checkouts": {"pinokio": {"path": checkout, "sha": registration["checkout_sha"]}},
+        "execution_scope": native.HOSTED_SCOPE,
+        "collector_provenance": collector,
+        "collector_structural_sha256": collector_sha,
+        "evidence_files": [
+            {
+                "path": f"evidence/{scenario}.json",
+                "scenario": scenario,
+                "kind": "machine-observation",
+                "sha256": "8" * 64,
+                "collector_kind": "live-platform",
+                "collector_structural_sha256": collector_sha,
+                "execution_scope": native.HOSTED_SCOPE,
+            }
+            for scenario in failure.SCENARIOS
+        ],
+        "native_service": {
+            "manager": "pinokio",
+            "capability": "pass",
+            "manager_version": "test",
+            "target": "pinokio-controller",
+            "principal": "runner",
+            "registration": registration,
+            "instances": [keep_before],
+            "removal": {
+                "definition_absent": False,
+                "manager_target_absent": True,
+                "owned_processes_after": 0,
+                "all_authorized_incarnations_absent": True,
+                "observed_action_count": 2,
+                "observed_incarnation_count": 2,
+                "post_data_identity": data_identity,
+                "post_data_identity_sha256": native._sha256_bytes(native._canonical(data_identity)),
+                "data_identity_unchanged": True,
+                "observed": True,
+                "requested": True,
+                "owned_target_revalidated": True,
+                "performed_by": "product-uninstall",
+                "authorized_identity_sha256": native._sha256_bytes(
+                    native._canonical(native._instance_identity(keep_before))
+                ),
+                "authorized_registration_sha256": native._sha256_bytes(
+                    native._canonical(registration)
+                ),
+                "authorized_live_census_sha256": "9" * 64,
+                "authorized_actions_sha256": native._sha256_bytes(native._canonical(action_rows)),
+                "authorized_incarnations_sha256": native._sha256_bytes(
+                    native._canonical(incarnation_rows)
+                ),
+                "authorized_data_identity_sha256": native._sha256_bytes(
+                    native._canonical(data_identity)
+                ),
+                "authorization_raw_index": 0,
+                "absence_raw_index": 1,
+            },
+            "raw_observations": raw,
+            "raw_observations_sha256": native._sha256_bytes(native._canonical(raw)),
+        },
+    }
 
-    monkeypatch.setattr(native, "HOSTED_ADMISSION_VERIFIER", None)
-    first = Verifier()
-    native.register_hosted_admission_verifier(first)
-    assert native.HOSTED_ADMISSION_VERIFIER is first
-    with pytest.raises(RuntimeError, match="already registered"):
-        native.register_hosted_admission_verifier(Verifier())
+    singleton_rows = [[row[0]] for row in action_rows]
+    assert observation["native_service"]["removal"]["authorized_actions_sha256"] != (
+        native._sha256_bytes(native._canonical(singleton_rows))
+    )
+    errors = native._pinokio_custody_structural_errors(observation)
+    assert errors == []
+
+    invalid_counts = copy.deepcopy(observation)
+    invalid_counts["native_service"]["removal"]["observed_action_count"] = 3
+    assert any(
+        "authorization/absence binding differs" in error
+        for error in native._pinokio_custody_structural_errors(invalid_counts)
+    )
+
+
+class _TwoPhasePlatformSession:
+    def __init__(self, events: list[str], *, fail_final: bool = False) -> None:
+        self.events = events
+        self.fail_final = fail_final
+        self.request = None
+
+    def bind_exact_custody(self, binding, owner):
+        del binding, owner
+        self.events.append("bind")
+
+    def authorize_exact_removal(self, request, owner):
+        del owner
+        assert request.session.slot_id == "direct-linux"
+        assert request.session.owner_kind == "native-service"
+        assert request.operation == "product-uninstall"
+        assert request.keep_data is True
+        assert request.remove_paths == ("/astrid.service", "/runtime")
+        assert request.preserve_paths == ("/data",)
+        assert request.custody.removal_plan is not None
+        assert request.custody.removal_plan.remove_paths == request.remove_paths
+        assert request.live_census.manager_target == "astrid.service"
+        assert request.live_census.processes[0].executable_sha256 == "1" * 64
+        self.request = request
+        self.events.append("authorize")
+
+    def finalize_after_removal(self, observation, owner):
+        assert observation.slot_id == "direct-linux"
+        assert self.request is not None
+        authorized = {
+            "observed_actions": [list(row) for row in self.request.observed_actions],
+            "observed_incarnations": [
+                {"pid": pid, "process_birth_id": birth_id}
+                for pid, birth_id in self.request.observed_incarnations
+            ],
+            "data_identity": dict(self.request.data_identity),
+        }
+        self.events.append("platform-live-reobserve")
+        second_absence = owner.observe_absent(authorized)
+        assert tuple(sorted(second_absence.items())) == observation.absence
+        self.events.append("finalize")
+        if self.fail_final:
+            raise RuntimeError("controlled final re-observation mismatch")
+
+    def abort(self, reason):
+        assert reason
+        self.events.append("abort")
+
+
+def test_authenticated_session_opens_before_private_scratch_creation(tmp_path: Path) -> None:
+    events: list[str] = []
+    session = _TwoPhasePlatformSession(events)
+    work_root = tmp_path / "private" / "run"
+    validated = native._validated_work_root(
+        work_root,
+        {"RUNNER_TEMP": str(tmp_path)},
+    )
+    native.DataProbe(validated)
+    native.DurableJournalProbe(validated)
+
+    class Provider:
+        @staticmethod
+        def open_authenticated_session(binding, owner):
+            assert binding == _session_binding()
+            assert owner is sentinel_owner
+            assert not work_root.exists()
+            events.append("open")
+            return session
+
+    sentinel_owner = object()
+    opened = native._open_platform_session_and_create_work_root(
+        Provider(),
+        _session_binding(),
+        sentinel_owner,
+        validated,
+    )
+
+    assert opened is session
+    assert events == ["open"]
+    assert work_root.is_dir()
+
+
+class _RemovalOwner:
+    os_name = "linux"
+
+    def __init__(self, current: dict, events: list[str]) -> None:
+        self.current = current
+        self.events = events
+        self.raw: list[dict] = []
+
+    def registration(self):
+        return {
+            "action": ["/runtime", "--service"],
+            "target": "astrid.service",
+            "principal": "runner",
+            "definition_path": "/astrid.service",
+        }
+
+    def revalidate(self, expected, discovery):
+        assert expected == self.current and discovery == self.current
+        self.raw.append({"label": "systemd-query"})
+        return dict(self.current)
+
+    @staticmethod
+    def _same_instance(left, right):
+        return native._instance_identity(left) == native._instance_identity(right)
+
+    def removal_census(self, current, instances, custody):
+        del instances
+        assert custody.removal_plan is not None
+        targets = ("astrid.service", *custody.removal_plan.remove_paths)
+        return native.RemovalCensus(
+            manager_target="astrid.service",
+            manager_instance_id=current["manager_instance_id"],
+            registration=tuple(sorted(self.registration().items())),
+            controller_identity=(
+                ("owner_kind", "native-service"),
+                ("manager", "systemd-user"),
+                ("target", "astrid.service"),
+                ("manager_instance_id", current["manager_instance_id"]),
+            ),
+            processes=(
+                native.RemovalProcessBinding(
+                    role="native-runtime-service",
+                    target="astrid.service",
+                    pid=current["pid"],
+                    process_birth_id=current["process_birth_id"],
+                    parent_role="systemd-user-owned-service",
+                    parent_pid=None,
+                    parent_process_birth_id=None,
+                    executable_path=current["executable_path"],
+                    executable_sha256=current["executable_sha256"],
+                    action=("/runtime", "--service"),
+                    discovery_identity=tuple(
+                        (name, current.get(name)) for name in native.INSTANCE_IDENTITY_FIELDS
+                    ),
+                    removal_targets=targets,
+                ),
+            ),
+            prior_incarnations=(),
+            removal_targets=targets,
+        )
+
+    def observe_absent(self, authorized):
+        assert authorized["observed_actions"]
+        self.events.append("live-absence")
+        self.raw.append({"label": "systemd-query"})
+        return {
+            "definition_absent": True,
+            "manager_target_absent": True,
+            "owned_processes_after": 0,
+            "all_authorized_incarnations_absent": True,
+            "observed_action_count": len(authorized["observed_actions"]),
+            "observed_incarnation_count": len(authorized["observed_incarnations"]),
+            "post_data_identity": authorized["data_identity"],
+            "post_data_identity_sha256": hashlib.sha256(
+                json.dumps(
+                    authorized["data_identity"], sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest(),
+            "data_identity_unchanged": True,
+            "observed": True,
+        }
+
+
+def _removal_current() -> dict:
+    return {
+        "state": "running",
+        "manager_instance_id": "manager",
+        "pid": 321,
+        "process_birth_id": "birth",
+        "runtime_instance_id": "runtime",
+        "executable_path": "/runtime",
+        "executable_sha256": "1" * 64,
+        "data_root": "/data",
+        "data_identity_sha256": "2" * 64,
+        "workspace_identity": "workspace",
+        "semantic_data_sha256": "3" * 64,
+        "data_manifest_path": "/data/native-data-identity.json",
+        "data_manifest_sha256": "4" * 64,
+        "data_root_identity_sha256": "5" * 64,
+    }
+
+
+def test_two_phase_session_authorizes_before_removal_and_finalizes_before_return() -> None:
+    events: list[str] = []
+    current = _removal_current()
+    owner = _RemovalOwner(current, events)
+    platform = _TwoPhasePlatformSession(events)
+    session = native.NativeSession(
+        owner,
+        platform_session=platform,
+        platform_binding=_session_binding(),
+        custody_binding=_custody_binding(),
+    )
+    session.instances.append({"scenario": "keep_data_uninstall", "phase": "before", **current})
+
+    session.before_product_removal(current, current)
+    events.append("product-remove")
+    result = session.observe_product_removal()
+
+    assert events == [
+        "authorize",
+        "product-remove",
+        "live-absence",
+        "platform-live-reobserve",
+        "live-absence",
+        "finalize",
+    ]
+    assert result["observed"] is True
+    assert "authorization_sha256" not in result
+    with pytest.raises(RuntimeError, match="already consumed"):
+        session.observe_product_removal()
+
+
+def test_removal_census_accounts_for_every_recorded_process_incarnation() -> None:
+    events: list[str] = []
+    current = _removal_current()
+    prior = {
+        **current,
+        "pid": 320,
+        "process_birth_id": "prior-birth",
+        "runtime_instance_id": "prior-runtime",
+    }
+    owner = _RemovalOwner(current, events)
+    platform = _TwoPhasePlatformSession(events)
+    session = native.NativeSession(
+        owner,
+        platform_session=platform,
+        platform_binding=_session_binding(),
+        custody_binding=_custody_binding(),
+    )
+    session.instances.extend(
+        [
+            {"scenario": "interruption_recovery", "phase": "before", **prior},
+            {"scenario": "keep_data_uninstall", "phase": "before", **current},
+        ]
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="does not account for every recorded process incarnation",
+    ):
+        session.before_product_removal(current, current)
+    assert events == []
+
+
+def test_two_phase_session_returns_no_removal_when_final_reobservation_fails() -> None:
+    events: list[str] = []
+    current = _removal_current()
+    owner = _RemovalOwner(current, events)
+    platform = _TwoPhasePlatformSession(events, fail_final=True)
+    session = native.NativeSession(
+        owner,
+        platform_session=platform,
+        platform_binding=_session_binding(),
+        custody_binding=_custody_binding(),
+    )
+    session.instances.append({"scenario": "keep_data_uninstall", "phase": "before", **current})
+    session.before_product_removal(current, current)
+
+    with pytest.raises(RuntimeError, match="final re-observation mismatch"):
+        session.observe_product_removal()
+    assert session.removal is None
+    assert events == [
+        "authorize",
+        "live-absence",
+        "platform-live-reobserve",
+        "live-absence",
+        "finalize",
+    ]
+    with pytest.raises(RuntimeError, match="no exact platform authorization"):
+        session.safe_finalize()
+    native._abort_platform_session(platform, RuntimeError("controlled"))
+    assert events[-1] == "abort"
+
+
+def test_two_phase_session_rejects_boolean_or_handle_shaped_authorization() -> None:
+    class BooleanAuthorizationSession(_TwoPhasePlatformSession):
+        def authorize_exact_removal(self, request, owner):
+            super().authorize_exact_removal(request, owner)
+            return True
+
+    events: list[str] = []
+    current = _removal_current()
+    owner = _RemovalOwner(current, events)
+    platform = BooleanAuthorizationSession(events)
+    session = native.NativeSession(
+        owner,
+        platform_session=platform,
+        platform_binding=_session_binding(),
+        custody_binding=_custody_binding(),
+    )
+    session.instances.append({"scenario": "keep_data_uninstall", "phase": "before", **current})
+
+    with pytest.raises(RuntimeError, match="must return no handle or verdict"):
+        session.before_product_removal(current, current)
+    assert session.removal is None
 
 
 def assign_path(value: dict | list, path: tuple[object, ...], replacement: object) -> None:
@@ -1040,11 +1602,6 @@ def assign_path(value: dict | list, path: tuple[object, ...], replacement: objec
                 "data_identity_sha256",
             ),
             "0" * 64,
-            "authorization",
-        ),
-        (
-            ("native_service", "removal", "authorization_sha256"),
-            "bad",
             "authorization",
         ),
         (
@@ -1556,9 +2113,7 @@ def test_windows_process_rows_normalize_provider_keys_without_loss(tmp_path: Pat
         ('[{"ProcessId":NaN}]', "malformed"),
     ],
 )
-def test_windows_process_rows_reject_malformed_powershell_json(
-    stdout: str, error: str
-) -> None:
+def test_windows_process_rows_reject_malformed_powershell_json(stdout: str, error: str) -> None:
     probe, _runner = windows_process_probe(stdout)
     with pytest.raises(RuntimeError, match=error):
         probe._windows_rows("provider query")
@@ -1606,9 +2161,7 @@ def test_windows_process_rows_reject_invalid_identity_values(
 
 
 @pytest.mark.parametrize("change", ["missing", "extra"])
-def test_windows_process_rows_require_exact_provider_fields(
-    tmp_path: Path, change: str
-) -> None:
+def test_windows_process_rows_require_exact_provider_fields(tmp_path: Path, change: str) -> None:
     executable = tmp_path / "runtime.exe"
     executable.write_bytes(b"runtime")
     row = windows_process_row(4312, windows_process_birth(4312), executable)
@@ -1684,26 +2237,16 @@ def test_windows_runtime_observation_wraps_expected_path_resolution_failure(
 ) -> None:
     probe, _runner = windows_process_probe("[]")
     with pytest.raises(RuntimeError, match="expected Runtime executable cannot be resolved"):
-        probe.observe(
-            4312, os_name="windows", expected_executable=tmp_path / "missing-runtime.exe"
-        )
+        probe.observe(4312, os_name="windows", expected_executable=tmp_path / "missing-runtime.exe")
 
 
 def test_windows_pid_reuse_changes_birth_identity_without_losing_pid(tmp_path: Path) -> None:
     executable = tmp_path / "runtime.exe"
     executable.write_bytes(b"runtime")
     probe, _runner = windows_process_probe(
-        json.dumps(
-            [
-                windows_process_row(
-                    4312, windows_process_birth(4312, fraction=2), executable
-                )
-            ]
-        )
+        json.dumps([windows_process_row(4312, windows_process_birth(4312, fraction=2), executable)])
     )
-    assert probe.incarnation_absent(
-        4312, windows_process_birth(4312), os_name="windows"
-    )
+    assert probe.incarnation_absent(4312, windows_process_birth(4312), os_name="windows")
 
 
 def test_windows_absence_only_accepts_explicit_empty_result(tmp_path: Path) -> None:
@@ -1712,9 +2255,7 @@ def test_windows_absence_only_accepts_explicit_empty_result(tmp_path: Path) -> N
     empty_probe, _runner = windows_process_probe("[]")
     malformed_probe, _runner = windows_process_probe("")
     same_probe, _runner = windows_process_probe(
-        json.dumps(
-            [windows_process_row(4312, windows_process_birth(4312), executable)]
-        )
+        json.dumps([windows_process_row(4312, windows_process_birth(4312), executable)])
     )
     birth = windows_process_birth(4312)
     assert empty_probe.incarnation_absent(4312, birth, os_name="windows")
@@ -1777,8 +2318,7 @@ def test_windows_owned_processes_return_canonical_native_map_rows(tmp_path: Path
     assert "ExecutablePath -eq" not in script
     assert (
         "Where-Object {(($null -ne $_.ExecutablePath -and "
-        "$_.ExecutablePath -ne '') -or $_.Name -eq 'runtime.exe')} | "
-        in script
+        "$_.ExecutablePath -ne '') -or $_.Name -eq 'runtime.exe')} | " in script
     )
     assert "$_.CreationDate.ToUniversalTime().ToString('o')" in script
 
@@ -1805,8 +2345,7 @@ def test_windows_owned_processes_canonicalize_reported_path_alias(
     assert "ExecutablePath -eq" not in script
     assert (
         "Where-Object {(($null -ne $_.ExecutablePath -and "
-        "$_.ExecutablePath -ne '') -or $_.Name -eq 'runtime.exe')} | "
-        in script
+        "$_.ExecutablePath -ne '') -or $_.Name -eq 'runtime.exe')} | " in script
     )
 
 
@@ -1835,8 +2374,7 @@ def test_windows_owned_process_candidate_rejects_missing_executable_path(
     script = runner.calls[0][-1]
     assert (
         "Where-Object {(($null -ne $_.ExecutablePath -and "
-        "$_.ExecutablePath -ne '') -or $_.Name -eq 'runtime.exe')} | "
-        in script
+        "$_.ExecutablePath -ne '') -or $_.Name -eq 'runtime.exe')} | " in script
     )
 
 
@@ -1847,8 +2385,7 @@ def test_windows_owned_process_name_filter_escapes_single_quote(tmp_path: Path) 
     assert probe.owned_action_processes([str(executable)], os_name="windows") == []
     assert (
         "Where-Object {(($null -ne $_.ExecutablePath -and "
-        "$_.ExecutablePath -ne '') -or $_.Name -eq 'run''time.exe')} | "
-        in runner.calls[0][-1]
+        "$_.ExecutablePath -ne '') -or $_.Name -eq 'run''time.exe')} | " in runner.calls[0][-1]
     )
 
 
@@ -2024,9 +2561,12 @@ def test_swapped_action_refuses_restart_and_unsafe_cleanup(tmp_path: Path) -> No
     "slot_id",
     [slot for slot in failure.REQUIRED_SLOT_IDS if not slot.startswith("direct-")],
 )
-def test_all_pinokio_slots_remain_explicit_needs(tmp_path: Path, slot_id: str) -> None:
+def test_all_pinokio_slots_use_distinct_fixed_custody_provider_slot(
+    tmp_path: Path, slot_id: str
+) -> None:
     assert len(failure.REQUIRED_SLOT_IDS) == 9
-    with pytest.raises(RuntimeError, match="NEEDS B/platform approval"):
+    assert native._pinokio_custody_provider() is pinokio_custody.PINOKIO_CUSTODY_PROVIDER
+    with pytest.raises(RuntimeError, match="NEEDS approved shared hosted journey-driver"):
         native.execute(
             slot_id,
             PROVISIONAL_CANDIDATE,
@@ -2037,6 +2577,7 @@ def test_all_pinokio_slots_remain_explicit_needs(tmp_path: Path, slot_id: str) -
             runtime_repo=tmp_path,
             pinokio_repo=tmp_path,
         )
+    assert not (tmp_path / "run").exists()
 
 
 def test_atomic_publication_helper_publishes_complete_tree_without_admission_claim(

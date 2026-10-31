@@ -6,20 +6,30 @@ from pathlib import Path
 
 import pytest
 
-from scripts import ci_journey, check_journey_evidence, journey_matrix
-from scripts import failure_mode_executor, journey_failure_modes
+from scripts import (
+    check_journey_evidence,
+    ci_journey,
+    failure_mode_executor,
+    journey_failure_modes,
+    journey_matrix,
+)
 from tests.failure_mode_fixtures import PROVISIONAL_CANDIDATE
 
 
 def _local_observation(slot_id):
     contract = failure_mode_executor.failure.SLOT_CONTRACTS[slot_id]
+
     def identity():
         return {
             "loaded_sources": {
-                "agent_module": "/tmp/agent.py", "agent_module_sha256": "a" * 64,
-                "runtime_module": "/tmp/runtime.py", "runtime_module_sha256": "b" * 64,
+                "agent_module": "/tmp/agent.py",
+                "agent_module_sha256": "a" * 64,
+                "runtime_module": "/tmp/runtime.py",
+                "runtime_module_sha256": "b" * 64,
                 "runtime_discovery": {
-                    "pid": 123, "process_birth_id": "birth", "runtime_instance_id": "instance",
+                    "pid": 123,
+                    "process_birth_id": "birth",
+                    "runtime_instance_id": "instance",
                 },
             },
         }
@@ -46,16 +56,24 @@ def _local_observation(slot_id):
         "manifest_sha256": PROVISIONAL_CANDIDATE["manifest_sha256"],
         "evidence_files": [],
         "scenarios": {
-            "interruption_recovery": {"terminal_identity": identity(), "cleanup": copy.deepcopy(cleanup)},
+            "interruption_recovery": {
+                "terminal_identity": identity(),
+                "cleanup": copy.deepcopy(cleanup),
+            },
             "failed_candidate_rollback": {
                 "executable_identity": copy.deepcopy(pair),
                 "candidate_process_boundary": {
-                    "started": True, "exit_code": 73, "process_identity_sha256": "c" * 64,
+                    "started": True,
+                    "exit_code": 73,
+                    "process_identity_sha256": "c" * 64,
                     "loaded_sources": {"agent_module_sha256": "d" * 64},
                 },
                 "cleanup": copy.deepcopy(cleanup),
             },
-            "keep_data_uninstall": {"executable_identity_before": identity(), "cleanup": copy.deepcopy(cleanup)},
+            "keep_data_uninstall": {
+                "executable_identity_before": identity(),
+                "cleanup": copy.deepcopy(cleanup),
+            },
             "stop_safety": {"cases": cases},
         },
     }
@@ -85,18 +103,19 @@ def _write_local_matrix(root, mutate=None):
 
 def test_m4_6_local_matrix_requires_all_nine_valid_local_outputs(tmp_path):
     _write_local_matrix(tmp_path)
-    assert check_journey_evidence.evaluate_m4_6_local_matrix(
-        tmp_path, PROVISIONAL_CANDIDATE
-    ) == []
+    assert check_journey_evidence.evaluate_m4_6_local_matrix(tmp_path, PROVISIONAL_CANDIDATE) == []
 
 
-@pytest.mark.parametrize("mutation,expected", [
-    ("incomplete", "missing M4-6 local execution"),
-    ("synthetic", "executor.rollback"),
-    ("wrong_tuple", "wrong candidate tuple"),
-    ("cleanup", "owned-process cleanup is missing"),
-    ("hosted", "wrong tuple or scope"),
-])
+@pytest.mark.parametrize(
+    "mutation,expected",
+    [
+        ("incomplete", "missing M4-6 local execution"),
+        ("synthetic", "executor.rollback"),
+        ("wrong_tuple", "wrong candidate tuple"),
+        ("cleanup", "owned-process cleanup is missing"),
+        ("hosted", "wrong tuple or scope"),
+    ],
+)
 def test_m4_6_local_aggregate_rejects_unadmitted_outputs(tmp_path, mutation, expected):
     def alter(slot, row):
         if slot != journey_matrix.M4_6_SLOT_IDS[0]:
@@ -110,9 +129,9 @@ def test_m4_6_local_aggregate_rejects_unadmitted_outputs(tmp_path, mutation, exp
         elif mutation == "wrong_tuple":
             row["observation"]["candidate_checkouts"]["agent"]["sha"] = "f" * 40
         elif mutation == "cleanup":
-            row["observation"]["scenarios"]["stop_safety"]["cases"]["unknown"][
-                "cleanup"
-            ]["process_absent"] = False
+            row["observation"]["scenarios"]["stop_safety"]["cases"]["unknown"]["cleanup"][
+                "process_absent"
+            ] = False
         elif mutation == "hosted":
             row["execution_scope"] = "hosted"
             row["observation"]["execution_scope"] = "hosted"
@@ -120,9 +139,7 @@ def test_m4_6_local_aggregate_rejects_unadmitted_outputs(tmp_path, mutation, exp
     _write_local_matrix(tmp_path, alter)
     if mutation == "incomplete":
         (tmp_path / journey_matrix.M4_6_SLOT_IDS[0] / "m4-6-local-result.json").unlink()
-    errors = check_journey_evidence.evaluate_m4_6_local_matrix(
-        tmp_path, PROVISIONAL_CANDIDATE
-    )
+    errors = check_journey_evidence.evaluate_m4_6_local_matrix(tmp_path, PROVISIONAL_CANDIDATE)
     assert errors
     assert any(expected in error for error in errors)
 
@@ -137,11 +154,26 @@ def test_m4_6_route_emits_local_exercised_output_without_hosted_validation(tmp_p
     observation = _local_observation(slot)
     monkeypatch.setattr(failure_mode_executor, "execute", lambda *args, **kwargs: observation)
     monkeypatch.setattr(failure_mode_executor, "execution_observation_errors", lambda value: [])
-    monkeypatch.setattr(failure, "validate_receipt", lambda *args: pytest.fail("hosted validator called"))
-    args = ["m4-6", "--slot-id", slot, "--candidate", str(candidate_path),
-            "--fixture", str(tmp_path / "fixture"), "--output", str(output),
-            "--work-root", str(tmp_path / "work"), "--agent-repo", str(tmp_path / "agent"),
-            "--release0-runtime-repo", str(tmp_path / "runtime")]
+    monkeypatch.setattr(
+        failure, "validate_receipt", lambda *args: pytest.fail("hosted validator called")
+    )
+    args = [
+        "m4-6",
+        "--slot-id",
+        slot,
+        "--candidate",
+        str(candidate_path),
+        "--fixture",
+        str(tmp_path / "fixture"),
+        "--output",
+        str(output),
+        "--work-root",
+        str(tmp_path / "work"),
+        "--agent-repo",
+        str(tmp_path / "agent"),
+        "--release0-runtime-repo",
+        str(tmp_path / "runtime"),
+    ]
 
     assert ci_journey._shared_executor_main(args) == 0
     receipt = json.loads(output.read_text(encoding="utf-8"))
@@ -153,14 +185,76 @@ def test_m4_6_route_fails_on_executor_observation_errors(tmp_path, monkeypatch):
     slot = journey_matrix.M4_6_SLOT_IDS[0]
     candidate_path = tmp_path / "candidate.json"
     candidate_path.write_text(json.dumps(PROVISIONAL_CANDIDATE), encoding="utf-8")
-    monkeypatch.setattr(failure_mode_executor, "execute", lambda *args, **kwargs: _local_observation(slot))
-    monkeypatch.setattr(failure_mode_executor, "execution_observation_errors", lambda value: ["cleanup failed"])
-    args = ["m4-6", "--slot-id", slot, "--candidate", str(candidate_path),
-            "--fixture", str(tmp_path / "fixture"), "--output", str(tmp_path / "result.json"),
-            "--work-root", str(tmp_path / "work"), "--agent-repo", str(tmp_path / "agent"),
-            "--release0-runtime-repo", str(tmp_path / "runtime")]
+    monkeypatch.setattr(
+        failure_mode_executor, "execute", lambda *args, **kwargs: _local_observation(slot)
+    )
+    monkeypatch.setattr(
+        failure_mode_executor, "execution_observation_errors", lambda value: ["cleanup failed"]
+    )
+    args = [
+        "m4-6",
+        "--slot-id",
+        slot,
+        "--candidate",
+        str(candidate_path),
+        "--fixture",
+        str(tmp_path / "fixture"),
+        "--output",
+        str(tmp_path / "result.json"),
+        "--work-root",
+        str(tmp_path / "work"),
+        "--agent-repo",
+        str(tmp_path / "agent"),
+        "--release0-runtime-repo",
+        str(tmp_path / "runtime"),
+    ]
     assert ci_journey._shared_executor_main(args) == 1
     assert not (tmp_path / "result.json").exists()
+
+
+def test_m4_6_hosted_root_route_fails_closed_until_rewired_to_live_session(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import native_service_adapter as native
+
+    monkeypatch.setattr(native, "JOURNEY_DRIVER_FACTORY", None)
+    driver_config = tmp_path / "driver.json"
+    driver_config.write_text("{}\n", encoding="utf-8")
+
+    def fail_at_fixed_platform_provider(_args):
+        assert native.JOURNEY_DRIVER_FACTORY is not None
+        native._platform_session_provider().open_authenticated_session(object(), object())
+
+    monkeypatch.setattr(native, "main", fail_at_fixed_platform_provider)
+    output = tmp_path / "hosted" / "journey-failure-result.json"
+    args = [
+        "m4-6-hosted",
+        "--slot-id",
+        "direct-linux",
+        "--candidate",
+        str(tmp_path / "candidate.json"),
+        "--fixture",
+        str(tmp_path / "fixture"),
+        "--output",
+        str(output),
+        "--work-root",
+        str(tmp_path / "work"),
+        "--app-repo",
+        str(tmp_path / "app"),
+        "--agent-repo",
+        str(tmp_path / "agent"),
+        "--runtime-repo",
+        str(tmp_path / "runtime"),
+        "--pinokio-repo",
+        str(tmp_path / "pinokio"),
+        "--journey-driver-config",
+        str(driver_config),
+    ]
+
+    assert ci_journey._shared_executor_main(args) == 1
+    assert "trusted collector context/channel is unavailable" in capsys.readouterr().err
+    assert native.JOURNEY_DRIVER_FACTORY is not None
+    assert not output.exists()
 
 
 def test_unknown_shared_route_fails_closed(capsys):
@@ -178,14 +272,33 @@ def test_m4_6_windows_route_uses_powershell_51_and_argv_safe_quoting(monkeypatch
     monkeypatch.setattr(ci_journey.sys, "platform", "win32")
     monkeypatch.setattr(ci_journey.sys, "executable", r"C:\Program Files\Python\python.exe")
     monkeypatch.setattr(ci_journey.subprocess, "run", fake_run)
-    args = ["m4-6", "--slot-id", "direct-windows", "--candidate", r"C:\Input Dir\it's.json",
-            "--fixture", r"C:\Fixture Dir\release0", "--output", r"C:\Out Dir\result.json",
-            "--work-root", r"C:\Temp Dir\work", "--agent-repo", r"C:\Agent's Repo",
-            "--release0-runtime-repo", r"C:\Runtime Repo"]
+    args = [
+        "m4-6",
+        "--slot-id",
+        "direct-windows",
+        "--candidate",
+        r"C:\Input Dir\it's.json",
+        "--fixture",
+        r"C:\Fixture Dir\release0",
+        "--output",
+        r"C:\Out Dir\result.json",
+        "--work-root",
+        r"C:\Temp Dir\work",
+        "--agent-repo",
+        r"C:\Agent's Repo",
+        "--release0-runtime-repo",
+        r"C:\Runtime Repo",
+    ]
 
     assert ci_journey._shared_executor_main(args) == 0
     command = captured["command"]
-    assert command[:5] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    assert command[:5] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+    ]
     script = command[-1]
     assert "C:\\Program Files\\Python\\python.exe" in script
     assert "C:\\Input Dir\\it's.json" not in script
@@ -196,18 +309,59 @@ def test_m4_6_windows_route_uses_powershell_51_and_argv_safe_quoting(monkeypatch
 def test_m4_4b_local_aggregate_fails_closed_when_missing_or_hosted(tmp_path):
     assert check_journey_evidence.evaluate_m4_4b_local_smoke(tmp_path)
     path = tmp_path / "m4-4b-local-result.json"
-    path.write_text(json.dumps({"receipt_kind": "m4-4b-fully-local-editor-journey",
-                                "evidence_class": "hosted-linux", "status": "pass"}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "receipt_kind": "m4-4b-fully-local-editor-journey",
+                "evidence_class": "hosted-linux",
+                "status": "pass",
+            }
+        ),
+        encoding="utf-8",
+    )
     assert check_journey_evidence.evaluate_m4_4b_local_smoke(tmp_path)
 
 
 def test_workflow_explicitly_wires_both_local_families_and_hosted_m4_6_gate():
-    workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text(encoding="utf-8")
-    for fragment in ("m4_4b_enabled", "m4_6_enabled", "m4_6_candidate", "m4_6_matrix",
-                     "m4_4b_local:", "failure_modes:", "m4-4b-local-m4-4b-fully-local-linux-smoke",
-                     "m4-6-local-${{",
-                     "--aggregate-m4-4b-local", "--aggregate-m4-6-local",
-                     "check_failure_receipts.py", "m4-6-hosted-needs.json"):
+    workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "m4_4b_enabled",
+        "m4_6_enabled",
+        "m4_6_candidate",
+        "m4_6_matrix",
+        "m4_4b_local:",
+        "failure_modes:",
+        "m4-4b-local-m4-4b-fully-local-linux-smoke",
+        "m4-6-local-${{",
+        "--aggregate-m4-4b-local",
+        "--aggregate-m4-6-local",
+        "check_failure_receipts.py",
+        "m4-6-hosted-needs.json",
+    ):
         assert fragment in workflow
     assert "powershell.exe" in workflow or "powershell5_command" in workflow
     assert journey_failure_modes.candidate_errors(PROVISIONAL_CANDIDATE) == []
+
+
+def test_workflow_provisions_and_attests_m4_6_historical_objects_before_execution():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text(
+        encoding="utf-8"
+    )
+    provisioning = workflow.index("Provision and attest immutable release-0 Git objects")
+    first_executor = workflow.index("Run local-disposable M4-6 executor slot on POSIX")
+    assert provisioning < first_executor
+    for fragment in (
+        "fetch-depth: 1",
+        "RELEASE0_AGENT_REF: 3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+        "RELEASE0_RUNTIME_REF: 6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+        'git -C "$GITHUB_WORKSPACE/candidate-agent" fetch --no-tags --depth=1 origin',
+        'git -C "$GITHUB_WORKSPACE/runtime" fetch --no-tags --depth=1 origin',
+        'cat-file -t "$RELEASE0_AGENT_REF"',
+        'cat-file -t "$RELEASE0_RUNTIME_REF"',
+        '--agent-repo "$GITHUB_WORKSPACE/candidate-agent"',
+        '--release0-runtime-repo "$GITHUB_WORKSPACE/runtime"',
+        "Effective M4-6 historical source provisioning",
+    ):
+        assert fragment in workflow
