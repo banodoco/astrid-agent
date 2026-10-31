@@ -553,6 +553,7 @@ def test_definitive_nonconflicts_never_rerun(connected, monkeypatch, status):
     with pytest.raises(CommitRefused) as caught:
         tl.commit(edit)
     assert caught.value.failure["details"]["status"] == status
+    assert caught.value.retry_fn is edit
     assert len(evaluations) == 1
     assert caught.value.pending_id
     saved = tl.pending_show(caught.value.pending_id)
