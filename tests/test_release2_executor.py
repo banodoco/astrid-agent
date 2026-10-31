@@ -256,7 +256,29 @@ def test_executor_runs_every_declared_os_channel_and_mode(tmp_path, row):
     assert receipt["scenario_id"] == row["scenario_id"]
     assert receipt["mode"] == row["mode"]
     assert receipt["installed"]["manifest_sha256"] == release2.STAND_IN_MANIFEST_SHA256
+    assert receipt["installed"]["release"] == 2
+    assert receipt["installed"]["qualification_marker"] == release2.STAND_IN_MARKER
+    inspection = next(action for action in receipt["actions"] if action["action"] == "inspect-release2")
+    assert inspection["observation"]["installed"] == receipt["installed"]
     assert all(value == "pass" for value in receipt["checks"].values())
+
+
+@pytest.mark.parametrize(("channel", "mode"), (
+    ("button", "direct"), ("install-line", "direct"),
+    ("pinokio-update", "pinokio-backend"), ("pinokio-update", "pinokio-fully-local"),
+))
+@pytest.mark.parametrize("missing", (False, True), ids=("wrong", "missing"))
+def test_executor_rejects_wrong_or_missing_visible_r2_identity(tmp_path, monkeypatch, channel, mode, missing):
+    change = ('observation["installed"].pop("qualification_marker")' if missing else
+              'observation["installed"]["qualification_marker"] = "wrong"')
+    modified = BOUNDARY.replace('elif action == "cleanup":',
+                                '    ' + change + '\nelif action == "cleanup":')
+    monkeypatch.setitem(globals(), "BOUNDARY", modified)
+    with pytest.raises(executor.ExecutionError, match="installed stand-in qualification_marker"):
+        run_scenario(tmp_path, scenario(channel, mode))
+    failed = json.loads((tmp_path / "journey-result.json").read_text())
+    assert failed["status"] == "fail"
+    assert failed["checks"]["marker"] == "not-run"
 
 
 def test_shared_m4_5_aggregate_rejects_disposable_receipts_duplicates_and_missing_rows(tmp_path):

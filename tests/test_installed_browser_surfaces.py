@@ -644,77 +644,28 @@ def test_update_command_runs_real_public_bootstrap_with_separate_argv_and_journa
         update_surface._validate_release2(root, data, request, digest)
 
 
-def test_current_accepted_stand_in_fails_before_bootstrap_or_journal(tmp_path):
-    marker = tmp_path / "bootstrap-invoked"
-    bootstrap = (
-        "#!/usr/bin/env python3\nfrom pathlib import Path\n"
-        f"Path({str(marker)!r}).write_text('invoked')\n"
-    )
-    paths, refs = _checkouts(tmp_path, {"public/install.py": bootstrap})
-    root, data = tmp_path / "program", tmp_path / "data"
-    data.mkdir()
-    _install(
-        root,
-        data,
-        {
-            "release": 1,
-            "agent": {"sha": refs["agent"]},
-            "runtime": {"sha": refs["runtime"]},
-        },
-        managed_by=None,
-    )
-    accepted = ROOT / "tests" / "fixtures" / "release0" / "release2" / "installable-stand-in.json"
-    manifest = json.loads(accepted.read_text())
-    digest = hashlib.sha256(accepted.read_bytes()).hexdigest()
-    assert digest == "66af38efb5109920cc01685487d4594b3787674aba8f49c6e5d951ac8f763fe8"
-    assert "vibecomfy" not in manifest
-    request = _request(
-        action="install-line-update",
-        refs=refs,
-        root=root,
-        data=data,
-        channel="install-line",
-        mode="direct",
-        stand_in={
-            "manifest_sha256": digest,
-            "target": {
-                "agent": manifest["agent"]["sha"],
-                "runtime": manifest["runtime"]["sha"],
-                "schema_digest": manifest["runtime"]["schema_digest"],
-            },
-        },
-        payload={
-            "update_flag": True,
-            "manifest_sha256": digest,
-            "root_bound": True,
-            "data_root_bound": True,
-        },
-    )
-    request["inputs"]["stand_in_marker"] = manifest["qualification_marker"]
-    result = _run(
-        [
-            sys.executable,
-            str(ROOT / "scripts" / "update_operation_surface.py"),
-            *_surface_args(paths),
-            "--stand-in-manifest",
-            str(accepted),
-            "--bootstrap",
-            str(paths["app"] / "public" / "install.py"),
-            "--shell",
-            sys.executable,
-        ],
-        input_text=json.dumps(_envelope("update", request)),
-    )
+def test_stand_in_passes_canonical_manifest_preflight():
+    from scripts import journey_release2 as release2
 
-    assert result.returncode == 1
-    assert (
-        "NEEDS: Agent installer must preserve the accepted stand-in manifest bytes" in result.stderr
-    )
-    assert digest in result.stderr
-    assert "omits vibecomfy" in result.stderr
-    assert not marker.exists()
-    assert not (data / ".astrid-m4-5-update-surface.json").exists()
-    assert (root / "current").read_text().strip() == "release-1"
+    manifest = json.loads(release2.STAND_IN_MANIFEST.read_text(encoding="utf-8"))
+    assert update_surface._manifest_preservation_preflight(
+        Namespace(stand_in_manifest=release2.STAND_IN_MANIFEST), manifest
+    ) == release2.STAND_IN_MANIFEST_SHA256
+
+
+@pytest.mark.parametrize("defect", ("missing-vibecomfy", "noncanonical"))
+def test_manifest_preflight_rejects_installer_rewrites(tmp_path, defect):
+    from scripts import journey_release2 as release2
+
+    manifest = json.loads(release2.STAND_IN_MANIFEST.read_text(encoding="utf-8"))
+    if defect == "missing-vibecomfy":
+        del manifest["vibecomfy"]
+    path = tmp_path / "stand-in.json"
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=defect != "noncanonical") + "\n")
+    if defect == "noncanonical":
+        path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n")
+    with pytest.raises(update_surface.SurfaceError, match="cannot remain installed"):
+        update_surface._manifest_preservation_preflight(Namespace(stand_in_manifest=path), manifest)
 
 
 @pytest.mark.parametrize("action", ["button-update-lost-ack", "button-update-explicit"])

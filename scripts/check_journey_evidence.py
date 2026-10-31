@@ -60,7 +60,7 @@ else:
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ARTIFACTS = ("public/install", "public/install.sh", "public/install.ps1")
-RELEASE0_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
+RELEASE0_SUMS_SHA256 = "6f6dc795391577933e5f8451b814b77d58a58c41b01ad86b0fcf8d32bddbe93a"
 RELEASE0_BOOTSTRAP_SHA256 = {
     "install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
     "install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258",

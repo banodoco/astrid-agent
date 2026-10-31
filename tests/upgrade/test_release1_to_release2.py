@@ -1,5 +1,7 @@
 """Focused admission and receipt controls for the provisional M4-5 module."""
 
+import hashlib
+import json
 from copy import deepcopy
 
 import pytest
@@ -200,6 +202,48 @@ def test_release2_fixture_is_exact_and_visible_marker_is_distinct_from_descripto
         "runtime": release2.STAND_IN_RUNTIME,
         "schema_digest": release2.STAND_IN_SCHEMA,
     }
+
+
+def test_r1_installer_canonical_rewrite_preserves_exact_stand_in_bytes(tmp_path, monkeypatch):
+    from astrid.installer import backend as installer
+    from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
+
+    source = release2.STAND_IN_MANIFEST.read_bytes()
+    manifest = json.loads(source)
+    assert VIBECOMFY_ENGINE_REVISION == release2.STAND_IN_VIBECOMFY
+    assert manifest["vibecomfy"] == {"sha": VIBECOMFY_ENGINE_REVISION}
+    uv = tmp_path / "uv"
+    uv.touch()
+    backend = installer.Backend(tmp_path / "root", tmp_path / "log", uv)
+    monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: "uv " + manifest["tools"]["uv"]["version"])
+
+    class Staged(Exception):
+        pass
+
+    def stop_after_manifest(*_args, **_kwargs):
+        raise Staged
+
+    monkeypatch.setattr(installer, "source", stop_after_manifest)
+    with pytest.raises(Staged):
+        backend.stage(manifest, tmp_path / "root", tmp_path / "data")
+    installed = next((tmp_path / "root" / "versions").glob("*/manifest.json"))
+    assert installed.read_bytes() == source
+    assert hashlib.sha256(installed.read_bytes()).hexdigest() == release2.STAND_IN_MANIFEST_SHA256
+
+
+@pytest.mark.parametrize("row", release2.RELEASE2_SCENARIOS,
+                         ids=[row["scenario_id"] for row in release2.RELEASE2_SCENARIOS])
+@pytest.mark.parametrize("field", ("release", "qualification_marker", "manifest_sha256",
+                                   "agent", "runtime", "schema_digest"))
+@pytest.mark.parametrize("missing", (False, True), ids=("wrong", "missing"))
+def test_receipt_rejects_wrong_or_missing_installed_r2_identity_on_every_path(row, field, missing):
+    receipt = valid_receipt(row)
+    assert release2.receipt_errors(receipt) == []
+    if missing:
+        del receipt["installed"][field]
+    else:
+        receipt["installed"][field] = "wrong"
+    assert any("installed stand-in identity" in error for error in release2.receipt_errors(receipt))
 
 
 def test_release2_matrix_covers_every_os_and_owned_channel_mode():

@@ -23,7 +23,7 @@ else:
 
 
 RELEASE0_FIXTURE = journey.ROOT / "tests" / "fixtures" / "release0"
-RELEASE0_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
+RELEASE0_SUMS_SHA256 = "6f6dc795391577933e5f8451b814b77d58a58c41b01ad86b0fcf8d32bddbe93a"
 RELEASE0_REFS = {
     "agent": "3204bb00135bec8ee2d2d3fb21eed5abfceca649",
     "runtime": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",

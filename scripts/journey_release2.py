@@ -33,14 +33,15 @@ RELEASE1_CANDIDATE = {
     "pinokio": "c5b42701641889ecb916c60cde09a717f83d62ff",
 }
 
-STAND_IN_SUMS_SHA256 = "58221a50aa7940e3121d6239ddeb92d6409df3711096aac1161c7ec130b755c0"
+STAND_IN_SUMS_SHA256 = "6f6dc795391577933e5f8451b814b77d58a58c41b01ad86b0fcf8d32bddbe93a"
 STAND_IN_DESCRIPTOR_SHA256 = "4b30c4d1cf8703bbb6efa65ae7bfafc7b28f5e410ccb411084c88e4f79512668"
-STAND_IN_MANIFEST_SHA256 = "66af38efb5109920cc01685487d4594b3787674aba8f49c6e5d951ac8f763fe8"
+STAND_IN_MANIFEST_SHA256 = "332458a5dda4408f392ca3c6fca59647000afec875c9769cfd400dc929aaf9b9"
 STAND_IN_MARKER = "M4-5 RELEASE 2 INSTALLABLE STAND-IN — UPDATE LANDED"
 STAND_IN_DESCRIPTOR_MARKER = "M4-2 RELEASE 2 STAND-IN — UPDATE LANDED"
 STAND_IN_AGENT = "2958bacea3e3c7961788fa9c625dd9db0be282de"
 STAND_IN_RUNTIME = "ebd412199a9c1e53c3a984d27d335de8b40654a1"
 STAND_IN_SCHEMA = "sha256:5d229bf66ffaeb0b4937844a3c2b08ddd21f97cbcc305101a5cc19a95c971194"
+STAND_IN_VIBECOMFY = "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
 
 RUNNERS = {
     "macos": {
@@ -182,10 +183,14 @@ def verified_stand_in(
         or (manifest.get("agent") or {}).get("sha") != STAND_IN_AGENT
         or (manifest.get("runtime") or {}).get("sha") != STAND_IN_RUNTIME
         or (manifest.get("runtime") or {}).get("schema_digest") != STAND_IN_SCHEMA
+        or manifest.get("vibecomfy") != {"sha": STAND_IN_VIBECOMFY}
         or not isinstance(manifest.get("tools"), dict)
         or not manifest["tools"]
     ):
         raise ValueError("Release-2 installable stand-in identity or marker differs from M4-2")
+    canonical = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if manifest_path.read_bytes() != canonical:
+        raise ValueError("Release-2 stand-in differs from the installer's canonical manifest")
     return {
         "fixture_sums_sha256": STAND_IN_SUMS_SHA256,
         "descriptor_sha256": STAND_IN_DESCRIPTOR_SHA256,
