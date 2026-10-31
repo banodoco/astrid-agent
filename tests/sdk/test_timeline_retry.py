@@ -310,6 +310,35 @@ def test_function_origin_retry_previews_saved_list_with_guards_for_approval(monk
     assert timeline.session.submissions[0][1]["reads"] == [dependency]
 
 
+def test_function_retry_reruns_saved_part_and_retains_suffix(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    record = timeline.session.state["pending_changes"]["pc_saved"]
+    record["origin"] = "function"
+    suffix = copy.deepcopy(record["parts"][0])
+    suffix["base"] = HEAD
+    suffix["commands"] = [{"op": "clip.move", "select": "clip:b", "args": {"on": 8}}]
+    record["parts"].append(suffix)
+    before_suffix = copy.deepcopy(suffix)
+    function = lambda working: None
+    calls = []
+    committed = {"status": "accepted", "receipt": {"receipt_id": "pub-retry"}}
+
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, []))
+
+    def commit(*args, **kwargs):
+        calls.append((args, kwargs))
+        return committed
+
+    timeline.commit = commit
+
+    result = retry_module.retry(timeline, "pc_saved", fn=function)
+
+    assert result is committed
+    assert calls == [((function,), {"label": "Recut", "key": "recut", "pending": "pc_saved"})]
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert saved["parts"][1] == before_suffix
+
+
 def test_function_overwrite_by_pending_id_closes_saved_record(monkeypatch, tmp_path):
     timeline = FakeTimeline(tmp_path / "outbox.json")
     record = timeline.session.state["pending_changes"]["pc_saved"]
