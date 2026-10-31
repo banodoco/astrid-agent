@@ -371,6 +371,14 @@ def test_function_retry_returns_commit_result_and_reuses_label_key(monkeypatch, 
     def commit(*args, **kwargs):
         calls.append((args, kwargs))
         assert timeline.session.state["base"] == HEAD
+        from astrid.sdk.timeline.sync import _settle_pending
+
+        _settle_pending(
+            timeline.session.state["pending_changes"][kwargs["pending"]],
+            expected_part=0,
+            actor_id=timeline.session.identity["actor_id"],
+            publication_id="pub9", how="rerun", base=HEAD,
+        )
         return committed
 
     timeline.commit = commit
@@ -445,16 +453,34 @@ def test_function_retry_reruns_saved_part_and_retains_suffix(monkeypatch, tmp_pa
 
     def commit(*args, **kwargs):
         calls.append((args, kwargs))
+        from astrid.sdk.timeline.sync import _settle_pending
+
+        record = timeline.session.state["pending_changes"][kwargs["pending"]]
+        settled = _settle_pending(
+            record,
+            expected_part=record.get("part", 0),
+            actor_id=timeline.session.identity["actor_id"],
+            publication_id=f"pub-retry-{len(calls)}", how="rerun", base=HEAD,
+        )
+        assert settled
+        committed["receipt"]["receipt_id"] = f"pub-retry-{len(calls)}"
         return committed
 
     timeline.commit = commit
 
     result = retry_module.retry(timeline, "pc_saved", fn=function)
 
-    assert result is committed
+    assert result["status"] == "part_landed"
+    assert result["pending_id"] == "pc_saved"
+    assert result["next"] == "tl.retry('pc_saved')"
+    assert result["record"] == timeline.session.state["pending_changes"]["pc_saved"]
     assert calls == [((function,), {"label": "Recut", "key": "recut", "pending": "pc_saved"})]
     saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert saved["state"] == "pending"
+    assert saved["part"] == 1
+    assert saved["receipts"] == ["pub-retry-1"]
     assert saved["parts"][1] == before_suffix
+    assert saved["parts"][1]["base"] == HEAD
 
 
 def test_function_overwrite_by_pending_id_closes_saved_record(monkeypatch, tmp_path):
@@ -508,7 +534,18 @@ def test_function_retry_leaves_unknown_flight_for_commit_reconciliation(monkeypa
     timeline.session.state["flight"] = {"key": "possibly-sent"}
     before = copy.deepcopy(timeline.session.state)
     committed = {"status": "accepted", "receipt": {"receipt_id": "pub9"}}
-    timeline.commit = lambda *args, **kwargs: committed
+
+    def commit(*args, **kwargs):
+        from astrid.sdk.timeline.sync import _settle_pending
+
+        _settle_pending(
+            timeline.session.state["pending_changes"][kwargs["pending"]],
+            expected_part=0, actor_id=timeline.session.identity["actor_id"],
+            publication_id="pub9", how="rerun", base=HEAD,
+        )
+        return committed
+
+    timeline.commit = commit
 
     history_calls = []
 
@@ -521,7 +558,8 @@ def test_function_retry_leaves_unknown_flight_for_commit_reconciliation(monkeypa
     result = retry_module.retry(timeline, "pc_saved", fn=lambda working: None)
 
     assert result is committed
-    assert timeline.session.state == before
+    assert timeline.session.state["flight"] == before["flight"]
+    assert timeline.session.state["pending_changes"]["pc_saved"]["state"] == "landed"
     assert len(history_calls) == 1  # Only the normal landed check ran.
 
 
@@ -1683,11 +1721,17 @@ def test_refused_function_retry_recovers_saved_suffix_once_in_receipt_order(monk
     first = retry_module.retry(timeline, "pc_saved", fn=edit_again)
 
     saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert first["status"] == "part_landed"
+    assert first["pending_id"] == "pc_saved"
+    assert first["next"] == "tl.retry('pc_saved')"
+    assert first["record"] == saved
     assert first["receipt"]["receipt_id"] == "receipt-function"
     assert saved["state"] == "pending"
     assert saved["part"] == 1
     assert saved["receipts"] == ["pub-function"]
     assert saved["parts"][1]["base"] == {"revision_id": "r3", "publication_id": "pub-function"}
+    assert saved["parts"][1]["commands"] == suffix["commands"]
+    assert saved["parts"][1]["commit_options"] == suffix["commit_options"]
 
     preview = retry_module.retry(timeline, "pc_saved")
     second = retry_module.commit_preview(timeline, preview)
