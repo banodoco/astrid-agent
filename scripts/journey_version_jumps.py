@@ -264,6 +264,10 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         project = "tst-m4-3b-release0"
         keys = workspace(old, data, baseline, "seed", {
             "project": project, "generation": "release0", "task_id": None, "create_project": True})
+        # The API is authoritative for the project identity.  Exercise both
+        # task legs against that exact seeded project, not merely its requested
+        # slug.
+        project = keys["project"]
         keys["task_id"] = task_after_update(old, baseline / "release0-task", project)
         before = workspace(old, data, baseline, "snapshot", keys)
         journey.bootstrap(app, candidate_path, args.shell, "update", evidence / "release1", root, data)
@@ -284,6 +288,7 @@ def execute_release0_to_release1(args, root: Path, data: Path, evidence: Path, s
         result["release_transition"] = {"from": 0, "to": 1,
                                         "harness_override": "frozen-release0-direct-to-release1"}
         result["service_transition"] = {"release0": old_service, "release1": new_service}
+        result["service_manager"] = new_service
         result["health_transition"] = {
             "release0_runtime_instance_id": old_health["runtime_instance_id"],
             "release1_runtime_instance_id": new_health["runtime_instance_id"],

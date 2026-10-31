@@ -8,16 +8,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import ntpath
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.request
@@ -27,24 +24,10 @@ from pathlib import Path
 
 if __package__:
     from . import ci_windows_journey as windows
-    from .journey_matrix import (
-        M4_4A_OLD_LAUNCHER_REF,
-        M4_4A_OLD_UPDATE_SHA256,
-        M4_4A_PROVISIONAL_AGENT_REF,
-        M4_4A_REQUIRED_AGENT_ANCESTORS,
-        RELEASE1_MODES,
-        validate_job,
-    )
+    from .journey_matrix import RELEASE1_MODES, validate_job
 else:
     import ci_windows_journey as windows
-    from journey_matrix import (
-        M4_4A_OLD_LAUNCHER_REF,
-        M4_4A_OLD_UPDATE_SHA256,
-        M4_4A_PROVISIONAL_AGENT_REF,
-        M4_4A_REQUIRED_AGENT_ANCESTORS,
-        RELEASE1_MODES,
-        validate_job,
-    )
+    from journey_matrix import RELEASE1_MODES, validate_job
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,345 +40,6 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
-
-
-def journey_os_label() -> str:
-    return {"darwin": "macos", "linux": "linux", "win32": "windows"}.get(sys.platform, sys.platform)
-
-
-def _git_show(checkout: Path, ref: str, path: str) -> bytes:
-    try:
-        return subprocess.check_output(["git", "-C", str(checkout), "show", f"{ref}:{path}"])
-    except subprocess.CalledProcessError as exc:
-        raise ValueError(f"Pinokio old-launcher input does not contain {path} at {ref}") from exc
-
-
-def validate_old_launcher_provenance(pinokio: Path, old_launcher_ref: str) -> dict:
-    """Authenticate the historical action before any Pinokio lifecycle call."""
-    if not isinstance(old_launcher_ref, str) or not re.fullmatch(r"[0-9a-f]{40}", old_launcher_ref):
-        raise ValueError("--old-launcher-ref must be a full 40-character commit SHA")
-    if pinokio.is_symlink():
-        raise ValueError("--pinokio-checkout must not be a symlink")
-    pinokio = pinokio.resolve(strict=True)
-    try:
-        subprocess.run(["git", "-C", str(pinokio), "cat-file", "-e", f"{old_launcher_ref}^{{commit}}"],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise ValueError("--old-launcher-ref is not present in the Pinokio checkout") from exc
-    source = _git_show(pinokio, old_launcher_ref, "pinokio/update.js")
-    source_sha256 = hashlib.sha256(source).hexdigest()
-    if old_launcher_ref == M4_4A_OLD_LAUNCHER_REF and source_sha256 != M4_4A_OLD_UPDATE_SHA256:
-        raise ValueError("the approved old-launcher update.js bytes do not match its provenance")
-    if old_launcher_ref != M4_4A_OLD_LAUNCHER_REF or source_sha256 != M4_4A_OLD_UPDATE_SHA256:
-        raise ValueError("M4-4a requires the approved release-0 old-launcher action provenance")
-    return {"ref": old_launcher_ref, "path": "pinokio/update.js", "sha256": source_sha256,
-            "vector": "H1", "validated": True}
-
-
-_PINOKIO_ACTION_SCRIPT = r'''
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-
-const [sourceRoot, appDirectory, mode] = process.argv.slice(1);
-const lib = require(path.join(sourceRoot, 'pinokio', 'lib.js'));
-const app = lib.createApp({ appDirectory });
-const bootstrapActions = new Map();
-const realBootstrap = app.bootstrapScript.bind(app);
-app.bootstrapScript = (action, ...args) => {
-  const message = realBootstrap(action, ...args);
-  bootstrapActions.set(message, action);
-  return message;
-};
-const realShell = app.shellStep.bind(app);
-app.shellStep = (message, ...args) => {
-  const step = realShell(message, ...args);
-  step.__bootstrap_action = bootstrapActions.get(message) || null;
-  return step;
-};
-app.readInstallMode = () => mode;
-app.hasPendingUpdate = () => false;
-const source = path.join(sourceRoot, 'pinokio', 'update.js');
-const sourceText = fs.readFileSync(source, 'utf8');
-const module = { exports: {} };
-const injectedRequire = (name) => name === './lib' ? app : require(name);
-vm.runInNewContext(sourceText, { module, exports: module.exports, require: injectedRequire }, { filename: source });
-Promise.resolve(module.exports({}, {})).then((action) => {
-  const normalize = (value) => {
-    if (typeof value === 'function') return { kind: 'custom', name: value.name || 'anonymous' };
-    if (Array.isArray(value)) return value.map(normalize);
-    if (!value || typeof value !== 'object') return value;
-    if (value.method === 'shell.run') {
-      const params = value.params || {};
-      const message = String(params.message || '');
-      return { kind: params.env?.ASTRID_PINOKIO_ENVIRONMENT === '1' ? 'git-shell' : 'shell',
-        message, bootstrap_action: value.__bootstrap_action || null };
-    }
-    if (typeof value.method === 'function') return { kind: 'custom', name: value.method.name || 'anonymous' };
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalize(item)]));
-  };
-  process.stdout.write(JSON.stringify({ run: normalize(action.run || []), on: normalize(action.on || null) }));
-}).catch((error) => { console.error(error.stack || error); process.exitCode = 1; });
-'''
-
-
-def _export_pinokio_source(pinokio: Path, ref: str, destination: Path) -> None:
-    """Export committed launcher bytes without checking out or mutating the input."""
-    archive = subprocess.check_output(
-        ["git", "-C", str(pinokio), "archive", "--format=tar", ref, "pinokio"],
-    )
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
-        for member in stream.getmembers():
-            relative = Path(member.name)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise ValueError("Pinokio source archive contains an unsafe path")
-            target = destination.joinpath(*relative.parts)
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-            elif member.isfile():
-                extracted = stream.extractfile(member)
-                if extracted is None:
-                    raise ValueError("Pinokio source archive contains an unreadable file")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(extracted.read())
-            else:
-                raise ValueError("Pinokio source archive contains a non-regular entry")
-
-
-def build_pinokio_action(pinokio: Path, source_ref: str, *, mode: str = "backend",
-                         app_directory: Path | None = None) -> dict:
-    """Build an action from one immutable launcher commit and its matching lib."""
-    node = shutil.which("node")
-    if not node:
-        raise RuntimeError("Node.js is required to build the Pinokio action")
-    pinokio = pinokio.resolve(strict=True)
-    if not re.fullmatch(r"[0-9a-f]{40}", source_ref):
-        raise ValueError("Pinokio action source must be a full commit SHA")
-    app_directory = (app_directory or pinokio).resolve()
-    with tempfile.TemporaryDirectory(prefix="astrid-m4-4a-action-") as temporary:
-        source_root = Path(temporary)
-        _export_pinokio_source(pinokio, source_ref, source_root)
-        node_args = ["-e", _PINOKIO_ACTION_SCRIPT, str(source_root),
-                     str(app_directory), mode]
-        argv = (windows.powershell5_command(node, node_args)
-                if sys.platform == "win32" else [node, *node_args])
-        completed = subprocess.run(
-            argv,
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-    if completed.returncode:
-        detail = (completed.stderr or completed.stdout).strip().splitlines()
-        raise RuntimeError(f"Pinokio action construction failed: {detail[-1] if detail else 'unknown error'}")
-    try:
-        value = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Pinokio action construction returned invalid JSON") from exc
-    if not isinstance(value, dict) or not isinstance(value.get("run"), list):
-        raise RuntimeError("Pinokio action did not return a run array")
-    return value
-
-
-def _write_sidecar(path: Path, value: object, *, receipt_root: Path) -> dict:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(value, str):
-        path.write_text(value, encoding="utf-8")
-    else:
-        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return {"path": path.relative_to(receipt_root).as_posix(),
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-
-
-def _emit_pinokio_event(stream, sequence: int, name: str, *, mode: str = "pinokio-backend",
-                        details: dict | None = None) -> int:
-    row = {"schema_version": 1, "seq": sequence, "timestamp": time.time(),
-           "event": name, "os": journey_os_label(), "mode": mode}
-    if details:
-        row["details"] = details
-    stream.write(json.dumps(row, sort_keys=True) + "\n")
-    stream.flush()
-    return sequence + 1
-
-
-def validate_m4_4a_product_ref(args: argparse.Namespace) -> dict:
-    """Require an explicit integrated stopped-path Agent before hosted execution."""
-    supplied = getattr(args, "stopped_path_agent_ref", None)
-    if not isinstance(supplied, str) or not re.fullmatch(r"[0-9a-f]{40}", supplied):
-        raise ValueError("pinokio-backend requires --stopped-path-agent-ref as a full commit SHA")
-    if supplied == M4_4A_PROVISIONAL_AGENT_REF:
-        raise ValueError("the provisional Agent base does not contain the integrated stopped path")
-    checkout = getattr(args, "candidate_agent_checkout", None)
-    if checkout is None or git_source(checkout)["sha"] != supplied:
-        raise ValueError("--stopped-path-agent-ref must equal the frozen candidate Agent checkout")
-    missing = [ref for ref in M4_4A_REQUIRED_AGENT_ANCESTORS if subprocess.run(
-        ["git", "-C", str(checkout), "merge-base", "--is-ancestor", ref, supplied],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-    ).returncode != 0]
-    if missing:
-        raise ValueError("candidate Agent lacks the paired stopped-path commits: " + ", ".join(missing))
-    candidate_path = getattr(args, "candidate", None)
-    if candidate_path is None or read_json(candidate_path).get("agent") != supplied:
-        raise ValueError("--stopped-path-agent-ref must equal the frozen candidate Agent input")
-    return {"ref": supplied, "required_ancestors": list(M4_4A_REQUIRED_AGENT_ANCESTORS),
-            "provisional_base_refused": M4_4A_PROVISIONAL_AGENT_REF, "validated": True}
-
-
-def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
-    """Build the old and retry action receipts before lifecycle execution.
-
-    This phase is intentionally independent of hosted execution.  It is useful
-    in unit/source checks, but the aggregate gate only accepts it when the same
-    receipt also contains hosted lifecycle evidence.
-    """
-    if not getattr(args, "old_launcher_ref", None):
-        raise ValueError("pinokio-backend requires --old-launcher-ref")
-    pinokio = args.pinokio_checkout.resolve(strict=True)
-    provenance = validate_old_launcher_provenance(pinokio, args.old_launcher_ref)
-    product = validate_m4_4a_product_ref(args)
-    backend_evidence = evidence / "pinokio-backend"
-    backend_evidence.mkdir(parents=True, exist_ok=True)
-    events_path = backend_evidence / "events.jsonl"
-    sequence = 1
-    with events_path.open("w", encoding="utf-8") as events:
-        sequence = _emit_pinokio_event(events, sequence, "action_built",
-                                       details={"launcher_ref": provenance["ref"]})
-        first = build_pinokio_action(pinokio, provenance["ref"], app_directory=pinokio)
-        first_steps = first["run"]
-        shape = [(step.get("kind"), step.get("bootstrap_action"))
-                 for step in first_steps if isinstance(step, dict)]
-        if shape != [("git-shell", None), ("shell", "update-app")]:
-            raise ValueError("approved old-launcher action is not the H1 backend update array")
-        first_record = {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
-                        "built_before_ref_advance": True, "launcher": provenance,
-                        "ordered_steps": first_steps}
-        first_sidecar = _write_sidecar(
-            backend_evidence / "action-array-first.json", first_record, receipt_root=evidence)
-        sequence = _emit_pinokio_event(events, sequence, "launcher_ref_advanced",
-                                       details={"launcher_ref": git_source(pinokio)["sha"]})
-        retry_ref = git_source(pinokio)["sha"]
-        retry = build_pinokio_action(pinokio, retry_ref, app_directory=pinokio)
-        retry_record = {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
-                        "launcher": git_source(pinokio), "ordered_steps": retry["run"]}
-        retry_sidecar = _write_sidecar(
-            backend_evidence / "action-array-retry.json", retry_record, receipt_root=evidence)
-    events_sidecar = {"path": events_path.relative_to(evidence).as_posix(),
-                      "sha256": hashlib.sha256(events_path.read_bytes()).hexdigest()}
-    def blocked(phase: str) -> dict:
-        return {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
-                "phase": phase, "status": "blocked",
-                "reason": "hosted lifecycle executor not admitted"}
-    return {"schema_version": 1, "os": journey_os_label(), "mode": "pinokio-backend",
-            "evidence_kind": "source-unit", "hosted_lifecycle": {
-                "status": "not-run", "reason": "integrated-product execution not admitted",
-            },
-            "old_launcher": provenance, "stopped_path_agent": product,
-            "first_click": blocked("first-click"),
-            "stop_after_refusal": blocked("stop-after-refusal"),
-            "retry_after_stop": blocked("retry-after-stop"),
-            "readiness_after_update": blocked("readiness-after-update"),
-            "stop_start": {"schema_version": 1, "os": journey_os_label(),
-                           "mode": "pinokio-backend", "status": "blocked",
-                           "reason": "hosted lifecycle executor not admitted"},
-            "negative_controls": {
-                name: blocked(name) for name in (
-                    "busy_stop", "unknown_stop", "identity_mismatch", "instance_mismatch")
-            },
-            "historical_compatibility": blocked("historical-compatibility"),
-            "provisional_dependencies": {
-                "required_agent_ancestors": list(M4_4A_REQUIRED_AGENT_ANCESTORS),
-                "hosted_receipts": "not-run", "g3": "external-gate",
-            },
-            "first_action_sha256": first_sidecar["sha256"],
-            "retry_action_sha256": retry_sidecar["sha256"],
-            "events_sha256": events_sidecar["sha256"],
-            "sidecars": {"action-array-first.json": first_sidecar,
-                          "action-array-retry.json": retry_sidecar,
-                          "events.jsonl": events_sidecar},
-            "not_applicable": []}
-
-
-def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
-    """Run the real M4-4a executor from a complete, explicit run-owned config."""
-    config_path = getattr(args, "pinokio_backend_config", None)
-    if config_path is None:
-        raise ValueError("pinokio-backend requires --pinokio-backend-config; source-only receipts cannot pass")
-    config = read_json(config_path)
-    if config.get("source_override_test_mode") is not False:
-        raise ValueError("M4-4a executor config must explicitly disable source overrides")
-    expected_os = journey_os_label()
-    identity = runner_identity()
-    runner = identity["runner_image"]
-    expected_platform = {
-        "os": expected_os,
-        "runner": runner,
-        "shell": args.shell,
-        "hosted": runner != "local",
-    }
-    platform_input = config.get("platform") or {}
-    for name, value in expected_platform.items():
-        if platform_input.get(name) != value:
-            raise ValueError(f"M4-4a config platform.{name} must match this matrix job")
-    if config.get("candidate_checkouts") is None:
-        raise ValueError("M4-4a executor requires explicit candidate checkout inputs")
-    actual = getattr(args, "candidate_checkouts", None)
-    if not isinstance(actual, dict):
-        raise ValueError("M4-4a executor requires the frozen four-checkout tuple")
-    checkouts = {"app": args.app_checkout,
-                 "agent": args.candidate_agent_checkout,
-                 "runtime": args.candidate_runtime_checkout,
-                 "pinokio": args.pinokio_checkout}
-    for name, checkout in checkouts.items():
-        supplied = config["candidate_checkouts"].get(name)
-        if not isinstance(supplied, dict):
-            raise ValueError(f"M4-4a config candidate_checkouts.{name} is required")
-        if (Path(supplied.get("path", "")).resolve() != checkout.resolve()
-                or supplied.get("ref") != actual[name]["sha"]):
-            raise ValueError(f"M4-4a config candidate {name} differs from the frozen checkout")
-    old_input = config.get("old_launcher")
-    if not isinstance(old_input, dict) or old_input.get("ref") != args.old_launcher_ref:
-        raise ValueError("M4-4a config old launcher differs from --old-launcher-ref")
-    old = validate_old_launcher_provenance(args.pinokio_checkout, args.old_launcher_ref)
-    first_steps = build_pinokio_action(args.pinokio_checkout, args.old_launcher_ref,
-                                       app_directory=args.pinokio_checkout)["run"]
-    candidate_pinokio_ref = actual["pinokio"]["sha"]
-    retry_steps = build_pinokio_action(args.pinokio_checkout, candidate_pinokio_ref,
-                                       app_directory=args.pinokio_checkout)["run"]
-    actions = config.get("actions") or {}
-    if (not isinstance(actions.get("first"), dict)
-            or actions["first"].get("steps") != first_steps
-            or not isinstance(actions.get("retry"), dict)
-            or actions["retry"].get("steps") != retry_steps):
-        raise ValueError("M4-4a explicit action arrays must match the real immutable Pinokio action builder")
-    try:
-        from .shared_journey_driver import JourneyDriver
-    except ImportError:
-        from shared_journey_driver import JourneyDriver
-    config = JourneyDriver.compose_pinokio_backend_config(config)
-    config.setdefault("old_launcher", {}).update({
-        "checkout": str(args.pinokio_checkout.resolve()), "path": old["path"],
-        "sha256": old["sha256"],
-    })
-    try:
-        from . import pinokio_backend_executor as backend_executor
-    except ImportError:
-        import pinokio_backend_executor as backend_executor
-    with tempfile.TemporaryDirectory(prefix="astrid-m4-4a-executor-") as temporary:
-        executor_output = Path(temporary) / "output"
-        receipt = JourneyDriver.execute_pinokio_backend(
-            config, executor_output, backend_executor
-        )
-        if platform_input["hosted"]:
-            backend_executor.admit_hosted_receipt(receipt)
-        sidecar_root = executor_output / "pinokio-backend"
-        if not sidecar_root.is_dir():
-            raise RuntimeError("M4-4a executor omitted its required sidecars")
-        destination = evidence / "pinokio-backend"
-        if destination.exists():
-            raise RuntimeError("M4-4a receipt sidecar destination already exists")
-        shutil.copytree(sidecar_root, destination)
-    backend = receipt.get("pinokio_backend")
-    if not isinstance(backend, dict):
-        raise RuntimeError("M4-4a executor did not return a backend receipt")
-    return receipt
 
 
 def runner_identity() -> dict:
@@ -1023,9 +667,6 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
               "candidate_checkouts": getattr(args, "candidate_checkouts", None),
               "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
               "source_override_test_mode": args.source_override,
-              "evidence_class": "hosted-lifecycle",
-              "source_unit_evidence": {"status": "not-run", "substitute_for_hosted": False},
-              "pinokio_backend": None,
               "retained_for_next_leg": getattr(args, "retain_for_next_leg", False),
               "installed_tuple": None, "import_origins": None,
               "run_roots": {"program": str(root), "data": str(data)},
@@ -1035,20 +676,11 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
     result_path = evidence / "journey-result.json"
     write_json(result_path, result)
     try:
-        if args.mode == "pinokio-backend":
-            backend_receipt = execute_pinokio_backend(args, evidence)
-            result.update(backend_receipt)
-            result["pinokio_backend"] = backend_receipt["pinokio_backend"]
-            result["source_unit_evidence"] = backend_receipt["source_unit_evidence"]
-            result["historical_compatibility"] = backend_receipt["pinokio_backend"].get(
-                "historical_compatibility")
-            result["status"] = backend_receipt["status"]
-            result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            return result
         if getattr(args, "job_id", None) and args.mode != "direct":
-            # M4-3a owns the fail-closed driver/receipt boundary.  Fully-local
-            # lifecycle ownership belongs to M4-4b; never fall back to direct.
-            raise RuntimeError(f"{args.mode} requires its dedicated lifecycle adapter")
+            # M4-3a owns the fail-closed driver/receipt boundary.  The native
+            # Pinokio lifecycle adapters themselves land in M4-4a/M4-4b; do
+            # not silently substitute the direct bootstrap while they are absent.
+            raise RuntimeError(f"{args.mode} requires its dedicated Pinokio lifecycle adapter")
         app = args.app_checkout.resolve(strict=True)
         manifest_path, manifest = selected_manifest(
             app, source_override=args.source_override, agent=args.agent_checkout,
@@ -1164,8 +796,7 @@ def execute(args: argparse.Namespace) -> dict:
                 raise
         assert_host_available("fresh-install" if args.leg in VERSION_JUMP_LEGS else args.leg, root, data)
     except Exception as exc:
-        failure_path = evidence / "journey-result.json"
-        recorded = read_json(failure_path) if failure_path.is_file() else {
+        write_json(evidence / "journey-result.json", {
             "schema_version": 2, "receipt_kind": "release1-installed-lifecycle",
             "job_id": getattr(args, "job_id", None), "mode": getattr(args, "mode", "direct"),
             "scenario": args.leg, "status": "fail",
@@ -1173,15 +804,11 @@ def execute(args: argparse.Namespace) -> dict:
             "run_roots": {"program": str(root), "data": str(data)},
             "candidate_checkouts": getattr(args, "candidate_checkouts", None),
             "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None),
-            "evidence_class": "hosted-lifecycle",
-            "source_unit_evidence": {"status": "not-run", "substitute_for_hosted": False},
-            "pinokio_backend": None,
             "installed_tuple": None, "import_origins": None,
             "checks": {"task_settled": "not-run", "workspace_content": "not-run",
                        "one_runtime": "not-run", "unrelated_sentinel": "not-run"},
-        }
-        recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
-        write_json(failure_path, recorded)
+            "error": f"{type(exc).__name__}: {exc}",
+        })
         raise
     with isolated_environment(run_root, root, data):
         with sentinel_process(run_root) as (sentinel, birth):
@@ -1230,196 +857,7 @@ def execute(args: argparse.Namespace) -> dict:
             return result
 
 
-def _shared_executor_main(argv: list[str]) -> int:
-    """Explicit shared routes for the independently owned executable modules."""
-    route = argv[0] if argv else ""
-    if route == "m4-4b":
-        route_parser = argparse.ArgumentParser(description="M4-4b local-process smoke")
-        route_parser.add_argument("--checkout", required=True, type=Path)
-        route_parser.add_argument("--state-root", required=True, type=Path)
-        route_parser.add_argument("--output", required=True, type=Path)
-        values = route_parser.parse_args(argv[1:])
-        try:
-            if sys.platform not in {"linux", "darwin"}:
-                raise ValueError("M4-4b local-process smoke supports POSIX hosts only")
-            try:
-                from .fully_local_executor import run_execution, validate_execution_receipt
-            except ImportError:
-                from fully_local_executor import run_execution, validate_execution_receipt
-            receipt = run_execution(checkout=values.checkout, state_root=values.state_root,
-                                    output=values.output)
-            validate_execution_receipt(receipt)
-            if receipt.get("evidence_class") != "local_process" or receipt.get("hosted_linux_receipt") is True:
-                raise ValueError("M4-4b smoke must remain local_process evidence")
-            if receipt.get("hosted_linux_receipt_required") is not True:
-                raise ValueError("M4-4b local receipt must retain its separate hosted Linux requirement")
-        except Exception as exc:
-            print(f"M4-4b shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    if route == "m4-5":
-        route_parser = argparse.ArgumentParser(description="Run one explicit M4-5 scenario")
-        route_parser.add_argument("--scenario-id", required=True)
-        route_parser.add_argument("--candidate", required=True, type=Path)
-        route_parser.add_argument("--boundary", required=True)
-        route_parser.add_argument("--boundary-arg", action="append", default=[])
-        route_parser.add_argument("--root", required=True, type=Path)
-        route_parser.add_argument("--data-root", required=True, type=Path)
-        route_parser.add_argument("--receipt", required=True, type=Path)
-        route_parser.add_argument("--evidence-kind", required=True,
-                                  choices=("disposable-executable", "hosted-lifecycle"))
-        values = route_parser.parse_args(argv[1:])
-        try:
-            try:
-                from . import journey_release2 as release2, release2_executor
-                from .journey_matrix import validate_m4_5_scenario
-            except ImportError:
-                import journey_release2 as release2
-                import release2_executor
-                from journey_matrix import validate_m4_5_scenario
-            row = validate_m4_5_scenario(values.scenario_id)
-            candidate = read_json(values.candidate)
-            try:
-                from .shared_journey_driver import JourneyDriver
-            except ImportError:
-                from shared_journey_driver import JourneyDriver
-            command = JourneyDriver.boundary_command(
-                values.boundary,
-                values.boundary_arg,
-                values.evidence_kind,
-            )
-            if sys.platform == "win32":
-                command = windows.powershell5_command(command[0], command[1:])
-            receipt = release2_executor.execute_journey(
-                scenario_id=row["scenario_id"], candidate=candidate,
-                stand_in_marker=release2.STAND_IN_MARKER, channel=row["channel"],
-                mode=row["mode"], os_name=row["os"], job_id=row["job_id"],
-                runner=row["runner"], shell=row["shell"],
-                stand_in_manifest=release2.STAND_IN_MANIFEST,
-                stand_in_descriptor=release2.STAND_IN_DESCRIPTOR,
-                fixture_sums=release2.FIXTURE_SUMS, boundary_command=command,
-                root=values.root.resolve(), data_root=values.data_root.resolve(),
-                receipt_path=values.receipt, evidence_kind=values.evidence_kind,
-            )
-            if receipt.get("evidence_kind") == "hosted-lifecycle":
-                release2.validate_receipt(receipt)
-        except Exception as exc:
-            print(f"M4-5 shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    if route == "m4-6-hosted":
-        route_parser = argparse.ArgumentParser(
-            description="Run one M4-6 hosted native-service journey"
-        )
-        route_parser.add_argument("--slot-id", required=True)
-        route_parser.add_argument("--candidate", required=True, type=Path)
-        route_parser.add_argument("--fixture", required=True, type=Path)
-        route_parser.add_argument("--output", required=True, type=Path)
-        route_parser.add_argument("--work-root", required=True, type=Path)
-        route_parser.add_argument("--app-repo", required=True, type=Path)
-        route_parser.add_argument("--agent-repo", required=True, type=Path)
-        route_parser.add_argument("--runtime-repo", required=True, type=Path)
-        route_parser.add_argument("--pinokio-repo", required=True, type=Path)
-        route_parser.add_argument("--journey-driver-config", required=True, type=Path)
-        values = route_parser.parse_args(argv[1:])
-        try:
-            try:
-                from . import native_service_adapter as native
-                from .shared_journey_driver import journey_driver_factory
-            except ImportError:
-                import native_service_adapter as native
-                from shared_journey_driver import journey_driver_factory
-            if native.HOSTED_ADMISSION_VERIFIER is None:
-                raise RuntimeError(
-                    "hosted_admission_verifier: NEEDS B/platform-owned external authentication"
-                )
-            if native.JOURNEY_DRIVER_FACTORY is not None:
-                raise RuntimeError("native journey driver is already registered")
-            native.register_journey_driver(journey_driver_factory(values.journey_driver_config))
-            native_args = [
-                "--slot-id", values.slot_id,
-                "--candidate", str(values.candidate),
-                "--fixture", str(values.fixture),
-                "--work-root", str(values.work_root),
-                "--app-repo", str(values.app_repo),
-                "--agent-repo", str(values.agent_repo),
-                "--runtime-repo", str(values.runtime_repo),
-                "--pinokio-repo", str(values.pinokio_repo),
-                "--output", str(values.output),
-            ]
-            if native.main(native_args) != 0:
-                raise RuntimeError("native hosted journey failed closed")
-        except Exception as exc:
-            print(f"M4-6 hosted shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    if route in {"m4-6", "m4-6-inner"}:
-        route_parser = argparse.ArgumentParser(description="Run one M4-6 local executable boundary")
-        route_parser.add_argument("--slot-id", required=True)
-        route_parser.add_argument("--candidate", required=True, type=Path)
-        route_parser.add_argument("--fixture", required=True, type=Path)
-        route_parser.add_argument("--output", required=True, type=Path)
-        route_parser.add_argument("--work-root", required=True, type=Path)
-        route_parser.add_argument("--agent-repo", required=True, type=Path)
-        route_parser.add_argument("--release0-runtime-repo", required=True, type=Path)
-        values = route_parser.parse_args(argv[1:])
-        if route == "m4-6" and sys.platform == "win32":
-            command = windows.powershell5_command(
-                sys.executable,
-                [str(Path(__file__).resolve()), "--shared-executor", "m4-6-inner", *argv[1:]],
-            )
-            return subprocess.run(command, check=False).returncode
-        try:
-            try:
-                from . import failure_mode_executor, journey_failure_modes as failure
-                from .journey_matrix import validate_m4_6_slot
-            except ImportError:
-                import failure_mode_executor
-                import journey_failure_modes as failure
-                from journey_matrix import validate_m4_6_slot
-            slot = validate_m4_6_slot(values.slot_id)
-            candidate = failure.read_json(values.candidate)
-            if failure.candidate_errors(candidate):
-                raise ValueError("M4-6 candidate tuple is incomplete")
-            observation = failure_mode_executor.execute(
-                slot["job_id"], candidate, values.fixture, values.work_root,
-                agent_repo=values.agent_repo, runtime_repo=values.release0_runtime_repo,
-            )
-            executor_errors = failure_mode_executor.execution_observation_errors(observation)
-            if executor_errors:
-                raise ValueError("M4-6 local executor observations failed: " + "; ".join(executor_errors))
-            if observation.get("execution_scope") != "local-disposable":
-                raise ValueError("M4-6 executable boundary must remain local-disposable")
-            evidence_source = values.work_root / "evidence"
-            values.output.parent.mkdir(parents=True, exist_ok=True)
-            if evidence_source.is_dir():
-                shutil.copytree(evidence_source, values.output.parent / "evidence")
-            receipt = {
-                "schema_version": 1,
-                "receipt_kind": "m4-6-local-disposable-execution",
-                "status": "exercised",
-                "slot_id": slot["job_id"],
-                "execution_scope": "local-disposable",
-                "source_override_test_mode": False,
-                "candidate": candidate,
-                "evidence_files": observation.get("evidence_files", []),
-                "observation": observation,
-            }
-            failure.write_json(values.output, receipt)
-            if (observation.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable":
-                raise ValueError("M4-6 local execution scope was not retained in its receipt")
-        except Exception as exc:
-            print(f"M4-6 shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    print(f"Unknown shared executor route: {route!r}", file=sys.stderr)
-    return 2
-
-
 def main(argv: list[str] | None = None) -> int:
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if raw_argv[:1] == ["--shared-executor"]:
-        return _shared_executor_main(raw_argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--leg", choices=("fresh-install", "stale-update", "reinstall", *VERSION_JUMP_LEGS), required=True)
     parser.add_argument("--old-declaration", choices=("bare", "pruned"),
@@ -1438,12 +876,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate-agent-checkout", type=Path)
     parser.add_argument("--candidate-runtime-checkout", type=Path)
     parser.add_argument("--pinokio-checkout", type=Path)
-    parser.add_argument("--old-launcher-ref",
-                        help="required full SHA for the approved pre-self-pull Pinokio action")
-    parser.add_argument("--stopped-path-agent-ref",
-                        help="required full candidate Agent SHA carrying the integrated stopped path")
-    parser.add_argument("--pinokio-backend-config", type=Path,
-                        help="explicit JSON inputs for the real M4-4a lifecycle executor")
     parser.add_argument("--release0-fixture", type=Path,
                         help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
@@ -1465,19 +897,6 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         if not all((args.candidate_agent_checkout, args.candidate_runtime_checkout, args.pinokio_checkout)):
             parser.error("Release-1 receipts require candidate Agent, Runtime and Pinokio checkouts")
-        if args.mode == "pinokio-backend":
-            if not args.old_launcher_ref:
-                parser.error("pinokio-backend requires --old-launcher-ref")
-            if not args.stopped_path_agent_ref:
-                parser.error("pinokio-backend requires --stopped-path-agent-ref")
-            if not args.pinokio_backend_config:
-                parser.error("pinokio-backend requires --pinokio-backend-config")
-        elif args.old_launcher_ref or args.stopped_path_agent_ref:
-            parser.error("Pinokio backend refs require a pinokio-backend job")
-        if args.mode != "pinokio-backend" and args.pinokio_backend_config:
-            parser.error("--pinokio-backend-config is only valid for pinokio-backend")
-    elif args.old_launcher_ref or args.stopped_path_agent_ref:
-        parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
     if args.leg == "release0-to-release1":
         if not (args.job_id and args.mode == "direct" and args.candidate):
             parser.error("release0-to-release1 requires a frozen direct Release-1 receipt")
@@ -1487,8 +906,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("release-0 fixture admission is only valid for release0-to-release1")
     if sys.platform not in {"linux", "darwin", "win32"}:
         parser.error("unsupported journey operating system")
-    if sys.platform == "win32" and args.shell != "powershell.exe":
-        parser.error("Windows hosted journeys require Windows PowerShell 5.1 (powershell.exe)")
+    if sys.platform == "win32" and args.shell not in {"powershell.exe", "pwsh.exe"}:
+        parser.error("Windows requires powershell.exe or pwsh.exe")
     if sys.platform != "win32" and args.shell != "sh":
         parser.error("Linux/macOS require sh")
     try:
