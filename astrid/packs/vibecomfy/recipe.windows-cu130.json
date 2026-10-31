@@ -4,7 +4,7 @@
   "platform": "windows-x86_64-cu130",
   "pins": {
     "path": "packs/vibecomfy/pins.json",
-    "sha256": "305c2d6641f691eef5d990da0a974ed9b3b2e663361aeb362ef61fdc486d42a7"
+    "sha256": "7aca02677d65905d2c9a4e3adf88c95cabc6542ba59e0a9ae74308ac71de3602"
   },
   "source_bindings": [
     {
@@ -56,13 +56,13 @@
           }
         ],
         "constraints": [
-          "comfy-kitchen==0.2.34",
-          "comfy-aimdo==0.5.3",
+          "comfy-kitchen==0.2.40",
+          "comfy-aimdo==0.6.0",
           "opencv-python-headless==5.0.0.93",
           "setuptools==80.9.0",
           "wheel==0.46.3"
         ],
-        "exclude_newer": "2026-10-19T00:00:00Z"
+        "exclude_newer": "2026-10-31T00:00:00Z"
       },
       "final_wheels": [
         {
@@ -91,7 +91,7 @@
   "primary_environment": "comfy",
   "models_lock": {
     "path": "packs/vibecomfy/models.lock.json",
-    "sha256": "ebb3379140c96ea72af8fa21c5255a3298b8cbf205aef091861f471127bb5cbe"
+    "sha256": "15644292198c752e4c4c37d4eb6f86afd2c7232181bc9606921ac0ef2dcff093"
   },
   "start": {
     "argv": [

@@ -1,4 +1,35 @@
 {
   "schema": "astrid.models-lock.v1",
-  "models": []
+  "models": [
+    {
+      "name": "qwen_image_2.1_turbo_int8_convrot",
+      "repository": "Comfy-Org/Qwen-Image-2.1",
+      "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+      "path": "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+      "url": null,
+      "destination": "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+      "bytes": 7256787829,
+      "sha256": "8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c"
+    },
+    {
+      "name": "qwen3vl_8b_int8_convrot",
+      "repository": "Comfy-Org/Qwen-Image-2.1",
+      "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+      "path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+      "url": null,
+      "destination": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+      "bytes": 9350798360,
+      "sha256": "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f"
+    },
+    {
+      "name": "qwen_image_2.1_vae_bf16",
+      "repository": "Comfy-Org/Qwen-Image-2.1",
+      "revision": "aacf31a6d48e707f352ecba714cee0680da3479b",
+      "path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+      "url": null,
+      "destination": "vae/qwen_image_2.1_vae_bf16.safetensors",
+      "bytes": 675509688,
+      "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9"
+    }
+  ]
 }

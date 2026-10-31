@@ -47,6 +47,39 @@ models:
               unit: image
               usd: 0.0025
 
+  # Qwen Image 2.1 Turbo: the official default paths use the same three
+  # pinned assets; prompt enhancement is disabled in these ready templates.
+  - id: qwen-image-2.1-turbo
+    modality: image
+    modes:
+      t2i:
+        supports: [prompt, negative_prompt, seed, count, size]
+        requires: [prompt]
+        backends:
+          local:
+            template: image/qwen_image_2_1_turbo
+            template_hash: "sha256:a47e24e6da4dfb7a41413e563fa90dd4e2d45a49a423ee132e5c00cbc27371b9"
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['qwen_image_2.1_turbo_int8_convrot.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen3vl_8b_int8_convrot.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['qwen_image_2.1_vae_bf16.safetensors']}
+
+  - id: qwen-image-2.1-turbo-edit
+    modality: image
+    modes:
+      edit:
+        supports: [prompt, negative_prompt, seed, count, image_ref]
+        requires: [prompt, image_ref]
+        backends:
+          local:
+            template: edit/qwen_image_2_1_turbo_edit
+            template_hash: "sha256:502814cc614d147499768f81b9e6f68c705f0ef5902c71c19f4505539d62fa74"
+            param_map: {prompt: prompt, negative_prompt: negative_prompt, seed: seed, count: count, image_ref: image}
+            model_roles:
+              diffusion: {node_class: UNETLoader, input: unet_name, binding: diffusion_model, names: ['qwen_image_2.1_turbo_int8_convrot.safetensors']}
+              text_encoder: {node_class: CLIPLoader, input: clip_name, binding: text_encoder, names: ['qwen3vl_8b_int8_convrot.safetensors']}
+              vae: {node_class: VAELoader, input: vae_name, binding: vae, names: ['qwen_image_2.1_vae_bf16.safetensors']}
+
   # =========================================================================
   # z-image — Z Image Turbo (text-to-image + image-to-image)
   #
