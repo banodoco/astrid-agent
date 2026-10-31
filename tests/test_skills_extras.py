@@ -154,6 +154,7 @@ def test_timeline_extras_list_and_selective_cli_install(tmp_path: Path) -> None:
     assert "timeline-series" in listing.stdout
     assert "timeline-narrated" in listing.stdout
     assert "timeline-review" in listing.stdout
+    assert "timeline-shots" in listing.stdout
 
     subprocess.run(
         [sys.executable, "-m", "astrid", "skills", "install", "timeline",
