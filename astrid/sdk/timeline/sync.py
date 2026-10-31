@@ -307,7 +307,7 @@ def _settle_pending(record, *, expected_part, actor_id, publication_id, how, bas
         record["part"] = index + 1
         record["parts"][index + 1]["base"] = copy.deepcopy(base)
         # The refusal described the completed part, not the remaining suffix.
-        record["failure"] = None
+        record["failure"] = {}
         record["diff"] = None
         record.pop("clash", None)
     else:
