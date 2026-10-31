@@ -9,6 +9,7 @@ from threading import Event
 import pytest
 
 from astrid.sdk.timeline import commit_session
+from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline._pending import snapshot
 from astrid.sdk.timeline.outbox import Outbox, request_bytes
 from astrid.sdk.timeline.sync import CommitConflict, _part_identity
@@ -23,21 +24,32 @@ def test_pending_record_written_during_function_evaluation_survives(connected):
     peer = opened(connected)
     _, _generated, path = connected
     evaluating, release = Event(), Event()
-    peer_error = []
+    base = {"revision_id": "r0", "publication_id": "pub0"}
+    failure = {"code": "conflict", "details": {
+        "status": "conflict", "reason": "value_conflict", "current": base,
+    }}
+    original = [{"op": "clip.move", "select": "parent/clip:a", "args": {"on": 2}}]
+    replacement = [{"op": "clip.move", "select": "parent/clip:b", "args": {"on": 8}}]
+    seeded = timeline.session.save_interrupted(
+        original, base=base, label="Function during pending write", steps=[],
+        merge="atomic", reads=None, key="function-during-pending",
+        evaluation={"kind": "function", "count": 1}, failure=failure,
+    )
+    pending_id = seeded.pending_id
+    seeded_record = json.loads(path.read_text())["pending_changes"][pending_id]
+    identity = _part_identity(seeded_record)
 
     def save_peer_record():
         assert evaluating.wait(10)
-        peer_error.append(peer.session.save_interrupted(
-            [{"op": "clip.move", "select": "parent/clip:b", "args": {"on": 8}}],
-            base={"revision_id": "r0", "publication_id": "pub0"},
-            label="Concurrent pending edit",
+        peer.session.save_interrupted(
+            replacement,
+            base=base,
+            label="Replacement pending edit",
             steps=[], merge="atomic", reads=None, key="concurrent-pending",
             evaluation={"kind": "function", "count": 1},
-            failure={"code": "conflict", "details": {
-                "status": "conflict", "reason": "value_conflict",
-                "current": {"revision_id": "r0", "publication_id": "pub0"},
-            }},
-        ))
+            failure=failure, pending_id=pending_id, pending_path=str(path),
+            pending_part=0, pending_identity=identity,
+        )
         release.set()
 
     def edit(working):
@@ -47,15 +59,15 @@ def test_pending_record_written_during_function_evaluation_survives(connected):
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         writer = pool.submit(save_peer_record)
-        with pytest.raises(CommitConflict):
-            timeline.commit(edit, label="Function during pending write", key="function-during-pending")
+        with pytest.raises(TimelineEditError, match="saved edit changed"):
+            timeline.commit(edit, label="Function during pending write", pending=pending_id)
         writer.result(timeout=10)
 
     state = json.loads(path.read_text())
-    assert len(peer_error) == 1
-    peer_record = state["pending_changes"][peer_error[0].pending_id]
-    assert peer_record["key"] == "concurrent-pending"
+    peer_record = state["pending_changes"][pending_id]
     assert peer_record["state"] == "pending"
+    assert peer_record["parts"][0]["commands"] == replacement
+    assert peer_record["closed_by"] is None
 
 
 def test_external_interrupted_save_retry_does_not_duplicate_suffix(
