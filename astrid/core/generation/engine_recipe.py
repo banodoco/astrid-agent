@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -259,31 +259,50 @@ def _load_recipe(ref: DataRef, index_engine: str, index_platform: str) -> Engine
     return EngineRecipe(top["schema"], engine, platform, pins_ref, tuple(sources), tuple(environments), primary, models_ref, StartSpec(argv, cwd, MappingProxyType(dict(start_env)), "127.0.0.1", port), health)
 
 
-def _load_index() -> RecipeIndex:
+def _load_index() -> tuple[RecipeIndex, dict[tuple[str, str], str]]:
     raw = _json(_INDEX_PATH)
     obj = _object(raw, {"schema", "entries"}, where="engine-index")
     if obj["schema"] != "astrid.engine-index.v1": raise RecipeValidationError("unknown recipe index schema")
-    entries, seen = [], set()
+    rows, seen = [], set()
     prior = None
     for i, item_raw in enumerate(_array(obj["entries"], "engine-index.entries")):
-        item = _object(item_raw, {"engine", "platform", "recipe"}, where=f"engine-index.entries[{i}]")
+        item = _object(item_raw, {"engine", "platform"}, {"recipe", "alias"}, where=f"engine-index.entries[{i}]")
         engine, platform = _string(item["engine"], "index.engine"), _string(item["platform"], "index.platform")
         if not _ENGINE.fullmatch(engine) or platform not in _PLATFORMS: raise RecipeValidationError("invalid index engine/platform")
         key = (engine, platform)
         if key in seen: raise RecipeValidationError("duplicate engine/platform index entry")
         if prior is not None and key < prior: raise RecipeValidationError("index entries must be deterministically sorted")
         seen.add(key); prior = key
-        entries.append(RecipeIndexEntry(engine, platform, _resolve_ref(item["recipe"], "index.recipe")))
-    return RecipeIndex(obj["schema"], tuple(entries))
+        if ("recipe" in item) == ("alias" in item):
+            raise RecipeValidationError("index entry must have exactly one recipe or alias")
+        if "alias" in item:
+            target = _string(item["alias"], "index.alias")
+            if not _ENGINE.fullmatch(target) or target == engine:
+                raise RecipeValidationError("invalid index alias target")
+            rows.append((key, target))
+        else:
+            rows.append((key, _resolve_ref(item["recipe"], "index.recipe")))
+    refs = dict(rows)
+    aliases = {}
+    entries = []
+    for (engine, platform), ref in rows:
+        if isinstance(ref, str):
+            target = ref
+            ref = refs.get((target, platform))
+            if not isinstance(ref, DataRef):
+                raise RecipeValidationError("index alias must target a direct recipe on the same platform")
+            aliases[(engine, platform)] = target
+        entries.append(RecipeIndexEntry(engine, platform, ref))
+    return RecipeIndex(obj["schema"], tuple(entries)), aliases
 
 
 def load_recipe_index() -> RecipeIndex:
-    return _load_index()
+    return _load_index()[0]
 
 
 def load_recipe(engine: str, platform: str) -> EngineRecipe:
     if not isinstance(engine, str) or not _ENGINE.fullmatch(engine): raise UnknownEngine(engine)
-    index = _load_index()
+    index, aliases = _load_index()
     matches = [entry for entry in index.entries if entry.engine == engine]
     if not matches:
         # A pack-owned canonical pin set establishes a known engine even when
@@ -293,7 +312,9 @@ def load_recipe(engine: str, platform: str) -> EngineRecipe:
         raise UnknownEngine(engine)
     if platform not in _PLATFORMS or not any(entry.platform == platform for entry in matches): raise UnsupportedPlatform(f"{engine} does not support {platform}")
     entry = next(entry for entry in matches if entry.platform == platform)
-    return _load_recipe(entry.recipe, engine, platform)
+    canonical_engine = aliases.get((engine, platform), engine)
+    recipe = _load_recipe(entry.recipe, canonical_engine, platform)
+    return replace(recipe, engine=engine) if canonical_engine != engine else recipe
 
 
 def _load_model_lock_ref(ref: DataRef) -> ModelLock:

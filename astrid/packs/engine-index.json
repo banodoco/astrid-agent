@@ -3,6 +3,11 @@
   "entries": [
     {
       "engine": "vibecomfy",
+      "platform": "linux-x86_64-cu130",
+      "alias": "vibecomfy-h3"
+    },
+    {
+      "engine": "vibecomfy",
       "platform": "windows-x86_64-cu130",
       "recipe": {
         "path": "packs/vibecomfy/recipe.windows-cu130.json",

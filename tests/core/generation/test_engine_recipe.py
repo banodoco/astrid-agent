@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from astrid.core.generation import engine_recipe as recipes
-from astrid.core.generation.engine_contracts import DataRef, ModelLockValidationError, RecipeValidationError, UnknownEngine, UnsupportedPlatform, UnsafePathError
+from astrid.core.generation.engine_contracts import DataRef, IntegrityError, ModelLockValidationError, RecipeValidationError, UnknownEngine, UnsupportedPlatform, UnsafePathError
 
 
 def _model_ref(tmp_path, value):
@@ -57,6 +57,67 @@ def test_unknown_fields_are_rejected_in_recipe_index(monkeypatch, tmp_path):
     monkeypatch.setattr(recipes, "_INDEX_PATH", index)
     with pytest.raises(RecipeValidationError, match="unknown surprise"):
         recipes.load_recipe_index()
+
+
+def test_linux_vibecomfy_alias_uses_shared_recipe_with_public_identity():
+    platform = "linux-x86_64-cu130"
+    public = recipes.load_recipe("vibecomfy", platform)
+    h3 = recipes.load_recipe("vibecomfy-h3", platform)
+    assert public.engine == "vibecomfy"
+    assert replace(public, engine="vibecomfy-h3") == h3
+    assert recipes.load_pin_set(public.pins) == recipes.load_pin_set(h3.pins)
+    entries = {entry.engine: entry for entry in recipes.load_recipe_index().entries if entry.platform == platform}
+    assert entries["vibecomfy"].recipe == entries["vibecomfy-h3"].recipe
+    assert entries["vibecomfy"].recipe.path == "packs/runpod/recipe.linux-cu130.json"
+    from astrid.core.generation.engine_runner import plan_install
+    plan = plan_install(public, root="/tmp/astrid-engine", placement="runpod")
+    assert plan.engine == "vibecomfy"
+    assert plan.recipe_sha256 == recipes.recipe_digest(public)
+
+
+@pytest.mark.parametrize("entries", [
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "a"}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "missing"}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "Bad Name"}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "b"},
+     {"engine": "b", "platform": "linux-x86_64-cu130", "alias": "a"}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "b"},
+     {"engine": "b", "platform": "windows-x86_64-cu130", "recipe": {"path": "x", "sha256": "a" * 64}}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130"}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "b", "recipe": {"path": "x", "sha256": "a" * 64}}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "alias": "b"},
+     {"engine": "a", "platform": "linux-x86_64-cu130", "alias": "b"}],
+    [{"engine": "b", "platform": "linux-x86_64-cu130", "recipe": {"path": "x", "sha256": "a" * 64}},
+     {"engine": "a", "platform": "linux-x86_64-cu130", "alias": "b"}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "recipe": {"path": "../x", "sha256": "a" * 64}}],
+    [{"engine": "a", "platform": "linux-x86_64-cu130", "recipe": {"path": "x", "sha256": "bad"}}],
+])
+def test_malformed_index_aliases_and_refs_are_rejected(monkeypatch, tmp_path, entries):
+    index = tmp_path / "index.json"
+    index.write_text(json.dumps({"schema": "astrid.engine-index.v1", "entries": entries}))
+    monkeypatch.setattr(recipes, "_INDEX_PATH", index)
+    with pytest.raises(RecipeValidationError):
+        recipes.load_recipe_index()
+
+
+def test_alias_checks_canonical_recipe_identity_and_digest(monkeypatch, tmp_path):
+    packs = tmp_path / "packs"
+    shutil.copytree(recipes._ROOT / "packs", packs)
+    index_path = packs / "engine-index.json"
+    index = json.loads(index_path.read_text())
+    entry = next(item for item in index["entries"] if item["engine"] == "vibecomfy-h3")
+    path = tmp_path / entry["recipe"]["path"]
+    monkeypatch.setattr(recipes, "_ROOT", tmp_path)
+    monkeypatch.setattr(recipes, "_INDEX_PATH", index_path)
+    recipe = json.loads(path.read_text())
+    recipe["engine"] = "vibecomfy"
+    path.write_text(json.dumps(recipe))
+    with pytest.raises(IntegrityError, match="digest mismatch"):
+        recipes.load_recipe("vibecomfy", "linux-x86_64-cu130")
+    entry["recipe"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    index_path.write_text(json.dumps(index))
+    with pytest.raises(RecipeValidationError, match="identity differs"):
+        recipes.load_recipe("vibecomfy", "linux-x86_64-cu130")
 
 
 def test_unknown_engine_and_known_unsupported_platform_are_distinct():
@@ -120,7 +181,7 @@ def _recipe_workspace(tmp_path, monkeypatch, mutate):
     shutil.copytree(source_root / "packs", packs)
     index_path = packs / "engine-index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    entry = next(item for item in index["entries"] if item["engine"] == "vibecomfy")
+    entry = next(item for item in index["entries"] if item["engine"] == "vibecomfy" and item["platform"] == "windows-x86_64-cu130")
     recipe_path = packs / entry["recipe"]["path"].removeprefix("packs/")
     recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
     mutate(recipe)
