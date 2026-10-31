@@ -85,7 +85,6 @@ class PipelineDispatchAliasTest(unittest.TestCase):
                 "dev",
                 "doctor",
                 "backup",
-                "skills",
             },
         )
         # The removed handlers (run/author/orchestrate/renderers/replay/...) do

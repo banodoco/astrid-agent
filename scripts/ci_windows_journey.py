@@ -26,22 +26,6 @@ TASK_OUTPUT_TAIL_BYTES = 65536
 TASK_OUTPUT_METADATA_BYTES = 2048
 
 
-def _powershell_quote(value):
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def powershell5_command(executable, args=()):
-    """Build the existing Windows PowerShell 5.1 admission command.
-
-    Backend action probes must enter Windows through this route; they may not
-    silently switch to ``pwsh`` or a foreground Runtime process.
-    """
-    command = "& " + " ".join([_powershell_quote(executable), *(_powershell_quote(arg) for arg in args)])
-    script = "$ErrorActionPreference='Stop'; " + command + "; " \
-        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]
-
-
 def save(name, value):
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     (EVIDENCE / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
@@ -244,16 +228,15 @@ def host_ready():
             ready.get("runtime_instance_id") == value["runtime_instance_id"])
 
 
-def task(project="windows-journey", *, create_project=True):
+def task(project="windows-journey"):
     # Exercise the installed SDK boundary against the profile written by the
     # real installer. This local SFX action has no external model/GPU needs.
     os.environ["ASTRID_HOST_EXECUTION_PROFILE"] = "installed"
     assert_installed_profile_binding()
-    if create_project:
-        created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
-                                 "project.json"))
-        if created.get("ok") is not True:
-            raise RuntimeError("Project creation failed")
+    created = json.loads(cli("astrid", ["projects", "create", project, "--name", "Windows journey", "--json"],
+                             "project.json"))
+    if created.get("ok") is not True:
+        raise RuntimeError("Project creation failed")
     request = {
         "capability_id": "chiptune.sfx",
         "kind": "executor",
@@ -321,7 +304,6 @@ def task(project="windows-journey", *, create_project=True):
                 not re.fullmatch(r"sha256:[0-9a-f]{64}", outputs[name].get("digest", "")) or
                 outputs[name].get("size", 0) <= 0 for name in ("sfx", "sfx_meta"))):
         raise RuntimeError("Task did not settle successfully with outputs")
-    return task_id
 
 
 def process_key(row):

@@ -1,7 +1,0 @@
-{
-  "format": "astrid-install-update/v1",
-  "operation_id": "55555555555555555555555555555555",
-  "transaction_id": "tx-missing-5555",
-  "step": "complete",
-  "target_release": 2
-}

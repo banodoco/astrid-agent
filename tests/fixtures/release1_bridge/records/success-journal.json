@@ -1,7 +1,0 @@
-{
-  "format": "astrid-install-update/v1",
-  "operation_id": "11111111111111111111111111111111",
-  "transaction_id": "tx-success-1111",
-  "step": "complete",
-  "target_release": 2
-}

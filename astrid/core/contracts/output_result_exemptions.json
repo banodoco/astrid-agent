@@ -2,8 +2,8 @@
   "schema_version": 1,
   "description": "Committed output-result inventory. Every bundled executor in the default registry either writes a universal result manifest (non-exempt) or appears here with a specific M2-approved reason; optional external routes remain explicitly listed without being treated as bundled discovery. The registry conformance gate uses this list to allow non-conforming executors while making the gap visible.",
   "last_registry_snapshot": "2026-10-16T00:00:00Z",
-  "total_executors": 114,
-  "m1_adopters": 78,
+  "total_executors": 111,
+  "m1_adopters": 75,
   "exempted": 36,
   "non_exempt": [
     "editorial.arrange",
@@ -80,10 +80,7 @@
     "video_editing.hype",
     "video_editing.iteration_video",
     "video_editing.logo_ideas",
-    "video_editing.vary_grid",
-    "music.duck",
-    "rendering.timeline_export_plan",
-    "rendering.timeline_prepare_import"
+    "video_editing.vary_grid"
   ],
   "exemptions": {
     "blender.render": {

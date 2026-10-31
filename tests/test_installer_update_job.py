@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import sys
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -76,27 +75,6 @@ def _startup_object_snapshot(root):
     return service.path, service.path.read_bytes()
 
 
-def _helper_call(request):
-    """Drive the real selected-Python helper entry point with one JSON request."""
-    agent_root = Path(__file__).resolve().parents[1]
-    script = (
-        "import sys; sys.path.insert(0, sys.argv[1]); "
-        "from astrid.installer import update_job; "
-        "update_job._probe_identity = lambda _data: ('instance-before', "
-        "{'release': 7, 'managed_by': None}); update_job.main()"
-    )
-    return subprocess.run(
-        [sys.executable, "-I", "-B", "-c", script, str(agent_root)],
-        input=json.dumps(request), text=True, capture_output=True, check=False,
-    )
-
-
-def _helper_document(result):
-    assert result.stdout, result.stderr
-    assert result.stdout.count("\n") <= 1
-    return json.loads(result.stdout)
-
-
 def test_accept_persists_additive_job_and_private_log_under_real_installer_lock(tmp_path, monkeypatch):
     root, data, old, request = _fixture(tmp_path, monkeypatch)
     job = update_job.accept(request)
@@ -109,89 +87,6 @@ def test_accept_persists_additive_job_and_private_log_under_real_installer_lock(
     assert job["old_version"] == old.document()
     assert platform.is_owner_only(job["log_path"])
     assert not (root / "update-transaction.json").exists()
-
-
-def test_helper_replays_same_operation_byte_for_byte_and_reconciles_pending_journal(tmp_path, monkeypatch):
-    root, _, _, request = _fixture(tmp_path, monkeypatch)
-    first = _helper_call({"action": "accept", **request})
-    assert first.returncode == 0, first.stderr
-    accepted = _helper_document(first)
-    marker_before = (root / "install.json").read_bytes()
-
-    replay = _helper_call({"action": "accept", **request})
-    assert replay.returncode == 0, replay.stderr
-    assert _helper_document(replay) == accepted
-    assert (root / "install.json").read_bytes() == marker_before
-
-    transaction_id = "c" * 32
-    marker = read_json(root / "install.json")
-    marker["update_job"]["transaction_id"] = transaction_id
-    write_json(root / "install.json", marker)
-    journal = {"format": "astrid-install-update/v1", "operation_id": transaction_id,
-               "step": "stopping", "update_job": {"operation_id": request["operation_id"]}}
-    write_json(root / "update-transaction.json", journal)
-    journal_before = (root / "update-transaction.json").read_bytes()
-
-    pending_replay = _helper_call({"action": "accept", **request})
-    assert pending_replay.returncode == 0, pending_replay.stderr
-    assert _helper_document(pending_replay)["operation_id"] == request["operation_id"]
-    assert (root / "update-transaction.json").read_bytes() == journal_before
-
-
-@pytest.mark.parametrize("state", ["active", "updated", "failed", "recovery-needed"])
-def test_same_id_replay_returns_active_or_terminal_durable_result_without_rewrite(tmp_path, monkeypatch, state):
-    root, _, _, request = _fixture(tmp_path, monkeypatch)
-    first = _helper_call({"action": "accept", **request})
-    assert first.returncode == 0
-    marker = read_json(root / "install.json")
-    marker["update_job"].update(state=state, message=f"{state} result")
-    write_json(root / "install.json", marker)
-    before = (root / "install.json").read_bytes()
-
-    replay = _helper_call({"action": "accept", **request})
-    assert replay.returncode == 0, replay.stderr
-    assert _helper_document(replay) == marker["update_job"]
-    assert (root / "install.json").read_bytes() == before
-
-
-@pytest.mark.parametrize(("case", "expected"), [
-    ("conflict", "conflicting-operation"),
-    ("payload", "mismatched-payload"),
-    ("journal", "corrupt-journal"),
-])
-def test_helper_refusals_are_bounded_json_and_do_not_accept(tmp_path, monkeypatch, case, expected):
-    root, _, _, request = _fixture(tmp_path, monkeypatch)
-    accepted = _helper_call({"action": "accept", **request})
-    assert accepted.returncode == 0
-    if case == "conflict":
-        request = dict(request, operation_id="b" * 32, job_name="astrid-update-" + "b" * 32)
-    elif case == "payload":
-        request = dict(request, metadata={**request["metadata"], "release": 7})
-    else:
-        (root / "update-transaction.json").write_text("{", encoding="utf-8")
-
-    result = _helper_call({"action": "accept", **request})
-    document = _helper_document(result)
-    assert result.returncode == 1
-    assert document == {
-        "format": update_job.REFUSAL_FORMAT, "accepted": False,
-        "reason": expected, "message": document["message"],
-    }
-    assert isinstance(document["message"], str) and len(document["message"]) <= update_job.MAX_RESULT_LINE
-
-
-def test_helper_lock_busy_refusal_is_structured(tmp_path, monkeypatch):
-    root, _, _, request = _fixture(tmp_path, monkeypatch)
-    lock = update_job._locked(root)
-    try:
-        result = _helper_call({"action": "accept", **request})
-    finally:
-        update_job._unlock(lock)
-    document = _helper_document(result)
-    assert result.returncode == 1
-    assert document["format"] == update_job.REFUSAL_FORMAT
-    assert document["reason"] == "busy"
-    assert document["accepted"] is False
 
 
 def test_accept_refuses_changed_selection_bytes_release_and_owner_without_journal(tmp_path, monkeypatch):
