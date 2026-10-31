@@ -486,7 +486,7 @@ def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, 
 
     def ordinary_start(boundary):
         message = ("Another Astrid operation" if boundary == "published" else
-                   "An Astrid update was interrupted; Choose Pinokio's Update button")
+                   "Choose Update to finish")
         with pytest.raises(ValueError, match=message):
             runpy.run_path(str(runner))
         refusals.append(boundary)

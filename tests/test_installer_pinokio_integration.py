@@ -981,7 +981,7 @@ def test_pre_e2_pinokio_foreground_rolls_back_and_recovers_migration(
                     output = output.decode("utf-8", errors="replace")
                 raise AssertionError(f"Ordinary Start did not finish refusing admission:\n{output}") from exc
             assert start_attempt.returncode != 0, start_attempt.stdout
-            assert "Choose Pinokio's Update button" in start_attempt.stdout
+            assert "Choose Update to finish" in start_attempt.stdout
             assert "ASTRID_PINOKIO_READY" not in start_attempt.stdout
             assert not (app_root / "pinokio-control.json").exists()
             assert not (data_root / "runtime" / "discovery.json").exists()
