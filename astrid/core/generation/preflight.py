@@ -198,8 +198,9 @@ def check_local_generation_readiness(
                 "or the 'comfyui' CLI); neither is installed or discoverable"
             ),
             recovery_command=(
-                "start your existing ComfyUI and use vibecomfy.run with its local server URL; "
-                "see the VibeComfy skill for setup"
+                "install the Astrid-managed ComfyUI runtime (the 'comfy' Python package "
+                "providing comfy.cmd.main or the 'comfyui' CLI) in Astrid's Python environment, "
+                "then retry; see the VibeComfy skill for the supported setup"
             ),
         )
 

@@ -281,3 +281,16 @@ def test_generation_help_does_not_load_sdk_or_start_runtime(monkeypatch, capsys)
         cli.main(["image", "--help"])
     assert exc.value.code == 0
     assert "--target" in capsys.readouterr().out
+
+
+def test_public_generate_help_lists_verbs_and_copyable_example(capsys):
+    from astrid.core import gateway
+
+    assert gateway.main(["generate", "--help"]) == 0
+    help_text = capsys.readouterr().out
+    for verb in ("image", "video", "describe", "list"):
+        assert verb in help_text
+    assert (
+        'astrid generate image --entry z-image --mode t2i --target managed '
+        '--dry-run "A red paper boat on a blue lake"'
+    ) in help_text

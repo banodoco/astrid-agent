@@ -10,6 +10,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.installed
+
 
 def test_installed_module_generate_subprocesses(tmp_path):
     repo = Path(__file__).resolve().parents[3]

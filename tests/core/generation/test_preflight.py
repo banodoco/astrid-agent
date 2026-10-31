@@ -58,9 +58,37 @@ def test_missing_comfyui_runtime_is_actionable(
 
     assert result.ready is False
     assert "ComfyUI runtime" in result.reason
-    assert "existing ComfyUI" in result.recovery_command
-    assert "vibecomfy.run" in result.recovery_command
+    assert "install the Astrid-managed ComfyUI runtime" in result.recovery_command
+    assert "comfy.cmd.main" in result.recovery_command
     assert "pip" not in result.recovery_command
+
+
+def test_managed_dry_run_names_missing_runtime_setup_action(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import astrid
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation import preflight
+
+    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
+    monkeypatch.setattr(preflight, "_comfyui_runtime_available", lambda: False)
+
+    with pytest.raises(AstridError) as exc:
+        astrid.generate.image(
+            model="z-image",
+            mode="t2i",
+            execution="local",
+            target="managed",
+            project="demo",
+            project_root=tmp_path,
+            dry_run=True,
+            prompt="A red paper boat on a blue lake",
+        )
+
+    assert exc.value.code == "COMFY_TARGET_NOT_READY"
+    assert "install the Astrid-managed ComfyUI runtime" in exc.value.fix
+    assert "comfy.cmd.main" in exc.value.fix
 
 
 def test_ready_structural_local_path_requires_no_network_probe(

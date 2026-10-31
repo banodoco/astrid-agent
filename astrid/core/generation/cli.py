@@ -101,8 +101,15 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     parser = argparse.ArgumentParser(
         prog="astrid generate",
         description="Generate media through the selected Comfy target and the Astrid runtime.",
+        epilog=(
+            'Example:\n'
+            '  astrid generate image --entry z-image --mode t2i --target managed '
+            '--dry-run "A red paper boat on a blue lake"'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="modality", required=True)
+    sub.add_parser("list", help="List generation entries and readiness.")
     for modality in ("image", "video"):
         command = sub.add_parser(modality, help=f"Generate {'an image' if modality == 'image' else 'a video'}.",
             epilog=_entry_help(contextual) if contextual and contextual["kind"] == modality else None,
@@ -217,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         print(json.dumps(description, indent=2, sort_keys=True) if parsed.json else _entry_help(description))
         return 0
+    if parsed.modality == "list":
+        from astrid.core.generation.listing import main as listing_main
+        return listing_main(argv)
     if parsed.modality == "workflow":
         return _workflow_command(parsed)
     if parsed.model and parsed.entry and parsed.model != parsed.entry:
