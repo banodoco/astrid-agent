@@ -240,12 +240,13 @@ jobs:
           python -m build --wheel --no-isolation --outdir dist
           test "$(ls dist/*.whl | wc -l)" -eq 1
 
-      # Not editable: astrid, the Runtime and its client are copied into the venv's site-packages.
+      # Not editable: Astrid and every declared Runtime dependency are installed into the venv.
       - name: Install the wheel and the Runtime into a venv
         run: |
           python -m venv "$RUNNER_TEMP/installed-venv"
           "$RUNNER_TEMP/installed-venv/bin/python" -m pip install "$(ls dist/*.whl)[dev]"
-          "$RUNNER_TEMP/installed-venv/bin/python" -m pip install --no-deps ./astrid-runtime ./astrid-runtime/packages/python
+          "$RUNNER_TEMP/installed-venv/bin/python" -m pip check
+          "$RUNNER_TEMP/installed-venv/bin/python" -c 'import astrid_runtime; print(astrid_runtime.__file__)'
 
       - name: Install the Remotion dependencies
         run: npm ci --prefix remotion
@@ -254,3 +255,5 @@ jobs:
         run: >-
           "$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib
           tests/packs/h3_av/test_character_swap_cpu_boundary.py
+          tests/test_installed_action_entrypoints.py
+          tests/test_local_source_manifest.py

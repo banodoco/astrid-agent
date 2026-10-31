@@ -21,15 +21,19 @@ def _print_entrypoint_help() -> None:
         """Astrid command gateway — Python SDK + CLI
 
 The canonical Python boundary is ``import astrid`` (see docs/reference/sdk.md).
-This gateway is the CLI entry point for the seven product families,
-workspace status, operational families (doctor, backup), and external tools.
+This gateway is the CLI entry point for product families, Runtime workspace
+operations, installer and account commands, and installed action tools.
 
 Usage:
   python3 -m astrid <family> <command> [options]
   python3 -m astrid help
+  python3 -m astrid --version
+  python3 -m astrid --agent-context ...
 
 Product families:
   python3 -m astrid projects ...
+  python3 -m astrid documents ...
+  python3 -m astrid preferences ...
   python3 -m astrid timelines ...
   python3 -m astrid media ...
   python3 -m astrid tasks ...
@@ -43,15 +47,21 @@ Timeline evidence:
 Latest project render:
   python3 -m astrid runs open [RUN_ID] [--project PROJECT] [--json]
 
-Operational families:
+Workspace, operational, and account commands:
+  python3 -m astrid install ...
   python3 -m astrid status [--json]
   python3 -m astrid doctor [--json]
   python3 -m astrid backup {create,restore,export,tombstone,recover,purge} [--json]
-  python3 -m astrid dev {status,promote,reclaim} [--ref REF] [--dry-run] [--json]
+  python3 -m astrid dev {status,promote,cache prune,reclaim} [--ref REF] [--dry-run] [--json]
   python3 -m astrid auth {login,status,logout,revoke}
+  python3 -m astrid login ...
+  python3 -m astrid logout ...
+  python3 -m astrid revoke ...
+  python3 -m astrid skills ...
 
-External tools:
+External tools and installed routes:
   python3 -m astrid hivemind search QUERY [--limit N] [--json]
+  python3 -m astrid <installed-route> ...
 
 Nested mounts (manifest-owned):
   python3 -m astrid timelines shots ...
@@ -66,7 +76,11 @@ Options:
 Notes:
   python3 -m astrid is the package entry point.
   Use ``python3 -m astrid help`` for the full family census, kernel/pack
-  ownership, nested mounts, and stable exit codes.
+  ownership, nested mounts, and stable exit codes. Installed routes, including
+  action and H3 routes when installed, are discovered from manifests.
+  If a source install has no Runtime workspace, use the repo-ref manifest route
+  in docs/setup/local-source-install.md; packaged installs use the OS command
+  in the Astrid setup skill.
 
 Ownership handoff:
   Product commands connect to the selected runtime through the generated

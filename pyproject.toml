@@ -23,6 +23,9 @@ dependencies = [
     "fal-client>=0.7.0",
     "xxhash>=3.4",
     "PyJWT[crypto]>=2.8",
+    # Runtime owns workspace state and is part of every Astrid installation.
+    # Keep this source pin aligned with runtime.lock.json.
+    "astrid-runtime @ git+https://github.com/banodoco/astrid-runtime.git@6d53a19070faf63fc15ae1f81417722edc2c8a5f",
     # VibeComfy is installed with --no-deps by the managed installer.
     "huggingface_hub[hf_xet]>=0.32.0",
     # pyannote.audio is intentionally excluded from core metadata.

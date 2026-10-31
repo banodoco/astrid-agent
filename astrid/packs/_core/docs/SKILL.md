@@ -56,6 +56,15 @@ developers.
 
 ## Commands for outside agents
 
+The same install line is the first-use path when a Runtime workspace is missing:
+the installer creates the workspace before starting Runtime. If a workspace
+command fails before setup, give the user the OS-specific command above. If
+installation fails, preserve the exact `Details:` log path printed by the
+installer so the failure can be diagnosed. When Astrid is running from a source
+checkout, use the repo-ref manifest procedure in
+`docs/setup/local-source-install.md` for workspace setup and repair instead of
+the hosted install line; this keeps the agent and Runtime refs aligned.
+
 Synced skills use the absolute path of Astrid's own Python, so their
 commands work from a terminal without changing PATH.
 
@@ -129,7 +138,10 @@ curl -fsSL https://astrid.haus/install | sh -s -- --doctor
 On Windows PowerShell use
 `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --doctor`.
 
-If Astrid isn't running, run the install line again.
+If Astrid isn't running, repeat the setup route for this installation:
+packaged installs use the OS install line above; source checkouts use the
+repo-ref manifest procedure in `docs/setup/local-source-install.md` so the
+agent and Runtime stay on the selected refs.
 
 The gateway is the stable command surface. Begin with its census, then inspect
 one family when needed:
