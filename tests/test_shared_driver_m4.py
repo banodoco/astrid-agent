@@ -343,3 +343,25 @@ def test_workflow_explicitly_wires_both_local_families_and_hosted_m4_6_gate():
         assert fragment in workflow
     assert "powershell.exe" in workflow or "powershell5_command" in workflow
     assert journey_failure_modes.candidate_errors(PROVISIONAL_CANDIDATE) == []
+
+
+def test_workflow_provisions_and_attests_m4_6_historical_objects_before_execution():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/journey.yml").read_text(
+        encoding="utf-8"
+    )
+    provisioning = workflow.index("Provision and attest immutable release-0 Git objects")
+    first_executor = workflow.index("Run local-disposable M4-6 executor slot on POSIX")
+    assert provisioning < first_executor
+    for fragment in (
+        "fetch-depth: 1",
+        "RELEASE0_AGENT_REF: 3204bb00135bec8ee2d2d3fb21eed5abfceca649",
+        "RELEASE0_RUNTIME_REF: 6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+        'git -C "$GITHUB_WORKSPACE/candidate-agent" fetch --no-tags --depth=1 origin',
+        'git -C "$GITHUB_WORKSPACE/runtime" fetch --no-tags --depth=1 origin',
+        'cat-file -t "$RELEASE0_AGENT_REF"',
+        'cat-file -t "$RELEASE0_RUNTIME_REF"',
+        '--agent-repo "$GITHUB_WORKSPACE/candidate-agent"',
+        '--release0-runtime-repo "$GITHUB_WORKSPACE/runtime"',
+        "Effective M4-6 historical source provisioning",
+    ):
+        assert fragment in workflow
