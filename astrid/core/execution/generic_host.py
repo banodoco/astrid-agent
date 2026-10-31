@@ -5097,6 +5097,8 @@ class RuntimeProtocolClient:
         fence: int | None = None,
         failure_diagnostic: Mapping[str, Any] | None = None,
         structured_error: Mapping[str, Any] | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
     ):
         if not attempt_id or fence is None:
             raise HostError("generated failure requires attempt_id and fence")
@@ -5119,14 +5121,47 @@ class RuntimeProtocolClient:
         epoch = self._attempt_runtime_epochs.get(str(attempt_id))
         if epoch is None:
             raise HostError("attempt runtime epoch was not captured at claim")
-        return completion_client.fail_attempt(
+        evidence = {}
+        if outputs is not None:
+            evidence["outputs"] = [dict(row) for row in outputs]
+        if result is not None:
+            evidence["result"] = dict(result)
+        response = completion_client.fail_attempt(
             attempt_id,
             lease_id=lease_token,
             fence=int(fence),
             error=payload,
             runtime_epoch=epoch,
             idempotency_key=f"fail-{attempt_id}-{fence}",
+            **evidence,
         )
+        if result is not None:
+            self._verify_terminal_evidence_readback(task_id, result, response)
+        return response
+
+    def _verify_terminal_evidence_readback(
+        self, task_id: str, expected_result: Mapping[str, Any], response: Any,
+    ) -> None:
+        """Require a Runtime task readback to contain the submitted durable result."""
+        task = response.get("task") if isinstance(response, Mapping) else getattr(response, "task", None)
+        result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+        if not isinstance(result, Mapping):
+            task = self.generated.get_task(task_id)
+            task = task.get("task", task) if isinstance(task, Mapping) else task
+            result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+        def contains(actual: Any, expected: Mapping[str, Any]) -> bool:
+            if not isinstance(actual, Mapping):
+                return False
+            if all(
+                (contains(actual.get(key), value) if isinstance(value, Mapping)
+                 else actual.get(key) == value)
+                for key, value in expected.items()
+            ):
+                return True
+            return any(contains(value, expected) for value in actual.values() if isinstance(value, Mapping))
+
+        if not contains(result, expected_result):
+            raise HostError("Runtime terminal evidence is not present in durable task readback")
 
     def cancel(
         self,
@@ -5135,6 +5170,10 @@ class RuntimeProtocolClient:
         attempt_id: str | None = None,
         fence: int | None = None,
         lease_id: str | None = None,
+        runtime_epoch: int | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
+        stop_observed: bool | None = None,
     ):
         if attempt_id is None or fence is None:
             return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
@@ -5149,11 +5188,34 @@ class RuntimeProtocolClient:
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
             raise HostError("runtime cancellation target has no version fence")
-        return self._lifecycle_client().cancel_task(
+        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if runtime_epoch is not None and runtime_epoch != epoch:
+            raise HostError("runtime cancellation epoch does not match the claim fence")
+        if isinstance(fence, bool):
+            raise HostError("runtime cancellation fence must be an integer")
+        evidence = outputs is not None or result is not None or stop_observed is not None
+        if evidence and (lease_id is None or epoch is None):
+            raise HostError("runtime cancellation evidence requires a complete attempt fence")
+        kwargs = {}
+        if evidence:
+            kwargs.update(
+                attempt_id=attempt_id,
+                lease_id=lease_id,
+                fence=int(fence),
+                runtime_epoch=epoch,
+                **({"outputs": [dict(row) for row in outputs]} if outputs is not None else {}),
+                **({"result": dict(result)} if result is not None else {}),
+                stop_observed=stop_observed,
+            )
+        response = self._lifecycle_client().cancel_task(
             task_id,
             expected_version=version,
             idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
+            **kwargs,
         )
+        if result is not None:
+            self._verify_terminal_evidence_readback(task_id, result, response)
+        return response
 
     def get_object(self, digest: str) -> bytes:
         response = self.generated.get_object(digest)
@@ -7697,7 +7759,9 @@ class GenericPackHost:
                     f"harvested output {index} names undeclared port {name!r}"
                 )
             role = harvested.get("role", "result")
-            if role not in {"result", "auxiliary"}:
+            if role not in {"result", "auxiliary"} and not (
+                role == "manifest" and name == "result_manifest"
+            ):
                 raise HostError(f"harvested output {name!r} has invalid role {role!r}")
             is_generation_result = (
                 generation_port is not None
@@ -7779,6 +7843,9 @@ class GenericPackHost:
                     if field in harvested
                 },
             }
+            if name == "result_manifest" and role == "manifest":
+                output["output_port"] = "result_manifest"
+                output["durability"] = harvested.get("durability", "durable")
 
             existing_index = seen_paths.get(path)
             if existing_index is not None:
@@ -9707,7 +9774,9 @@ class GenericPackHost:
                 terminal["lease_diagnostic"] = diagnostic
 
         def ensure_failure(error):
-            if terminal.get("recorded") or self.client is None or not exact_attempt or exact_fence is None:
+            if (terminal.get("recorded") or terminal.get("evidence_pending")
+                    or terminal.get("pending_status") == "cancelled"
+                    or self.client is None or not exact_attempt or exact_fence is None):
                 return
             try:
                 normalized = coerce_astrid_error(error)
@@ -9719,12 +9788,21 @@ class GenericPackHost:
                 # Their failure cannot suppress the original fenced mutation.
                 message = type(error).__name__
                 structured_error = {"code": "executor_failed", "field": None, "fix": ""}
+            pending_evidence = {
+                key: terminal[key]
+                for key in ("pending_outputs", "pending_result")
+                if key in terminal
+            }
             try:
                 completion_call(
                     self.client.fail, str(data["id"]), lease_token,
                     message, retryable=False,
                     attempt_id=exact_attempt, fence=exact_fence,
                     structured_error=structured_error,
+                    **({"outputs": pending_evidence["pending_outputs"]}
+                       if "pending_outputs" in pending_evidence else {}),
+                    **({"result": pending_evidence["pending_result"]}
+                       if "pending_result" in pending_evidence else {}),
                     **({"failure_diagnostic": dict(terminal["lease_diagnostic"])}
                        if terminal.get("forced") == "lease_lost" else {}),
                 )
@@ -9998,7 +10076,8 @@ class GenericPackHost:
             try:
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
-                    if self.attempt_root is None and not keep_attempt:
+                    if (self.attempt_root is None and not keep_attempt
+                            and not terminal.get("evidence_pending")):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             finally:
                 stop.set()
@@ -10347,6 +10426,9 @@ class GenericPackHost:
             """Fence a deadline expiry at Runtime before returning to the worker."""
             nonlocal deadline_failed
             try:
+                deadline_outputs, deadline_result = collect_terminal_evidence(
+                    "failed", AstridError("execution deadline exceeded", code="timeout")
+                )
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
@@ -10355,6 +10437,7 @@ class GenericPackHost:
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
+                    outputs=deadline_outputs, result=deadline_result,
                 )
                 deadline_failed = True
             except Exception as exc:
@@ -10366,6 +10449,69 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            """Harvest and upload verified partial outputs before terminal mutation."""
+            if ("pending_outputs" in _terminal and "pending_result" in _terminal
+                    and _terminal.get("pending_status") == status):
+                return _terminal["pending_outputs"], _terminal["pending_result"]
+            output_root = _terminal.get("output_root")
+            if output_root is None:
+                normalized = coerce_astrid_error(error)
+                result_value = {"status": status, "error": {
+                    "code": normalized.code or "executor_failed", "message": normalized.message,
+                }}
+                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
+                return [], result_value
+            try:
+                values = dict(_terminal.get("inputs") or {})
+                values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
+                if record.definition.command is not None:
+                    _, values = _bind_host_owned_command_outputs(
+                        record, values, output_root=Path(output_root)
+                    )
+                harvested = harvest_staged_outputs(
+                    output_root, definition=record.definition,
+                    declared_outputs=record.definition.outputs, values=values, require=False,
+                )
+                manifest_path = Path(output_root) / "manifest.json"
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if manifest_value.get("kind") == "managed-generation-result.v1":
+                        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+
+                        validate_managed_generation_result(
+                            manifest_value, staging_root=output_root,
+                            expected_task_id=task_id, expected_attempt_id=attempt_id,
+                        )
+                typed = self._typed_outputs(record, harvested, root)
+                task_epoch = task_data.get("runtime_epoch")
+                uploaded = self._upload_outputs(
+                    typed,
+                    project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
+                    fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
+                ) if typed else []
+                normalized = coerce_astrid_error(error)
+                result_value: dict[str, Any] = {
+                    "status": status,
+                    "error": {"code": normalized.code or "executor_failed", "message": normalized.message},
+                    "outcomes": {"execution": {"status": status}},
+                }
+                manifest = next((row for row in uploaded
+                                 if row.get("output_port", row.get("name")) == "result_manifest"), None)
+                if manifest is not None:
+                    result_value["manifest_ref"] = {
+                        "object_id": manifest.get("digest"), "size": manifest.get("size"),
+                    }
+            except Exception as evidence_error:
+                # The original terminal error remains authoritative. Keep the
+                # attempt spool and expose why evidence could not be attached.
+                _terminal["evidence_error"] = type(evidence_error).__name__
+                _terminal["evidence_pending"] = True
+                raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
+            _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+            return uploaded, result_value
+
         def handle_guard_abort() -> None:
             if _terminal.get("forced") == "lease_lost":
                 raise HostError("execution lease lost")
@@ -10373,6 +10519,9 @@ class GenericPackHost:
                 nonlocal deadline_exceeded
                 deadline_exceeded = True
             if evidence_cap_exceeded:
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "failed", AstridError(_evidence_cap_message(evidence_failure_message), code="evidence_cap")
+                )
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
@@ -10381,13 +10530,20 @@ class GenericPackHost:
                     attempt_id=attempt_id,
                     fence=fence,
                     failure_diagnostic=evidence_failure_receipt,
+                    outputs=evidence_outputs, result=evidence_result,
                 )
                 raise HostError(_evidence_cap_message(evidence_failure_message))
             if deadline_exceeded:
                 terminalize_deadline()
             elif callable(getattr(self.client, "cancel", None)):
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "cancelled", AstridError("execution cancelled", code="cancelled")
+                )
                 completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
-                                fence=fence, lease_id=lease_token)
+                                fence=fence, lease_id=lease_token,
+                                runtime_epoch=task_data.get("runtime_epoch"),
+                                outputs=evidence_outputs, result=evidence_result,
+                                stop_observed=False)
 
         read_progress = _terminal["read_progress"]
         try:
@@ -11190,6 +11346,7 @@ class GenericPackHost:
             if isinstance(gpu, Mapping) and (gpu.get("warning") or not gpu.get("qualified")):
                 failure_message += " " + str(gpu.get("warning") or gpu["reason"])
             failure_message += recovery_suffix(original_error)
+            evidence_outputs, evidence_result = collect_terminal_evidence("failed", original_error)
             completion_call(self.client.fail,
                 task_id,
                 lease_token,
@@ -11203,6 +11360,8 @@ class GenericPackHost:
                     if getattr(original_error, "child_import_receipt", None) is not None
                     else storage_failure_receipt or evidence_failure_receipt
                 ),
+                outputs=evidence_outputs,
+                result=evidence_result,
                 **_structured_failure_kwargs(original_error),
             )
             raise
@@ -11235,12 +11394,20 @@ class GenericPackHost:
                 child_bridge.revoke()
                 with self._process_lock:
                     self._child_bridges.discard(child_bridge)
-            retain_for_unresolved_scope = command_cleanup_error is not None
+            retain_for_unresolved_scope = (
+                command_cleanup_error is not None
+                or bool(_terminal.get("evidence_pending"))
+                or (bool(_terminal.get("pending_result")) and not _terminal.get("recorded"))
+            )
             if retain_for_unresolved_scope:
                 # The task-scope supervisor has evidence of a child writer
                 # that outlived its leader. Keep the attempt even when the
                 # caller did not request debug retention.
-                cleanup_errors.append("unresolved command task scope; attempt retained")
+                cleanup_errors.append(
+                    "unresolved command task scope; attempt retained"
+                    if command_cleanup_error is not None
+                    else "Runtime terminal evidence publication pending; attempt retained"
+                )
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
@@ -11418,11 +11585,20 @@ class GenericPackHost:
         attempt_id: str | None = None,
         fence: int | None = None,
         lease_id: str | None = None,
+        runtime_epoch: int | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
+        stop_observed: bool | None = None,
         require_fence: bool = False,
     ) -> Any:
         """Propagate cancellation, requiring identity for orphan reclaim."""
         operation = self._client_operation("cancel")
+        has_evidence = outputs is not None or result is not None or stop_observed is not None
+        if has_evidence and (not attempt_id or not lease_id or fence is None or runtime_epoch is None):
+            raise HostError("runtime cancellation evidence requires a complete attempt fence")
         if attempt_id is None or fence is None:
+            if has_evidence:
+                raise HostError("runtime cancellation evidence requires an attempt fence")
             return operation(task_id)
         try:
             return operation(
@@ -11430,9 +11606,13 @@ class GenericPackHost:
                 attempt_id=attempt_id,
                 fence=int(fence),
                 lease_id=lease_id,
+                **({"runtime_epoch": runtime_epoch} if runtime_epoch is not None else {}),
+                **({"outputs": outputs} if outputs is not None else {}),
+                **({"result": result} if result is not None else {}),
+                **({"stop_observed": stop_observed} if stop_observed is not None else {}),
             )
         except TypeError as exc:
-            if require_fence:
+            if require_fence or has_evidence:
                 raise HostError("runtime cancellation lacks an attempt/fence operation") from exc
             return operation(task_id)
 
