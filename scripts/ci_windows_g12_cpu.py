@@ -28,6 +28,7 @@ VIBECOMFY_SHA = "3bebae39655eb460454885040be4d3aefaf2ef31"
 COMFYUI_SHA = "0dbfd493b4cc604db743c699f0f7ce01348e54a4"
 TASK_ID_FILE = EVIDENCE / "task-id.json"
 DISCOVERY_JSON = EVIDENCE / "generate-list.json"
+ACTIVE_STEP: str | None = None
 
 
 def save(name: str, value: object) -> Path:
@@ -48,6 +49,9 @@ def run(argv: list[str | Path], name: str, *, env=None, timeout=300, show=True) 
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     log = EVIDENCE / name
     print(f"Running {name}", flush=True)
+    if Path(str(argv[0])).name.casefold() in {"powershell.exe", "pwsh.exe"}:
+        env = {key: value for key, value in (os.environ if env is None else env).items()
+               if key.casefold() != "psmodulepath"}
     try:
         with log.open("w", encoding="utf-8") as output:
             result = subprocess.run([str(arg) for arg in argv], env=env, stdout=output,
@@ -157,13 +161,13 @@ def version() -> dict:
     return value
 
 
-def cli(argv: list[str], output_name: str, *, timeout=300) -> dict:
+def cli(argv: list[str], output_name: str, *, module="astrid", timeout=300) -> dict:
     installed = version()
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(installed["env"])
     output_path = EVIDENCE / output_name
     stderr_path = EVIDENCE / (Path(output_name).stem + ".stderr.log")
-    command = [installed["python"], "-I", "-m", "astrid", *argv]
+    command = [installed["python"], "-I", "-m", module, *argv]
     print("Running installed Astrid CLI: " + " ".join(argv), flush=True)
     try:
         with output_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
@@ -407,22 +411,41 @@ def stop_comfy() -> None:
                                 "stdout": result.stdout[-2000:], "stderr": result.stderr[-2000:]})
 
 
+def runtime_stop() -> None:
+    if not (program_root() / "current").is_file():
+        save("runtime-down.json", {"stopped": False, "reason": "Astrid was not installed"})
+        return
+    try:
+        run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+             "$ErrorActionPreference='Stop'; Get-ScheduledTask | Where-Object { $_.TaskName -eq 'Astrid Runtime' -and $_.TaskPath -eq '\\' } | Disable-ScheduledTask | Out-Null"],
+            "runtime-disable-task.log", timeout=60)
+        result = cli(["down", "--profile", "astrid", "--data-root", str(data_root()),
+                      "--source-manifest", version()["profile"], "--json"],
+                     "runtime-down.json", module="astrid_runtime", timeout=900)
+    except Exception as exc:
+        save("runtime-down-error.json", {"error": str(exc)})
+        raise RuntimeError(f"Runtime stop: failed to disable its Scheduled Task or run down; see runtime-down-error.json and runtime-disable-task.log") from exc
+    save("runtime-down-result.json", result)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("step", choices=("install", "runtime-start", "runtime-ready", "comfy-install",
                                           "comfy-start", "comfy-ready", "discover-target", "reuse-list",
-                                          "workflow", "tasks-show", "comfy-stop"))
+                                          "workflow", "tasks-show", "comfy-stop", "runtime-stop"))
     parser.add_argument("--installer-shell", choices=("powershell.exe", "pwsh.exe"))
     args = parser.parse_args()
     if sys.platform != "win32":
         parser.error("This journey must run on Windows")
+    global ACTIVE_STEP
+    ACTIVE_STEP = args.step
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     actions = {
         "runtime-start": runtime_start, "runtime-ready": runtime_ready,
         "comfy-install": comfy_install, "comfy-start": comfy_start,
         "comfy-ready": comfy_ready, "discover-target": discover_attached_target,
         "reuse-list": reuse_discovery, "workflow": workflow,
-        "tasks-show": tasks_show, "comfy-stop": stop_comfy,
+        "tasks-show": tasks_show, "comfy-stop": stop_comfy, "runtime-stop": runtime_stop,
     }
     if args.step == "install":
         if not args.installer_shell:
@@ -437,9 +460,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        if "args" in locals() and getattr(args, "step", None):
+        if ACTIVE_STEP:
             try:
-                save(f"{args.step}-error.json", {"step": args.step, "error": str(exc)})
+                save(f"{ACTIVE_STEP}-error.json", {"step": ACTIVE_STEP, "error": str(exc)})
             except Exception:
                 pass
         print(f"G-12 Windows CPU journey failed: {exc}", file=sys.stderr, flush=True)

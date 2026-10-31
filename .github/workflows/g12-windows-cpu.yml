@@ -73,6 +73,10 @@ jobs:
       - name: Show the successful workflow task
         run: python -u scripts/ci_windows_g12_cpu.py tasks-show
 
+      - name: Stop the installed Astrid Runtime
+        if: always()
+        run: python -u scripts/ci_windows_g12_cpu.py runtime-stop
+
       - name: Stop ComfyUI
         if: always()
         run: python -u scripts/ci_windows_g12_cpu.py comfy-stop
