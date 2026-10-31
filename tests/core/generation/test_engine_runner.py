@@ -576,6 +576,34 @@ def test_command_failure_timeout_and_custody_keep_authority(setup, error):
     assert not [e for e in setup[1].events if e[0] == "download"]
 
 
+@pytest.mark.parametrize("diagnostic_io_fails", [False, True])
+def test_command_failure_retains_bounded_target_log_without_changing_public_error(setup, monkeypatch, diagnostic_io_fails):
+    context = setup[1]
+    context.fail = ("git", CommandResult(17, "x" * 70000, "underlying wheel error", False,
+                                         0.1, "private-handle", False, False))
+    path = ROOT + "/.astrid-engine/command-failure.json"
+    write = context.write_json_atomic
+    def diagnostic_write(target_path, value, **kwargs):
+        if diagnostic_io_fails and target_path == path:
+            raise OSError("diagnostic write failed")
+        return write(target_path, value, **kwargs)
+    monkeypatch.setattr(context, "write_json_atomic", diagnostic_write)
+    with pytest.raises(CommandFailed) as caught:
+        install(setup)
+    assert caught.value.step_id == "source:comfyui"
+    assert "underlying" not in str(caught.value) and "private-handle" not in str(caught.value)
+    if diagnostic_io_fails:
+        assert path not in context.files
+    else:
+        snapshot = context.files[path]
+        assert snapshot["step"] == "source:comfyui" and snapshot["exit_code"] == 17
+        assert snapshot["argv"][0] == "git" and snapshot["cwd"] == ROOT
+        assert snapshot["stdout"] == "x" * 65536 and snapshot["stdout_truncated"]
+        assert snapshot["stderr"] == "underlying wheel error" and not snapshot["stderr_truncated"]
+    receipt = context.files[ROOT + "/" + runner._RECEIPT]
+    assert receipt["status"] == "failed" and "underlying wheel error" not in json.dumps(receipt)
+
+
 def test_expired_deadline_never_acquires_lock(setup):
     with pytest.raises(DeadlineExceeded):
         runner.install_engine(setup[0], context=setup[1], adapter=setup[2], deadline=time.monotonic() - 1)

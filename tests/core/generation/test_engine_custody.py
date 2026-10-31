@@ -46,7 +46,7 @@ class Handler(BaseHTTPRequestHandler):
   if setting=='slow': time.sleep(30)
   if setting=='redirect':
    self.send_response(302);self.send_header('Location','http://127.0.0.1:1/');self.end_headers();return
-  value={'system':{'comfyui_version':'0.36.0'}} if self.path=='/system_stats' else {'MiniMaxH3ReferenceToVideo':{},'VHS_VideoCombine':{}}
+  value={'system':{'comfyui_version':'0.43.2'}} if self.path=='/system_stats' else __NODE_INFO__
   if self.path.startswith('/history/'):
    prompt_id=self.path.rsplit('/',1)[1]
    value={prompt_id:{'status':{'completed':True,'status_str':'success'},'outputs':{}}}
@@ -115,7 +115,8 @@ def session(tmp_path, monkeypatch):
         subprocess.run(argv, cwd=source, check=True, capture_output=True, timeout=5)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True, timeout=5).strip()
     server = root / "tiny_http.py"
-    server.write_text(_SERVER)
+    server.write_text(_SERVER.replace("__NODE_INFO__", repr(dict.fromkeys(
+        load_recipe("vibecomfy-h3", PLATFORM).health.required_nodes, {}))))
     mode, started = root / "mode", root / "started"
     mode.write_text("healthy")
     with socket.socket() as port_probe:
@@ -352,7 +353,7 @@ def test_engine_survives_two_finite_client_exits_and_uses_existing_vibe_registry
     assert (registry / "source_revision").read_text() == next(s.pin.revision for s in recipe.sources if s.name == "vibecomfy")
     expected = hashlib.sha256(b"tiny.py\0" + hashlib.sha256(b"# immutable fixture source\n").digest()).hexdigest()
     assert (registry / "source_content_digest").read_text() == "sha256:" + expected
-    nodes = {"MiniMaxH3ReferenceToVideo": {}, "VHS_VideoCombine": {}}
+    nodes = dict.fromkeys(recipe.health.required_nodes, {})
     assert first["object_info_sha256"] == _sha(nodes)
     assert len(list(Path(client.control).glob("*.json"))) == 1
 

@@ -327,6 +327,20 @@ class _Runner:
             raise RecipeValidationError("engine command requires a nonempty public argv", step_id=self.step_id)
         result = self.context.run(CommandRequest(tuple(argv), cwd or self.plan.root,
                                                  self.env if env is None else env, limit))
+        if result.timed_out or result.exit_code != 0:
+            # Keep third-party output on the target, outside receipt/public facts.
+            # Diagnostic I/O must never replace the original command failure.
+            try:
+                self.write(self.path(".astrid-engine/command-failure.json"), {
+                    "schema": "astrid.engine-command-failure.v1", "step": self.step_id,
+                    "argv": list(argv), "cwd": cwd or self.plan.root,
+                    "exit_code": result.exit_code, "timed_out": result.timed_out,
+                    "stdout": result.stdout[-65536:], "stderr": result.stderr[-65536:],
+                    "stdout_truncated": result.stdout_truncated or len(result.stdout) > 65536,
+                    "stderr_truncated": result.stderr_truncated or len(result.stderr) > 65536,
+                })
+            except Exception:
+                pass
         if result.timed_out:
             # The context may return this only after verifying exact owned stop.
             raise DeadlineExceeded("owned engine command exceeded deadline", step_id=self.step_id,
