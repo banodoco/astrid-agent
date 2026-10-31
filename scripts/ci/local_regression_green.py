@@ -109,13 +109,15 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
                     core.require(manifest.get('checkouts') == {r: shas[r] for r in repos}, 'wrong effective checkouts')
                     core.require(manifest.get('pod_id') == pod and manifest.get('job_id') == source_id, 'wrong broker result identity')
                 elif kind == 'hosted':
-                    core.require(key[2] in ('macos', 'windows'), 'hosted lane must be macos or windows')
+                    core.require(key[2] in ('linux', 'macos', 'windows'), 'invalid hosted platform')
                     base = hosted / source_id
                     run = core.read_json(base / 'run.json')
                     manifest_file, junit_file = base / 'manifest.json', base / 'junit.xml'
                     manifest = core.read_json(manifest_file)
                     core.require(run.get('id') == source['run_id'] and run.get('run_attempt') == source['run_attempt'] and run.get('repository') == tup['repos'][key[0]]['url'] and run.get('head_sha') == shas[key[0]] and run.get('status') == 'completed' and run.get('conclusion') == 'success', 'wrong or unsuccessful hosted run')
                     core.require(run.get('workflow_path') == source['workflow_path'] and run.get('job_id') == source['job_id'] and run.get('job_conclusion') == 'success', 'wrong or unsuccessful hosted job')
+                    artifact = run['artifact']
+                    core.require(type(source['artifact_id']) is int and artifact == {'id': source['artifact_id'], 'name': source_id, 'run_id': source['run_id'], 'run_attempt': source['run_attempt'], 'job_id': source['job_id']}, 'wrong hosted artifact association')
                     started = fresh(run['run_started_at'], cutoff, now)
                     ended = fresh(run['updated_at'], cutoff, now)
                     core.require(started <= ended and manifest.get('run_id') == run['id'] and manifest.get('run_attempt') == run['run_attempt'] and manifest.get('job_id') == run['job_id'], 'hosted identity mismatch')

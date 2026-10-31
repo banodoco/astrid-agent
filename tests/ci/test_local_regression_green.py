@@ -22,7 +22,7 @@ class LocalEvidenceTests(unittest.TestCase):
         self.shas = {r: str(i) * 40 for i, r in enumerate(core.REPOS, 1)}
         self.tuple = {'version': 1, 'name': 'synthetic', 'repos': {r: {'url': 'https://github.com/banodoco/astrid-' + r, 'sha': sha} for r, sha in self.shas.items()}, 'generated': {}, 'toolchain': {}, 'created_at': '2026-10-31T23:00:00Z'}
         self.identity = core.digest(self.tuple)
-        self.lanes = [{'repo': 'runtime', 'lane': 'unit-1', 'platform': 'linux', 'source': {'kind': 'broker', 'id': 'job-1', 'checkouts': ['runtime']}}, {'repo': 'agent', 'lane': 'unit-1', 'platform': 'windows', 'source': {'kind': 'hosted', 'id': 'artifact-1', 'checkouts': ['agent'], 'run_id': 1, 'run_attempt': 1, 'job_id': 2, 'workflow_path': '.github/workflows/ci.yml'}}]
+        self.lanes = [{'repo': 'runtime', 'lane': 'unit-1', 'platform': 'linux', 'source': {'kind': 'broker', 'id': 'job-1', 'checkouts': ['runtime']}}, {'repo': 'agent', 'lane': 'unit-1', 'platform': 'windows', 'source': {'kind': 'hosted', 'id': 'artifact-1', 'checkouts': ['agent'], 'run_id': 1, 'run_attempt': 1, 'job_id': 2, 'workflow_path': '.github/workflows/ci.yml', 'artifact_id': 3}}]
         for lane in self.lanes:
             lane['tests'] = [{'node_id': 'test_a', 'protected': False}]
         self.write('tuple.json', self.tuple)
@@ -46,7 +46,7 @@ class LocalEvidenceTests(unittest.TestCase):
         manifest.update(checkouts={'agent': self.shas['agent']}, run_id=1, run_attempt=1, job_id=2)
         self.write('hosted/artifact-1/manifest.json', manifest)
         (self.p / 'hosted/artifact-1/junit.xml').write_bytes(self.xml)
-        self.write('hosted/artifact-1/run.json', {'id': 1, 'run_attempt': 1, 'job_id': 2, 'repository': self.tuple['repos']['agent']['url'], 'head_sha': self.shas['agent'], 'status': 'completed', 'conclusion': 'success', 'job_conclusion': 'success', 'workflow_path': '.github/workflows/ci.yml', 'run_started_at': '2026-10-31T23:01:00Z', 'updated_at': '2026-10-31T23:04:00Z'})
+        self.write('hosted/artifact-1/run.json', {'id': 1, 'run_attempt': 1, 'job_id': 2, 'repository': self.tuple['repos']['agent']['url'], 'head_sha': self.shas['agent'], 'status': 'completed', 'conclusion': 'success', 'job_conclusion': 'success', 'workflow_path': '.github/workflows/ci.yml', 'run_started_at': '2026-10-31T23:01:00Z', 'updated_at': '2026-10-31T23:04:00Z', 'artifact': {'id': 3, 'name': 'artifact-1', 'run_id': 1, 'run_attempt': 1, 'job_id': 2}})
         self.save_inventory()
         self.write('coverage.json', {'lanes': [{k: lane[k] for k in ('repo', 'lane', 'platform')} for lane in self.lanes]})
 
@@ -95,7 +95,7 @@ class LocalEvidenceTests(unittest.TestCase):
     def test_stale_and_wrong_hosted_identity(self):
         path = self.p / 'hosted/artifact-1/run.json'
         saved = path.read_text()
-        for fields in ({'head_sha': 'f' * 40}, {'repository': 'wrong'}, {'run_started_at': '2026-10-30T23:01:00Z'}, {'conclusion': 'failure'}, {'job_conclusion': 'skipped'}, {'id': 99}, {'workflow_path': 'wrong'}):
+        for fields in ({'head_sha': 'f' * 40}, {'repository': 'wrong'}, {'run_started_at': '2026-10-30T23:01:00Z'}, {'conclusion': 'failure'}, {'job_conclusion': 'skipped'}, {'id': 99}, {'workflow_path': 'wrong'}, {'artifact': {'id': 99}}):
             with self.subTest(fields=fields):
                 self.mutate('hosted/artifact-1/run.json', **fields)
                 self.assertTrue(self.check())
