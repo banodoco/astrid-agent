@@ -7,9 +7,7 @@ import sys
 import time
 
 import pytest
-from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
 from scripts.verify_installed import bridge_observation, evaluate
-from tests.lanes import unavailable
 
 
 def test_update_only_fails_regressions_and_reports_preexisting():
@@ -22,11 +20,10 @@ def test_update_only_fails_regressions_and_reports_preexisting():
     assert not evaluate({'observations': {'old': False}}, 'install')['passed']
 
 
-@pytest.mark.omp
 def test_broken_real_bridge_model_command_fails_verify(tmp_path):
     bun = os.environ.get('ASTRID_TEST_BUN')
     if not bun or not Path(bun).is_file():
-        unavailable('set ASTRID_TEST_BUN to run the real bridge negative control')
+        pytest.skip('set ASTRID_TEST_BUN to run the real bridge negative control')
     env = {k: v for k, v in os.environ.items() if not k.endswith('_API_KEY') and not k.endswith('_TOKEN')}
     env.update(ASTRID_WORKSPACE_DISCOVERY=str(tmp_path / 'discovery.json'),
                ASTRID_ACP_CWD=str(tmp_path), ASTRID_ACP_BRIDGE_PORT='0',
@@ -111,7 +108,6 @@ def test_bridge_does_not_follow_redirect(tmp_path):
         thread.join()
 
 
-@pytest.mark.posix_native
 def test_service_executable_symlink_escape_is_rejected(tmp_path):
     from scripts.verify_installed import installed_executable
     root = tmp_path / 'install'
@@ -122,7 +118,7 @@ def test_service_executable_symlink_escape_is_rejected(tmp_path):
     try:
         link.symlink_to(outside)
     except OSError:
-        unavailable('symlinks unavailable')
+        pytest.skip('symlinks unavailable')
     assert not installed_executable(link, root)
     inside = root / 'real'
     inside.write_text('inside')
@@ -131,7 +127,6 @@ def test_service_executable_symlink_escape_is_rejected(tmp_path):
     assert installed_executable(link, root)
 
 
-@pytest.mark.posix_native
 def test_pinned_bootstrap_python_link_allowed_but_external_or_wrong_pin_rejected(tmp_path):
     from scripts.verify_installed import installed_python
     version = tmp_path / 'versions' / 'candidate'
@@ -144,7 +139,7 @@ def test_pinned_bootstrap_python_link_allowed_but_external_or_wrong_pin_rejected
     try:
         executable.symlink_to(pinned)
     except OSError:
-        unavailable('symlinks unavailable')
+        pytest.skip('symlinks unavailable')
     assert installed_python(executable, version, bootstrap, '3.11.13')
     assert not installed_python(executable, version, bootstrap, '3.11.12')
     assert not installed_python(pinned, version, bootstrap, '3.11.13')
@@ -185,7 +180,7 @@ def _legacy_identity_fixture(tmp_path):
     python.parent.mkdir(parents=True)
     python.write_text('fixture python')
     installed_manifest = dict(fixture['manifest'])
-    installed_manifest['vibecomfy'] = {'sha': VIBECOMFY_ENGINE_REVISION}
+    installed_manifest['vibecomfy'] = {'sha': 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'}
     (root / 'manifest.json').write_text(json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n')
     version_path = root / 'version.json'
     fixture['version'] = {'root': str(root), 'python': str(python), 'profile': str(profile), 'env': {}}
@@ -218,7 +213,7 @@ def _identity_aware_fixture(tmp_path):
     python.write_text('fixture python')
     raw = base64.b64decode(source['manifest_base64'])
     installed_manifest = dict(source['manifest'])
-    installed_manifest['vibecomfy'] = {'sha': VIBECOMFY_ENGINE_REVISION}
+    installed_manifest['vibecomfy'] = {'sha': 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'}
     raw = (json.dumps(installed_manifest, indent=2, sort_keys=True) + '\n').encode()
     (root / 'manifest.json').write_bytes(raw)
     version_path = root / 'version.json'
@@ -249,7 +244,7 @@ def test_supported_legacy_schema_accepts_matching_instance_and_exact_provenance(
     assert details['discovery_identity'] is None
     assert details['version_identity'] is None
     assert details['version_record_fields'] == ['env', 'profile', 'python', 'root']
-    assert json.loads(raw)['vibecomfy']['sha'] == VIBECOMFY_ENGINE_REVISION
+    assert json.loads(raw)['vibecomfy']['sha'] == 'ac0ee1b80991f2414dae27d264af4b5e2890a7a6'
 
 
 def test_source_backed_identity_aware_schema_accepts_synthetic_matching_identity_shape(tmp_path):
@@ -398,7 +393,6 @@ def test_legacy_profile_missing_source_checkout_fails_closed(tmp_path):
     assert any('profile source_checkout provenance' in problem for problem in details['problems'])
 
 
-@pytest.mark.posix_native
 def test_legacy_profile_runtime_checkout_symlink_escape_fails_closed(tmp_path):
     from scripts.verify_installed import legacy_identity_observation
     fixture, version_path, runtime = _legacy_identity_fixture(tmp_path)
@@ -410,7 +404,7 @@ def test_legacy_profile_runtime_checkout_symlink_escape_fails_closed(tmp_path):
     try:
         runtime_dir.symlink_to(outside, target_is_directory=True)
     except OSError:
-        unavailable('symlinks unavailable')
+        pytest.skip('symlinks unavailable')
     raw = (root / 'manifest.json').read_bytes()
     ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
                                                fixture['manifest'], raw, version_path, runtime)
@@ -418,7 +412,6 @@ def test_legacy_profile_runtime_checkout_symlink_escape_fails_closed(tmp_path):
     assert 'profile Runtime checkout provenance does not match installed version' in details['problems']
 
 
-@pytest.mark.posix_native
 def test_legacy_profile_runtime_environment_symlink_escape_fails_closed(tmp_path):
     from scripts.verify_installed import legacy_identity_observation
     fixture, version_path, runtime = _legacy_identity_fixture(tmp_path)
@@ -433,7 +426,7 @@ def test_legacy_profile_runtime_environment_symlink_escape_fails_closed(tmp_path
     try:
         environment.symlink_to(outside, target_is_directory=True)
     except OSError:
-        unavailable('symlinks unavailable')
+        pytest.skip('symlinks unavailable')
     raw = (root / 'manifest.json').read_bytes()
     ok, details = legacy_identity_observation(fixture['health'], fixture['discovery'], fixture['version'],
                                                fixture['manifest'], raw, version_path, runtime)

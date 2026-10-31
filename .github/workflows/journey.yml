@@ -10,38 +10,12 @@ on:
         description: Frozen JSON with app, agent, runtime and pinokio full commit SHAs plus bootstrap hashes
         required: true
         type: string
-      old_launcher_ref:
-        description: Full SHA for the approved pre-self-pull Pinokio backend action
-        required: true
-        type: string
-      stopped_path_agent_ref:
-        description: Full candidate Agent SHA containing the integrated A/B stopped path
-        required: true
-        type: string
-      m4_4a_backend_only:
-        description: Run and aggregate only the three M4-4a backend rows
-        required: false
-        default: false
-        type: boolean
   workflow_dispatch:
     inputs:
       candidate:
         description: Frozen candidate JSON; hosted results are evidence, never a publish action
         required: true
         type: string
-      old_launcher_ref:
-        description: Full SHA for the approved pre-self-pull Pinokio backend action
-        required: true
-        type: string
-      stopped_path_agent_ref:
-        description: Full candidate Agent SHA containing the integrated A/B stopped path
-        required: true
-        type: string
-      m4_4a_backend_only:
-        description: Run and aggregate only the three M4-4a backend rows
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -53,9 +27,6 @@ jobs:
     outputs:
       candidate: ${{ steps.config.outputs.candidate }}
       driver_agent_ref: ${{ steps.config.outputs.driver_agent_ref }}
-      old_launcher_ref: ${{ steps.config.outputs.old_launcher_ref }}
-      stopped_path_agent_ref: ${{ steps.config.outputs.stopped_path_agent_ref }}
-      m4_4a_backend_only: ${{ steps.config.outputs.m4_4a_backend_only }}
       matrix: ${{ steps.config.outputs.matrix }}
     steps:
       - id: config
@@ -64,9 +35,6 @@ jobs:
           CANDIDATE: ${{ inputs.candidate }}
           DRIVER_AGENT_REF: ${{ job.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
-          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
-          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
-          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -81,15 +49,6 @@ jobs:
               raise SystemExit("the reviewed Agent workflow SHA is required")
           if os.environ["WORKFLOW_REPOSITORY"] != "banodoco/astrid-agent":
               raise SystemExit("the receipt harness must run from banodoco/astrid-agent")
-          old_launcher = os.environ["OLD_LAUNCHER_REF"]
-          if old_launcher != "bbba620e3d89eeff8021417f365e6ea584203105":
-              raise SystemExit("the approved old_launcher_ref SHA is required")
-          stopped_path = os.environ["STOPPED_PATH_AGENT_REF"]
-          if stopped_path != candidate["agent"]:
-              raise SystemExit("stopped_path_agent_ref must equal the frozen candidate Agent SHA")
-          if stopped_path == "3cc84be5d8c565f1a4a500dcf713478498e34885":
-              raise SystemExit("the provisional Agent base lacks the integrated A/B stopped path")
-          backend_only = os.environ["M4_4A_BACKEND_ONLY"].lower() == "true"
           matrix = [
               {"job_id":"direct-macos", "mode":"direct", "leg":"release0-to-release1", "runner":"macos-14", "shell":"sh"},
               {"job_id":"direct-linux", "mode":"direct", "leg":"release0-to-release1", "runner":"ubuntu-24.04", "shell":"sh"},
@@ -101,14 +60,8 @@ jobs:
               {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"ubuntu-24.04", "shell":"sh"},
               {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "leg":"fresh-install", "runner":"windows-2022", "shell":"powershell.exe"},
           ]
-          if backend_only:
-              matrix = [row for row in matrix if row["mode"] == "pinokio-backend"]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              for key, value in (("candidate", candidate), ("driver_agent_ref", driver),
-                                  ("old_launcher_ref", old_launcher),
-                                  ("stopped_path_agent_ref", stopped_path),
-                                  ("m4_4a_backend_only", str(backend_only).lower()),
-                                  ("matrix", {"include": matrix})):
+              for key, value in (("candidate", candidate), ("driver_agent_ref", driver), ("matrix", {"include": matrix})):
                   print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
           PY
 
@@ -145,9 +98,6 @@ jobs:
           repository: banodoco/astrid-agent
           ref: ${{ fromJSON(needs.config.outputs.candidate).agent }}
           path: candidate-agent
-          # M4-4a proves the paired stopped-path commits are ancestors of the
-          # frozen candidate rather than trusting a caller-supplied label.
-          fetch-depth: 0
           persist-credentials: false
       - name: Check out frozen Runtime candidate
         uses: actions/checkout@v4
@@ -190,13 +140,6 @@ jobs:
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
           $release0Args = @()
-          $oldLauncherArgs = @()
-          if ('${{ matrix.mode }}' -eq 'pinokio-backend') {
-            $oldLauncherArgs = @(
-              '--old-launcher-ref', '${{ needs.config.outputs.old_launcher_ref }}',
-              '--stopped-path-agent-ref', '${{ needs.config.outputs.stopped_path_agent_ref }}'
-            )
-          }
           if ('${{ matrix.leg }}' -eq 'release0-to-release1') {
             $release0Args = @(
               '--release0-fixture', "$pwd/agent/tests/fixtures/release0",
@@ -209,7 +152,7 @@ jobs:
             --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
             --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
             --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
-            --shell '${{ matrix.shell }}' @release0Args @oldLauncherArgs
+            --shell '${{ matrix.shell }}' @release0Args
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain the matrix receipt even after a lifecycle failure
         if: always()
@@ -257,18 +200,9 @@ jobs:
           path: receipts
           merge-multiple: true
       - name: Aggregate the exact Release-1 receipt matrix
-        if: needs.config.outputs.m4_4a_backend_only != 'true'
         shell: bash
         env:
           CANDIDATE: ${{ needs.config.outputs.candidate }}
         run: |
           printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
           python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1
-      - name: Aggregate the exact M4-4a Pinokio backend receipts
-        if: needs.config.outputs.m4_4a_backend_only == 'true'
-        shell: bash
-        env:
-          CANDIDATE: ${{ needs.config.outputs.candidate }}
-        run: |
-          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
-          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-m4-4a
