@@ -2506,6 +2506,15 @@ def main(argv: list[str] | None = None) -> int:
     from astrid.core.execution._child_import_receipt import observe_action_entry
 
     observe_action_entry()
+    # A task marker permits entry; the child bridge still owns admission and
+    # publication authority for the managed parent route.
+    if not environ.get(ASTRID_TASK_RUN_ID, "").strip():
+        raise AstridError(
+            "H3 transform requires a Runtime-admitted parent task "
+            f"({ASTRID_TASK_RUN_ID}); invoke through the public Astrid action with a project",
+            code="tracked_parent_required",
+            field=ASTRID_TASK_RUN_ID,
+        )
     result = run_transform(build_parser().parse_args(argv))
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
