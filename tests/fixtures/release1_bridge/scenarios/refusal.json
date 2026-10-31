@@ -1,0 +1,20 @@
+{
+  "format": "astrid-bridge-scenario/v1",
+  "scenario": "refusal",
+  "operation_id": "22222222222222222222222222222222",
+  "manifest_fixture": "inputs/release1-worker-manifest.json",
+  "job_fixture": "records/refusal-job.json",
+  "journal_fixture": "records/refusal-journal.json",
+  "release0_adoption": "release0-adoption.json",
+  "expected": {
+    "post_status": 409,
+    "post_state": "refused",
+    "status_state": "terminal",
+    "job_state": "failed",
+    "result_state": "refused",
+    "journal_step": "rolled_back",
+    "stop_ack": "refused",
+    "stop_proceeded": false,
+    "release0_skip": false
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "format": "astrid-release1-bridge-release0-adoption/v1",
+  "source_kind": "authentic-release0-fixture",
+  "provenance": "../release0/provenance.json",
+  "checksums": "../release0/SHA256SUMS",
+  "required_files": [
+    "../release0/served/install",
+    "../release0/served/install.ps1",
+    "../release0/served/install-manifest.json",
+    "../release0/services/launchd.plist",
+    "../release0/services/systemd.service",
+    "../release0/services/task.xml",
+    "../release0/services/service-env.json",
+    "../release0/release2/stand-in.json"
+  ],
+  "retention": {
+    "release1_skipped": true,
+    "target_release": 2,
+    "service_renderer": "astrid.installer.service.render"
+  }
+}
