@@ -74,13 +74,16 @@ Use this decision map when an idea is underspecified:
    executors can be wired to satisfy the request, add no new implementation.
 2. **Action** — a callable public function. Keep its implementation and
    action-specific helpers under `actions/`, and declare the public entry in
-   `pack.yaml`.
+   `pack.yaml`. A helper is private support and does not become a public action
+   unless it has its own declaration.
 3. **UI** — a contribution received by a host application. Keep host-specific
    code under `ui/`, and declare the public contribution in `pack.yaml`.
 4. **Rendering** — renderer or rendering support owned by the pack. Declare it
    under `rendering:` in `pack.yaml` and follow the current authoring steps in
    the [pack guide](../../../../../docs/guides/create-a-pack.md); the rendering
-   skill remains the downstream compatibility layer.
+   skill remains the downstream compatibility layer. Declaring a renderer,
+   planner, or finalizer describes that contribution; it does not by itself
+   register a generation entry.
 5. **Shared library** — support with no public runtime of its own. Keep it
    under `shared/` and use it only from the pack's declared contributions.
 6. **No new pack** — keep one-off experiments in a run directory and do not
@@ -104,6 +107,14 @@ For a new reusable pack, follow the supported authoring path in
    `description` frontmatter and point to it from
    `documentation: {kind: skill, path: docs/SKILL.md}`. Link adjacent guides,
    references, templates, and assets normally; they are not extra skills.
+   Add a useful pack description or optional `agent.purpose`. Optional
+   `agent.normal_entrypoints` should name only preferred declared contributions
+   or supported aliases; do not force action ids onto UI, rendering, documents,
+   or support-only packs. Keep `agent.required_context` only for files an agent
+   actually needs to read. For authored port lists, document each port's type
+   and meaning, and state input requiredness without changing defaults. Keep
+   schema-based contracts and their own descriptions, required structure, and
+   defaults intact.
 4. For a standalone pack, keep code and declaration in the pack. For a
    wrapper, keep the external repository unchanged and use a thin adapter plus
    its normal dependency/install route; do not vendor arbitrary upstream code.

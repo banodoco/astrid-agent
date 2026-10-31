@@ -149,6 +149,7 @@ def check_local_generation_readiness(
     mode: str,
     *,
     python_executable: str | None = None,
+    require_managed_runtime: bool = True,
 ) -> LocalGenerationReadiness:
     """Check deterministic prerequisites for a selected local model path.
 
@@ -189,7 +190,7 @@ def check_local_generation_readiness(
             ),
         )
 
-    if not _comfyui_runtime_available():
+    if require_managed_runtime and not _comfyui_runtime_available():
         return LocalGenerationReadiness(
             ready=False,
             reason=(
@@ -227,3 +228,58 @@ def require_local_generation_readiness(
         f"Local generation is not ready: {result.reason}. "
         f"Next: {result.recovery_command}"
     )
+
+
+def select_generation_target(target: str):
+    """Probe attached loopback before considering the existing managed owner.
+
+    ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
+    No installation or process lifecycle operation happens during selection.
+    """
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+
+    if target == "managed":
+        return None
+    if target == "runpod":
+        raise AstridError(
+            "RunPod generation requires an explicitly prepared target; automatic provisioning is unavailable",
+            code="COMFY_TARGET_UNSUPPORTED", field="target",
+            fix="Use --target managed inside an existing prepared pod, or --target auto locally",
+        )
+    url = "http://127.0.0.1:8188" if target == "auto" else target
+    try:
+        client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    except (TypeError, ValueError) as exc:
+        raise AstridError(
+            str(exc), code="COMFY_TARGET_INVALID", field="target",
+            fix="Use --target auto, --target managed, or http://127.0.0.1:<port>",
+        ) from exc
+    try:
+        facts = client.request_json("/system_stats", timeout=1.0)
+        if not isinstance(facts, dict) or not isinstance(facts.get("system"), dict):
+            raise ValueError("target did not return ComfyUI system facts")
+    except (OSError, ValueError, TimeoutError) as exc:
+        if target == "auto":
+            return None
+        raise AstridError(
+            f"ComfyUI target {url} is unavailable: {exc}",
+            code="COMFY_TARGET_UNAVAILABLE", field="target",
+            fix=f"Start ComfyUI at {url}, or use --target managed with an installed ComfyUI runtime",
+        ) from exc
+    return ComfyTargetClient(ComfyTarget(client.target.url, "attached", facts))
+
+
+def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:
+    """Reuse package prerequisites while leaving server ownership to its owner."""
+    from astrid.core.contracts.errors import AstridError
+
+    readiness = check_local_generation_readiness(
+        entry, mode, require_managed_runtime=client is None,
+    )
+    if not readiness.ready:
+        raise AstridError(
+            readiness.reason, code="COMFY_TARGET_NOT_READY", field="target",
+            fix=(readiness.recovery_command + "; use --target http://127.0.0.1:8188 "
+                 "when your existing ComfyUI is running there"),
+        )

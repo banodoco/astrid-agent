@@ -1,0 +1,128 @@
+{
+  "schema": "astrid.engine-recipe.v1",
+  "engine": "vibecomfy-h3",
+  "platform": "linux-x86_64-cu130",
+  "pins": {
+    "path": "packs/runpod/pins.json",
+    "sha256": "305c2d6641f691eef5d990da0a974ed9b3b2e663361aeb362ef61fdc486d42a7"
+  },
+  "source_bindings": [
+    {
+      "name": "comfyui",
+      "pin": "comfyui",
+      "relative_path": "runtime/ComfyUI"
+    },
+    {
+      "name": "vibecomfy",
+      "pin": "vibecomfy",
+      "relative_path": "runtime/vibecomfy"
+    },
+    {
+      "name": "h3-motion-context",
+      "pin": "h3-motion-context",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-H3-Motion-Context-MultiRef"
+    },
+    {
+      "name": "videohelpersuite",
+      "pin": "videohelpersuite",
+      "relative_path": "runtime/ComfyUI/custom_nodes/ComfyUI-VideoHelperSuite"
+    }
+  ],
+  "environments": [
+    {
+      "name": "comfy",
+      "relative_path": "runtime/venv",
+      "python_version": "3.12.10",
+      "uv_version": "0.11.32",
+      "requirements": {
+        "mode": "packaged",
+        "packaged_lock": {
+          "path": "packs/runpod/requirements.linux-cu130.lock",
+          "sha256": "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+        },
+        "input_paths": [],
+        "constraints": [],
+        "exclude_newer": null
+      },
+      "final_wheels": [
+        {
+          "name": "torch",
+          "version": "2.10.0+cu130",
+          "url": "https://download.pytorch.org/whl/cu130/torch-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl",
+          "sha256": "858f0cbcc78d726fea9499eb3464faa98392fa093845a3262209bd226b7844d6"
+        },
+        {
+          "name": "torchvision",
+          "version": "0.25.0+cu130",
+          "url": "https://download.pytorch.org/whl/cu130/torchvision-0.25.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl",
+          "sha256": "c2f5e38f0cd57a2796e4503c0f13365deba01dbc167ef820f0beec7ca96f5f2e"
+        },
+        {
+          "name": "torchaudio",
+          "version": "2.10.0+cu130",
+          "url": "https://download.pytorch.org/whl/cu130/torchaudio-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl",
+          "sha256": "ed573e7319ba9a6e137b4895eddf4c9fcd424bb4e10a629267d64b55acc57fbb"
+        }
+      ],
+      "node_lock": {
+        "source": "vibecomfy",
+        "path": "custom_nodes.lock",
+        "sha256": "7741945b99176bedf97fd14009539156ccccde41c3cbe4f03b9f26df0ccead42"
+      },
+      "source_installs": [
+        {
+          "source": "vibecomfy",
+          "argv": [
+            "{install_root}/runtime/bootstrap/bin/uv",
+            "--no-config",
+            "pip",
+            "install",
+            "--python",
+            "{python}",
+            "--no-deps",
+            "--no-build-isolation",
+            "."
+          ],
+          "check_modules": [
+            "vibecomfy"
+          ]
+        }
+      ]
+    }
+  ],
+  "primary_environment": "comfy",
+  "models_lock": {
+    "path": "packs/runpod/models.lock.json",
+    "sha256": "d86ca8584229010f39c326f2c2d5b6dd3c0aa7b3c06ec6deb0ab5dc5f89c61a5"
+  },
+  "start": {
+    "argv": [
+      "{python}",
+      "main.py",
+      "--listen",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--extra-model-paths-config",
+      "{models_config}",
+      "--use-ck-attention",
+      "--disable-comfy-compiler"
+    ],
+    "cwd": "{comfy_root}",
+    "env": {
+      "VIBECOMFY_HEADLESS": "1"
+    },
+    "bind_host": "127.0.0.1",
+    "port": 8188
+  },
+  "health": {
+    "path": "/system_stats",
+    "object_info_path": "/object_info",
+    "required_nodes": [
+      "MiniMaxH3ReferenceToVideo",
+      "VHS_VideoCombine"
+    ],
+    "timeout_seconds": 180,
+    "poll_interval_seconds": 2
+  }
+}

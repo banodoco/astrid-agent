@@ -1,0 +1,21 @@
+{
+  "schema": "astrid.engine-pins.v1",
+  "sources": {
+    "comfyui": {
+      "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+      "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
+    },
+    "vibecomfy": {
+      "repository": "https://github.com/peteromallet/VibeComfy.git",
+      "revision": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+    },
+    "h3-motion-context": {
+      "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
+      "revision": "361624fb406b63eb6694442eac6c895fc1533a70"
+    },
+    "videohelpersuite": {
+      "repository": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
+      "revision": "4ee72c065db22c9d96c2427954dc69e7b908444b"
+    }
+  }
+}

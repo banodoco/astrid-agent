@@ -25,7 +25,8 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
         for local_id, declaration in h3_pack["actions"].items()
         if action_is_local_orchestrator(declaration)
     }
-    assert "h3_av.transform" in local_orchestrators
+    # The composed registry routes H3 through the tracked host parent.
+    assert "h3_av.transform" not in local_orchestrators
     # Every discovered capability must have a row in
     # config/astrid-beta-capabilities.json; no discovered id is exempted.
     assert {record.id for record in records} == (
@@ -37,7 +38,14 @@ def test_beta_matrix_covers_every_discovered_capability_and_declaration():
     for record in records:
         assert record.matrix["evidence_reason"]
         assert record.matrix["adapter_family"] == record.adapter.family
-        assert isinstance(record.resource_keys, tuple) and record.resource_keys
+        assert isinstance(record.resource_keys, tuple)
+        if record.id == "h3_av.transform":
+            assert record.definition.metadata["tracked_h3_parent"] is True
+            assert record.adapter.family == "orchestration"
+            assert record.resource_keys == ()
+            assert not record.adapter.requires_network
+        else:
+            assert record.resource_keys
         assert record.capability_digest and record.source_digest
         assert isinstance(record.manifest()["inputs"], list)
         assert isinstance(record.manifest()["outputs"], list)

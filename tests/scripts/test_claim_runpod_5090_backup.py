@@ -13,6 +13,12 @@ from runpod_lifecycle import AllocationUnknown, LaunchFailure, PostCreateHookFai
 from astrid.packs.runpod import worker_preparation
 from scripts import claim_runpod_5090_backup as claim
 
+@pytest.fixture(autouse=True)
+def offline_egress(monkeypatch):
+    # These tests fake the provider; real egress preflight has dedicated tests.
+    monkeypatch.setattr("runpod_lifecycle.preflight.preflight_transport", lambda *_a, **_kw: None)
+
+
 _TEST_API_KEY = "rpa_test_secret_must_not_persist"
 _VOLUME = {"id": "vol-backup", "name": "backup", "size": 250}
 
@@ -92,18 +98,26 @@ def _write_terminal_cleanup(handle_path: Path, handle: dict[str, Any]) -> Path:
     return receipt_path
 
 
-def test_defaults_match_the_canonical_twelve_hour_claim() -> None:
+def test_defaults_bound_unattended_claim_to_one_hour() -> None:
     args = claim._parser().parse_args([])
 
     assert args.handle_path == str(claim.DEFAULT_HANDLE_PATH)
-    assert args.max_wait_seconds == 43200
+    assert args.max_wait_seconds == 3600
+    assert args.on_failure is None
     assert args.poll_seconds == 120
     assert args.lifecycle_policy == "leave_running"
     assert args.storage_name == "backup"
     assert args.provider_account_ref is None
     assert args.worker_image == claim.DEFAULT_WORKER_IMAGE
     assert args.template_id is None
-    assert args.allowed_cuda_versions == "13.0"
+    assert args.allowed_cuda_versions == "13.0,13.1,13.2,13.3"
+
+
+def test_exact_match_cuda_filter_default_claim_list_covers_every_13x_from_recipe_minimum() -> None:
+    args = claim._parser().parse_args([])
+    built = [part.strip() for part in args.allowed_cuda_versions.split(",") if part.strip()]
+
+    assert {"13.0", "13.1", "13.2", "13.3"} <= set(built)
 
 
 def test_release_preflight_is_cpu_only_and_never_queries_cuda() -> None:
@@ -116,12 +130,51 @@ def test_release_preflight_is_cpu_only_and_never_queries_cuda() -> None:
             return 0, "python=3.12.8", ""
 
     pod = Pod()
-    result = asyncio.run(claim._preflight_release(pod, "/workspace/release"))
+    result = asyncio.run(claim._preflight_release(pod, claim.CANONICAL_RELEASE_ROOT))
 
     assert result["probe"] == "python=3.12.8"
     assert "torch" not in pod.command.casefold()
     assert "cuda" not in pod.command.casefold()
     assert "nvidia-smi" not in pod.command
+
+
+def test_release_preflight_accepts_canonical_install_root() -> None:
+    class Pod:
+        commands: list[str] = []
+
+        async def exec_ssh(self, command: str, *, timeout: int):
+            self.commands.append(command)
+            return 0, "python=3.12.8", ""
+
+    pod = Pod()
+    result = asyncio.run(claim._preflight_release(pod, "/workspace/astrid/engines/vibecomfy-h3"))
+
+    assert result["release_root"] == "/workspace/astrid/engines/vibecomfy-h3"
+    assert result["release_python"] == "/workspace/astrid/engines/vibecomfy-h3/runtime/venv/bin/python"
+    assert result["release_launcher"] == "/workspace/astrid/engines/vibecomfy-h3/runtime/launch-comfy.sh"
+    assert len(pod.commands) == 1
+    assert "/workspace/astrid/engines/vibecomfy-h3/runtime/venv/bin/python" in pod.commands[0]
+
+
+@pytest.mark.parametrize("release_root", [
+    "/workspace/astrid/engines/vibecomfy-h3/",
+    "/workspace/astrid/engines/vibecomfy-h3/../other",
+    "/workspace/astrid/engines/other",
+    "/workspace/astrid/engines/vibecomfy-h3; echo injected",
+    "/workspace/release",
+])
+def test_release_preflight_refuses_other_roots_before_contacting_pod(release_root: str) -> None:
+    class Pod:
+        calls: list[str] = []
+
+        async def exec_ssh(self, command: str, *, timeout: int):
+            self.calls.append(command)
+            return 0, "python=3.12.8", ""
+
+    pod = Pod()
+    with pytest.raises(RuntimeError, match="not an accepted install root"):
+        asyncio.run(claim._preflight_release(pod, release_root))
+    assert pod.calls == []
 
 
 def test_allocation_unknown_persists_secret_free_marker_and_never_opens_another_window(
@@ -153,7 +206,7 @@ def test_allocation_unknown_persists_secret_free_marker_and_never_opens_another_
         assert config.storage_volumes == ("backup",)
         assert config.worker_image == claim.DEFAULT_WORKER_IMAGE
         assert config.template_id is None
-        assert config.allowed_cuda_versions == ("13.0",)
+        assert config.allowed_cuda_versions == ("13.0", "13.1", "13.2", "13.3")
         assert 1 <= kwargs["max_wait_sec"] <= 2
         assert kwargs["retry_interval_sec"] == 120
         raise AllocationUnknown(name, claim.DEFAULT_GPU, 72, "backup", "vol-backup")
@@ -510,7 +563,7 @@ def test_known_pod_launch_failure_is_preserved_and_never_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle_path = tmp_path / "claim-handle.json"
-    args = _args(handle_path, "--max-wait-seconds", "10")
+    args = _args(handle_path, "--max-wait-seconds", "10", "--on-failure", "leave_running")
     _offline_volume(monkeypatch)
     launches: list[str] = []
 
@@ -578,7 +631,8 @@ def test_success_atomically_replaces_marker_with_claim_handle_and_leaves_pod_run
         assert marker["request_name"] == name
         assert config.attach_only is True
         assert config.disk_size_gb == 0
-        assert kwargs == {"max_wait_sec": 3600, "retry_interval_sec": 120}
+        assert 1 <= kwargs["max_wait_sec"] <= 3600
+        assert kwargs["retry_interval_sec"] == 120
         pod.name = name
         return pod
 
@@ -610,7 +664,7 @@ def test_success_atomically_replaces_marker_with_claim_handle_and_leaves_pod_run
     assert final["container_disk_gb"] == 200
     assert final["worker_image"] == claim.DEFAULT_WORKER_IMAGE
     assert final["template_id"] is None
-    assert final["allowed_cuda_versions"] == ["13.0"]
+    assert final["allowed_cuda_versions"] == ["13.0", "13.1", "13.2", "13.3"]
     assert final["lifecycle"] == {"mode": "leave_running"}
     assert final["acquisition_mode"] == "allocate"
     assert final["release_authorized"] is True
@@ -631,7 +685,7 @@ def test_allocated_failure_is_recorded_and_leave_running_does_not_retry_or_termi
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle_path = tmp_path / "claim-handle.json"
-    args = _args(handle_path)
+    args = _args(handle_path, "--on-failure", "leave_running")
     _offline_volume(monkeypatch)
     launches = 0
 
@@ -896,3 +950,103 @@ def test_active_claim_handle_refuses_before_any_provider_boundary(
 
     with pytest.raises(RuntimeError, match="already identifies pod pod-active"):
         asyncio.run(claim._claim(_args(handle_path)))
+
+
+def test_wait_forever_is_explicit_and_storage_help_names_override():
+    parser = claim._parser()
+    assert parser.parse_args(['--wait-forever']).max_wait_seconds == 0
+    assert parser.parse_args(['--storage-name', 'storage']).storage_name == 'storage'
+    help_text = parser.format_help()
+    assert '--storage-name' in help_text
+    assert 'existing network volume name or ID' in help_text
+
+
+@pytest.mark.parametrize('transport,phase', [
+    ('ssh', 'readiness'), ('ssh', 'ssh'), ('ssh', 'preflight'), ('ssh', 'post_create'),
+    ('https', 'readiness'), ('https', 'preflight'), ('https', 'post_create'),
+])
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_new_allocation_failure_releases_exact_unactivated_pod(
+    tmp_path, monkeypatch, transport, phase, cleanup_fails,
+):
+    import runpod_lifecycle.api as api
+
+    handle_path = tmp_path / 'claim.json'
+    _offline_volume(monkeypatch)
+    launches, deletes, inventory = [], [], []
+    class Pod:
+        id = 'pod-failed'
+        name = ''
+        async def wait_ready(self, **kwargs):
+            if phase == 'readiness':
+                raise RuntimeError('fixture failure')
+        async def _ensure_ssh_details(self):
+            assert transport == 'ssh'
+            if phase == 'ssh':
+                raise RuntimeError('fixture failure')
+            return {'ip': '127.0.0.1', 'port': 22}
+    async def launch(config, *, name, **kwargs):
+        launches.append(name)
+        if phase == 'post_create':
+            raise PostCreateHookFailure('pod-failed', RuntimeError('fixture failure'))
+        pod = Pod()
+        pod.name = name
+        return pod
+    async def preflight(*args):
+        raise RuntimeError('fixture failure')
+    async def release_inventory(config, contract):
+        assert contract.pod_id == 'pod-failed'
+        assert contract.expected_pod_name == launches[0]
+        assert contract.network_volume_id == _VOLUME['id']
+        inventory.append(contract.pod_id)
+        observation = worker_preparation.RunPodTargetObservation(
+            pod_id=contract.pod_id, pod_name=contract.expected_pod_name,
+            desired_status='RUNNING', actual_status='RUNNING',
+            gpu_type=contract.gpu_type, worker_image=contract.worker_image,
+            network_volume_id=contract.network_volume_id,
+            network_volume_name=contract.network_volume_name,
+            network_volume_size_gb=contract.network_volume_size_gb,
+            datacenter_id=None, observed_at='fixture-time',
+        )
+        return (None if deletes else observation), dict(_VOLUME)
+    def terminate(pod_id, api_key):
+        assert api_key == _TEST_API_KEY
+        assert json.loads(handle_path.read_text())['release_quiescence']['schema'] == (
+            'astrid.runpod.unactivated-quiescence.v1'
+        )
+        deletes.append(pod_id)
+        if cleanup_fails:
+            raise RuntimeError('fixture cleanup failure')
+    monkeypatch.setattr(runpod_lifecycle, 'launch_when_available', launch)
+    monkeypatch.setattr(claim, '_preflight_release', preflight)
+    monkeypatch.setattr(worker_preparation, '_release_inventory', release_inventory)
+    monkeypatch.setattr(api, 'terminate_pod', terminate)
+    with pytest.raises((RuntimeError, PostCreateHookFailure)):
+        asyncio.run(claim._claim(_args(handle_path, '--transport', transport)))
+    record = json.loads(handle_path.read_text())
+    assert len(launches) == 1
+    assert deletes == ['pod-failed']
+    if cleanup_fails:
+        assert len(inventory) == 1
+        assert record['state'] == 'cleanup_pending'
+        assert record['reconciliation_required'] is True
+    else:
+        assert len(inventory) == 2
+        assert record['state'] == 'cleanup_complete'
+        assert record['cleanup']['backup_volume_id'] == _VOLUME['id']
+        assert record['cleanup']['backup_volume_preserved'] is True
+    assert _TEST_API_KEY not in handle_path.read_text()
+    if transport == 'https':
+        from runpod_lifecycle.https import read_token_file
+        assert record['transport'] == 'https'
+        token = read_token_file(record['https_token_file'])
+        assert token not in handle_path.read_text()
+
+
+@pytest.mark.parametrize('arguments', [
+    ['--max-wait-seconds', '0'], ['--max-wait-seconds', '-1'],
+    ['--max-wait-seconds', '1', '--wait-forever'],
+])
+def test_unbounded_wait_requires_explicit_flag(arguments):
+    with pytest.raises(SystemExit, match='2'):
+        claim._parser().parse_args(arguments)

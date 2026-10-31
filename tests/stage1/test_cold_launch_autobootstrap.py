@@ -530,6 +530,7 @@ def test_sdk_open_uses_explicit_context_without_bootstrap(monkeypatch):
             return {
                 "status": "ok",
                 "protocol": "workspace.v1",
+                "identity": None,
                 "schema_digest": SCHEMA_DIGEST,
                 "runtime_epoch": 1,
                 "runtime_instance_id": "runtime-1",

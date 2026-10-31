@@ -711,6 +711,7 @@ actions:
     inputs:
     - name: effect_id
       type: string
+      required: true
       description: Bare effect id to create under the local pack, e.g. glass-product-card.
     outputs:
     - name: report
@@ -1046,7 +1047,7 @@ actions:
       name: timeline_authority
       required: false
       type: json
-    - description: ''
+    - description: Optional Hype media asset registry JSON for timeline media references; omission supplies an empty registry, suitable when no registry media is referenced.
       name: assets_registry
       required: false
       type: file
@@ -1056,7 +1057,7 @@ actions:
       name: media_dependency
       required: false
       type: file
-    - description: ''
+    - description: Optional theme configuration file; supported renderers may receive a schema-validated, runtime-materialized theme.json from the host.
       name: theme
       required: false
       type: file
@@ -1274,9 +1275,11 @@ actions:
     inputs:
     - description: Animation to depict across frames.
       name: animation
+      required: true
       type: string
     - description: Character or object being animated.
       name: subject
+      required: true
       type: string
     - default: ''
       description: Optional reference image for preserving the character/object identity

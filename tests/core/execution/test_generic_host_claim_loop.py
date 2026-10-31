@@ -96,6 +96,13 @@ def world(tmp_path, monkeypatch):
     def execute(slot, task, *, lease_token, attempt_id, fence, **kwargs):
         task_id = task["task"]["id"]
         backend = slot.client.backend
+        if kwargs.get("_setup_error") is not None:
+            # This fixture replaces the whole run_task boundary, including its
+            # fenced setup-failure handling. Preserve that behavior for a
+            # shutdown that won the claim race before execution starts.
+            slot.client.fail(task_id, lease_token, str(kwargs["_setup_error"]),
+                             retryable=False, attempt_id=attempt_id, fence=fence)
+            return None
         slot.client.heartbeat(task_id, lease_token, attempt_id=attempt_id, fence=fence)
         owned = SimpleNamespace(task_id=task_id, killed=False, finished=False)
         # The process/bridge/session/warmth mutations mirror the ownership

@@ -153,69 +153,114 @@ def test_codex_collects_current_exec_png_names(tmp_path):
     backend = CodexBackend(generated_images_dir=tmp_path)
     assert backend._collect_new_images(SESSION_ID, 0) == [output]
 
-def test_generate_image_codex_preflight_falls_back_to_cloud(
+@pytest.mark.parametrize("unavailable_case", ["missing_cli", "missing_auth_file"])
+def test_generate_image_explicit_codex_unavailable_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    unavailable_case: str,
 ) -> None:
     from astrid.packs.generation.actions.generate_image import run as run_mod
-
-    class FakeAdapter:
-        def generate(self, *, entry, mode: str, params: dict[str, object], out_dir: Path):
-            image_path = out_dir / "cloud_result.png"
-            image_path.write_bytes(PNG_BYTES)
-            assert mode == "t2i"
-            assert params["prompt"] == "fallback test"
-            return GenerationResult(
-                image_paths=[image_path],
-                seed_used=int(params["seed"]),
-                model_actual="fal-ai/flux/dev",
-                applied_features=["prompt", "seed"],
-                request_id="fal-req",
-            )
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.backends.codex import codex_unavailable_reason
 
     class FakeRegistry:
-        def create(self, execution: str, *, env_file: Path | None) -> FakeAdapter:
-            assert execution == "cloud"
-            return FakeAdapter()
+        def create(self, execution: str, *, env_file: Path | None) -> None:
+            pytest.fail(f"must not create {execution!r} adapter after Codex preflight failure")
 
     monkeypatch.setattr(
         run_mod,
         "load_default_generation_backend_registry",
         lambda: FakeRegistry(),
     )
+    if unavailable_case == "missing_cli":
+        availability_check = lambda: codex_unavailable_reason(
+            codex_bin="astrid-test-codex-binary-that-does-not-exist",
+            auth_file=tmp_path / "unused-auth.json",
+        )
+        expected_reason = "binary not found on PATH"
+    else:
+        import sys
+
+        availability_check = lambda: codex_unavailable_reason(
+            codex_bin=sys.executable,
+            auth_file=tmp_path / "missing-auth.json",
+        )
+        expected_reason = "auth file missing"
+    monkeypatch.setattr(run_mod, "codex_unavailable_reason", availability_check)
+
+    out = tmp_path / "out"
+    with pytest.raises(AstridError) as exc_info:
+        run_mod.generate_core(
+            [
+                "--model", "flux-dev",
+                "--mode", "t2i",
+                "--execution", "codex",
+                "--prompt", "fail closed test",
+                "--out", str(out),
+                "--seed", "9",
+            ]
+        )
+
+    error = exc_info.value
+    assert error.code == "CODEX_BACKEND_UNAVAILABLE"
+    assert expected_reason in error.message
+    assert "install or enable Codex" in error.recovery_command
+    assert "new request explicitly targeted to the cloud backend" in error.recovery_command
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    ("model", "execution"),
+    [("z-image", "local"), ("flux-dev", "cloud")],
+)
+def test_generate_image_non_codex_execution_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    execution: str,
+) -> None:
+    from astrid.packs.generation.actions.generate_image import run as run_mod
+
+    seen: list[str] = []
+
+    class FakeAdapter:
+        def generate(self, *, entry, mode: str, params: dict[str, object], out_dir: Path):
+            image_path = out_dir / "result.png"
+            image_path.write_bytes(PNG_BYTES)
+            return GenerationResult(
+                image_paths=[image_path],
+                seed_used=int(params["seed"]),
+                model_actual=f"test/{execution}",
+                applied_features=["prompt", "seed"],
+                request_id="test-req",
+            )
+
+    class FakeRegistry:
+        def create(self, selected: str, *, env_file: Path | None) -> FakeAdapter:
+            seen.append(selected)
+            return FakeAdapter()
+
+    monkeypatch.setattr(run_mod, "load_default_generation_backend_registry", FakeRegistry)
     monkeypatch.setattr(
         run_mod,
         "codex_unavailable_reason",
-        lambda: "`codex` binary not found on PATH",
+        lambda: pytest.fail("Codex availability check must not affect a non-Codex request"),
     )
     monkeypatch.setattr(run_mod, "embed_png_text", lambda path, fields: None)
 
-    out = tmp_path / "out"
-    result = run_mod.generate_core(
-        [
-            "--model",
-            "flux-dev",
-            "--mode",
-            "t2i",
-            "--execution",
-            "codex",
-            "--prompt",
-            "fallback test",
-            "--out",
-            str(out),
-            "--seed",
-            "9",
-        ]
-    )
+    args = [
+        "--model", model,
+        "--mode", "t2i",
+        "--execution", execution,
+        "--prompt", "route test",
+        "--out", str(tmp_path / "out"),
+    ]
+    result = run_mod.generate_core(args)
 
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert result.model_actual == "fal-ai/flux/dev"
-    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["execution"] == "cloud"
-    assert manifest["warnings"][0]["feature"] == "codex"
-    assert "not found on PATH" in manifest["warnings"][0]["reason"]
+    assert seen == [execution]
+    manifest = json.loads((tmp_path / "out" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["execution"] == execution
+    assert result.model_actual == f"test/{execution}"
 
 
 def test_managed_attempt_home_is_bound_in_process_not_in_os_environ(tmp_path, monkeypatch):

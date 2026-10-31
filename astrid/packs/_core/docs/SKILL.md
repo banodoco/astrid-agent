@@ -28,6 +28,11 @@ Choose the route by the requested result. Read only that route's guidance:
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 
+For the exact distinction between managed setup, bring-your-own engines, and
+remote workers, see the [platform and execution matrix](../../../../docs/reference/where-things-run.md).
+Linux and macOS can use an existing ComfyUI through `vibecomfy.run` with
+`comfy_url`. H3 (`h3_av`) inference currently requires a RunPod worker.
+
 Using an existing workflow and building a reusable extension are different
 requests: pack builder handles the latter, including deciding what to reuse.
 
@@ -53,8 +58,6 @@ with a ComfyUI the user already runs, follow [Run on your own
 ComfyUI](../../vibecomfy/docs/SKILL.md#run-on-your-own-comfyui); it covers
 Wan2GP results too. Do not install or clone `astrid-app`; it is for app
 developers.
-
-## Commands for outside agents
 
 Synced skills use the absolute path of Astrid's own Python, so their
 commands work from a terminal without changing PATH.
@@ -86,8 +89,8 @@ preferences. To change lasting guidance, read the correct scope, check it out
 to a new file, edit it, then check it in. For example:
 
 ```bash
-python3 -m astrid preferences checkout --scope user --file /tmp/prefs.md
-python3 -m astrid preferences checkin /tmp/prefs.md
+python3 -m astrid preferences checkout --scope user --file astrid-user-prefs.md
+python3 -m astrid preferences checkin astrid-user-prefs.md
 ```
 
 Read the [preferences and project documents guide](../../../../docs/guides/preferences-and-documents.md)

@@ -1592,3 +1592,34 @@ def test_regular_stderr_file_diagnostic_follows_close_and_never_masks_error(tmp_
         os.close(saved)
         os.close(fd)
         bridge.close()
+
+
+def test_failed_child_poll_carries_only_projected_lease_evidence(tmp_path, isolated, channel):
+    from astrid.core.execution._child_bridge import _public_task
+
+    root = write_pack(tmp_path)
+    _, requests, terminal = channel
+    diagnostic = {"schema_version": 1, "category": "fence_changed",
+                  "observed_at_utc": "2026-10-30T18:44:22+00:00",
+                  "last_successful_heartbeat_at_utc": None,
+                  "last_successful_heartbeat_expiry": None,
+                  "observed": {"state": "running", "attempt_id": "A-poll", "fence": "2"}}
+    source = {"task_id": "T-poll", "run_id": "R-poll", "attempt_id": "A-poll", "state": "failed",
+              "result": {"error": {"message": "MESSAGE_SENTINEL", "diagnostic": {
+                  **diagnostic, "runtime_message": "MESSAGE_SENTINEL",
+                  "request": {"prompt": "PROMPT_SENTINEL"},
+                  "observed": {**diagnostic["observed"], "input": "INPUT_SENTINEL"}}},
+                  "payload": {"input": "PAYLOAD_SENTINEL"}, "outputs": ["PRIVATE_PATH"]}}
+    projected = _public_task(source)
+    terminal.update(state=projected["state"], result=projected["result"])
+    result = call(root, inputs={"message": "hello"}, child_key="poll", wait=True,
+                  timeout_seconds=2, poll_seconds=0.01)
+    assert not result.ok and result.error["code"] == "task_failed"
+    assert (result.kernel_task_id, result.kernel_run_id, result.kernel_attempt_id) == ("T-poll", "R-poll", "A-poll")
+    assert result.raw_result["state"] == "failed"
+    assert result.raw_result["task"]["result"]["error"]["diagnostic"] == diagnostic
+    assert result.raw_result["task"]["result"]["outputs"] == []
+    assert not result.outputs.get("managed_outputs")
+    assert [request["op"] for request in requests] == ["submit", "status"]
+    for sentinel in ("MESSAGE_SENTINEL", "PROMPT_SENTINEL", "INPUT_SENTINEL", "PAYLOAD_SENTINEL", "PRIVATE_PATH"):
+        assert sentinel not in json.dumps(result.raw_result)
