@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -108,3 +112,42 @@ def test_unit_digest_is_stable_excludes_generated_files_and_separates_main(tmp_p
 
     (docs / "guide.md").write_text("changed", encoding="utf-8")
     assert unit_digest(main, [extra]) != main_digest
+
+
+def test_timeline_extras_list_and_selective_cli_install(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / ".claude").mkdir(exist_ok=True)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "ASTRID_STATE_HOME": str(tmp_path / "state"),
+    }
+
+    listing = subprocess.run(
+        [sys.executable, "-m", "astrid", "skills", "list"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert "timeline" in listing.stdout
+    assert "timeline-series" in listing.stdout
+    assert "timeline-narrated" in listing.stdout
+    assert "timeline-review" in listing.stdout
+
+    subprocess.run(
+        [sys.executable, "-m", "astrid", "skills", "install", "timeline",
+         "--skill", "series", "--harness", "claude"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    state = json.loads((tmp_path / "state" / "astrid" / "skills.json").read_text(encoding="utf-8"))
+    selected = {
+        skill_id
+        for skill_id, entry in state["skills"]["claude"]["skills"].items()
+        if entry.get("selected")
+    }
+    assert selected == {"timeline-series"}
