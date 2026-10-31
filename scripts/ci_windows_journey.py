@@ -72,6 +72,79 @@ def powershell(code, name, *, show=True, timeout=300):
                show=show, timeout=timeout)
 
 
+# Get-ScheduledTask's query-not-found error is different from a failed query.
+# Record exception details for diagnosis and never suppress other failures.
+SCHEDULED_TASK_PREFLIGHT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try {
+    $tasks = @(Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction Stop)
+    $items = @($tasks | ForEach-Object {
+        @{ path = $_.TaskPath; executables = @($_.Actions | ForEach-Object { $_.Execute }) }
+    })
+    @{ status = 'present'; tasks = $items } | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $record = $_
+    $detail = @{
+        type = $record.Exception.GetType().FullName
+        fully_qualified_error_id = $record.FullyQualifiedErrorId
+        message = $record.Exception.Message
+        hresult = $record.Exception.HResult
+        category = [string]$record.CategoryInfo.Category
+    }
+    if ($record.FullyQualifiedErrorId -eq 'CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask' -and
+        $record.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+        @{ status = 'absent'; error = $detail } | ConvertTo-Json -Depth 5 -Compress
+        exit 0
+    }
+    @{ status = 'error'; error = $detail } | ConvertTo-Json -Depth 5 -Compress
+    exit 1
+}
+"""
+
+
+def scheduled_task_preflight(leg):
+    """Record the query, its process result, and fail closed on malformed output."""
+    env = {key: value for key, value in os.environ.items() if key.casefold() != "psmodulepath"}
+    evidence = {"status": "error", "exit_code": None, "stdout": "", "stderr": ""}
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", SCHEDULED_TASK_PREFLIGHT],
+            env=env, capture_output=True, timeout=30, check=False,
+        )
+        evidence.update(exit_code=result.returncode,
+                        stdout=result.stdout.decode("utf-8-sig", errors="replace"),
+                        stderr=result.stderr.decode("utf-8-sig", errors="replace"))
+        try:
+            observation = json.loads(evidence["stdout"])
+            status = observation.get("status") if isinstance(observation, dict) else None
+            valid_present = (status == "present" and isinstance(observation.get("tasks"), list)
+                             and bool(observation["tasks"])
+                             and all(isinstance(task, dict) and isinstance(task.get("path"), str)
+                                     and isinstance(task.get("executables"), list)
+                                     and all(isinstance(item, str) for item in task["executables"])
+                                     for task in observation["tasks"]))
+            if result.returncode == 0 and (status == "absent" or valid_present):
+                evidence.update(status=status, observation=observation)
+            elif result.returncode != 0 and status == "error":
+                evidence["observation"] = observation
+            else:
+                evidence["protocol_error"] = "Unexpected query result or exit code"
+        except (ValueError, TypeError):
+            evidence["protocol_error"] = "Invalid query JSON"
+    except subprocess.TimeoutExpired as exc:
+        evidence["stdout"] = (exc.stdout or b"").decode("utf-8-sig", errors="replace")
+        evidence["stderr"] = (exc.stderr or b"").decode("utf-8-sig", errors="replace")
+        evidence["process_error"] = f"{type(exc).__name__}: {exc}"
+    except OSError as exc:
+        evidence["process_error"] = f"{type(exc).__name__}: {exc}"
+    save(f"preflight-scheduled-task-{leg}.json", evidence)
+    if evidence["status"] == "error":
+        raise RuntimeError(f"Scheduled Task preflight failed; see preflight-scheduled-task-{leg}.json")
+    return evidence["observation"]
+
+
 def source(repo):
     sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", sha):

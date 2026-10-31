@@ -673,12 +673,13 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                 if fresh or fields.get("FragmentPath") != expected:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
-        existing = windows.powershell(
-            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
-            "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }",
-            "preflight-scheduled-task.txt", show=False, timeout=30)
-        if existing.strip() and (fresh or not windows_task_owned(existing, root)):
-            raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
+        existing = windows.scheduled_task_preflight(leg)
+        if existing["status"] == "present":
+            tasks = existing["tasks"]
+            owned = (len(tasks) == 1 and len(tasks[0]["executables"]) == 1
+                     and windows_task_owned("present\n" + tasks[0]["executables"][0], root))
+            if fresh or not owned:
+                raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
     if fresh and runtime_processes(data):
         raise RuntimeError("A Runtime owner is already running on this host")
 
