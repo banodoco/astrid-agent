@@ -12,7 +12,7 @@ from . import clash
 from ._command_state import ABSENT, equal, present
 from ._commit_patch import canonical_site
 from ._doc_patch import value_at
-from .sync import _response, _settle_pending
+from .sync import _part_identity, _response, _settle_pending
 from .outbox import Outbox
 
 
@@ -52,7 +52,8 @@ def _close(path, record, session, entry, how):
         if saved is None:
             return record
         if _settle_pending(saved, expected_part=record.get("part", 0), actor_id=actor,
-                           publication_id=publication, receipt_id=receipt, how=how, base=base):
+                           publication_id=publication, receipt_id=receipt, how=how, base=base,
+                           expected_identity=_part_identity(record)):
             if saved.get("state") == "pending":
                 saved["attempts"] = int(saved.get("attempts", 1))
             outbox.write(state)
@@ -85,6 +86,7 @@ def _landed(timeline, path, record):
         if (flight.get("pending_id") == record["id"] and owner
                 and Path(owner).resolve() == Path(path).resolve()
                 and flight.get("pending_part") == record.get("part", 0)
+                and flight.get("pending_identity") == _part_identity(record)
                 and isinstance(entry, dict) and entry.get("revision_id")
                 and entry.get("publication_id") and entry.get("publisher") == timeline.session.identity["actor_id"]):
             closed = _close(path, record, timeline.session, entry, flight.get("pending_how", "retry"))
@@ -528,13 +530,24 @@ def commit_preview(timeline, result):
             imports=copy.deepcopy(part.get("imports", [])),
             expected_state=expected, base={"revision_id": request["base_revision_id"],
                                             "publication_id": request["base_publication_id"]},
-            pending_id=pending_id, pending_path=path, pending_part=current.get("part", 0), pending_how="retry")
-        return timeline._accepted(submitted)
+            pending_id=pending_id, pending_path=path, pending_part=current.get("part", 0), pending_how="retry",
+            pending_identity=_part_identity(current))
+        accepted = timeline._accepted(submitted)
+        saved = next((record for record_path, record in timeline._pending_records_with_paths("all")
+                      if record.get("id") == pending_id and str(record_path) == path), None)
+        if (saved is not None and saved.get("state") == "pending"
+                and saved.get("part", 0) > current.get("part", 0)):
+            return {"status": "part_landed", "pending_id": pending_id, "data": accepted.get("data", {}),
+                    "summary": f'Part of "{saved.get("label") or "Timeline edit"}" landed; {pending_id} still has saved work.',
+                    "next": f'tl.retry({pending_id!r})', "record": saved}
+        return accepted
     except Exception as exc:
-        # Timeline.commit() reconciles durable unknown outcomes on the next call.
-        if getattr(exc, "failure", {}).get("details", {}).get("status") != "conflict":
+        # Re-read the owner: another actor may have closed it while this request ran.
+        if getattr(exc, "failure", {}).get("details", {}).get("status") not in {"conflict", "refused", "invalid"}:
             raise
-        landed = _landed(timeline, Path(path), current)
+        latest = next((record for record_path, record in timeline._pending_records_with_paths("all")
+                       if record.get("id") == pending_id and str(record_path) == path), current)
+        landed = _landed(timeline, Path(path), latest)
         if landed is not None:
             return landed
         raise
