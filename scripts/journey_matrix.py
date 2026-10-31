@@ -10,14 +10,6 @@ from __future__ import annotations
 
 from typing import Final
 
-if __package__:
-    from .journey_release2 import RELEASE2_SCENARIOS
-else:
-    try:
-        from journey_release2 import RELEASE2_SCENARIOS
-    except ModuleNotFoundError:
-        from scripts.journey_release2 import RELEASE2_SCENARIOS
-
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-14", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},
@@ -33,71 +25,6 @@ RELEASE1_MATRIX: Final = (
 RELEASE1_JOB_IDS: Final = tuple(row["job_id"] for row in RELEASE1_MATRIX)
 RELEASE1_MODES: Final = tuple(sorted({row["mode"] for row in RELEASE1_MATRIX}))
 
-# M4-4a is deliberately a narrower contract than the Release-1 matrix. Keep
-# all of its immutable receipt vocabulary here so the driver and checker cannot
-# silently drift apart.
-M4_4A_OLD_LAUNCHER_REF: Final = "bbba620e3d89eeff8021417f365e6ea584203105"
-M4_4A_OLD_UPDATE_SHA256: Final = "a0f998c03bbba57966c8863a3bd38411d7859d970ddc4c93af1e28b04a66291b"
-M4_4A_PROVISIONAL_AGENT_REF: Final = "3cc84be5d8c565f1a4a500dcf713478498e34885"
-M4_4A_REQUIRED_AGENT_ANCESTORS: Final = (
-    "14d87abe38cd2545411a84549d5e4edc5a33561d",  # paired M1-4a prerequisite
-    "b97a4757a908982c978e46c90898a816c0c5d9ee",  # M1-4b stopped-path implementation
-)
-M4_4A_BACKEND_SIDECARS: Final = (
-    "action-array-first.json", "action-array-retry.json", "events.jsonl",
-    "first-click.stdout.log", "first-click.stderr.log",
-    "status-after-update.json", "health-after-update.json", "menu-after-update.json",
-    "status-after-restart.json", "health-after-restart.json", "menu-after-restart.json",
-    "processes-before.json", "processes-after-first-click.json",
-    "processes-after-stop.json", "processes-after-retry-ready.json",
-    "processes-after-final-stop.json", "processes-after-restart-ready.json",
-    "negative-controls.json",
-)
-M4_4A_REQUIRED_EVENTS: Final = (
-    "action_built", "launcher_ref_advanced", "first_click_begin",
-    "launcher_pull_begin", "launcher_pull_end", "installer_begin",
-    "installer_end", "ready_sentinel", "action_end", "health_probe_begin",
-    "health_probe_pass", "stop_begin", "stop_end", "retry_begin", "retry_end",
-    "start_begin", "start_end",
-)
-M4_4A_BACKEND_MATRIX: Final = tuple(
-    {**row, "leg": row.get("leg", "fresh-install")}
-    for row in RELEASE1_MATRIX if row["mode"] == "pinokio-backend"
-)
-M4_4A_BACKEND_JOB_IDS: Final = tuple(row["job_id"] for row in M4_4A_BACKEND_MATRIX)
-
-# M4-4b is executable local-process smoke coverage.  Its evidence class is
-# intentionally separate from every hosted Release-1 row.
-M4_4B_LOCAL_SMOKE: Final = {
-    "scenario_id": "m4-4b-fully-local-linux-smoke",
-    "runner": "ubuntu-24.04",
-    "shell": "sh",
-    "os": "linux-or-macos",
-    "evidence_class": "local_process",
-    "hosted": False,
-}
-
-# M4-5 rows are keyed by scenario_id because the two direct channels share a
-# job_id for each OS.  M4-6 reuses the nine Release-1 ownership/OS tuples.
-M4_5_MATRIX: Final = RELEASE2_SCENARIOS
-M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
-M4_6_MATRIX: Final = RELEASE1_MATRIX
-M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
-
-
-def m4_4a_backend_job(job_id: str) -> dict:
-    for row in M4_4A_BACKEND_MATRIX:
-        if row["job_id"] == job_id:
-            return dict(row)
-    raise ValueError(f"Unknown M4-4a backend job: {job_id}")
-
-
-def validate_m4_4a_backend_job(job_id: str, mode: str) -> dict:
-    row = m4_4a_backend_job(job_id)
-    if row["mode"] != mode:
-        raise ValueError(f"M4-4a backend job {job_id} requires mode {row['mode']}, not {mode}")
-    return row
-
 
 def release1_job(job_id: str) -> dict:
     """Return a copy so callers cannot mutate the checked-in matrix."""
@@ -112,17 +39,3 @@ def validate_job(job_id: str, mode: str) -> dict:
     if row["mode"] != mode:
         raise ValueError(f"Release-1 job {job_id} requires mode {row['mode']}, not {mode}")
     return row
-
-
-def validate_m4_5_scenario(scenario_id: str) -> dict:
-    for row in M4_5_MATRIX:
-        if row["scenario_id"] == scenario_id:
-            return dict(row)
-    raise ValueError(f"Unknown M4-5 scenario: {scenario_id}")
-
-
-def validate_m4_6_slot(slot_id: str) -> dict:
-    for row in M4_6_MATRIX:
-        if row["job_id"] == slot_id:
-            return dict(row)
-    raise ValueError(f"Unknown M4-6 failure-mode slot: {slot_id}")

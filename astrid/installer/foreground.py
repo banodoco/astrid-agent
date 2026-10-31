@@ -12,17 +12,6 @@ from .core import absolute, current, read_json
 from .service import LABEL, command, installer_lock_path, launch_admission
 
 
-def _probe_operation_lock(path: Path) -> None:
-    """Prove no app updater owns ``path`` without importing installed Agent code."""
-    platform.private_directory(path.parent)
-    with path.open("a+b") as lock:
-        try:
-            platform.lock_file(lock.fileno(), blocking=False)
-        except BlockingIOError:
-            raise ValueError("Another Astrid operation still owns the installation lock.") from None
-        platform.unlock_file(lock.fileno())
-
-
 def launch(root: Path, argv: list[str], *, system: str | None = None) -> None:
     system = system or sys.platform
     root = absolute(root)
@@ -32,9 +21,12 @@ def launch(root: Path, argv: list[str], *, system: str | None = None) -> None:
         raise ValueError("Astrid isn't fully installed. Choose Pinokio's Reset button, then install again.")
     activating = launch_admission(version, absolute(record["data_root"]))
     if not activating and (root / "install.json").is_file():
+        from .app_update import locked
+
         # The journal admits only the activation selected by this updater.
         # Ordinary Start still contends with online candidate preparation.
-        _probe_operation_lock(root / ".app-update.lock")
+        with locked(root / ".app-update.lock"):
+            pass
     lock_path = installer_lock_path(Path.home(), system)
     platform.private_directory(lock_path.parent)
     with lock_path.open("a+b") as lock:
