@@ -160,7 +160,9 @@ def test_lost_parent_authority_prevents_child_authority_or_admission(mode):
                                 heartbeat_error=HostError("lease lost") if mode == "heartbeat" else None)
     with pytest.raises(HostError):
         client.admit_child(**admission_args())
-    assert [row[0] for row in calls] == ["heartbeat"]
+    # An already stale epoch is rejected before any lease mutation. A lost
+    # heartbeat still reaches that RPC, and neither case may issue authority.
+    assert [row[0] for row in calls] == ([] if mode == "epoch" else ["heartbeat"])
 
 
 def test_unstaged_transport_retains_exact_child_grant_and_opaque_generation_intent():

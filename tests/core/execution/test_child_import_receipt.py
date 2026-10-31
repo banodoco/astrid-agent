@@ -40,19 +40,38 @@ def _host(tmp_path: Path) -> GenericPackHost:
     return host
 
 
+def _legacy_h3_command(pack):
+    """Keep the native command/runpy receipt boundary independently of admission.
+
+    The public declaration now selects a tracked Python parent. These tests
+    retain the real legacy command interpreter and all of its observation
+    assertions; they do not claim Runtime parent acceptance.
+    """
+    import copy
+
+    action = copy.deepcopy(pack.actions["transform"])
+    action["metadata"].update(local_orchestrator=True, runtime_entrypoint="main")
+    action["metadata"].pop("tracked_h3_parent", None)
+    action["invocation"] = {"kind": "command", "command": {
+        "argv": ["{python_exec}", "-m", "astrid.packs.h3_av.actions.transform.run",
+                 "--request", "{request}", "--asset-map", "{asset_map}", "--out", "{out}"],
+        "input_args": [{"input": "dry_run", "flag": "--dry-run", "optional": True}],
+    }}
+    return action
+
+
 def _invoke(host: GenericPackHost, capability_id: str, inputs: dict[str, object],
             tmp_path: Path, *, bridge=None):
     host.discover()
     if capability_id == "h3_av.transform":
-        # H3 is excluded from Runtime executor registration. This projection
-        # tests the command worker/runpy mechanism separately from the actual
-        # supported local-parent route tested below.
+        # Project the retained native command explicitly; public H3 admission
+        # uses the tracked Python parent declaration.
         from astrid.core.pack.loader import load_pack_manifest
         from astrid.core.execution.executor.actions import _action_definition
         from astrid.core.execution.generic_host import CapabilityRecord, _capability_digest
 
         pack = load_pack_manifest(_PACK_ROOT / "h3_av" / "pack.yaml")
-        definition = _action_definition(pack, "transform", pack.actions["transform"])
+        definition = _action_definition(pack, "transform", _legacy_h3_command(pack))
         host.capabilities[capability_id] = CapabilityRecord(
             definition, _capability_digest(definition.to_dict()), "unit-source", pack.root)
     attempt = tmp_path / "attempt"
@@ -136,7 +155,9 @@ def test_bridge_wrapped_validator_records_worker_and_action_entry(tmp_path: Path
     assert worker["process_birth_id"] == stored["child"]["process_birth_id"]
 
 
-def test_h3_transform_dry_run_subprocess_records_runpy_action_entry(tmp_path: Path, leaf_cleanup) -> None:
+def test_h3_transform_dry_run_subprocess_records_runpy_action_entry(tmp_path: Path, leaf_cleanup, monkeypatch) -> None:
+    # This marker permits module entry, and grants no Runtime authority.
+    monkeypatch.setenv("ASTRID_TASK_RUN_ID", "fixture-entry-marker")
     host = _host(tmp_path)
     request = tmp_path / "request.json"
     asset_map = tmp_path / "asset-map.json"
@@ -334,8 +355,9 @@ def test_actual_local_h3_launcher_observes_child_without_inventing_runtime_ident
     support.mkdir()
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(support))
     monkeypatch.setenv("PYTHONPATH", str(_AGENT_ROOT))
+    monkeypatch.setenv("ASTRID_TASK_RUN_ID", "fixture-entry-marker")
     pack = load_pack_manifest(_PACK_ROOT / "h3_av" / "pack.yaml")
-    definition = action_orchestrator_definition(pack, "transform", pack.actions["transform"])
+    definition = action_orchestrator_definition(pack, "transform", _legacy_h3_command(pack))
     request = tmp_path / "request.json"
     assets = tmp_path / "assets.json"
     request.write_text("{}")
