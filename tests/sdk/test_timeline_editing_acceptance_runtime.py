@@ -940,7 +940,7 @@ def test_function_rerun_preserves_disjoint_user_title_edit(editing_case, tmp_pat
     assert [landed.clip(f"clip-{index}").duration for index in range(1, 4)] == [2.0, 2.0, 2.0]
 
 
-def test_e14_function_lost_fallback_previews_then_merges_disjoint_edit(
+def test_e14_function_lost_fallback_refuses_overlapping_read(
     editing_case, tmp_path, monkeypatch,
 ):
     daemon, client, project, timeline = editing_case
@@ -978,12 +978,15 @@ def test_e14_function_lost_fallback_previews_then_merges_disjoint_edit(
 
     monkeypatch.setattr(generated, "commit_timeline", advance_before_attempt)
 
+    dependency = {"kind": "scope", "ref": "parent", "path": []}
+
     def edit(t):
         evaluations.append(t.bundle["parent"].get("name"))
-        t.bundle["parent"]["custom"] = {"function_edit": True}
+        t.bundle["parent"]["custom"] = {"function_edit": t.bundle["parent"].get("name")}
 
     with pytest.raises(CommitConflict) as caught:
-        timeline.commit(edit, label="E14 function fallback", key="e14-function-fallback")
+        timeline.commit(edit, label="E14 function fallback", key="e14-function-fallback",
+                        merge="fields", reads=[dependency])
     assert len(evaluations) == 3
     assert len(peer_writes) == 2
     assert caught.value.pending_id
@@ -999,7 +1002,6 @@ def test_e14_function_lost_fallback_previews_then_merges_disjoint_edit(
     assert preview["pending_id"] == caught.value.pending_id
     assert len(evaluations) == 3
 
-    # The callable read parent.name, so a change after preview invalidates its result.
     late_peer_edit = peer.commit(
         lambda t: t.bundle["parent"].update({"name": "Peer edit after preview"}),
         label="Peer edit after preview",
@@ -1017,9 +1019,77 @@ def test_e14_function_lost_fallback_previews_then_merges_disjoint_edit(
         project, "film", client=client, outbox_path=tmp_path / "fallback-current.json"
     )
     assert current.bundle["parent"]["name"] == "Peer edit after preview"
-    assert current.bundle["parent"].get("custom") != {"function_edit": True}
+    assert current.bundle["parent"].get("custom") is None
     assert len(_history(client, project)) == len(history_after_peer)
     assert len(evaluations) == 3
+
+
+def test_e14_function_lost_fallback_merges_disjoint_edit(
+    editing_case, tmp_path, monkeypatch,
+):
+    daemon, client, project, timeline = editing_case
+    from astrid.sdk.timeline.sync import CommitConflict
+    from astrid_runtime_client import ApiError
+    from tests.editing_conformance.test_commit_runtime_m1 import open_client
+
+    _, credential = daemon.credentials.provision("e14-disjoint-fallback-peer", [
+        "handshake", "projects:read", "projects:write", "objects:read", "objects:write",
+        "tasks:read", "tasks:write",
+    ])
+    peer = type(timeline).open(
+        project,
+        "film",
+        client=open_client(daemon, actor="e14-disjoint-fallback-peer", credential=credential),
+        outbox_path=tmp_path / "disjoint-fallback-peer.json",
+    )
+    generated = client._remote._transport._generated
+    original = generated.commit_timeline
+    history_before = _history(client, project)
+    peer_writes = []
+
+    def advance_before_attempt(project_id, timeline_id, body, **kwargs):
+        if body.get("label") == "E14 disjoint function fallback" and len(peer_writes) < 2:
+            name = f"Disjoint peer edit {len(peer_writes) + 1}"
+            peer_writes.append(peer.commit(
+                lambda t, name=name: t.bundle["parent"].update({"name": name}),
+                label=name,
+                key=f"e14-disjoint-fallback-peer-{len(peer_writes) + 1}",
+            ))
+        elif body.get("label") == "E14 disjoint function fallback":
+            raise ApiError(409, "conflict", "injected retry exhaustion after disjoint peer edits", details={
+                "status": "conflict", "reason": "value_conflict", "current": dict(peer.head),
+            })
+        return original(project_id, timeline_id, body, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", advance_before_attempt)
+
+    def edit(t):
+        t.bundle["parent"]["custom"] = {"function_edit": True}
+
+    with pytest.raises(CommitConflict) as caught:
+        timeline.commit(edit, label="E14 disjoint function fallback", key="e14-disjoint-function-fallback")
+    assert len(peer_writes) == 2
+    assert caught.value.pending_id
+    assert len(_history(client, project)) == len(history_before) + 2
+
+    reopened = type(timeline).open(
+        project, "film", client=client, outbox_path=timeline.session.outbox.path
+    )
+    monkeypatch.setattr(generated, "commit_timeline", original)
+    preview = reopened.retry(caught.value.pending_id)
+    assert preview["status"] == "preview"
+    assert preview["pending_id"] == caught.value.pending_id
+    assert preview["data"]["diff"]
+
+    landed = reopened.commit(preview)
+    assert landed["status"] in {"accepted", "merged"}
+    current = type(timeline).open(
+        project, "film", client=client, outbox_path=tmp_path / "disjoint-fallback-current.json"
+    )
+    assert current.bundle["parent"]["name"] == "Disjoint peer edit 2"
+    assert current.bundle["parent"]["custom"] == {"function_edit": True}
+    saved = reopened.pending_show(caught.value.pending_id)
+    assert saved["state"] == "landed"
 
 
 def test_e14_explicit_atomic_list_refuses_disjoint_intervening_edit(
