@@ -5221,6 +5221,14 @@ class RuntimeProtocolClient:
             else getattr(task, "attempt_id", None)
         )
         if current_attempt != attempt_id:
+            # A prior observed-stop cancellation may already have cleared the
+            # active attempt before its response/readback was lost. Resolve
+            # that replay from durable task.result before rejecting the old
+            # fence; never issue a fresh mutation under a cleared binding.
+            if result is not None:
+                return self._verify_terminal_evidence_readback(
+                    task_id, result, {"task": task},
+                )
             raise HostError("runtime cancellation target no longer matches attempt")
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
@@ -11612,7 +11620,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors:
+            if cleanup_errors and not (_terminal.get("evidence_pending") and sys.exc_info()[1] is not None):
+                # Pending evidence retains the spool and latches cleanup above.
+                # Preserve the publication exception already being propagated.
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
             self._record_native_cpu_handoff(
                 self.managed_tool_session.current_adapter, managed_token,
