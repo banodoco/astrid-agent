@@ -1,0 +1,29 @@
+Astrid local-font offline acceptance receipt
+date=2026-08-30
+worktree=/private/tmp/astrid-local-font-port
+branch=fix/remotion-local-fonts
+source-parent=c0a08f94fb028a80d8933d12b06f5d5dc6919b6b
+render-source-state=follow-up acceptance revision sealed by the receipt commit
+
+network-policy=(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*"))
+network-policy-meaning=all outbound network denied; localhost is allowed only for the Remotion development server
+command=sandbox-exec -p '<network-policy>' ./node_modules/.bin/remotion render src/index.ts TimelineComposition /tmp/astrid-local-font-offline.mp4 --props ../tests/fixtures/remotion-local-font-probe.json --frames=0-29 --log=verbose
+exit=0
+
+render-evidence:
+Output = /tmp/astrid-local-font-offline.mp4
+[Tab 0, delayRender()] "Loading Astrid local fonts" handle was cleared after 34ms
+[Tab 1, delayRender()] "Loading Astrid local fonts" handle was cleared after 57ms
+[Tab 2, delayRender()] "Loading Astrid local fonts" handle was cleared after 88ms
+[Tab 0, delayRender()] "Loading Astrid local fonts" handle was cleared after 97ms
+[Tab 3, delayRender()] "Loading Astrid local fonts" handle was cleared after 111ms
+Rendered 30/30
+Rendering frames done in 14039ms
+
+network-observation-command=rg -i 'fonts\\.googleapis|fonts\\.gstatic' /tmp/astrid-local-font-offline.log
+hosted-font-request-lines=0
+font-loader-completions=5
+output=H.264/AAC 1920x1080 30-frames 1.045333-seconds
+output-sha256=64af64f4d9076375eb1339fcb15cce5f6da6587c217d403c6e0119ad3c058f28
+frame-15-sha256=ef0b5418d465bdfaddfcf3765e7fe1bd225120d4b2f1c86d300d8453f722f05e
+frame-15-content=three visible rows: Sixtyfour, Inter, JetBrains Mono; each contains Astrid 2RP — Aa 0123

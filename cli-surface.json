@@ -2188,23 +2188,6 @@
           ],
           "verbs": {}
         },
-        "export": {
-          "flags": {
-            "--json": {
-              "required": false
-            },
-            "--out": {
-              "required": true
-            },
-            "--project": {
-              "required": false
-            }
-          },
-          "positionals": [
-            "ref"
-          ],
-          "verbs": {}
-        },
         "find": {
           "flags": {
             "--asset": {
@@ -2261,23 +2244,6 @@
           },
           "positionals": [
             "ref"
-          ],
-          "verbs": {}
-        },
-        "import": {
-          "flags": {
-            "--json": {
-              "required": false
-            },
-            "--name": {
-              "required": false
-            },
-            "--project": {
-              "required": false
-            }
-          },
-          "positionals": [
-            "file"
           ],
           "verbs": {}
         },
