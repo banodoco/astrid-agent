@@ -75,7 +75,8 @@ def _legacy_flight_entry(session, record, flights, entries):
             if not isinstance(body, dict) or not flight["key"] or flight["path"] != session.path:
                 continue
             part_matches = []
-            if "parts" not in record and _legacy_request_matches(record, flight):
+            if ("parts" not in record and flight.get("pending_part") in (None, 0)
+                    and _legacy_request_matches(record, flight)):
                 part_matches.append(0)
             for index, part in enumerate(record.get("parts", [])):
                 request = _request(record, part)
