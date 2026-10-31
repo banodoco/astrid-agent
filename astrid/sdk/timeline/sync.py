@@ -308,6 +308,15 @@ def _part_identity(record):
     return hashlib.sha256(request_bytes(value)).hexdigest()
 
 
+def _legacy_request_matches(record, flight):
+    """A missing part identity is usable only with the exact saved flight."""
+    saved = record.get("flight") if isinstance(record, dict) else None
+    if not isinstance(record, dict) or "parts" in record or not isinstance(saved, dict) or not isinstance(flight, dict):
+        return False
+    return all(isinstance(saved.get(key), str) and saved[key]
+               and saved[key] == flight.get(key) for key in ("path", "body", "key"))
+
+
 def _settle_pending(record, *, expected_part, actor_id, publication_id, how, base, receipt_id=None,
                     expected_identity=None):
     """Apply an acknowledged part while retaining any unsent suffix."""
@@ -1171,7 +1180,8 @@ class TimelineSession:
                         record = state.get("pending_changes", {}).get(pending_id)
                         if record is not None and record.get("state") == "pending":
                             _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
-                                            publication_id=receipt["receipt_id"], expected_identity=flight.get("pending_identity") or "",
+                                            publication_id=receipt["receipt_id"], expected_identity=(flight.get("pending_identity")
+                                                if _legacy_request_matches(record, flight) else flight.get("pending_identity") or ""),
                                             how=flight.get("pending_how", "retry"), base=state["base"])
                 if pending_id is not None:
                     state.pop("pending_close", None)
@@ -1189,7 +1199,8 @@ class TimelineSession:
                     record = target.get("pending_changes", {}).get(pending_id) if isinstance(target, dict) else None
                     if record is not None and record.get("state") == "pending":
                         _settle_pending(record, expected_part=flight.get("pending_part"), actor_id=self.identity["actor_id"],
-                                        publication_id=receipt["receipt_id"], expected_identity=flight.get("pending_identity") or "", how=how,
+                                        publication_id=receipt["receipt_id"], expected_identity=(flight.get("pending_identity")
+                                                if _legacy_request_matches(record, flight) else flight.get("pending_identity") or ""), how=how,
                                         base={"revision_id": data["accepted_revision_id"],
                                               "publication_id": receipt["receipt_id"]})
                         target_outbox.write(target)

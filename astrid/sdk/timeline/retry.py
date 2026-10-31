@@ -14,7 +14,7 @@ from . import clash
 from ._command_state import ABSENT, equal, present
 from ._commit_patch import canonical_site
 from ._doc_patch import value_at
-from .sync import _native_command, _part_identity, _response, _settle_pending
+from .sync import _legacy_request_matches, _native_command, _part_identity, _response, _settle_pending
 from .outbox import Outbox
 
 
@@ -53,6 +53,8 @@ def _close(path, record, session, entry, how):
         saved = state.get("pending_changes", {}).get(record["id"]) if isinstance(state, dict) else None
         if saved is None:
             return record
+        if "parts" not in record and not _legacy_request_matches(saved, record.get("flight")):
+            return copy.deepcopy(saved)
         if _settle_pending(saved, expected_part=record.get("part", 0), actor_id=actor,
                            publication_id=publication, receipt_id=receipt, how=how, base=base,
                            expected_identity=_part_identity(record)):
@@ -73,7 +75,9 @@ def _legacy_flight_entry(session, record, flights, entries):
             if not isinstance(body, dict) or not flight["key"] or flight["path"] != session.path:
                 continue
             part_matches = []
-            for index, part in enumerate(record["parts"]):
+            if "parts" not in record and _legacy_request_matches(record, flight):
+                part_matches.append(0)
+            for index, part in enumerate(record.get("parts", [])):
                 request = _request(record, part)
                 expected = {"api_version": 1, "project_id": session.project_id,
                             "timeline_id": session.timeline_id,
@@ -140,6 +144,7 @@ def _landed(timeline, path, record):
         if (flight.get("pending_id") == record["id"] and owner
                 and Path(owner).resolve() == Path(path).resolve()
                 and flight.get("pending_part") == record.get("part", 0)
+                and _part_identity(record) is not None
                 and flight.get("pending_identity") == _part_identity(record)
                 and isinstance(entry, dict) and entry.get("revision_id")
                 and entry.get("publication_id") and entry.get("publisher") == timeline.session.identity["actor_id"]):
@@ -158,7 +163,15 @@ def _landed(timeline, path, record):
                     "summary": f'"{record.get("label") or "Timeline edit"}" already landed as {publication}; '
                                f'{record["id"]} is closed. Nothing was sent.',
                     "next": None, "record": closed}
-    base = _pin(record["parts"][0]["base"])
+    if "parts" not in record:
+        try:
+            body = json.loads(record["flight"]["body"])
+            base = {"revision_id": body["base_revision_id"],
+                    "publication_id": body["base_publication_id"]}
+        except (KeyError, TypeError, ValueError):
+            return None
+    else:
+        base = _pin(record["parts"][0]["base"])
     try:
         _, entries = clash._history(timeline.session, base)
     except Exception:  # noqa: BLE001 - history is only a recovery confirmation path
@@ -169,7 +182,7 @@ def _landed(timeline, path, record):
                       if flight.get("pending_id") == record["id"]
                       and flight.get("pending_path")
                       and Path(flight["pending_path"]).resolve() == Path(path).resolve()
-                      and flight.get("pending_part") is None]
+                      and (flight.get("pending_part") is None or "parts" not in record)]
     if legacy_flights:
         entry = _legacy_flight_entry(timeline.session, record, legacy_flights, entries)
         if entry is None:
@@ -192,6 +205,8 @@ def _landed(timeline, path, record):
             entry = matches[0]
             break
     if entry is None:
+        if "parts" not in record:
+            return None
         # A group identifies the saved record, not a subsequently refused request.
         if record.get("last_refusal_request") or record.get("versions"):
             return None
