@@ -117,6 +117,42 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
     assert "this is a bug" not in captured.err
 
 
+def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypatch, capsys):
+    from astrid.core import gateway
+    from astrid.sdk.exceptions import CapabilityPreconditionError
+    import astrid
+
+    events = []
+
+    def fail(**_kwargs):
+        events.append("generation-dispatched")
+        error = CapabilityPreconditionError("FAL_KEY is required for this provider.")
+        error.code = "GENERATION_KEY_MISSING"
+        error.field = "credentials"
+        error.fix = "Configure FAL_KEY and retry."
+        raise error
+
+    @contextmanager
+    def open_client():
+        events.append("client-open")
+        try:
+            yield "runtime-client"
+        finally:
+            events.append("client-close")
+
+    monkeypatch.setitem(astrid.__dict__, "generate", SimpleNamespace(image=fail))
+    monkeypatch.setattr(cli, "_open_client", open_client)
+
+    assert gateway.main(["generate", "image", "a dog", "--entry", "flux-schnell"]) == 2
+
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "code: GENERATION_KEY_MISSING" in captured.err
+    assert "FAL_KEY is required" in captured.err
+    assert "fix: Configure FAL_KEY and retry." in captured.err
+    assert events == ["client-open", "generation-dispatched", "client-close"]
+
+
 def test_runtime_connection_stays_open_until_generation_finishes(monkeypatch, capsys):
     import astrid
 
