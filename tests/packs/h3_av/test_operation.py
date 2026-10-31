@@ -1359,3 +1359,45 @@ def test_managed_failure_sidecar_declares_executor_without_inventing_parent_iden
     assert receipt["kernel_task_id"] is receipt["kernel_attempt_id"] is None
     assert receipt["publication"] == {"status": "not_settled", "receipt": None, "effect": None}
     assert "_managed_client" not in receipt["resolved_options"]
+
+
+def test_native_pass_rejects_changed_managed_compilation_before_workflow_execution(tmp_path, monkeypatch):
+    from astrid.core.contracts.errors import AstridError
+    from astrid.packs.h3_av.actions.transform import run as transform
+
+    client = transform.ManagedParentClient({}, tmp_path)
+    compilation = {"changed": "sealed plan"}
+    calls = []
+
+    def invoke(_client, capability_id, **kwargs):
+        calls.append((capability_id, kwargs["inputs"]))
+        return object()
+
+    def verify(value):
+        assert value is compilation
+        raise AstridError("H3 staged compilation changed the admitted sealed plan")
+
+    monkeypatch.setattr(client, "verify_compilation", verify)
+    monkeypatch.setattr(transform, "_invoke_stage", invoke)
+    monkeypatch.setattr(transform, "_materialize_output", lambda *_args, **_kwargs: (tmp_path / "compilation.json", {}))
+    monkeypatch.setattr(transform, "_json_mapping", lambda _path: compilation)
+    prepared = {
+        "bundle_descriptor": {"object_id": "sha256:" + "a" * 64, "filename": "inputs.zip"},
+        "source_inputs": {}, "preparation_path": tmp_path / "preparation.json",
+        "preparation_row": {"object_id": "sha256:" + "b" * 64, "filename": "preparation.json"},
+        "preparation": {},
+    }
+    args = SimpleNamespace(_managed_client=client, project="fixture", resume=False)
+
+    with pytest.raises(AstridError, match="changed the admitted sealed plan"):
+        transform._execute_verified_pass(
+            client, args=args, root=tmp_path, request=object(), raw_request={},
+            asset_map={}, journal=object(), idempotency_context={}, local_engine=None,
+            prepared_selection=None, execution_request=None, placement="local",
+            prepared_input=prepared,
+        )
+
+    assert calls == [("h3_av.compile", {
+        "preparation": transform._descriptor(prepared["preparation_row"], filename="preparation.json"),
+        "input_bundle": prepared["bundle_descriptor"],
+    })]
