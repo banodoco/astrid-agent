@@ -28,6 +28,9 @@ Choose the route by the requested result. Read only that route's guidance:
 | Build your own reusable tool, workflow, or visual element | [Pack builder](pack-builder/SKILL.md) |
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 
+For batch timeline edits, narration and beats, or exact-value approval, load
+`timeline-series`, `timeline-narrated`, or `timeline-review` by skill name.
+
 Using an existing workflow and building a reusable extension are different
 requests: pack builder handles the latter, including deciding what to reuse.
 
@@ -201,11 +204,12 @@ python3 -m astrid media references list --project <project> --include-archived -
 
 Use `timelines show`, `history`, `diff`, `visualize`, and `render` for
 timeline work. Look at your visual edits with `visualize` as often as helps
-([how to look](../../rendering/docs/references/how-to-look.md)); render only
+([how to look](../../timeline/docs/references/how-to-look.md)); render only
 when the user asks, and point them to the editor link. Whole-document timeline saves are retired; edits are published
-through the detached authoring bundle. Read the [timeline editing skill](../../rendering/docs/SKILL.md)
-for the canonical authoring, Remotion, visualization, effects, and playback
-route. Use `tasks` and `runs` to inspect or manage admitted work:
+through the detached authoring bundle. Read the [timeline skill](../../timeline/docs/SKILL.md)
+for editing. Read the [rendering skill](../../rendering/docs/SKILL.md) for
+rendering, worlds, effects, and generated elements. Use `tasks` and `runs` to
+inspect or manage admitted work:
 
 ```bash
 python3 -m astrid tasks list --project demo --json
