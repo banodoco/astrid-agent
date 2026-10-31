@@ -107,7 +107,7 @@ def _release0_environment(environment: Path) -> tuple[Path, Path]:
     return python, site_packages
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX exec path")
+@pytest.mark.posix_native
 def test_service_and_foreground_exec_with_authentic_release0_package(
     tmp_path: Path,
 ) -> None:
