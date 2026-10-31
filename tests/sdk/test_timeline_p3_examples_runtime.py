@@ -219,3 +219,109 @@ def test_every_extra_python_example_runs_and_lands_on_scratch_runtime(
     placements = {row["occurrence_id"]: row for row in landed.bundle["placements"]}
     assert placements["occ-earlier"]["placement"]["start_ms"] == 0
     assert placements["occ-later"]["placement"]["start_ms"] == 2200
+
+
+def test_shots_example_authors_cuts_restructures_and_reuses_stored_shot(
+    p3_editing_case, tmp_path, monkeypatch,
+):
+    _daemon, client, project, timeline = p3_editing_case
+    created = client.timelines.create_empty(
+        project=project,
+        timeline_id="shots",
+        name="Shots example",
+        idempotency_key="p3-shots-create-film",
+    )
+    assert created.ok, created.as_dict()
+
+    from astrid.sdk.timeline import Checkout, Timeline
+
+    timeline = Timeline.open(project, "shots", client=client, outbox_path=tmp_path / "p3-shots-outbox.json")
+
+    original_open = Timeline.open.__func__
+
+    def open_on_case_runtime(cls, *args, **kwargs):
+        kwargs.setdefault("client", client)
+        kwargs.setdefault("outbox_path", tmp_path / "p3-shots-outbox.json")
+        return original_open(cls, *args, **kwargs)
+
+    monkeypatch.setattr(Timeline, "open", classmethod(open_on_case_runtime))
+    original_checkout_open = Checkout.open.__func__
+
+    def checkout_on_case_runtime(cls, *args, **kwargs):
+        kwargs.setdefault("client", client)
+        return original_checkout_open(cls, *args, **kwargs)
+
+    monkeypatch.setattr(Checkout, "open", classmethod(checkout_on_case_runtime))
+    from tests.sdk.test_timeline_editing_acceptance_runtime import _media_file
+
+    picture = _media_file(tmp_path / "shots.png")
+    from astrid.sdk.timeline.capture import capture_track_create
+    from astrid.sdk.timeline.native_occurrence_create import capture_occurrence_create
+    from astrid.sdk.timeline.native_occurrence_media_commands import capture_occurrence_add_media
+    from astrid.sdk.timeline.commit import bundle_from_document
+
+    bundle = bundle_from_document(_snapshot(timeline))
+    parent_track = capture_track_create(bundle, "parent", {"id": "picture", "kind": "visual"})
+    timeline.commit([parent_track], label="Prepare picture track", key="p3-shots-picture-track")
+    timeline = Timeline.open(project, "shots", client=client, outbox_path=tmp_path / "p3-shots-outbox.json")
+    bundle = bundle_from_document(_snapshot(timeline))
+    birth = capture_occurrence_create(
+        bundle, "opening-source", "opening-source-shot", name="Opening source",
+        track="picture", on=0, duration=4,
+    )
+    timeline.commit([birth], label="Create source shot", key="p3-shots-source-shot")
+    timeline = Timeline.open(project, "shots", client=client, outbox_path=tmp_path / "p3-shots-outbox.json")
+    bundle = bundle_from_document(_snapshot(timeline))
+    track = capture_track_create(
+        bundle, "occurrence:opening-source", {"id": "plate", "kind": "visual"}
+    )
+    timeline.commit([track], label="Create shot picture track", key="p3-shots-shot-picture-track")
+    timeline = Timeline.open(project, "shots", client=client, outbox_path=tmp_path / "p3-shots-outbox.json")
+    transport = client._remote._transport
+    imported = transport.import_project_media(
+        project, picture.read_bytes(), media_type="image/png", filename=picture.name,
+        idempotency_key="p3-shots-picture-import",
+    )["data"]
+    media = transport.get_project_media_selection(project, {
+        "asset": imported["variant_id"], "generation_id": imported["generation_id"],
+        "variant_id": imported["variant_id"],
+    })
+    verified = transport.get_project_verified_media(project, media)
+    bundle = bundle_from_document(_snapshot(timeline))
+    seed = capture_occurrence_add_media(bundle, "occurrence:opening-source", {
+        "id": "opening-seed", "clipType": "image", "track": "plate",
+        "asset": media["asset"], "at": 0, "hold": 4,
+    }, media, verified_media=[verified])
+    timeline.commit([seed], label="Add source picture", key="p3-shots-source-picture")
+    checkout = Checkout.open(project, "shots", client=client)
+    checkout.clip("opening-seed").remove()
+    picture_clip = checkout.add(
+        "media", at=0, hold=4, asset=media["asset"], track="plate", cut="c1", layer="picture",
+    )
+    second_cut = checkout.add_cut(2, after="c1", id="c2")
+    picture_clip.hold_for(2)
+    second_cut.picture.on(None)
+    checkout.publish("Author picture cuts", idempotency_key="p3-shots-author-picture-cuts", client=client)
+
+    example = _python_examples(PACK / "docs" / "shots" / "SKILL.md")[0]
+    namespace = {"project": project, "timeline": "shots", "client": client}
+    exec(compile(example, "timeline shots skill example", "exec"), namespace)
+
+    reopened = Timeline.open(project, "shots", client=client, outbox_path=tmp_path / "p3-shots-verify.json")
+    rows = sorted(reopened.bundle["placements"], key=lambda row: row["placement"]["start_ms"])
+    assert len(rows) == 3
+    assert [(row["occurrence_id"], row["placement"]["start_ms"]) for row in rows] == [
+        (namespace["source"]["occurrence_id"], 0),
+        ("opening-repeat", 2500),
+        (namespace["other"]["occurrence_id"], 5000),
+    ]
+    assert all(row["shot_id"] for row in rows)
+    canonical = {
+        row["occurrence_id"]: row
+        for row in reopened._runtime_document["parent_revision"]["payload"]["occurrences"]
+    }
+    original = canonical[namespace["source"]["occurrence_id"]]
+    repeat = canonical["opening-repeat"]
+    assert original["shot_id"] == repeat["shot_id"]
+    assert original["shot_revision_id"] == repeat["shot_revision_id"]
+    assert canonical[rows[0]["occurrence_id"]]["shot_revision_id"] != canonical[rows[2]["occurrence_id"]]["shot_revision_id"]
