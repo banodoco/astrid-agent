@@ -305,7 +305,10 @@ def _materialize_duplicates(base: dict[str, Any], work: dict[str, Any]) -> tuple
             authored['base_payload'].get('items', []), native['payload'].get('items', []))}
         copied = copy.deepcopy(native)
         copied['payload'] = _remap_known_item_references(authored['payload'], remap)
-        copied['internal_timeline'] = _remap_known_item_references(authored['internal_timeline'], remap)
+        from .native_occurrence_duplicate import remap_copy_cuts
+
+        copied['internal_timeline'] = remap_copy_cuts(
+            _remap_known_item_references(authored['internal_timeline'], remap), occurrence_id)
         work['shots'][shot_id] = copied
         if occurrence_id in plan.bundle['base_placements']:
             work['base_placements'][occurrence_id] = copy.deepcopy(plan.bundle['base_placements'][occurrence_id])

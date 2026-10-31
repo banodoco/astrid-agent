@@ -2,10 +2,55 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import re
+from dataclasses import replace
 
 from ._command_state import CommandError, root_identity
 
 OCCURRENCE_INTENT = {'ownership': 'occurrence'}
+
+
+def remap_copy_cuts(internal, occurrence_id):
+    """Give the independent copy its own cuts and retarget its local moments."""
+    from astrid.core.timeline import moments
+    from astrid.sdk import timeline_intent as intent
+
+    result = copy.deepcopy(internal)
+    cuts = {intent.cut_of(clip) for clip in result.get('clips', [])} - {None}
+    mapping = {cut: 'c' + str(int(hashlib.sha256(
+        (occurrence_id + '\0' + cut).encode()).hexdigest(), 16)) for cut in cuts}
+
+    def remap_moment(moment):
+        base = remap_moment(moment.base) if moment.base else None
+        cut = moment.cut
+        if cut:
+            # Moment spelling permits zero-padded aliases for the same cut.
+            def canonical(value):
+                match = re.fullmatch(r'c0*(\d+)([a-z]?)', value.lower())
+                return (int(match.group(1)), match.group(2)) if match else None
+
+            matches = [new for old, new in mapping.items()
+                       if old == cut or (canonical(old) is not None and canonical(old) == canonical(cut))]
+            if len(matches) == 1:
+                cut = matches[0]
+        return replace(moment, cut=cut, base=base)
+
+    for clip in result.get('clips', []):
+        cut = intent.cut_of(clip)
+        if cut:
+            intent.set_cut(clip, mapping[cut])
+        for read, write in ((intent.on, intent.set_on), (intent.until, intent.set_until)):
+            value = read(clip)
+            if value:
+                try:
+                    parsed = moments.parse(value)
+                except moments.MomentError:
+                    continue
+                updated = remap_moment(parsed)
+                if updated != parsed:
+                    write(clip, str(updated))
+    return result
 
 
 def occurrence_duplicate(ctx, command):
@@ -26,7 +71,8 @@ def occurrence_duplicate(ctx, command):
     if occurrence_id == row['occurrence_id'] or shot_id == source_shot:
         raise CommandError('duplicate requires reserved identities distinct from the source',
                            kind='identity_collision', ref=owner)
-    copy_child(ctx, owner, occurrence_id, shot_id, source_shot, payload, internal)
+    copy_child(ctx, owner, occurrence_id, shot_id, source_shot, payload,
+               remap_copy_cuts(internal, occurrence_id))
     from astrid.core.timeline.authoring_bundle import compile_authoring_candidate
 
     bundle = ctx.state.bundle

@@ -1,0 +1,50 @@
+"""Shot duplication after chapter restructuring on a scratch Runtime."""
+from astrid.sdk.timeline import Checkout, Timeline
+from astrid.sdk.timeline.commit import bundle_from_document
+from astrid.sdk.timeline.native_occurrence_duplicate import capture_occurrence_duplicate
+from tests.sdk.test_timeline_restructure import restructure_runtime  # noqa: F401
+
+
+def test_restructured_shot_duplicate_and_arrange(restructure_runtime, tmp_path):
+    env = restructure_runtime
+    Checkout.open(env.project, 't', client=env.client).publish(
+        'Restructure', restructure=True, client=env.client, idempotency_key='shots-restructure')
+    bundle = bundle_from_document(env.document())
+    source = bundle['placements'][0]
+    timeline = Timeline.open(env.project, 't', client=env.client, outbox_path=tmp_path / 'outbox.json')
+    command = capture_occurrence_duplicate(
+        bundle, 'occurrence:' + source['occurrence_id'], 'copy-occurrence', 'copy-shot')
+    move = {'schema_version': 1, 'op': 'doc.patch', 'version': '1', 'select': None,
+            'args': {'changes': [{'op': 'set', 'ref': 'parent',
+                'path': ['occurrences', 'occurrence_id:copy-occurrence', 'placement', 'start_ms'],
+                'before': {'state': 'present', 'value': source['placement']['start_ms']}, 'value': 12000}]}}
+    timeline.commit([command, move],
+                    label='Duplicate shot', key='shots-duplicate')
+    timeline.commit(lambda t: t.arrange(['copy-occurrence'], at=16),
+                    label='Arrange copy', key='shots-arrange')
+    landed = bundle_from_document(env.document())
+    copied = next(row for row in landed['placements'] if row['occurrence_id'] == 'copy-occurrence')
+    assert copied['shot_id'] == 'copy-shot'
+    assert copied['placement']['start_ms'] == 16000
+    original_cut = landed['shots'][source['shot_id']]['internal_timeline']['clips'][0]['app']['astrid']['cut']
+    copied_cut = landed['shots']['copy-shot']['internal_timeline']['clips'][0]['app']['astrid']['cut']
+    assert original_cut != copied_cut
+
+
+def test_duplicate_retargets_only_local_cut_moments():
+    from astrid.sdk.timeline.native_occurrence_duplicate import remap_copy_cuts
+
+    original = {'clips': [
+        {'id': 'a', 'app': {'astrid': {'cut': 'c1', 'on': 'c01 +2f', 'until': 'end of c1'}}},
+        {'id': 'b', 'app': {'cut': 'c1', 'on': 'c2', 'until': 'beat 2 after c1'}},
+        {'id': 'c', 'app': {'astrid': {'on': '"c1"'}}},
+    ]}
+    result = remap_copy_cuts(original, 'copy-occurrence')
+    cut = result['clips'][0]['app']['astrid']['cut']
+    assert cut != 'c1'
+    assert result['clips'][0]['app']['astrid']['on'] == f'{cut} +2f'
+    assert result['clips'][0]['app']['astrid']['until'] == f'end of {cut}'
+    assert result['clips'][1]['app']['astrid']['cut'] == cut
+    assert result['clips'][1]['app']['astrid']['on'] == 'c2'
+    assert result['clips'][1]['app']['astrid']['until'] == f'beat 2 after {cut}'
+    assert result['clips'][2] == original['clips'][2]
