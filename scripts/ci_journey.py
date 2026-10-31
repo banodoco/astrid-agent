@@ -880,6 +880,118 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
             "foreground_fallback": False, "evidence": str(evidence / "service-manager-prerequisite.log")}
 
 
+def _linux_manager_properties(*properties: str, unit: str | None = None) -> dict:
+    command = ["systemctl", "--user", "show"]
+    if unit:
+        command.append(unit)
+    command.append("--property=" + ",".join(properties))
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    if completed.returncode:
+        raise RuntimeError("Cannot inspect systemd user manager: " + (completed.stderr or completed.stdout).strip())
+    fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+    if any(key not in fields for key in properties):
+        raise RuntimeError("Incomplete systemd user manager properties")
+    return fields
+
+
+@contextmanager
+def linux_direct_unit_bridge(args, data: Path, evidence: Path):
+    """Retain a failure receipt even if the manager bridge cannot be established."""
+    try:
+        with _linux_direct_unit_bridge(args, data, evidence):
+            yield
+    except Exception as exc:
+        result_path = evidence / "journey-result.json"
+        if (sys.platform == "linux" and getattr(args, "job_id", None) == "direct-linux"
+                and not result_path.exists()):
+            write_json(result_path, {"schema_version": 2, "receipt_kind": "release1-installed-lifecycle",
+                                     "job_id": args.job_id, "mode": args.mode,
+                                     "scenario": getattr(args, "leg", None), "status": "fail",
+                                     "error": f"{type(exc).__name__}: {exc}",
+                                     "service_manager_prerequisite": getattr(args, "service_manager_prerequisite", None)})
+        raise
+
+
+@contextmanager
+def _linux_direct_unit_bridge(args, data: Path, evidence: Path):
+    """Expose only this isolated unit to the already-running user manager."""
+    if sys.platform != "linux" or getattr(args, "job_id", None) != "direct-linux" or args.mode != "direct":
+        yield
+        return
+    if getattr(args, "retain_for_next_leg", False):
+        raise RuntimeError("Linux direct unit bridge cannot retain a service between runs")
+    paths = _linux_manager_properties("UnitPath")["UnitPath"].split()
+    env = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True,
+                         text=True, timeout=30, check=False)
+    if env.returncode:
+        raise RuntimeError("Cannot inspect systemd user manager environment")
+    fields = dict(line.split("=", 1) for line in env.stdout.splitlines() if "=" in line)
+    home = fields.get("HOME")
+    if not home or not Path(home).is_absolute():
+        raise RuntimeError("systemd user manager has no absolute HOME")
+    config = Path(fields.get("XDG_CONFIG_HOME") or Path(home) / ".config")
+    directory = config / "systemd" / "user"
+    if not directory.is_absolute() or str(directory) not in paths or directory != directory.resolve():
+        raise RuntimeError("systemd user manager config directory is not a safe UnitPath entry")
+    for path in paths:
+        if not Path(path).is_absolute() or os.path.lexists(Path(path) / "astrid.service"):
+            raise RuntimeError("An Astrid unit already exists in the systemd user UnitPath")
+    before = _linux_manager_properties("LoadState", "FragmentPath", "ActiveState", unit="astrid.service")
+    if before["LoadState"] != "not-found" or before["FragmentPath"]:
+        raise RuntimeError("An Astrid unit is already loaded by the systemd user manager")
+    directory.mkdir(parents=True, exist_ok=True)
+    unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+    link = directory / "astrid.service"
+    record = {"unit_path": paths, "manager_link": str(link), "owned_unit": str(unit),
+              "before": before}
+    evidence.mkdir(parents=True, exist_ok=True)
+    manager_evidence = evidence / "systemd-manager.json"
+    write_json(manager_evidence, record)
+    os.symlink(str(unit), link)
+    owned = link.lstat()
+    previous_evidence = os.environ.get("ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE")
+    os.environ["ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE"] = str(manager_evidence)
+    try:
+        yield
+    finally:
+        try:
+            after_uninstall = _linux_manager_properties("LoadState", "FragmentPath", "ActiveState", unit="astrid.service")
+            record["after_uninstall"] = after_uninstall
+            current = link.lstat()
+            if (not link.is_symlink() or (current.st_dev, current.st_ino) != (owned.st_dev, owned.st_ino)
+                    or os.readlink(link) != str(unit)):
+                raise RuntimeError("systemd manager link is no longer owned by this run")
+            if os.path.lexists(unit) or after_uninstall["ActiveState"] not in {"inactive", "failed"}:
+                raise RuntimeError("Run-owned systemd unit or active service remains after uninstall")
+            if after_uninstall["FragmentPath"] not in {"", str(unit), str(link)}:
+                raise RuntimeError("systemd manager now points to a foreign unit")
+            link.unlink()
+            reload_result = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True,
+                                           text=True, timeout=30, check=False)
+            if reload_result.returncode:
+                raise RuntimeError("systemd user manager reload failed after unit cleanup")
+            record["after_cleanup"] = _linux_manager_properties("LoadState", "FragmentPath", "ActiveState", unit="astrid.service")
+            if record["after_cleanup"]["LoadState"] != "not-found" or record["after_cleanup"]["FragmentPath"]:
+                raise RuntimeError("systemd user manager still resolves Astrid after cleanup")
+            record["cleanup"] = "pass"
+        except Exception as exc:
+            record.update(cleanup="fail", cleanup_error=f"{type(exc).__name__}: {exc}")
+            result_path = evidence / "journey-result.json"
+            if result_path.is_file():
+                result = read_json(result_path)
+                result.update(status="fail", final_cleanup="fail", systemd_bridge_error=record["cleanup_error"])
+                write_json(result_path, result)
+            raise
+        finally:
+            if manager_evidence.is_file():
+                record["observations"] = read_json(manager_evidence).get("observations", [])
+            write_json(manager_evidence, record)
+            if previous_evidence is None:
+                os.environ.pop("ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE", None)
+            else:
+                os.environ["ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE"] = previous_evidence
+
+
 def assert_direct_service_ownership(root: Path, data: Path) -> dict:
     """Prove a direct leg selected a native service, never a foreground fallback."""
     selection_path = program_root().parent / "astrid-install.json"
@@ -893,11 +1005,23 @@ def assert_direct_service_ownership(root: Path, data: Path) -> dict:
                                     "--property=LoadState,FragmentPath,ActiveState"], capture_output=True,
                                    text=True, timeout=30, check=False)
         fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
-        if (completed.returncode or fields.get("LoadState") == "not-found"
-                or fields.get("FragmentPath") != str(unit)
+        fragment = fields.get("FragmentPath", "")
+        evidence_path = os.environ.get("ASTRID_CI_SYSTEMD_MANAGER_EVIDENCE")
+        if evidence_path:
+            manager_evidence = Path(evidence_path)
+            record = read_json(manager_evidence)
+            record.setdefault("observations", []).append({
+                "returncode": completed.returncode, "load_state": fields.get("LoadState"),
+                "fragment_path": fragment, "active_state": fields.get("ActiveState"),
+                "unit_sha256": hashlib.sha256(unit.read_bytes()).hexdigest()})
+            write_json(manager_evidence, record)
+        if (completed.returncode or fields.get("LoadState") != "loaded"
+                or fragment != str(unit)
                 or fields.get("ActiveState") != "active"):
             raise RuntimeError("Direct journey service is not owned by the expected systemd user unit")
-        return {"manager": "systemd-user", "service_path": str(unit), "foreground_fallback": False}
+        return {"manager": "systemd-user", "service_path": str(unit),
+                "load_state": fields["LoadState"], "fragment_path": fragment,
+                "active_state": fields["ActiveState"], "foreground_fallback": False}
     if sys.platform == "darwin":
         plist = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
         if not plist.is_file() or plist.is_symlink():
@@ -1322,7 +1446,7 @@ def execute(args: argparse.Namespace) -> dict:
         print(f"Journey preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         retain_named_evidence(evidence, "failure")
         raise
-    with isolated_environment(run_root, root, data):
+    with linux_direct_unit_bridge(args, data, evidence), isolated_environment(run_root, root, data):
         with sentinel_process(run_root) as (sentinel, birth):
             try:
                 result = _execute_owned(args, root, data, evidence, sentinel, birth)

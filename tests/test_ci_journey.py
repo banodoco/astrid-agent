@@ -431,3 +431,123 @@ def test_tst_b1_counts_all_runtime_owners_to_reject_duplicates(tmp_path, monkeyp
         "103 python -m astrid_runtime up\n"
     ))
     assert journey.runtime_processes(data) == [101, 102]
+
+
+def _linux_systemd_bridge_fixture(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    manager_home = tmp_path / "manager"
+    directory = manager_home / ".config" / "systemd" / "user"
+    run = tmp_path / "run"
+    data = run / "data"
+    unit = run / "home" / ".config" / "systemd" / "user" / "astrid.service"
+    link = directory / "astrid.service"
+    state = {"LoadState": "not-found", "FragmentPath": "", "ActiveState": "inactive"}
+    def fake_run(argv, **kwargs):
+        if "show-environment" in argv:
+            output = f"HOME={manager_home}\n"
+        elif "--property=UnitPath" in argv:
+            output = f"UnitPath={directory} {tmp_path / 'vendor'}\n"
+        elif "show" in argv:
+            output = "".join(f"{key}={value}\n" for key, value in state.items())
+        elif "daemon-reload" in argv:
+            output = ""
+        else:
+            raise AssertionError(argv)
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+    monkeypatch.setattr(journey.subprocess, "run", fake_run)
+    args = argparse.Namespace(job_id="direct-linux", mode="direct", retain_for_next_leg=False)
+    return args, data, unit, link, state
+
+
+def test_linux_systemd_bridge_records_paths_and_removes_only_owned_link(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    evidence = tmp_path / "evidence"
+    with journey.linux_direct_unit_bridge(args, data, evidence):
+        assert link.is_symlink() and os.readlink(link) == str(unit)
+        unit.parent.mkdir(parents=True)
+        unit.write_text("[Service]\nExecStart=/bin/true\n")
+        state.update(LoadState="loaded", FragmentPath=str(unit), ActiveState="active")
+        owner = journey.assert_direct_service_ownership(data.parent / "program", data)
+        assert owner["fragment_path"] == str(unit)
+        assert owner["load_state"] == "loaded" and owner["active_state"] == "active"
+        unit.unlink()
+        state.update(LoadState="not-found", FragmentPath="", ActiveState="inactive")
+    record = journey.read_json(evidence / "systemd-manager.json")
+    assert str(link.parent) in record["unit_path"]
+    assert record["owned_unit"] == str(unit)
+    assert record["observations"][0]["fragment_path"] == str(unit)
+    assert len(record["observations"][0]["unit_sha256"]) == 64
+    assert record["cleanup"] == "pass" and record["after_cleanup"]["LoadState"] == "not-found"
+    assert not os.path.lexists(link)
+
+
+def test_linux_systemd_bridge_rejects_existing_or_dangling_unit(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    link.parent.mkdir(parents=True)
+    link.symlink_to(tmp_path / "foreign")
+    with pytest.raises(RuntimeError, match="already exists"):
+        with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+            pytest.fail("existing units must be refused")
+    assert link.is_symlink() and os.readlink(link) == str(tmp_path / "foreign")
+
+
+def test_linux_systemd_bridge_refuses_to_remove_replaced_link(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="no longer owned"):
+        with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+            link.unlink()
+            link.symlink_to(tmp_path / "foreign")
+    assert link.is_symlink() and os.readlink(link) == str(tmp_path / "foreign")
+    assert journey.read_json(tmp_path / "evidence" / "systemd-manager.json")["cleanup"] == "fail"
+
+
+def test_linux_systemd_bridge_preserves_link_if_owned_unit_remains(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="remains after uninstall"):
+        with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+            unit.parent.mkdir(parents=True)
+            unit.write_text("owned")
+    assert link.is_symlink() and unit.is_file()
+
+
+def test_linux_service_ownership_rejects_foreign_fragment(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    unit.parent.mkdir(parents=True)
+    unit.write_text("owned")
+    state.update(LoadState="loaded", FragmentPath=str(tmp_path / "foreign"), ActiveState="active")
+    with pytest.raises(RuntimeError, match="not owned"):
+        journey.assert_direct_service_ownership(data.parent / "program", data)
+
+
+def test_linux_systemd_bridge_rejects_manager_without_config_unit_path(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    original = journey.subprocess.run
+    def no_config_path(argv, **kwargs):
+        if "--property=UnitPath" in argv:
+            return SimpleNamespace(returncode=0, stdout=f"UnitPath={tmp_path / 'vendor'}\n", stderr="")
+        return original(argv, **kwargs)
+    monkeypatch.setattr(journey.subprocess, "run", no_config_path)
+    with pytest.raises(RuntimeError, match="not a safe UnitPath"):
+        with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+            pytest.fail("must not modify an undiscoverable unit path")
+    assert not os.path.lexists(link)
+
+
+def test_linux_systemd_bridge_rejects_preloaded_unit(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    state.update(LoadState="loaded", FragmentPath=str(tmp_path / "foreign"), ActiveState="inactive")
+    with pytest.raises(RuntimeError, match="already loaded"):
+        with journey.linux_direct_unit_bridge(args, data, tmp_path / "evidence"):
+            pytest.fail("must not replace a loaded unit")
+    assert not os.path.lexists(link)
+
+
+def test_linux_service_ownership_requires_exact_fragment_even_for_symlink(tmp_path, monkeypatch):
+    args, data, unit, link, state = _linux_systemd_bridge_fixture(tmp_path, monkeypatch)
+    unit.parent.mkdir(parents=True)
+    unit.write_text("owned")
+    link.parent.mkdir(parents=True)
+    link.symlink_to(unit)
+    state.update(LoadState="loaded", FragmentPath=str(link), ActiveState="active")
+    with pytest.raises(RuntimeError, match="not owned"):
+        journey.assert_direct_service_ownership(data.parent / "program", data)
