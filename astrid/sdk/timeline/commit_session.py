@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from ._common import PARENT_SHOT, TimelineEditError
 from .checkout import Checkout
-from .sync import CommitConflict, TimelineSession, _OutboxChanged, _pending_clash, _pin
+from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _pending_clash, _pin
 
 
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
@@ -699,6 +699,11 @@ class Timeline(Checkout):
                 try:
                     result = self.session.flush(idempotency_key=idempotency_key, dry_run=dry_run,
                                                 release_conflict=not function)
+                except CommitRefused as exc:
+                    if function:
+                        exc.retry_fn = function
+                        self._retry_functions[exc.pending_id] = function
+                    raise
                 except CommitConflict as exc:
                     conflict = exc.failure
                     pending_id, clash = getattr(exc, "pending_id", None), getattr(exc, "clash", None)
@@ -792,7 +797,7 @@ class Timeline(Checkout):
                     pending_how="rerun" if function else "rederive",
                 )
             except _OutboxChanged:
-                if dry_run or pending_id is not None:
+                if dry_run or (pending_id is not None and not function):
                     raise
                 if function and count < 3:
                     with self.session.outbox.locked():
@@ -805,15 +810,22 @@ class Timeline(Checkout):
                         state = latest
                         base = _pin(latest["base"])
                         continue
-                error = self.session.save_interrupted(working._commands, base=base, label=commit_label,
+                error = self.session.save_interrupted(working._commands, base=original_base if function else base, label=commit_label,
                                                       steps=steps, merge=effective_merge, reads=reads,
-                                                      key=idempotency_key, evaluation=evaluation)
+                                                      key=idempotency_key, evaluation=evaluation,
+                                                      pending_id=pending_id, pending_path=pending_path,
+                                                      pending_part=pending_part)
                 if function:
                     error.retry_fn = function
                     self._retry_functions[error.pending_id] = function
                 if working is self:
                     self._adopt(self._base_bundle)
                 raise error
+            except CommitRefused as exc:
+                if function:
+                    exc.retry_fn = function
+                    self._retry_functions[exc.pending_id] = function
+                raise
             except CommitConflict as exc:
                 if exc.pending_id is not None and working is self:
                     self._adopt(self._base_bundle)

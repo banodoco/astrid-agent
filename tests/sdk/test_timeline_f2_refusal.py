@@ -9,10 +9,12 @@ import pytest
 
 from astrid.sdk import timeline
 from astrid.sdk.timeline.commit import bundle_from_document
-from astrid.sdk.timeline.sync import CommitConflict
+from astrid.sdk.timeline.sync import CommitConflict, CommitRefused
 from astrid_runtime_client import ApiError
 from tests.sdk import test_timeline_sync as sync_test
 from tests.sdk.test_timeline_sync import connected as connected_fixture  # noqa: F401
+
+pytest_plugins = ("tests.sdk.test_timeline_editing_acceptance_runtime",)
 
 
 def test_runtime_refusal_is_not_retried_or_reclassified_and_saves_verified_payload(
@@ -79,7 +81,7 @@ def test_runtime_refusal_is_not_retried_or_reclassified_and_saves_verified_paylo
         evaluations.append(True)
         working.add(source, at=0, hold=2, id="refused-clip")
 
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         editor.commit(edit, idempotency_key="refused-media-edit")
 
     assert caught.value.failure["details"]["status"] == "refused"
@@ -225,7 +227,7 @@ def test_list_origin_runtime_refusal_suggests_fix_retry_or_drop(
         "status": status, "reason": "policy",
     })
 
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         editor.commit(commands, label="Reviewed move", idempotency_key="reviewed-move")
 
     assert caught.value.failure["details"]["status"] == status
@@ -236,3 +238,95 @@ def test_list_origin_runtime_refusal_suggests_fix_retry_or_drop(
     assert record["origin"] == "list"
     assert record["parts"][0]["commands"] == commands
     assert record["failure"] == caught.value.failure
+
+
+@pytest.mark.parametrize("status", ["refused", "invalid"])
+def test_runtime_non_conflict_result_keeps_callable_for_explicit_retry(
+    editing_case, monkeypatch, status,
+):
+    _daemon, client, project, editor = editing_case
+    from astrid.sdk.timeline.sync import CommitRefused
+
+    generated = client._remote._transport._generated
+    commit = generated.commit_timeline
+    history_before = len(client.timelines.history(project, "film", limit=100).data["items"])
+    evaluations = []
+    injected = []
+
+    def refuse_once(*args, **kwargs):
+        if not injected:
+            injected.append(True)
+            raise ApiError(422, "invalid", "injected Runtime validation result", details={
+                "status": status, "reason": "validation", "issues": ["injected"],
+            })
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", refuse_once)
+
+    def edit(working):
+        evaluations.append(True)
+        working.bundle["parent"].update({"name": "Retry after validation"})
+
+    with pytest.raises(CommitRefused) as caught:
+        editor.commit(edit, label="Retry after validation", key="runtime-refusal-retry")
+
+    assert len(evaluations) == 1
+    assert caught.value.retry_fn is edit
+    assert caught.value.failure["details"]["status"] == status
+    pending_id = caught.value.pending_id
+    saved = editor.pending_show(pending_id)
+    assert saved["state"] == "pending"
+    assert saved["origin"] == "function"
+    assert saved["failure"] == caught.value.failure
+
+    result = editor.retry(caught.value)
+
+    assert result["status"] in {"accepted", "merged", "rebased"}
+    assert evaluations == [True, True]
+    assert editor.pending_show(pending_id)["state"] == "landed"
+    assert len(client.timelines.history(project, "film", limit=100).data["items"]) == history_before + 1
+
+
+def test_runtime_refusal_retry_by_id_after_restart_explains_callable_requirement(
+    editing_case, monkeypatch,
+):
+    _daemon, client, project, editor = editing_case
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitRefused
+
+    generated = client._remote._transport._generated
+    commit = generated.commit_timeline
+    history_before = len(client.timelines.history(project, "film", limit=100).data["items"])
+    injected = []
+
+    def refuse_once(*args, **kwargs):
+        if not injected:
+            injected.append(True)
+            raise ApiError(422, "invalid", "injected Runtime validation result", details={
+                "status": "invalid", "reason": "validation", "issues": ["injected"],
+            })
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", refuse_once)
+    evaluations = []
+
+    def edit(working):
+        evaluations.append(True)
+        working.bundle["parent"].update({"name": "Retry after restart"})
+
+    with pytest.raises(CommitRefused) as caught:
+        editor.commit(edit, label="Retry after restart", key="runtime-restart-retry")
+
+    pending_id = caught.value.pending_id
+    reopened = Timeline.open(
+        project, "film", client=client, outbox_path=editor.session.outbox.path,
+    )
+    response = reopened.retry(pending_id)
+
+    assert response["status"] == "refused"
+    assert response["pending_id"] == pending_id
+    assert "original edit function is needed" in response["summary"]
+    assert response["next"] == f"tl.retry({pending_id!r}, your_function)"
+    assert evaluations == [True]
+    assert reopened.pending_show(pending_id)["state"] == "pending"
+    assert len(client.timelines.history(project, "film", limit=100).data["items"]) == history_before
