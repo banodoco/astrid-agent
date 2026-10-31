@@ -375,7 +375,7 @@ def test_function_commit_keeps_overlap_as_pending_clash_after_shared_outbox_adva
     monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "shared-overlap-data"))
 
     from astrid.sdk.timeline import Timeline
-    from astrid.sdk.timeline.sync import CommitConflict, CommitRefused
+    from astrid.sdk.timeline.sync import CommitConflict
 
     stale = Timeline.open(project, "film", client=client)
     peer = Timeline.open(project, "film", client=client)
