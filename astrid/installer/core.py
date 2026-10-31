@@ -609,10 +609,18 @@ class Installer:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
             self.say("Installing Astrid.")
+            same_schema = False
+            prepared_candidate: Version | None = None
 
             def prepare() -> Version:
+                nonlocal prepared_candidate, same_schema
+                if prepared_candidate is not None:
+                    return prepared_candidate
                 candidate = self.backend.stage(manifest, self.root, self.data)
                 self.backend.validate_candidate(candidate, self.data, realm)
+                same_schema = (inspect_schema(self.backend, old, realm, require_current=False)
+                               == inspect_schema(self.backend, candidate, realm, require_current=False))
+                prepared_candidate = candidate
                 return candidate
 
             def migrate(candidate: Version, data: Path, _realm: dict) -> None:
@@ -648,13 +656,17 @@ class Installer:
 
             if realm is None:
                 raise ValueError("The selected workspace identity is unavailable.")
+            # Choose the workspace policy before constructing the transaction;
+            # the shared runner receives its callbacks as concrete values.
+            prepare()
             self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self.backend.stop,
                 switch_candidate=select, switch_old=select_old,
                 activate=activate,
                 activate_old=lambda previous, _data, selected_realm: self._activate(
                     previous, selected_realm["realm_id"]),
-                backup=self.backend.backup, migrate=migrate, kind="migration",
+                backup=None if same_schema else self.backend.backup,
+                migrate=None if same_schema else migrate, kind="migration",
             )
             backup_image = getattr(self, "_last_update_backup", None)
             if backup_image:
