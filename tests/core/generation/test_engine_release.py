@@ -35,8 +35,8 @@ def wheel_inputs(tmp_path_factory):
     assert all((p / 'pyproject.toml').is_file() for p in local.values()), 'frozen sibling source checkouts required'
     wheel_dir = work / 'wheels'
     wheel_dir.mkdir()
-    env = dict(os.environ, UV_CACHE_DIR='/home/user/proof/.uv-cache',
-               PIP_CACHE_DIR='/home/user/proof/.pip-cache',
+    env = dict(os.environ, UV_CACHE_DIR=str(work / 'uv-cache'),
+               PIP_CACHE_DIR=str(work / 'pip-cache'),
                SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUNPOD='1.12.0+astrid.2')
     built = subprocess.run([sys.executable, '-m', 'pip', 'wheel', '--no-deps', '--no-build-isolation',
                             '--wheel-dir', str(wheel_dir), *map(str, local.values())],
@@ -70,6 +70,15 @@ def test_actual_whole_wheels_build_extract_installed_canonical_dryrun(archive_fi
     assert manifest['fixture'] is True and manifest['complete'] is False
     assert manifest['python'] == release.interpreter_identity()
     recipe = json.loads((REPO / 'astrid/packs/runpod/recipe.linux-cu130.json').read_text())
+    assert json.loads((root / 'site/astrid/packs/runpod/recipe.linux-cu130.json').read_text()) == recipe
+    pins_ref = recipe['pins']
+    bundled_pins = root / 'site/astrid' / pins_ref['path']
+    assert hashlib.sha256(bundled_pins.read_bytes()).hexdigest() == pins_ref['sha256']
+    assert json.loads(bundled_pins.read_text())['sources']['comfyui']['revision'] == (
+        '423cbd20511becb1f16122ab518e92e58bfa03d9')
+    assert {'TextEncodeQwenImage21', 'QwenImage21Cache', 'MiniMaxH3ReferenceToVideo',
+            'MiniMaxH3AudioVAECompatibility', 'H3V2VGranularFractionalDenoise',
+            'VHS_LoadVideoFFmpeg', 'VHS_VideoCombine'} <= set(recipe['health']['required_nodes'])
     for env in recipe['environments']:
         if env['requirements']['mode'] != 'packaged':
             assert 'resolved-linux-lock:' + env['name'] in manifest['missing']

@@ -1548,7 +1548,7 @@ def test_packaged_requirements_follow_same_hashed_lock_path(tmp_path, monkeypatc
 
 
 LINUX_LOCK_PATH = "packs/runpod/requirements.linux-cu130.lock"
-LINUX_LOCK_SHA256 = "ffc717b5cb0520584ff0d7a79e440f6d922727a952572778c6eb6eb7cbd5a73a"
+LINUX_LOCK_SHA256 = "866c596ea3288d74d2fd65e7111b7cc50e8d5276393b8ae871deb9ed8164e93d"
 
 
 def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
@@ -1562,17 +1562,74 @@ def test_shipped_linux_lock_is_the_exact_packaged_hash_bearing_resolution():
     assert hashlib.sha256(path.read_bytes()).hexdigest() == LINUX_LOCK_SHA256
     entries = target._entries(path.read_text(encoding="utf-8"))
     by_name = {re.match(r"[A-Za-z0-9._-]+", row[0])[0].lower(): row for row in entries}
-    assert len(by_name) == len(entries) == 114
+    assert len(by_name) == len(entries) == 115
     for wheel in recipe.environments[0].final_wheels:
         requirement, hashes, _ = by_name[wheel.name]
         assert requirement == f"{wheel.name} @ {wheel.url}"
         assert hashes == [wheel.sha256]
-    for pin in ("comfy-kitchen==0.2.34", "comfy-aimdo==0.5.3", "opencv-python-headless==5.0.0.93", "pip==25.2"):
+    for pin in ("comfy-kitchen==0.2.40", "comfy-aimdo==0.6.0", "opencv-python-headless==5.0.0.93", "pip==25.2",
+                "comfyui-frontend-package==1.57.4", "comfyui-embedded-docs==0.5.15",
+                "comfyui-workflow-templates==0.11.100"):
         name, version = pin.split("==")
         assert by_name[name][0] == pin
     # The reviewed index digest binds the exact recipe bytes that name this lock.
     entry = next(e for e in recipes.load_recipe_index().entries if (e.engine, e.platform) == ("vibecomfy-h3", PLATFORM))
     assert hashlib.sha256((Path(recipes._ROOT) / entry.recipe.path).read_bytes()).hexdigest() == entry.recipe.sha256
+
+
+@pytest.mark.parametrize("masked", [False, True])
+def test_h3_workflow_runtime_and_node_requirements_match_linux_recipe(masked):
+    import vibecomfy
+    from astrid.packs.h3_av.shared.generation import build_generation_workflow
+    from vibecomfy.node_packs import read_lockfile
+
+    recipe = recipes.load_recipe("vibecomfy-h3", PLATFORM)
+    workflow = build_generation_workflow(
+        references=["reference.png"], prompt="A scene.", frames=24,
+        model="minimax_h3_ref2va_pruned_int8_convrot.safetensors", steps=8, seed=1,
+        masked_edit={"source_binding": "source.mp4", "start_time": 0, "frame_load_cap": 24,
+                     "mask_binding": "mask.png", "mask_channel": "red", "strength": 0.5} if masked else None,
+    )
+    requirements = workflow.metadata["requirements"]
+    runtime = requirements["runtime"]
+    sources = {source.name: source.pin for source in recipe.sources}
+    assert sources["h3-motion-context"].revision == "361624fb406b63eb6694442eac6c895fc1533a70"
+    assert sources["videohelpersuite"].revision == "4ee72c065db22c9d96c2427954dc69e7b908444b"
+    assert runtime["comfy_commit"] == sources["comfyui"].revision == "423cbd20511becb1f16122ab518e92e58bfa03d9"
+    assert runtime["comfy_version"] == "==0.43.2"
+    assert runtime["packages"] == {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.40", "comfy-aimdo": "==0.6.0"}
+    assert all(flag in recipe.start.argv for flag in runtime["launch_flags"])
+    environment = recipe.environments[0]
+    lock = Path(recipes._ROOT) / environment.requirements.packaged_lock.path
+    pins = {row[0].split("==")[0]: row[0] for row in target._entries(lock.read_text())}
+    for name, version in runtime["packages"].items():
+        if name == "torch":
+            assert next(w.version for w in environment.final_wheels if w.name == name) == version.removeprefix("==")
+        else:
+            assert pins[name] == name + version
+
+    node_lock = Path(vibecomfy.__file__).resolve().parent.parent / environment.node_lock.path
+    assert hashlib.sha256(node_lock.read_bytes()).hexdigest() == environment.node_lock.sha256
+    entries = {entry.name: entry for entry in read_lockfile(node_lock)}
+    node_sources = {"ComfyUI-H3-Motion-Context-MultiRef": "h3-motion-context", "ComfyUI-VideoHelperSuite": "videohelpersuite"}
+    assert {ref["slug"] for ref in requirements["custom_node_refs"]} == set(node_sources)
+    for ref in requirements["custom_node_refs"]:
+        name = node_sources[ref["slug"]]
+        assert ref["commit"] == sources[name].revision == entries[ref["slug"]].git_commit_sha
+        assert ref["url"] == sources[name].repository == entries[ref["slug"]].url
+        assert set(ref["classes"]) <= set(entries[ref["slug"]].class_set)
+
+
+@pytest.mark.parametrize("node", ["TextEncodeQwenImage21", "QwenImage21Cache", "MiniMaxH3ReferenceToVideo",
+                                 "MiniMaxH3AudioVAECompatibility", "H3V2VGranularFractionalDenoise",
+                                 "VHS_LoadVideoFFmpeg", "VHS_VideoCombine"])
+def test_linux_engine_health_refuses_missing_required_image_or_h3_node(setup, node):
+    assert node in setup[1].recipe.health.required_nodes
+    install(setup)
+    del setup[1].health_objects[node]
+    current = status(setup)
+    assert current.status == "failed"
+    assert current.health.required_nodes_present is False
 
 
 def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path, monkeypatch):
@@ -1603,7 +1660,7 @@ def test_fresh_root_selects_exact_shipped_lock_bytes_without_resolution(tmp_path
     support = (directory / "support.lock").read_text()
     wheels = (directory / "wheels.lock").read_text()
     assert "torch @" not in support and "torchvision @" not in support and "torchaudio @" not in support
-    assert "comfy-kitchen==0.2.34" in support and "opencv-python-headless==5.0.0.93" in support
+    assert "comfy-kitchen==0.2.40" in support and "opencv-python-headless==5.0.0.93" in support
     assert all(w.sha256 in wheels and w.url in wheels for w in recipe.environments[0].final_wheels)
     # An altered shipped lock is refused rather than re-resolved.
     (directory / "requirements.lock").write_bytes(shipped + b"# tamper\n")

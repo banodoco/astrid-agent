@@ -1,6 +1,6 @@
 """General single-pass H3 reference-to-AV adapter; no project or fixture inputs.
 
-Node contract: ComfyUI ee71d5c4993f29086b27fde1629a945ae48425bf,
+Node contract: ComfyUI 423cbd20511becb1f16122ab518e92e58bfa03d9 (v0.43.2),
 comfy_extras/nodes_minimax_h3.py, MiniMaxH3ReferenceToVideo.
 """
 from __future__ import annotations
@@ -263,19 +263,19 @@ def build_generation_workflow(*, references: list[str], prompt: str, frames: int
         requirements={
             "runtime": {
                 "comfy_commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "comfyui"),
-                "comfy_version": "==0.36.0",
-                "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.34", "comfy-aimdo": "==0.5.3"},
+                "comfy_version": "==0.43.2",
+                "packages": {"torch": "==2.10.0+cu130", "comfy-kitchen": "==0.2.40", "comfy-aimdo": "==0.6.0"},
                 "launch_flags": ["--use-ck-attention", "--disable-comfy-compiler"],
             },
             "custom_node_refs": [
                 {"slug": "ComfyUI-H3-Motion-Context-MultiRef", "source": "git",
                  "url": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
-                 "commit": "361624fb406b63eb6694442eac6c895fc1533a70",
+                 "commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "h3-motion-context"),
                  "classes": ["MiniMaxH3AudioVAECompatibility"]
                             + (["H3V2VGranularFractionalDenoise"] if masked_edit else [])},
                 {"slug": "ComfyUI-VideoHelperSuite", "source": "git",
                  "url": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
-                 "commit": "4ee72c065db22c9d96c2427954dc69e7b908444b",
+                 "commit": engine_source_revision("vibecomfy-h3", "linux-x86_64-cu130", "videohelpersuite"),
                  "classes": ["VHS_LoadVideoFFmpeg", "VHS_VideoCombine"]},
             ],
         },

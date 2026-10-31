@@ -479,10 +479,26 @@ def test_real_lock_and_recipe_pins():
     assert sum(row["bytes"] for row in models) == 53484234760
     assert all(len(row["sha256"]) == 64 and len(row["revision"]) == 40 for row in models)
     assert inputs["recipe"]["vibecomfy_source"]["revision"] == VIBECOMFY_ENGINE_REVISION
+    from astrid.core.generation.engine_recipe import load_recipe
+
+    canonical = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    sources = {source.name: {"repository": source.pin.repository, "revision": source.pin.revision}
+               for source in canonical.sources}
+    assert inputs["recipe"]["source"] == sources["comfyui"]
+    assert inputs["recipe"]["source"]["revision"] == "423cbd20511becb1f16122ab518e92e58bfa03d9"
+    assert inputs["recipe"]["support"] == {
+        "comfy-kitchen": "0.2.40", "comfy-aimdo": "0.6.0", "opencv-python-headless": "5.0.0.93", "pip": "25.2",
+    }
+    assert inputs["recipe"]["exclude_newer"] == "2026-10-31T00:00:00Z"
+    assert inputs["recipe"]["custom_nodes"] == [
+        {"name": "ComfyUI-H3-Motion-Context-MultiRef", **sources["h3-motion-context"]},
+        {"name": "ComfyUI-VideoHelperSuite", **sources["videohelpersuite"]},
+    ]
+    for wheel in canonical.environments[0].final_wheels:
+        assert inputs["recipe"]["torch_wheels"][wheel.name] == wheel.url + "#sha256=" + wheel.sha256
     from astrid.core.generation.gpu_environment import _description
 
     _, windows = _description("vibecomfy")
-    assert inputs["recipe"]["source"] == windows["source"]
     assert inputs["recipe"]["custom_nodes"] == windows["custom_nodes"]
     assert inputs["recipe"]["torch"] == windows["torch"]
 
