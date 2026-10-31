@@ -195,7 +195,7 @@ def _cmd_create(parsed: argparse.Namespace) -> int:
         data = result.data if isinstance(result.data, Mapping) else {}
         print(f"Created timeline {data.get('timeline_id') or parsed.slug or parsed.timeline_id}")
         print(f"project: {parsed.project}")
-        print(f"next: astrid timelines show {data.get('timeline_id') or parsed.slug or parsed.timeline_id}")
+        print(f"next: astrid timelines show {data.get('timeline_id') or parsed.slug or parsed.timeline_id} --project {parsed.project}")
         return 0
     return print_result(result, as_json=parsed.json)
 
@@ -345,6 +345,12 @@ def _cmd_list_recent(parsed: argparse.Namespace) -> int:
             return print_result(DomainResult.failure(ErrorObject(
                 "protocol_error", "project listing returned an invalid cursor chain", {}
             )), as_json=parsed.json)
+    elif getattr(parsed, "project", None):
+        shown = parsed.client.projects.show(parsed.project)
+        if not shown.ok:
+            return print_result(shown, as_json=parsed.json)
+        project = shown.data if isinstance(shown.data, Mapping) else None
+        projects = [dict(project)] if isinstance(project, Mapping) else []
     else:
         current = parsed.client.projects.current()
         project = current.data.get("project") if current.ok and isinstance(current.data, Mapping) else None

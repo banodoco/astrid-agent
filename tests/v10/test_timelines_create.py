@@ -185,7 +185,7 @@ def test_timelines_create_human_output_is_short_and_actionable(capsys) -> None:
     assert _run(["create", "--project", "render-smoke"], client=client) == 0
     output = capsys.readouterr().out
     assert "Created timeline T-1" in output
-    assert "next: astrid timelines show T-1" in output
+    assert "next: astrid timelines show T-1 --project render-smoke" in output
 
 
 def test_timelines_create_forwards_id_canvas_fps_and_key(capsys) -> None:

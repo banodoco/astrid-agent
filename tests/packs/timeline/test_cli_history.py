@@ -123,6 +123,39 @@ def test_recent_list_uses_latest_revision_and_prints_project(monkeypatch, capsys
     assert output.splitlines()[1] == "2026-10-30T12:00:00Z  demo  yesterday  Yesterday cut"
 
 
+def test_recent_list_explicit_project_overrides_selected_project(monkeypatch, capsys):
+    calls = []
+
+    class Projects:
+        def show(self, ref):
+            calls.append(("show", ref))
+            return DomainResult.success({"project_id": "P-beta", "slug": "beta"})
+
+        def current(self):
+            calls.append(("current", None))
+            return DomainResult.success({"project": {"project_id": "P-alpha", "slug": "alpha"}})
+
+    class Timelines:
+        def list(self, project, **_kwargs):
+            calls.append(("list", project))
+            assert project == "P-beta"
+            return DomainResult.success([[{"timeline_id": "promo", "name": "Promo"}], None])
+
+    monkeypatch.setattr(
+        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
+        lambda _self, project, timeline, *, limit: [SimpleNamespace(created_at="2026-10-30T12:00:00Z")],
+    )
+    parsed = SimpleNamespace(
+        client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
+        project="beta", recent=True, all_projects=False, json=False, include_archived=False,
+    )
+
+    assert cli._cmd_list(parsed) == 0
+    output = capsys.readouterr().out
+    assert "2026-10-30T12:00:00Z  beta  promo  Promo" in output
+    assert calls == [("show", "beta"), ("list", "P-beta")]
+
+
 def test_recent_all_projects_follows_project_cursor_pages(monkeypatch, capsys):
     class Projects:
         def list(self, *, cursor=None, limit=50):
