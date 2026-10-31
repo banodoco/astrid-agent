@@ -648,10 +648,10 @@ class TimelineSession:
                          values=values, idempotency_key=idempotency_key, dry_run=dry_run, via=via)
 
     def retry(self, key, *, matches, dry_run=False, via='python'):
-        """Resend a previously acknowledged explicit key, without advancing the local base.
+        """Replay an exact keyed request or resend its durable unknown-outcome flight.
 
-        Retain only original request bytes; Runtime remains the receipt authority.
-        This also permits a retry after later edits have advanced the timeline.
+        Acknowledged replay does not advance the local base. Active flights go
+        through flush so its normal acknowledgement settlement remains in force.
         """
         if key is None:
             return None
@@ -660,8 +660,19 @@ class TimelineSession:
         with self.outbox.locked():
             state = self._state()
             flight = copy.deepcopy(state.get('acknowledged', {}).get(key))
+            in_flight = copy.deepcopy(state.get('flight'))
         if flight is None:
-            return None
+            flight = in_flight
+            if flight is None:
+                return None
+            body = json.loads(flight['body'])
+            logical_key = flight.get('logical_key', flight['key'] if flight.get('explicit_key') else None)
+            if (flight['path'] != self.path or logical_key != key
+                    or body['project_id'] != self.project_id or body['timeline_id'] != self.timeline_id
+                    or body.get('dry_run', False) != dry_run or body['source'] != {'via': via}
+                    or not matches(body)):
+                raise TimelineEditError('idempotency key belongs to another edit; use a fresh key for new intent')
+            return self.flush(idempotency_key=key, dry_run=dry_run, via=via)
         body = json.loads(flight['body'])
         logical_key = flight.get('logical_key', flight['key'])
         if (flight['path'] != self.path or logical_key != key
