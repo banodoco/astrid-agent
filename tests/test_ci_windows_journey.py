@@ -8,9 +8,30 @@ import sys
 import pytest
 
 from scripts import ci_windows_journey as journey
+from scripts import ci_journey as shared_journey
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "windows-journey.yml"
+
+
+def test_tst_b1_windows_alias_requires_owned_roots_before_install(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ci_journey", shared_journey)
+    monkeypatch.setattr(sys, "argv", ["ci_windows_journey.py", "journey", "--leg", "fresh-install",
+                                   "--app-checkout", str(tmp_path)])
+    monkeypatch.setattr(shared_journey, "bootstrap", lambda *unused: (_ for _ in ()).throw(
+        AssertionError("bootstrap must not run")))
+    with pytest.raises(SystemExit) as failure:
+        journey.main()
+    assert failure.value.code == 2
+
+
+def test_tst_b1_windows_alias_returns_shared_driver_failure(monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ci_journey", shared_journey)
+    monkeypatch.setattr(sys, "argv", ["ci_windows_journey.py", "journey"])
+    monkeypatch.setattr(shared_journey, "main", lambda unused: 1)
+    assert journey.main() == 1
 
 
 @pytest.fixture
@@ -65,7 +86,8 @@ def test_manifest_replaces_released_sources_and_keeps_app_tools(tmp_path, monkey
         "tools": {"python": {"version": "3.11.13"}},
     }), encoding="utf-8")
     monkeypatch.setattr(journey, "source", lambda repo: {"sha": repo.name, "repo": str(repo)})
-    manifest = journey.install_manifest(tmp_path / "agent", tmp_path / "runtime", app)
+    manifest = journey.install_manifest(tmp_path / "agent", tmp_path / "runtime", app,
+                                        source_override=True)
     assert manifest["agent"] == {"sha": "agent", "repo": str(tmp_path / "agent")}
     assert manifest["runtime"] == {"sha": "runtime", "repo": str(tmp_path / "runtime")}
     assert manifest["tools"] == {"python": {"version": "3.11.13"}}

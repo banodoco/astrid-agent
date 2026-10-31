@@ -7,12 +7,15 @@ pretty-printed, or reserialized.  The captured manifest names Agent
 `3204bb00135bec8ee2d2d3fb21eed5abfceca649` and Runtime
 `6d53a19070faf63fc15ae1f81417722edc2c8a5f`.
 
-`services/` was rendered by the genuine Agent `3204bb00135bec8ee2d2d3fb21eed5abfceca649`,
-using `astrid.installer.service.render` from a detached isolated checkout.
-The external driver is `work/coord/M4-2/generate_release0_service_fixtures.py`.
+`services/` is the registered-service form produced by the genuine Agent
+`3204bb00135bec8ee2d2d3fb21eed5abfceca649`, using
+`astrid.installer.service.render` from a detached isolated checkout.  The old
+`Service.register()` first creates an empty `service-env.json` beside the
+program root and passes that path to the renderer; that sidecar is frozen here
+as `services/service-env.json`.  The external driver is
+`work/coord/Q-manager/queue/running/M1-3-service-env/generate_registered_release0_service_fixtures.py`.
 It uses the normalized, non-personal values recorded in `provenance.json`, and
-pins the Task Scheduler clock to `2000-01-01T00:00:00+00:00`.  The generated
-bytes match that commit's reviewed `tests/fixtures/installer/` snapshots.
+pins the Task Scheduler clock to `2000-01-01T00:00:00+00:00`.
 
 The launcher provenance is recorded even though this fixture set does not copy
 launcher code: main is `bbba620e3d89eeff8021417f365e6ea584203105`; the full
@@ -42,4 +45,5 @@ PYTHONPATH="$M42_OLD_CHECKOUT" python3 work/coord/M4-2/generate_release0_service
 ```
 
 Then compare the regenerated output to `SHA256SUMS`.  `provenance.json` records
-the URLs, source refs, exact renderer, normalized inputs, and stand-in source.
+the URLs, source refs, exact renderer, registration sidecar, normalized inputs,
+and stand-in source.

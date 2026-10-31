@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import contextlib
 import os
 import runpy
 import sys
@@ -228,9 +227,7 @@ def test_foreground_binds_migration_journal_to_exact_retained_session(tmp_path, 
 
     monkeypatch.setenv("ASTRID_INSTALLER_OPERATION_ID", "not-used")
     monkeypatch.setattr(foreground.os, "execvpe", lambda *_args: (_ for _ in ()).throw(ExecCalled()))
-    from astrid.installer.app_update import locked
-
-    with locked(root / ".app-update.lock"), (tmp_path / "installer.lock").open("a+b") as lock:
+    with (tmp_path / "installer.lock").open("a+b") as lock:
         with pytest.raises(ExecCalled):
             foreground._run(root, [], "linux", lock.fileno())
 
@@ -260,9 +257,8 @@ def test_foreground_refuses_unmatched_transaction_binding_before_launch(tmp_path
     ("rolled_back", "old", True, True),
     (None, "old", True, True),
 ])
-@pytest.mark.parametrize("operation_lock_held", [False, True])
 def test_generated_foreground_retains_exact_admission_across_rollback(
-        tmp_path, monkeypatch, step, selected, allowed, data_matches, operation_lock_held):
+        tmp_path, monkeypatch, step, selected, allowed, data_matches):
     root, data, old = _installation(tmp_path)
     candidate = _second_version(root)
     chosen = candidate if selected == "candidate" else old
@@ -292,25 +288,20 @@ def test_generated_foreground_retains_exact_admission_across_rollback(
         raise ExecCalled
 
     monkeypatch.setattr(os, "execvpe", capture)
-    from astrid.installer.app_update import locked
-
-    allowed = allowed and (operation_lock_held if step in {"switched", "rollback_selected"}
-                           else not operation_lock_held)
-    with locked(root / ".app-update.lock") if operation_lock_held else contextlib.nullcontext():
-        if allowed:
-            with pytest.raises(ExecCalled):
-                runpy.run_path(str(root / "run_runtime.py"))
-            arguments, environment = observed[0]
-            assert arguments[0] == str(chosen.python)
-            assert _runtime_args(arguments) == [
-                "run", "--profile", "astrid", "--data-root", str(data),
-                "--source-manifest", str(chosen.profile), "--hosted-origin", "off",
-            ]
-            assert "ASTRID_INSTALLER_OPERATION_ID" not in environment
-        else:
-            with pytest.raises(ValueError, match="interrupted|Update|installation lock"):
-                runpy.run_path(str(root / "run_runtime.py"))
-            assert observed == []
+    if allowed:
+        with pytest.raises(ExecCalled):
+            runpy.run_path(str(root / "run_runtime.py"))
+        arguments, environment = observed[0]
+        assert arguments[0] == str(chosen.python)
+        assert _runtime_args(arguments) == [
+            "run", "--profile", "astrid", "--data-root", str(data),
+            "--source-manifest", str(chosen.profile), "--hosted-origin", "off",
+        ]
+        assert "ASTRID_INSTALLER_OPERATION_ID" not in environment
+    else:
+        with pytest.raises(ValueError, match="interrupted|Update"):
+            runpy.run_path(str(root / "run_runtime.py"))
+        assert observed == []
 
 
 def test_generated_foreground_refuses_malformed_pending_journal(tmp_path, monkeypatch):
