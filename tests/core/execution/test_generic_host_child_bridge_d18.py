@@ -996,6 +996,7 @@ def world(tmp_path, monkeypatch):
             if path == "/v1/health":
                 data = service.health()
                 data["runtime_instance_id"] = "offline-fixture"
+                data["identity"] = None  # Canonical HTTP health without an owning daemon.
             elif path == "/v1/objects" and method == "POST":
                 data = service.ingest_object(body, media_type=headers["Content-Type"], original_name=headers.get("X-Filename"),
                                              idempotency_key=key, identity=identity, upload_binding=json.loads(headers["X-Output-Binding"]))
@@ -1064,7 +1065,7 @@ def world(tmp_path, monkeypatch):
         sys.modules.pop(spec.name, None)
 
 
-def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=False, input_ports=None, argv_override=None, delegating=True, root_object_ids=(), child_file_output=False, network_policy=None, prelude="", module_prelude="", parent_outputs=None, parent_inputs=None, parent_command_fields=None, parent_input_values=None, child_limits=None, child_code_override=None, parent_execution_inputs=None):
+def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=False, input_ports=None, argv_override=None, delegating=True, root_object_ids=(), child_file_output=False, network_policy=None, prelude="", module_prelude="", parent_outputs=None, parent_inputs=None, parent_command_fields=None, parent_input_values=None, child_limits=None, child_code_override=None, parent_execution_inputs=None, staged=False):
     root = world.root
     (root / "actions").mkdir(exist_ok=True)
     inputs = input_ports if input_ports is not None else [{"name": "value", "type": "file" if derived else "string", "required": True}]
@@ -1113,6 +1114,9 @@ def setup(world, *, form="python", derived=False, code=None, flags=(), targeted=
     world.service.register_executor({"executor_id": "worker", "capabilities": [PARENT, CHILD], "max_concurrency": 2}, idempotency_key="fixture-register")
     policy = {"capabilities": [{"capability_id": CHILD, "capability_digest": host.capabilities[CHILD].capability_digest}],
               "targets": [{"kind": "default"}], "input_object_ids": list(root_object_ids), "limits": {"max_children": 4, **(child_limits or {})}}
+    if staged:
+        policy["stages"] = [{"name": "generate", **policy["capabilities"][0],
+                             "target": {"kind": "default"}, "inputs": []}]
     body = {"project": world.project, "capability_id": PARENT, "capability_digest": host.capabilities[PARENT].capability_digest,
                                "input_object_ids": list(root_object_ids), "spec": {"inputs": parent_input_values or {}}, "child_delegation": policy, "idempotency_key": "parent"}
     if not delegating:
@@ -1347,6 +1351,128 @@ def test_successful_managed_outputs_have_verified_public_projection(world):
     assert rows[0]["object_id"] == digest(data)
     assert not {"lease_id", "provenance", "producer", "authority", "runtime_epoch"} & rows[0].keys()
     b.finish()
+
+
+def _staged_producer_readback(world, monkeypatch, producer_fields):
+    """Real staged admission/settlement; override only the readback under test."""
+    setup(world, staged=True)
+    b = bridge(world)
+    child = b.dispatch({**request(world), "stage": "generate", "input_refs": []})
+    claim = world.service.claim_next({"executor_id": "worker", "capability_ids": [CHILD],
+        "runtime_epoch": 1, "target": {"kind": "default"}},
+        idempotency_key="claim-staged-output", identity=world.identity)
+    assert claim is not None and claim["task_id"] == child["task_id"]
+    data = b"staged-producer-bytes"
+    world.service.settle_attempt(claim["attempt_id"], {
+        **{k: claim[k] for k in ("lease_id", "fence", "runtime_epoch")},
+        "outputs": [{"name": "answer", "kind": "object", "filename": "answer.txt",
+            "media_type": "text/plain", "digest": digest(data), "size": len(data),
+            "data_base64": base64.b64encode(data).decode(), **copy.deepcopy(producer_fields)}]},
+        idempotency_key="settle-staged-output", identity=world.identity)
+    row = copy.deepcopy(world.service.managed_outputs(child["task_id"])[0])
+    settled = copy.deepcopy(world.service.task(child["task_id"])["task"]["result"]["outputs"][0])
+    # Runtime omits an empty producer in the normalized settlement. Expose the
+    # supplied empty mapping too, so the bridge proves both contract spellings.
+    settled.update(copy.deepcopy(producer_fields))
+    original_task = world.client.task
+    def task(task_id):
+        value = copy.deepcopy(resource(original_task(task_id)))
+        if task_id == child["task_id"]:
+            value.get("task", value)["result"]["outputs"] = [copy.deepcopy(settled)]
+        return value
+    monkeypatch.setattr(world.client, "task", task)
+    monkeypatch.setattr(world.client, "child_outputs", lambda task_id: [copy.deepcopy(row)])
+    monkeypatch.setattr(world.client, "child_output", lambda association_id: copy.deepcopy(row))
+    reads = []
+    original_get_object = world.client.get_object
+    monkeypatch.setattr(world.client, "get_object", lambda oid: reads.append(oid) or original_get_object(oid))
+    return SimpleNamespace(bridge=b, child=child, row=row, settled=settled, data=data, reads=reads,
+        frame={"v": 1, "request_id": 2, "op": "outputs", "child_key": "child", "task_id": child["task_id"]})
+
+
+@pytest.mark.parametrize("producer_fields", [
+    pytest.param({}, id="omitted"),
+    pytest.param({"producer": {}}, id="empty"),
+    pytest.param({"producer": {"capability_id": CHILD}}, id="declared-capability"),
+    pytest.param({"producer": {"output_port": "answer", "producer_output_id": "output-1",
+        "metadata": {"steps": [1, {"seed": 7}], "retained": None}}}, id="declared-nested"),
+    pytest.param({"producer": {"capability_id": CHILD, "output_port": "answer",
+        "producer_output_id": "output-1", "metadata": {"steps": [1, {"seed": 7}]}}},
+        id="declared-capability-and-nested"),
+])
+def test_staged_producer_accepts_only_verified_capability_enrichment(world, monkeypatch, producer_fields):
+    f = _staged_producer_readback(world, monkeypatch, producer_fields)
+    declared = copy.deepcopy(f.settled)
+    association = copy.deepcopy(f.row)
+    assert f.row["producer"] == {"capability_id": CHILD, **producer_fields.get("producer", {})}
+    rows = f.bridge.dispatch(f.frame)
+    assert len(rows) == 1 and rows[0]["association_id"] == f.row["association_id"]
+    assert rows[0]["object_id"] == digest(f.data)
+    public_producer = {key: producer_fields["producer"][key] for key in ("output_port", "producer_output_id")
+                       if key in producer_fields.get("producer", {})}
+    assert rows[0].get("producer", {}) == public_producer
+    assert "capability_id" not in rows[0].get("producer", {})
+    assert f.bridge.dispatch({**f.frame, "request_id": 3}) == rows
+    f.bridge.finish()
+    assert f.settled == declared and f.row == association
+    assert f.reads and set(f.reads) == {digest(f.data)[7:]}
+
+
+@pytest.mark.parametrize("capability", [None, "", "foreign.capability", CHILD + ".changed"])
+def test_staged_producer_rejects_incorrect_runtime_capability(world, monkeypatch, capability):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    f.row["producer"]["capability_id"] = capability
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("producer_fields", [{}, {"producer": {}}], ids=["absent-producer", "empty-producer"])
+def test_staged_producer_rejects_missing_runtime_capability(world, monkeypatch, producer_fields):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    f.row.pop("producer")
+    f.row.update(copy.deepcopy(producer_fields))
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("echoed", [False, True])
+def test_staged_producer_rejects_wrong_declared_capability_even_when_echoed(world, monkeypatch, echoed):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    f.settled["producer"] = {"capability_id": "foreign.capability"}
+    if echoed:
+        f.row["producer"]["capability_id"] = "foreign.capability"
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("mutation", ["field-change", "field-removal", "nested-change", "nested-removal", "extra-field"])
+def test_staged_producer_rejects_declared_field_tampering_and_extra_keys(world, monkeypatch, mutation):
+    f = _staged_producer_readback(world, monkeypatch, {"producer": {
+        "output_port": "answer", "producer_output_id": "output-1",
+        "metadata": {"steps": [1, {"seed": 7}], "retained": None}}})
+    producer = f.row["producer"]
+    if mutation == "field-change": producer["producer_output_id"] = "output-2"
+    elif mutation == "field-removal": producer.pop("producer_output_id")
+    elif mutation == "nested-change": producer["metadata"]["steps"][1]["seed"] = 8
+    elif mutation == "nested-removal": producer["metadata"].pop("retained")
+    else: producer["runtime_extra"] = "unapproved"
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
+
+
+@pytest.mark.parametrize("boundary", ["settlement", "association", "both"])
+@pytest.mark.parametrize("malformed", [None, [], ["producer"], "producer", 1, False])
+def test_staged_producer_rejects_malformed_mapping(world, monkeypatch, boundary, malformed):
+    f = _staged_producer_readback(world, monkeypatch, {})
+    if boundary in {"settlement", "both"}: f.settled["producer"] = copy.deepcopy(malformed)
+    if boundary in {"association", "both"}: f.row["producer"] = copy.deepcopy(malformed)
+    with pytest.raises(ChildBridgeError, match="descriptor disagrees with settlement"):
+        f.bridge.dispatch(f.frame)
+    assert f.reads == [] and f.bridge._verified_outputs == {}
 
 
 def test_wait_poll_does_not_block_second_admission_or_heartbeat(world):

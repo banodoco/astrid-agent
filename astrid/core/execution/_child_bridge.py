@@ -1017,6 +1017,11 @@ class HostChildBridge:
                 if resource(self.client.child_output(association)) != row:
                     raise ChildBridgeError("snapshot association changed during readback")
                 continue
+            if self.policy and self.policy.get("stages"):
+                producer = row.get("producer", {})
+                if (not isinstance(producer, Mapping)
+                        or producer.get("capability_id") != task["capability_id"]):
+                    raise ChildBridgeError("child output descriptor disagrees with settlement")
             matches = [expected for expected in remaining if isinstance(expected, Mapping)
                        and expected.get("kind") == "object" and expected.get("digest") == oid
                        and expected.get("size") == size and expected.get("media_type") == row.get("media_type")
@@ -1024,7 +1029,11 @@ class HostChildBridge:
                        and all(k not in expected or expected[k] == row.get(k)
                                for k in ("filename", "ordinal", "group_key", "variant_key"))
                        and (not self.policy or not self.policy.get("stages")
-                            or expected.get("producer", {}) == row.get("producer", {}))]
+                            # Runtime fills only an omitted capability from the
+                            # authenticated child; every declared field stays exact.
+                            or (isinstance(expected.get("producer", {}), Mapping)
+                                and {"capability_id": task["capability_id"],
+                                     **expected.get("producer", {})} == producer))]
             if not matches:
                 raise ChildBridgeError("child output descriptor disagrees with settlement")
             remaining.remove(matches[0])
