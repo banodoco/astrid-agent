@@ -257,11 +257,11 @@ def test_update_candidate_and_rollback_activate_under_retained_custody(
         with pytest.raises(ValueError, match="lock"):
             with locked(lock_path):
                 pass
-        with pytest.raises(ValueError, match="already running or being installed|update was interrupted"):
+        with pytest.raises(ValueError, match="^Choose Update to finish$"):
             foreground_launch(root, [])
         contender = subprocess.run([str(root / "run")], capture_output=True, text=True, timeout=10)
         assert contender.returncode != 0
-        assert "update was interrupted" in contender.stderr
+        assert "Choose Update to finish" in contender.stderr
         observations.append((version.release, report["health"]["runtime_instance_id"]))
         if version == candidate and fail_candidate["remaining"]:
             fail_candidate["remaining"] -= 1

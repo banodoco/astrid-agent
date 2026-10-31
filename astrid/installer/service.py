@@ -221,7 +221,7 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
             raise ValueError("The pending update does not permit this launch.")
         context = transaction.get("transaction_context") or {}
         if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
-            raise ValueError("The stopped update requires its authenticated activation lease.")
+            raise ValueError("Choose Update to finish")
         if not activation_lock_held(root, version):
             raise ValueError("Choose Update to finish")
         return True

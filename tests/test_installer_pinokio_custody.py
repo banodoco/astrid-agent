@@ -209,7 +209,7 @@ def test_stale_activation_phase_without_operation_lock_refuses_start(tmp_path, s
     from astrid.installer.foreground import launch
 
     root, _data, _home, _backend, _versions = _fixture(tmp_path, step=step, selected=selected)
-    with pytest.raises(ValueError, match="update was interrupted"):
+    with pytest.raises(ValueError, match="^Choose Update to finish$"):
         launch(root, [])
 
 
