@@ -204,7 +204,7 @@ def _landed(timeline, path, record):
         entry = flight.get("pending_ack")
         if (flight.get("pending_id") == record["id"] and owner
                 and Path(owner).resolve() == Path(path).resolve()
-                and flight.get("pending_part") == record.get("part", 0)
+                and flight.get("pending_part") in (None, record.get("part", 0))
                 and _part_identity(record) is not None
                 and flight.get("pending_identity") == _part_identity(record)
                 and isinstance(entry, dict) and entry.get("revision_id")
@@ -245,7 +245,7 @@ def _landed(timeline, path, record):
         owner = flight.get("pending_path")
         if (flight.get("pending_id") != record["id"] or not owner
                 or Path(owner).resolve() != Path(path).resolve()
-                or flight.get("pending_part") != index or not flight.get("key")
+                or flight.get("pending_part") not in (None, index) or not flight.get("key")
                 or flight.get("pending_identity") is None
                 or flight["pending_identity"] != _part_identity(record)):
             continue
