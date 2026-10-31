@@ -99,7 +99,9 @@ def _legacy_flight_entry(session, record, flights, entries):
                     expected["rationale"] = request["rationale"]
                 if canonical_json(body) == canonical_json(expected):
                     part_matches.append(index)
-            if part_matches != [record.get("part", 0)]:
+            index = record.get("part", 0)
+            if (flight.get("pending_part") not in (None, index)
+                    or part_matches != [index]):
                 continue
             invocation = {"operation": "commitTimeline", "path": flight["path"],
                           "publisher": session.identity["actor_id"], "request": body}
@@ -186,7 +188,7 @@ def _landed(timeline, path, record):
                       if flight.get("pending_id") == record["id"]
                       and flight.get("pending_path")
                       and Path(flight["pending_path"]).resolve() == Path(path).resolve()
-                      and (flight.get("pending_part") is None or "parts" not in record)]
+                      and flight.get("pending_identity") is None]
     if legacy_flights:
         entry = _legacy_flight_entry(timeline.session, record, legacy_flights, entries)
         if entry is None:
@@ -198,8 +200,8 @@ def _landed(timeline, path, record):
         if (flight.get("pending_id") != record["id"] or not owner
                 or Path(owner).resolve() != Path(path).resolve()
                 or flight.get("pending_part") != index or not flight.get("key")
-                or (flight.get("pending_identity") is not None
-                    and flight["pending_identity"] != _part_identity(record))):
+                or flight.get("pending_identity") is None
+                or flight["pending_identity"] != _part_identity(record)):
             continue
         matches = [item for item in entries
                    if item.get("publisher") == timeline.session.identity["actor_id"]

@@ -1205,6 +1205,38 @@ def test_legacy_ack_without_pending_part_requires_exact_saved_request_and_receip
     assert saved["receipts"] == ["pub-history"]
 
 
+def test_legacy_ack_with_pending_part_recovers_exact_saved_part(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _legacy_acknowledged_setup(timeline)
+    timeline.session.state["acknowledged"]["logical-key"]["pending_part"] = 0
+    landed_entry = _legacy_ack_entry(timeline, body)
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, [landed_entry]))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert landed["status"] == "landed"
+    assert saved["state"] == "landed"
+    assert saved["receipts"] == ["pub-history"]
+
+
+def test_legacy_ack_with_pending_part_does_not_recover_changed_saved_command(
+    monkeypatch, tmp_path,
+):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _legacy_acknowledged_setup(timeline)
+    timeline.session.state["acknowledged"]["logical-key"]["pending_part"] = 0
+    record["parts"][0]["commands"][0]["args"]["on"] = 5
+    entry = _legacy_ack_entry(timeline, body)
+    before = copy.deepcopy(timeline.session.state["pending_changes"]["pc_saved"])
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, [entry]))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    assert landed is None
+    assert timeline.session.state["pending_changes"]["pc_saved"] == before
+
+
 def test_legacy_no_parts_ack_recovers_only_exact_saved_request_and_receipt(monkeypatch, tmp_path):
     timeline = FakeTimeline(tmp_path / "outbox.json")
     path, record, body = _legacy_no_parts_acknowledged_setup(timeline)
@@ -1318,11 +1350,12 @@ def test_legacy_ack_without_pending_part_refuses_ambiguous_or_mismatched_evidenc
     assert timeline.session.state["pending_changes"]["pc_saved"] == before
 
 
-def test_landed_recovers_legacy_cross_actor_flight_by_exact_history_identity(
+def test_landed_recovers_legacy_cross_actor_flight_by_exact_saved_request(
     monkeypatch, tmp_path,
 ):
     timeline = FakeTimeline(tmp_path / "outbox.json")
-    path, record, entry = _legacy_ack_history_setup(timeline)
+    path, record, body = _legacy_acknowledged_setup(timeline)
+    entry = _legacy_ack_entry(timeline, body)
     monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, [entry]))
 
     landed = retry_module._landed(timeline, path, record)
