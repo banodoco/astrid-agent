@@ -387,9 +387,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: journey-receipt-${{ matrix.job_id }}
-          # Keep the job-id directory in the artifact so merge-multiple cannot
-          # overwrite nine identically named journey-result.json files.
-          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+          # The harness stages only allowlisted, size-bounded evidence copies.
+          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/
           if-no-files-found: warn
 
   release2:

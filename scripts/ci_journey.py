@@ -57,6 +57,18 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
                  "windows-2022": "win32", "macos-14": "darwin"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
+JOURNEY_EVIDENCE_NAMES = frozenset({
+    "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
+    "install-bootstrap.log", "update-bootstrap.log", "start.log",
+    "verify-install.json", "verify-install.log", "verify-update.json", "verify-update.log",
+    "service-manager-prerequisite.log", "direct-service-ownership.log",
+    "runtime-owner-processes.json",
+    "runtime-service-runtime.log",
+    "manager-state-before-cleanup.json", "manager-state-after-cleanup.json",
+    "manager-state-before-cleanup.log", "manager-state-after-cleanup.log",
+    "unit-file-before-cleanup.txt", "unit-file-after-cleanup.txt",
+})
+EVIDENCE_LOG_LIMIT = 1024 * 1024
 
 
 def journey_os_label() -> str:
@@ -451,6 +463,131 @@ def read_json(path: Path) -> dict:
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def capture_manager_state(evidence: Path, data: Path, phase: str) -> None:
+    """Record small, named service-manager and unit observations around cleanup."""
+    evidence.mkdir(parents=True, exist_ok=True)
+    manager_path = evidence / f"manager-state-{phase}.json"
+    unit_path = evidence / f"unit-file-{phase}.txt"
+    manager = {"platform": sys.platform, "phase": phase}
+    unit_content = None
+    try:
+        if sys.platform == "linux":
+            unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+            command = ["systemctl", "--user", "show", "astrid.service",
+                       "--property=LoadState,FragmentPath,ActiveState,SubState"]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            manager.update(command=command, returncode=completed.returncode,
+                           stdout=completed.stdout, stderr=completed.stderr)
+        elif sys.platform == "darwin":
+            unit = data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist"
+            command = ["launchctl", "print", f"gui/{os.getuid()}/haus.astrid.runtime"]
+            completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+            manager.update(command=command, returncode=completed.returncode,
+                           stdout=completed.stdout, stderr=completed.stderr)
+        elif sys.platform == "win32":
+            output = windows.powershell(
+                "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
+                "if ($null -eq $t) { 'not-found' } else { 'STATE:'; $t | Get-ScheduledTaskInfo | "
+                "Select-Object TaskName,LastRunTime,LastTaskResult,NumberOfMissedRuns | "
+                "ConvertTo-Json -Compress; 'TASK_XML:'; Export-ScheduledTask -TaskName 'Astrid Runtime' }",
+                f"manager-state-{phase}.log", show=False, timeout=30)
+            manager.update(command="Get-ScheduledTask / Get-ScheduledTaskInfo", stdout=output)
+            task_xml = re.split(r"TASK_XML:\r?\n", output, maxsplit=1)
+            unit_content = task_xml[1] if len(task_xml) == 2 else None
+            manager["unit_file"] = "Task Scheduler exported task definition" if unit_content else None
+        else:
+            raise RuntimeError(f"Unsupported service-manager platform: {sys.platform}")
+        if sys.platform == "win32" and unit_content:
+            unit_path.write_text(unit_content, encoding="utf-8")
+        elif sys.platform != "win32" and unit.is_file() and not unit.is_symlink():
+            unit_path.write_bytes(unit.read_bytes())
+            manager["unit_file"] = str(unit)
+        elif sys.platform != "win32":
+            unit_path.write_text(f"Unit file unavailable: {unit}\n", encoding="utf-8")
+            manager["unit_file"] = None
+        else:
+            unit_path.write_text("Task Scheduler definition unavailable\n", encoding="utf-8")
+        if sys.platform in {"linux", "darwin"} and completed.returncode:
+            manager["error"] = f"manager command exited {completed.returncode}"
+            print(f"Journey manager-state capture ({phase}) failed: {manager['error']}: "
+                  f"{(completed.stderr or completed.stdout).strip()}", file=sys.stderr, flush=True)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"Journey evidence capture ({phase}) failed: {message}", file=sys.stderr, flush=True)
+        manager["error"] = message
+        possible_unit = {
+            "linux": data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service",
+            "darwin": data.parent / "home" / "Library" / "LaunchAgents" / "haus.astrid.runtime.plist",
+        }.get(sys.platform)
+        try:
+            if possible_unit is not None and possible_unit.is_file() and not possible_unit.is_symlink():
+                unit_path.write_bytes(possible_unit.read_bytes())
+                manager["unit_file"] = str(possible_unit)
+            else:
+                unit_path.write_text(f"Unit file capture failed: {message}\n", encoding="utf-8")
+        except OSError as unit_error:
+            print(f"Journey unit-file capture ({phase}) failed: {type(unit_error).__name__}: {unit_error}",
+                  file=sys.stderr, flush=True)
+    try:
+        write_json(manager_path, manager)
+    except Exception as exc:
+        print(f"Journey manager-state write ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def capture_runtime_service_logs(evidence: Path, run_root: Path, phase: str) -> None:
+    """Retain bounded tails of the run-owned Runtime and named service logs."""
+    if sys.platform == "darwin":
+        log_dir = run_root / "home" / "Library" / "Logs" / "Astrid Runtime"
+    elif sys.platform == "win32":
+        log_dir = run_root / "localappdata" / "Astrid Runtime" / "logs"
+    else:
+        log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+    paths = [log_dir / "runtime.log", *sorted(log_dir.glob("service-*.log"))]
+    for source in paths:
+        if source.is_symlink() or not source.is_file():
+            continue
+        name = ("runtime-service-runtime.log" if source.name == "runtime.log"
+                else f"runtime-service-{source.name}")
+        target = evidence / name
+        try:
+            with source.open("rb") as stream:
+                stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+        except Exception as exc:
+            print(f"Journey Runtime log capture ({phase}) failed for {source.name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
+def retain_named_evidence(evidence: Path, phase: str) -> None:
+    """Copy only the allowlisted journey evidence, clipping verbose text logs."""
+    destination = evidence.parent / "evidence-upload" / phase
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        print(f"Journey evidence staging ({phase}) failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return
+    for source in sorted(evidence.iterdir(), key=lambda path: path.name):
+        name = source.name
+        if (name not in JOURNEY_EVIDENCE_NAMES and
+                not (name.startswith("runtime-service-service-") and name.endswith(".log"))):
+            continue
+        if not source.is_file() or source.is_symlink():
+            continue
+        target = destination / name
+        try:
+            if source.suffix == ".log":
+                with source.open("rb") as stream:
+                    stream.seek(max(0, source.stat().st_size - EVIDENCE_LOG_LIMIT))
+                    target.write_bytes(stream.read(EVIDENCE_LOG_LIMIT))
+            else:
+                shutil.copyfile(source, target)
+        except Exception as exc:
+            print(f"Journey evidence copy ({phase}) failed for {name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
 
 def _under(path: Path, parent: Path) -> bool:
@@ -1182,12 +1319,17 @@ def execute(args: argparse.Namespace) -> dict:
         }
         recorded.update(status="fail", error=f"{type(exc).__name__}: {exc}")
         write_json(failure_path, recorded)
+        print(f"Journey preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        retain_named_evidence(evidence, "failure")
         raise
     with isolated_environment(run_root, root, data):
         with sentinel_process(run_root) as (sentinel, birth):
             try:
                 result = _execute_owned(args, root, data, evidence, sentinel, birth)
             finally:
+                capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+                capture_manager_state(evidence, data, "before-cleanup")
+                retain_named_evidence(evidence, "before-cleanup")
                 if not getattr(args, "retain_for_next_leg", False):
                     result_path = evidence / "journey-result.json"
                     try:
@@ -1218,6 +1360,11 @@ def execute(args: argparse.Namespace) -> dict:
                         recorded.update(status="fail", final_cleanup="fail",
                                         cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
                         write_json(result_path, recorded)
+                        print(f"Journey cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}",
+                              file=sys.stderr, flush=True)
+                        capture_runtime_service_logs(evidence, run_root, "after-cleanup")
+                        capture_manager_state(evidence, data, "after-cleanup")
+                        retain_named_evidence(evidence, "after-cleanup")
                         raise
                 else:
                     result_path = evidence / "journey-result.json"
@@ -1227,6 +1374,9 @@ def execute(args: argparse.Namespace) -> dict:
                         write_json(result_path, recorded)
                     if "result" in locals():
                         result["final_cleanup"] = "retained-for-next-leg"
+                capture_runtime_service_logs(evidence, run_root, "after-cleanup")
+                capture_manager_state(evidence, data, "after-cleanup")
+                retain_named_evidence(evidence, "after-cleanup")
             return result
 
 

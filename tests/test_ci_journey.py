@@ -150,6 +150,62 @@ def test_tst_b1_preflight_refuses_loaded_user_unit_without_unit_file(tmp_path, m
                                       tmp_path / "run" / "data")
 
 
+def test_tst_b1_named_evidence_copy_is_allowlisted_and_bounds_logs(tmp_path):
+    evidence = tmp_path / "run" / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+    (evidence / "journey-result.json").write_text('{"status":"pass"}\n', encoding="utf-8")
+    (evidence / "install-bootstrap.log").write_bytes(b"x" * (journey.EVIDENCE_LOG_LIMIT + 17))
+    (evidence / "unrelated-large-dump.bin").write_bytes(b"z" * 4096)
+
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    retained = evidence.parent / "evidence-upload" / "before-cleanup"
+    assert {path.name for path in retained.iterdir()} == {
+        "journey-result.json", "install-bootstrap.log",
+    }
+    assert (retained / "install-bootstrap.log").stat().st_size == journey.EVIDENCE_LOG_LIMIT
+    assert (retained / "journey-result.json").read_text(encoding="utf-8") == '{"status":"pass"}\n'
+
+
+def test_tst_b1_runtime_service_logs_are_named_bounded_and_allowlisted(tmp_path, monkeypatch):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    run_root = tmp_path / "run"
+    log_dir = run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "runtime.log").write_bytes(b"r" * (journey.EVIDENCE_LOG_LIMIT + 1))
+    (log_dir / "service-worker.log").write_text("worker ready\n", encoding="utf-8")
+    (log_dir / "unrelated.log").write_text("not a service log\n", encoding="utf-8")
+    evidence = run_root / "evidence" / "fresh-install"
+    evidence.mkdir(parents=True)
+
+    journey.capture_runtime_service_logs(evidence, run_root, "before-cleanup")
+    journey.retain_named_evidence(evidence, "before-cleanup")
+
+    retained = evidence.parent / "evidence-upload" / "before-cleanup"
+    assert {path.name for path in retained.iterdir()} == {
+        "runtime-service-runtime.log", "runtime-service-service-worker.log",
+    }
+    assert (retained / "runtime-service-runtime.log").stat().st_size == journey.EVIDENCE_LOG_LIMIT
+    assert (retained / "runtime-service-service-worker.log").read_text(encoding="utf-8") == "worker ready\n"
+
+
+def test_tst_b1_manager_state_capture_keeps_named_unit_and_reports_exceptions(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    data = tmp_path / "run" / "data"
+    unit = data.parent / "home" / ".config" / "systemd" / "user" / "astrid.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Service]\nExecStart=/owned/runtime\n", encoding="utf-8")
+    monkeypatch.setattr(journey.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(
+        OSError("systemctl unavailable")))
+
+    journey.capture_manager_state(tmp_path / "evidence", data, "before-cleanup")
+
+    assert "systemctl unavailable" in capsys.readouterr().err
+    state = journey.read_json(tmp_path / "evidence" / "manager-state-before-cleanup.json")
+    assert state["error"] == "OSError: systemctl unavailable"
+    assert (tmp_path / "evidence" / "unit-file-before-cleanup.txt").read_text(encoding="utf-8") == unit.read_text(encoding="utf-8")
+
+
 def test_release1_direct_linux_records_failed_manager_prerequisite_before_bootstrap(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     args = argparse.Namespace(run_root=run_root, root=run_root / "program", data_root=run_root / "data",
