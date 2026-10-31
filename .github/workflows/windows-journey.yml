@@ -113,10 +113,34 @@ jobs:
         if: always()
         run: python -u scripts/ci_windows_journey.py collect
 
+      - name: Stage compact named Windows journey evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'X5-windows-journey'
+          $target = Join-Path $env:RUNNER_TEMP 'X5-windows-journey-upload'
+          $names = @(
+            'bootstrap.log', 'install-manifest.json', 'sources.json', 'start.log',
+            'down.json', 'disable-scheduled-task.log', 'processes-before-down.json',
+            'processes-after-down.json', 'processes-final.json', 'health.json',
+            'health-final.json', 'collection.json', 'service-pack-host.log',
+            'service-worker.log'
+          )
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          foreach ($name in $names) {
+            $path = Join-Path $source $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $bytes = [IO.File]::ReadAllBytes($path)
+            if ($name.EndsWith('.log') -and $bytes.Length -gt 1048576) {
+              $bytes = $bytes[($bytes.Length - 1048576)..($bytes.Length - 1)]
+            }
+            [IO.File]::WriteAllBytes((Join-Path $target $name), $bytes)
+          }
+
       - name: Upload Windows task host journey evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Windows-task-host-journey-${{ matrix.installer-shell }}
-          path: ${{ runner.temp }}/X5-windows-journey/
+          path: ${{ runner.temp }}/X5-windows-journey-upload/
           if-no-files-found: error
