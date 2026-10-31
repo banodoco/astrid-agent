@@ -747,3 +747,182 @@ def validate_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if vl is not None and int(vl) <= 0:
         raise ValueError("video_length must be a positive integer")
     return dict(settings)
+
+
+def wan_session_main() -> int:
+    """Serve the host's JSONL protocol in the target Wan2GP interpreter.
+
+    The protocol descriptor is isolated before loading native code, which may
+    write to stdout. Only the worker imports the upstream runtime.
+    """
+    import os as system_os
+    import sys
+    import tempfile
+    import uuid
+
+    protocol = system_os.fdopen(system_os.dup(1), "w", encoding="utf-8", buffering=1)
+    system_os.dup2(2, 1)
+    write_lock = threading.Lock()
+    active_lock = threading.Lock()
+    active: dict[str, Any] = {}
+    birth: str | None = None
+    session = None
+    scratch: str | None = None
+    exit_code = 0
+
+    def emit(kind: str, **fields: Any) -> None:
+        frame = {"birth": birth, "kind": kind, **fields}
+        encoded = json.dumps(frame, ensure_ascii=True, allow_nan=False)
+        with write_lock:
+            protocol.write(encoded + "\n")
+            protocol.flush()
+
+    def parse(line: str) -> dict[str, Any]:
+        def invalid(value: str) -> None:
+            raise ValueError(f"invalid JSON constant {value}")
+        frame = json.loads(line, parse_constant=invalid)
+        if not isinstance(frame, dict):
+            raise ValueError("control frame must be an object")
+        return frame
+
+    def finish(job: Any, identity: dict[str, Any], native_id: str, spool: Path) -> None:
+        context = {"identity": identity, "native_job_id": native_id}
+        try:
+            for event in job.events.iter():
+                # Native previews and completed results can contain tensors or
+                # media bytes. Forward only the progress fields the host uses.
+                if event.kind == "progress":
+                    update = event.data
+                    data = {key: getattr(update, key, None) for key in
+                            ("phase", "status", "progress", "current_step", "total_steps")}
+                    emit("event", **context, event={"kind": "progress", "data": data})
+            result = job.result()
+            files = result.generated_files
+            try:
+                snapshots = snapshot_native_outputs(files, spool)
+            except Exception as exc:
+                raise RuntimeError(f"output paths {files!r} in spool {spool}: {exc}") from exc
+            mapped = {"success": result.success, "generated_files": files,
+                      "errors": [str(error) for error in result.errors],
+                      "total_tasks": result.total_tasks,
+                      "successful_tasks": result.successful_tasks,
+                      "failed_tasks": result.failed_tasks}
+            with active_lock:
+                active.clear()
+                emit("result", **context, result=mapped, output_snapshots=snapshots)
+        except Exception as exc:
+            with active_lock:
+                active.clear()
+                emit("error", **context, error=f"Wan job result or output observation failed: {exc}")
+
+    try:
+        line = sys.stdin.readline()
+        if not line:
+            raise ValueError("missing initialization frame")
+        initial = parse(line)
+        birth = initial.get("birth")
+        if not isinstance(birth, str) or not birth:
+            raise ValueError("initialization requires a birth identity")
+        raw_root, options = initial.get("root"), initial.get("init")
+        if not isinstance(raw_root, str) or not raw_root or not isinstance(options, dict):
+            raise ValueError("initialization requires root and init object")
+        if set(options) - {"root", "config_path", "output_dir", "cli_args", "console_output", "console_isatty"}:
+            raise ValueError("unsupported Wan initialization option")
+        root = resolve_wan2gp_root(raw_root)
+        if root is None:
+            raise ValueError(f"invalid Wan root: {raw_root}")
+        if options.get("root", str(root)) != str(root):
+            raise ValueError("initialization root does not match admitted root")
+        raw_spool = options.get("output_dir")
+        if not isinstance(raw_spool, str) or not raw_spool or not Path(raw_spool).is_absolute():
+            raise ValueError("initialization requires an absolute output_dir")
+        spool = Path(raw_spool).absolute()
+        with _custody_directory(spool, create=True):
+            pass
+        if spool == root or spool.is_relative_to(root):
+            raise ValueError(f"output_dir must be outside Wan root: {spool}")
+        config = Path(options.get("config_path") or root / "wgp_config.json").expanduser().resolve(strict=True)
+        if not config.is_file():
+            raise ValueError(f"Wan config is not a file: {config}")
+        scratch = tempfile.mkdtemp(prefix="wan-config-", dir=spool.parent)
+        scratch_config = Path(scratch) / "wgp_config.json"
+        shutil.copyfile(config, scratch_config)
+        system_os.chdir(root)
+        sys.path.insert(0, str(root))
+        from shared import api
+        init_options = {key: options[key] for key in ("cli_args", "console_isatty") if key in options}
+        session = api.init(root=str(root), config_path=str(scratch_config), output_dir=str(spool),
+                           console_output=False, **init_options)
+        emit("ready", pid=system_os.getpid())
+        for line in sys.stdin:
+            identity = None
+            try:
+                request = parse(line)
+                if request.get("birth") != birth:
+                    raise ValueError("control frame birth does not match session")
+                op = request.get("op")
+                identity = request.get("identity")
+                if op == "close":
+                    break
+                if op == "cancel":
+                    with active_lock:
+                        if not active or identity != active["identity"]:
+                            raise ValueError("cancel identity does not match active job")
+                        active["job"].cancel()
+                        emit("cancel_requested", identity=identity, native_job_id=active["id"])
+                    continue
+                if op != "run":
+                    raise ValueError("operation must be run, cancel, or close")
+                if not isinstance(identity, dict) or not identity:
+                    raise ValueError("run requires an identity object")
+                settings = request.get("settings")
+                if not isinstance(settings, dict):
+                    raise ValueError("run requires a settings object")
+                with active_lock:
+                    if active:
+                        raise ValueError("a Wan job is already active")
+                    try:
+                        job = session.submit_task(settings)
+                    except Exception as exc:
+                        raise RuntimeError(f"Wan submit_task failed: {exc}") from exc
+                    native_id = uuid.uuid4().hex
+                    active.update(job=job, identity=identity, id=native_id)
+                    emit("job_started", identity=identity, native_job_id=native_id)
+                    thread = threading.Thread(target=finish, args=(job, identity, native_id, spool))
+                    active["thread"] = thread
+                    thread.start()
+            except Exception as exc:
+                emit("error", identity=identity, error=f"Wan control request failed: {exc}")
+    except Exception as exc:
+        emit("error", error=f"Wan session initialization failed: {exc}")
+        exit_code = 1
+    finally:
+        with active_lock:
+            job = active.get("job")
+            thread = active.get("thread")
+            if job is not None:
+                try:
+                    job.cancel()
+                except Exception as exc:
+                    print(f"Wan job cancellation failed: {exc}", file=sys.stderr)
+                    exit_code = 1
+        if thread is not None:
+            thread.join()
+        if session is not None:
+            try:
+                session.close()
+            except Exception as exc:
+                print(f"Wan session close failed: {exc}", file=sys.stderr)
+                exit_code = 1
+        if scratch is not None:
+            shutil.rmtree(scratch)
+        protocol.close()
+    return exit_code
+
+
+if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:] != ["--wan-session"]:
+        raise SystemExit("usage: python -m astrid.packs.wan2gp.src.driver --wan-session")
+    raise SystemExit(wan_session_main())
