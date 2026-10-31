@@ -229,12 +229,22 @@ def test_context_refuses_cache_overlapping_private_engine_root(tmp_path, monkeyp
     assert not (tmp_path / 'engine').exists()
 
 
-def test_context_copies_verified_cache_bytes_into_private_local_model_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize('workspace_siblings', [False, True])
+def test_context_copies_verified_cache_bytes_into_private_local_model_root(
+        tmp_path, monkeypatch, workspace_siblings):
     from astrid.core.generation import model_downloader
     from astrid.core.generation.engine_contracts import ModelSpec
     from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
     from astrid.core.generation.engine_platforms import platform_adapter
     root, cache = tmp_path / 'engine', tmp_path / 'mounted-cache'
+    if workspace_siblings:
+        root = tmp_path / 'workspace/astrid/runtime/h3/vibecomfy-h3'
+        cache = tmp_path / 'workspace/astrid/engines/vibecomfy-h3/models'
+        # Exercise the real private-directory guard, without starting a service.
+        # This verifies a POSIX filesystem; it does not simulate a FUSE mount.
+        from astrid.core.generation.engine_custody import _directory
+        with _directory(str(root / '.astrid-engine/session')):
+            pass
     payload = b'locked model bytes'
     model = ModelSpec(name='tiny-model', repository='owner/model', revision='a' * 40,
                       path='model.bin', url=None, destination='nested/model.bin',
@@ -247,8 +257,12 @@ def test_context_copies_verified_cache_bytes_into_private_local_model_root(tmp_p
                                      service_client=object())
     monkeypatch.setattr(model_downloader.urllib.request, 'urlopen',
                         lambda *a, **kw: pytest.fail('network used for verified cache bytes'))
+    binding = {}
+    if workspace_siblings:
+        mount_id, device, _ = model_downloader._mount_identity(cache)
+        binding = dict(model_cache_device=device, model_cache_mount_id=mount_id)
     result = ctx.download_model(model, models_root=str(root / 'models'), deadline=deadline(),
-                                model_cache_root=str(cache))
+                                model_cache_root=str(cache), **binding)
     destination = root / 'models' / model.destination
     assert result.path == str(destination) and result.verified is True
     assert result.bytes == len(payload) and result.sha256 == model.sha256

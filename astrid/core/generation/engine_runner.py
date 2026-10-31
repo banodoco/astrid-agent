@@ -716,8 +716,13 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
     with context.acquire_install_lock(plan.root, deadline=deadline):
         # Also bind installed target code/data before any source/environment action.
         runner.step_id = "helper-identity"
-        if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
-            raise IntegrityError("target engine helper identity differs", step_id=runner.step_id)
+        try:
+            if runner.helper("identity") != {"helper_sha256": runner.helper_sha256}:
+                raise IntegrityError("target engine helper identity differs", step_id=runner.step_id)
+        except EngineError as exc:
+            if exc.step_id is None:
+                exc.step_id = runner.step_id
+            raise
         runner.step_id = None
         previous = runner.optional_json(runner.path(_RECEIPT))
         if previous is not None:

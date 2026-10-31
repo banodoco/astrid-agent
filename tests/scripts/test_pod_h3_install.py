@@ -90,6 +90,44 @@ def test_install_selected_recovers_legacy_receipt_and_returns_ready_attestation(
     assert endpoint.endpoint.attestation.install_receipt_sha256 == result["receipt_sha256"]
 
 
+def test_fresh_canonical_install_refuses_nonprivate_volume_before_any_process(
+        tmp_path, monkeypatch, capsys):
+    """A mount ignoring mkdir's private mode must fail at the first helper."""
+    import os
+    from astrid.core.generation import engine_custody
+
+    root = str(tmp_path / "workspace/astrid/runtime/h3/vibecomfy-h3")
+    cache = str(tmp_path / "workspace/astrid/engines/vibecomfy-h3/models")
+    monkeypatch.setattr(local, "_engines_dir", lambda: tmp_path / "registry")
+    local.record_engine_root("vibecomfy-h3", root)
+    mkdir = os.mkdir
+
+    def mounted_mkdir(path, mode=0o777, *, dir_fd=None):
+        mkdir(path, mode, dir_fd=dir_fd)
+        if path in (".astrid-engine", "session"):
+            os.chmod(path, 0o777, dir_fd=dir_fd)
+
+    def no_process(*args, **kwargs):
+        pytest.fail("unsafe private directory reached a subprocess")
+
+    # Only the filesystem mode behavior is simulated. CLI, backend, install
+    # lock, helper dispatch and directory validation are the canonical code.
+    monkeypatch.setattr(os, "mkdir", mounted_mkdir)
+    monkeypatch.setattr(engine_custody.subprocess, "Popen", no_process)
+    args = ["engines", "install", "vibecomfy-h3", "--root", root,
+            "--model-cache-root", cache, "--deadline", "15"]
+    with pytest.raises(ValueError, match="canonical engine installation failed"):
+        source.install_selected(args, {}, {})
+    captured = capsys.readouterr()
+    check, phase = map(json.loads, captured.err.splitlines())
+    assert check == {"schema": "astrid.pod-h3-install-check.v1",
+                     "code": "unsafe_path", "step": "helper-identity"}
+    assert phase == {"schema": "astrid.pod-h3-install-phase.v1",
+                     "phase": "canonical-install", "reason": "check_failed"}
+    assert captured.out == "" and root not in captured.err and cache not in captured.err
+    assert not Path(root, runner._RECEIPT).exists() and not Path(cache).exists()
+
+
 @pytest.mark.parametrize("registered", [None, "wrong"])
 def test_install_selected_requires_existing_registered_root_before_install(
         install_harness, registered):
