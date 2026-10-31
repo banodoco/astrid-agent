@@ -60,3 +60,4 @@ Report the edit summary, what you looked at, and the editor link
 Load `timeline-narrated` for words, beats, shots, or music beds;
 `timeline-review` when a person approves exact values first; `timeline-series`
 for one edit across many timelines.
+Load `timeline-shots` to label sections, reuse shots, and arrange occurrences.
