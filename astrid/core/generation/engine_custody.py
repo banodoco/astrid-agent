@@ -89,14 +89,24 @@ def _receive(channel, deadline):
     return _decode(read(size))
 
 
-def _private(info, kind):
-    if (not kind(info.st_mode) or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) & 0o077):
+def _private(info, kind, *, engine_path=None):
+    is_kind = kind(info.st_mode)
+    owner_matches = info.st_uid == os.getuid()
+    mode = stat.S_IMODE(info.st_mode)
+    if not is_kind or not owner_matches or mode & 0o077:
+        if kind is stat.S_ISDIR and is_kind and mode & 0o077 and engine_path is not None:
+            raise UnsafePathError(
+                f"private directory permissions were not enforced for engine path {engine_path}: "
+                f"requested mode 0o700, observed mode {oct(mode)}, "
+                f"owner matches current user: {owner_matches}. "
+                "Choose a local filesystem engine root (for example "
+                "~/.local/share/astrid/engines/<engine>) and retry."
+            )
         raise UnsafePathError("engine control state must be private to its owner")
 
 
 @contextmanager
-def _directory(path, *, create=True):
+def _directory(path, *, create=True, engine_path=None):
     """Pin a no-symlink directory; only the final component must be private."""
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
@@ -112,8 +122,8 @@ def _directory(path, *, create=True):
             os.close(fd)
             fd = child
             if component == ".astrid-engine":
-                _private(os.fstat(fd), stat.S_ISDIR)
-        _private(os.fstat(fd), stat.S_ISDIR)
+                _private(os.fstat(fd), stat.S_ISDIR, engine_path=engine_path)
+        _private(os.fstat(fd), stat.S_ISDIR, engine_path=engine_path)
         yield fd
     except OSError as exc:
         if isinstance(exc, FileNotFoundError):
@@ -241,7 +251,7 @@ class LinuxEngineServiceClient:
     def _request(self, operation, payload, deadline, *, start=True):
         _remaining(deadline)
         try:
-            with _directory(self.control, create=start) as fd:
+            with _directory(self.control, create=start, engine_path=self.identity["root"]) as fd:
                 try:
                     channel = self._connect(fd, deadline, start=start)
                 except DeadlineExceeded as exc:

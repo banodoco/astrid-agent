@@ -1094,6 +1094,42 @@ def test_private_control_path_required(tmp_path, unsafe):
         _client(_identity(root)).run(_request(root, "print('must not run')"))
 
 
+def test_ignored_private_directory_mode_explains_local_filesystem_remedy(tmp_path, monkeypatch):
+    root = tmp_path / "install"
+    root.mkdir()
+    real_mkdir, real_chmod = os.mkdir, os.chmod
+    requested_modes = []
+    launches = []
+
+    def mkdir(path, mode=0o777, *, dir_fd=None):
+        real_mkdir(path, mode, dir_fd=dir_fd)
+        if path == ".astrid-engine":
+            requested_modes.append((path, mode))
+            # Simulate a filesystem that ignores the requested owner-only mode.
+            real_chmod(path, 0o777, dir_fd=dir_fd)
+
+    def no_launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        raise AssertionError("unsafe private directory must be refused before launch")
+
+    monkeypatch.setattr(custody.os, "mkdir", mkdir)
+    monkeypatch.setattr(custody.subprocess, "Popen", no_launch)
+    client = _client(_identity(root))
+
+    with pytest.raises(UnsafePathError) as raised:
+        client.run(_request(root, "print('must not run')"))
+
+    message = str(raised.value)
+    assert raised.value.code == "unsafe_path"
+    assert requested_modes == [(".astrid-engine", 0o700)]
+    assert f"engine path {root}" in message
+    assert "requested mode 0o700" in message
+    assert "observed mode 0o777" in message
+    assert "owner matches current user: True" in message
+    assert "~/.local/share/astrid/engines" in message
+    assert launches == []
+
+
 def test_invalid_command_deadline_and_output_budget_do_not_spawn(session):
     client, payload, recipe, root, mode, started = session
     with pytest.raises(DeadlineExceeded):
