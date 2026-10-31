@@ -1,1 +1,1 @@
-This reference moved to [the timeline look reference](../../timeline/references/how-to-look.md).
+[Moved to the timeline render inspection reference](../../../timeline/docs/references/how-to-look.md).

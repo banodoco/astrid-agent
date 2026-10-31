@@ -2,7 +2,7 @@
 
 Use this page for the complete closure's read/validation shape, media
 inventory, and migration notes. A checkout is a detached snapshot, not a lock.
-The write path is `tl.commit` from the [editing skill](../SKILL.md), a guarded
+The write path is `tl.commit` from the [timeline skill](../../../timeline/docs/SKILL.md), a guarded
 command commit through `TimelineSession`'s outbox; the broad
 checkout publication described below remains held on this base.
 

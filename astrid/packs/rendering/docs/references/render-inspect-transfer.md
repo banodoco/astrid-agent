@@ -1,9 +1,9 @@
 # Render, inspect, transfer and worlds
 
-Moved unchanged from the rendering skill so the [editing skill](../SKILL.md) stays
-short. The editing skill owns every timeline write; this page covers reading
+Timeline writes belong to the [timeline skill](../../../timeline/docs/SKILL.md).
+This page covers reading
 frames, rendering, timeline transfer, worlds and shot narration. Make every
-timeline edit with `tl.commit` or the direct CLI as the editing skill teaches;
+timeline edit with `tl.commit` or the direct CLI as the timeline skill teaches;
 `TimelineSession` is a legacy low-level layer, not an edit path to use here.
 
 ## Timeline transfer
@@ -202,7 +202,7 @@ timeline `effects`/clip `app` or `params`, freeze the candidate, and use
 create a renderer-specific timeline format or send effect edits through the
 production orchestrators in `video_editing`. The source pack directory and
 capability IDs intentionally remain `rendering` for runtime compatibility;
-the agent-facing skill name is `timeline_editing`. After changing this skill,
+the agent-facing skill name is `timeline`. After changing this skill,
 refresh the writable views with `python3 -m astrid.skills sync --all` and verify
 with `python3 -m astrid.skills sync --all --check --json` so the root gateway and
 installed pack view do not route existing-timeline work back to video editing.
@@ -535,7 +535,7 @@ to the shot's current voiceover audio.
 The config must be renderable before spending a render attempt. Keep clip types
 explicit, use registered element IDs for custom visual elements, and keep the
 output/profile compatible with the authoritative theme canvas. Read
-[references/timeline-cookbook.md](timeline-cookbook.md) when
+[timeline cookbook](../../../timeline/docs/references/timeline-cookbook.md) when
 constructing or checking the JSON shape.
 
 For the constrained transparent PNG layer supported by the FFmpeg backend, use

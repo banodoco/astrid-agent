@@ -1,1 +1,1 @@
-This reference moved to [the timeline cookbook](../../timeline/references/timeline-cookbook.md).
+[Moved to the timeline cookbook reference](../../../timeline/docs/references/timeline-cookbook.md).

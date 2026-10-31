@@ -57,6 +57,5 @@ For a vague span such as “the intro,” look first, say what you mean, then ed
 Report the edit summary, what you inspected, and the editor link from
 `r["data"]["editor_url"]`. Render only when asked.
 
-For words, beats, shots, or music beds, load `astrid-timeline-narrated`. For
-approval of exact values, load `astrid-timeline-review`. For batch edits, load
-`astrid-timeline-series`.
+For words, beats, shots, or music beds, load `timeline-narrated`. For approval
+of exact values, load `timeline-review`. For batch edits, load `timeline-series`.
