@@ -153,8 +153,16 @@ def _cmd_retry(parsed):
         status = result.get("status")
         data = result.get("data") if isinstance(result.get("data"), Mapping) else {}
         if status in {"accepted", "merged", "rebased"} or data.get("status") in {"accepted", "merged", "rebased"}:
-            result = {**result, "status": "landed", "pending_id": parsed.ref_id,
-                      "summary": result.get("summary") or data.get("summary")}
+            record = timeline.pending_show(parsed.ref_id)
+            durable_status = {"landed": "landed", "pending": "part_landed"}.get(
+                record.get("state"), status,
+            )
+            result = {
+                **result,
+                "status": durable_status,
+                "pending_id": record.get("id", parsed.ref_id),
+                "summary": result.get("summary") or data.get("summary"),
+            }
     data = _retry_data(result)
     if parsed.json:
         return print_result(DomainResult.success(data), as_json=True)
