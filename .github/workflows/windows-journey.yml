@@ -8,12 +8,17 @@ on:
         required: false
         type: string
   push:
-    branches: [main, release-1, "windows/**"]
+    branches: [main, release-1, "int/**"]
   pull_request:
     branches: [main]
+  merge_group:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-journey:
