@@ -1,0 +1,122 @@
+# Candidate-only receipt producer. No deployment, publication, or complete qualification claim.
+# The full nine-row journey gate remains unchanged; six Pinokio rows are not run here.
+name: Direct lifecycle receipts (partial, non-release)
+'on':
+  push:
+    branches:
+    - r1/journey-direct-20261031
+    paths:
+    - .github/workflows/journey-direct-candidate.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: journey-direct-20261031
+  cancel-in-progress: false
+jobs:
+  direct-receipts:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - job_id: direct-linux
+          mode: direct
+          leg: release0-to-release1
+          runner: ubuntu-24.04
+          shell: sh
+          os: linux
+        - job_id: direct-macos
+          mode: direct
+          leg: release0-to-release1
+          runner: macos-14
+          shell: sh
+          os: macos
+        - job_id: direct-windows
+          mode: direct
+          leg: release0-to-release1
+          runner: windows-2022
+          shell: powershell.exe
+          os: windows
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+    - name: Check out reviewed Agent receipt harness
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: ${{ github.workflow_sha }}
+        path: agent
+        persist-credentials: false
+    - name: Check out frozen App candidate
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-app
+        ref: ad43f06092e1cb7c4155bbb1a9138c847dd4b7ed
+        path: app
+        persist-credentials: false
+    - name: Check out frozen Agent candidate
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-agent
+        ref: b05ac03a5bcab278bccf99d85b49f4037b5dec10
+        path: candidate-agent
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Check out frozen Runtime candidate
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-runtime
+        ref: f75517d86011140e737782f3f75206408ddc1cf9
+        path: runtime
+        persist-credentials: false
+    - name: Check out frozen Pinokio candidate
+      uses: actions/checkout@v4
+      with:
+        repository: banodoco/astrid-pinokio
+        ref: c5b42701641889ecb916c60cde09a717f83d62ff
+        path: pinokio
+        persist-credentials: false
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Record effective immutable checkouts
+      shell: bash
+      run: |
+        {
+          echo "## Effective Release-1 journey tuple"
+          echo "- Driver Agent: $(git -C agent rev-parse HEAD)"
+          echo "- Candidate App: $(git -C app rev-parse HEAD)"
+          echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
+          echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
+          echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Freeze and validate candidate inputs
+      shell: bash
+      env:
+        CANDIDATE: '{"app":"ad43f06092e1cb7c4155bbb1a9138c847dd4b7ed","agent":"b05ac03a5bcab278bccf99d85b49f4037b5dec10","runtime":"f75517d86011140e737782f3f75206408ddc1cf9","pinokio":"c5b42701641889ecb916c60cde09a717f83d62ff","manifest_sha256":"ce9f4944f2e8c844a3246d0e1bf85c830839653d48935f4c734c3198f1e93dd7","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
+      run: |
+        printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+        python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+    - name: Run authentic direct release-0 to release-1 lifecycle
+      env:
+        ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+      run: |
+        $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
+        python -u agent/scripts/ci_journey.py `
+          --job-id '${{ matrix.job_id }}' --mode direct --leg release0-to-release1 `
+          --candidate "$env:RUNNER_TEMP/candidate.json" `
+          --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
+          --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
+          --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
+          --shell '${{ matrix.shell }}' --release0-fixture "$pwd/agent/tests/fixtures/release0" --allow-release0-to-release1
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - name: Retain the matrix receipt even after a lifecycle failure
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: journey-receipt-${{ matrix.job_id }}
+        path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+        if-no-files-found: warn
