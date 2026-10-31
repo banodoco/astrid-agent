@@ -45,6 +45,49 @@ def write_json(path, value):
     from .core import write_json as write
     return write(path, value)
 
+
+class _UnsupportedServiceManager(ValueError):
+    """The selected OS cannot safely run an installer update job."""
+
+    reason = "unsupported-service-manager"
+
+
+MINIMUM_SYSTEMD_VERSION = 254
+UNSUPPORTED_SERVICE_MANAGER_MESSAGE = "This update requires user systemd 254 or newer on Linux."
+
+
+def update_job_availability(*, system: str | None = None) -> dict:
+    """Return whether the selected OS can safely run an update job."""
+    actual = sys.platform if system is None else system
+    if actual != "linux":
+        return {"available": True}
+    try:
+        version = subprocess.run(
+            ["systemctl", "--user", "--version"], capture_output=True,
+            text=True, timeout=5, check=False,
+        )
+        if version.returncode != 0:
+            raise ValueError("systemd version command failed")
+        output = version.stdout if isinstance(version.stdout, str) else ""
+        match = re.match(r"^systemd\s+(\d+)(?:\s|$)", output.strip())
+        if match is None or int(match.group(1)) < MINIMUM_SYSTEMD_VERSION:
+            raise ValueError("systemd version is unsupported or unknown")
+        manager = subprocess.run(
+            ["systemctl", "--user", "show-environment"], capture_output=True,
+            text=True, timeout=5, check=False,
+        )
+        if manager.returncode != 0:
+            raise ValueError("systemd user manager is unavailable")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return {"available": False, "reason": _UnsupportedServiceManager.reason}
+    return {"available": True}
+
+
+def _require_update_job_available() -> None:
+    if not update_job_availability()["available"]:
+        raise _UnsupportedServiceManager(UNSUPPORTED_SERVICE_MANAGER_MESSAGE)
+
+
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024
 JOB_FORMAT = "astrid-update-job/v1"
@@ -319,6 +362,7 @@ def _validate_request(request: dict, root: Path) -> dict:
 
 def accept(request: dict) -> dict:
     """Durably accept one already-prepared request under the normal install lock."""
+    _require_update_job_available()
     root = absolute(request.get("root", ""))
     stream = _locked(root)
     try:
@@ -540,6 +584,7 @@ def _owned_descriptor(descriptor: dict, operation_id: str) -> bool:
 
 def launch_job(root: Path, operation_id: str) -> dict:
     """Register and start the already accepted job exactly once."""
+    _require_update_job_available()
     root = absolute(root)
     stream = _locked(root)
     try:
@@ -1035,17 +1080,31 @@ def main():
         raise ValueError("The update helper request is too large.")
     value = json.loads(raw)
     action = value.get("action", "prepare")
-    if action == "prepare":
+    if action == "availability":
+        print(json.dumps(update_job_availability()))
+    elif action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
                                        bootstrap_url=value["bootstrap_url"],
                                        installed_release=value["installed_release"])
         print(json.dumps(metadata))
     elif action == "accept":
-        print(json.dumps(accept(value)))
+        try:
+            result = accept(value)
+        except _UnsupportedServiceManager as failure:
+            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
+                              "message": _one_line(failure)}))
+            raise SystemExit(1)
+        print(json.dumps(result))
     elif action == "fail":
         print(json.dumps(fail(Path(value["root"]), value["operation_id"], value.get("reason"))))
     elif action == "launch":
-        print(json.dumps(launch_job(Path(value["root"]), value["operation_id"])))
+        try:
+            result = launch_job(Path(value["root"]), value["operation_id"])
+        except _UnsupportedServiceManager as failure:
+            print(json.dumps({"state": "recovery-needed", "reason": failure.reason,
+                              "message": _one_line(failure)}))
+            raise SystemExit(1)
+        print(json.dumps(result))
     else:
         raise ValueError("Unknown update helper action.")
 
