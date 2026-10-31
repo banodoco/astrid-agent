@@ -942,15 +942,20 @@ def test_retry_after_repeated_refusal_uses_rederived_commands_before_suffix(monk
     assert preview["data"]["commands"] == current
     result = retry_module.commit_preview(timeline, preview)
 
-    assert result["status"] == "accepted"
+    assert result["status"] == "part_landed"
     args, kwargs = timeline.session.submissions[0]
     assert args[0] == current
     assert kwargs["pending_id"] == stable_id
     saved = timeline.session.state["pending_changes"][stable_id]
     assert saved["id"] == stable_id
+    assert saved["state"] == "pending"
     assert saved["part"] == 1
+    assert saved["receipts"] == ["pub-accepted"]
     assert saved["parts"][1]["commands"] == suffix["commands"]
     assert [part["commands"] for part in saved["parts"]] == [current, suffix["commands"]]
+    suffix_preview = retry_module.retry(timeline, stable_id)
+    assert suffix_preview["status"] == "preview"
+    assert suffix_preview["data"]["commands"] == suffix["commands"]
 
 
 def test_commit_preview_accepts_records_without_saved_steps(monkeypatch, tmp_path):
@@ -1011,6 +1016,148 @@ def test_retry_returns_history_receipt_when_another_actor_already_landed(monkeyp
     )
     assert set(result) == {"status", "pending_id", "data", "summary", "next", "record"}
     assert timeline.session.submissions == []
+
+
+def test_two_actors_retry_owner_record_and_refused_loser_releases_flight(
+    editing_case, tmp_path, monkeypatch,
+):
+    daemon, client, project, _ = editing_case
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "two-actor-data"))
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitConflict
+    from tests.editing_conformance.test_commit_runtime_m1 import open_client
+    from tests.editing_conformance.test_timeline_clash_back_acceptance_runtime import (
+        _move_commands, _seed_clip,
+    )
+    from astrid_runtime_client import ApiError
+
+    owner = Timeline.open(project, "film", client=client)
+    _seed_clip(owner, tmp_path)
+    commands = _move_commands(owner, on=4, label="Two actor retry")
+    _, credential = daemon.credentials.provision("retry-peer", [
+        "handshake", "projects:read", "projects:write", "objects:read", "objects:write",
+        "tasks:read", "tasks:write",
+    ])
+    peer_client = open_client(daemon, actor="retry-peer", credential=credential)
+    peer = Timeline.open(project, "film", client=peer_client)
+    owner_transport = client._remote._transport._generated
+    original = owner_transport.commit_timeline
+    initial = ApiError(409, "conflict", "initial conflict", details={
+        "status": "conflict", "reason": "guard_changed", "conflicts": [],
+    })
+
+    def refuse_initial(project_id_arg, timeline_id_arg, body, **kwargs):
+        if body.get("label") == "Two actor retry":
+            raise initial
+        return original(project_id_arg, timeline_id_arg, body, **kwargs)
+
+    monkeypatch.setattr(owner_transport, "commit_timeline", refuse_initial)
+    with pytest.raises(CommitConflict) as caught:
+        owner.commit(commands, label="Two actor retry", key="two-actor-retry")
+    pending_id = caught.value.pending_id
+    assert pending_id
+    monkeypatch.setattr(owner_transport, "commit_timeline", original)
+
+    owner_preview = owner.retry(pending_id)
+    peer_preview = peer.retry(pending_id)
+    assert owner_preview["status"] == peer_preview["status"] == "preview"
+    owner_path = owner.session.outbox.path
+    assert peer_preview["_retry_path"] == str(owner_path)
+
+    nested = []
+    refused = ApiError(409, "refused", "losing retry refused", details={"status": "refused"})
+
+    def peer_wins_then_refuse_owner(*args, **kwargs):
+        assert json.loads(owner_path.read_text())["flight"] is not None
+        nested.append(peer.commit(peer_preview))
+        assert nested[0]["receipt"]["receipt_id"]
+        # The peer settles the shared owner record while this owner's flight is
+        # still on disk; this refusal must release only that flight.
+        raise refused
+
+    monkeypatch.setattr(owner.session.client.timelines, "commit", peer_wins_then_refuse_owner)
+    loser = owner.commit(owner_preview)
+
+    state = json.loads(owner_path.read_text())
+    saved = state["pending_changes"][pending_id]
+    assert state["flight"] is None
+    assert saved["state"] == "landed"
+    assert saved["receipts"] == [nested[0]["receipt"]["receipt_id"]]
+    monkeypatch.setattr(owner_transport, "commit_timeline", original)
+    assert loser["status"] == "landed"
+    assert loser["data"]["receipt"]["receipt_id"] == nested[0]["receipt"]["receipt_id"]
+
+
+def test_retry_replays_landed_multipart_prefix_then_lands_suffix(
+    editing_case, tmp_path, monkeypatch,
+):
+    daemon, client, project, _ = editing_case
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "multipart-data"))
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.capture import capture_move
+    from tests.editing_conformance.test_commit_runtime_m1 import open_client
+    from tests.editing_conformance.test_timeline_clash_back_acceptance_runtime import _media_file, _seed_clip
+
+    owner = Timeline.open(project, "film", client=client)
+    _seed_clip(owner, tmp_path)
+    owner.commit(lambda t: t.add(_media_file(tmp_path / "c.png"), at=3, hold=3,
+                                 track="V1", id="c"), label="Seed c", key="seed-c")
+    _, credential = daemon.credentials.provision("multipart-peer", [
+        "handshake", "projects:read", "projects:write", "objects:read", "objects:write",
+        "tasks:read", "tasks:write",
+    ])
+    peer = Timeline.open(project, "film", client=open_client(
+        daemon, actor="multipart-peer", credential=credential))
+    bundle = owner.bundle
+    commands = [capture_move(bundle, "parent/clip:b", 4),
+                capture_move(bundle, "parent/clip:c", 6)]
+    record = {
+        "id": "multipart-retry", "state": "pending", "key": "multipart-retry",
+        "label": "Multipart retry", "origin": "list", "part": 0, "attempts": 1,
+        "parts": [
+            {"base": copy.deepcopy(owner.session._state()["base"]), "commands": [commands[0]],
+             "commit_options": {"label": "Multipart retry", "merge": "fields", "steps": [
+                 {"id": "part-1", "label": "Multipart retry", "intent": "", "tags": [],
+                  "command_ordinals": [0], "patch": []},
+             ]},
+             "group_id": "multipart-retry"},
+            {"base": copy.deepcopy(owner.session._state()["base"]), "commands": [commands[1]],
+             "commit_options": {"label": "Multipart retry", "merge": "fields", "steps": [
+                 {"id": "part-2", "label": "Multipart retry", "intent": "", "tags": [],
+                  "command_ordinals": [0], "patch": []},
+             ]},
+             "group_id": "multipart-retry"},
+        ],
+        "failure": {"details": {"status": "conflict", "reason": "guard_changed", "conflicts": []}},
+        "head": copy.deepcopy(owner.session._state()["base"]), "closed_by": None,
+    }
+    state = owner.session._state()
+    state["pending"] = []
+    state.setdefault("pending_changes", {})[record["id"]] = record
+    owner.session.outbox.write(state)
+
+    prefix = peer.session.submit(
+        [commands[0]], label="Multipart retry",
+        steps=[{"id": "part-1", "label": "Multipart retry", "intent": "", "tags": [],
+                "command_ordinals": [0], "patch": []}],
+        expected_state=peer.session._state(), base=record["parts"][0]["base"],
+        group_id=record["id"],
+    )
+    assert prefix["receipt"]["receipt_id"]
+    recovered = owner.retry(record["id"])
+    assert recovered["status"] == "part_landed"
+    assert recovered["record"]["part"] == 1
+
+    suffix_preview = owner.retry(record["id"])
+    assert suffix_preview["status"] == "preview"
+    suffix = owner.commit(suffix_preview)
+    assert suffix["status"] == "accepted", suffix
+    saved = owner.session._state()["pending_changes"][record["id"]]
+    assert saved["state"] == "landed"
+    assert saved["part"] == 1
+    assert saved["receipts"] == [prefix["receipt"]["receipt_id"], suffix["receipt"]["receipt_id"]]
 
 
 def test_retry_returns_uniform_result_for_saved_landed_record(monkeypatch, tmp_path):

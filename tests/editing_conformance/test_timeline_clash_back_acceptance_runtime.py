@@ -587,6 +587,65 @@ def test_j4_lost_ack_on_retry_is_confirmed_once_and_record_closes(
     assert closed["closed_by"]["publication_id"] == landed["receipt"]["receipt_id"]
 
 
+def test_cli_retry_reports_accepted_part_from_durable_pending_state(
+    editing_case,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _daemon, client, project, timeline = editing_case
+    _seed_clip(timeline, tmp_path)
+    from astrid.sdk.timeline.sync import CommitConflict
+
+    commands = _move_commands(timeline, on=4, label="CLI multipart retry")
+    generated = client._remote._transport._generated
+    original = generated.commit_timeline
+
+    def inject_conflict(project_id, timeline_id, body, **kwargs):
+        if body.get("label") == "CLI multipart retry":
+            raise _injected_conflict(timeline)
+        return original(project_id, timeline_id, body, **kwargs)
+
+    monkeypatch.setattr(generated, "commit_timeline", inject_conflict)
+    with pytest.raises(CommitConflict) as caught:
+        timeline.commit(commands, label="CLI multipart retry", key="cli-multipart-retry")
+    pending_id = caught.value.pending_id
+    assert pending_id
+    monkeypatch.setattr(generated, "commit_timeline", original)
+
+    with timeline.session.outbox.locked():
+        state = timeline.session._state()
+        record = state["pending_changes"][pending_id]
+        record["parts"].append(copy.deepcopy(record["parts"][0]))
+        timeline.session.outbox.write(state)
+
+    from astrid.packs.timeline import cli as timeline_cli
+    from astrid.packs.timeline import cli_pending
+
+    monkeypatch.setattr(cli_pending, "_open", lambda _parsed: timeline)
+    parser = timeline_cli.build_parser(client)
+    preview_args = parser.parse_args([
+        "retry", "film", pending_id, "--project", project, "--json",
+    ])
+    assert preview_args.handler(preview_args) == 0
+    preview = json.loads(capsys.readouterr().out)["data"]
+    assert preview["status"] == "preview"
+
+    commit_args = parser.parse_args([
+        "retry", "film", pending_id, "--project", project, "--json",
+        "--commit", preview["token"],
+    ])
+    assert commit_args.handler(commit_args) == 0
+    committed = json.loads(capsys.readouterr().out)["data"]
+
+    assert committed["status"] == "part_landed"
+    assert committed["pending_id"] == pending_id
+    saved = timeline.pending_show(pending_id)
+    assert saved["state"] == "pending"
+    assert saved["part"] == 1
+    assert len(saved["receipts"]) == 1
+
+
 def test_j5_two_actors_retry_one_record_and_group_id_closes_other_actor(
     editing_case,
     tmp_path,
