@@ -295,8 +295,16 @@ def recovery_suffix(exc: BaseException) -> str:
     return f" Next: {recovery}"
 
 
-def render_astrid_error(error: AstridError) -> int:
-    """Render an ``AstridError`` envelope to stderr and return its exit code."""
+def render_astrid_error(error: AstridError, *, json_output: bool = False) -> int:
+    """Render an ``AstridError`` envelope and return its exit code.
+
+    JSON callers receive the canonical envelope on stdout; interactive callers
+    retain the existing human-readable diagnostics on stderr.
+    """
+
+    if json_output:
+        print(json.dumps(error.to_envelope(), indent=2, sort_keys=True))
+        return 1 if error.degraded else 2
 
     if error.degraded:
         print("unstructured - this is a bug.", file=sys.stderr)

@@ -113,6 +113,49 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
     assert "this is a bug" not in captured.err
 
 
+def test_json_generation_failure_renders_coded_error_envelope(monkeypatch, capsys):
+    from astrid.core import gateway
+
+    def fail(**_kwargs):
+        error = SimpleNamespace(
+            code="COMFY_TARGET_UNAVAILABLE",
+            message="No Comfy target is ready.",
+            field="target",
+            fix="Start ComfyUI and pass its loopback URL with --target.",
+        )
+        return SimpleNamespace(ok=False, error=error)
+
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=fail))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+
+    assert gateway.main(["generate", "image", "a dog", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    assert envelope["code"] == "COMFY_TARGET_UNAVAILABLE"
+    assert envelope["cause"] == "No Comfy target is ready."
+    assert envelope["field"] == "target"
+    assert envelope["fix"] == "Start ComfyUI and pass its loopback URL with --target."
+    assert captured.err == ""
+
+
+def test_json_generation_unexpected_error_renders_degraded_envelope(monkeypatch, capsys):
+    def fail(**_kwargs):
+        raise RuntimeError("transport exploded")
+
+    monkeypatch.setattr(cli, "_generate_facade", lambda: SimpleNamespace(image=fail))
+    monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("runtime-client"))
+
+    assert cli.main(["image", "a dog", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    assert envelope["cause"] == "transport exploded"
+    assert envelope["degraded"] is True
+    assert envelope["fix"]
+    assert captured.err == ""
+
+
 def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypatch, capsys):
     from astrid.core import gateway
     from astrid.sdk.exceptions import CapabilityPreconditionError

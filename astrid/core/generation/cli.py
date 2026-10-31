@@ -211,7 +211,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     """Parse one request and call its existing public SDK method exactly once."""
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = _parser(_context_description(argv))
@@ -321,6 +321,34 @@ def main(argv: list[str] | None = None) -> int:
         if payload.get("run_dir"):
             print(f"run: {payload['run_dir']}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run generate and render command failures in the selected output mode."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    try:
+        return _main(argv)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        # Let the gateway's regular renderer handle text mode. In JSON mode,
+        # keep the error inside the same stdout envelope as successful output.
+        if "--json" not in argv:
+            raise
+        from astrid.core.contracts.errors import (
+            AstridError,
+            render_astrid_error,
+            wrap_degraded_error,
+        )
+
+        if isinstance(exc, AstridError):
+            error = exc
+        else:
+            error = wrap_degraded_error(
+                exc,
+                state_snapshot={"argv": argv, "entrypoint": "astrid.core.generation.cli"},
+            )
+        return render_astrid_error(error, json_output=True)
 
 
 if __name__ == "__main__":
