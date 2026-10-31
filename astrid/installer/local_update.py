@@ -267,10 +267,10 @@ def _recover(root: Path, backend: Backend, hooks: HookClient, *, say) -> bool:
     previous = _at_step("recover-selection", Version.load, transaction["old"])
     _selected, data, identity = _at_step("recover-selection", _selection, root, backend)
     candidate_value = transaction.get("candidate")
-    if candidate_value is not None and not isinstance(candidate_value, dict):
+    if candidate_value is not None and not isinstance(candidate_value, str):
         raise LocalUpdateStepError("recover-selection", "The interrupted local update candidate is invalid.")
     candidate = (_at_step("recover-selection", Version.load, candidate_value)
-                 if candidate_value is not None else None)
+                 if candidate_value else None)
     if current(root) not in (previous, candidate):
         raise LocalUpdateStepError(
             "recover-selection", "The interrupted local update does not match the selected Runtime.")
