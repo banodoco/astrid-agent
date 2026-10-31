@@ -30,10 +30,14 @@ def remap_copy_cuts(internal, occurrence_id):
                 match = re.fullmatch(r'c0*(\d+)([a-z]?)', value.lower())
                 return (int(match.group(1)), match.group(2)) if match else None
 
-            matches = [new for old, new in mapping.items()
-                       if old == cut or (canonical(old) is not None and canonical(old) == canonical(cut))]
-            if len(matches) == 1:
-                cut = matches[0]
+            if cut in mapping:
+                cut = mapping[cut]
+            else:
+                alias = canonical(cut)
+                matches = [new for old, new in mapping.items()
+                           if alias is not None and canonical(old) == alias]
+                if len(matches) == 1:
+                    cut = matches[0]
         return replace(moment, cut=cut, base=base)
 
     for clip in result.get('clips', []):

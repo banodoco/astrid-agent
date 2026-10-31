@@ -48,3 +48,24 @@ def test_duplicate_retargets_only_local_cut_moments():
     assert result['clips'][1]['app']['astrid']['on'] == 'c2'
     assert result['clips'][1]['app']['astrid']['until'] == f'beat 2 after {cut}'
     assert result['clips'][2] == original['clips'][2]
+
+
+def test_duplicate_prefers_exact_cut_spelling_and_keeps_ambiguous_alias():
+    from astrid.sdk.timeline.native_occurrence_duplicate import remap_copy_cuts
+
+    original = {'clips': [
+        {'id': 'a', 'app': {'astrid': {'cut': 'c1', 'on': 'c1'}}},
+        {'id': 'b', 'app': {'astrid': {'cut': 'c01'}}},
+        {'id': 'c', 'app': {'astrid': {'cut': 'c2', 'on': 'c02'}}},
+        {'id': 'd', 'app': {'astrid': {'cut': 'c2', 'until': 'end of c001'}}},
+    ]}
+
+    result = remap_copy_cuts(original, 'copy-occurrence')
+    clips = {clip['id']: clip for clip in result['clips']}
+    exact_c1 = clips['a']['app']['astrid']['cut']
+    exact_c01 = clips['b']['app']['astrid']['cut']
+    exact_c2 = clips['c']['app']['astrid']['cut']
+    assert exact_c1 != exact_c01
+    assert clips['a']['app']['astrid']['on'] == exact_c1
+    assert clips['c']['app']['astrid']['on'] == exact_c2
+    assert clips['d']['app']['astrid']['until'] == 'end of c001'
