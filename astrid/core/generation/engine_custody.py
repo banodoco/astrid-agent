@@ -535,24 +535,63 @@ class _Supervisor:
     def health(self, channel, deadline):
         health = self.recipe.health
         deadline = min(deadline, time.monotonic() + health.timeout_seconds)
+        self.last_probe = {"stage": "process"}
+        self.last_probe_failure = None
         while True:
             self.check(channel, deadline)
             if not self.engine.live():
+                self.last_probe = {"stage": "process"}
                 raise EndpointHealthError("owned engine exited before readiness")
             try:
+                self.last_probe = {"stage": "listener", "port": self.recipe.start.port}
                 if not _listener_owned(self.engine.process, self.recipe.start.port):
                     raise ValueError("listener does not belong to the owned engine")
                 check = lambda: self.check(channel, deadline)
+                self.last_probe = {"stage": "health", "path": health.path}
                 _get_json(self.recipe.start.port, health.path, 1024 * 1024, deadline, check)
+                self.last_probe = {"stage": "object_info", "path": health.object_info_path}
                 nodes = _get_json(self.recipe.start.port, health.object_info_path, 32 * 1024 * 1024, deadline, check)
+                self.last_probe = {"stage": "required_nodes", "missing_nodes": sorted(set(health.required_nodes) - nodes.keys())}
                 if not set(health.required_nodes) <= nodes.keys():
                     raise ValueError("required engine nodes missing")
+                self.last_probe = {"stage": "ownership"}
                 check()
                 if not self.engine.live() or not _listener_owned(self.engine.process, self.recipe.start.port):
                     raise EndpointHealthError("engine ownership changed during health")
                 return self.facts("owned", healthy=True, digest=_object_info_sha256(nodes))
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                self.last_probe.update(error_type=type(exc).__name__, message=str(exc)[:1024])
+                self.last_probe_failure = dict(self.last_probe)
                 time.sleep(min(health.poll_interval_seconds, _remaining(deadline)))
+
+    def clear_start_failure(self):
+        try:
+            with _directory(self.control, create=False) as fd:
+                os.unlink("start-failure.json", dir_fd=fd)
+        except (OSError, EngineError):
+            pass  # Diagnostics must not change the service outcome.
+
+    def record_start_failure(self, error, owned, phase, exit_code):
+        # Observation only: never read as ownership or readiness evidence. Keep
+        # arbitrary child output private; the public RPC remains code-only.
+        value = {"schema": "astrid.engine-start-failure.v1", "identity": self.identity,
+                 "launch": self.launch, "captured_at": time.time(), "phase": phase,
+                 "error_code": error.code if isinstance(error, EngineError) else "engine_error",
+                 "error_type": type(error).__name__, "message": str(error)[:1024],
+                 "exit_code": exit_code, "last_probe": getattr(self, "last_probe", None),
+                 "last_probe_failure": getattr(self, "last_probe_failure", None),
+                 "stdout": owned.stdout.text() if owned else "",
+                 "stderr": owned.stderr.text() if owned else "",
+                 "stdout_truncated": owned.stdout.truncated() if owned else False,
+                 "stderr_truncated": owned.stderr.truncated() if owned else False}
+        cause = error.__cause__
+        if isinstance(cause, OSError):
+            value["os_error"] = {"type": type(cause).__name__, "errno": cause.errno}
+        try:
+            with _directory(self.control, create=False) as fd:
+                _write(fd, "start-failure.json", _json(value).encode())
+        except (OSError, EngineError):
+            pass
 
     def clear_registry(self):
         if self.registry_names:
@@ -652,16 +691,39 @@ class _Supervisor:
                     return self.facts("unowned")
             if operation != "start":
                 return self.facts("absent")
-            source = self.source_identity(deadline, channel)
-            request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
-            self.engine = self.spawn(request)
+            self.clear_start_failure()
+            self.last_probe = None
+            self.last_probe_failure = None
+            owned, phase = None, "source-identity"
             try:
+                source = self.source_identity(deadline, channel)
+                request = _command({**self.launch, "max_output_bytes": 262144}, deadline)
+                phase = "spawn"
+                # Keep the source selector's safe-path mode, while giving the
+                # verified application its recipe-bound ComfyUI import root.
+                self.engine = owned = self.spawn(replace(request, env={**request.env, "PYTHONPATH": request.cwd}))
+                phase = "readiness"
                 facts = self.health(channel, deadline)
+                phase = "registry"
                 self.publish_registry(source)
                 self.check(channel, deadline)
                 return facts
-            except BaseException:
+            except BaseException as exc:
+                # Observe before cleanup: a SIGTERM from our own drain must not
+                # be reported as the engine's original startup exit.
+                exit_code = None
+                if owned is not None:
+                    # Like native.tree_exited(), WNOWAIT retains the group
+                    # anchor until the existing native cleanup reaps it.
+                    try:
+                        status = os.waitid(os.P_PID, owned.process.pid,
+                                           os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if status is not None:
+                            exit_code = status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
+                    except OSError:
+                        pass  # Failed observation cannot skip native cleanup.
                 self.stop_engine()
+                self.record_start_failure(exc, owned, phase, exit_code)
                 raise
         if operation == "health":
             return self.health(channel, deadline)

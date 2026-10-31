@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -822,15 +823,121 @@ def test_invalid_utf8_output_obeys_returned_byte_limit(session, limit):
 @pytest.mark.parametrize("mode_name", ["missing", "redirect", "nan", "oversize", "slow", "exit"])
 def test_failed_launch_is_drained_and_same_supervisor_can_rerun(session, mode_name):
     client, payload, recipe, root, mode, started = session
+    if mode_name == "exit":
+        server = root / "tiny_http.py"
+        server.write_text(server.read_text().replace(
+            "if mode.read_text()=='exit': raise SystemExit(3)",
+            "if mode.read_text()=='exit':\n import subprocess\n"
+            " child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
+            " (started.parent/'descendant').write_text(str(child.pid))\n os.write(1,b'x'*300000)\n"
+            " os.write(2,b'private-startup-marker')\n raise SystemExit(3)"))
     mode.write_text(mode_name)
-    with pytest.raises((DeadlineExceeded, custody.EndpointHealthError)):
+    expected_error = custody.EndpointHealthError if mode_name == "exit" else DeadlineExceeded
+    with pytest.raises(expected_error) as failed:
         _call(client, payload, seconds=1.5)
     assert started.exists()
     assert all(not _alive(int(pid)) for pid in started.read_text().splitlines())
+    failure = Path(client.control, "start-failure.json")
+    diagnostic = json.loads(failure.read_text())
+    assert diagnostic["schema"] == "astrid.engine-start-failure.v1"
+    assert diagnostic["identity"] == client.identity and diagnostic["launch"] == payload["launch"]
+    assert diagnostic["phase"] == "readiness" and diagnostic["error_code"] == failed.value.code
+    assert diagnostic["exit_code"] == (3 if mode_name == "exit" else None)
+    assert failure.stat().st_uid == os.getuid() and stat.S_IMODE(failure.stat().st_mode) == 0o600
+    assert stat.S_IMODE(failure.parent.stat().st_mode) == 0o700
+    assert not (root / "runtime/out/sessions/vibecomfy-h3/comfy.log").exists()
+    assert len(diagnostic["stdout"].encode()) <= 262144 and len(diagnostic["stderr"].encode()) <= 262144
+    if mode_name == "exit":
+        assert not _alive(int((root / "descendant").read_text()))
+        assert diagnostic["stdout_truncated"] is True and diagnostic["stderr_truncated"] is False
+        assert diagnostic["stderr"] == "private-startup-marker"
+        assert "private-startup-marker" not in str(failed.value)
+        assert diagnostic["last_probe"] == {"stage": "process"}
+    elif mode_name == "missing":
+        assert diagnostic["last_probe_failure"]["stage"] == "required_nodes"
+        assert diagnostic["last_probe_failure"]["missing_nodes"] == sorted(recipe.health.required_nodes)
+    else:
+        assert diagnostic["last_probe"]["stage"] == "health"
+        assert diagnostic["last_probe"]["path"] == recipe.health.path
+    owner_pid = client._spawned.pid
     mode.write_text("healthy")
     result = _call(client, payload)
     assert result["healthy"] is True
     assert len(started.read_text().splitlines()) == 2
+    assert client._spawned.pid == owner_pid and not failure.exists()
+
+
+def test_source_selection_safe_path_preserves_verified_application_imports_and_helper_isolation(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    monkeypatch.setenv("PYTHONNOUSERSITE", "1")
+    selected_path = os.pathsep.join((str(Path(__file__).resolve().parents[3]),
+                                     str(Path(custody.native.__file__).resolve().parents[1])))
+    monkeypatch.setenv("PYTHONPATH", selected_path)
+    comfy = Path(recipe.start.cwd)
+    (comfy / "comfy").mkdir()
+    (comfy / "comfy/__init__.py").write_text("")
+    (comfy / "comfy/options.py").write_text("# CPU sibling package\n")
+    witness = root / "engine-import.json"
+    code = ("import comfy.options\nimport json,os,sys\nfrom pathlib import Path\n"
+            f"Path({str(witness)!r}).write_text(json.dumps({{'safe_path':sys.flags.safe_path,"
+            "'PYTHONSAFEPATH':os.environ.get('PYTHONSAFEPATH'),'PYTHONPATH':os.environ.get('PYTHONPATH')}))\n")
+    server = root / "tiny_http.py"
+    server.write_text(code + server.read_text())
+    facts = _call(client, payload)
+    assert facts["healthy"] is True and facts["required_nodes_present"] is True
+    assert facts["launch_sha256"] == _sha(payload["launch"])
+    assert json.loads(witness.read_text()) == {
+        "safe_path": True, "PYTHONSAFEPATH": "1", "PYTHONPATH": recipe.start.cwd}
+    helper = client.run(_request(root, "import json,os,sys;print(json.dumps({'safe_path':sys.flags.safe_path,"
+                                "'PYTHONSAFEPATH':os.environ.get('PYTHONSAFEPATH'),'PYTHONPATH':os.environ.get('PYTHONPATH')}))"))
+    assert json.loads(helper.stdout) == {"safe_path": True, "PYTHONSAFEPATH": "1", "PYTHONPATH": selected_path}
+    assert os.environ["PYTHONSAFEPATH"] == "1" and os.environ["PYTHONPATH"] == selected_path
+
+
+def test_spawn_oserror_retains_private_command_and_errno_without_following_log_symlink(session):
+    client, payload, recipe, root, mode, started = session
+    assert _call(client, payload, "probe")["state"] == "absent"
+    outside = root.parent / "unrelated-log"
+    outside.write_text("unchanged")
+    failure = Path(client.control, "start-failure.json")
+    failure.symlink_to(outside)
+    shutil.rmtree(root / "runtime/ComfyUI")
+    with pytest.raises(custody.EndpointHealthError) as failed:
+        _call(client, payload)
+    assert str(failed.value) == "engine supervisor: endpoint_unhealthy"
+    diagnostic = json.loads(failure.read_text())
+    assert diagnostic["phase"] == "spawn" and diagnostic["last_probe"] is None
+    assert diagnostic["launch"] == payload["launch"] and diagnostic["identity"] == client.identity
+    assert diagnostic["os_error"] == {"type": "FileNotFoundError", "errno": 2}
+    assert diagnostic["exit_code"] is None and diagnostic["stdout"] == diagnostic["stderr"] == ""
+    assert not started.exists() and not failure.is_symlink()
+    assert outside.read_text() == "unchanged" and stat.S_IMODE(failure.stat().st_mode) == 0o600
+    (root / "runtime/ComfyUI/output").mkdir(parents=True)
+    assert _call(client, payload)["healthy"] is True and not failure.exists()
+
+
+def test_start_failure_log_write_error_cannot_mask_failure_or_skip_cleanup(session, monkeypatch):
+    client, payload, recipe, root, mode, started = session
+    program = client._fixture_program.replace(
+        "_serve(json.loads(sys.argv[1])", """
+from astrid.core.generation import engine_custody as owner
+write = owner._write
+def fail_log(fd, name, data):
+    if name == 'start-failure.json':
+        raise OSError('simulated diagnostic disk failure')
+    return write(fd, name, data)
+owner._write = fail_log
+_serve(json.loads(sys.argv[1])""")
+    monkeypatch.setattr(custody, "_supervisor_argv", lambda identity, lock_fd, token:
+                        [sys.executable, "-c", program, _json(identity), str(lock_fd), "--launch-token", token])
+    mode.write_text("exit")
+    with pytest.raises(custody.EndpointHealthError):
+        _call(client, payload)
+    assert all(not _alive(int(pid)) for pid in started.read_text().splitlines())
+    assert not Path(client.control, "start-failure.json").exists()
+    mode.write_text("healthy")
+    assert _call(client, payload)["healthy"] is True
 
 
 def test_unowned_port_never_adopted_or_stopped(session):
@@ -1144,6 +1251,7 @@ def test_installed_consumer_capacity_replacement_refuses_before_controls(install
 
     owner, transport, reference, readiness, registry = installed_consumer
     adapter = object.__new__(CheckoutServerAdapter)
+    adapter._endpoint_transport = None
     adapter._host_session = {"session_dir": str(registry)}
     def forbidden(*args, **kwargs):
         pytest.fail("capacity replacement reached engine/CLI control")

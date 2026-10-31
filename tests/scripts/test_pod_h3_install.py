@@ -207,6 +207,34 @@ def test_install_integrity_failure_reports_canonical_phase_without_exception_det
     assert not [e for e in context.events if e[0] in {"write", "mkdir", "download"}]
 
 
+def test_start_failure_remains_failed_and_private_log_never_enters_public_output(
+        install_harness, monkeypatch, capsys):
+    _plan, context, _adapter, root, receipt_path, selection, identity, args = install_harness
+    failure = Path(root, ".astrid-engine/session/start-failure.json")
+    failure.parent.mkdir(parents=True, mode=0o700)
+    failure.parent.parent.chmod(0o700)
+    failure.write_text('{"stderr":"private-startup-marker"}')
+    original = context.run
+
+    def run(request):
+        if "--engine-service" in request.argv and request.argv[-2] == "start":
+            raise canonical.EndpointHealthError("private-startup-marker")
+        return original(request)
+
+    monkeypatch.setattr(context, "run", run)
+    with pytest.raises(ValueError, match="canonical engine installation failed"):
+        source.install_selected(args, selection, identity)
+    captured = capsys.readouterr()
+    check, phase = map(json.loads, captured.err.splitlines())
+    assert check == {"schema": "astrid.pod-h3-install-check.v1", "code": "endpoint_unhealthy", "step": "start"}
+    assert phase["phase"] == "canonical-install" and captured.out == ""
+    assert "private-startup-marker" not in captured.err and root not in captured.err
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["status"] == "failed" and receipt["error_code"] == "endpoint_unhealthy"
+    assert receipt["steps"][-1]["id"] == "start" and receipt["steps"][-1]["validation"] == "failed"
+    assert "private-startup-marker" not in receipt_path.read_text() and failure.exists()
+
+
 @pytest.mark.parametrize("diagnostic", [
     {"code": "integrity_failed", "step": "source:comfyui", "recovery_handle": "/private/input/token-marker"},
     {"code": "/private/input/token-marker", "step": "/private/input/token-marker"},
