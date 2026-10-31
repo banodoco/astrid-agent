@@ -18,7 +18,7 @@
     },
     "tests/fixtures/runtime-responses/events_page_1_200.json": {
       "from": "conformance/responses/events_page_1_200.json",
-      "sha256": "sha256:6aaaabe512589beddddd5ef64f2307c39d365a99565c5a3291a15933a114be0d"
+      "sha256": "sha256:235b4de800c6a234d537c2607682f0ba9a03331af76c664e4bbf890acba285fb"
     },
     "tests/fixtures/runtime-responses/events_page_2_200.json": {
       "from": "conformance/responses/events_page_2_200.json",
@@ -59,6 +59,6 @@
   },
   "manifest": "contract/artifacts.json",
   "producer": "astrid-runtime",
-  "producer_version": "sha256:0ea29424b8e99a94dbda2e8960fe3b2ba49e71904198ce1e071f5481c1d71f85",
-  "source_commit": "2c4917af059f1b4f9e48899cb5fced450b660f42"
+  "producer_version": "sha256:31d29d03e433032645386320676c3578d3fc38658205da8b7cc8494720bbd9be",
+  "source_commit": "8f3d1091ada773af63f730f6340226a40e86ecc4"
 }
