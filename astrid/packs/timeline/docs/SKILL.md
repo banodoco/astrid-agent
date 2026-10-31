@@ -1,6 +1,8 @@
 ---
 name: timeline
-description: Edit and inspect Astrid video timelines: place, trim, move, and remove clips, then look at the result and report it.
+description: >-
+  Edit and inspect Astrid video timelines: place, trim, move, and remove clips,
+  then look at the result and report it.
 ---
 # Timeline editing
 
