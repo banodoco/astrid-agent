@@ -173,31 +173,36 @@ def _dispatch_status(args: list[str]) -> int:
                     if isinstance(project, dict):
                         project_ref = project.get("slug") or project.get("project_id") or project.get("id")
                         print(f"project: {project_ref} (selected)")
-                        from astrid.packs.timeline.cli import _follow_list_cursors, _list_rows
                         from astrid.sdk.timeline.revisions import RuntimeRevisions
                         from astrid.sdk.pagination import paged_rows
-                        project_rows = paged_rows(client.projects.list) or [project]
-                        parser = argparse.Namespace(client=client, include_archived=False)
-                        recent = []
-                        revisions = RuntimeRevisions(client.timelines)
-                        for recent_project in project_rows:
-                            recent_project_id = recent_project.get("project_id") or recent_project.get("id") or recent_project.get("slug")
-                            if not recent_project_id:
-                                continue
-                            listed = client.timelines.list(str(recent_project_id))
-                            if not listed.ok:
-                                continue
-                            parser.project = str(recent_project_id)
-                            timelines = _list_rows(_follow_list_cursors(parser, listed).data)
-                            for timeline in timelines:
-                                ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
-                                history = revisions.list(str(recent_project_id), str(ref), limit=1) if ref else None
-                                if history:
-                                    label = recent_project.get("slug") or recent_project.get("name") or recent_project_id
-                                    recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref,
-                                                   str(recent_project_id)))
-                        for edited, label, ref, name, owner in sorted(recent, reverse=True)[:3]:
-                            print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref} --project {owner}")
+                        project_rows = paged_rows(client.projects.list)
+                        if project_rows is None:
+                            print("recent: unavailable (project pagination incomplete)")
+                        else:
+                            recent = []
+                            incomplete_timelines = False
+                            revisions = RuntimeRevisions(client.timelines)
+                            for recent_project in project_rows:
+                                recent_project_id = recent_project.get("project_id") or recent_project.get("id") or recent_project.get("slug")
+                                if not recent_project_id:
+                                    continue
+                                timeline_rows = paged_rows(
+                                    client.timelines.list, str(recent_project_id), include_archived=False
+                                )
+                                if timeline_rows is None:
+                                    incomplete_timelines = True
+                                    continue
+                                for timeline in timeline_rows:
+                                    ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
+                                    history = revisions.list(str(recent_project_id), str(ref), limit=1) if ref else None
+                                    if history:
+                                        label = recent_project.get("slug") or recent_project.get("name") or recent_project_id
+                                        recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref,
+                                                       str(recent_project_id)))
+                            if incomplete_timelines:
+                                print("recent: partial (timeline pagination incomplete)")
+                            for edited, label, ref, name, owner in sorted(recent, reverse=True)[:3]:
+                                print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref} --project {owner}")
                     else:
                         print("project: none selected — run `astrid projects list`")
             except (RuntimeCLIError, ServiceUnavailableError, TimelineEditError, OSError, ValueError):
