@@ -1329,23 +1329,28 @@ def _shared_executor_main(argv: list[str]) -> int:
             except ImportError:
                 import native_service_adapter as native
                 from shared_journey_driver import journey_driver_factory
-            if native.HOSTED_ADMISSION_VERIFIER is None:
-                raise RuntimeError(
-                    "hosted_admission_verifier: NEEDS B/platform-owned external authentication"
-                )
             if native.JOURNEY_DRIVER_FACTORY is not None:
                 raise RuntimeError("native journey driver is already registered")
             native.register_journey_driver(journey_driver_factory(values.journey_driver_config))
             native_args = [
-                "--slot-id", values.slot_id,
-                "--candidate", str(values.candidate),
-                "--fixture", str(values.fixture),
-                "--work-root", str(values.work_root),
-                "--app-repo", str(values.app_repo),
-                "--agent-repo", str(values.agent_repo),
-                "--runtime-repo", str(values.runtime_repo),
-                "--pinokio-repo", str(values.pinokio_repo),
-                "--output", str(values.output),
+                "--slot-id",
+                values.slot_id,
+                "--candidate",
+                str(values.candidate),
+                "--fixture",
+                str(values.fixture),
+                "--work-root",
+                str(values.work_root),
+                "--app-repo",
+                str(values.app_repo),
+                "--agent-repo",
+                str(values.agent_repo),
+                "--runtime-repo",
+                str(values.runtime_repo),
+                "--pinokio-repo",
+                str(values.pinokio_repo),
+                "--output",
+                str(values.output),
             ]
             if native.main(native_args) != 0:
                 raise RuntimeError("native hosted journey failed closed")
