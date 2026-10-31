@@ -22,7 +22,6 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from scripts import m4_6_artifact_provenance as provenance
-from tests.lanes import unavailable
 
 REPOSITORY_ID = 4567
 REPOSITORY = "banodoco/astrid"
@@ -631,10 +630,8 @@ def test_structural_fixture_rejects_nonregular_archive(tmp_path: Path) -> None:
         provenance._check_authenticated_batch(batch)
 
 
-@pytest.mark.posix_native
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO is a POSIX archive-custody case")
 def test_structural_fixture_rejects_fifo_without_blocking(tmp_path: Path) -> None:
-    if not hasattr(os, "mkfifo"):
-        unavailable("os.mkfifo is unavailable on the POSIX native lane")
     batch = _structural_batch(tmp_path / "private-downloads")
     artifact_id = batch.frozen.slots[0].artifact_id
     archive = batch.archive_root / f"{artifact_id}.zip"

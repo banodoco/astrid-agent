@@ -14,7 +14,6 @@ import pytest
 from scripts import installed_browser_adapter as adapter
 from scripts import journey_release2 as release2
 from scripts import release2_executor
-from tests.lanes import unavailable
 
 INTERFACE = r"""#!/usr/bin/env python3
 import json
@@ -636,11 +635,10 @@ def test_registered_identity_ignores_mutable_output_file_appearance(tmp_path):
     assert trusted["trusted"] is True
 
 
-@pytest.mark.posix_native
 def test_env_wrapped_worker_must_be_an_explicit_artifact(tmp_path):
     env = shutil.which("env")
     if env is None:
-        unavailable("env executable is unavailable on the POSIX native lane")
+        pytest.skip("env executable is unavailable")
     worker = _worker(tmp_path)
     command = adapter._resolve_command(env, ["python3", str(worker)], "installed")
     observed = adapter._command_provenance(

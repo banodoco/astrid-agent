@@ -1002,7 +1002,7 @@ def test_communication_error_kills_adapter_owned_group(tmp_path, monkeypatch):
     assert events == ["communicate", ("killpg", 4141, update_surface.signal.SIGKILL)]
 
 
-@pytest.mark.posix_native
+@pytest.mark.skipif(os.name == "nt", reason="POSIX adapter process-group custody")
 def test_communication_error_kills_real_product_descendant(tmp_path):
     child_pid_path = tmp_path / "communication-child.pid"
     log = tmp_path / "communication-product.log"

@@ -108,29 +108,10 @@ class ArchivedSources:
     refs: dict[str, str]
     agent_module_sha256: str
     runtime_module_sha256: str | None
-    provenance: dict[str, dict[str, str]]
 
 
 class InjectedInterruption(BaseException):
     """Simulate a process boundary after a durable journal write."""
-
-
-class HistoricalSourcePrerequisiteError(ValueError):
-    """The immutable release-0 source object was not provisioned."""
-
-    def __init__(self, *, component: str, required_ref: str, searched: Path) -> None:
-        self.prerequisite = {
-            "component": component,
-            "required_ref": required_ref,
-            "object_type": "commit",
-            "searched_repository": str(searched),
-            "provisioning": "explicit immutable Git object or checked-in release-0 fixture",
-        }
-        super().__init__(
-            f"Historical release-0 prerequisite missing: required {component} Git object "
-            f"{required_ref}; provision that immutable commit or use the checked-in "
-            "release-0 fixture. Candidate/live-URL/foreground fallbacks are forbidden."
-        )
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -159,42 +140,19 @@ def _git_output(repo: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _git_discovery_root(start: Path) -> Path:
-    probe = start.expanduser().resolve()
-    if probe.is_file():
-        probe = probe.parent
-    try:
-        return Path(_git_output(probe, "rev-parse", "--show-toplevel")).resolve(strict=True)
-    except ValueError:
-        return probe
-
-
-def _git_repo(start: Path, required_ref: str, *, component: str) -> Path:
-    if failure.SHA.fullmatch(required_ref) is None:
-        raise ValueError(f"historical {component} ref must be a full commit SHA")
-    env_name = (
-        "ASTRID_RELEASE0_AGENT_REPO"
-        if component == "Agent"
-        else "ASTRID_RELEASE0_RUNTIME_REPO"
-    )
-    configured = os.environ.get(env_name)
-    searched = (
-        Path(configured).expanduser().resolve()
-        if configured
-        else _git_discovery_root(start)
-    )
-    try:
-        resolved = _git_output(searched, "rev-parse", f"{required_ref}^{{commit}}")
-        object_type = _git_output(searched, "cat-file", "-t", required_ref)
-    except ValueError:
-        raise HistoricalSourcePrerequisiteError(
-            component=component, required_ref=required_ref, searched=searched
-        ) from None
-    if resolved != required_ref or object_type != "commit":
-        raise HistoricalSourcePrerequisiteError(
-            component=component, required_ref=required_ref, searched=searched
-        )
-    return searched.resolve(strict=True)
+def _git_repo(start: Path, required_ref: str) -> Path:
+    configured = os.environ.get("ASTRID_RELEASE0_RUNTIME_REPO")
+    candidates = ([Path(configured)] if configured else []) + [start, *start.parents]
+    for candidate in candidates:
+        if not (candidate / ".git").exists():
+            continue
+        try:
+            resolved = _git_output(candidate, "rev-parse", f"{required_ref}^{{commit}}")
+        except ValueError:
+            continue
+        if resolved == required_ref:
+            return candidate.resolve(strict=True)
+    raise ValueError(f"no Git repository containing exact source {required_ref} was found")
 
 
 def _extract_git_paths(repo: Path, ref: str, destination: Path, paths: tuple[str, ...]) -> None:
@@ -256,12 +214,6 @@ def _archive_sources(
         refs=dict(refs),
         agent_module_sha256=sha256_file(agent / "astrid" / "__init__.py"),
         runtime_module_sha256=runtime_digest,
-        provenance={
-            "agent": {"repo": str(agent_repo), "ref": refs["agent"], "object_type": "commit"},
-            "runtime": {
-                "repo": str(runtime_repo), "ref": refs["runtime"], "object_type": "commit"
-            },
-        },
     )
 
 
@@ -273,20 +225,16 @@ def _source_inputs(
     runtime_repo: Path | None = None,
 ) -> tuple[ArchivedSources, ArchivedSources]:
     agent_repo = _git_repo(
-        agent_repo or Path(__file__).resolve(), failure.RELEASE0_REFS["agent"], component="Agent"
+        (agent_repo or Path(__file__).resolve()).resolve(), failure.RELEASE0_REFS["agent"]
     )
     if runtime_repo is None:
         import runtime_protocol
 
         runtime_repo = _git_repo(
-            Path(runtime_protocol.__file__).resolve(),
-            failure.RELEASE0_REFS["runtime"],
-            component="Runtime",
+            Path(runtime_protocol.__file__).resolve(), failure.RELEASE0_REFS["runtime"]
         )
     else:
-        runtime_repo = _git_repo(
-            runtime_repo, failure.RELEASE0_REFS["runtime"], component="Runtime"
-        )
+        runtime_repo = _git_repo(runtime_repo.resolve(), failure.RELEASE0_REFS["runtime"])
     old = _archive_sources(
         destination / "release0",
         agent_repo,
@@ -1295,34 +1243,12 @@ def execute(
     temp_root = Path(tempfile.gettempdir()).resolve()
     if not work_root.is_relative_to(temp_root):
         raise ValueError("work root must be confined to the system temporary directory")
-    # Resolve both immutable historical objects before creating the disposable
-    # execution root. A shallow checkout therefore fails as a prerequisite,
-    # before any installer, service, or process state can be mutated.
-    if runtime_repo is None:
-        import runtime_protocol
-
-        runtime_source_repo = _git_repo(
-            Path(runtime_protocol.__file__).resolve(),
-            failure.RELEASE0_REFS["runtime"],
-            component="Runtime",
-        )
-    else:
-        runtime_source_repo = _git_repo(
-            runtime_repo,
-            failure.RELEASE0_REFS["runtime"],
-            component="Runtime",
-        )
-    agent_source_repo = _git_repo(
-        agent_repo or Path(__file__).resolve(),
-        failure.RELEASE0_REFS["agent"],
-        component="Agent",
-    )
     work_root.mkdir(parents=True, exist_ok=False)
     old_sources, candidate_sources = _source_inputs(
         work_root / "sources",
         candidate,
-        agent_repo=agent_source_repo,
-        runtime_repo=runtime_source_repo,
+        agent_repo=agent_repo,
+        runtime_repo=runtime_repo,
     )
     scenarios_root = work_root / "scenarios"
     scenarios_root.mkdir()
@@ -1397,7 +1323,6 @@ def execute(
         },
         "manifest_sha256": candidate["manifest_sha256"],
         "release0_fixture": fixture_receipt,
-        "release0_source_provenance": old_sources.provenance,
         "evidence_files": evidence,
         "scenarios": values,
         "execution_scope": execution_scope,
@@ -1442,32 +1367,6 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copytree(evidence_source, args.output.parent / "evidence", dirs_exist_ok=True)
         failure.write_json(args.output, receipt)
         errors = failure.validate_receipt(receipt, candidate, args.slot_id)
-    except HistoricalSourcePrerequisiteError as exc:
-        # Keep the prerequisite failure machine-readable even though no
-        # disposable work root was admitted. The evidence names the exact
-        # object/ref a hosted checkout must provision.
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        prerequisite_path = args.output.parent / "historical-prerequisite.json"
-        failure.write_json(
-            prerequisite_path,
-            {"status": "fail", "historical_release0": exc.prerequisite},
-        )
-        failure.write_json(
-            args.output,
-            {
-                "schema_version": failure.SCHEMA_VERSION,
-                "receipt_kind": failure.RECEIPT_KIND,
-                "receipt_state": "recorded",
-                "slot_id": args.slot_id,
-                "status": "fail",
-                "execution_scope": "local-disposable; not hosted OS evidence",
-                "historical_release0": exc.prerequisite,
-                "evidence_files": [],
-                "verification": {"state": "prerequisite-fail", "failed_assertions": [str(exc)]},
-            },
-        )
-        print(f"Failure-mode execution: FAIL: {exc}", file=sys.stderr)
-        return 1
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"Failure-mode execution: FAIL: {exc}", file=sys.stderr)
         return 1

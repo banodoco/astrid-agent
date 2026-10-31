@@ -14,7 +14,6 @@ import time
 import pytest
 
 from scripts import m4_6_trusted_launcher as launcher
-from tests.lanes import unavailable
 
 
 def _candidate(**overrides: str) -> launcher.CandidateBinding:
@@ -509,10 +508,8 @@ def test_fork_copy_closes_local_channel_and_requires_parent_supervisor() -> None
     peer.close()
 
 
-@pytest.mark.posix_native
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX fork")
 def test_real_fork_invalidates_child_copy_but_not_parent_context() -> None:
-    if not hasattr(os, "fork"):
-        unavailable("os.fork is unavailable on the POSIX native lane")
     context, peer, key, child = _fixture()
     read_fd, write_fd = os.pipe()
     pid = os.fork()

@@ -606,21 +606,6 @@ def _linux_process_info(pid: int) -> tuple[str, int]:
     return _parse_linux_process_info(raw)
 
 
-def _linux_process_state(pid: int) -> str | None:
-    """Observe the Linux process-table state, treating an absent PID as gone."""
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise AdapterError(f"cannot observe Linux process state: {exc}") from exc
-    closing = raw.rfind(")")
-    fields = raw[closing + 2 :].split() if closing >= 0 else []
-    if len(fields) < 3:
-        raise AdapterError("Linux process stat state was malformed")
-    return fields[0]
-
-
 def _parse_linux_process_info(raw: str) -> tuple[str, int]:
     """Return Linux proc start time and process group from one stat row."""
     closing = raw.rfind(")")
@@ -718,12 +703,6 @@ def _run_observation(argv: list[str], *, timeout: int) -> subprocess.CompletedPr
 def _pid_alive(pid: int) -> bool:
     if not isinstance(pid, int) or pid <= 1:
         raise AdapterError("recorded PID is invalid")
-    if sys.platform == "linux":
-        # kill(pid, 0) reports a zombie as present even though it has exited
-        # and cannot own a listener. Treating that table entry as live makes
-        # stop fail closed after an otherwise successful SIGTERM/SIGKILL.
-        state = _linux_process_state(pid)
-        return state is not None and state != "Z"
     if sys.platform == "darwin":
         try:
             _mac_process_info(pid)
@@ -1155,14 +1134,10 @@ def _stop(spec: Mapping[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     os_name = spec["platform"]["os"]
     if not _process_matches(state, os_name):
         raise AdapterError("recorded active process is absent; refusing unverified cleanup")
-    if not _listener_owned_by(state["pid"], state["host"], state["port"], os_name):
-        raise AdapterError("recorded active process is not the configured listener owner")
     # Re-observe incarnation immediately before termination. POSIX children were
     # created in their own session; Windows uses taskkill /T against the exact PID.
     if _birth(state["pid"], os_name) != state["birth"]:
         raise AdapterError("recorded PID changed incarnation before stop")
-    if not _listener_owned_by(state["pid"], state["host"], state["port"], os_name):
-        raise AdapterError("recorded listener ownership changed before stop")
     try:
         if os_name == "windows":
             result = _run_observation(

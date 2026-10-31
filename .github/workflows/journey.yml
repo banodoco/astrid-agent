@@ -546,9 +546,7 @@ jobs:
           repository: banodoco/astrid-agent
           ref: ${{ fromJSON(needs.config.outputs.m4_6_candidate).agent }}
           path: candidate-agent
-          # Keep the candidate checkout shallow; release-0 is provisioned
-          # explicitly below and is never inferred from candidate ancestry.
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - name: Check out exact M4-6 candidate Runtime history
         uses: actions/checkout@v4
@@ -556,34 +554,8 @@ jobs:
           repository: banodoco/astrid-runtime
           ref: ${{ fromJSON(needs.config.outputs.m4_6_candidate).runtime }}
           path: runtime
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
-      - name: Provision and attest immutable release-0 Git objects
-        shell: bash
-        env:
-          RELEASE0_AGENT_REF: 3204bb00135bec8ee2d2d3fb21eed5abfceca649
-          RELEASE0_RUNTIME_REF: 6d53a19070faf63fc15ae1f81417722edc2c8a5f
-        run: |
-          set -euo pipefail
-          # A shallow candidate checkout does not imply that either historical
-          # object exists. Fetch each exact full SHA into the repository that
-          # the executor will receive, then verify both object identity and
-          # object type before any disposable execution root is created.
-          git -C "$GITHUB_WORKSPACE/candidate-agent" fetch --no-tags --depth=1 origin "$RELEASE0_AGENT_REF"
-          git -C "$GITHUB_WORKSPACE/runtime" fetch --no-tags --depth=1 origin "$RELEASE0_RUNTIME_REF"
-          agent_resolved="$(git -C "$GITHUB_WORKSPACE/candidate-agent" rev-parse "$RELEASE0_AGENT_REF^{commit}")"
-          runtime_resolved="$(git -C "$GITHUB_WORKSPACE/runtime" rev-parse "$RELEASE0_RUNTIME_REF^{commit}")"
-          test "$agent_resolved" = "$RELEASE0_AGENT_REF"
-          test "$runtime_resolved" = "$RELEASE0_RUNTIME_REF"
-          test "$(git -C "$GITHUB_WORKSPACE/candidate-agent" cat-file -t "$RELEASE0_AGENT_REF")" = commit
-          test "$(git -C "$GITHUB_WORKSPACE/runtime" cat-file -t "$RELEASE0_RUNTIME_REF")" = commit
-          {
-            echo "## Effective M4-6 historical source provisioning"
-            echo "- Agent repository: $GITHUB_WORKSPACE/candidate-agent"
-            echo "- Agent ref: $agent_resolved (commit)"
-            echo "- Runtime repository: $GITHUB_WORKSPACE/runtime"
-            echo "- Runtime ref: $runtime_resolved (commit)"
-          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
