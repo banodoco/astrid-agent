@@ -15,6 +15,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def validate_selection(value):
@@ -98,6 +99,95 @@ def verify_selection(value):
     return profile, identity
 
 
+@contextlib.contextmanager
+def _install_phase(phase):
+    """Add a closed diagnostic without changing failures or exposing their text."""
+    try:
+        yield
+    except Exception:
+        print(json.dumps({"schema": "astrid.pod-h3-install-phase.v1", "phase": phase,
+                          "reason": "check_failed"}, sort_keys=True), file=sys.stderr)
+        raise
+
+
+def diagnose_selected(selected):
+    """Receipt-only observation: no backend, status, service or readiness call."""
+    from astrid.core.generation._engine_target_files import _TargetFiles
+    from astrid.core.generation.engine_local_endpoint import RECEIPT_RELATIVE_PATH, recorded_engine_root
+    from astrid.core.generation.engine_recipe import load_recipe
+    from astrid.core.generation.engine_runner import (
+        _parse_receipt, _sha, _STATUS_ERROR_CODES, _status_step_ids, helper_manifest, plan_install,
+    )
+
+    root = DIAGNOSTIC_ENGINE_ROOT
+    result = {"schema": "astrid.pod-h3-install-diagnostic.v1", "mode": "receipt-only",
+              "source": {k: selected[k] for k in ("agent_head", "runtime_head", "runtime_lock_sha256")},
+              "readiness": "not_checked"}
+    result["registered_root_matches"] = recorded_engine_root("vibecomfy-h3") == root
+    if not result["registered_root_matches"]:
+        result["receipt_state"] = "not_read"
+        return result
+    recipe = load_recipe("vibecomfy-h3", "linux-x86_64-cu130")
+    plan = plan_install(recipe, root=root, placement="local")
+    result.update(recipe_sha256=plan.recipe_sha256, models_lock_sha256=plan.models_lock_sha256,
+                  expected_helper_sha256=_sha(helper_manifest(recipe)))
+    files, deadline = _TargetFiles(root), time.monotonic() + 120
+    path = str(Path(root) / RECEIPT_RELATIVE_PATH)
+    fact = files.file_fact(path, hash_bytes=False, deadline=deadline)
+    if not fact.exists:
+        result["receipt_state"] = "missing"
+        return result
+    if fact.symlink or not fact.regular or fact.bytes is None or fact.bytes > 1024 * 1024:
+        result["receipt_state"] = "unsafe"
+        return result
+    before = files.file_fact(path, hash_bytes=True, deadline=deadline)
+    try:
+        raw = files.read_json(path, deadline=deadline)
+    except Exception:
+        result["receipt_state"] = "unreadable"
+        return result
+    after = files.file_fact(path, hash_bytes=True, deadline=deadline)
+    if before != after:
+        result["receipt_state"] = "changed"
+        return result
+    result["receipt_sha256"] = before.sha256
+    result["receipt_identity_matches"] = {k: raw.get(k) == getattr(plan, k) for k in
+        ("engine", "platform", "placement", "root", "recipe_sha256", "models_lock_sha256")}
+    try:
+        receipt = _parse_receipt(raw, plan)
+    except Exception:
+        result["receipt_state"] = "invalid"
+        return result
+    allowed = _status_step_ids(plan)
+    result.update(receipt_state="valid", receipt_status=receipt.status,
+                  error_code=receipt.error_code if receipt.error_code in _STATUS_ERROR_CODES else None,
+                  failed_step_ids=sorted({s.id for s in receipt.steps
+                                          if s.validation == "failed" and s.id in allowed}
+                                         | ({receipt.failed_step_id} if receipt.failed_step_id in allowed else set())))
+    return result
+
+
+DIAGNOSTIC_ENGINE_ROOT = "/root/astrid/engines/vibecomfy-h3"
+
+
+def _canonical_failure(text, parsed):
+    code, step = "engine_error", None
+    try:
+        from astrid.core.generation.engine_recipe import load_recipe
+        from astrid.core.generation.engine_runner import _STATUS_ERROR_CODES, _status_step_ids, plan_install
+        error = json.loads(text)["error"]
+        plan = plan_install(load_recipe(parsed.engine, parsed.platform),
+                            root=parsed.root, placement=parsed.placement)
+        if isinstance(error.get("code"), str) and error["code"] in _STATUS_ERROR_CODES:
+            code = error["code"]
+        if isinstance(error.get("step"), str) and error["step"] in _status_step_ids(plan):
+            step = error["step"]
+    except Exception:
+        # Malformed or unavailable diagnostics cannot mask the original failure.
+        pass
+    return {"schema": "astrid.pod-h3-install-check.v1", "code": code, "step": step}
+
+
 def install_selected(args, selected, identity):
     """Canonical same-root recovery followed by the ordinary local readiness gate."""
     from astrid.core import engine_cli
@@ -105,32 +195,40 @@ def install_selected(args, selected, identity):
         RECEIPT_RELATIVE_PATH, local_engine_endpoint, recorded_engine_root,
     )
 
-    parsed = engine_cli._parser().parse_args(args[1:])
-    if (args[:3] != ["engines", "install", "vibecomfy-h3"] or parsed.root is None
-            or parsed.placement != "local" or parsed.dry_run
-            or recorded_engine_root("vibecomfy-h3") != parsed.root):
-        raise ValueError("installer requires the existing registered root")
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        code = engine_cli.main(args[1:])
-    if code != 0:
-        raise ValueError("canonical engine installation failed")
-    # Canonical CLI output must equal the receipt it committed at the same root.
-    result = json.loads(output.getvalue())
-    receipt_path = Path(parsed.root) / RECEIPT_RELATIVE_PATH
-    receipt_bytes = receipt_path.read_bytes()
-    if (result != json.loads(receipt_bytes) or result.get("status") != "installed"
-            or result.get("engine") != "vibecomfy-h3" or result.get("root") != parsed.root
-            or recorded_engine_root("vibecomfy-h3") != parsed.root):
-        raise ValueError("canonical engine receipt differs")
-    ready = local_engine_endpoint(root=parsed.root, deadline_seconds=parsed.deadline).endpoint
-    digest = hashlib.sha256(receipt_bytes).hexdigest()
-    if (ready.state != "ready" or ready.attestation.install_receipt_sha256 != digest
-            or receipt_path.read_bytes() != receipt_bytes):
-        raise ValueError("canonical engine readiness receipt differs")
-    _, after = verify_selection(selected)
-    if after != identity:
-        raise ValueError("installer source identity changed")
+    with _install_phase('registered-root'):
+        parsed = engine_cli._parser().parse_args(args[1:])
+        if (args[:3] != ["engines", "install", "vibecomfy-h3"] or parsed.root is None
+                or parsed.placement != "local" or parsed.dry_run
+                or recorded_engine_root("vibecomfy-h3") != parsed.root):
+            raise ValueError("installer requires the existing registered root")
+    with _install_phase('canonical-install'):
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = engine_cli.main(args[1:])
+        if code != 0:
+            # CLI diagnostics may carry recovery handles. Expose only closed
+            # codes and packaged step IDs, never the raw stderr or handle.
+            print(json.dumps(_canonical_failure(errors.getvalue(), parsed), sort_keys=True), file=sys.stderr)
+            raise ValueError("canonical engine installation failed")
+    with _install_phase('committed-receipt'):
+        # Canonical CLI output must equal the receipt it committed at the same root.
+        result = json.loads(output.getvalue())
+        receipt_path = Path(parsed.root) / RECEIPT_RELATIVE_PATH
+        receipt_bytes = receipt_path.read_bytes()
+        if (result != json.loads(receipt_bytes) or result.get("status") != "installed"
+                or result.get("engine") != "vibecomfy-h3" or result.get("root") != parsed.root
+                or recorded_engine_root("vibecomfy-h3") != parsed.root):
+            raise ValueError("canonical engine receipt differs")
+    with _install_phase('readiness'):
+        ready = local_engine_endpoint(root=parsed.root, deadline_seconds=parsed.deadline).endpoint
+        digest = hashlib.sha256(receipt_bytes).hexdigest()
+        if (ready.state != "ready" or ready.attestation.install_receipt_sha256 != digest
+                or receipt_path.read_bytes() != receipt_bytes):
+            raise ValueError("canonical engine readiness receipt differs")
+    with _install_phase('source-recheck'):
+        _, after = verify_selection(selected)
+        if after != identity:
+            raise ValueError("installer source identity changed")
     print(json.dumps({"schema": "astrid.pod-h3-install.v1", "engine": "vibecomfy-h3",
                       "root": parsed.root, "status": "ready", "receipt_sha256": digest,
                       "receipt_id": result["receipt_id"]}, sort_keys=True))
@@ -144,6 +242,14 @@ def main():
     except Exception:
         # Never expose paths, connection diagnostics, or ambient credentials.
         sys.exit("H3 selected source identity verification failed")
+    if action_args == ["--diagnose-install"]:
+        try:
+            if sys.argv[2] != "-":
+                raise ValueError("diagnostic evidence must use stdout")
+            print(json.dumps(diagnose_selected(selected), sort_keys=True))
+        except Exception:
+            sys.exit("H3 selected source installer diagnostic failed")
+        return
     with tempfile.TemporaryDirectory(prefix="astrid-source-") as temporary:
         manifest = Path(temporary) / "source-profile.json"
         manifest.write_text(json.dumps(profile.as_dict()))

@@ -150,3 +150,118 @@ def test_install_selected_rechecks_source_identity_after_install(install_harness
 
     with pytest.raises(ValueError, match="installer source identity changed"):
         source.install_selected(args, selection, identity)
+
+
+
+def test_install_integrity_failure_reports_canonical_phase_without_exception_details(
+        install_harness, capsys):
+    _plan, context, _adapter, _root, receipt_path, selection, identity, args = install_harness
+    context.wrong_identity = True
+    with pytest.raises(ValueError, match="canonical engine installation failed"):
+        source.install_selected(args, selection, identity)
+    captured = capsys.readouterr()
+    canonical_error, phase = map(json.loads, captured.err.splitlines())
+    assert canonical_error == {"schema": "astrid.pod-h3-install-check.v1",
+                               "code": "integrity_failed", "step": "helper-identity"}
+    assert phase == {"schema": "astrid.pod-h3-install-phase.v1",
+                     "phase": "canonical-install", "reason": "check_failed"}
+    assert captured.out == "" and not receipt_path.exists()
+    assert not [e for e in context.events if e[0] in {"write", "mkdir", "download"}]
+
+
+@pytest.mark.parametrize("diagnostic", [
+    {"code": "integrity_failed", "step": "source:comfyui", "recovery_handle": "/private/input/token-marker"},
+    {"code": "/private/input/token-marker", "step": "/private/input/token-marker"},
+    {"code": ["token-marker"], "step": ["token-marker"]},
+])
+def test_install_error_projection_omits_handles_and_untrusted_details(
+        install_harness, monkeypatch, capsys, diagnostic):
+    from astrid.core import engine_cli
+    import sys
+    _plan, _context, _adapter, _root, _receipt, selection, identity, args = install_harness
+    def fail(_args):
+        print(json.dumps({"error": diagnostic}), file=sys.stderr)
+        return 1
+    monkeypatch.setattr(engine_cli, "main", fail)
+    with pytest.raises(ValueError, match="canonical engine installation failed"):
+        source.install_selected(args, selection, identity)
+    captured = capsys.readouterr()
+    check, phase = map(json.loads, captured.err.splitlines())
+    assert check == {"schema": "astrid.pod-h3-install-check.v1",
+                     "code": "integrity_failed" if isinstance(diagnostic["code"], str) and diagnostic["code"] == "integrity_failed" else "engine_error",
+                     "step": "source:comfyui" if diagnostic["step"] == "source:comfyui" else None}
+    assert phase["phase"] == "canonical-install" and captured.out == ""
+    assert "token-marker" not in captured.err and "/private/input" not in captured.err
+
+
+@pytest.mark.parametrize("state", ["installed", "failed", "missing", "mismatch", "malformed", "symlink", "oversize"])
+def test_receipt_only_diagnostic_is_private_and_cannot_start_or_repair(
+        install_harness, monkeypatch, state):
+    plan, context, adapter, root, receipt_path, selection, _identity, _args = install_harness
+    runner.install_engine(plan, context=context, adapter=adapter, deadline=context.deadline)
+    raw = json.loads(receipt_path.read_bytes())
+    raw["receipt_id"] = "private-token-marker"
+    receipt_path.write_text(json.dumps(raw))
+    if state == "failed":
+        raw.update(status="failed", error_code="integrity_failed", failed_step_id="helper-identity")
+        receipt_path.write_text(json.dumps(raw))
+    elif state == "missing":
+        receipt_path.unlink()
+    elif state == "mismatch":
+        raw["recipe_sha256"] = "e" * 64
+        raw["receipt_id"] = "private-token-marker"
+        receipt_path.write_text(json.dumps(raw))
+    elif state == "malformed":
+        receipt_path.write_text('{"private-path":"/private/input","private-token":"private-token-marker"')
+    elif state == "symlink":
+        target = receipt_path.parent / "private-token-marker"
+        receipt_path.rename(target)
+        receipt_path.symlink_to(target)
+    elif state == "oversize":
+        receipt_path.write_bytes(b"x" * (1024 * 1024 + 1))
+    monkeypatch.setattr(source, "DIAGNOSTIC_ENGINE_ROOT", root)
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("receipt diagnostic invoked execution/status/readiness")
+    monkeypatch.setattr(engine_execution, "create_local_backend", forbidden)
+    monkeypatch.setattr(runner, "engine_status", forbidden)
+    monkeypatch.setattr(runner, "install_engine", forbidden)
+    monkeypatch.setattr(runner._Runner, "helper", forbidden)
+    monkeypatch.setattr(local, "local_engine_endpoint", forbidden)
+    before_events = list(context.events)
+    before = {p: p.read_bytes() for p in receipt_path.parent.iterdir() if p.is_file()}
+    result = source.diagnose_selected(selection)
+    assert context.events == before_events
+    assert before == {p: p.read_bytes() for p in receipt_path.parent.iterdir() if p.is_file()}
+    assert result["readiness"] == "not_checked"
+    assert result["registered_root_matches"] is True
+    assert result["source"] == {k: selection[k] for k in ("agent_head", "runtime_head", "runtime_lock_sha256")}
+    assert result["recipe_sha256"] == plan.recipe_sha256
+    assert result["models_lock_sha256"] == plan.models_lock_sha256
+    assert len(result["expected_helper_sha256"]) == 64
+    expected = {"installed": "valid", "failed": "valid", "missing": "missing", "mismatch": "invalid",
+                "malformed": "unreadable", "symlink": "unsafe", "oversize": "unsafe"}
+    assert result["receipt_state"] == expected[state]
+    if state == "failed":
+        assert result["receipt_status"] == "failed"
+        assert result["error_code"] == "integrity_failed"
+        assert result["failed_step_ids"] == ["helper-identity"]
+    elif state == "installed":
+        assert result["receipt_status"] == "installed"
+        assert result["failed_step_ids"] == []
+    elif state == "mismatch":
+        assert result["receipt_identity_matches"]["recipe_sha256"] is False
+    text = json.dumps(result)
+    assert root not in text and "/private/input" not in text and "private-token-marker" not in text
+    assert selection["agent_root"] not in text and selection["runtime_root"] not in text
+
+
+def test_receipt_diagnostic_refuses_unregistered_root_before_reading(install_harness, monkeypatch):
+    _plan, context, _adapter, root, _receipt, selection, _identity, _args = install_harness
+    local._record_path("vibecomfy-h3").unlink()
+    monkeypatch.setattr(source, "DIAGNOSTIC_ENGINE_ROOT", root)
+    from astrid.core.generation._engine_target_files import _TargetFiles
+    monkeypatch.setattr(_TargetFiles, "file_fact", lambda *_a, **_kw: pytest.fail("unregistered receipt read"))
+    before = list(context.events)
+    result = source.diagnose_selected(selection)
+    assert result["registered_root_matches"] is False and result["receipt_state"] == "not_read"
+    assert context.events == before

@@ -590,8 +590,9 @@ def test_deadline_propagates_to_every_context_operation(setup):
 
 def test_wrong_helper_identity_has_no_install_side_effect(setup):
     setup[1].wrong_identity = True
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError) as failed:
         install(setup)
+    assert failed.value.step_id == "helper-identity"
     assert not [e for e in setup[1].events if e[0] in {"write", "mkdir", "download"}]
 
 

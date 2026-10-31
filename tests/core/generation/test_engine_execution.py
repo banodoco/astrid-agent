@@ -118,6 +118,78 @@ def test_context_delegates_commands_service_and_lock(tmp_path):
         ctx.run(CommandRequest(('git',), root, {}, time.monotonic() - 1))
 
 
+@pytest.mark.parametrize('wrong_digest', [False, True])
+def test_finite_helper_uses_selected_package_and_interpreter_with_isolation(
+        tmp_path, monkeypatch, wrong_digest):
+    """A real isolated child must not resolve a different installation on PATH."""
+    import json
+    import shlex
+    import subprocess
+    import sys
+    from pathlib import Path
+    from astrid.core.generation import engine_execution, engine_recipe, engine_runner
+    from astrid.core.generation.engine_contracts import CommandRequest, CommandResult
+    from astrid.core.generation.engine_platforms import platform_adapter
+
+    recipe = engine_recipe.load_recipe('vibecomfy-h3', 'linux-x86_64-cu130')
+    manifest = engine_runner.helper_manifest(recipe)
+    ambient = tmp_path / "ambient ' ; $literal"
+    for relative in manifest:
+        target = ambient / 'astrid' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((engine_recipe._ROOT / relative).read_bytes())
+    (ambient / 'pyproject.toml').write_bytes((engine_recipe._ROOT.parent / 'pyproject.toml').read_bytes())
+    with (ambient / 'astrid/version.py').open('a') as stream:
+        stream.write('\n# different installed helper closure\n')
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    program = (f"import runpy,sys; sys.path.insert(0,{str(ambient)!r}); sys.argv=sys.argv[3:]; "
+               "runpy.run_module('astrid.core.generation.engine_runner_target',run_name='__main__')")
+    python = bin_dir / 'python3'
+    python.write_text('#!/bin/sh\nexec ' + shlex.join([sys.executable, '-I', '-c', program]) + ' "$@"\n')
+    python.chmod(0o700)
+    monkeypatch.setenv('PATH', str(bin_dir) + os.pathsep + os.environ['PATH'])
+    monkeypatch.setenv('PYTHONPATH', str(engine_recipe._ROOT.parent))
+    root = str(tmp_path / 'engine')
+    Path(root).mkdir()
+    digest = engine_runner._sha(manifest)
+    payload = {'schema': engine_runner._HELPER_SCHEMA, 'engine': recipe.engine,
+               'platform': recipe.platform, 'root': root,
+               'recipe_sha256': engine_recipe.recipe_digest(recipe), 'helper_sha256': digest}
+    argv = ('python3', '-I', '-m', 'astrid.core.generation.engine_runner_target',
+            'identity', json.dumps(payload))
+
+    class Client:
+        def run(self, request):
+            self.request = request
+            done = subprocess.run(request.argv, cwd=request.cwd,
+                                  env={**os.environ, **request.env}, capture_output=True,
+                                  text=True, timeout=max(1, request.deadline - time.monotonic()))
+            return CommandResult(done.returncode, done.stdout, done.stderr, False, 0.1, 'job', False, False)
+
+    client = Client()
+    # Control reproduces the old code: -I ignores selected PYTHONPATH and the
+    # independently installed helper rejects the selected closure's digest.
+    request = CommandRequest(argv, root, {}, deadline(), max_output_bytes=4096)
+    control = client.run(request)
+    assert control.exit_code == 0 and not control.stderr
+    assert json.loads(control.stdout)['facts'] == {'error_code': 'integrity_failed'}
+    if wrong_digest:
+        payload['helper_sha256'] = '0' * 64
+        request = CommandRequest((*argv[:-1], json.dumps(payload)), root, {}, deadline(), max_output_bytes=4096)
+    ctx = engine_execution.LocalLinuxExecutionContext(
+        engine=recipe.engine, platform=recipe.platform, root=root,
+        adapter=platform_adapter(recipe.platform), service_client=client)
+    result = ctx.run(request)
+    assert result.exit_code == 0 and not result.stderr
+    expected = {'error_code': 'integrity_failed'} if wrong_digest else {'helper_sha256': digest}
+    assert json.loads(result.stdout)['facts'] == expected
+    assert client.request.argv[0] == sys.executable and client.request.argv[1] == '-I'
+    assert (client.request.cwd, client.request.env, client.request.deadline, client.request.max_output_bytes) == (
+        request.cwd, request.env, request.deadline, request.max_output_bytes)
+    assert list(Path(root).iterdir()) == []
+
+
 def test_download_delegates_canonical_and_confines_root(tmp_path, monkeypatch):
     from astrid.core.generation import model_downloader
     from astrid.core.generation.engine_execution import LocalLinuxExecutionContext
