@@ -10,6 +10,12 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 
+_WORKFLOW_ID_ALIASES = {
+    "image/z_image": "z-image",
+    "image/z_image_turbo": "z-image",
+}
+
+
 def user_entries() -> list[dict[str, Any]]:
     try:
         from vibecomfy.entries import discover_entries
@@ -144,6 +150,10 @@ def bundle_path(entry: dict[str, Any]) -> Path:
 
 
 def find_entry(entry_id: str) -> dict[str, Any] | None:
+    requested_id = entry_id
+    from astrid.core.model_catalog.registry import ModelRegistry
+    registry = ModelRegistry.load_default()
+    entry_id = canonical_entry_id(entry_id, registry=registry)
     matches = [entry for entry in user_entries() if entry['id'] == entry_id]
     actions = [entry for entry in action_entries() if entry['id'] == entry_id]
     if actions:
@@ -162,7 +172,51 @@ def find_entry(entry_id: str) -> dict[str, Any] | None:
         raise ValueError(f'ambiguous workflow entry {entry_id!r}')
     if matches:
         return matches[0]
-    return next((entry for entry in ready_entries() if entry['id'] == entry_id), None)
+    ready = ready_entries()
+    entry = next((entry for entry in ready if entry['id'] == requested_id), None)
+    if entry is None:
+        entry = next((entry for entry in ready
+                      if entry.get('registry_id') == entry_id or entry['id'] == entry_id), None)
+    if entry is not None:
+        canonical_id = _canonical_workflow_id(entry, registry)
+        if canonical_id == entry['id']:
+            canonical_id = entry_id
+        if canonical_id != entry['id']:
+            entry = {**entry, 'id': canonical_id}
+    return entry
+
+
+def _canonical_workflow_id(entry: dict[str, Any], registry: Any) -> str:
+    """Return a workflow's catalog identity when the existing projection has one."""
+    registry_id = entry.get('registry_id')
+    if isinstance(registry_id, str):
+        try:
+            return registry.get(registry_id).id
+        except KeyError:
+            pass
+    return entry['id']
+
+
+def canonical_entry_id(entry_id: str, *, registry: Any = None,
+                       ready: list[dict[str, Any]] | None = None) -> str:
+    """Resolve a ready-workflow spelling to its existing catalog identity."""
+    if registry is None:
+        from astrid.core.model_catalog.registry import ModelRegistry
+        registry = ModelRegistry.load_default()
+    alias_target = _WORKFLOW_ID_ALIASES.get(entry_id)
+    if alias_target is not None:
+        try:
+            return registry.get(alias_target).id
+        except KeyError:
+            return alias_target
+    # Catalog IDs are already canonical and avoid a costly failed registry
+    # lookup for every ordinary ready-template identifier.
+    if entry_id in getattr(registry, "_by_id", {}):
+        return entry_id
+    matches = [entry for entry in (ready if ready is not None else ready_entries())
+               if entry['id'] == entry_id]
+    canonical = {_canonical_workflow_id(entry, registry) for entry in matches}
+    return next(iter(canonical)) if len(canonical) == 1 else entry_id
 
 
 def _input_type(value: Any) -> str:
@@ -293,6 +347,7 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
     if registry is None:
         from astrid.core.model_catalog.registry import ModelRegistry
         registry = ModelRegistry.load_default()
+    entry_id = canonical_entry_id(entry_id, registry=registry)
     try:
         catalog = registry.get(entry_id)
     except KeyError:
@@ -534,9 +589,12 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
     observed = client.object_info()
     if not isinstance(observed, dict):
         raise ValueError("target model inventory is malformed")
-    for node in workflow.runtime_nodes().values():
-        if node.class_type not in observed:
-            raise ValueError(f"target is missing node {node.class_type!r}")
+    missing_nodes = sorted({node.class_type for node in workflow.runtime_nodes().values()
+                            if node.class_type not in observed})
+    if missing_nodes:
+        names = ", ".join(repr(name) for name in missing_nodes)
+        raise ValueError(f"target is missing required nodes: {names}; "
+                         "install the custom node packs that provide every listed node")
     roles = {}
     needs_by_key = {}
     for index, need in enumerate(entry.get("needs", [])):

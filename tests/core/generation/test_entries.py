@@ -43,6 +43,33 @@ def test_ready_projection_uses_index_and_coverage():
     assert unknown and all(row['kind'] is None or len(row['modes']) != 1 for row in unknown)
 
 
+@pytest.mark.parametrize("alias", ["image/z_image", "image/z_image_turbo"])
+def test_workflow_aliases_describe_with_canonical_registry_id(alias):
+    description = entries.describe_entry(alias, mode="t2i")
+    assert description["id"] == "z-image"
+    assert description["source"] == "catalog"
+
+
+def test_target_schema_reports_all_missing_node_classes():
+    workflow = SimpleNamespace(runtime_nodes=lambda: {
+        "1": SimpleNamespace(class_type="MissingLoader"),
+        "2": SimpleNamespace(class_type="MissingEncoder"),
+        "3": SimpleNamespace(class_type="PresentNode"),
+    })
+    client = SimpleNamespace(object_info=lambda: {"PresentNode": {}})
+    with pytest.raises(ValueError) as error:
+        entries.target_schema({"needs": []}, workflow, client)
+    message = str(error.value)
+    assert "MissingEncoder" in message and "MissingLoader" in message
+    assert "install the custom node packs" in message
+
+
+def test_workflow_alias_invocation_echoes_canonical_id(loopback_comfy, capsys):
+    assert cli.main(["image", "hello", "--model", "image/z_image_turbo",
+                     "--target", loopback_comfy.url, "--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["entry"] == "z-image"
+
+
 def test_gateway_workflow_dispatch(monkeypatch):
     from astrid import console
     calls = []

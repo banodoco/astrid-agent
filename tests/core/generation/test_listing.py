@@ -133,7 +133,7 @@ def test_discovered_windows_target_resolves_real_turbo_roles(comfy, mode):
     ) for row in rows)
 
     row = _readiness_row(mode)
-    assert row["id"] == "z-image-turbo"
+    assert row["id"] == "z-image"
     assert row["target"] == f"http://127.0.0.1:{comfy[0].server_port}"
     assert row["target_kind"] == "attached"
     assert row["ready"] is True
@@ -231,6 +231,17 @@ def test_stale_direct_image_aliases_are_not_represented_as_resolved_turbo(comfy)
     stale = [row for row in rows if row.get("source") == "direct-image"
              and row.get("template") == "image/z_image"]
     assert not any(row.get("registry_id") == "z-image" for row in stale)
+
+
+def test_list_uses_canonical_id_for_existing_z_image_workflow_spellings():
+    rows = listing.catalog_rows()
+    aliases = [row for row in rows if row["id"] == "z-image" and row["backend"] == "local"]
+    assert aliases and all(row["aliases"] == ["image/z_image", "image/z_image_turbo"]
+                           for row in aliases)
+    assert any(row["template"] == "image/z_image_turbo" and row["source"] == "catalog-alias"
+               for row in aliases)
+    assert not any(row["id"] in {"image/z_image", "image/z_image_turbo", "z-image-turbo"}
+                   and row.get("source") in {"ready-template", "catalog-alias"} for row in rows)
 
 
 def test_catalog_has_no_duplicate_entries():
@@ -382,8 +393,8 @@ def test_real_list_subprocess_returns_complete_json_within_ten_seconds():
     assert isinstance(rows, list) and rows
     identities = {(row["id"], row["mode"], row["source"], row["template"]) for row in rows}
     assert {
-        ("z-image-turbo", "t2i", "catalog-alias", "image/z_image_turbo"),
-        ("z-image-turbo", "i2i", "catalog-alias", "image/z_image_img2img"),
+        ("z-image", "t2i", "catalog-alias", "image/z_image_turbo"),
+        ("z-image", "i2i", "catalog-alias", "image/z_image_img2img"),
         ("qwen-image-2.1-turbo", "t2i", "catalog", "image/qwen_image_2_1_turbo"),
         ("qwen-image-2.1-turbo-edit", "edit", "catalog", "edit/qwen_image_2_1_turbo_edit"),
     } <= identities

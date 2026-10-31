@@ -44,8 +44,16 @@ def catalog_rows(*, registry: ModelRegistry | None = None,
             # Public direct-image spelling of the catalog's z-image identity.
             # Inventory follows G23's declaration, not the older leaf binding.
             _, mode = registry.get_by_mode("z-image", spec.mode)
-            add(spec.model_id, "image", spec.mode, "local", mode.backends["local"].template, "catalog-alias")
-            rows[-1]["registry_id"] = "z-image"
+            template = mode.backends["local"].template
+            existing = next((row for row in rows if
+                             (row["id"], row["kind"], row["mode"], row["backend"], row["template"]) ==
+                             ("z-image", "image", spec.mode, "local", template)), None)
+            if existing is not None:
+                existing["source"] = "catalog-alias"
+                existing["registry_id"] = "z-image"
+            else:
+                add("z-image", "image", spec.mode, "local", template, "catalog-alias")
+                rows[-1]["registry_id"] = "z-image"
         else:
             if any((row["id"], row["mode"], row["backend"], row["template"]) ==
                    (spec.model_id, spec.mode, "local", spec.template_id) for row in rows):
@@ -70,7 +78,7 @@ def catalog_rows(*, registry: ModelRegistry | None = None,
     for route, fixture in declaration.get("fixture_only_routes", {}).items():
         if fixture:
             add(route, "fixture", source="fixture", availability="fixture-only", reason="fixture-only route")
-    from astrid.core.generation.entries import action_entries, user_entries, ready_entries
+    from astrid.core.generation.entries import action_entries, canonical_entry_id, user_entries, ready_entries
     for entry in action_entries(discovery):
         for mode in entry["modes"]:
             add(entry["id"], entry["kind"], mode, "action", entry["action"], "action-entry")
@@ -85,10 +93,20 @@ def catalog_rows(*, registry: ModelRegistry | None = None,
         ready_templates = ready_entries(registry=registry)
     for entry in ready_templates:
         for mode in entry["modes"] or [""]:
-            add(entry["id"], entry["kind"] or "generation", mode, "local", entry["bundle"], "ready-template",
+            canonical_id = entry.get("registry_id") or canonical_entry_id(
+                entry["id"], registry=registry, ready=ready_templates)
+            if entry.get("registry_id") and any(
+                    row["id"] == canonical_id and row["mode"] == mode
+                    and row["backend"] == "local" and row["template"] == entry["id"]
+                    for row in rows):
+                continue
+            add(canonical_id, entry["kind"] or "generation", mode, "local", entry["bundle"], "ready-template",
                 reason=entry["ambiguity"] or next((need["ambiguity"] for need in entry["needs"] if need.get("ambiguity")), ""))
-            if entry.get("registry_id"):
-                rows[-1]["registry_id"] = entry["registry_id"]
+            if entry.get("registry_id") or canonical_id != entry["id"]:
+                rows[-1]["registry_id"] = entry.get("registry_id") or canonical_id
+    for row in rows:
+        if row["id"] == "z-image" and row["backend"] == "local":
+            row["aliases"] = ["image/z_image", "image/z_image_turbo"]
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
 
 
