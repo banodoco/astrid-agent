@@ -590,7 +590,9 @@ def test_atomic_probe_omits_unset_reads(monkeypatch, tmp_path):
     result = retry_module.retry(timeline, "pc_saved")
 
     assert "reads" not in calls[0]
-    assert result["summary"] == "Runtime refusal"
+    assert "Runtime refusal" in result["summary"]
+    assert "Inspect the saved edit and fix it or drop it." in result["summary"]
+    assert result["next"] == "tl.pending_show('pc_saved')"
 
 
 def test_preview_rejects_stale_record_and_token(monkeypatch, tmp_path):
