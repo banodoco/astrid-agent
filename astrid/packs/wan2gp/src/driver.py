@@ -753,7 +753,11 @@ def wan_session_main() -> int:
     """Serve the host's JSONL protocol in the target Wan2GP interpreter.
 
     The protocol descriptor is isolated before loading native code, which may
-    write to stdout. Only the worker imports the upstream runtime.
+    write to stdout. Readiness refuses upstream import/init by default: even
+    with a scratch config, upstream may migrate the installation or download
+    FFmpeg. Only a caller that obtained explicit user_env consent for this root
+    and session may set top-level ``allow_user_env`` to JSON true in the first
+    frame. This permission is consumed here, never passed to the upstream API.
     """
     import os as system_os
     import sys
@@ -833,14 +837,32 @@ def wan_session_main() -> int:
             raise ValueError(f"invalid Wan root: {raw_root}")
         if options.get("root", str(root)) != str(root):
             raise ValueError("initialization root does not match admitted root")
+        # No upstream code, output directory, or scratch config may be created
+        # before this gate. A supplied root/config, a run request, or a truthy
+        # string is not consent to upstream setup. Permission lasts only for
+        # this process; a fresh session needs its own explicit authorization.
+        if initial.get("allow_user_env") is not True:
+            code = "wan2gp_init_requires_consent"
+            reason = (
+                f"Wan initialization blocked for {root}: shared.api.init imports wgp "
+                "and may migrate settings/model files, write FFmpeg binaries, and download files. "
+                "Obtain explicit user_env consent for this root and session, then restart "
+                "--wan-session and resend the initialization frame with top-level "
+                "allow_user_env set to JSON true."
+            )
+            emit("error", code=code, status="blocked", error=reason,
+                 fixes=[{"id": code, "scope": "user_env", "root": str(root),
+                         "description": reason, "requires_consent": True,
+                         "retry": {"allow_user_env": True}}])
+            return 1
         raw_spool = options.get("output_dir")
         if not isinstance(raw_spool, str) or not raw_spool or not Path(raw_spool).is_absolute():
             raise ValueError("initialization requires an absolute output_dir")
         spool = Path(raw_spool).absolute()
-        with _custody_directory(spool, create=True):
-            pass
         if spool == root or spool.is_relative_to(root):
             raise ValueError(f"output_dir must be outside Wan root: {spool}")
+        with _custody_directory(spool, create=True):
+            pass
         config = Path(options.get("config_path") or root / "wgp_config.json").expanduser().resolve(strict=True)
         if not config.is_file():
             raise ValueError(f"Wan config is not a file: {config}")

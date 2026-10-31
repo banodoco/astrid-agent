@@ -65,7 +65,8 @@ def init(*, root, config_path, output_dir, **kwargs):
     state = tmp_path / "state.jsonl"
     processes = []
 
-    def start(*, init_fail=False, options=None):
+    def start(*, init_fail=False, options=None, allow_user_env=True):
+        # Existing session tests explicitly authorize setup in the first frame.
         env = os.environ.copy()
         env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
         env["FAKE_STATE"] = str(state)
@@ -75,7 +76,8 @@ def init(*, root, config_path, output_dir, **kwargs):
                                 cwd=tmp_path, env=env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         processes.append(proc)
-        send(proc, {"birth": BIRTH, "root": str(root), "init": options or {
+        send(proc, {"birth": BIRTH, "root": str(root), "allow_user_env": allow_user_env,
+                    "init": options or {
             "root": str(root), "config_path": str(root / "wgp_config.json"),
             "output_dir": str(spool), "console_output": False}})
         return proc
@@ -131,6 +133,7 @@ def test_serial_runs_progress_snapshots_and_close(worker):
     assert scratch.name == "wgp_config.json" and not scratch.is_relative_to(root)
     assert not scratch.exists() and (root / "wgp_config.json").read_text() == '{"config": 42}'
     assert init["options"]["console_output"] is False
+    assert "allow_user_env" not in init["options"]
 
 
 def test_eof_and_cooperative_cancel(worker):
@@ -198,3 +201,30 @@ def test_initialization_failure(worker):
     assert error["kind"] == "error" and "fake init failure" in error["error"]
     assert proc.wait(timeout=5) == 1
     assert [e["event"] for e in records(state)] == ["init"]
+
+
+def test_consent_fix_retries_only_a_new_explicitly_consented_session(worker):
+    start, root, spool, state = worker
+    proc = start(allow_user_env=False)
+    error = read(proc)
+    assert error["code"] == "wan2gp_init_requires_consent"
+    assert error["status"] == "blocked" and error["kind"] == "error"
+    fix, = error["fixes"]
+    assert fix["scope"] == "user_env" and fix["requires_consent"] is True
+    assert fix["root"] == str(root)
+    assert proc.wait(timeout=5) == 1
+    assert not state.exists() and not spool.exists()
+
+    # The caller explicitly authorizes the returned fix for a fresh session.
+    proc = start(**fix["retry"])
+    assert read(proc)["kind"] == "ready"
+    send(proc, {"birth": BIRTH, "op": "close"})
+    assert proc.wait(timeout=5) == 0
+    assert [event["event"] for event in records(state)] == ["init", "close"]
+    assert "allow_user_env" not in records(state)[0]["options"]
+
+    # A previous consented session does not grant permission to the next one.
+    proc = start(allow_user_env=None)
+    assert read(proc)["code"] == "wan2gp_init_requires_consent"
+    assert proc.wait(timeout=5) == 1
+    assert [event["event"] for event in records(state)] == ["init", "close"]
