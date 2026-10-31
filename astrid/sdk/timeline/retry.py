@@ -64,6 +64,8 @@ def _close(path, record, session, entry, how):
 
 def _legacy_flight_entry(session, record, flights, entries):
     """Confirm a legacy flight against one saved part and one history receipt."""
+    if len(flights) != 1:
+        return None
     matches = []
     for flight in flights:
         try:
@@ -86,7 +88,7 @@ def _legacy_flight_entry(session, record, flights, entries):
                     expected["reads"] = request["reads"]
                 if request.get("rationale") is not None:
                     expected["rationale"] = request["rationale"]
-                if body == expected:
+                if canonical_json(body) == canonical_json(expected):
                     part_matches.append(index)
             if part_matches != [record.get("part", 0)]:
                 continue
@@ -95,7 +97,12 @@ def _legacy_flight_entry(session, record, flights, entries):
             digest = hashlib.sha256(canonical_json(invocation).encode()).hexdigest()
             found = [entry for entry in entries if isinstance(entry.get("receipt"), dict)
                      and entry["receipt"].get("idempotency_key") == flight["key"]]
-            if (len(found) == 1 and found[0].get("publisher") == session.identity["actor_id"]
+            result = found[0]["receipt"].get("result") if len(found) == 1 else None
+            if (len(found) == 1 and isinstance(result, dict)
+                    and result.get("status") in {"accepted", "merged", "rebased"}
+                    and result.get("publisher") == session.identity["actor_id"]
+                    and result.get("accepted_revision_id") == found[0].get("revision_id")
+                    and found[0].get("publisher") == session.identity["actor_id"]
                     and found[0]["receipt"].get("request_hash") == digest
                     and found[0]["receipt"].get("command_kind") == "timeline.commit"
                     and found[0]["receipt"].get("project_id") == session.project_id
