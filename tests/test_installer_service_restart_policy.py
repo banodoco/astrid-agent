@@ -95,7 +95,9 @@ def test_darwin_stop_reload_and_explicit_start_keep_launchagent_for_next_login(t
 
 
 @pytest.mark.parametrize("system", ["darwin", "linux", "win32"])
-def test_off_choice_stop_does_not_create_startup_registration(tmp_path, system):
+def test_off_choice_stop_does_not_create_startup_registration(tmp_path, monkeypatch, system):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     calls = []
     manager = service.Service(tmp_path / "program", tmp_path / "log",
                               lambda argv: calls.append(argv) or "",

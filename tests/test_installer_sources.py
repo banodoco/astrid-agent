@@ -294,6 +294,9 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         tmp_path, monkeypatch, capsys, outcome):
     """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
     home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     old_root = root / "versions" / "old"
     for path in (old_root / "a", old_root / "r", old_root / "tools"):
         path.mkdir(parents=True)
@@ -405,7 +408,6 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     monkeypatch.setattr(backend, "run", run)
     monkeypatch.setattr(backend, "install_remotion_dependencies", lambda *_args: False)
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
-    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(platform, "log_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(platform, "private_directory", lambda path: Path(path).mkdir(
         parents=True, exist_ok=True))
