@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_root="$(git rev-parse --show-toplevel)"
+args=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -n "${local_sha:-}" ]] || continue
+  [[ "$local_sha" =~ ^0+$ ]] && continue
+  if [[ "${remote_sha:-}" =~ ^0+$ ]]; then
+    args+=(--range "${local_sha}^!")
+  elif [[ -n "${remote_sha:-}" ]]; then
+    args+=(--range "${remote_sha}..${local_sha}")
+  fi
+done
+exec "$repo_root/scripts/check-before-push" "${args[@]}"
