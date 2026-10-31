@@ -10495,15 +10495,23 @@ class GenericPackHost:
 
         def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             """Harvest and upload verified partial outputs before terminal mutation."""
+            try:
+                normalized = coerce_astrid_error(error)
+                error_value = {
+                    "code": normalized.code or "executor_failed",
+                    "message": normalized.message or type(error).__name__,
+                }
+            except BaseException:
+                # Error normalization is executor controlled and may itself
+                # fail. Terminal evidence must still be attachable with a
+                # bounded fallback description.
+                error_value = {"code": "executor_failed", "message": type(error).__name__}
             if ("pending_outputs" in _terminal and "pending_result" in _terminal
                     and _terminal.get("pending_status") == status):
                 return _terminal["pending_outputs"], _terminal["pending_result"]
             output_root = _terminal.get("output_root")
             if output_root is None:
-                normalized = coerce_astrid_error(error)
-                result_value = {"status": status, "error": {
-                    "code": normalized.code or "executor_failed", "message": normalized.message,
-                }}
+                result_value = {"status": status, "error": error_value}
                 _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
                 return [], result_value
             try:
@@ -10546,10 +10554,9 @@ class GenericPackHost:
                     task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
                     fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
                 ) if typed else []
-                normalized = coerce_astrid_error(error)
                 result_value: dict[str, Any] = {
                     "status": status,
-                    "error": {"code": normalized.code or "executor_failed", "message": normalized.message},
+                    "error": error_value,
                     "outcomes": {"execution": {"status": status}},
                 }
                 manifest = next((row for row in uploaded
