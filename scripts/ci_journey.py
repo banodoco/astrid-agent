@@ -526,44 +526,6 @@ def isolated_environment(run_root: Path, root: Path, data: Path):
                 os.environ[key] = value
 
 
-def _collect_service_evidence(run_root: Path, evidence: Path, phase: str,
-                              runtime_checkout: Path | None = None) -> None:
-    """Retain bounded, redacted copies of known logs and manager state."""
-    if __package__:
-        from .export_journey_evidence import redactor
-    else:
-        from export_journey_evidence import redactor
-    doctor = redactor(runtime_checkout)
-    destination = evidence / "service-diagnostics" / phase
-    destination.mkdir(parents=True, exist_ok=True)
-    candidates = [run_root / "home" / ".local" / "state" / "astrid-runtime" / "logs",
-                  run_root / "localappdata" / "Astrid Runtime" / "logs",
-                  run_root / "home" / "Library" / "Logs" / "Astrid Runtime"]
-    for index, directory in enumerate(candidates):
-        for name in ("install.log", "runtime-service.log"):
-            source = directory / name
-            if source.is_symlink() or not source.is_file():
-                continue
-            text = doctor.redact_log(doctor._read_tail(source).decode("utf-8", errors="replace"))
-            (destination / f"{index}-{name}").write_text(text, encoding="utf-8")
-    if sys.platform == "linux":
-        for name, command in (("manager-unit-path.txt", ["systemctl", "--user", "show", "--property=UnitPath"]),
-                              ("service-properties.txt", ["systemctl", "--user", "show", "astrid.service", "--property=LoadState,FragmentPath,ActiveState,SubState"])):
-            try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
-                (destination / name).write_text(f"exit={result.returncode}\n{result.stdout}{result.stderr}", encoding="utf-8")
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                (destination / name).write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-
-
-def collect_service_evidence(run_root: Path, evidence: Path, phase: str,
-                             runtime_checkout: Path | None = None) -> None:
-    try:
-        _collect_service_evidence(run_root, evidence, phase, runtime_checkout)
-    except Exception as exc:
-        print(f"Service evidence collection ({phase}) failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-
-
 def process_birth(pid: int) -> str | None:
     if sys.platform == "win32":
         output = windows.powershell(
@@ -712,11 +674,10 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
         existing = windows.powershell(
-            "$t=@(Get-ScheduledTask | Where-Object { $_.TaskName -eq 'Astrid Runtime' }); "
-            "if ($t.Count -gt 0) { 'present'; $t | ForEach-Object { $_.Actions | ForEach-Object { $_.Execute } } } "
-            "else { 'absent' }; exit 0",
+            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
+            "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }",
             "preflight-scheduled-task.txt", show=False, timeout=30)
-        if existing.strip() != "absent" and (fresh or not windows_task_owned(existing, root)):
+        if existing.strip() and (fresh or not windows_task_owned(existing, root)):
             raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
     if fresh and runtime_processes(data):
         raise RuntimeError("A Runtime owner is already running on this host")
@@ -1227,8 +1188,6 @@ def execute(args: argparse.Namespace) -> dict:
             try:
                 result = _execute_owned(args, root, data, evidence, sentinel, birth)
             finally:
-                original_error = sys.exception()
-                collect_service_evidence(run_root, evidence, "before-cleanup", getattr(args, "candidate_runtime_checkout", None))
                 if not getattr(args, "retain_for_next_leg", False):
                     result_path = evidence / "journey-result.json"
                     try:
@@ -1259,11 +1218,7 @@ def execute(args: argparse.Namespace) -> dict:
                         recorded.update(status="fail", final_cleanup="fail",
                                         cleanup_error=f"{type(cleanup_error).__name__}: {cleanup_error}")
                         write_json(result_path, recorded)
-                        if original_error is not None:
-                            raise original_error from cleanup_error
                         raise
-                    finally:
-                        collect_service_evidence(run_root, evidence, "after-cleanup", getattr(args, "candidate_runtime_checkout", None))
                 else:
                     result_path = evidence / "journey-result.json"
                     if result_path.is_file():
