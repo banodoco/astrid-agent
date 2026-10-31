@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from ._common import PARENT_SHOT, TimelineEditError
 from .checkout import Checkout
-from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _enrich_pending_diff, _pending_clash, _pin
+from .sync import CommitConflict, CommitRefused, TimelineSession, _OutboxChanged, _enrich_pending_diff, _pending_clash, _part_identity, _pin
 
 
 def _function_rerun_conflict(session, original_base, current_base, before_bundle, after_bundle):
@@ -669,7 +669,7 @@ class Timeline(Checkout):
                 return self._accepted(replay) if active_flight else replay
         pending_target = (self._resolve_pending(pending) if pending is not None else
                           self._resolve_pending_key(idempotency_key) if idempotency_key is not None else None)
-        pending_id, pending_path, pending_part = pending_target if pending_target is not None else (None, None, None)
+        pending_id, pending_path, pending_part, pending_identity = pending_target if pending_target is not None else (None, None, None, None)
         if function:
             replay = self.session.resolve_acknowledged(idempotency_key, dry_run=dry_run)
             if replay is not None:
@@ -677,7 +677,8 @@ class Timeline(Checkout):
         if commands is not None:
             return self._commit_commands(commands, label=commit_label, merge=merge, dry_run=dry_run,
                                          reads=reads, idempotency_key=idempotency_key,
-                                         pending_id=pending_id, pending_path=pending_path, pending_part=pending_part)
+                                         pending_id=pending_id, pending_path=pending_path, pending_part=pending_part,
+                                         pending_identity=pending_identity)
         with self.session.outbox.locked():
             state = self.session._state()
         if _original_base is None and pending_id is not None:
@@ -784,7 +785,7 @@ class Timeline(Checkout):
                         merge=effective_merge, reads=reads, key=idempotency_key,
                         evaluation=evaluation, failure=overlap, release_flight=state.get("flight"),
                         release_dry_run=dry_run, pending_id=pending_id,
-                        pending_path=pending_path, pending_part=pending_part)
+                        pending_path=pending_path, pending_part=pending_part, pending_identity=pending_identity)
                     error.retry_fn = function
                     self._retry_functions[error.pending_id] = function
                     raise error
@@ -804,6 +805,7 @@ class Timeline(Checkout):
                     pending_id=pending_id,
                     pending_path=pending_path,
                     pending_part=pending_part,
+                    pending_identity=pending_identity,
                     pending_how="rerun" if function else "rederive",
                 )
             except _OutboxChanged:
@@ -824,7 +826,7 @@ class Timeline(Checkout):
                                                       steps=steps, merge=effective_merge, reads=reads,
                                                       key=idempotency_key, evaluation=evaluation,
                                                       pending_id=pending_id, pending_path=pending_path,
-                                                      pending_part=pending_part)
+                                                      pending_part=pending_part, pending_identity=pending_identity)
                 if function:
                     error.retry_fn = function
                     self._retry_functions[error.pending_id] = function
@@ -926,7 +928,7 @@ class Timeline(Checkout):
         path, record = matches[0]
         if record.get("state") != "pending":
             raise TimelineEditError(f"cannot close pending change in state {record.get('state')!r}")
-        return record["id"], str(path), record.get("part", 0)
+        return record["id"], str(path), record.get("part", 0), _part_identity(record)
 
     def _resolve_pending_key(self, key):
         """Find a pending edit created with this commit key, if it is unique."""
@@ -938,10 +940,10 @@ class Timeline(Checkout):
         if not matches:
             return None
         path, record = matches[0]
-        return record["id"], str(path), record.get("part", 0)
+        return record["id"], str(path), record.get("part", 0), _part_identity(record)
 
     def _commit_commands(self, commands, *, label, merge, dry_run, reads, idempotency_key,
-                         pending_id=None, pending_path=None, pending_part=None):
+                         pending_id=None, pending_path=None, pending_part=None, pending_identity=None):
         """Submit an already captured list without rebuilding its guards or media pins."""
         if not commands:
             raise TimelineEditError("commit requires a nonempty command list")
@@ -972,7 +974,7 @@ class Timeline(Checkout):
                                          idempotency_key=idempotency_key, dry_run=dry_run,
                                          expected_state=state, base=state["base"],
                                          pending_id=pending_id, pending_path=pending_path, pending_part=pending_part,
-                                         pending_how="rederive", imports=_imports_in_commands(commands))
+                                         pending_how="rederive", pending_identity=pending_identity, imports=_imports_in_commands(commands))
         except _OutboxChanged:
             if dry_run or pending_id is not None:
                 raise

@@ -14,7 +14,7 @@ from . import clash
 from ._command_state import ABSENT, equal, present
 from ._commit_patch import canonical_site
 from ._doc_patch import value_at
-from .sync import _native_command, _part_identity, _response, _settle_pending
+from .sync import _native_command, _part_identity, _response, _settle_pending, _settled_part
 from .outbox import Outbox
 
 
@@ -629,6 +629,14 @@ def commit_preview(timeline, result):
             raise
         latest = next((record for record_path, record in timeline._pending_records_with_paths("all")
                        if record.get("id") == pending_id and str(record_path) == path), current)
+        settled = _settled_part(latest, current.get("part", 0), _part_identity(current))
+        if settled and latest.get("state") == "pending":
+            publication = settled["publication_id"]
+            return {"status": "part_landed", "pending_id": pending_id,
+                    "data": {"publication_id": publication, "receipt": {"receipt_id": settled["receipt_id"]},
+                             "part": latest.get("part")},
+                    "summary": f'Part of "{latest.get("label") or "Timeline edit"}" landed; {pending_id} still has saved work.',
+                    "next": f'tl.retry({pending_id!r})', "record": latest}
         landed = _landed(timeline, Path(path), latest)
         if landed is not None:
             return landed
