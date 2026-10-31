@@ -128,7 +128,7 @@ def _landed(timeline, path, record):
             break
     if entry is None:
         # A group identifies the saved record, not a subsequently refused request.
-        if record.get("last_refusal_request"):
+        if record.get("last_refusal_request") or record.get("versions"):
             return None
         matches = [item for item in entries if item.get("group_id") == record["id"]]
         if type(index) is not int or index < 0 or len(matches) <= index:
