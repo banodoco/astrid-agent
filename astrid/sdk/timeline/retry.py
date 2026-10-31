@@ -362,7 +362,13 @@ def _already_applied(timeline, path, record, packet):
 
     closed = _close(path, record, timeline.session, entry, "already_applied")
     if closed.get("state") != "landed":
-        return None
+        if closed.get("part", 0) == record.get("part", 0):
+            return None
+        return {"status": "part_landed", "pending_id": record["id"],
+                "data": {"publication_id": publication_id, "part": closed.get("part")},
+                "record": closed,
+                "summary": f'Part of "{record.get("label") or "Timeline edit"}" already landed; {record["id"]} still has saved work.',
+                "next": f'tl.retry({record["id"]!r})'}
     data = {"publication_id": publication_id}
     if isinstance(entry.get("receipt"), dict):
         data["receipt"] = copy.deepcopy(entry["receipt"])
