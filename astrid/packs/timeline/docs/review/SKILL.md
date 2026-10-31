@@ -32,3 +32,6 @@ preview again, then commit the new commands with the original key and
 After an unknown outcome, repeat the same request with the same idempotency key
 and read its result; never resend the reviewed list as a new request. Use
 `overwrite=True` only when the person explicitly asked to replace an intervening edit.
+
+For SDK helpers used in function edits, see [timeline editing helpers](../references/helpers.md).
+For a static storyboard of pinned-shot image inputs, use [`rendering.timeline_storyboard`](../../../rendering/actions/timeline_storyboard/STAGE.md).
