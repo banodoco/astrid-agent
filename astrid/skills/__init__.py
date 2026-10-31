@@ -7,6 +7,7 @@ selects one Claude-style frontmatter document per pack.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from functools import wraps
 from typing import Iterable
@@ -266,6 +267,10 @@ def sync(
     view_parent = (state_path or state.state_path()).parent / "skills"
 
     for harness_name, adapter in targets.items():
+        state_before = {
+            key: copy.deepcopy(current_state.get(key, {}).get(harness_name))
+            for key in ("skills", "installs", "disabled_defaults")
+        }
         previous_view_ids: set[str] = set()
         descriptors = _sync_descriptors_for_harness(
             all_descriptors,
@@ -388,7 +393,16 @@ def sync(
                 if not dry_run:
                     entry["digest"] = digest
         if not dry_run:
-            current_state["skills"][harness_name]["synced_at"] = state.now_iso()
+            state_after = {
+                key: copy.deepcopy(current_state.get(key, {}).get(harness_name))
+                for key in ("skills", "installs", "disabled_defaults")
+            }
+            for snapshot in (state_before, state_after):
+                skills_snapshot = snapshot.get("skills")
+                if isinstance(skills_snapshot, dict):
+                    skills_snapshot.pop("synced_at", None)
+            if state_after != state_before:
+                current_state["skills"][harness_name]["synced_at"] = state.now_iso()
         report["actions"].append(
             {"harness": harness_name, "steps": [_step_to_dict(s) for s in [*view_steps, *steps]],
              "outdated": outdated, "changed": changed,

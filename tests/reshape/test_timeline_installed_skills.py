@@ -42,17 +42,27 @@ def _selected(harness: InstalledArtifactHarness) -> set[str]:
     }
 
 
-def _view_files(harness: InstalledArtifactHarness) -> dict[str, str]:
-    root = harness.roots.state / "state" / "astrid" / "skills" / "claude"
-    return {
-        path.relative_to(root).as_posix(): (
-            f"symlink:{path.readlink()}"
-            if path.is_symlink()
-            else hashlib.sha256(path.read_bytes()).hexdigest()
+def _filesystem_snapshot(root: Path) -> dict[str, tuple]:
+    paths = [root, *sorted(root.rglob("*"))] if root.exists() else []
+    snapshot = {}
+    for path in paths:
+        info = path.lstat()
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        if path.is_symlink():
+            content = ("symlink", path.readlink().as_posix())
+        elif path.is_file():
+            content = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+        else:
+            content = ("directory",)
+        snapshot[relative] = (
+            *content,
+            info.st_mode,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+            info.st_ino,
         )
-        for path in root.rglob("*")
-        if path.is_symlink() or path.is_file()
-    }
+    return snapshot
 
 
 def _timeline_broken_links(report: dict) -> list[dict]:
@@ -160,21 +170,23 @@ def test_timeline_skill_lifecycle_on_installed_wheel(tmp_path: Path) -> None:
 
         first = _run(harness, "skills", "sync", "--harness", "claude", "--json")
         first_skills_state = _state(harness)["skills"]
-        first_skills_state = {
-            name: {key: value for key, value in entry.items() if key != "synced_at"}
-            for name, entry in first_skills_state.items()
-        }
-        first_view = _view_files(harness)
+        first_state = harness.roots.state / "state" / "astrid" / "skills.json"
+        first_filesystem = _filesystem_snapshot(
+            harness.roots.state / "state" / "astrid" / "skills" / "claude"
+        )
+        first_installed_links = _filesystem_snapshot(
+            harness.roots.home / ".claude" / "skills"
+        )
+        first_state_filesystem = _filesystem_snapshot(first_state)
         second = _run(harness, "skills", "sync", "--harness", "claude", "--json")
         assert second["broken_links"] == first["broken_links"]
         assert _timeline_broken_links(first) == _timeline_broken_links(second) == []
-        second_skills_state = _state(harness)["skills"]
-        second_skills_state = {
-            name: {key: value for key, value in entry.items() if key != "synced_at"}
-            for name, entry in second_skills_state.items()
-        }
-        assert second_skills_state == first_skills_state
-        assert _view_files(harness) == first_view
+        assert _state(harness)["skills"] == first_skills_state
+        assert _filesystem_snapshot(
+            harness.roots.state / "state" / "astrid" / "skills" / "claude"
+        ) == first_filesystem
+        assert _filesystem_snapshot(harness.roots.home / ".claude" / "skills") == first_installed_links
+        assert _filesystem_snapshot(first_state) == first_state_filesystem
         assert second["registry"]["changed"] is False
         assert all(
             not step["extras"].get("changed", False)

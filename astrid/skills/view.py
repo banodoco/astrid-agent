@@ -129,6 +129,12 @@ class _ViewLinks:
 
 def _write_view_file(target: Path, text: str) -> None:
     """Write a regular file in the view, never through a symlink into the source."""
+    if target.is_file() and not target.is_symlink():
+        try:
+            if target.read_text(encoding="utf-8") == text:
+                return
+        except (OSError, UnicodeError):
+            pass
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_symlink():
         target.unlink()
@@ -155,15 +161,51 @@ def _materialise_pack(target: Path, source: Path, links: _ViewLinks, *, managed:
         if target.is_symlink():
             target.unlink()
         elif managed and target.is_dir():
-            shutil.rmtree(target)
+            pass
         else:
             raise AstridError(
                 f"Astrid skill view target is occupied: {target}",
                 recovery_command="remove the foreign entry or choose another profile",
             )
-    shutil.copytree(source, target)
+    target.mkdir(parents=True, exist_ok=True)
+    _copy_tree_if_changed(source, target)
     for md in iter_markdown_files(source):
         _materialise(md, target / md.relative_to(source), links)
+
+
+def _copy_tree_if_changed(source: Path, target: Path) -> None:
+    """Reconcile a managed pack copy without touching unchanged entries."""
+    source_names = {child.name for child in source.iterdir()}
+    for child in target.iterdir():
+        if child.name not in source_names:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    for child in source.iterdir():
+        dest = target / child.name
+        if child.is_dir() and not child.is_symlink():
+            if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                dest.unlink()
+            dest.mkdir(exist_ok=True)
+            _copy_tree_if_changed(child, dest)
+        elif child.is_symlink():
+            link = child.readlink()
+            if dest.is_symlink() and dest.readlink() == link:
+                continue
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            elif dest.exists() or dest.is_symlink():
+                dest.unlink()
+            dest.symlink_to(link, target_is_directory=child.is_dir())
+        elif child.suffix.lower() == ".md":
+            continue
+        elif not dest.is_file() or dest.is_symlink() or child.read_bytes() != dest.read_bytes():
+            if dest.is_symlink():
+                dest.unlink()
+            elif dest.is_dir():
+                shutil.rmtree(dest)
+            shutil.copy2(child, dest)
 
 
 def view_descriptors(root: Path, packs: list[SkillDescriptor]) -> list[SkillDescriptor]:
@@ -295,7 +337,9 @@ def compose_view(
         if source_packs.is_file() and not (root / _PACKS_REGISTRY).exists():
             _materialise(source_packs, root / _PACKS_REGISTRY, links)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("\n".join(sorted(enabled_ids)) + "\n", encoding="utf-8")
+        marker_text = "\n".join(sorted(enabled_ids)) + "\n"
+        if not marker.is_file() or marker.read_text(encoding="utf-8") != marker_text:
+            marker.write_text(marker_text, encoding="utf-8")
 
     gateway = replace(
         core,
