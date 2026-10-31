@@ -389,7 +389,11 @@ def retry(timeline, ref, fn=None, *, overwrite=False):
     failure = record.get("failure") or {}
     if ((failure.get("details") or {}).get("status") in {"refused", "invalid"}
             and (record.get("origin") != "function" or fn is None)):
-        return _refused(record, failure, failure)
+        result = _refused(record, failure, failure)
+        if record.get("origin") == "function":
+            result["summary"] += " The original edit function is needed to re-run this saved edit."
+            result["next"] = f'tl.retry({record["id"]!r}, your_function)'
+        return result
     captured_function_list = record.get("origin") == "function" and fn is None
     if fn is not None:
         refreshed = _refresh_function_base(timeline, record)
