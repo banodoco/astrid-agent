@@ -48,8 +48,33 @@ def write_json(path, value):
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_BOOTSTRAP_BYTES = 2 * 1024 * 1024
 JOB_FORMAT = "astrid-update-job/v1"
+REFUSAL_FORMAT = "astrid-update-refusal/v1"
+REFUSAL_REASONS = frozenset({
+    "busy", "conflicting-operation", "mismatched-payload", "corrupt-journal",
+    "unsupported-recovery",
+})
+JOURNAL_FORMAT = "astrid-install-update/v1"
+JOURNAL_STEPS = frozenset({
+    "staged", "stopping", "stopped", "backed_up", "migrated", "switched", "verified",
+    "recovering", "rollback_selected", "complete", "rolled_back",
+})
 JOB_STATES = {"accepted", "launching", "active", "updated", "rolled_back", "failed", "recovery-needed"}
 MAX_RESULT_LINE = 240
+
+
+class AcceptanceRefusal(ValueError):
+    """A bounded refusal that the selected-Python helper can serialize safely."""
+
+    def __init__(self, reason: str, message: str):
+        if reason not in REFUSAL_REASONS:
+            reason = "unsupported-recovery"
+        super().__init__(message)
+        self.reason = reason
+        self.message = _one_line(message)
+
+
+def _refusal(reason: str, message: str) -> AcceptanceRefusal:
+    return AcceptanceRefusal(reason, message)
 
 
 def _selected_bytes(path: Path, limit: int) -> bytes:
@@ -168,7 +193,7 @@ def _locked(root: Path, *, blocking: bool = False):
         platform.lock_file(stream.fileno(), blocking=blocking)
     except BlockingIOError:
         stream.close()
-        raise ValueError("The Astrid installer is already running.") from None
+        raise _refusal("busy", "The Astrid installer is already running.") from None
     return stream
 
 
@@ -317,6 +342,83 @@ def _validate_request(request: dict, root: Path) -> dict:
     }
 
 
+def _read_accept_journal(root: Path) -> dict | None:
+    """Read the C2 journal without treating malformed bytes as absence."""
+    path = root / "update-transaction.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        journal = read_json(path)
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        raise _refusal("corrupt-journal", "The existing update journal is corrupt; no job was launched.") from None
+    if (not isinstance(journal, dict) or not isinstance(journal.get("step"), str)
+            or journal.get("step") not in JOURNAL_STEPS):
+        raise _refusal("corrupt-journal", "The existing update journal is ambiguous; no job was launched.")
+    return journal
+
+
+def _validate_job_journal(job: dict, journal: dict | None, operation_id: str) -> None:
+    """Require the durable job and C2 journal to identify one operation."""
+    if journal is None:
+        return
+    step = journal.get("step")
+    if journal.get("format") != JOURNAL_FORMAT:
+        raise _refusal("corrupt-journal", "The update journal format is unsupported; no job was launched.")
+    journal_operation = journal.get("operation_id")
+    journal_job = journal.get("update_job")
+    journal_job_operation = journal_job.get("operation_id") if isinstance(journal_job, dict) else None
+    job_transaction = job.get("transaction_id")
+
+    if step not in TERMINAL_STEPS:
+        # A pending transaction must carry a C2 operation id and an explicit
+        # update-job binding. If the durable job already has a transaction
+        # link, it must agree with the journal too.
+        if (not isinstance(journal_operation, str) or not journal_operation
+                or journal_job_operation != operation_id
+                or (job_transaction is not None and job_transaction != journal_operation)):
+            raise _refusal("corrupt-journal", "The pending update journal is not bound to this operation; no job was launched.")
+        return
+
+    # Terminal journals are still evidence, not permission to infer success.
+    # Any explicit binding must match the replayed job, and a recorded
+    # transaction link must match the journal operation.
+    if (journal_job is not None
+            and (not isinstance(journal_job, dict) or journal_job_operation != operation_id)):
+        raise _refusal("corrupt-journal", "The terminal update journal is not bound to this operation; no job was launched.")
+    prior_transaction = job.get("prior_transaction_id")
+    if (job_transaction is not None
+            and (not isinstance(journal_operation, str) or job_transaction != journal_operation)):
+        raise _refusal("corrupt-journal", "The durable job and update journal do not match; no job was launched.")
+    if (journal_job is None and job_transaction is None
+            and prior_transaction != journal_operation):
+        raise _refusal("corrupt-journal", "The terminal update journal is not bound to this operation; no job was launched.")
+
+
+def _same_acceptance_payload(job: dict, candidate: dict) -> bool:
+    """Compare immutable acceptance fields while ignoring lifecycle fields."""
+    fields = (
+        "format", "operation_id", "job_name", "log_path", "program_root", "data_root",
+        "old_instance_id", "old_identity", "old_version", "target_release", "metadata",
+    )
+    return all(job.get(field) == candidate.get(field) for field in fields)
+
+
+def _replay_existing(job: dict, request: dict, root: Path, journal: dict | None) -> dict:
+    """Validate and return the exact durable job for a same-ID replay."""
+    if job.get("format") != JOB_FORMAT or job.get("operation_id") != request.get("operation_id"):
+        raise _refusal("mismatched-payload", "The durable update job is invalid; no job was launched.")
+    if job.get("state") not in JOB_STATES:
+        raise _refusal("unsupported-recovery", "The durable update job has an unsupported state; no job was launched.")
+    try:
+        candidate = _validate_request(request, root)
+    except (OSError, ValueError, KeyError, TypeError) as failure:
+        raise _refusal("mismatched-payload", str(failure)) from None
+    if not _same_acceptance_payload(job, candidate):
+        raise _refusal("mismatched-payload", "The replayed update payload does not match the durable job; no job was launched.")
+    _validate_job_journal(job, journal, request["operation_id"])
+    return job
+
+
 def accept(request: dict) -> dict:
     """Durably accept one already-prepared request under the normal install lock."""
     root = absolute(request.get("root", ""))
@@ -325,21 +427,30 @@ def accept(request: dict) -> dict:
         marker_path = root / "install.json"
         marker = read_json(marker_path)
         prior = marker.get("update_job")
-        pending = read_json(root / "update-transaction.json")
-        if pending and pending.get("step") not in TERMINAL_STEPS:
-            raise ValueError("The installer must recover its pending update first.")
-        if isinstance(prior, dict) and prior.get("state") in {"accepted", "launching", "active", "recovery-needed"}:
-            raise ValueError("An update operation is already active.")
-        job = _validate_request(request, root)
+        pending = _read_accept_journal(root)
+        operation_id = request.get("operation_id") if isinstance(request, dict) else None
+        if isinstance(prior, dict) and prior.get("operation_id") == operation_id:
+            return _replay_existing(prior, request, root, pending)
+        if (isinstance(prior, dict)
+                and prior.get("state") in {"accepted", "launching", "active", "recovery-needed"}):
+            raise _refusal("conflicting-operation", "An update operation is already active; no job was launched.")
+        if pending is not None and pending.get("step") not in TERMINAL_STEPS:
+            raise _refusal("conflicting-operation", "The installer must recover its pending update first; no job was launched.")
+        try:
+            job = _validate_request(request, root)
+        except AcceptanceRefusal:
+            raise
+        except (OSError, ValueError, KeyError, TypeError) as failure:
+            raise _refusal("mismatched-payload", str(failure)) from None
         # Capture the journal observed under the installer lock. A later direct
         # transaction has a different operation ID; an unchanged journal predates
         # this acceptance even if the bootstrap never reaches staging.
-        if not pending or isinstance(pending.get("operation_id"), str):
-            job["prior_transaction_id"] = pending.get("operation_id")
+        if pending is None or isinstance(pending.get("operation_id"), str):
+            job["prior_transaction_id"] = pending.get("operation_id") if pending else None
         preferences = read_json(_selection_path()).get("preferences")
         autostart = preferences.get("autostart") if isinstance(preferences, dict) else None
         if autostart_off(autostart):
-            raise ValueError("This update cannot run because saved autostart is off and the installer cannot preserve that choice yet.")
+            raise _refusal("unsupported-recovery", "This update cannot run because saved autostart is off and the installer cannot preserve that choice yet.")
         job["autostart_snapshot"] = autostart
         log_path = Path(job["log_path"])
         platform.private_directory(log_path.parent)
@@ -1028,12 +1139,35 @@ def run_job(root: Path, operation_id: str) -> dict:
             _unlock(stream)
 
 
-def main():
+def _helper_refusal(failure: BaseException) -> dict:
+    if isinstance(failure, AcceptanceRefusal):
+        reason = failure.reason
+        message = failure.message
+    elif isinstance(failure, (json.JSONDecodeError, TypeError, ValueError)):
+        reason = "mismatched-payload"
+        message = "The update helper request is invalid; no job was launched."
+    else:
+        reason = "unsupported-recovery"
+        message = "The update helper could not safely complete this operation; no job was launched."
+    return {
+        "format": REFUSAL_FORMAT,
+        "accepted": False,
+        "reason": reason,
+        "message": _one_line(message),
+    }
+
+
+def _main():
     # Internal selected-Python helper, not a browser-controlled command.
     raw = sys.stdin.read(65537)
     if len(raw) > 65536:
-        raise ValueError("The update helper request is too large.")
-    value = json.loads(raw)
+        raise _refusal("mismatched-payload", "The update helper request is too large; no job was launched.")
+    try:
+        value = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        raise _refusal("mismatched-payload", "The update helper request is invalid; no job was launched.") from None
+    if not isinstance(value, dict):
+        raise _refusal("mismatched-payload", "The update helper request is invalid; no job was launched.")
     action = value.get("action", "prepare")
     if action == "prepare":
         metadata = fetch_update_inputs(Path(value["directory"]), manifest_url=value["manifest_url"],
@@ -1047,12 +1181,29 @@ def main():
     elif action == "launch":
         print(json.dumps(launch_job(Path(value["root"]), value["operation_id"])))
     else:
-        raise ValueError("Unknown update helper action.")
+        raise _refusal("mismatched-payload", "Unknown update helper action; no job was launched.")
+
+
+def main():
+    try:
+        return _main()
+    except Exception as failure:  # noqa: BLE001 - helper stdout must remain a JSON protocol
+        # Runtime imports this function through ``python -c``; the module's
+        # __main__ block is therefore not involved in the normal helper path.
+        print(json.dumps(_helper_refusal(failure), separators=(",", ":")))
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == "--worker":
-        result = run_job(Path(sys.argv[2]), sys.argv[3])
-        print(json.dumps(result))
-    else:
-        main()
+    try:
+        if len(sys.argv) == 4 and sys.argv[1] == "--worker":
+            result = run_job(Path(sys.argv[2]), sys.argv[3])
+            print(json.dumps(result))
+        else:
+            main()
+    except Exception as failure:  # noqa: BLE001 - helper stdout must remain a JSON protocol
+        # The Runtime helper consumes stdout as a strict JSON protocol. Never
+        # let a traceback, free-form ValueError, or ambiguous exit status look
+        # like an accepted update.
+        print(json.dumps(_helper_refusal(failure), separators=(",", ":")))
+        raise SystemExit(1) from None

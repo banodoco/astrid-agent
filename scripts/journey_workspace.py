@@ -14,8 +14,20 @@ from pathlib import Path
 ACTOR = {"actor": "tst-c1-user"}
 
 
-def seed(service, project: str, generation: str, task_id: str) -> dict:
-    selected = service.get_project(project)
+def seed(service, project: str, generation: str, task_id: str | None,
+         create_project: bool = False) -> dict:
+    """Write user data through the selected Runtime service API.
+
+    The authentic release-0 journey owns its project seed too, rather than
+    relying on the installed CLI's convenience project creation step.
+    """
+    if create_project:
+        selected = service.create_project(
+            {"slug": project, "name": "Release-0 user project " + generation,
+             "metadata": {"seed": "release0-to-release1"}},
+            idempotency_key="project-" + generation)
+    else:
+        selected = service.get_project(project)
     project_id = selected["id"]
     timeline = "tst-c1-" + generation
     service.create_timeline_document(project_id, {
@@ -30,8 +42,11 @@ def seed(service, project: str, generation: str, task_id: str) -> dict:
     payload = ("C1 object " + generation + "\n").encode()
     service.ingest_object(payload, media_type="text/plain", original_name=generation + ".txt",
                           idempotency_key="object-" + generation)
-    return {"project": project_id, "timeline": timeline, "task_id": task_id,
-            "object_digest": hashlib.sha256(payload).hexdigest()}
+    result = {"project": project_id, "timeline": timeline,
+              "object_digest": hashlib.sha256(payload).hexdigest()}
+    if task_id is not None:
+        result["task_id"] = task_id
+    return result
 
 
 def snapshot(service, keys: dict) -> dict:
@@ -47,16 +62,20 @@ def snapshot(service, keys: dict) -> dict:
         raise ValueError("Seeded timeline content is missing")
     preferences = service.get_preferences("user", identity=ACTOR)
     _metadata, payload = service.object(keys["object_digest"])
-    task = service.store.get_task(keys["task_id"])["task"]
-    if task["status"] != "completed":
-        raise ValueError("Seeded task is no longer settled successfully")
+    task = None
+    if "task_id" in keys:
+        task = service.store.get_task(keys["task_id"])["task"]
+        if task["status"] != "completed":
+            raise ValueError("Seeded task is no longer settled successfully")
     schema = service.store.conn.execute("SELECT version FROM runtime_schema WHERE id=1").fetchone()[0]
-    return {"project": {key: project[key] for key in ("id", "slug", "name")},
-            "timeline": {"name": timeline["name"], "content": json.loads(document["content_json"])},
-            "preferences": {key: preferences[key] for key in ("content", "version")},
-            "task": {key: task.get(key) for key in ("id", "status", "spec", "result")},
-            "cas_sha256": hashlib.sha256(payload).hexdigest(), "schema_version": schema,
-            "target_schema_version": SCHEMA_VERSION}
+    result = {"project": {key: project[key] for key in ("id", "slug", "name")},
+              "timeline": {"name": timeline["name"], "content": json.loads(document["content_json"])},
+              "preferences": {key: preferences[key] for key in ("content", "version")},
+              "cas_sha256": hashlib.sha256(payload).hexdigest(), "schema_version": schema,
+              "target_schema_version": SCHEMA_VERSION}
+    if task is not None:
+        result["task"] = {key: task.get(key) for key in ("id", "status", "spec", "result")}
+    return result
 
 
 def busy(service) -> dict:
