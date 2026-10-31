@@ -194,9 +194,10 @@ def _dispatch_status(args: list[str]) -> int:
                                 history = revisions.list(str(recent_project_id), str(ref), limit=1) if ref else None
                                 if history:
                                     label = recent_project.get("slug") or recent_project.get("name") or recent_project_id
-                                    recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref))
-                        for edited, label, ref, name in sorted(recent, reverse=True)[:3]:
-                            print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref}")
+                                    recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref,
+                                                   str(recent_project_id)))
+                        for edited, label, ref, name, owner in sorted(recent, reverse=True)[:3]:
+                            print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref} --project {owner}")
                     else:
                         print("project: none selected — run `astrid projects list`")
             except (RuntimeCLIError, ServiceUnavailableError, TimelineEditError, OSError, ValueError):

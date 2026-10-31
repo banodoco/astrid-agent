@@ -860,7 +860,8 @@ def test_status_human_output_includes_selected_project_and_recent_timelines(monk
     assert "project: demo (selected)" in output
     assert "recent: 2026-10-30T12:00:00Z  demo  promo  Promo" in output
     assert "recent: 2026-10-30T12:00:00Z  later  later-promo  Later Promo" in output
-    assert "next: astrid timelines show promo" in output
+    assert "next: astrid timelines show promo --project P" in output
+    assert "next: astrid timelines show later-promo --project P-2" in output
 
 
 def test_print_product_help_prints_to_stdout(capsys) -> None:
