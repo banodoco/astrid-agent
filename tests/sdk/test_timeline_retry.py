@@ -1134,6 +1134,16 @@ def _legacy_acknowledged_setup(timeline, *, part_changes=None, flight_changes=No
     return path, record, body
 
 
+def _legacy_no_parts_acknowledged_setup(timeline, *, flight_changes=None):
+    path, record, body = _legacy_acknowledged_setup(timeline, flight_changes=flight_changes)
+    part = record.pop("parts")[0]
+    record.pop("part", None)
+    record.update({key: copy.deepcopy(part[key]) for key in
+                   ("base", "commands", "commit_options", "group_id", "rationale", "imports")})
+    timeline.session.state["acknowledged"]["logical-key"]["pending_part"] = None
+    return path, record, body
+
+
 def test_legacy_ack_without_pending_part_requires_exact_saved_request_and_receipt(
     monkeypatch, tmp_path,
 ):
@@ -1155,6 +1165,71 @@ def test_legacy_ack_without_pending_part_requires_exact_saved_request_and_receip
     assert landed["data"]["receipt"] == landed_entry["receipt"]
     assert saved["state"] == "landed"
     assert saved["receipts"] == ["pub-history"]
+
+
+def test_legacy_no_parts_ack_recovers_only_exact_saved_request_and_receipt(monkeypatch, tmp_path):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _legacy_no_parts_acknowledged_setup(timeline)
+    earlier = {"group_id": "assembly-existing", "publication_id": "pub-earlier",
+               "revision_id": "r2", "publisher": "actor-1",
+               "receipt": {"receipt_id": "receipt-earlier"}}
+    landed_entry = _legacy_ack_entry(timeline, body)
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, [earlier, landed_entry]))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    saved = timeline.session.state["pending_changes"]["pc_saved"]
+    assert landed["status"] == "landed"
+    assert landed["data"]["publication_id"] == "pub-history"
+    assert landed["data"]["receipt"] == landed_entry["receipt"]
+    assert saved["state"] == "landed"
+    assert saved["receipts"] == ["pub-history"]
+
+
+@pytest.mark.parametrize("damage", [
+    "ambiguous_flights", "ambiguous_receipts", "request_mismatch", "request_hash_mismatch",
+    "owner_mismatch", "part_mismatch", "receipt_key_mismatch", "receipt_owner_mismatch",
+    "publication_mismatch", "revision_mismatch", "group_only",
+])
+def test_legacy_no_parts_ack_refuses_mismatched_or_ambiguous_identity(
+    monkeypatch, tmp_path, damage,
+):
+    timeline = FakeTimeline(tmp_path / "outbox.json")
+    path, record, body = _legacy_no_parts_acknowledged_setup(timeline)
+    entry = _legacy_ack_entry(timeline, body)
+    entries = [entry]
+    if damage == "ambiguous_flights":
+        timeline.session.state["acknowledged"]["second-flight"] = copy.deepcopy(
+            timeline.session.state["acknowledged"]["logical-key"])
+    elif damage == "ambiguous_receipts":
+        entries.append(copy.deepcopy(entry))
+    elif damage == "request_mismatch":
+        changed = copy.deepcopy(body)
+        changed["label"] = "Different saved request"
+        timeline.session.state["acknowledged"]["logical-key"]["body"] = json.dumps(changed)
+    elif damage == "request_hash_mismatch":
+        entry["receipt"]["request_hash"] = "wrong-request-hash"
+    elif damage == "owner_mismatch":
+        timeline.session.state["acknowledged"]["logical-key"]["pending_path"] = "/another/outbox.json"
+    elif damage == "part_mismatch":
+        timeline.session.state["acknowledged"]["logical-key"]["pending_part"] = 1
+    elif damage == "receipt_key_mismatch":
+        entry["receipt"]["idempotency_key"] = "another-key"
+    elif damage == "receipt_owner_mismatch":
+        entry["publisher"] = "actor-2"
+    elif damage == "publication_mismatch":
+        entry["receipt"]["receipt_id"] = "different-publication"
+    elif damage == "revision_mismatch":
+        entry["receipt"]["result"]["accepted_revision_id"] = "r4"
+    elif damage == "group_only":
+        entry["receipt"] = {"receipt_id": "pub-history"}
+    before = copy.deepcopy(timeline.session.state["pending_changes"]["pc_saved"])
+    monkeypatch.setattr(retry_module.clash, "_history", lambda *args: (HEAD, entries))
+
+    landed = retry_module._landed(timeline, path, record)
+
+    assert landed is None
+    assert timeline.session.state["pending_changes"]["pc_saved"] == before
 
 
 @pytest.mark.parametrize("damage", [

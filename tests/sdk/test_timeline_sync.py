@@ -337,6 +337,65 @@ def test_retry_recovers_accepted_legacy_flight_without_pending_part_for_assembly
     assert len(generated.calls) == 1
 
 
+@pytest.mark.parametrize("external_owner", [False, True], ids=["same-owner", "external-owner"])
+@pytest.mark.parametrize("change_record", [False, True], ids=["exact-record", "changed-record"])
+def test_acknowledgement_settles_legacy_pending_record_without_parts(
+    connected, monkeypatch, external_owner, change_record,
+):
+    from astrid.sdk import timeline
+
+    from astrid.sdk.timeline.outbox import Outbox
+
+    client, generated, path = connected
+    editor = timeline.open("project-slug", "timeline-slug", client=client, outbox_path=path)
+    command = {"schema_version": 1, "op": "clip.move", "version": "1",
+               "select": "parent/clip:a", "args": {"on": 4}}
+    pending_id = "pc_legacy_without_parts"
+    owner_path = path.parent / "legacy-owner.json" if external_owner else path
+    legacy_record = {
+        "id": pending_id, "state": "pending", "key": "legacy-edit",
+        "label": "Legacy edit", "part": 0, "receipts": [],
+        "base": {"revision_id": "r0", "publication_id": "pub0"},
+        "commands": [copy.deepcopy(command)],
+    }
+    owner_state = (editor.session._state() if not external_owner else {
+        "scope": {**editor.session._state()["scope"], "actor_id": "legacy-owner"},
+    })
+    owner_state["pending_changes"] = {pending_id: copy.deepcopy(legacy_record)}
+    Outbox(owner_path).write(owner_state)
+
+    if change_record:
+        send = generated.commit_timeline
+
+        def change_before_ack(*args, **kwargs):
+            owner = Outbox(owner_path)
+            with owner.locked():
+                state = owner.read()
+                saved = state["pending_changes"][pending_id]
+                saved["commands"] = [{**copy.deepcopy(command), "args": {"on": 9}}]
+                owner.write(state)
+            return send(*args, **kwargs)
+
+        monkeypatch.setattr(generated, "commit_timeline", change_before_ack)
+
+    result = editor.session.submit(
+        [command], label="Legacy edit", steps=[], reads=[], expected_state=editor.session._state(),
+        pending_id=pending_id, pending_path=str(owner_path), pending_part=0,
+        pending_how="retry",
+    )
+
+    saved = Outbox(owner_path).read()["pending_changes"][pending_id]
+    assert result["status"] == "accepted"
+    if change_record:
+        assert saved["state"] == "pending"
+        assert saved["commands"][0]["args"] == {"on": 9}
+        assert saved["receipts"] == []
+    else:
+        assert saved["state"] == "landed"
+        assert saved["closed_by"]["publication_id"] == result["receipt"]["receipt_id"]
+        assert saved["receipts"] == [result["receipt"]["receipt_id"]]
+
+
 def test_function_key_replays_original_receipt_after_undo_without_evaluation(connected):
     from astrid.sdk import timeline
 
