@@ -19,9 +19,6 @@ if __package__:
         M4_4A_PROVISIONAL_AGENT_REF,
         M4_4A_REQUIRED_AGENT_ANCESTORS,
         M4_4A_REQUIRED_EVENTS,
-        M4_4B_LOCAL_SMOKE,
-        M4_6_MATRIX,
-        M4_6_SLOT_IDS,
         RELEASE1_JOB_IDS,
         RELEASE1_MATRIX,
     )
@@ -35,9 +32,6 @@ else:
             M4_4A_PROVISIONAL_AGENT_REF,
             M4_4A_REQUIRED_AGENT_ANCESTORS,
             M4_4A_REQUIRED_EVENTS,
-            M4_4B_LOCAL_SMOKE,
-            M4_6_MATRIX,
-            M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
         )
@@ -50,9 +44,6 @@ else:
             M4_4A_PROVISIONAL_AGENT_REF,
             M4_4A_REQUIRED_AGENT_ANCESTORS,
             M4_4A_REQUIRED_EVENTS,
-            M4_4B_LOCAL_SMOKE,
-            M4_6_MATRIX,
-            M4_6_SLOT_IDS,
             RELEASE1_JOB_IDS,
             RELEASE1_MATRIX,
         )
@@ -531,154 +522,10 @@ def evaluate_m4_4a_backend_matrix(candidate, results):
     return errors
 
 
-def evaluate_m4_5_matrix(results):
-    """Require one authentic hosted receipt for each distinct Release-2 scenario."""
-    if __package__:
-        from . import journey_release2
-    else:
-        try:
-            import journey_release2
-        except ModuleNotFoundError:
-            from scripts import journey_release2
-
-    expected = set(journey_release2.RELEASE2_SCENARIO_IDS)
-    found = {}
-    errors = []
-    for path in Path(results).rglob("journey-result.json"):
-        try:
-            row = read(path)
-        except (OSError, ValueError) as exc:
-            errors.append(f"{path}: {exc}")
-            continue
-        if row.get("receipt_kind") != "release2-installed-lifecycle":
-            continue
-        scenario_id = row.get("scenario_id")
-        if scenario_id not in expected:
-            errors.append(f"{path}: unknown M4-5 scenario_id {scenario_id!r}")
-        elif scenario_id in found:
-            errors.append(f"{scenario_id}: duplicate M4-5 receipt")
-        else:
-            found[scenario_id] = row
-    for scenario_id in journey_release2.RELEASE2_SCENARIO_IDS:
-        row = found.get(scenario_id)
-        if row is None:
-            errors.append(f"{scenario_id}: missing M4-5 receipt")
-            continue
-        try:
-            journey_release2.validate_receipt(row)
-        except ValueError as exc:
-            errors.append(f"{scenario_id}: {exc}")
-        if row.get("status") != "pass" or row.get("evidence_kind") != "hosted-lifecycle":
-            errors.append(f"{scenario_id}: only a hosted-lifecycle pass is admissible")
-        if row.get("source_override_test_mode") is not False:
-            errors.append(f"{scenario_id}: source override evidence is not admissible")
-    return errors
-
-
-def evaluate_m4_4b_local_smoke(results):
-    """Validate the one local-process M4-4b smoke without hosted promotion."""
-    if __package__:
-        from .fully_local_executor import validate_execution_receipt
-    else:
-        try:
-            from fully_local_executor import validate_execution_receipt
-        except ModuleNotFoundError:
-            from scripts.fully_local_executor import validate_execution_receipt
-
-    expected_name = "m4-4b-local-result.json"
-    files = sorted(Path(results).rglob(expected_name))
-    errors = []
-    if len(files) != 1:
-        errors.append(f"M4-4b local smoke requires exactly one receipt, found {len(files)}")
-    for path in files:
-        try:
-            row = read(path)
-            validate_execution_receipt(row)
-        except (OSError, ValueError, TypeError) as exc:
-            errors.append(f"{path}: invalid M4-4b local receipt: {exc}")
-            continue
-        if row.get("receipt_kind") != "m4-4b-fully-local-editor-journey":
-            errors.append(f"{path}: unexpected M4-4b receipt kind")
-        if row.get("evidence_class") != M4_4B_LOCAL_SMOKE["evidence_class"]:
-            errors.append(f"{path}: M4-4b receipt is not local_process evidence")
-        if row.get("hosted_linux_receipt") is not False or row.get("hosted_linux_receipt_required") is not True:
-            errors.append(f"{path}: local M4-4b receipt cannot satisfy hosted Linux evidence")
-        if (row.get("platform") or {}).get("linux_receipt") is not False:
-            errors.append(f"{path}: local M4-4b receipt cannot claim linux_receipt")
-    return errors
-
-
-def evaluate_m4_6_local_matrix(results, candidate):
-    """Validate all nine local-disposable M4-6 executions, never hosted receipts."""
-    if __package__:
-        from . import failure_mode_executor
-        from .check_failure_receipts import verify_evidence_files
-        from .journey_failure_modes import candidate_errors
-    else:
-        try:
-            import failure_mode_executor
-            from check_failure_receipts import verify_evidence_files
-            from journey_failure_modes import candidate_errors
-        except ModuleNotFoundError:
-            from scripts import failure_mode_executor
-            from scripts.check_failure_receipts import verify_evidence_files
-            from scripts.journey_failure_modes import candidate_errors
-
-    errors = [f"candidate: {error}" for error in candidate_errors(candidate)]
-    expected = {row["job_id"]: row for row in M4_6_MATRIX}
-    found = {}
-    for path in Path(results).rglob("m4-6-local-result.json"):
-        try:
-            row = read(path)
-        except (OSError, ValueError) as exc:
-            errors.append(f"{path}: {exc}")
-            continue
-        slot_id = row.get("slot_id")
-        if slot_id not in expected:
-            errors.append(f"{path}: unknown M4-6 local slot {slot_id!r}")
-        elif slot_id in found:
-            errors.append(f"{slot_id}: duplicate M4-6 local receipt")
-        else:
-            found[slot_id] = (row, path)
-    for slot_id in M4_6_SLOT_IDS:
-        entry = found.get(slot_id)
-        if entry is None:
-            errors.append(f"{slot_id}: missing M4-6 local execution")
-            continue
-        row, path = entry
-        contract = expected[slot_id]
-        for key, value in (("receipt_kind", "m4-6-local-disposable-execution"),
-                           ("status", "exercised"), ("slot_id", slot_id),
-                           ("execution_scope", "local-disposable"),
-                           ("source_override_test_mode", False)):
-            if row.get(key) != value:
-                errors.append(f"{slot_id}: local receipt {key} is not {value!r}")
-        observation = row.get("observation")
-        if not isinstance(observation, dict):
-            errors.append(f"{slot_id}: local executor observation is missing or malformed")
-            continue
-        if row.get("candidate") != candidate:
-            errors.append(f"{slot_id}: local receipt candidate tuple differs from the frozen tuple")
-        observed_candidate = observation.get("candidate_checkouts") or {}
-        if (observation.get("manifest_sha256") != candidate.get("manifest_sha256")
-                or any((observed_candidate.get(name) or {}).get("sha") != candidate.get(name)
-                       for name in ("app", "agent", "runtime", "pinokio"))):
-            errors.append(f"{slot_id}: local executor observed a wrong candidate tuple")
-        if (observation.get("slot_id") != slot_id or observation.get("runner_image") != contract["runner"]
-                or observation.get("shell") != contract["shell"]
-                or observation.get("execution_scope") != "local-disposable"
-                or (observation.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable"):
-            errors.append(f"{slot_id}: local executor observation has a wrong tuple or scope")
-        observation_errors = failure_mode_executor.execution_observation_errors(observation)
-        errors.extend(f"{slot_id}: {error}" for error in observation_errors)
-        errors.extend(f"{slot_id}: {error}" for error in verify_evidence_files(row, path))
-    return errors
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate", type=Path)
-    parser.add_argument("--app-checkout", type=Path)
+    parser.add_argument("--candidate", required=True, type=Path)
+    parser.add_argument("--app-checkout", required=True, type=Path)
     parser.add_argument("--results", type=Path)
     parser.add_argument("--expected-runner", choices=("ubuntu-24.04", "ubuntu-22.04", "windows-2022", "macos-14", "local"))
     parser.add_argument("--expected-shell", choices=("sh", "powershell.exe", "pwsh.exe"))
@@ -690,49 +537,24 @@ def main():
                         help="require the exact nine Release-1 job receipts under --results")
     parser.add_argument("--aggregate-m4-4a", action="store_true",
                         help="require all three hosted Pinokio backend M4-4a receipts")
-    parser.add_argument("--aggregate-m4-5", action="store_true",
-                        help="require all twelve hosted Release-2 scenario receipts")
-    parser.add_argument("--aggregate-m4-4b-local", action="store_true",
-                        help="require one local-process M4-4b smoke receipt; never hosted evidence")
-    parser.add_argument("--aggregate-m4-6-local", action="store_true",
-                        help="require all nine separately retained local-disposable M4-6 outputs")
     args = parser.parse_args()
     errors = []
     try:
-        aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local))
-        if aggregate_modes > 1:
+        candidate = read(args.candidate)
+        manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
+        if args.aggregate_release1 and args.aggregate_m4_4a:
             raise ValueError("choose one aggregate mode")
-        if args.aggregate_m4_4b_local:
-            if args.results is None:
-                raise ValueError("--results is required with --aggregate-m4-4b-local")
-            errors.extend(evaluate_m4_4b_local_smoke(args.results))
-        elif args.aggregate_m4_6_local:
-            if args.results is None or args.candidate is None:
-                raise ValueError("--results and --candidate are required with --aggregate-m4-6-local")
-            errors.extend(evaluate_m4_6_local_matrix(args.results, read(args.candidate)))
-        else:
-            if args.candidate is None or args.app_checkout is None:
-                raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
-            candidate = read(args.candidate)
-            manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
+        if args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
             errors.extend(evaluate_release1_matrix(candidate, args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_m4_4a:
+        elif args.aggregate_m4_4a:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-m4-4a")
             if args.allow_source_override:
                 raise ValueError("M4-4a aggregate never admits a source override")
             errors.extend(evaluate_m4_4a_backend_matrix(candidate, args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_m4_5:
-            if args.results is None:
-                raise ValueError("--results is required with --aggregate-m4-5")
-            if args.allow_source_override:
-                raise ValueError("M4-5 aggregate never admits a source override")
-            errors.extend(evaluate_m4_5_matrix(args.results))
-        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and not args.prepare_only:
+        elif not args.prepare_only:
             if args.cadence == "release-candidate":
                 raise ValueError("release-candidate evidence requires --aggregate-release1")
             if args.results is None or args.expected_runner is None or args.expected_shell is None:

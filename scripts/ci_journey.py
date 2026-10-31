@@ -313,84 +313,6 @@ def prepare_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
             "not_applicable": []}
 
 
-def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
-    """Run the real M4-4a executor from a complete, explicit run-owned config."""
-    config_path = getattr(args, "pinokio_backend_config", None)
-    if config_path is None:
-        raise ValueError("pinokio-backend requires --pinokio-backend-config; source-only receipts cannot pass")
-    config = read_json(config_path)
-    if config.get("source_override_test_mode") is not False:
-        raise ValueError("M4-4a executor config must explicitly disable source overrides")
-    expected_os = journey_os_label()
-    identity = runner_identity()
-    runner = identity["runner_image"]
-    expected_platform = {
-        "os": expected_os,
-        "runner": runner,
-        "shell": args.shell,
-        "hosted": runner != "local",
-    }
-    platform_input = config.get("platform") or {}
-    for name, value in expected_platform.items():
-        if platform_input.get(name) != value:
-            raise ValueError(f"M4-4a config platform.{name} must match this matrix job")
-    if config.get("candidate_checkouts") is None:
-        raise ValueError("M4-4a executor requires explicit candidate checkout inputs")
-    actual = getattr(args, "candidate_checkouts", None)
-    if not isinstance(actual, dict):
-        raise ValueError("M4-4a executor requires the frozen four-checkout tuple")
-    checkouts = {"app": args.app_checkout,
-                 "agent": args.candidate_agent_checkout,
-                 "runtime": args.candidate_runtime_checkout,
-                 "pinokio": args.pinokio_checkout}
-    for name, checkout in checkouts.items():
-        supplied = config["candidate_checkouts"].get(name)
-        if not isinstance(supplied, dict):
-            raise ValueError(f"M4-4a config candidate_checkouts.{name} is required")
-        if (Path(supplied.get("path", "")).resolve() != checkout.resolve()
-                or supplied.get("ref") != actual[name]["sha"]):
-            raise ValueError(f"M4-4a config candidate {name} differs from the frozen checkout")
-    old_input = config.get("old_launcher")
-    if not isinstance(old_input, dict) or old_input.get("ref") != args.old_launcher_ref:
-        raise ValueError("M4-4a config old launcher differs from --old-launcher-ref")
-    old = validate_old_launcher_provenance(args.pinokio_checkout, args.old_launcher_ref)
-    first_steps = build_pinokio_action(args.pinokio_checkout, args.old_launcher_ref,
-                                       app_directory=args.pinokio_checkout)["run"]
-    candidate_pinokio_ref = actual["pinokio"]["sha"]
-    retry_steps = build_pinokio_action(args.pinokio_checkout, candidate_pinokio_ref,
-                                       app_directory=args.pinokio_checkout)["run"]
-    actions = config.get("actions") or {}
-    if (not isinstance(actions.get("first"), dict)
-            or actions["first"].get("steps") != first_steps
-            or not isinstance(actions.get("retry"), dict)
-            or actions["retry"].get("steps") != retry_steps):
-        raise ValueError("M4-4a explicit action arrays must match the real immutable Pinokio action builder")
-    config.setdefault("old_launcher", {}).update({
-        "checkout": str(args.pinokio_checkout.resolve()), "path": old["path"],
-        "sha256": old["sha256"],
-    })
-    try:
-        from . import pinokio_backend_executor as backend_executor
-    except ImportError:
-        import pinokio_backend_executor as backend_executor
-    with tempfile.TemporaryDirectory(prefix="astrid-m4-4a-executor-") as temporary:
-        executor_output = Path(temporary) / "output"
-        receipt = backend_executor.execute(config, executor_output)
-        if platform_input["hosted"]:
-            backend_executor.admit_hosted_receipt(receipt)
-        sidecar_root = executor_output / "pinokio-backend"
-        if not sidecar_root.is_dir():
-            raise RuntimeError("M4-4a executor omitted its required sidecars")
-        destination = evidence / "pinokio-backend"
-        if destination.exists():
-            raise RuntimeError("M4-4a receipt sidecar destination already exists")
-        shutil.copytree(sidecar_root, destination)
-    backend = receipt.get("pinokio_backend")
-    if not isinstance(backend, dict):
-        raise RuntimeError("M4-4a executor did not return a backend receipt")
-    return receipt
-
-
 def runner_identity() -> dict:
     """Record the workflow's declared image and raw hosted-runner observations."""
     label = os.environ.get("ASTRID_CI_EXPECTED_RUNNER") or "local"
@@ -1029,15 +951,18 @@ def _execute_owned(args: argparse.Namespace, root: Path, data: Path,
     write_json(result_path, result)
     try:
         if args.mode == "pinokio-backend":
-            backend_receipt = execute_pinokio_backend(args, evidence)
-            result.update(backend_receipt)
-            result["pinokio_backend"] = backend_receipt["pinokio_backend"]
-            result["source_unit_evidence"] = backend_receipt["source_unit_evidence"]
-            result["historical_compatibility"] = backend_receipt["pinokio_backend"].get(
-                "historical_compatibility")
-            result["status"] = backend_receipt["status"]
-            result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            return result
+            # The action-array boundary is intentionally usable before the
+            # hosted executor is adopted.  Do not substitute the direct
+            # installer: a source/unit receipt is visibly provisional and
+            # cannot become a hosted pass.
+            result["pinokio_backend"] = prepare_pinokio_backend(args, evidence)
+            result["source_unit_evidence"] = {
+                "status": "pass", "substitute_for_hosted": False,
+                "kind": "pinokio-action-array-source-check",
+            }
+            raise RuntimeError(
+                "M4-4a Pinokio lifecycle execution is provisional: integrated A/B hosted inputs are absent"
+            )
         if getattr(args, "job_id", None) and args.mode != "direct":
             # M4-3a owns the fail-closed driver/receipt boundary.  Fully-local
             # lifecycle ownership belongs to M4-4b; never fall back to direct.
@@ -1223,142 +1148,7 @@ def execute(args: argparse.Namespace) -> dict:
             return result
 
 
-def _shared_executor_main(argv: list[str]) -> int:
-    """Explicit shared routes for the independently owned executable modules."""
-    route = argv[0] if argv else ""
-    if route == "m4-4b":
-        route_parser = argparse.ArgumentParser(description="M4-4b local-process smoke")
-        route_parser.add_argument("--checkout", required=True, type=Path)
-        route_parser.add_argument("--state-root", required=True, type=Path)
-        route_parser.add_argument("--output", required=True, type=Path)
-        values = route_parser.parse_args(argv[1:])
-        try:
-            if sys.platform not in {"linux", "darwin"}:
-                raise ValueError("M4-4b local-process smoke supports POSIX hosts only")
-            try:
-                from .fully_local_executor import run_execution, validate_execution_receipt
-            except ImportError:
-                from fully_local_executor import run_execution, validate_execution_receipt
-            receipt = run_execution(checkout=values.checkout, state_root=values.state_root,
-                                    output=values.output)
-            validate_execution_receipt(receipt)
-            if receipt.get("evidence_class") != "local_process" or receipt.get("hosted_linux_receipt") is True:
-                raise ValueError("M4-4b smoke must remain local_process evidence")
-            if receipt.get("hosted_linux_receipt_required") is not True:
-                raise ValueError("M4-4b local receipt must retain its separate hosted Linux requirement")
-        except Exception as exc:
-            print(f"M4-4b shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    if route == "m4-5":
-        route_parser = argparse.ArgumentParser(description="Run one explicit M4-5 scenario")
-        route_parser.add_argument("--scenario-id", required=True)
-        route_parser.add_argument("--candidate", required=True, type=Path)
-        route_parser.add_argument("--boundary", required=True)
-        route_parser.add_argument("--boundary-arg", action="append", default=[])
-        route_parser.add_argument("--root", required=True, type=Path)
-        route_parser.add_argument("--data-root", required=True, type=Path)
-        route_parser.add_argument("--receipt", required=True, type=Path)
-        route_parser.add_argument("--evidence-kind", required=True,
-                                  choices=("disposable-executable", "hosted-lifecycle"))
-        values = route_parser.parse_args(argv[1:])
-        try:
-            try:
-                from . import journey_release2 as release2, release2_executor
-                from .journey_matrix import validate_m4_5_scenario
-            except ImportError:
-                import journey_release2 as release2
-                import release2_executor
-                from journey_matrix import validate_m4_5_scenario
-            row = validate_m4_5_scenario(values.scenario_id)
-            candidate = read_json(values.candidate)
-            command = [values.boundary, *values.boundary_arg]
-            if sys.platform == "win32":
-                command = windows.powershell5_command(values.boundary, values.boundary_arg)
-            receipt = release2_executor.execute_journey(
-                scenario_id=row["scenario_id"], candidate=candidate,
-                stand_in_marker=release2.STAND_IN_MARKER, channel=row["channel"],
-                mode=row["mode"], os_name=row["os"], job_id=row["job_id"],
-                runner=row["runner"], shell=row["shell"],
-                stand_in_manifest=release2.STAND_IN_MANIFEST,
-                stand_in_descriptor=release2.STAND_IN_DESCRIPTOR,
-                fixture_sums=release2.FIXTURE_SUMS, boundary_command=command,
-                root=values.root.resolve(), data_root=values.data_root.resolve(),
-                receipt_path=values.receipt, evidence_kind=values.evidence_kind,
-            )
-            if receipt.get("evidence_kind") == "hosted-lifecycle":
-                release2.validate_receipt(receipt)
-        except Exception as exc:
-            print(f"M4-5 shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    if route in {"m4-6", "m4-6-inner"}:
-        route_parser = argparse.ArgumentParser(description="Run one M4-6 local executable boundary")
-        route_parser.add_argument("--slot-id", required=True)
-        route_parser.add_argument("--candidate", required=True, type=Path)
-        route_parser.add_argument("--fixture", required=True, type=Path)
-        route_parser.add_argument("--output", required=True, type=Path)
-        route_parser.add_argument("--work-root", required=True, type=Path)
-        route_parser.add_argument("--agent-repo", required=True, type=Path)
-        route_parser.add_argument("--release0-runtime-repo", required=True, type=Path)
-        values = route_parser.parse_args(argv[1:])
-        if route == "m4-6" and sys.platform == "win32":
-            command = windows.powershell5_command(
-                sys.executable,
-                [str(Path(__file__).resolve()), "--shared-executor", "m4-6-inner", *argv[1:]],
-            )
-            return subprocess.run(command, check=False).returncode
-        try:
-            try:
-                from . import failure_mode_executor, journey_failure_modes as failure
-                from .journey_matrix import validate_m4_6_slot
-            except ImportError:
-                import failure_mode_executor
-                import journey_failure_modes as failure
-                from journey_matrix import validate_m4_6_slot
-            slot = validate_m4_6_slot(values.slot_id)
-            candidate = failure.read_json(values.candidate)
-            if failure.candidate_errors(candidate):
-                raise ValueError("M4-6 candidate tuple is incomplete")
-            observation = failure_mode_executor.execute(
-                slot["job_id"], candidate, values.fixture, values.work_root,
-                agent_repo=values.agent_repo, runtime_repo=values.release0_runtime_repo,
-            )
-            executor_errors = failure_mode_executor.execution_observation_errors(observation)
-            if executor_errors:
-                raise ValueError("M4-6 local executor observations failed: " + "; ".join(executor_errors))
-            if observation.get("execution_scope") != "local-disposable":
-                raise ValueError("M4-6 executable boundary must remain local-disposable")
-            evidence_source = values.work_root / "evidence"
-            values.output.parent.mkdir(parents=True, exist_ok=True)
-            if evidence_source.is_dir():
-                shutil.copytree(evidence_source, values.output.parent / "evidence")
-            receipt = {
-                "schema_version": 1,
-                "receipt_kind": "m4-6-local-disposable-execution",
-                "status": "exercised",
-                "slot_id": slot["job_id"],
-                "execution_scope": "local-disposable",
-                "source_override_test_mode": False,
-                "candidate": candidate,
-                "evidence_files": observation.get("evidence_files", []),
-                "observation": observation,
-            }
-            failure.write_json(values.output, receipt)
-            if (observation.get("runner_provenance") or {}).get("ImageVersion") != "local-disposable":
-                raise ValueError("M4-6 local execution scope was not retained in its receipt")
-        except Exception as exc:
-            print(f"M4-6 shared route failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    print(f"Unknown shared executor route: {route!r}", file=sys.stderr)
-    return 2
-
-
 def main(argv: list[str] | None = None) -> int:
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if raw_argv[:1] == ["--shared-executor"]:
-        return _shared_executor_main(raw_argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--leg", choices=("fresh-install", "stale-update", "reinstall", *VERSION_JUMP_LEGS), required=True)
     parser.add_argument("--old-declaration", choices=("bare", "pruned"),
@@ -1381,8 +1171,6 @@ def main(argv: list[str] | None = None) -> int:
                         help="required full SHA for the approved pre-self-pull Pinokio action")
     parser.add_argument("--stopped-path-agent-ref",
                         help="required full candidate Agent SHA carrying the integrated stopped path")
-    parser.add_argument("--pinokio-backend-config", type=Path,
-                        help="explicit JSON inputs for the real M4-4a lifecycle executor")
     parser.add_argument("--release0-fixture", type=Path,
                         help="the checked-in frozen release-0 fixture directory for the direct 0-to-1 leg")
     parser.add_argument("--allow-release0-to-release1", action="store_true",
@@ -1409,12 +1197,8 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("pinokio-backend requires --old-launcher-ref")
             if not args.stopped_path_agent_ref:
                 parser.error("pinokio-backend requires --stopped-path-agent-ref")
-            if not args.pinokio_backend_config:
-                parser.error("pinokio-backend requires --pinokio-backend-config")
         elif args.old_launcher_ref or args.stopped_path_agent_ref:
             parser.error("Pinokio backend refs require a pinokio-backend job")
-        if args.mode != "pinokio-backend" and args.pinokio_backend_config:
-            parser.error("--pinokio-backend-config is only valid for pinokio-backend")
     elif args.old_launcher_ref or args.stopped_path_agent_ref:
         parser.error("Pinokio backend refs require a Release-1 Pinokio backend job")
     if args.leg == "release0-to-release1":
@@ -1426,8 +1210,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("release-0 fixture admission is only valid for release0-to-release1")
     if sys.platform not in {"linux", "darwin", "win32"}:
         parser.error("unsupported journey operating system")
-    if sys.platform == "win32" and args.shell != "powershell.exe":
-        parser.error("Windows hosted journeys require Windows PowerShell 5.1 (powershell.exe)")
+    if sys.platform == "win32" and args.shell not in {"powershell.exe", "pwsh.exe"}:
+        parser.error("Windows requires powershell.exe or pwsh.exe")
     if sys.platform != "win32" and args.shell != "sh":
         parser.error("Linux/macOS require sh")
     try:

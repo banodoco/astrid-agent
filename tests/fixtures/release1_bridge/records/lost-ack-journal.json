@@ -1,7 +1,0 @@
-{
-  "format": "astrid-install-update/v1",
-  "operation_id": "33333333333333333333333333333333",
-  "transaction_id": "tx-lost-ack-3333",
-  "step": "pending",
-  "target_release": 2
-}
