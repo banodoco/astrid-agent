@@ -883,7 +883,9 @@ class TimelineSession:
                     state.pop(field, None)
             self.outbox.write(state)
         record = _enrich_pending_diff(self, record)
-        record = _pending_clash(self, record)
+        if (record.get("state") == "pending"
+                and (record.get("failure", {}).get("details") or {}).get("status") == "conflict"):
+            record = _pending_clash(self, record)
         error = CommitConflict(failure, label=label, timeline_id=self.timeline_id,
                                project_id=self.project_id, pending_id=record["id"],
                                clash=record.get("clash") or clash(record))
@@ -1107,7 +1109,8 @@ class TimelineSession:
                 if record is not None:
                     if external_conflict is None:
                         record = _enrich_pending_diff(self, record)
-                    if external_conflict is None and details.get("status") == "conflict":
+                    if (external_conflict is None and record.get("state") == "pending"
+                            and (record.get("failure", {}).get("details") or {}).get("status") == "conflict"):
                         record = _pending_clash(self, record)
                 from ._pending import clash
                 error_type = CommitConflict if details.get("status") == "conflict" else CommitRefused
