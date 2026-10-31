@@ -624,6 +624,39 @@ def test_listener_owner_mismatch_fails_readiness(tmp_path, monkeypatch):
     _operation(spec, "stop")
 
 
+def test_stop_refuses_when_listener_owner_changes(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    _operation(spec, "start")
+    state_path = Path(spec["state_path"])
+    before = state_path.read_bytes()
+    calls = 0
+
+    def owner_recheck(*_args):
+        nonlocal calls
+        calls += 1
+        return calls == 1
+
+    monkeypatch.setattr(adapter, "_listener_owned_by", owner_recheck)
+    with pytest.raises(adapter.AdapterError, match="changed before stop"):
+        _operation(spec, "stop")
+    assert calls == 2
+    assert state_path.read_bytes() == before
+    monkeypatch.undo()
+    _operation(spec, "stop")
+
+
+def test_linux_zombie_process_is_not_observed_as_live(monkeypatch):
+    monkeypatch.setattr(adapter.sys, "platform", "linux")
+    monkeypatch.setattr(adapter, "_linux_process_state", lambda _pid: "Z")
+    assert adapter._pid_alive(2222) is False
+
+
+def test_linux_live_process_is_observed_as_live(monkeypatch):
+    monkeypatch.setattr(adapter.sys, "platform", "linux")
+    monkeypatch.setattr(adapter, "_linux_process_state", lambda _pid: "S")
+    assert adapter._pid_alive(2222) is True
+
+
 def test_windows_birth_uses_explicit_cim_powershell_argv(monkeypatch):
     captured = {}
 
@@ -665,6 +698,7 @@ def test_posix_stop_targets_authenticated_process_group(monkeypatch, tmp_path, o
     calls = []
     written = {}
     monkeypatch.setattr(adapter, "_process_matches", lambda *_args: True)
+    monkeypatch.setattr(adapter, "_listener_owned_by", lambda *_args: True)
     monkeypatch.setattr(adapter, "_birth", lambda *_args: "birth")
     monkeypatch.setattr(adapter, "_pid_alive", lambda *_args: False)
     monkeypatch.setattr(
@@ -692,6 +726,7 @@ def test_windows_stop_uses_native_tree_kill_after_birth_recheck(monkeypatch, tmp
     }
     captured = {}
     monkeypatch.setattr(adapter, "_process_matches", lambda *_args: True)
+    monkeypatch.setattr(adapter, "_listener_owned_by", lambda *_args: True)
     monkeypatch.setattr(adapter, "_birth", lambda *_args: "birth")
     monkeypatch.setattr(adapter, "_pid_alive", lambda *_args: False)
     monkeypatch.setattr(adapter, "_wait_port_free", lambda *_args, **_kwargs: True)
