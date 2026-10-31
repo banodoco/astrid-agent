@@ -1,0 +1,86 @@
+name: G-12 Windows CPU journey
+
+on:
+  push:
+    branches: ["lane/M-GPU/g12-windows-cpu"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cpu:
+    name: Install and generate through local CPU ComfyUI
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - name: Check out this Agent commit
+        uses: actions/checkout@v4
+
+      - name: Set up the journey and ComfyUI Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check out the pinned Runtime source
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: 8f3d1091ada773af63f730f6340226a40e86ecc4
+          path: journey-runtime
+
+      - name: Check out the pinned VibeComfy source
+        uses: actions/checkout@v4
+        with:
+          repository: peteromallet/VibeComfy
+          ref: 3bebae39655eb460454885040be4d3aefaf2ef31
+          path: journey-vibecomfy
+
+      - name: Check out the official App installer
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: main
+          path: journey-app
+
+      - name: Install through the official App install.ps1
+        run: python -u scripts/ci_windows_g12_cpu.py install --installer-shell powershell.exe
+
+      - name: Start the installed Astrid Runtime Scheduled Task
+        run: python -u scripts/ci_windows_g12_cpu.py runtime-start
+
+      - name: Wait for installed Runtime and pack host readiness
+        run: python -u scripts/ci_windows_g12_cpu.py runtime-ready
+
+      - name: Install CPU PyTorch and pinned ComfyUI requirements
+        run: python -u scripts/ci_windows_g12_cpu.py comfy-install
+
+      - name: Start pinned ComfyUI in CPU mode
+        run: python -u scripts/ci_windows_g12_cpu.py comfy-start
+
+      - name: Poll ComfyUI HTTP API readiness
+        run: python -u scripts/ci_windows_g12_cpu.py comfy-ready
+
+      - name: Discover and require the attached local target using generate list JSON
+        run: python -u scripts/ci_windows_g12_cpu.py discover-target
+
+      - name: Reuse the saved generate list JSON result
+        run: python -u scripts/ci_windows_g12_cpu.py reuse-list
+
+      - name: Run model-free EmptyImage to SaveImage workflow
+        run: python -u scripts/ci_windows_g12_cpu.py workflow
+
+      - name: Show the successful workflow task
+        run: python -u scripts/ci_windows_g12_cpu.py tasks-show
+
+      - name: Stop ComfyUI
+        if: always()
+        run: python -u scripts/ci_windows_g12_cpu.py comfy-stop
+
+      - name: Upload G-12 journey evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: G12-windows-cpu-${{ github.run_id }}
+          path: ${{ runner.temp }}/G12-windows-cpu/
+          if-no-files-found: warn
