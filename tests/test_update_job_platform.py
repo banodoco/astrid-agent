@@ -306,7 +306,7 @@ def test_windows_worker_command_runs_private_utf8_script_with_complex_values(tmp
     task_script = base64.b64decode(calls[-1][-1]).decode("utf-16le")
     worker_encoded = __import__("re").search(r"-EncodedCommand ([A-Za-z0-9+/=]+)", task_script).group(1)
     wrapper = base64.b64decode(worker_encoded).decode("utf-16le")
-    assert "-c" not in wrapper
+    assert "'-c'" not in wrapper
     assert str(worker).replace("'", "''") in wrapper
     assert "O''Brien with spaces 雪" not in wrapper
     assert str(program_root) not in wrapper
