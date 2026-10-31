@@ -20,7 +20,7 @@ from astrid.sdk.timeline.commit_session import _changed_ranges
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.commands import execute
 from astrid.sdk.timeline.commit import bundle_from_document
-from astrid.sdk.timeline.sync import CommitConflict, CommitOutcomeUnknown
+from astrid.sdk.timeline.sync import CommitConflict, CommitOutcomeUnknown, CommitRefused
 from astrid.sdk.workspace_client import WorkspaceClientError
 from astrid_runtime_client import ApiError
 from tests.sdk.test_timeline_commit_provider_document import document_fixture
@@ -550,10 +550,16 @@ def test_definitive_nonconflicts_never_rerun(connected, monkeypatch, status):
         evaluations.append(1)
         working.move("parent/clip:a", 3)
 
-    with pytest.raises(CommitConflict) as caught:
+    with pytest.raises(CommitRefused) as caught:
         tl.commit(edit)
     assert caught.value.failure["details"]["status"] == status
     assert len(evaluations) == 1
+    assert caught.value.pending_id
+    saved = tl.pending_show(caught.value.pending_id)
+    assert saved["state"] == "pending"
+    assert saved["origin"] == "function"
+    assert saved["failure"] == caught.value.failure
+    assert saved["parts"][0]["commands"]
 
 
 @pytest.mark.parametrize("lost_ack", [False, True])
@@ -908,17 +914,28 @@ def test_preview_then_function_call_evaluates_fresh_intent(connected):
     assert len(generated.accepted) == 1 and at(tl) == 1
 
 
-def test_preview_refusal_leaves_no_pending_request_or_key_reservation(connected):
+def test_preview_refusal_saves_edit_without_commit_or_key_reservation(connected):
     tl = opened(connected)
     _, generated, path = connected
     generated.refusal = ApiError(409, "conflict", "preview refused", details={"status": "refused"})
-    with pytest.raises(CommitConflict):
+    with pytest.raises(CommitRefused) as caught:
         tl.commit(lambda working: working.move("parent/clip:a", 6), dry_run=True,
                   idempotency_key="caller-key")
     state = json.loads(path.read_text())
     assert state["pending"] == [] and state["flight"] is None
     assert "commit_options" not in state and "evaluation" not in state
     assert "acknowledged" not in state and "preview_key" not in state
+    assert caught.value.pending_id
+    saved = tl.pending_show(caught.value.pending_id)
+    assert saved["state"] == "pending"
+    assert saved["origin"] == "function"
+    assert saved["failure"] == caught.value.failure
+    assert saved["failure"]["details"]["status"] == "refused"
+    assert saved["parts"][0]["commands"]
+    assert len(generated.calls) == 1
+    sent_body = json.loads(generated.calls[0][0])
+    assert sent_body["dry_run"] is True
+    assert generated.accepted == {}
 
 
 def test_callback_exception_and_nested_commit_publish_nothing(connected):
