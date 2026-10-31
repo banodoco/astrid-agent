@@ -143,11 +143,8 @@ def test_accept_refuses_competing_operation_and_pending_c2_transaction(tmp_path,
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     update_job.accept(request)
     competing = dict(request, operation_id="b" * 32)
-    monkeypatch.setattr(update_job._platform_api(), "is_registered", lambda *_args: True)
-    monkeypatch.setattr(update_job._platform_api(), "is_active", lambda *_args: True)
-    with pytest.raises(ValueError) as refusal:
+    with pytest.raises(ValueError, match="already active"):
         update_job.accept(competing)
-    assert refusal.value.reason == "busy"
 
     marker = read_json(root / "install.json")
     marker.pop("update_job")
@@ -188,20 +185,9 @@ def test_existing_c2_journal_associates_job_without_preseeding_transaction(tmp_p
     assert read_json(root / "update-transaction.json")["update_job"] == journal["update_job"]
 
 
-def _register_worker_for_test(root, job, monkeypatch):
-    """Give direct worker tests the descriptor normally persisted by launch_job."""
-    descriptor = {"format": "astrid-update-platform/v1", "system": "linux",
-                  "operation_id": job["operation_id"],
-                  "name": job["job_name"] + ".service", "unit": job["job_name"] + ".service"}
-    update_job._write_job(root, job["operation_id"], state="launching", message="Launched.",
-                          fields={"platform": descriptor})
-    monkeypatch.setattr(update_job, "_cleanup_terminal", lambda *_args, **_kwargs: update_job.read_job(root))
-
-
 def test_worker_claims_once_and_terminal_result_is_idempotent(tmp_path, monkeypatch):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     job = update_job.accept(request)
-    _register_worker_for_test(root, job, monkeypatch)
     calls = []
 
     def launch(argv, **kwargs):
@@ -247,7 +233,6 @@ def test_prior_rolled_back_journal_cannot_claim_new_job_rollback(tmp_path, monke
 def test_worker_recovers_existing_c2_journal_before_rechecking_and_launching(tmp_path, monkeypatch):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     job = update_job.accept(request)
-    _register_worker_for_test(root, job, monkeypatch)
     write_json(root / "update-transaction.json", {
         "format": "astrid-install-update/v1", "operation_id": "f" * 32,
         "transaction_kind": "migration", "step": "stopping",

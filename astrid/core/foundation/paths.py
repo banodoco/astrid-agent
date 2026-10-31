@@ -40,8 +40,6 @@ def load_checkout_script(name: str):
     if not path.is_file():
         return None
     spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load checkout script {name!r}.")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
