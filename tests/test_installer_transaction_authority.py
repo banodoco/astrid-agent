@@ -550,8 +550,9 @@ def test_cli_recovers_completed_stop_with_fresh_controller(tmp_path, monkeypatch
         def foreground_start(version, workspace, realm_id):
             lock = installer_lock_path(fresh.service.home, fresh.service.system)
             with lock.open("a+b") as stream:
-                platform.lock_file(stream.fileno(), blocking=False)
-                platform.unlock_file(stream.fileno())
+                with pytest.raises(BlockingIOError):
+                    platform.lock_file(stream.fileno(), blocking=False)
+            assert fresh._pinokio_custody is not None
             verify(version, workspace, realm_id)
 
         lifecycle = SimpleNamespace(validate=lambda *_: None, stop=fresh.stop, start=foreground_start)
@@ -672,40 +673,15 @@ def test_new_interpreter_recovers_real_completed_c1_stop(tmp_path, monkeypatch, 
     folder.mkdir(parents=True)
     profile = folder / "profile.json"
     import astrid_runtime
-    python = Path(sys.executable)
-    source = SourceProfile(
+    write_json(profile, SourceProfile(
         profile="astrid", runtime_checkout=str(Path(astrid_runtime.__file__).resolve().parents[1]),
         source_checkout=str(Path(__file__).resolve().parents[1]),
-    )
-    if kind == "app":
-        # Runtime's Pinokio stop binding is intentionally derived from the
-        # selected Version/profile/catalog composition. Keep this fixture
-        # local to the proof instead of making the shared minimal helper
-        # authoritative for callers that do not exercise Pinokio admission.
-        environment = folder / "py"
-        python = environment / "bin" / "python"
-        declaration = folder / "services.json"
-        python.parent.mkdir(parents=True)
-        python.write_text("runtime interpreter fixture\n", encoding="utf-8")
-        write_json(declaration, {"services": []})
-        source = SourceProfile(
-            profile="astrid", runtime_checkout=source.runtime_checkout,
-            source_checkout=source.source_checkout, runtime_environment=str(environment),
-            source_digest="source-v1", service_declaration=str(declaration),
-        )
-        catalog = read_json(paths.catalog_path)
-        catalog["source_profiles"] = {"astrid": source.as_dict()}
-        write_json(paths.catalog_path, catalog)
-        write_json(paths.source_profiles_dir / "astrid.json", source.as_dict())
-    write_json(profile, source.as_dict())
-    old = Version(folder, python, profile, {}, 17, managed_by)
+    ).as_dict())
+    old = Version(folder, Path(sys.executable), profile, {}, 17, managed_by)
     write_json(folder / "version.json", old.document())
     switch(root, old)
     record = {"owner": LABEL, "program_root": str(root), "data_root": str(data),
               "managed_by": managed_by}
-    if kind == "app":
-        record.update({"realm_id": "realm-1", "realm_root": str(realm),
-                       "identity": {"release": old.release, "managed_by": "pinokio"}})
     write_json(root / "install.json", record)
     write_json(backend.service.selection, record)
     backend.service.recorded = lambda: record.copy()

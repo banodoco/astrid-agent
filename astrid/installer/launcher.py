@@ -158,7 +158,7 @@ def publish_runtime_runner(root: Path) -> Path:
     """Durably publish current admission before an update can stop or migrate."""
     from runtime_protocol import platform
 
-    from . import foreground, service
+    from . import custody, foreground, service
 
     root = Path(root).absolute()
     runtime_runner = root / "run_runtime.py"
@@ -178,6 +178,7 @@ def publish_runtime_runner(root: Path) -> Path:
         ))
     )
     foreground_source = Path(foreground.__file__).read_text(encoding="utf-8")
+    custody_source = Path(custody.__file__).read_text(encoding="utf-8")
     source = (
         'import sys, importlib, types\nfrom pathlib import Path\n'
         '_retained_service = importlib.import_module("astrid.installer.service")\n'
@@ -186,9 +187,13 @@ def publish_runtime_runner(root: Path) -> Path:
         f'exec(compile({service_source!r}, "<Astrid service launcher>", "exec"), _service.__dict__)\n'
         f'_service._ADMISSION_SOURCE = {admission_source!r}\n'
         'sys.modules["astrid.installer.service"] = _service\n'
+        '_custody = types.ModuleType("astrid.installer.custody")\n'
+        f'exec(compile({custody_source!r}, "<Astrid lock custody>", "exec"), _custody.__dict__)\n'
+        f'_service._CUSTODY_KEEPER_SOURCE = {inspect.getsource(custody.keeper)!r}\n'
         '_foreground = {"__name__": "astrid.installer.foreground", '
         '"__package__": "astrid.installer"}\n'
         f'exec(compile({foreground_source!r}, "<Astrid foreground launcher>", "exec"), _foreground)\n'
+        '_foreground["_CUSTODY_ATTACH"] = _custody.attach\n'
         '_foreground["launch"](Path(__file__).resolve().parent, sys.argv[1:])\n'
     )
     fd, temporary = platform.private_temporary(root, ".run_runtime.py.")
