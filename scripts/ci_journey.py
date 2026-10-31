@@ -365,6 +365,11 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
             or not isinstance(actions.get("retry"), dict)
             or actions["retry"].get("steps") != retry_steps):
         raise ValueError("M4-4a explicit action arrays must match the real immutable Pinokio action builder")
+    try:
+        from .shared_journey_driver import JourneyDriver
+    except ImportError:
+        from shared_journey_driver import JourneyDriver
+    config = JourneyDriver.compose_pinokio_backend_config(config)
     config.setdefault("old_launcher", {}).update({
         "checkout": str(args.pinokio_checkout.resolve()), "path": old["path"],
         "sha256": old["sha256"],
@@ -375,7 +380,9 @@ def execute_pinokio_backend(args: argparse.Namespace, evidence: Path) -> dict:
         import pinokio_backend_executor as backend_executor
     with tempfile.TemporaryDirectory(prefix="astrid-m4-4a-executor-") as temporary:
         executor_output = Path(temporary) / "output"
-        receipt = backend_executor.execute(config, executor_output)
+        receipt = JourneyDriver.execute_pinokio_backend(
+            config, executor_output, backend_executor
+        )
         if platform_input["hosted"]:
             backend_executor.admit_hosted_receipt(receipt)
         sidecar_root = executor_output / "pinokio-backend"
@@ -1272,9 +1279,17 @@ def _shared_executor_main(argv: list[str]) -> int:
                 from journey_matrix import validate_m4_5_scenario
             row = validate_m4_5_scenario(values.scenario_id)
             candidate = read_json(values.candidate)
-            command = [values.boundary, *values.boundary_arg]
+            try:
+                from .shared_journey_driver import JourneyDriver
+            except ImportError:
+                from shared_journey_driver import JourneyDriver
+            command = JourneyDriver.boundary_command(
+                values.boundary,
+                values.boundary_arg,
+                values.evidence_kind,
+            )
             if sys.platform == "win32":
-                command = windows.powershell5_command(values.boundary, values.boundary_arg)
+                command = windows.powershell5_command(command[0], command[1:])
             receipt = release2_executor.execute_journey(
                 scenario_id=row["scenario_id"], candidate=candidate,
                 stand_in_marker=release2.STAND_IN_MARKER, channel=row["channel"],
@@ -1290,6 +1305,52 @@ def _shared_executor_main(argv: list[str]) -> int:
                 release2.validate_receipt(receipt)
         except Exception as exc:
             print(f"M4-5 shared route failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if route == "m4-6-hosted":
+        route_parser = argparse.ArgumentParser(
+            description="Run one M4-6 hosted native-service journey"
+        )
+        route_parser.add_argument("--slot-id", required=True)
+        route_parser.add_argument("--candidate", required=True, type=Path)
+        route_parser.add_argument("--fixture", required=True, type=Path)
+        route_parser.add_argument("--output", required=True, type=Path)
+        route_parser.add_argument("--work-root", required=True, type=Path)
+        route_parser.add_argument("--app-repo", required=True, type=Path)
+        route_parser.add_argument("--agent-repo", required=True, type=Path)
+        route_parser.add_argument("--runtime-repo", required=True, type=Path)
+        route_parser.add_argument("--pinokio-repo", required=True, type=Path)
+        route_parser.add_argument("--journey-driver-config", required=True, type=Path)
+        values = route_parser.parse_args(argv[1:])
+        try:
+            try:
+                from . import native_service_adapter as native
+                from .shared_journey_driver import journey_driver_factory
+            except ImportError:
+                import native_service_adapter as native
+                from shared_journey_driver import journey_driver_factory
+            if native.HOSTED_ADMISSION_VERIFIER is None:
+                raise RuntimeError(
+                    "hosted_admission_verifier: NEEDS B/platform-owned external authentication"
+                )
+            if native.JOURNEY_DRIVER_FACTORY is not None:
+                raise RuntimeError("native journey driver is already registered")
+            native.register_journey_driver(journey_driver_factory(values.journey_driver_config))
+            native_args = [
+                "--slot-id", values.slot_id,
+                "--candidate", str(values.candidate),
+                "--fixture", str(values.fixture),
+                "--work-root", str(values.work_root),
+                "--app-repo", str(values.app_repo),
+                "--agent-repo", str(values.agent_repo),
+                "--runtime-repo", str(values.runtime_repo),
+                "--pinokio-repo", str(values.pinokio_repo),
+                "--output", str(values.output),
+            ]
+            if native.main(native_args) != 0:
+                raise RuntimeError("native hosted journey failed closed")
+        except Exception as exc:
+            print(f"M4-6 hosted shared route failed: {exc}", file=sys.stderr)
             return 1
         return 0
     if route in {"m4-6", "m4-6-inner"}:

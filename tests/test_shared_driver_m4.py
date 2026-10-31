@@ -163,6 +163,34 @@ def test_m4_6_route_fails_on_executor_observation_errors(tmp_path, monkeypatch):
     assert not (tmp_path / "result.json").exists()
 
 
+def test_m4_6_hosted_route_fails_before_mutation_without_b_verifier(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import native_service_adapter as native
+
+    monkeypatch.setattr(native, "HOSTED_ADMISSION_VERIFIER", None)
+    monkeypatch.setattr(native, "JOURNEY_DRIVER_FACTORY", None)
+    output = tmp_path / "hosted" / "journey-failure-result.json"
+    args = [
+        "m4-6-hosted",
+        "--slot-id", "direct-linux",
+        "--candidate", str(tmp_path / "candidate.json"),
+        "--fixture", str(tmp_path / "fixture"),
+        "--output", str(output),
+        "--work-root", str(tmp_path / "work"),
+        "--app-repo", str(tmp_path / "app"),
+        "--agent-repo", str(tmp_path / "agent"),
+        "--runtime-repo", str(tmp_path / "runtime"),
+        "--pinokio-repo", str(tmp_path / "pinokio"),
+        "--journey-driver-config", str(tmp_path / "driver.json"),
+    ]
+
+    assert ci_journey._shared_executor_main(args) == 1
+    assert "NEEDS B/platform-owned external authentication" in capsys.readouterr().err
+    assert native.JOURNEY_DRIVER_FACTORY is None
+    assert not output.exists()
+
+
 def test_unknown_shared_route_fails_closed(capsys):
     assert ci_journey._shared_executor_main(["not-a-route"]) == 2
     assert "Unknown shared executor route" in capsys.readouterr().err
