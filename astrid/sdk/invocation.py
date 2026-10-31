@@ -56,7 +56,13 @@ _INTERNAL_DISPATCH_TOKEN = object()
 
 
 def _validate_generation_metadata(value: Any) -> dict[str, Any]:
-    """Return a small JSON metadata object safe to persist with a generation."""
+    """Copy extensible generation metadata, including the optional ``gen`` contract.
+
+    ``gen`` carries kind, origin, generator, model, mode, backend, target,
+    machine, workflow_digest, task_id, run_id, seed, cost_usd, duration_ms,
+    and tags. Preserve caller metadata and imported provenance as supplied;
+    unavailable facts need not be invented to publish an older record.
+    """
     if value is None:
         return {}
     if not isinstance(value, Mapping):

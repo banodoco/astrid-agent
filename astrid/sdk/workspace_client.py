@@ -1063,8 +1063,23 @@ class WorkspaceClient:
     def list_run_events(self, run_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_run_events", run_id, cursor=cursor, limit=limit)
 
-    def list_generations(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
-        return self._call_generated("list_generations", project_id, cursor=cursor, limit=limit)
+    def list_generations(
+        self,
+        project_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        kind: str | None = None,
+        model: str | None = None,
+        target: str | None = None,
+        tag: str | None = None,
+    ) -> Any:
+        filters = {
+            name: value
+            for name, value in (("kind", kind), ("model", model), ("target", target), ("tag", tag))
+            if value is not None
+        }
+        return self._call_generated("list_generations", project_id, cursor=cursor, limit=limit, **filters)
 
     def get_generation(self, generation_id: str) -> Any:
         return self._call_generated("get_generation", generation_id)

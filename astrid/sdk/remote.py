@@ -2559,8 +2559,13 @@ class RemoteGenerations(_RemoteFamily):
             source_task_id=source_task_id,
             idempotency_key=key,
         )
-    def list(self, project, *, cursor=None, limit=50):
-        result = self._typed("list_generations", project, cursor=cursor, limit=limit)
+    def list(self, project, *, cursor=None, limit=50, kind=None, model=None, target=None, tag=None):
+        filters = {
+            name: value
+            for name, value in (("kind", kind), ("model", model), ("target", target), ("tag", tag))
+            if value is not None
+        }
+        result = self._typed("list_generations", project, cursor=cursor, limit=limit, **filters)
         if not result.ok:
             return result
         page = page_pair(result.data)
