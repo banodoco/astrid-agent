@@ -308,16 +308,17 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
         raise ValueError("The interrupted update identity does not match this installation.")
     if transaction.get("transaction_kind") not in {None, "migration", "app"}:
         raise ValueError("The interrupted update transaction kind is invalid.")
-    if save is None:
+    persist_callback = save
+    if persist_callback is None:
         installer = Installer(root, data, backend)
 
-        def save(step, **details):
+        def persist_default(step, **details):
             installer._save_update(transaction, step, **details)
-    persist = save
+        persist_callback = persist_default
 
-    def save(step, **details):
+    def write_step(step, **details):
         transaction.update(step=step, **details)
-        persist(step, **details)
+        persist_callback(step, **details)
 
     # New journals publish staged before any stop or workspace backup. The old
     # v1 migration writer published staged only after stop and backup, so it
@@ -325,7 +326,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     if (transaction.get("step") == "staged"
             and transaction.get("transaction_kind") in {"migration", "app"}
             and transaction.get("backup") is None):
-        save("complete", outcome="recovered_before_stop")
+        write_step("complete", outcome="recovered_before_stop")
         return
     realm = transaction["realm"]
     absolute(realm["realm_root"])
@@ -342,7 +343,7 @@ def recover_transaction(root: Path, data: Path, backend, *, stop, switch_old,
     rollback_transaction(
         root, data, backend, transaction, stop=stop, switch_old=switch_old,
         activate_old=activate_old, restore_workspace=restore_workspace,
-        save=save,
+        save=write_step,
     )
     install_launcher(root)
 
@@ -645,7 +646,9 @@ class Installer:
                 else:
                     (self.root / "current").unlink(missing_ok=True)
 
-            candidate = self._run_update_transaction(
+            if realm is None:
+                raise ValueError("The selected workspace identity is unavailable.")
+            self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self.backend.stop,
                 switch_candidate=select, switch_old=select_old,
                 activate=activate,
@@ -659,39 +662,39 @@ class Installer:
             self._ready()
             return
 
-        candidate = None
+        candidate_version: Version | None = None
         backup = None
         try:
             self.say("Installing Astrid.")
-            candidate = self.backend.stage(manifest, self.root, self.data)
+            candidate_version = self.backend.stage(manifest, self.root, self.data)
             if reinstall:
-                realm = self.backend.attach_existing(candidate, self.data)
+                realm = self.backend.attach_existing(candidate_version, self.data)
             else:
-                realm = self.backend.create(candidate, self.data)
-            switch(self.root, candidate)
+                realm = self.backend.create(candidate_version, self.data)
+            switch(self.root, candidate_version)
             self.say("Finishing up." if self.managed_by == "pinokio" else "Starting Astrid at sign-in.")
-            self.backend.register(candidate, self.data)
+            self.backend.register(candidate_version, self.data)
             install_launcher(self.root)
             if self.managed_by != "pinokio":
-                self.backend.start(candidate, self.data)
+                self.backend.start(candidate_version, self.data)
             if self.managed_by != "pinokio":
-                self.backend.verify(candidate, self.data, realm["realm_id"])
+                self.backend.verify(candidate_version, self.data, realm["realm_id"])
             else:
                 # Creation/adoption/migration is verified through Runtime's
                 # workspace API; Pinokio starts and checks the browser door.
-                if self.backend.workspace(candidate, self.data)["realm_id"] != realm["realm_id"]:
+                if self.backend.workspace(candidate_version, self.data)["realm_id"] != realm["realm_id"]:
                     raise VerificationError("The installed workspace identity changed.")
             try:
-                self.backend.sync_skills(candidate)
+                self.backend.sync_skills(candidate_version)
             except Exception:  # noqa: BLE001 - skill setup must never fail installation
                 self.say("Couldn't add Astrid's skill to your agents; see the log.")
-            self.backend.finish(old, candidate, backup)
+            self.backend.finish(old, candidate_version, backup)
         except (Exception, KeyboardInterrupt) as failure:
             if is_lifecycle_refusal(failure):
                 raise
-            if candidate is not None:
+            if candidate_version is not None:
                 try:
-                    self.backend.stop(candidate, self.data)
+                    self.backend.stop(candidate_version, self.data)
                 except (Exception, KeyboardInterrupt) as cleanup:
                     if is_lifecycle_refusal(cleanup):
                         raise cleanup

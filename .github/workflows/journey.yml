@@ -1,0 +1,201 @@
+name: Release-1 installed lifecycle receipts
+
+# This workflow is deliberately a receipt producer, not a release dispatcher.
+# A caller supplies one immutable candidate tuple; the final gate rejects any
+# missing, skipped, failed, duplicate, or foreground-substituted matrix result.
+on:
+  workflow_call:
+    inputs:
+      candidate:
+        description: Frozen JSON with app, agent, runtime and pinokio full commit SHAs plus bootstrap hashes
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Frozen candidate JSON; hosted results are evidence, never a publish action
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      candidate: ${{ steps.config.outputs.candidate }}
+      driver_agent_ref: ${{ steps.config.outputs.driver_agent_ref }}
+      matrix: ${{ steps.config.outputs.matrix }}
+    steps:
+      - id: config
+        shell: bash
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          DRIVER_AGENT_REF: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          candidate = json.loads(os.environ["CANDIDATE"])
+          if not isinstance(candidate, dict) or any(
+              not re.fullmatch(r"[0-9a-f]{40}", str(candidate.get(key, "")))
+              for key in ("app", "agent", "runtime", "pinokio")
+          ):
+              raise SystemExit("a frozen candidate with app/agent/runtime/pinokio full commit SHAs is required")
+          driver = os.environ["DRIVER_AGENT_REF"]
+          if not re.fullmatch(r"[0-9a-f]{40}", driver):
+              raise SystemExit("the reviewed Agent workflow SHA is required")
+          if os.environ["WORKFLOW_REPOSITORY"] != "banodoco/astrid-agent":
+              raise SystemExit("the receipt harness must run from banodoco/astrid-agent")
+          matrix = [
+              {"job_id":"direct-macos", "mode":"direct", "runner":"macos-14", "shell":"sh"},
+              {"job_id":"direct-linux", "mode":"direct", "runner":"ubuntu-24.04", "shell":"sh"},
+              {"job_id":"direct-windows", "mode":"direct", "runner":"windows-2022", "shell":"powershell.exe"},
+              {"job_id":"pinokio-backend-macos", "mode":"pinokio-backend", "runner":"macos-14", "shell":"sh"},
+              {"job_id":"pinokio-backend-linux", "mode":"pinokio-backend", "runner":"ubuntu-24.04", "shell":"sh"},
+              {"job_id":"pinokio-backend-windows", "mode":"pinokio-backend", "runner":"windows-2022", "shell":"powershell.exe"},
+              {"job_id":"pinokio-fully-local-macos", "mode":"pinokio-fully-local", "runner":"macos-14", "shell":"sh"},
+              {"job_id":"pinokio-fully-local-linux", "mode":"pinokio-fully-local", "runner":"ubuntu-24.04", "shell":"sh"},
+              {"job_id":"pinokio-fully-local-windows", "mode":"pinokio-fully-local", "runner":"windows-2022", "shell":"powershell.exe"},
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in (("candidate", candidate), ("driver_agent_ref", driver), ("matrix", {"include": matrix})):
+                  print(f"{key}={json.dumps(value, separators=(',', ':')) if isinstance(value, dict) else value}", file=output)
+          PY
+
+  journey:
+    needs: config
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # The driver itself is pinned to the reviewed workflow source.  Candidate
+      # Agent is checked out separately so the receipt proves both identities.
+      - name: Check out reviewed Agent receipt harness
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Check out frozen App candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/reigh-app
+          ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
+          path: app
+          persist-credentials: false
+      - name: Check out frozen Agent candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ fromJSON(needs.config.outputs.candidate).agent }}
+          path: candidate-agent
+          persist-credentials: false
+      - name: Check out frozen Runtime candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ fromJSON(needs.config.outputs.candidate).runtime }}
+          path: runtime
+          persist-credentials: false
+      - name: Check out frozen Pinokio candidate
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-pinokio
+          ref: ${{ fromJSON(needs.config.outputs.candidate).pinokio }}
+          path: pinokio
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Record effective immutable checkouts
+        shell: bash
+        run: |
+          {
+            echo "## Effective Release-1 journey tuple"
+            echo "- Driver Agent: $(git -C agent rev-parse HEAD)"
+            echo "- Candidate App: $(git -C app rev-parse HEAD)"
+            echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
+            echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
+            echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Freeze and validate candidate inputs
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+      - name: Run the matrix-owned lifecycle driver
+        env:
+          ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
+          python -u agent/scripts/ci_journey.py `
+            --job-id '${{ matrix.job_id }}' --mode '${{ matrix.mode }}' --leg fresh-install `
+            --candidate "$env:RUNNER_TEMP/candidate.json" `
+            --app-checkout "$pwd/app" --candidate-agent-checkout "$pwd/candidate-agent" `
+            --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
+            --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
+            --shell '${{ matrix.shell }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain the matrix receipt even after a lifecycle failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journey-receipt-${{ matrix.job_id }}
+          # Keep the job-id directory in the artifact so merge-multiple cannot
+          # overwrite nine identically named journey-result.json files.
+          path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}
+          if-no-files-found: warn
+
+  gate:
+    if: always()
+    needs: [config, journey]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Reject skipped, cancelled, or failed matrix dependencies
+        shell: bash
+        env:
+          CONFIG_RESULT: ${{ needs.config.result }}
+          JOURNEY_RESULT: ${{ needs.journey.result }}
+        run: test "$CONFIG_RESULT" = success && test "$JOURNEY_RESULT" = success
+      - name: Check out reviewed Agent receipt harness
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-agent
+          ref: ${{ needs.config.outputs.driver_agent_ref }}
+          path: agent
+          persist-credentials: false
+      - name: Check out frozen App candidate for aggregate validation
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/reigh-app
+          ref: ${{ fromJSON(needs.config.outputs.candidate).app }}
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download every per-job receipt
+        uses: actions/download-artifact@v4
+        with:
+          pattern: journey-receipt-*
+          path: receipts
+          merge-multiple: true
+      - name: Aggregate the exact Release-1 receipt matrix
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.config.outputs.candidate }}
+        run: |
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --results receipts --aggregate-release1

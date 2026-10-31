@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "agent": {
+    "sha": "3204bb00135bec8ee2d2d3fb21eed5abfceca649"
+  },
+  "runtime": {
+    "sha": "6d53a19070faf63fc15ae1f81417722edc2c8a5f",
+    "schema_digest": "sha256:9061d4982c786e04d99e45470b8ea4f3d9c9ff9855c4a2f83d751a93408c205b"
+  },
+  "tools": {
+    "uv": {
+      "version": "0.11.32"
+    },
+    "python": {
+      "version": "3.11.13"
+    },
+    "bun": {
+      "version": "1.3.14",
+      "assets": {
+        "linux-x64": {
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip",
+          "sha256": "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-aarch64.zip",
+          "sha256": "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b"
+        },
+        "macos-x64": {
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-x64.zip",
+          "sha256": "4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633"
+        },
+        "macos-arm64": {
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-aarch64.zip",
+          "sha256": "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620"
+        },
+        "windows-x64": {
+          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-x64.zip",
+          "sha256": "0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922"
+        }
+      }
+    },
+    "omp": {
+      "source": {
+        "repo": "https://github.com/peteromallet/oh-my-pi",
+        "sha": "78f0e0960f471c2c62b943272a48c33366f239fe"
+      }
+    },
+    "node": {
+      "version": "20.19.4",
+      "assets": {
+        "linux-x64": {
+          "url": "https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.gz",
+          "sha256": "d80a33707605ced9a31b8f543cea9ab512bc3d2fef2c148f31a50e939ff07560"
+        },
+        "linux-arm64": {
+          "url": "https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-arm64.tar.gz",
+          "sha256": "d200798332b7a56d355888ce58e6a639fac7939a4833e5bc8780c66888e1ce4d"
+        },
+        "macos-x64": {
+          "url": "https://nodejs.org/dist/v20.19.4/node-v20.19.4-darwin-x64.tar.gz",
+          "sha256": "cc47ed094c1876b211a9091d09a78537c1cbbb0f8cf5a49c9fd79933ee8fd7fd"
+        },
+        "macos-arm64": {
+          "url": "https://nodejs.org/dist/v20.19.4/node-v20.19.4-darwin-arm64.tar.gz",
+          "sha256": "8b89801f527a85e3f7de539512c9dde08673ac99db6458cc7cc627e05d707054"
+        },
+        "windows-x64": {
+          "url": "https://nodejs.org/dist/v20.19.4/node-v20.19.4-win-x64.zip",
+          "sha256": "1bf83e5958157d13673507349238236aec4f6efc95cf426cbe126a999a3e4c0b"
+        },
+        "windows-arm64": {
+          "url": "https://nodejs.org/dist/v20.19.4/node-v20.19.4-win-arm64.zip",
+          "sha256": "1554251027d777d3dbb276af0553b2e9f89822a1579067216bc0b9522a3a22d3"
+        }
+      }
+    },
+    "ffmpeg": {
+      "version": "7.0.2",
+      "assets": {
+        "linux-x64": {
+          "url": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz",
+          "sha256": "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
+        },
+        "linux-arm64": {
+          "url": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-arm64-static.tar.xz",
+          "sha256": "f4149bb2b0784e30e99bdda85471c9b5930d3402014e934a5098b41d0f7201b1"
+        },
+        "macos-x64": {
+          "urls": [
+            "https://ffmpeg.martin-riedl.de/download/macos/amd64/1726075833_7.0.2/ffmpeg.zip",
+            "https://ffmpeg.martin-riedl.de/download/macos/amd64/1726075833_7.0.2/ffprobe.zip"
+          ],
+          "sha256": [
+            "2b11f1ad35a67b9bbe0bf726a3eb0171d4eeabf95081bb34af1b371ecaa1c607",
+            "efb9b2153dd7748dc8e09027bddb13f4a1472ae4381966f3d2e6646e4350df37"
+          ]
+        },
+        "macos-arm64": {
+          "urls": [
+            "https://ffmpeg.martin-riedl.de/download/macos/arm64/1726073313_7.0.2/ffmpeg.zip",
+            "https://ffmpeg.martin-riedl.de/download/macos/arm64/1726073313_7.0.2/ffprobe.zip"
+          ],
+          "sha256": [
+            "cb0c071e58945231ae9596ce21c46b94810142d0a664ed1dcc2e9c6f1b2525c4",
+            "77a8678ea1e47a8495ddebf6561a142abfd8105c1286bfda080dba5f5b064ee2"
+          ]
+        },
+        "windows-x64": {
+          "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.0.2/ffmpeg-7.0.2-full_build.zip",
+          "sha256": "0aa623feec95066839db4125679cd04d4a8fc1039ed8877acca9826113e42768"
+        }
+      }
+    }
+  }
+}
