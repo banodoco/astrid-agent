@@ -91,6 +91,8 @@ def _landed(timeline, path, record):
                 and entry.get("publication_id") and entry.get("publisher") == timeline.session.identity["actor_id"]):
             closed = _close(path, record, timeline.session, entry, flight.get("pending_how", "retry"))
             publication = entry["publication_id"]
+            if closed.get("state") == "pending" and closed.get("part", 0) == record.get("part", 0):
+                return None
             if closed.get("state") != "landed":
                 return {"status": "part_landed", "pending_id": record["id"],
                         "data": {"publication_id": publication, "part": closed.get("part")},
@@ -113,7 +115,9 @@ def _landed(timeline, path, record):
         owner = flight.get("pending_path")
         if (flight.get("pending_id") != record["id"] or not owner
                 or Path(owner).resolve() != Path(path).resolve()
-                or flight.get("pending_part") != index or not flight.get("key")):
+                or flight.get("pending_part") != index or not flight.get("key")
+                or (flight.get("pending_identity") is not None
+                    and flight["pending_identity"] != _part_identity(record))):
             continue
         matches = [item for item in entries
                    if item.get("publisher") == timeline.session.identity["actor_id"]
@@ -123,6 +127,9 @@ def _landed(timeline, path, record):
             entry = matches[0]
             break
     if entry is None:
+        # A group identifies the original saved record, not a later replacement.
+        if record.get("attempts", 1) != 1 or record.get("versions"):
+            return None
         matches = [item for item in entries if item.get("group_id") == record["id"]]
         if type(index) is not int or index < 0 or len(matches) <= index:
             return None
@@ -131,6 +138,8 @@ def _landed(timeline, path, record):
     if publication is None:
         publication = entry.get("receipt", {}).get("receipt_id")
     closed = _close(path, record, timeline.session, entry, "retry")
+    if closed.get("state") == "pending" and closed.get("part", 0) == index:
+        return None
     actor = entry.get("publisher")
     label = record.get("label") or "Timeline edit"
     suffix = f" (by {actor})" if actor else ""
