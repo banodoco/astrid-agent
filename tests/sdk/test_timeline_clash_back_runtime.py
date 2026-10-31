@@ -420,6 +420,80 @@ def test_function_commit_keeps_overlap_as_pending_clash_after_shared_outbox_adva
     assert saved["closed_by"]["publication_id"] == landed["receipt"]["receipt_id"]
 
 
+def test_function_rerun_overlap_during_same_actor_shared_outbox_advance_is_saved(
+    editing_case, tmp_path, monkeypatch,
+):
+    _daemon, client, project, _setup = editing_case
+    monkeypatch.setenv("ASTRID_RUNTIME_DATA_ROOT", str(tmp_path / "shared-rerun-overlap-data"))
+
+    from astrid.sdk.timeline import Timeline
+    from astrid.sdk.timeline.sync import CommitConflict
+
+    stale = Timeline.open(project, "film", client=client)
+    peer = Timeline.open(project, "film", client=client)
+    assert stale.session.outbox.path == peer.session.outbox.path
+    assert stale.head == peer.head
+    initial_head = dict(stale.head)
+    initial_name = stale.bundle["parent"]["name"]
+
+    evaluating = threading.Event()
+    resume = threading.Event()
+    observed_names = []
+    outcomes = []
+
+    def overlapping_edit(t):
+        observed_names.append(t.bundle["parent"]["name"])
+        if len(observed_names) == 1:
+            evaluating.set()
+            if not resume.wait(timeout=60):
+                raise TimeoutError("same-actor peer did not release the rerunning function")
+        t.bundle["parent"]["name"] = "function overwrites peer"
+
+    def run_function():
+        try:
+            outcomes.append(stale.commit(
+                overlapping_edit, label="Overlapping function during shared outbox advance",
+                key="shared-rerun-overlap-function", reads=[],
+            ))
+        except Exception as exc:  # Return the actual Runtime/outbox failure to the test thread.
+            outcomes.append(exc)
+
+    worker = threading.Thread(target=run_function)
+    worker.start()
+    try:
+        assert evaluating.wait(timeout=60), "function did not pause during its first evaluation"
+        peer_result = peer.commit(
+            lambda t: t.bundle["parent"].update({"name": "peer owns this field"}),
+            label="Same actor peer edit during function evaluation", key="shared-rerun-peer",
+        )
+        assert peer_result["status"] in {"accepted", "merged", "landed"}
+    finally:
+        resume.set()
+        worker.join(timeout=60)
+
+    assert not worker.is_alive(), "function did not finish after peer commit"
+    assert len(outcomes) == 1 and isinstance(outcomes[0], CommitConflict), outcomes
+    conflict = outcomes[0]
+    assert observed_names == [initial_name, "peer owns this field"]
+    assert conflict.failure["details"]["reason"] == "intervening_write"
+    assert conflict.pending_id
+
+    saved = stale.pending_show(conflict.pending_id)
+    assert saved["state"] == "pending"
+    assert saved["origin"] == "function"
+    assert saved["parts"][0]["base"] == initial_head
+    assert saved["clash"]["schema"] == "astrid.clash/2"
+    assert saved["clash"]["conflicts"] == conflict.failure["details"]["conflicts"]
+    assert len(saved["clash"]["receipts"]) == 1
+    intervening = saved["clash"]["receipts"][0]
+    assert intervening["publication_id"] == peer_result["receipt"]["receipt_id"]
+    assert intervening["label"] == "Same actor peer edit during function evaluation"
+    assert intervening["touches_conflict"] is True
+    assert saved["parts"][0]["commands"]
+    assert "function overwrites peer" in json.dumps(saved["parts"][0]["commands"])
+    assert peer.bundle["parent"]["name"] == "peer owns this field"
+
+
 def test_pending_rederive_lost_reply_replays_exact_commit_once(editing_case, tmp_path, monkeypatch):
     daemon, client, project, timeline = editing_case
     from astrid.sdk.timeline import Timeline
