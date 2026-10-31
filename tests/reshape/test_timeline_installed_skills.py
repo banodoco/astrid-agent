@@ -25,6 +25,8 @@ def _run(harness: InstalledArtifactHarness, *args: str) -> dict:
     if record.returncode:
         assert record.returncode == 1 and args[1] in {"sync", "update"}, record.output
         assert report.get("broken_links"), record.output
+    if len(args) > 1 and args[1] in {"sync", "install", "update", "uninstall"}:
+        assert _timeline_broken_links(report) == [], report.get("broken_links", [])
     return report
 
 
@@ -66,11 +68,31 @@ def _filesystem_snapshot(root: Path) -> dict[str, tuple]:
 
 
 def _timeline_broken_links(report: dict) -> list[dict]:
-    return [
-        link
-        for link in report["broken_links"]
-        if "packs" in Path(link["file"]).parts and "timeline" in Path(link["file"]).parts
-    ]
+    def is_timeline_owned(link: dict) -> bool:
+        parts = Path(link["file"]).parts
+        try:
+            pack_index = parts.index("packs")
+            pack_id = parts[pack_index + 1]
+        except (ValueError, IndexError):
+            return False
+        return pack_id == "timeline" or pack_id.startswith("timeline-")
+
+    return [link for link in report.get("broken_links", []) if is_timeline_owned(link)]
+
+
+def test_timeline_broken_link_scope_includes_extra_packs() -> None:
+    report = {
+        "broken_links": [
+            {"file": "packs/timeline/SKILL.md"},
+            {"file": "packs/timeline-series/SKILL.md"},
+            {"file": "packs/timeline-narrated/docs/guide.md"},
+            {"file": "packs/timelineish/SKILL.md"},
+            {"file": "packs/other/docs/timeline-reference.md"},
+            {"file": "docs/timeline/SKILL.md"},
+        ]
+    }
+
+    assert _timeline_broken_links(report) == report["broken_links"][:3]
 
 
 def _add_runtime_protocol(harness: InstalledArtifactHarness) -> None:
