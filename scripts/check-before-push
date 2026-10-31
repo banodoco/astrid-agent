@@ -1,51 +1,30 @@
 #!/usr/bin/env bash
-# Fast T0 check: Ruff lint and formatting for changed Python files only.
+# The one pre-push command (testing plan R-12): default test lane, then host/render change check.
+# Run from anywhere in the repo before pushing; it cds to the repo root itself.
 set -euo pipefail
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-ranges=()
-while (($#)); do
-  case "$1" in
-    --range)
-      (($# >= 2)) || { echo 'missing value for --range' >&2; exit 2; }
-      ranges+=("$2")
-      shift 2
-      ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
-  esac
-done
-
-collect_changed_files() {
-  local range
-  for range in "${ranges[@]}"; do
-    git diff --name-only -z "$range" -- 2>/dev/null || true
-  done
-  git diff --cached --name-only -z --
-  git diff --name-only -z --
-  git ls-files --others --exclude-standard -z
-}
-
-changed=()
-while IFS= read -r -d '' file; do
-  duplicate=false
-  for previous in "${changed[@]}"; do
-    [[ "$previous" == "$file" ]] && { duplicate=true; break; }
-  done
-  [[ "$duplicate" == true ]] || changed+=("$file")
-done < <(collect_changed_files)
-python_files=()
-for file in "${changed[@]}"; do
-  [[ "$file" == *.py && -f "$file" ]] && python_files+=("$file")
-done
-
-if ((${#python_files[@]} == 0)); then
-  echo 'No changed Python files; Ruff checks skipped.'
-  exit 0
+if [ -x .venv/bin/python ]; then
+  PY=.venv/bin/python
+else
+  PY=python3
 fi
 
-if ! command -v ruff >/dev/null 2>&1; then
-  echo 'Ruff is required for changed Python files; install the repository dev tools.' >&2
-  exit 127
+"$PY" -m pytest -q
+
+# Paths this push changes: commits on this branch vs origin/main (tolerated when
+# origin/main is absent), plus uncommitted and untracked files.
+CHANGED="$(
+  {
+    git diff --name-only origin/main...HEAD 2>/dev/null || true
+    git diff --name-only HEAD
+    git ls-files --others --exclude-standard
+  } | sort -u
+)"
+
+HOST_RENDER_RE='^(astrid/core/execution/process_group\.py|astrid/sdk/autobootstrap\.py|astrid/packs/rendering/|remotion/)|(^|/)(custody_broker|task_scope|host_bootstrap|workspace_client)\.py$|(^|/)generic_host[^/]*\.py$'
+
+if grep -Eq "$HOST_RENDER_RE" <<<"$CHANGED"; then
+  echo 'Host/render paths changed: run `python -m astrid dev journey --tier smoke` before merging (testing plan R-11).'
 fi
-ruff check -- "${python_files[@]}"
-ruff format --check -- "${python_files[@]}"

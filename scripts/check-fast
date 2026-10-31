@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Fast T0 check: Ruff lint and formatting for changed Python files only.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+ranges=()
+while (($#)); do
+  case "$1" in
+    --range)
+      (($# >= 2)) || { echo 'missing value for --range' >&2; exit 2; }
+      ranges+=("$2")
+      shift 2
+      ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+collect_changed_files() {
+  local range
+  for range in "${ranges[@]}"; do
+    git diff --name-only -z "$range" -- 2>/dev/null || true
+  done
+  git diff --cached --name-only -z --
+  git diff --name-only -z --
+  git ls-files --others --exclude-standard -z
+}
+
+changed=()
+while IFS= read -r -d '' file; do
+  duplicate=false
+  for previous in "${changed[@]}"; do
+    [[ "$previous" == "$file" ]] && { duplicate=true; break; }
+  done
+  [[ "$duplicate" == true ]] || changed+=("$file")
+done < <(collect_changed_files)
+python_files=()
+for file in "${changed[@]}"; do
+  [[ "$file" == *.py && -f "$file" ]] && python_files+=("$file")
+done
+
+if ((${#python_files[@]} == 0)); then
+  echo 'No changed Python files; Ruff checks skipped.'
+  exit 0
+fi
+
+if ! command -v ruff >/dev/null 2>&1; then
+  echo 'Ruff is required for changed Python files; install the repository dev tools.' >&2
+  exit 127
+fi
+ruff check -- "${python_files[@]}"
+ruff format --check -- "${python_files[@]}"

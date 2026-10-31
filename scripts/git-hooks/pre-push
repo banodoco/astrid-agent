@@ -11,4 +11,4 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     args+=(--range "${remote_sha}..${local_sha}")
   fi
 done
-exec "$repo_root/scripts/check-before-push" "${args[@]}"
+exec "$repo_root/scripts/check-fast" "${args[@]}"
