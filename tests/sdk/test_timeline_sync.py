@@ -21,7 +21,7 @@ from astrid.sdk.timeline.capture import capture_move
 from astrid.sdk.timeline.commands import execute
 from astrid.sdk.timeline.outbox import Outbox, request_bytes
 from astrid.sdk.timeline.rebase import replay
-from astrid.sdk.timeline.sync import CommitConflict, CommitRefused, TimelineSession
+from astrid.sdk.timeline.sync import CommitConflict, CommitOutcomeUnknown, CommitRefused, TimelineSession
 from astrid.sdk.workspace_client import WorkspaceClient, WorkspaceClientError
 from astrid_runtime_client import ApiError
 
@@ -193,6 +193,45 @@ def connected(tmp_path, monkeypatch):
 def open_session(connected):
     client, _, path = connected
     return TimelineSession.open("project-slug", "timeline-slug", client=client, outbox_path=path)
+
+
+@pytest.mark.parametrize("reopen", [False, True], ids=["same-handle", "reopen"])
+def test_literal_list_key_replays_lost_ack_exactly_once(connected, reopen):
+    from astrid.sdk import timeline
+
+    client, generated, path = connected
+    editor = timeline.open("project-slug", "timeline-slug", client=client, outbox_path=path)
+    command = capture_move(initial_bundle(), "parent/clip:a", 3)
+    generated.lose_ack = True
+    with pytest.raises(CommitOutcomeUnknown, match="No reply could be verified"):
+        editor.commit([command], label="Literal move", key="literal-lost-ack")
+    original_call = generated.calls[-1]
+
+    changed = capture_move(initial_bundle(), "parent/clip:a", 4)
+    with pytest.raises(TimelineEditError, match="belongs to another edit"):
+        editor.commit([changed], label="Literal move", key="literal-lost-ack")
+    with pytest.raises(TimelineEditError, match="belongs to another edit"):
+        editor.commit([command], label="Different label", key="literal-lost-ack")
+    with pytest.raises(TimelineEditError, match="belongs to another edit"):
+        editor.commit([command], label="Literal move", merge="atomic", key="literal-lost-ack")
+    with pytest.raises(TimelineEditError, match="belongs to another edit"):
+        editor.commit([command], label="Literal move", reads=["parent/clip:a"], key="literal-lost-ack")
+    assert generated.calls == [original_call]
+
+    retry_editor = (timeline.open("project-slug", "timeline-slug", client=client, outbox_path=path)
+                    if reopen else editor)
+    replayed = retry_editor.commit([command], label="Literal move", key="literal-lost-ack")
+
+    assert generated.calls == [original_call, original_call]
+    assert replayed["receipt"] == generated.accepted[original_call[1]][1]["receipt"]
+
+    acknowledged_replay = retry_editor.commit([command], label="Literal move", key="literal-lost-ack")
+    assert generated.calls == [original_call, original_call, original_call]
+    assert acknowledged_replay["receipt"] == replayed["receipt"]
+    with pytest.raises(TimelineEditError, match="belongs to another edit"):
+        retry_editor.commit([changed], label="Literal move", key="literal-lost-ack")
+    assert generated.calls == [original_call, original_call, original_call]
+    assert len(generated.entries) == len(generated.accepted) == 1
 
 
 def test_acknowledged_function_key_replays_original_request_read_only(connected):

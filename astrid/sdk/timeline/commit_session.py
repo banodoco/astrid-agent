@@ -935,18 +935,20 @@ class Timeline(Checkout):
                           "command_ordinals": [ordinal], "patch": patch})
         try:
             list_reads = [] if reads is None and merge == "fields" else reads
-            replay = self.session.retry(
-                idempotency_key,
-                matches=lambda body: (body.get("commands") == commands
-                                      and body.get("label") == label
-                                      and body.get("steps") == steps
-                                      and body.get("merge") == merge
-                                      and body.get("reads") == list_reads),
-                dry_run=dry_run,
-            )
-            if replay is not None:
-                return replay
             flight = state.get("flight")
+            replay = None
+            if flight is None or flight.get("pending_id") == pending_id:
+                replay = self.session.retry(
+                    idempotency_key,
+                    matches=lambda body: (body.get("commands") == commands
+                                          and body.get("label") == label
+                                          and body.get("steps") == steps
+                                          and body.get("merge") == merge
+                                          and body.get("reads") == list_reads),
+                    dry_run=dry_run,
+                )
+            if replay is not None:
+                return self._accepted(replay) if flight is not None else replay
             if flight is not None and pending_id is not None:
                 body = json.loads(flight["body"])
                 if (flight.get("pending_id") != pending_id or body.get("commands") != commands
