@@ -5,6 +5,7 @@ on: [push, pull_request]
 jobs:
   windows-launchers:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -37,6 +38,7 @@ jobs:
           }
   chat:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

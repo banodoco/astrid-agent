@@ -11,6 +11,7 @@ on:
 jobs:
   windows-native-and-installer:
     runs-on: windows-latest
+    timeout-minutes: 90
     env:
       ASTRID_CI_JOB: windows-native-and-installer
     steps:
@@ -43,6 +44,7 @@ jobs:
   checks:
     name: fast checks
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -152,6 +154,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: test-durations-${{ matrix.group }}-${{ matrix.os }}
           path: tests/.test_durations
           include-hidden-files: true
@@ -160,6 +163,7 @@ jobs:
   unit:
     name: unit
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [checks, unit-shard]
     steps:
       - name: All unit shards and fast checks passed
@@ -168,6 +172,7 @@ jobs:
   darwin-native:
     name: darwin native
     runs-on: macos-latest
+    timeout-minutes: 120
     env:
       ASTRID_CI_JOB: darwin-native
       # A test in both the integration and a darwin lane starts real Runtime daemons from this checkout (tests/helpers/runtime.py).
@@ -232,6 +237,7 @@ jobs:
   release:
     name: release wheel / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -279,6 +285,7 @@ jobs:
       - name: Upload the wheel and its toolchain record
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 14
           name: release-wheel-${{ matrix.python-version }}
           path: dist/
 
@@ -287,6 +294,7 @@ jobs:
   boundary:
     name: boundary
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
