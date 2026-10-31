@@ -621,7 +621,8 @@ def commit_preview(timeline, result):
                       if record.get("id") == pending_id and str(record_path) == path), None)
         if (saved is not None and saved.get("state") == "pending"
                 and saved.get("part", 0) > current.get("part", 0)):
-            return {"status": "part_landed", "pending_id": pending_id, "data": accepted.get("data", {}),
+            return {"status": "part_landed", "pending_id": pending_id,
+                    "data": {**accepted.get("data", {}), "receipt": copy.deepcopy(accepted.get("receipt"))},
                     "summary": f'Part of "{saved.get("label") or "Timeline edit"}" landed; {pending_id} still has saved work.',
                     "next": f'tl.retry({pending_id!r})', "record": saved}
         return accepted
