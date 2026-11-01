@@ -478,6 +478,38 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise RuntimeError("Runtime discovery owner identity changed; refusing to change it.")
         return "live"
 
+    @staticmethod
+    def _legacy_doors_stopped(discovery: dict, version: Version) -> bool:
+        """Only a refused loopback connection is a positive absent-door observation."""
+        import errno
+        import socket
+        from urllib.parse import urlsplit
+
+        # A retained private endpoint does not identify the browser door, and
+        # Release-0 could inherit an ambient port. Require the selected record
+        # to pin it and the same snapshot to advertise that exact door.
+        port = version.env.get("ASTRID_RUNTIME_DOOR_PORT")
+        if (not isinstance(port, str) or not port.isascii() or not port.isdigit()
+                or not 1 <= int(port) <= 65535
+                or discovery.get("door_endpoint") != f"http://127.0.0.1:{port}"):
+            return False
+        endpoints = [discovery.get("endpoint"), discovery["door_endpoint"]]
+        for endpoint in endpoints:
+            try:
+                parsed = urlsplit(endpoint)
+                if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}
+                        or parsed.username or parsed.password or parsed.query or parsed.fragment
+                        or parsed.path not in ("", "/") or parsed.port is None):
+                    return False
+                family = socket.AF_INET6 if parsed.hostname == "::1" else socket.AF_INET
+                with socket.socket(family, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(2)
+                    if sock.connect_ex((parsed.hostname, parsed.port)) != errno.ECONNREFUSED:
+                        return False
+            except (OSError, TypeError, ValueError):
+                return False
+        return True
+
     def source_checkout_ownership(self, data: Path, installed: Version | None = None) -> bool:
         """Resolve whether the selected workspace belongs to source checkouts.
 
@@ -539,10 +571,18 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # (runtime_checkout); neither is a Git checkout root.
         if installed is not None:
             if (state != "live" and installed.release == 0 and installed.managed_by is None):
-                # Missing or stale discovery is not proof that the service
-                # manager and browser door are stopped.  Do not admit the
-                # identityless predecessor solely from its selection record.
-                raise RuntimeError("Cannot prove the selected Release-0 predecessor is stopped; refusing to update it.")
+                from .legacy_identity import admitted as legacy_admitted
+                if (self.process_control is None or self.managed_by is not None or state != "stale"
+                        or not self._legacy_doors_stopped(discovery, installed)
+                        or not self.service.legacy_manager_stopped(data)
+                        or not legacy_admitted(installed, {}, discovery, program_root=self.root, stopped=True)
+                        or paths.discovery_path.read_bytes() != discovery_bytes
+                        or self._discovery_owner_state(discovery) != "stale"
+                        or not self._legacy_doors_stopped(discovery, installed)
+                        or not self.service.legacy_manager_stopped(data)
+                        or paths.discovery_path.read_bytes() != discovery_bytes):
+                    raise RuntimeError("Cannot prove the selected Release-0 predecessor is stopped; refusing to update it.")
+                self._legacy_identity_admitted = True
             return False
 
         profile_path = paths.source_profiles_dir / "astrid.json"

@@ -131,7 +131,7 @@ def _version_provenance_problems(version, manifest, version_path):
     return problems
 
 
-def classify(health, discovery, version, manifest, manifest_bytes, version_path, runtime_contract):
+def classify(health, discovery, version, manifest, manifest_bytes, version_path, runtime_contract, *, stopped=False):
     """Classify only the exact reviewed identityless predecessor and explain refusal."""
     supported = _policy()
     problems = []
@@ -163,9 +163,9 @@ def classify(health, discovery, version, manifest, manifest_bytes, version_path,
         for key, actual in checks.items():
             if actual != supported.get('schema_digest' if key == 'manifest_schema_digest' else key):
                 problems.append(f'{key} mismatch')
-        if health.get('protocol') != supported.get('protocol'):
+        if not stopped and health.get('protocol') != supported.get('protocol'):
             problems.append('health protocol mismatch')
-        if health.get('schema_digest') != supported.get('schema_digest'):
+        if not stopped and health.get('schema_digest') != supported.get('schema_digest'):
             problems.append('health schema digest mismatch')
         if set(version) != set(supported.get('version_record_keys', [])):
             problems.append('legacy version record fields mismatch')
@@ -177,11 +177,11 @@ def classify(health, discovery, version, manifest, manifest_bytes, version_path,
             problems.append('manifest Python provenance mismatch')
     instance = health.get('runtime_instance_id')
     discovered_instance = discovery.get('runtime_instance_id')
-    if health.get('status') != 'ok':
+    if not stopped and health.get('status') != 'ok':
         problems.append('Runtime health is not ok')
-    if not isinstance(instance, str) or not instance.strip():
+    if not stopped and (not isinstance(instance, str) or not instance.strip()):
         problems.append('health runtime instance id is missing')
-    if not isinstance(discovered_instance, str) or not discovered_instance.strip() or instance != discovered_instance:
+    if not stopped and (not isinstance(discovered_instance, str) or not discovered_instance.strip() or instance != discovered_instance):
         problems.append('health/discovery runtime instance ids do not match')
     return not problems, {'mode': 'supported-legacy-schema', 'release_id': supported.get('id') if supported else None,
                           'health_protocol': health.get('protocol'), 'health_schema_digest': health.get('schema_digest'),
@@ -201,8 +201,8 @@ def classify(health, discovery, version, manifest, manifest_bytes, version_path,
                           'problems': problems}
 
 
-def admitted(version, health, discovery, *, program_root):
-    """Return true only for the exact selected, live, direct-installed tuple."""
+def admitted(version, health, discovery, *, program_root, stopped=False):
+    """Match the selected direct install; stopped callers must independently prove quiescence."""
     if version is None or version.release != 0 or version.managed_by is not None:
         return False
     if not isinstance(health, Mapping) or not isinstance(discovery, Mapping):
@@ -225,7 +225,8 @@ def admitted(version, health, discovery, *, program_root):
                 or not version.profile.is_file() or not version.profile.resolve().is_relative_to(root)):
             return False
         contract = _contract(version)
-        matches, _ = classify(health, discovery, record, manifest, raw, root / "version.json", contract)
+        matches, _ = classify(health, discovery, record, manifest, raw, root / "version.json", contract,
+                              **({"stopped": True} if stopped else {}))
         if not matches:
             return False
         if (contract.get("python") != str(version.python) or contract.get("python_version") != "3.11.13"

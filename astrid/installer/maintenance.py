@@ -354,6 +354,11 @@ def apply_update_recovery(root: Path | str, data_root: Path | str, plan_sha256: 
 
     # All gates happen before archive/copy/publish writes.  A caller can repair
     # a missing bundle, unsafe path, schema, or stop proof and rerun the plan.
+    if selected.release == 0 and selected.managed_by is None:
+        # This recovery path cannot bind its later copy and publication to the
+        # legacy update admission. Do not let selection or a preflight alone
+        # stand in for that ownership proof.
+        raise MaintenanceRefusal("unknown-ownership", "Legacy maintenance ownership cannot be verified by this recovery path.")
     _quiesce(active_backend, selected, data)
     source_realm, source_schema = _schema(active_backend, selected, data)
     rows, raw_evidence = _evidence(root_path, selection)

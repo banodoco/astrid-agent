@@ -283,3 +283,18 @@ def test_update_recovery_cli_is_plan_by_default_and_apply_is_explicit(tmp_path, 
     assert cli.main(["--update-recovery", "--root", str(root), "--data-root", str(data),
                      "--apply", "b" * 64]) == 0
     assert '"state": "restored-working-installation"' in capsys.readouterr().out
+
+
+def test_legacy_recovery_without_bound_ownership_refuses_before_writes(tmp_path, monkeypatch):
+    root, data, _selection, _journal, backend = _fixture(tmp_path, monkeypatch)
+    version_root = root / 'versions' / 'retained-7'
+    record = read_json(version_root / 'version.json')
+    record.pop('identity')
+    write_json(version_root / 'version.json', record)
+    write_json(version_root / 'manifest.json', {'release': 0})
+    plan = maintenance.plan_update_recovery(root, data)
+    before = _files(root)
+    with pytest.raises(maintenance.MaintenanceRefusal, match='Legacy maintenance ownership'):
+        maintenance.apply_update_recovery(root, data, plan['plan_sha256'], backend=backend)
+    assert not backend.calls
+    assert _files(root) == before

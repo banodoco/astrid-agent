@@ -496,6 +496,28 @@ class Service:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    def legacy_manager_stopped(self, data: Path) -> bool:
+        """Positively observe an idle owned systemd unit; unknown states refuse."""
+        if self.system != "linux":
+            return False
+        try:
+            record = self.recorded()
+            if (record.get("owner") != LABEL or record.get("program_root") != str(self.root)
+                    or record.get("data_root") != str(data) or record.get("managed_by") is not None
+                    or record.get("foreground") is not None or not self.systemd()):
+                return False
+            value = self.run(["systemctl", "--user", "show", "astrid.service",
+                              "--property=MainPID,FragmentPath,LoadState,ActiveState,SubState,TasksCurrent"])
+            lines = [line.split("=", 1) for line in value.splitlines()]
+            if any(len(line) != 2 for line in lines) or len(dict(lines)) != len(lines):
+                return False
+            fields = dict(lines)
+            return (fields.get("FragmentPath") == str(self.path) and fields.get("LoadState") == "loaded"
+                    and fields.get("ActiveState") == "inactive" and fields.get("SubState") == "dead"
+                    and fields.get("MainPID") == "0" and fields.get("TasksCurrent") == "0")
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            return False
+
     def _launchd_stop_identity(self, value: str, data: Path) -> tuple[dict, dict]:
         """Validate and snapshot the loaded, installer-owned LaunchAgent."""
         target = f"gui/{platform.current_user()}/{LABEL}"
