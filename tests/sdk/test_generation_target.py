@@ -443,7 +443,6 @@ def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize("target,code", [
-    ("runpod", "missing_dependency"),
     ("https://example.com:8188", "input_rejected"),
 ])
 def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code):
@@ -452,6 +451,18 @@ def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code)
         GenerationFacade().image(target=target, prompt="one boat")
     assert raised.value.code == code
     assert "--target" in raised.value.fix
+
+
+def test_runpod_requires_fresh_paid_authority_before_admission(monkeypatch):
+    import astrid.sdk as sdk
+    monkeypatch.setattr(sdk, '_load_model_registry', lambda **kwargs: ModelRegistry([]))
+    monkeypatch.setattr(GenerationFacade, 'workflow', Mock(side_effect=AssertionError('unconsented RunPod admission')))
+    with pytest.raises(AstridError) as raised:
+        GenerationFacade().image(target='runpod', prompt='one boat')
+    envelope = raised.value.to_envelope()
+    assert envelope['status'] == 'blocked' and envelope['task_id'] is None
+    assert envelope['issues'][0]['code'] == 'input_rejected'
+    assert envelope['issues'][0]['details']['field'] == 'consent'
 
 
 def test_explicit_unready_target_names_working_recovery(monkeypatch):
