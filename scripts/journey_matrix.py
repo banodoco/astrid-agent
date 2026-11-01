@@ -200,6 +200,63 @@ M4_5_SCENARIO_IDS: Final = tuple(row["scenario_id"] for row in M4_5_MATRIX)
 M4_6_MATRIX: Final = RELEASE1_MATRIX
 M4_6_SLOT_IDS: Final = RELEASE1_JOB_IDS
 
+# Installed-App update-guard proof is an independent Linux scenario, not an OS
+# lifecycle leg.  The earlier I-AP-08 receipt establishes the contract only;
+# every execution must provide fresh installed-App and exact-tuple evidence.
+APP_UPDATE_GUARD_MATRIX: Final = (
+    {
+        "scenario_id": "installed-app-update-guard-linux",
+        "section": "installed-app-update-guard",
+        "runner": "ubuntu-24.04",
+        "runner_os": "Linux",
+        "image_os": "ubuntu24",
+        "shell": "sh",
+        "os": "linux",
+        "evidence_class": "installed_app",
+        "phases": (
+            {
+                "phase_id": "unresolved-save",
+                "save_state": "unresolved",
+                "expected_update_post_count": 0,
+            },
+            {
+                "phase_id": "settled-save",
+                "save_state": "settled",
+                "expected_update_post_count": 1,
+            },
+        ),
+        "required_observations": (
+            "app_update_guard_phase_results",
+            "update_post_outbox_observation",
+            "runner_provenance.RUNNER_OS",
+            "runner_provenance.ImageOS",
+            "runner_provenance.ImageVersion",
+            "os_build",
+            "candidate_tuple",
+            "installed_tuple",
+            "manifest_sha256",
+            "installed_app_identity",
+        ),
+        "tuple_binding": {
+            "candidate_tuple_fields": ("app", "agent", "runtime", "pinokio"),
+            "installed_tuple_must_equal_candidate": True,
+            "manifest_digest_required": True,
+            "installed_app_identity_required": True,
+        },
+        "missing_observation": "fail_closed",
+        "evidence_provenance": {
+            "owner": "M-APP",
+            "contract_reference": "I-AP-08",
+            "reference_time_utc": "2026-11-01T12:36Z",
+            "asserted_contract": "failed-save zero update POSTs; successful-save exactly one update POST",
+            "reference_role": "contract_only_not_final_tuple_execution",
+        },
+    },
+)
+APP_UPDATE_GUARD_SCENARIO_IDS: Final = tuple(
+    row["scenario_id"] for row in APP_UPDATE_GUARD_MATRIX
+)
+
 
 def m4_4a_backend_job(job_id: str) -> dict:
     for row in M4_4A_BACKEND_MATRIX:

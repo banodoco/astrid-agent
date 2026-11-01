@@ -1,0 +1,106 @@
+"""Focused inventory contract checks for the installed-App update guard."""
+
+from scripts import journey_matrix
+
+
+def test_linux_installed_app_update_guard_is_unique_and_separate():
+    rows = journey_matrix.APP_UPDATE_GUARD_MATRIX
+    assert len(rows) == 1
+    row = rows[0]
+
+    assert row["scenario_id"] == "installed-app-update-guard-linux"
+    assert journey_matrix.APP_UPDATE_GUARD_SCENARIO_IDS == (row["scenario_id"],)
+    assert row["section"] == "installed-app-update-guard"
+    assert row["runner"] == "ubuntu-24.04"
+    assert row["runner_os"] == "Linux"
+    assert row["evidence_class"] == "installed_app"
+    assert row["shell"] == "sh"
+
+
+def test_guard_inventory_keeps_both_exact_post_count_predicates():
+    row = journey_matrix.APP_UPDATE_GUARD_MATRIX[0]
+    phases = {phase["phase_id"]: phase for phase in row["phases"]}
+
+    assert phases["unresolved-save"] == {
+        "phase_id": "unresolved-save",
+        "save_state": "unresolved",
+        "expected_update_post_count": 0,
+    }
+    assert phases["settled-save"] == {
+        "phase_id": "settled-save",
+        "save_state": "settled",
+        "expected_update_post_count": 1,
+    }
+
+
+def test_guard_evidence_requires_installed_tuple_and_fails_closed_when_missing():
+    row = journey_matrix.APP_UPDATE_GUARD_MATRIX[0]
+
+    assert row["evidence_class"] == "installed_app"
+    assert row["tuple_binding"] == {
+        "candidate_tuple_fields": ("app", "agent", "runtime", "pinokio"),
+        "installed_tuple_must_equal_candidate": True,
+        "manifest_digest_required": True,
+        "installed_app_identity_required": True,
+    }
+    assert set(row["required_observations"]) >= {
+        "app_update_guard_phase_results",
+        "update_post_outbox_observation",
+        "runner_provenance.RUNNER_OS",
+        "runner_provenance.ImageOS",
+        "runner_provenance.ImageVersion",
+        "candidate_tuple",
+        "installed_tuple",
+        "manifest_sha256",
+        "installed_app_identity",
+    }
+    assert row["missing_observation"] == "fail_closed"
+
+
+def test_i_ap_08_is_contract_reference_only():
+    provenance = journey_matrix.APP_UPDATE_GUARD_MATRIX[0]["evidence_provenance"]
+
+    assert provenance["owner"] == "M-APP"
+    assert provenance["contract_reference"] == "I-AP-08"
+    assert provenance["reference_role"] == "contract_only_not_final_tuple_execution"
+
+
+def test_consolidated_scenarios_are_unique_and_do_not_add_m4_6_slots():
+    fault_rows = (
+        journey_matrix.DIRECT_LINUX_FAULT_SCENARIOS
+        + journey_matrix.DIRECT_MACOS_FAULT_SCENARIOS
+        + journey_matrix.DIRECT_WINDOWS_FAULT_SCENARIOS
+    )
+    ids = [row["scenario_id"] for row in fault_rows + journey_matrix.APP_UPDATE_GUARD_MATRIX]
+    assert set(ids) == {
+        f"direct-{os_name}-{scenario}"
+        for os_name in ("linux", "macos", "windows")
+        for scenario in ("interrupted-update", "rollback")
+    } | {"installed-app-update-guard-linux"}
+    assert len(ids) == len(set(ids)) == 7
+    existing_ids = (list(journey_matrix.RELEASE1_JOB_IDS)
+                    + list(journey_matrix.M4_5_SCENARIO_IDS)
+                    + [journey_matrix.M4_4B_LOCAL_SMOKE["scenario_id"]])
+    assert len(existing_ids) == len(set(existing_ids))
+    assert set(ids).isdisjoint(existing_ids)
+    assert journey_matrix.M4_6_MATRIX == journey_matrix.RELEASE1_MATRIX
+    assert journey_matrix.M4_6_SLOT_IDS == journey_matrix.RELEASE1_JOB_IDS
+    assert len(journey_matrix.M4_6_SLOT_IDS) == 9
+
+
+def test_fault_declarations_use_the_available_shared_helper_contract():
+    from scripts.failure_mode_executor import execute_installed_fault
+
+    assert callable(execute_installed_fault)
+    rows = (journey_matrix.DIRECT_LINUX_FAULT_SCENARIOS
+            + journey_matrix.DIRECT_MACOS_FAULT_SCENARIOS
+            + journey_matrix.DIRECT_WINDOWS_FAULT_SCENARIOS)
+    for row in rows:
+        kind = row.get("scenario", row.get("leg"))
+        assert row["steps"] == {
+            "interrupted-update": ("baseline", "interrupt", "recover", "verify"),
+            "rollback": ("baseline", "fail_candidate", "verify"),
+        }[kind]
+        helper = row.get("helper", row.get("executor"))
+        if helper is not None:
+            assert helper == "failure_mode_executor.execute_installed_fault"
