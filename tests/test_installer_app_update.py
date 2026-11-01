@@ -131,6 +131,14 @@ def test_selected_interpreter_refuses_incapable_runtime_versions(tmp_path, capab
     assert "cannot safely hand off Pinokio Stop" in raised.value.stderr
 
 
+def test_stopped_custody_accepts_runtime_without_stop_handshake(tmp_path):
+    installed = _install_test_runtime(tmp_path, "selected", capability=0)
+    lifecycle, calls = _qualification_lifecycle(tmp_path, installed.python)
+    lifecycle.backend._pinokio_custody = object()
+    lifecycle.validate(installed.selected)
+    assert calls[-1][-1] == "provenance"
+
+
 def test_selected_interpreter_refuses_wrong_environment_and_unrelated_origin(tmp_path):
     installed = _install_test_runtime(tmp_path, "selected")
     lifecycle, _calls = _qualification_lifecycle(tmp_path, installed.python)
@@ -368,8 +376,9 @@ def _use_real_selected_runtime(env, runtime):
     return calls
 
 
-def test_running_incapable_runtime_refuses_exact_i1_without_writes(
-        installed, monkeypatch, capsys):
+@pytest.mark.parametrize("capability", [0, 1])
+def test_running_runtime_refuses_exact_i1_without_writes(
+        installed, monkeypatch, capsys, capability):
     env = installed
     env.owner["running"] = True
     (env.root / "install-manifest.json").write_bytes(b"{}\n")
@@ -377,7 +386,7 @@ def test_running_incapable_runtime_refuses_exact_i1_without_writes(
     (env.root / "run_runtime.py").write_bytes(b"legacy runner\n")
     journal = env.root / "update-transaction.json"
     journal.write_bytes(b'{"step":"complete","opaque":"preserve"}\n')
-    runtime = _real_runtime(env, 0)
+    runtime = _real_runtime(env, capability)
     probe_calls = _use_real_selected_runtime(env, runtime)
     env.record.pop("identity")  # Release-0 selection identity is read-only here.
     old_version_path = env.old.root / "version.json"
@@ -411,8 +420,7 @@ def test_running_incapable_runtime_refuses_exact_i1_without_writes(
     assert "identity" not in read_json(old_version_path)
     assert "identity" not in env.record
     assert preflight_calls == []
-    assert len(probe_calls) == 2
-    assert all("-B" in call for call in probe_calls)
+    assert probe_calls == []
     assert env.candidate_admissions == []
 
 
@@ -441,12 +449,11 @@ def test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write(
     assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in capsys.readouterr().out.splitlines()
     assert _tree_bytes(env.root) == before
     assert not list(env.old.root.rglob("__pycache__"))
-    assert len(probe_calls) == 2
-    assert all("-B" in call for call in probe_calls)
+    assert probe_calls == []
     assert env.candidate_admissions == []
 
 
-def test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe(
+def test_running_runtime_refusal_precedes_provenance_probe(
         installed, monkeypatch):
     env = installed
     runtime = _real_runtime(env, 1)
@@ -465,8 +472,7 @@ def test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe(
         assert _run_cli_app_update(env, monkeypatch) == 1
     assert _tree_bytes(env.root) == before
     assert not list(env.old.root.rglob("__pycache__"))
-    assert len(probe_calls) == 1
-    assert "-B" in probe_calls[0]
+    assert probe_calls == []
     assert env.candidate_admissions == []
 
 
@@ -638,7 +644,7 @@ def test_ordinary_start_refuses_update_publication_and_stop_handoffs(installed, 
 
     def ordinary_start(boundary):
         message = ("Another Astrid operation" if boundary == "published" else
-                   "An Astrid update was interrupted; Choose Pinokio's Update button")
+                   "^Choose Update to finish$")
         with pytest.raises(ValueError, match=message):
             runpy.run_path(str(runner))
         refusals.append(boundary)
@@ -1233,25 +1239,21 @@ def test_rollback_launcher_incompatible_fails_before_stage(installed):
 
 
 def test_lock_failure_after_stop_restarts_old(installed, monkeypatch):
-    real_lock = update.locked
+    real_lock = update.selection_lock
     failed = False
 
     @contextlib.contextmanager
-    def lock(path, **kwargs):
+    def lock(path, backend):
         nonlocal failed
-        if path.name != ".app-update.lock":
-            if not failed:
-                failed = True
-                raise ValueError("lock unavailable")
-        with real_lock(path, **kwargs):
+        if not failed:
+            failed = True
+            raise ValueError("lock unavailable")
+        with real_lock(path, backend):
             yield
 
-    monkeypatch.setattr(update, "locked", lock)
-    from astrid.installer.service import installer_lock_path
-
-    with real_lock(installer_lock_path(installed.tmp_path, sys.platform)):
-        with pytest.raises(ValueError, match="lock unavailable"):
-            run(installed)
+    monkeypatch.setattr(update, "selection_lock", lock)
+    with pytest.raises(ValueError, match="lock unavailable"):
+        run(installed)
     assert installed.calls == ["stage", "stop:old", "stop:old", "start:old"]
     assert current(installed.root) == installed.old
     assert installed.record["identity"] == installed.old.document()["identity"]
@@ -1281,6 +1283,63 @@ def test_stopped_start_retains_lifetime_lock(installed, monkeypatch):
 
     installed.lifecycle.start = start
     run(installed)
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_update_custody_covers_stop_switch_readiness_and_terminal_write(installed, monkeypatch, rollback):
+    from astrid.installer.service import installer_lock_path
+
+    env = installed
+    lock_path = installer_lock_path(env.tmp_path, sys.platform)
+    observed = []
+
+    def assert_owned(label):
+        env.backend._pinokio_custody.check()
+        with pytest.raises(ValueError, match="lock"):
+            with update.locked(lock_path):
+                pytest.fail("lifetime lock became available")
+        observed.append(label)
+
+    save = Installer._save_update
+
+    def save_checked(self, transaction, step, **details):
+        assert_owned("before:" + step)
+        save(self, transaction, step, **details)
+        assert read_json(env.root / "update-transaction.json")["step"] == step
+        assert_owned("durable:" + step)
+
+    monkeypatch.setattr(Installer, "_save_update", save_checked)
+    stop, start, persist = env.lifecycle.stop, env.lifecycle.start, env.backend.persist_identity
+
+    def stop_checked(*args):
+        assert_owned("stop")
+        return stop(*args)
+
+    def persist_checked(*args):
+        assert_owned("switch")
+        return persist(*args)
+
+    def start_checked(version, *args):
+        assert_owned("readiness:" + version.root.name)
+        if rollback and version == env.candidate:
+            raise ValueError("candidate readiness failed")
+        return start(version, *args)
+
+    env.lifecycle.stop = stop_checked
+    env.lifecycle.start = start_checked
+    env.backend.persist_identity = persist_checked
+    if rollback:
+        with pytest.raises(ValueError, match="candidate readiness failed"):
+            run(env)
+        terminal = "rolled_back"
+    else:
+        run(env)
+        terminal = "complete"
+    assert {"stop", "switch", "readiness:new", "durable:" + terminal} <= set(observed)
+    if rollback:
+        assert "readiness:old" in observed
+    with update.locked(lock_path):
+        assert read_json(env.root / "update-transaction.json")["step"] == terminal
 
 
 def test_pinokio_app_update_recovers_staged_migration_journal_before_staging(installed):

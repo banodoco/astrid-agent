@@ -179,16 +179,9 @@ def operation(root, backend):
         return
     with stopped_custody(root, backend) as custody:
         if custody is None:
-            from astrid.installer.app_update import qualify_running, selection
-
-            _old, data, _identity = selection(root, backend, allow_transaction=True)
-            # Recovery retains its existing phase-specific qualification after
-            # stopping the selected owner; fresh updates refuse incapable owners
-            # here before CLI manifest writes, even if Start won the first race.
-            from astrid.installer.core import pending_transaction
-
-            if pending_transaction(root) is None:
-                qualify_running(root, backend, data)
+            # The preflight probe is not admission: a Start can win that race.
+            # Refuse before manifest or journal writes, including recovery.
+            raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
         backend._pinokio_custody = custody
         try:
             yield custody

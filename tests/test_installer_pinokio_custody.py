@@ -150,6 +150,18 @@ def test_stopped_custody_yields_none_when_foreground_owns_lifetime_lock(tmp_path
         platform.unlock_file(owner.fileno())
 
 
+def test_running_owner_refuses_recovery_without_changing_unfinished_journal(tmp_path):
+    from astrid.installer.custody import operation
+
+    root, _data, home, backend, _versions = _fixture(tmp_path)
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    with locked(installer_lock_path(home, sys.platform)):
+        with pytest.raises(ValueError, match="^Astrid is still running\\. Choose Pinokio's Stop button, then try again\\.$"):
+            with operation(root, backend):
+                pytest.fail("running recovery must not be admitted")
+    assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
 def test_broker_death_closes_attached_runtime_connection(tmp_path):
     from astrid.installer.custody import attach
 
@@ -211,6 +223,18 @@ def test_stale_activation_phase_without_operation_lock_refuses_start(tmp_path, s
     root, _data, _home, _backend, _versions = _fixture(tmp_path, step=step, selected=selected)
     with pytest.raises(ValueError, match="^Choose Update to finish$"):
         launch(root, [])
+
+
+@pytest.mark.parametrize("step,selected", [("staged", "old"), ("stopping", "old"),
+                                            ("stopped", "old"), ("switched", "candidate"),
+                                            ("rollback_selected", "old")])
+def test_ordinary_start_refuses_any_unfinished_transaction_even_with_operation_lock(tmp_path, step, selected):
+    from astrid.installer.foreground import launch
+
+    root, _data, _home, _backend, _versions = _fixture(tmp_path, step=step, selected=selected)
+    with locked(root / ".app-update.lock"):
+        with pytest.raises(ValueError, match="^Choose Update to finish$"):
+            launch(root, [])
 
 
 def test_actual_runtime_keeper_exits_if_lock_custodian_dies(tmp_path):
