@@ -392,6 +392,48 @@ def _materialize_managed_generation_result(
            if key not in {"source", "effective_settings", "values"}},
     })
     producer = rebased_payload["evidence"]["producer"]
+    provenance = context.get("comfy_provenance")
+    if provenance is not None:
+        captured = provenance.evidence()
+        def evidence_mapping(parent, key):
+            # Native producer evidence permits explicit unknown (null) maps.
+            # Fill those with A04 observations just as for an absent map.
+            if parent.get(key) is None:
+                parent[key] = {}
+            return parent[key]
+
+        # Preserve every native producer field. A04's observations fill the
+        # existing evidence profile; source/settings refs are untouched.
+        versions = evidence_mapping(producer, "versions")
+        for side, values in captured["versions"].items():
+            existing = evidence_mapping(versions, side)
+            for key, value in values.items():
+                if isinstance(value, dict) and isinstance(existing.get(key, {}), dict):
+                    nested = existing.setdefault(key, {})
+                    for name, version in value.items():
+                        if version is not None:
+                            nested[name] = version
+                        else:
+                            nested.setdefault(name, None)
+                elif value is not None:
+                    existing[key] = value
+                else:
+                    existing.setdefault(key, None)
+        build = evidence_mapping(producer, "build")
+        for key, value in captured["build"].items():
+            if value is not None:
+                build[key] = value
+            else:
+                build.setdefault(key, None)
+        native_models = producer.setdefault("models", [])
+        for model in captured["models"]:
+            if not any(row.get("name") == model["name"] and row.get("subdir", "") == model["subdir"]
+                       for row in native_models if isinstance(row, dict)):
+                native_models.append(model)
+        producer["comfy_provenance"] = captured["comfy_provenance"]
+        for issue in captured["comfy_provenance"]["readiness"]["issues"]:
+            if issue["message"] not in rebased_payload["warnings"]:
+                rebased_payload["warnings"].append(issue["message"])
     producer.setdefault("engine", {"id": "comfyui"})
     producer.setdefault("entry", {"id": None, "mode": None, "source": rebased_payload["inputs"].get("source")})
     producer.setdefault("models", [])
@@ -400,7 +442,11 @@ def _materialize_managed_generation_result(
         "observed": {"engine": None, "pack": None, "runtime": None},
     })
     producer.setdefault("provider", None)
-    producer.setdefault("build", {"manifest": None, "sha256": None, "engine": None, "recipe": None, "source": None})
+    build = producer.setdefault("build", {"manifest": None, "sha256": None, "engine": None,
+                                          "recipe": None, "source": None})
+    if isinstance(build, dict):
+        for key in ("manifest", "sha256", "engine", "recipe", "source"):
+            build.setdefault(key, None)
     for model in producer["models"]:
         if not isinstance(model, dict):
             raise AstridValueError("producer models must contain identity objects")
@@ -778,7 +824,12 @@ def _run_and_settle(
         readiness_profile, profile_path=readiness_profile_path, profile_hash=readiness_profile_hash,
         task_identity=task_identity, attempt_identity=attempt_identity, execution_identity=execution_identity,
     )
+    from astrid.core.generation.engine_readiness import ComfyProvenance
+
+    provenance = ComfyProvenance()
+    provenance.source(workflow_path)
     producer_context = {
+        "comfy_provenance": provenance,
         "values": dict(workflow_input_bindings),
         "target": (execution_request.get("target") if isinstance(execution_request, dict) else None)
                   or {"kind": "local_server" if comfy_url else "default", "endpoint": comfy_url or None},
@@ -786,25 +837,26 @@ def _run_and_settle(
     }
     producer_run_id = f"astrid-{uuid4().hex}"
     try:
-        if synthetic is None:
-            production_result = adapter.workflow(
-                workflow_path, output_root, **production_kwargs,
-            )
-        else:
-            run, marker = synthetic
-            production_kwargs["profile_id"] = "t9_cpu_stub"
-            keys = ("ASTRID_T9_MODEL_SUBSTITUTE_MARKER", "ASTRID_T9_MODEL_SUBSTITUTE_CALLS")
-            previous = {key: os.environ.get(key) for key in keys}
-            try:
-                os.environ[keys[0]] = marker["activation_marker_path"]
-                os.environ[keys[1]] = marker["calls_path"]
-                production_result = run(workflow_path, output_root, **production_kwargs)
-            finally:
-                for key, value in previous.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
+        with provenance.capture():
+            if synthetic is None:
+                production_result = adapter.workflow(
+                    workflow_path, output_root, **production_kwargs,
+                )
+            else:
+                run, marker = synthetic
+                production_kwargs["profile_id"] = "t9_cpu_stub"
+                keys = ("ASTRID_T9_MODEL_SUBSTITUTE_MARKER", "ASTRID_T9_MODEL_SUBSTITUTE_CALLS")
+                previous = {key: os.environ.get(key) for key in keys}
+                try:
+                    os.environ[keys[0]] = marker["activation_marker_path"]
+                    os.environ[keys[1]] = marker["calls_path"]
+                    production_result = run(workflow_path, output_root, **production_kwargs)
+                finally:
+                    for key, value in previous.items():
+                        if value is None:
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
     except BaseException as error:
         if attempt_identity != "-":
             # Prefer the producer's explicit receipt, including its verified

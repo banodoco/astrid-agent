@@ -170,29 +170,18 @@ def _assert_process_incarnation_gone(pid: int, expected_identity: str) -> None:
 
 
 def _normalise_comfyui_constraint(value: object | None) -> str:
-    """Return one validated PEP 440 ComfyUI version constraint.
-
-    The historical checkout profile defaults to 0.26.0, but a canonical
-    workflow may carry a stricter runtime declaration (for example
-    ``==0.36.0``). Keeping the constraint on the adapter makes the server
-    probe and the session fingerprint agree without weakening the gate.
-    """
+    """Normalize qualified pins and retain unqualified identities as evidence."""
     constraint = COMFYUI_VERSION if value is None else str(value).strip()
     # The legacy constant was a bare version, while workflow declarations use
     # normal PEP 440 specifiers. Treat a bare version as an exact pin so old
-    # callers retain their fail-closed behaviour.
+    # callers retain the same session fingerprint.
     if re.fullmatch(r"\d+(?:\.\d+)+(?:[._-][0-9A-Za-z]+)?", constraint):
         constraint = f"=={constraint}"
     if not constraint:
         raise ValueError("checkout_server ComfyUI version constraint is empty")
-    try:
-        from packaging.specifiers import SpecifierSet
-
-        SpecifierSet(constraint)
-    except Exception as exc:  # noqa: BLE001 - normalize dependency-boundary errors.
-        raise ValueError(
-            f"checkout_server has an invalid ComfyUI version constraint {constraint!r}"
-        ) from exc
+    # An unqualified declaration (nightly, unknown, a source ref) is silent
+    # version evidence. Installed baselines independently require a positive
+    # match in _comfyui_version_satisfies, including for such declarations.
     return constraint
 
 
@@ -1491,6 +1480,8 @@ class CheckoutServerAdapter(VibeComfyBackend):
         self._expected_comfyui_version = _normalise_comfyui_constraint(
             expected_comfyui_version
         )
+        self._workflow_comfyui_version = expected_comfyui_version
+        self._version_readiness: dict[str, Any] | None = None
         self._endpoint_transport = endpoint_transport
         self._http_origin = self._origin if endpoint_transport is None else endpoint_transport.server_url
         self._engine = VibeComfyEngine(self._origin, endpoint_transport=endpoint_transport)
@@ -1704,6 +1695,13 @@ class CheckoutServerAdapter(VibeComfyBackend):
             or observed_source_content_digest != source_content_digest
         ):
             raise ValueError("checkout_server source revision does not match the live VibeComfy checkout")
+        from astrid.core.generation.engine_readiness import ReadinessError, verify_installed_source
+
+        try:
+            verify_installed_source(source_revision, source_content_digest,
+                                    observed_source_revision, observed_source_content_digest)
+        except ReadinessError:
+            raise ValueError("checkout_server source revision does not match the live VibeComfy checkout") from None
         try:
             if platform.process_identity(pid) is None:
                 raise ProcessLookupError(pid)
@@ -1945,7 +1943,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
         return self._engine.fence_pending
 
     def _probe_system_stats(self) -> None:
-        """Verify the pinned ComfyUI version only.
+        """Observe workflow drift and enforce the independent installed baseline.
 
         Runtime instance identity is supplied by the health/bootstrap
         handshake; a system-stats digest is never an identity fence.
@@ -1967,12 +1965,24 @@ class CheckoutServerAdapter(VibeComfyBackend):
             raise ValueError("checkout_server /system_stats response is not an object")
         system = payload.get("system")
         observed_version = system.get("comfyui_version") if isinstance(system, dict) else None
-        if not isinstance(system, dict) or not _comfyui_version_satisfies(
-            observed_version, self._expected_comfyui_version
+        from astrid.core.generation.engine_readiness import current_comfy_provenance
+        from astrid.core.generation.preflight import compare_versions, readiness_envelope
+
+        provenance = current_comfy_provenance()
+        if provenance is not None:
+            provenance.system_stats(payload)
+        self._version_readiness = readiness_envelope(issues=compare_versions(
+            {"comfyui": self._workflow_comfyui_version}, {"comfyui": observed_version},
+        ))
+        profile = self._host_profile
+        runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
+        installed_version = runtime.get("comfyui_version")
+        if installed_version is not None and not _comfyui_version_satisfies(
+            observed_version, _normalise_comfyui_constraint(installed_version)
         ):
             raise ValueError(
-                "checkout_server requires ComfyUI "
-                f"{self._expected_comfyui_version} according to /system_stats; "
+                "checkout_server installed baseline requires ComfyUI "
+                f"{installed_version} according to /system_stats; "
                 f"observed {observed_version!r}"
             )
         self._startup_probe_digest = hashlib.sha256(
@@ -2220,6 +2230,13 @@ class CheckoutServerAdapter(VibeComfyBackend):
             or observed_source_content_digest != source_content_digest
         ):
             raise ValueError("checkout_server live source revision changed")
+        from astrid.core.generation.engine_readiness import ReadinessError, verify_installed_source
+
+        try:
+            verify_installed_source(source_revision, source_content_digest,
+                                    observed_source_revision, observed_source_content_digest)
+        except ReadinessError:
+            raise ValueError("checkout_server live source revision changed") from None
         _verify_owned_vibe_session(session_dir, pid)
 
     def run_compiled_workflow(
@@ -2291,6 +2308,11 @@ class CheckoutServerAdapter(VibeComfyBackend):
                     "checkout_server requires a canonical VibeComfy loader result"
                 )
             bundle.require_canonical_authority("checkout_server execution")
+            from astrid.core.generation.engine_readiness import current_comfy_provenance
+
+            provenance = current_comfy_provenance()
+            if provenance is not None:
+                provenance.workflow(bundle)
             if self._endpoint_transport is not None and any(
                 node.class_type == "SaveImageWebsocket" for node in bundle.workflow.nodes.values()
             ):
@@ -2317,6 +2339,8 @@ class CheckoutServerAdapter(VibeComfyBackend):
             refresh = getattr(target_schema, "refresh", None)
             if callable(refresh):
                 refresh()
+            if provenance is not None:
+                provenance.object_info(target_schema.object_info())
             # The VibeComfy release owns the model volume.  The live Comfy session
             # reads it through extra_model_paths.yaml, but bundle approval
             # performs its own local asset preflight and must be given the
@@ -2326,10 +2350,12 @@ class CheckoutServerAdapter(VibeComfyBackend):
             try:
                 bound_model_root = validate_model_root_binding(
                     host_session.get("model_root_binding"),
-                    verify_files=False,
+                    verify_files=True,
                 )
             except ModelRootBindingError as exc:
                 raise ValueError(f"checkout_server model-root binding is invalid: {exc}") from exc
+            if provenance is not None:
+                provenance.installed(self._host_profile)
             environment_model_root = os.environ.get(MODEL_ROOT_ENV)
             if environment_model_root is not None and environment_model_root != str(bound_model_root.path):
                 raise ValueError(

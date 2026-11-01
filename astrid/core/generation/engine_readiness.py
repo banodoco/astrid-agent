@@ -15,6 +15,7 @@ inference. The installed receipt stays ``qualified=false``.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib
 import importlib.util
@@ -29,6 +30,9 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -56,6 +60,230 @@ _MINIMUM = frozenset({"vram_bytes", "scratch_bytes"})
 
 class ReadinessError(ValueError):
     """Sanitized fail-closed refusal; messages are fixed product strings."""
+
+
+_COMFY_PROVENANCE = ContextVar("comfy_provenance", default=None)
+
+
+def current_comfy_provenance():
+    """The current attempt's evidence collector, never a machine facts cache."""
+    return _COMFY_PROVENANCE.get()
+
+
+def verify_installed_source(recorded_revision, recorded_digest, observed_revision, observed_digest):
+    """Installed source proof is mandatory, even when workflow versions are unknown."""
+    if (not isinstance(recorded_revision, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{40}", recorded_revision)
+            or not isinstance(recorded_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", recorded_digest)
+            or observed_revision != recorded_revision or observed_digest != recorded_digest):
+        raise ReadinessError("installed VibeComfy source identity could not be verified")
+    return {"revision": observed_revision, "content_digest": observed_digest, "verified": True}
+
+
+class ComfyProvenance:
+    """Retain native workflow and target observations through terminal settlement.
+
+    This adds evidence to the existing result, without approving dependencies,
+    inspecting a human filesystem, or changing a target. Native compilation and
+    the installed-session verifiers continue to own their integrity gates.
+    """
+
+    def __init__(self):
+        self.recorded = {"engine": None, "pack": {}, "runtime": None}
+        self.observed = {"engine": None, "pack": {}, "runtime": None}
+        self.models = []
+        self.build = {"recipe": None, "source": None}
+        self.object_info_sha256 = None
+        self.observed_at = None
+        self._inventory = {}
+        self._pack_classes = {}
+        self.recorded_sources = {"comfyui": None}
+        self.observed_sources = {}
+        self._readiness_issues = []
+
+    def add_readiness_issues(self, issues):
+        """Retain warnings from independent readiness checks in terminal evidence."""
+        for issue in issues:
+            if issue not in self._readiness_issues:
+                self._readiness_issues.append(copy.deepcopy(issue))
+
+    def source(self, path):
+        """Read declarations through VibeComfy's static observer, without exec."""
+        from types import SimpleNamespace
+
+        try:
+            if path.suffix.lower() == ".py":
+                from vibecomfy.registry.static_contract import extract_ready_template_contract
+
+                contract = extract_ready_template_contract(path)
+                from vibecomfy.contracts.runtime import RuntimeRequirements
+
+                requirements = SimpleNamespace(
+                    runtime=RuntimeRequirements.from_dict(contract.get("runtime")),
+                    models=contract.get("model_assets", []),
+                    custom_node_refs=contract.get("custom_node_refs", []),
+                )
+                self.workflow(SimpleNamespace(requirements=requirements))
+            elif path.suffix.lower() == ".json":
+                from vibecomfy.porting.provenance import extract_provenance
+
+                report = extract_provenance(json.loads(path.read_bytes()))
+                for pin in report.version_pins:
+                    slug = pin.locator_key.split("|", 1)[0].removeprefix("cnr:")
+                    if slug == "-":
+                        continue
+                    self.recorded["pack"][slug] = pin.version
+                    self._pack_classes[slug] = set(pin.class_types)
+                    if slug == "comfy-core" and self.recorded["engine"] is None:
+                        self.recorded["engine"] = pin.version
+        except (ImportError, OSError, ValueError, TypeError):
+            # Static extraction can be incomplete; the canonical loader still
+            # decides whether the source is executable. Unknown stays explicit.
+            return
+
+    @contextmanager
+    def capture(self):
+        token = _COMFY_PROVENANCE.set(self)
+        try:
+            yield self
+        finally:
+            _COMFY_PROVENANCE.reset(token)
+
+    def workflow(self, resolved):
+        workflow = getattr(resolved, "workflow", resolved)
+        requirements = getattr(workflow, "requirements", None)
+        runtime = getattr(requirements, "runtime", None)
+        self.recorded["engine"] = getattr(runtime, "comfy_version", None)
+        self.recorded["runtime"] = getattr(runtime, "python_version", None)
+        self.recorded_sources["comfyui"] = getattr(runtime, "comfy_commit", None)
+        # Imported UI version pins are retained by VibeComfy's native loader.
+        provenance = getattr(resolved, "provenance", {})
+        source_provenance = provenance.get("source_provenance", {}) if isinstance(provenance, Mapping) else {}
+        if not source_provenance:
+            provenance = getattr(getattr(workflow, "source", None), "provenance", {})
+            source_provenance = provenance.get("source_provenance", {}) if isinstance(provenance, Mapping) else {}
+        if not isinstance(source_provenance, Mapping):
+            source_provenance = {}
+        for pin in source_provenance.get("version_pins", ()):
+            slug = pin.get("locator_key", "").split("|", 1)[0].removeprefix("cnr:")
+            if slug and slug != "-":
+                self.recorded["pack"][slug] = pin.get("version")
+                self._pack_classes[slug] = set(pin.get("class_types", ()))
+                if slug == "comfy-core" and self.recorded["engine"] is None:
+                    self.recorded["engine"] = pin.get("version")
+        for ref in getattr(requirements, "custom_node_refs", ()):
+            slug = ref.get("slug") or ref.get("name")
+            if slug:
+                self.recorded["pack"].setdefault(slug, ref.get("version"))
+                self._pack_classes.setdefault(slug, set()).update(ref.get("class_set", ()))
+        declarations = [*getattr(requirements, "models", ()), *getattr(runtime, "models", ())]
+        self.models = []
+        for declaration in declarations:
+            asset = declaration if isinstance(declaration, Mapping) else {"name": declaration}
+            name, subdir = asset.get("name"), asset.get("subdir", "")
+            row = {"name": name, "subdir": subdir, "source": asset.get("url") or asset.get("source"),
+                   "recorded_sha256": asset.get("sha256"), "observed_sha256": None,
+                   "identity_status": "unknown"}
+            if row not in self.models:
+                self.models.append(row)
+
+    def installed(self, profile):
+        if not isinstance(profile, Mapping):
+            return
+        # These are observations from the verified installed profile, never
+        # arbitrary paths supplied in an attached target's saved facts.
+        self.build.update(profile.get("installed_provenance", {}))
+        source = self.build.get("source")
+        if isinstance(source, Mapping):
+            self.observed_sources = dict(source.get("commits", {}))
+        launch = profile.get("launch", {})
+        binding = launch.get("model_root", {}) if isinstance(launch, Mapping) else {}
+        self._inventory = {(row.get("subdir", ""), row.get("name")): row
+                           for row in binding.get("inventory", ())}
+
+    def system_stats(self, payload):
+        from datetime import datetime, timezone
+
+        system = payload.get("system", {}) if isinstance(payload, Mapping) else {}
+        if not isinstance(system, Mapping):
+            system = {}
+        self.observed["engine"] = system.get("comfyui_version")
+        self.observed["runtime"] = system.get("python_version")
+        self.observed_at = datetime.now(timezone.utc).isoformat()
+
+    def object_info(self, payload):
+        self.object_info_sha256 = _digest(payload)
+        # Only reported versions count. A module name or node presence does
+        # not establish a pack version, a model hash, or ownership.
+        self.observed["pack"] = {}
+        versions = {}
+        for class_type, info in payload.items():
+            if isinstance(info, Mapping):
+                slugs = {info["cnr_id"]} if isinstance(info.get("cnr_id"), str) and info["cnr_id"] else {
+                    slug for slug, classes in self._pack_classes.items() if class_type in classes}
+                for slug in slugs:
+                    version = info.get("pack_version")
+                    versions.setdefault(slug, set()).add(version if isinstance(version, str) else None)
+        for slug, values in versions.items():
+            self.observed["pack"][slug] = next(iter(values)) if len(values) == 1 else None
+
+    def evidence(self):
+        from .preflight import compare_versions, readiness_envelope
+        from packaging.specifiers import InvalidSpecifier, SpecifierSet
+        from packaging.version import InvalidVersion, Version
+
+        recorded = {key: self.recorded[key] for key in ("engine", "runtime")}
+        observed = {key: self.observed[key] for key in ("engine", "runtime")}
+        recorded.update({f"pack:{key}": value for key, value in self.recorded["pack"].items()})
+        observed.update({f"pack:{key}": value for key, value in self.observed["pack"].items()})
+        issues = compare_versions(recorded, observed)
+        issues.extend(copy.deepcopy(self._readiness_issues))
+        comparisons = []
+        for name in sorted(recorded.keys() | observed.keys()):
+            expected, actual = recorded.get(name), observed.get(name)
+            status = "unknown"
+            if isinstance(expected, str) and isinstance(actual, str):
+                try:
+                    Version(actual)
+                    try:
+                        Version(expected)
+                    except InvalidVersion:
+                        if not str(SpecifierSet(expected)):
+                            raise InvalidSpecifier(expected)
+                    status = "different" if any(issue["details"]["name"] == name for issue in issues) else "matching"
+                except (InvalidVersion, InvalidSpecifier):
+                    pass
+            comparisons.append({"name": name, "recorded": expected, "observed": actual, "status": status})
+        for name, expected in self.recorded_sources.items():
+            actual = self.observed_sources.get(name)
+            if expected and actual and expected != actual:
+                issues.append({"code": "version_drift", "severity": "warning",
+                               "message": f"{name} recorded source differs from the installed recipe",
+                               "details": {"name": name, "recorded": expected, "observed": actual}})
+        models = []
+        for model in self.models:
+            row = dict(model)
+            installed = self._inventory.get((row["subdir"], row["name"]), {})
+            digest = installed.get("sha256")
+            row["observed_sha256"] = digest.removeprefix("sha256:") if isinstance(digest, str) else None
+            authored, actual = row["recorded_sha256"], row["observed_sha256"]
+            row["identity_status"] = ("verified" if authored and authored == actual
+                                      else "observed" if actual else "unknown")
+            models.append(row)
+        versions = copy.deepcopy({"recorded": self.recorded, "observed": self.observed})
+        for side in versions.values():
+            for slug in self.recorded["pack"].keys() | self.observed["pack"].keys():
+                side["pack"].setdefault(slug, None)
+        return {"versions": versions,
+                "models": models, "build": self.build,
+                "comfy_provenance": {"object_info_sha256": self.object_info_sha256,
+                                     "observed_at": self.observed_at,
+                                     "version_comparisons": comparisons,
+                                     "sources": {"recorded": self.recorded_sources,
+                                                 "observed": {name: self.observed_sources.get(name)
+                                                              for name in self.recorded_sources.keys() | self.observed_sources.keys()}},
+                                     "readiness": readiness_envelope(issues=issues)}}
 
 
 @dataclass(frozen=True)
@@ -304,6 +532,34 @@ def bind_vibecomfy_checkout(checkout):
             for name in products} != products:
         raise ReadinessError("VibeComfy selection changed a product import origin")
     return root
+
+
+def select_unimported_vibecomfy_checkout(checkout):
+    """Explicitly select a verified source before applying the strict binder.
+
+    Readiness's isolated release keeps the reviewed binder as its default.
+    This opt-in helper also supports a source consumer with an unimported
+    ambient checkout; loaded conflicting code still fails the same checks.
+    """
+    root = Path(checkout)
+    before = list(sys.path)
+    products = {name: getattr(importlib.util.find_spec(name), "origin", None)
+                for name in ("astrid", "runtime_protocol")}
+    try:
+        if str(root) not in sys.path:
+            position = next((index for index, value in enumerate(sys.path)
+                             if (Path(value) / "vibecomfy/__init__.py").is_file()), len(sys.path))
+            sys.path.insert(position, str(root))
+        importlib.invalidate_caches()
+        selected = bind_vibecomfy_checkout(root)
+        if {name: getattr(importlib.util.find_spec(name), "origin", None)
+                for name in products} != products:
+            raise ReadinessError("VibeComfy selection changed a product import origin")
+        return selected
+    except BaseException:
+        sys.path[:] = before
+        importlib.invalidate_caches()
+        raise
 
 
 def probe_hardware(deadline, *, executable=None):
@@ -576,6 +832,13 @@ def produce_readiness(*, root, release_root, deadline, status=None, hardware=Non
         "verified_facts": facts,
         "verified_facts_digest": verified_facts_digest(facts),
         "runtime": {"runtime_instance_id": runtime_instance_id, "comfyui_version": "==" + version},
+        "installed_provenance": {
+            "recipe": {"sha256": receipt.recipe_sha256, "models_lock_sha256": receipt.models_lock_sha256},
+            "source": {"commits": dict(sorted(receipt.source_commits.items())),
+                       "vibecomfy": verify_installed_source(
+                           installed["source_revision"], installed["source_content_digest"],
+                           live["source_revision"], live["source_content_digest"])},
+        },
         "launch": {"output_root": output_root, "model_root": model_root},
         "vibecomfy_session": {
             "session_dir": registry, "server_url": installed["url"],

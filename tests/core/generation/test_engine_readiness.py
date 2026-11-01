@@ -47,6 +47,7 @@ ENGINE = "vibecomfy-h3"
 CLONE = Path(__file__).resolve().parents[3]
 RUNTIME_SOURCE = Path(os.environ.get("ASTRID_RUNTIME_CHECKOUT", "/home/user/proof/src/astrid-runtime"))
 VIBECOMFY_SOURCE = Path(os.environ.get("ASTRID_VIBECOMFY_CHECKOUT", "/home/user/proof/src/VibeComfy"))
+VIBECOMFY_REVISION = "3bebae39655eb460454885040be4d3aefaf2ef31"
 COMFY_VERSION = "0.36.0"
 SYNTHETIC_DRIVER = "580.95.05"
 SYNTHETIC_VRAM_MIB = 32607
@@ -82,6 +83,8 @@ from astrid.core.generation import engine_recipe
 from astrid.core.generation.engine_contracts import ModelLock, ModelSpec, StartSpec
 _cfg=json.loads(TINY)
 _base=engine_recipe.load_recipe(_cfg['engine'],'linux-x86_64-cu130')
+if _cfg.get('vibecomfy_revision'):
+    _base=replace(_base,sources=tuple(replace(s,pin=replace(s.pin,revision=_cfg['vibecomfy_revision'])) if s.name=='vibecomfy' else s for s in _base.sources))
 recipe=replace(_base,start=StartSpec(tuple(_cfg['argv']),_cfg['cwd'],{'VIBECOMFY_HEADLESS':'1'},'127.0.0.1',_cfg['port']),
                health=replace(_base.health,timeout_seconds=4,poll_interval_seconds=0.02))
 lock=ModelLock('astrid.models-lock.v1',tuple(ModelSpec(**m) for m in _cfg['models']))
@@ -89,8 +92,14 @@ lock=ModelLock('astrid.models-lock.v1',tuple(ModelSpec(**m) for m in _cfg['model
 
 _HARNESS = r'''
 import json,sys,time
+from pathlib import Path
 sys.dont_write_bytecode=True  # as run.py does; -I ignores PYTHONDONTWRITEBYTECODE
 cfg=json.loads(sys.argv[1])
+# This harness uses -I with venv dependencies, while the retained launcher
+# uses -I -S. Remove the venv's unimported source checkout from discovery so
+# the reviewed strict binder can select only the fixture's installed source.
+sys.path[:] = [value for value in sys.path
+               if not (Path(value) / 'vibecomfy/__init__.py').is_file()]
 sys.path.insert(0,cfg['site'])
 bearer_opens=[]
 def audit(event,args):
@@ -136,6 +145,19 @@ try:
     adapter=CheckoutServerAdapter.from_host_session(
         hc03_profile=result.profile,model_id='vibecomfy.run',template_id='vibecomfy.run',
         invocation_identity='readiness-producer-test')
+    # Check both A04 source-mismatch refusals in the same selected checkout.
+    import pytest
+    from astrid.core.generation.backends import vibecomfy as backend
+    profile = result.profile
+    source = profile["vibecomfy_session"]
+    for revision, digest in (("0" * 40, source["source_content_digest"]),
+                             (source["source_revision"], "sha256:" + "0" * 64)):
+        with pytest.MonkeyPatch.context() as mismatch:
+            mismatch.setattr(backend, "_observed_source_identity", lambda *_: (revision, digest))
+            with pytest.raises(ValueError, match="source revision does not match the live VibeComfy checkout"):
+                CheckoutServerAdapter.from_host_session(
+                    hc03_profile=profile, model_id="vibecomfy.run", template_id="vibecomfy.run",
+                    invocation_identity="readiness-source-mismatch", expected_comfyui_version="==0.25.0")
     out={'ok':True,'path':result.path,'sha256':result.sha256,'size':result.size,
          'adapter_session':adapter._host_session}
 except engine_readiness.ReadinessError as exc:
@@ -189,9 +211,10 @@ def _script(path, body):
     return str(path)
 
 
-@pytest.fixture(scope="module", params=[ENGINE, "comfyui"])
+@pytest.fixture(scope="module", params=[ENGINE, "comfyui", "vibecomfy-h3-a04"])
 def installation(tmp_path_factory, request):
-    engine = request.param
+    engine = ENGINE if request.param == "vibecomfy-h3-a04" else request.param
+    a04_source = request.param == "vibecomfy-h3-a04"
     version = COMFY_VERSION if engine == ENGINE else "0.43.2"
     mp = pytest.MonkeyPatch()
     tmp = tmp_path_factory.mktemp("readiness")
@@ -201,7 +224,11 @@ def installation(tmp_path_factory, request):
     (comfy / "output").mkdir(parents=True)
     (comfy / "comfyui_version.py").write_text(f'__version__ = "{version}"\n')
     canonical_recipe = load_recipe(engine, PLATFORM)
-    pin = next(s.pin.revision for s in canonical_recipe.sources if s.name == "vibecomfy")
+    pin = VIBECOMFY_REVISION if a04_source else next(s.pin.revision for s in canonical_recipe.sources if s.name == "vibecomfy")
+    # Both the pinned source and each installed producer use verified local checkouts.
+    import vibecomfy
+    assert Path(vibecomfy.__file__).resolve() == VIBECOMFY_SOURCE.resolve() / "vibecomfy/__init__.py"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=VIBECOMFY_SOURCE, text=True).strip() == VIBECOMFY_REVISION
     # Real VibeComfy at the canonical pin (objects shared read-only with the source tree).
     _run(["git", "clone", "-q", "--shared", "--no-checkout", str(VIBECOMFY_SOURCE), str(root / "runtime/vibecomfy")], tmp)
     _run(["git", "-c", "advice.detachedHead=false", "checkout", "-q", pin], root / "runtime/vibecomfy")
@@ -227,6 +254,8 @@ def installation(tmp_path_factory, request):
     tiny = {"argv": [str(venv_python), str(server), str(port), str(mode), str(started),
                      version, json.dumps(canonical_recipe.health.required_nodes)],
             "cwd": str(comfy), "port": port, "models": models, "engine": engine}
+    if a04_source:
+        tiny["vibecomfy_revision"] = VIBECOMFY_REVISION
     namespace = {"TINY": json.dumps(tiny)}
     exec(_TINY_RECIPE, namespace)
     recipe, lock = namespace["recipe"], namespace["lock"]

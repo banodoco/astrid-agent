@@ -90,6 +90,13 @@ def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monke
     assert calls[0]["modality"] == "audio" and calls[0]["mode"] == "workflow"
     assert json.loads(capsys.readouterr().out)["kind"] == "audio"
 
+    # Keep the original UI-JSON entry point alongside int/r1's canonical bundle.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'audio.json').write_bytes((tmp_path / 'source.json').read_bytes())
+    assert cli.main(["workflow", "audio.json", "--dry-run"]) == 0
+    assert calls[1]["modality"] == "audio" and calls[1]["mode"] == "workflow"
+    assert json.loads(capsys.readouterr().out)["kind"] == "audio"
+
 
 from tests.core.generation.test_generate_target_journey import loopback_comfy, PACK
 
