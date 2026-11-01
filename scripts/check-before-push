@@ -1,30 +1,62 @@
 #!/usr/bin/env bash
-# The one pre-push command (testing plan R-12): default test lane, then host/render change check.
-# Run from anywhere in the repo before pushing; it cds to the repo root itself.
+# Fast pre-push safety checks. Full pytest, integration, GPU, render, and
+# journey coverage remains in CI; this command checks only changed files.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-
-if [ -x .venv/bin/python ]; then
-  PY=.venv/bin/python
-else
-  PY=python3
+if [ -n "${PYTHON_BIN:-}" ]; then PY=$PYTHON_BIN
+elif [ -x .venv/bin/python ]; then PY=.venv/bin/python
+else PY=python3
 fi
+usage() { echo "usage: $0 [remote-name remote-url] < local-ref local-sha remote-ref remote-sha" >&2; }
 
-"$PY" -m pytest -q
+changed_files() {
+  if [ "$#" -eq 2 ]; then
+    while read -r _local_ref local_sha _remote_ref remote_sha; do
+      [ -n "${local_sha:-}" ] || continue
+      if [[ "$remote_sha" =~ ^0+$ ]]; then git diff-tree --root --no-commit-id --name-only -r "$local_sha"
+      else git diff --name-only "$remote_sha" "$local_sha"; fi
+    done
+    return
+  fi
+  if git rev-parse --verify --quiet origin/main >/dev/null; then git diff --name-only origin/main...HEAD; fi
+  git diff --name-only HEAD
+  git ls-files --others --exclude-standard
+}
 
-# Paths this push changes: commits on this branch vs origin/main (tolerated when
-# origin/main is absent), plus uncommitted and untracked files.
-CHANGED="$(
-  {
-    git diff --name-only origin/main...HEAD 2>/dev/null || true
-    git diff --name-only HEAD
-    git ls-files --others --exclude-standard
-  } | sort -u
-)"
+run_changed_checks() {
+  mapfile -t changed < <(changed_files "$@" | sed '/^$/d' | sort -u)
+  if [ "${#changed[@]}" -eq 0 ]; then echo "pre-push: no changed files; full suites remain in CI"; return 0; fi
+  mapfile -t python_files < <(printf '%s\n' "${changed[@]}" | awk '/\.py$/')
+  if [ "${#python_files[@]}" -gt 0 ]; then
+    PYTHONDONTWRITEBYTECODE=1 "$PY" - "${python_files[@]}" <<'PY'
+import ast, pathlib, sys
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    if not path.is_file(): continue
+    try: ast.parse(path.read_text(encoding="utf-8"), filename=name)
+    except (OSError, SyntaxError) as error:
+        print(f"Python syntax check failed: {name}: {error}", file=sys.stderr); raise SystemExit(1)
+PY
+    ruff_bin=${RUFF_BIN:-}
+    [ -n "$ruff_bin" ] || { [ -x .venv/bin/ruff ] && ruff_bin=.venv/bin/ruff || ruff_bin=$(command -v ruff || true); }
+    [ -n "$ruff_bin" ] || { echo "pre-push: changed Python files require Ruff for lint/format checks" >&2; return 2; }
+    "$ruff_bin" check --no-cache "${python_files[@]}"
+    "$ruff_bin" format --check --no-cache "${python_files[@]}"
+    mapfile -t test_files < <(printf '%s\n' "${python_files[@]}" | awk '/^tests\/test_.*\.py$/')
+    if [ "${#test_files[@]}" -gt 0 ]; then
+      "$PY" -m pytest --version >/dev/null 2>&1 || { echo "pre-push: changed test files require pytest; full suites remain in CI" >&2; return 2; }
+      timeout --signal=TERM 7 "$PY" -m pytest -q --maxfail=1 "${test_files[@]}"
+    fi
+  fi
+  if printf '%s\n' "${changed[@]}" | grep -Eq '^(astrid/core/execution/process_group\.py|astrid/sdk/autobootstrap\.py|astrid/packs/rendering/|remotion/)|(^|/)(custody_broker|task_scope|host_bootstrap|workspace_client)\.py$|(^|/)generic_host[^/]*\.py$'; then
+    echo "pre-push: host/render paths changed; smoke journey is deferred to CI" >&2
+  fi
+  echo "pre-push: checked ${#changed[@]} changed file(s); full suites remain in CI"
+}
 
-HOST_RENDER_RE='^(astrid/core/execution/process_group\.py|astrid/sdk/autobootstrap\.py|astrid/packs/rendering/|remotion/)|(^|/)(custody_broker|task_scope|host_bootstrap|workspace_client)\.py$|(^|/)generic_host[^/]*\.py$'
-
-if grep -Eq "$HOST_RENDER_RE" <<<"$CHANGED"; then
-  echo 'Host/render paths changed: run `python -m astrid dev journey --tier smoke` before merging (testing plan R-11).'
-fi
+case "${1:-}" in
+  -h|--help) usage ;;
+  "") run_changed_checks ;;
+  *) [ "$#" -eq 2 ] || { usage; exit 2; }; run_changed_checks "$@" ;;
+esac
