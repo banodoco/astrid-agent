@@ -424,8 +424,9 @@ def test_native_render_uses_exact_verified_inputs_and_proves_cleanup(tmp_path, m
             assert receipt["publication"]["status"] == "settled"
             assert host._handoff_active_attempts == host._handoff_pending_settlements == 0
             assert not host._active_processes
-            assert host._remotion_host_session is not None
-            assert not host._remotion_host_session._leases
+            # A completed render owns no persistent renderer lease: the host
+            # deliberately releases the session as part of task cleanup.
+            assert host._remotion_host_session is None
             host.shutdown()
             assert not host._active_processes and not host._host_lifetime_processes
             assert not host._unresolved_task_scopes
