@@ -18,6 +18,43 @@ else:
     except ModuleNotFoundError:
         from scripts.journey_release2 import RELEASE2_SCENARIOS
 
+# Independently attributable direct Linux faults. Each row requires a fresh
+# fixture installation; these contracts are not yet routed by the workflow.
+DIRECT_LINUX_FAULT_SCENARIOS: Final = (
+    {
+        "scenario_id": "direct-linux-interrupted-update",
+        "job_id": "direct-linux-interrupted-update",
+        "scenario": "interrupted-update",
+        "mode": "direct", "os": "linux", "runner": "ubuntu-24.04", "shell": "sh",
+        "steps": ("baseline", "interrupt", "recover", "verify"),
+        "required_evidence": (
+            "direct-installed-release0-fixture-and-native-service",
+            "populated-semantic-data-and-live-sentinel-before",
+            "durable-interrupted-operation-and-same-operation-terminal-journal",
+            "selected-installed-program-and-restored-healthy-native-service",
+            "unchanged-semantic-data-and-same-live-sentinel-after",
+            "per-step-command-and-inner-exits-and-sha256-evidence-binding",
+            "candidate-tuple-and-runner-provenance",
+        ),
+    },
+    {
+        "scenario_id": "direct-linux-rollback",
+        "job_id": "direct-linux-rollback",
+        "scenario": "rollback",
+        "mode": "direct", "os": "linux", "runner": "ubuntu-24.04", "shell": "sh",
+        "steps": ("baseline", "fail_candidate", "verify"),
+        "required_evidence": (
+            "direct-installed-release0-fixture-and-native-service",
+            "populated-semantic-data-and-live-sentinel-before",
+            "observed-failed-candidate-operation-and-terminal-rollback-journal",
+            "authentic-selected-release0-predecessor-and-restored-healthy-native-service",
+            "unchanged-semantic-data-and-same-live-sentinel-after",
+            "per-step-command-and-inner-exits-and-sha256-evidence-binding",
+            "candidate-tuple-and-runner-provenance",
+        ),
+    },
+)
+
 RELEASE1_MATRIX: Final = (
     {"job_id": "direct-macos", "mode": "direct", "runner": "macos-14", "shell": "sh", "os": "macos", "leg": "release0-to-release1"},
     {"job_id": "direct-linux", "mode": "direct", "runner": "ubuntu-24.04", "shell": "sh", "os": "linux", "leg": "release0-to-release1"},

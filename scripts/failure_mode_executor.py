@@ -26,6 +26,7 @@ import time
 import uuid
 import venv
 from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -1284,6 +1285,129 @@ def execution_observation_errors(observation: Mapping) -> list[str]:
         if mutation.get("unchanged") is not True or mutation.get("before") != mutation.get("after"):
             errors.append(f"executor.stop.{outcome}: no-update byte inventory changed")
     return errors
+
+
+def execute_installed_fault(scenario: str, adapter: Any, evidence_root: Path) -> dict:
+    """Run one installed fault via ``adapter.run_step(step, previous)``.
+
+    The adapter must operate on the same native installation for every step and
+    return the observations documented in the R-40 receipt. This helper never
+    creates, deletes, restores, or cleans an installation. It fails immediately
+    on an absent observation; its return is input to the existing journey
+    evidence pipeline, not a hosted verdict. The disposable executor below is
+    not an installed adapter.
+    """
+    sequences = {
+        "interrupted-update": ("baseline", "interrupt", "recover", "verify"),
+        "rollback": ("baseline", "fail_candidate", "verify"),
+    }
+    if scenario not in sequences or not callable(getattr(adapter, "run_step", None)):
+        raise ValueError("unknown installed fault scenario or missing adapter")
+    root = Path(evidence_root).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("evidence root is not a directory")
+    observations: dict[str, dict] = {}
+    evidence_seen: set[str] = set()
+
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            raise ValueError(message)
+
+    def check_evidence(row: Mapping, step: str, *, fresh: bool) -> None:
+        files = row.get("evidence")
+        require(isinstance(files, list) and bool(files), f"{step}: evidence missing")
+        for item in files:
+            require(isinstance(item, Mapping), f"{step}: invalid evidence")
+            name, digest = item.get("path"), item.get("sha256")
+            require(isinstance(name, str) and bool(name) and _sha256(digest),
+                    f"{step}: evidence path or digest missing")
+            path = Path(name)
+            require(not path.is_absolute() and ".." not in path.parts,
+                    f"{step}: evidence path escapes root")
+            source = root / path
+            try:
+                resolved = source.resolve(strict=True)
+                valid = (resolved.is_relative_to(root) and source.is_file()
+                         and not any(part.is_symlink() for part in (source, *source.parents)
+                                     if part != root and part.is_relative_to(root))
+                         and sha256_file(source) == digest)
+            except OSError:
+                valid = False
+            require(valid, f"{step}: evidence bytes missing or mismatched")
+            if fresh:
+                require(str(resolved) not in evidence_seen, f"{step}: duplicate evidence path")
+                evidence_seen.add(str(resolved))
+
+    for step in sequences[scenario]:
+        row = adapter.run_step(step, deepcopy(observations))
+        require(isinstance(row, Mapping), f"{step}: observation missing")
+        row = deepcopy(dict(row))
+        command = row.get("command")
+        require(isinstance(command, list) and bool(command)
+                and all(isinstance(part, str) and bool(part) for part in command),
+                f"{step}: command missing")
+        require(type(row.get("command_exit")) is int and row["command_exit"] == 0,
+                f"{step}: command exit missing or failed")
+        inner = row.get("inner_exit")
+        require(type(inner) is int and (inner != 0 if step in {"interrupt", "fail_candidate"}
+                                      else inner == 0),
+                f"{step}: inner exit missing or unexpected")
+        check_evidence(row, step, fresh=True)
+        if step == "baseline":
+            require(isinstance(row.get("installation_id"), str) and bool(row["installation_id"]),
+                    "baseline: installed identity missing")
+            require(row.get("direct_release0_fixture") is True
+                    and row.get("native_service_healthy") is True
+                    and row.get("populated_data") is True,
+                    "baseline: installed Release-0, native health or populated data missing")
+            for field in ("predecessor_sha256", "candidate_sha256", "data_sha256"):
+                require(_sha256(row.get(field)), f"baseline: {field} missing")
+            require(row["predecessor_sha256"] != row["candidate_sha256"],
+                    "baseline: predecessor and candidate identities coincide")
+            sentinel = row.get("sentinel")
+            require(isinstance(sentinel, Mapping) and type(sentinel.get("pid")) is int
+                    and sentinel["pid"] > 0 and isinstance(sentinel.get("birth"), str)
+                    and bool(sentinel["birth"]) and sentinel.get("alive") is True,
+                    "baseline: live birth-bound sentinel missing")
+        elif step in {"interrupt", "fail_candidate"}:
+            require(row.get("installation_id") == observations["baseline"]["installation_id"]
+                    and row.get("candidate_sha256") == observations["baseline"]["candidate_sha256"],
+                    f"{step}: installed or candidate identity changed")
+            require(isinstance(row.get("operation_id"), str) and bool(row["operation_id"])
+                    and row.get("fault_observed") is True,
+                    f"{step}: operation or fault observation missing")
+            if step == "interrupt":
+                require(row.get("journal_step") == "switched",
+                        "interrupt: durable switched journal missing")
+            else:
+                require(row.get("journal_step") == "rolled_back"
+                        and row.get("candidate_started") is True
+                        and row.get("terminal_operation_id") == row["operation_id"],
+                        "fail_candidate: same-operation terminal rollback journal missing")
+        elif step == "recover":
+            require(row.get("installation_id") == observations["baseline"]["installation_id"],
+                    "recover: installed identity changed")
+            _verify_recovery_journal(observations["interrupt"], {
+                "operation_id": row.get("operation_id"), "step": row.get("journal_step")
+            })
+        else:
+            baseline = observations["baseline"]
+            require(row.get("installation_id") == baseline["installation_id"]
+                    and row.get("native_service_healthy") is True
+                    and row.get("data_sha256") == baseline["data_sha256"]
+                    and row.get("sentinel") == baseline["sentinel"],
+                    "verify: service, data or sentinel preservation missing")
+            if scenario == "rollback":
+                expected = baseline["predecessor_sha256"]
+            else:
+                expected = baseline["candidate_sha256"] if observations["recover"]["journal_step"] == "complete" else baseline["predecessor_sha256"]
+            require(row.get("selected_sha256") == expected,
+                    "verify: selected installed program does not match terminal state")
+        observations[step] = row
+    # A later callback must not silently alter an earlier step's evidence.
+    for step, row in observations.items():
+        check_evidence(row, step, fresh=False)
+    return {"scenario": scenario, "steps": observations}
 
 
 def execute(
