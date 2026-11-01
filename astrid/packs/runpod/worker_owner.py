@@ -10,25 +10,30 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import secrets
 import stat
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from runtime_protocol import platform
 from runtime_protocol.dirfd import filesystem as os
 
 from astrid.core.execution.platform_helpers import owned_by_current_user
+from astrid.core.execution.warm_hold import WarmHolds, _start_timer, idle_seconds
 
 from .worker_preparation import (
     _checkpoint_release_progress,
     _release_exact_target_after_quiescence,
+    _validate_absence_receipt,
     replace_target_record,
+    target_owner,
 )
 from .worker_process import (
     RunPodWorkerProcessTransport,
@@ -48,6 +53,302 @@ from .worker_staging import (
 
 class RunPodWorkerOwnerError(RuntimeError):
     """Exact RunPod preparation or host custody could not be established."""
+
+
+def runpod_idle_seconds(*, requested: float | None = None,
+                       environ: Mapping[str, str] | None = None,
+                       service_environ: Mapping[str, str] | None = None) -> float:
+    """Request, caller environment, service environment, then ten minutes."""
+    default = idle_seconds(600.0, environ=service_environ or {})
+    value = idle_seconds(default, requested=requested, environ=environ)
+    if not math.isfinite(value) or value < 0:
+        raise RunPodWorkerOwnerError("RunPod idle seconds must be finite and nonnegative")
+    return value
+
+
+class RunPodWarmSessionOwner:
+    """Retain one journal-created session using the host's existing WarmHolds.
+
+    The F07/A10 owner supplies ``release_task(request)`` to dispatch/resume its
+    Runtime release task with the stable idempotency key. That task calls the
+    existing release_prepared_worker; timer threads never delete provider pods.
+    A new owner must call recover before admission, including after restart.
+    """
+
+    _identity_fields = ("operation_id", "provider_account_ref", "pod_id", "gpu_type",
+                        "worker_image", "network_volume_id", "volume_mount_path")
+
+    def __init__(self, preparer: Any, *, release_task: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+                 holds: WarmHolds | None = None, requested_idle_seconds: float | None = None,
+                 environ: Mapping[str, str] | None = None,
+                 service_environ: Mapping[str, str] | None = None,
+                 clock: Callable[[], float] = time.time, timer: Any = _start_timer) -> None:
+        if not callable(release_task):
+            raise RunPodWorkerOwnerError("a Runtime release-task dispatcher is required")
+        self.preparer, self.release_task = preparer, release_task
+        self.clock, self.timer = clock, timer
+        self.holds = holds if holds is not None else WarmHolds(clock=clock, timer=timer)
+        self.idle = runpod_idle_seconds(requested=requested_idle_seconds, environ=environ,
+                                       service_environ=service_environ)
+        self.lock = threading.RLock()
+        self.lease = None
+        self.deadline_timer = None
+        record = preparer._read_claim(allowed_states=("claimed", "release_pending", "cleanup_pending", "cleanup_complete"))
+        self.identity = {key: record.get(key) for key in self._identity_fields}
+        self.key = (str(preparer.claim_handle_path), *self.identity.values())
+        self._check_identity(record)
+
+    def _check_identity(self, record: Mapping[str, Any]) -> None:
+        operation = record.get("operation_id")
+        if (any(not value for value in self.identity.values())
+                or any(record.get(key) != value for key, value in self.identity.items())
+                or record.get("acquisition_mode") != "allocate"
+                or record.get("release_authorized") is not True
+                or record.get("target_identity_verified") is not True
+                or record.get("request_name") != "astrid-product-" + str(operation)
+                or record.get("name") != record["request_name"]):
+            raise RunPodWorkerOwnerError("warm session differs from the journal-created account/pod/GPU/image/volume")
+
+    def _read(self) -> dict[str, Any]:
+        record = self.preparer._read_claim(allowed_states=("claimed", "release_pending", "cleanup_pending", "cleanup_complete"))
+        self._check_identity(record)
+        return record
+
+    def _save(self, record: Mapping[str, Any], warm: Mapping[str, Any], **changes: Any) -> None:
+        replace_target_record(self.preparer.claim_handle_path,
+                              {**record, "warm_session": dict(warm), **changes},
+                              operation_id=self.identity["operation_id"])
+
+    def _bounds(self, record: Mapping[str, Any]) -> tuple[str, float, float]:
+        from .target_selection import _number, _utc
+        try:
+            paid = record["paid_limits"]
+            invocation = paid["invocation_id"]
+            if not isinstance(invocation, str) or not invocation:
+                raise ValueError()
+            rate = _number(paid["hourly_usd"], "hourly USD rate")
+            cap = _number(paid["max_usd"], "USD cap")
+            authorized = _utc(paid["authorized_at"]).timestamp()
+            expiry = min(_utc(paid["expires_at"]).timestamp(), _utc(paid["deadline"]).timestamp(),
+                         authorized + cap / rate * 3600)
+            idle = _number(paid["idle_seconds"], "disclosed idle", zero=True)
+            if authorized > self.clock() or not math.isfinite(expiry):
+                raise ValueError()
+            return invocation, expiry, idle
+        except Exception:
+            raise RunPodWorkerOwnerError("warm session has no verified paid lifetime") from None
+
+    def _warm(self, record: Mapping[str, Any], reference: Any | None = None) -> dict[str, Any]:
+        warm = record.get("warm_session")
+        if (not isinstance(warm, dict) or warm.get("schema") != "astrid.runpod.warm-session.v1"
+                or warm.get("identity") != self.identity
+                or type(warm.get("generation")) is not int or warm["generation"] < 1
+                or warm.get("state") not in {"active", "idle", "releasing"}
+                or not isinstance(warm.get("task_id"), str) or not warm["task_id"]
+                or not isinstance(warm.get("run_id"), str) or not warm["run_id"]
+                or not isinstance(warm.get("invocation_id"), str) or not warm["invocation_id"]
+                or type(warm.get("paid_expires_at")) not in (int, float)
+                or not math.isfinite(warm["paid_expires_at"])
+                or (warm["state"] == "idle" and (type(warm.get("idle_expires_at")) not in (int, float)
+                    or not math.isfinite(warm["idle_expires_at"])))
+                or (reference is not None and any(warm.get(key) != value for key, value in {
+                    "task_id": reference.task_id, "run_id": reference.run_id,
+                    "deployment_digest": reference.digest(),
+                }.items()))):
+            raise RunPodWorkerOwnerError("retained warm-session custody is invalid or foreign")
+        return dict(warm)
+
+    def begin(self, reference: Any) -> None:
+        """Lease only after R02 has recorded fresh paid consent for this run."""
+        with self.lock, target_owner(self.preparer.claim_handle_path):
+            record = self._read()
+            self.preparer._binding(reference)
+            if record["state"] != "claimed" or record.get("reconciliation_required") is not False:
+                raise RunPodWorkerOwnerError("cleanup prevents admission or renewal")
+            invocation, expiry, disclosed_idle = self._bounds(record)
+            previous = self._warm(record) if "warm_session" in record else None
+            if previous is not None:
+                if previous["state"] != "idle" or self.clock() >= previous["idle_expires_at"]:
+                    raise RunPodWorkerOwnerError("active, expired or unresolved session cannot be renewed")
+                if invocation == previous["invocation_id"]:
+                    raise RunPodWorkerOwnerError("fresh per-run paid consent is required")
+                expiry = min(expiry, previous["paid_expires_at"])
+            if self.clock() >= expiry or self.idle > disclosed_idle:
+                raise RunPodWorkerOwnerError("paid lifetime or disclosed idle cannot cover retention")
+            warm = {
+                "schema": "astrid.runpod.warm-session.v1", "identity": self.identity,
+                "generation": 1 if previous is None else previous["generation"] + 1,
+                "state": "active", "task_id": reference.task_id, "run_id": reference.run_id,
+                "deployment_digest": reference.digest(), "invocation_id": invocation,
+                "paid_expires_at": expiry, "idle_seconds": self.idle,
+            }
+            self._save(record, warm)
+            self._arm(warm)
+
+    async def retire(self, reference: Any, *, runtime_owner: Any,
+                     qualification: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Retire the exact task/activation, retaining the compatible engine."""
+        with self.lock:
+            self._warm(self._read(), reference)
+        result = await self.preparer.retire_task(reference, runtime_owner=runtime_owner, qualification=qualification)
+        with self.lock, target_owner(self.preparer.claim_handle_path):
+            record = self._read()
+            warm = self._warm(record, reference)
+            if record["state"] != "claimed" or warm["state"] == "releasing":
+                raise RunPodWorkerOwnerError("release already fences this warm session")
+            if warm["state"] == "active":
+                warm.update(state="idle", idle_expires_at=min(self.clock() + warm["idle_seconds"],
+                                                            warm["paid_expires_at"]))
+                self._save(record, warm)
+            self._arm(warm)
+        return result
+
+    def recover(self, reference: Any) -> None:
+        """Restore saved deadlines without granting consent or extending idle."""
+        with self.lock, target_owner(self.preparer.claim_handle_path):
+            record = self._read()
+            warm = self._warm(record, reference)
+            if record["state"] == "cleanup_complete":
+                _validate_absence_receipt(record)
+                return
+            warm["generation"] += 1  # invalidate callbacks from an older owner
+            self._save(record, warm)
+            pending = record["state"] != "claimed" or warm["state"] == "releasing"
+            if not pending:
+                self._arm(warm)
+        if pending:
+            self._expire("recovery", warm["generation"])
+
+    def _arm(self, warm: Mapping[str, Any]) -> None:
+        if self.deadline_timer is not None:
+            self.deadline_timer.cancel()
+        if self.lease is not None:
+            self.holds.release(self.lease, holding=None, idle_seconds=0)
+        generation = warm["generation"]
+        self._generation = generation
+        self.lease = self.holds.lease(self.key, lock=self.lock,
+                                     stop=lambda: self._expire("idle", self._generation))
+        if warm["state"] == "idle":
+            self.holds.release(self.lease, holding="RunPod " + self.identity["pod_id"],
+                               on_idle="release exact journal-created pod; preserve volume",
+                               idle_seconds=max(0, warm["idle_expires_at"] - self.clock()))
+            self.lease = None
+        # Independent of WarmHolds leases: active work cannot suppress this.
+        self.deadline_timer = self.timer(max(0, warm["paid_expires_at"] - self.clock()),
+                                        lambda: self._expire("paid_deadline", generation))
+
+    def _expire(self, reason: str, generation: int) -> None:
+        with self.lock:
+            try:
+                with target_owner(self.preparer.claim_handle_path):
+                    record = self._read()
+                    warm = self._warm(record)
+                    if warm["generation"] != generation or record["state"] == "cleanup_complete":
+                        return
+                    if record["state"] == "claimed":
+                        due = (self.clock() >= warm["paid_expires_at"] or
+                               (warm["state"] == "idle" and self.clock() >= warm["idle_expires_at"]))
+                        if not due:
+                            return
+                    warm.update(state="releasing", release_reason=reason)
+                    self._save(record, warm, state="cleanup_pending", reconciliation_required=True)
+                if self.deadline_timer is not None:
+                    self.deadline_timer.cancel()
+                if self.lease is not None:
+                    self.holds.release(self.lease, holding=None, idle_seconds=0)
+                    self.lease = None
+                request = {**self.identity, "task_id": warm["task_id"], "run_id": warm["run_id"],
+                           "deployment_digest": warm["deployment_digest"], "reason": reason, "resume": True,
+                           "idempotency_key": "runpod-release:" + self.identity["operation_id"]}
+                # The Runtime release task owns its durable task/evidence. An
+                # admitted task may still be pending; only the journal's exact
+                # independent absence receipt permits released status.
+                self.release_task(request)
+                current = self._read()
+                if current["state"] == "cleanup_complete":
+                    _validate_absence_receipt(current)
+            except Exception as exc:
+                # Keep only a type; provider/transport messages can hold secrets.
+                self.last_error_type = type(exc).__name__
+
+
+def _stop_original_installed_session(selection_value: Mapping[str, Any],
+                                     receipt_value: Mapping[str, Any]) -> dict[str, Any]:
+    """Run on the target: stop through the original supervisor's pinned socket.
+
+    The installed attachment remains read-only. No PID is adopted or signalled
+    here; only the live installation supervisor has process-tree stop authority.
+    """
+    from .worker_session import ManagedSessionReceipt, ManagedSessionSelection, RunPodManagedVibeComfySessionOwner
+    from .installed_session import LocalInstalledVibeComfySessionTransport
+    from astrid.core.generation import engine_custody as custody
+    from astrid.core.generation.engine_recipe import load_recipe, recipe_digest
+    from astrid.core.generation.engine_runner import _sha, helper_manifest
+
+    selection = ManagedSessionSelection(**dict(selection_value))
+    receipt = ManagedSessionReceipt.from_dict(receipt_value)
+    if (selection.session_ref != "vibecomfy-h3" or any(
+            getattr(selection, key) != getattr(receipt, key)
+            for key in ("account_ref", "pod_id", "session_ref", "config_digest", "output_root"))):
+        raise RunPodWorkerOwnerError("original supervisor stop selection is foreign")
+    root = str(Path(selection.runtime_root).parent)
+    if selection.runtime_root != root + "/runtime":
+        raise RunPodWorkerOwnerError("installed runtime root is not canonical")
+    deadline = time.monotonic() + 30
+    transport = LocalInstalledVibeComfySessionTransport()
+    recipe = load_recipe(selection.session_ref, transport.platform)
+    client = custody.LinuxEngineServiceClient(root=root, engine=selection.session_ref,
+        platform=transport.platform, recipe_sha256=recipe_digest(recipe), helper_sha256=_sha(helper_manifest(recipe)))
+    marker_path = client.control + "/session.json"
+
+    def marker() -> Any:
+        try:
+            return json.loads(transport._read(root, marker_path, deadline))
+        except FileNotFoundError:
+            return None
+
+    def birth(pid: int) -> str | None:
+        try:
+            return custody._vibe_birth(pid)
+        except FileNotFoundError:
+            return None
+
+    def stopped() -> bool:
+        # A reused PID cannot be killed by this owner. A different live process
+        # is nevertheless ambiguous evidence, so require actual PID absence.
+        return birth(receipt.daemon_pid) is None and birth(receipt.comfy_pid) is None and marker() is None
+
+    if not stopped():
+        RunPodManagedVibeComfySessionOwner(transport).resume(selection, receipt)
+        observed = marker()
+        if (not isinstance(observed, dict) or observed.get("identity") != client.identity
+                or not isinstance(observed.get("owner_id"), str)
+                or "sha256:" + hashlib.sha256(observed["owner_id"].encode()).hexdigest() != receipt.launch_token_digest):
+            raise RunPodWorkerOwnerError("original installation supervisor identity changed")
+        with custody._directory(client.control, create=False) as fd:
+            channel = client._connect(fd, deadline, start=False)
+            if channel is None:
+                raise RunPodWorkerOwnerError("original installation supervisor is unavailable")
+            with channel:
+                # Verify after connecting; the channel pins the actual owner,
+                # unlike sending a later stop through a newly resolved socket.
+                if (marker() != observed or birth(receipt.daemon_pid) != receipt.daemon_birth_id
+                        or birth(receipt.comfy_pid) != receipt.comfy_birth_id):
+                    raise RunPodWorkerOwnerError("original supervisor changed before stop")
+                custody._send(channel, {"identity": client.identity, "operation": "stop", "payload": {},
+                                        "remaining_seconds": max(0.001, deadline - time.monotonic())}, deadline)
+                response = custody._receive(channel, deadline + 8)
+                if response != {"identity": client.identity, "result": {"stopped": True}}:
+                    raise RunPodWorkerOwnerError("original supervisor did not confirm stop")
+        while not stopped():
+            if time.monotonic() >= deadline + 8:
+                raise RunPodWorkerOwnerError("original supervisor processes remain uncertain")
+            time.sleep(0.02)
+    return {"state": "stopped", "session_ref": selection.session_ref,
+            "config_digest": selection.config_digest, "gpu_qualified": False,
+            "supervisor_stop": "original_installation_owner",
+            "daemon_pid": receipt.daemon_pid, "daemon_birth_id": receipt.daemon_birth_id,
+            "comfy_pid": receipt.comfy_pid, "comfy_birth_id": receipt.comfy_birth_id}
 
 
 def _run_sync(coroutine: Any) -> Any:
@@ -1077,9 +1378,9 @@ class RunPodRemoteWorkerPreparer:
                 raise RunPodWorkerOwnerError("persisted task drain response is foreign")
 
             stopped = progress.get("process_stop")
+            owner = self._owner(reference)
+            owner._require_handle(process)
             if stopped is None:
-                owner = self._owner(reference)
-                owner._require_handle(process)
                 stopped = await owner.stop(process)
                 if (not isinstance(stopped, Mapping) or stopped.get("stopped") is not True
                         or any(stopped.get(key) != getattr(process, key)
@@ -1285,10 +1586,27 @@ class RunPodRemoteWorkerPreparer:
             receipt = ManagedSessionReceipt.from_dict(session_record["receipt"])
             if (session_record.get("session_ref") != selection.session_ref
                     or session_record.get("config_digest") != selection.config_digest
-                    or session_record.get("output_root") != selection.output_root):
+                    or session_record.get("output_root") != selection.output_root
+                    or selection.account_ref != binding.account_ref or receipt.account_ref != binding.account_ref
+                    or selection.pod_id != binding.pod_id or receipt.pod_id != binding.pod_id):
                 raise RunPodWorkerOwnerError("managed session custody changed before release")
             if session_stopped is None:
-                session_stopped = self.session_owner.stop(selection, receipt)
+                if selection.session_ref == "vibecomfy-h3":
+                    program = (
+                        "import json,sys; sys.path[:0]=json.loads(sys.argv[1]); "
+                        "from astrid.packs.runpod.worker_owner import _stop_original_installed_session; "
+                        "print(json.dumps(_stop_original_installed_session(json.loads(sys.argv[2]),json.loads(sys.argv[3]))))"
+                    )
+                    try:
+                        session_stopped = await self.preparation_transport._run_json_program(
+                            program, [json.dumps([str(reference.source_checkout), selection.vibecomfy_root]),
+                                      json.dumps(asdict(selection)), json.dumps(receipt.as_dict())],
+                            python=selection.python_executable, timeout_seconds=45,
+                        )
+                    except Exception:
+                        raise RunPodWorkerOwnerError("original installation supervisor stop is unresolved") from None
+                else:
+                    session_stopped = self.session_owner.stop(selection, receipt)
                 checkpoint(session_stop=dict(session_stopped))
             elif (not isinstance(session_stopped, Mapping)
                     or session_stopped.get("state") != "stopped"

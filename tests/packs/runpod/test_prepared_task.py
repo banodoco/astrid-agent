@@ -365,7 +365,10 @@ def test_completed_explicit_release_receipt_resumes_without_provider_access(tmp_
         },
         "release_quiescence": quiescence,
         "cleanup": {"pod_id": "pod-1", "backup_volume_id": "volume-1",
-                    "backup_volume_preserved": True, "status": "terminated"},
+                    "backup_volume_preserved": True, "status": "terminated",
+                    "absence": {"provider_account_ref": "account-1", "pod_id": "pod-1",
+                                "exact_get_status": 404, "account_list_succeeded": True,
+                                "account_list_absent": True}},
         "cleanup_status": "complete", "reconciliation_required": False,
     }
     claim_path.write_text(json.dumps(released), encoding="utf-8")
@@ -498,14 +501,14 @@ def test_installed_attachment_cannot_forge_quiescence_or_transfer_provider_relea
     import asyncio
     from dataclasses import asdict, replace
     from astrid.packs.runpod.worker_preparation import write_target_record
-    from astrid.packs.runpod.worker_session import ManagedSessionError
+    from astrid.packs.runpod.worker_owner import RunPodWorkerOwnerError
     from tests.test_runpod_managed_worker_session import _owner
 
     case = release_case
     session_owner, transport, selected, _ = _owner()
     receipt = session_owner.start(selected)
-    selected = replace(selected, session_ref="vibecomfy-h3")
-    receipt = replace(receipt, session_ref="vibecomfy-h3")
+    selected = replace(selected, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
+    receipt = replace(receipt, session_ref="vibecomfy-h3", account_ref="runpod-test-account", pod_id="pod-exact")
     record = {**case.record, "managed_session": {
         "schema": "astrid.runpod.managed-session.v1",
         "claim_operation_id": case.record["operation_id"],
@@ -516,7 +519,7 @@ def test_installed_attachment_cannot_forge_quiescence_or_transfer_provider_relea
     preparer = case.fresh()
     preparer.session_owner = session_owner
     transport.calls.clear()
-    with pytest.raises(ManagedSessionError, match="original supervisor stop"):
+    with pytest.raises(RunPodWorkerOwnerError, match="original installation supervisor stop"):
         asyncio.run(preparer.release(case.reference, runtime_owner=case.runtime))
     saved = json.loads(case.path.read_bytes())
     assert "delete" not in case.calls

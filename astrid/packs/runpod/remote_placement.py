@@ -938,10 +938,16 @@ class LifecyclePodProvider:
         ))
 
     def pod_exists(self, pod_id: str) -> bool:
-        from runpod_lifecycle import RunPodConfig, api
+        from runpod_lifecycle import RunPodConfig
+        from .worker_preparation import read_exact_pod
 
         config = RunPodConfig.from_env(transport="https")
-        return api.get_pod_status(pod_id, config.api_key) is not None
+        status, record = read_exact_pod(config.api_key, pod_id)
+        if status == 404 and record is None:
+            return False
+        if status == 200 and isinstance(record, dict) and record.get("id") == pod_id:
+            return True
+        raise RemotePlacementError("exact pod GET did not establish presence or 404")
 
 
 def _read_token(handle: Mapping[str, Any]) -> str:
