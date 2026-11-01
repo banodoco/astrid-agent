@@ -13,8 +13,75 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from contextlib import contextmanager
 from pathlib import Path
+
+
+def _assert_private_destination(path: Path, borrowed: Path) -> None:
+    """Reject writes whose destination or ancestor is a link or borrowed path."""
+    resolved = path.resolve(strict=False)
+    if resolved == borrowed or resolved.is_relative_to(borrowed):
+        raise ValueError(f"staging destination resolves into borrowed graph: {path}")
+    current = path
+    while current != current.parent:
+        if current.is_symlink():
+            raise ValueError(f"staging destination has a linked ancestor: {path}")
+        current = current.parent
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"staging destination is not a directory: {path}")
+
+
+def _extract_private_tarball(archive: Path, destination: Path, *, borrowed: Path) -> None:
+    """Extract only after proving the destination is a private real directory."""
+    _assert_private_destination(destination, borrowed)
+    destination.mkdir(parents=True, exist_ok=True)
+    _assert_private_destination(destination, borrowed)
+    with tarfile.open(archive) as source:
+        source.extractall(destination, filter="data")
+
+
+def _stage_private_node_modules(
+    peers: Path,
+    modules: Path,
+    *,
+    skip_scopes: frozenset[str] | set[str] = frozenset(),
+) -> None:
+    """Link a borrowed peer graph into a private node_modules root.
+
+    Scope directories are owned by the stage; only their package leaves link
+    to the read-only peer graph.  The realpath check must run before every
+    directory or leaf write so a linked parent cannot turn a link operation
+    into a write through the borrowed graph.
+    """
+    borrowed = peers.resolve(strict=True)
+
+    _assert_private_destination(modules, borrowed)
+    modules.mkdir(parents=True, exist_ok=True)
+    _assert_private_destination(modules, borrowed)
+    for peer in sorted(peers.iterdir(), key=lambda item: item.name):
+        if peer.name in skip_scopes:
+            continue
+        if peer.name.startswith("@"):
+            scope = modules / peer.name
+            _assert_private_destination(scope, borrowed)
+            scope.mkdir(parents=True, exist_ok=True)
+            if scope.is_symlink() or not scope.is_dir():
+                raise ValueError(f"staging scope is not a real directory: {scope}")
+            for leaf in sorted(peer.iterdir(), key=lambda item: item.name):
+                target = scope / leaf.name
+                _assert_private_destination(target.parent, borrowed)
+                subprocess.run(
+                    ["ln", "-sfnT", str(leaf.resolve(strict=True)), str(target)],
+                    check=True,
+                )
+        else:
+            target = modules / peer.name
+            _assert_private_destination(target.parent, borrowed)
+            subprocess.run(
+                ["ln", "-sfnT", str(peer.resolve(strict=True)), str(target)],
+                check=True,
+            )
 
 
 @contextmanager
@@ -34,19 +101,10 @@ def _execution_env():
     old_path = os.environ.get("PATH", "")
     schema_env = "ASTRID_TIMELINE_SCHEMA_PYTHONPATH"
     old_schema_root = os.environ.get(schema_env)
-    # A test runner may import the canonical package from a venv/site-packages
-    # path without exporting the install root.  Renderer commands use
-    # ``python3`` from PATH, so make that dependency explicit for the child
-    # instead of relying on whichever interpreter happens to be first there.
     if not old_schema_root:
-        try:
-            import banodoco_timeline_schema
-
-            schema_root = Path(banodoco_timeline_schema.__file__).resolve().parent
-        except (ImportError, AttributeError):
-            schema_root = None
-        if schema_root is not None:
-            os.environ[schema_env] = str(schema_root.parent)
+        os.environ[schema_env] = str(
+            Path(__file__).resolve().parents[3] / "astrid/core/timeline/schema/timeline-config.schema.json"
+        )
     os.environ["PATH"] = ":".join(
         [d for d in (python_bin, node_bin) if d] + [old_path]
     )

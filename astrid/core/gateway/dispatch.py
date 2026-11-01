@@ -102,7 +102,9 @@ def _dispatch_status(args: list[str]) -> int:
     from astrid.core.auth import contributor_key_present
     from astrid.core.gateway.diagnostics import collect_diagnostic
     from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
+    from astrid.sdk.exceptions import ServiceUnavailableError
     from astrid.sdk.storage_root import resolve_runtime_data_root
+    from astrid.sdk.timeline._common import TimelineEditError
 
     try:
         support_root = resolve_runtime_data_root()
@@ -171,6 +173,49 @@ def _dispatch_status(args: list[str]) -> int:
         print("Astrid status")
         for key, value in payload["readiness"].items():
             print(f"{key.replace('_', ' ')}: {value}")
+        if payload["ok"]:
+            try:
+                from astrid.sdk.client import AstridClient
+                with AstridClient.open_existing_from_launcher() as client:
+                    current = client.projects.current()
+                    project = current.data.get("project") if current.ok and isinstance(current.data, dict) else None
+                    if isinstance(project, dict):
+                        project_ref = project.get("slug") or project.get("project_id") or project.get("id")
+                        print(f"project: {project_ref} (selected)")
+                        from astrid.sdk.timeline.revisions import RuntimeRevisions
+                        from astrid.sdk.pagination import paged_rows
+                        project_rows = paged_rows(client.projects.list)
+                        if project_rows is None:
+                            print("recent: unavailable (project pagination incomplete)")
+                        else:
+                            recent = []
+                            incomplete_timelines = False
+                            revisions = RuntimeRevisions(client.timelines)
+                            for recent_project in project_rows:
+                                recent_project_id = recent_project.get("project_id") or recent_project.get("id") or recent_project.get("slug")
+                                if not recent_project_id:
+                                    continue
+                                timeline_rows = paged_rows(
+                                    client.timelines.list, str(recent_project_id), include_archived=False
+                                )
+                                if timeline_rows is None:
+                                    incomplete_timelines = True
+                                    continue
+                                for timeline in timeline_rows:
+                                    ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
+                                    history = revisions.list(str(recent_project_id), str(ref), limit=1) if ref else None
+                                    if history:
+                                        label = recent_project.get("slug") or recent_project.get("name") or recent_project_id
+                                        recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref,
+                                                       str(recent_project_id)))
+                            if incomplete_timelines:
+                                print("recent: partial (timeline pagination incomplete)")
+                            for edited, label, ref, name, owner in sorted(recent, reverse=True)[:3]:
+                                print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref} --project {owner}")
+                    else:
+                        print("project: none selected — run `astrid projects list`")
+            except (RuntimeCLIError, ServiceUnavailableError, TimelineEditError, OSError, ValueError):
+                print("project: unavailable")
         if not payload["ok"]:
             print("next action: run the Astrid install line again")
     return 0 if payload["ok"] else 1

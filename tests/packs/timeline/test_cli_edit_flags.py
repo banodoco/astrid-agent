@@ -152,6 +152,7 @@ def test_edit_nudge_frames_set_and_close_gap(local, capsys):
     assert _run("edit", "--file", str(local), "--close-gap-before", "now") == 0
     out = capsys.readouterr().out
     assert "next:" in out.splitlines()[-1]
+    assert any(line.startswith("next: export the complete JSON candidate") for line in out.splitlines())
 
 
 def test_edit_needs_one_selector_and_an_operation(local, capsys):
@@ -180,6 +181,7 @@ def test_voice_line_swap_reflows_and_reports(local, tmp_path, capsys):
     assert _run("edit", "--file", str(local), "--line", "s1", "--take", "P", "--words", words) == 0
     out = capsys.readouterr().out
     assert out.splitlines()[-1].startswith("next: timelines check")
+    assert any(line.startswith("next: export the complete JSON candidate") for line in out.splitlines())
     line = Checkout.load(local).voice("s1")
     assert [w.text for w in line.words] == ["it", "went", "viral"]
 

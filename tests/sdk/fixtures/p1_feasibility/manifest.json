@@ -1,0 +1,175 @@
+{
+  "corpus": "timeline-h3-agent-feasibility",
+  "status": "collection-only; doc.patch execution pending",
+  "cases": [
+    {
+      "id": "nested-closure-trim",
+      "fixture": "canonical_clip_trim.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_clip_trim.json",
+      "source_sha256": "60fcc84d769a2a68b5330288e842ca286f3907510a5dd18bc240c6e314ee612c",
+      "provenance": "tests/editing_conformance/test_recipe_m2_clip_trim.py::test_portable_golden_and_closed_schema",
+      "document": "input",
+      "edit": "commands[0]",
+      "tags": ["nested-closure", "media-reference", "occurrence-list", "metadata", "trim"],
+      "expected": {
+        "status": "accepted",
+        "effect": "clip-a source window becomes 1..5 while its film position stays at 1; clip-b, chapter metadata, and media closure remain unchanged"
+      }
+    },
+    {
+      "id": "created-track-and-clip",
+      "fixture": "canonical_created_ids.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_clip_add.json",
+      "source_sha256": "cebe45dbf6806c2fb772665ad2c3a416eae172df48d1b0cc48d023cbc80345ff",
+      "provenance": "tests/editing_conformance/test_recipe_m2_clip_add.py::test_empty_bootstrap_explicit_track_then_first_clip_golden",
+      "document": "input",
+      "edit": "commands",
+      "tags": ["created-ids", "ordered-lists", "metadata", "empty-closure"],
+      "expected": {
+        "status": "accepted",
+        "created": ["parent/track:first-track", "parent/clip:first-clip"],
+        "effect": "append a visual track and a text clip, retaining null/sourceURL and opaque values"
+      }
+    },
+    {
+      "id": "params-absent",
+      "fixture": "canonical_params_absent.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_params_absent.json",
+      "source_sha256": "9687956ee3850c5d873580a28cd6e8354f0b76dcb9a17bf56eb6ae0213f24b36",
+      "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[params_absent]",
+      "document": "bundle",
+      "edit": "command",
+      "tags": ["absent", "explicit-clear", "nested-key"],
+      "expected": {
+        "status": "accepted",
+        "effect": "create params and write an empty key, a dotted/bracketed key, and an explicit null; clear remains distinct from null"
+      }
+    },
+    {
+      "id": "params-null",
+      "fixture": "canonical_params_null.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_params_null.json",
+      "source_sha256": "15e945496b805af2554d78777be4585aa684615de575960352376f1dd4eaba74",
+      "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[params_null]",
+      "document": "bundle",
+      "edit": "command",
+      "tags": ["null", "explicit-clear", "nested-key"],
+      "expected": {
+        "status": "accepted",
+        "effect": "replace a null params container with authored values without treating the container null as a child field"
+      }
+    },
+    {
+      "id": "params-object-clear",
+      "fixture": "canonical_params_object.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_params_object.json",
+      "source_sha256": "ae9f96e55432d0cf892f6045285e56265c6adc66058caf146bf4a7d7b1869638",
+      "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[params_object]",
+      "document": "bundle",
+      "edit": "command",
+      "tags": ["present-null", "explicit-clear", "opaque-metadata"],
+      "expected": {
+        "status": "accepted",
+        "effect": "clear old while preserving existing null, opaque, x, and y parameter values"
+      }
+    },
+    {
+      "id": "disjoint-rebase",
+      "fixture": "canonical_disjoint_rebase.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_scalar_disjoint.json",
+      "source_sha256": "0aab88bff6040ad741771fe8ed2198c141347970420ede78a981ba1416f6e866",
+      "provenance": "tests/editing_conformance/test_recipe_scalar_commands.py::test_portable_scalar_capture_goldens[disjoint]",
+      "document": "bundle",
+      "edit": "command",
+      "head": "head_bundle",
+      "expected_rebase": "rebased_bundle",
+      "tags": ["disjoint-edit", "rebase", "nested-field"],
+      "expected": {
+        "status": "merged",
+        "effect": "apply x=2 onto a head that changed only sibling y, preserving the head's y value"
+      }
+    },
+    {
+      "id": "same-field-conflict",
+      "fixture": "canonical_clip_trim.json",
+      "source": "tests/editing_conformance/fixtures/recipe_m2_clip_trim.json",
+      "source_sha256": "60fcc84d769a2a68b5330288e842ca286f3907510a5dd18bc240c6e314ee612c",
+      "provenance": "tests/editing_conformance/test_recipe_m2_clip_trim.py::test_replay_consumed_source_identity_bounds_and_selection_but_preserves_disjoint_data",
+      "document": "input",
+      "edit": "commands[0]",
+      "conflict": {
+        "path": ["parent", "clips", "clip-a", "from"],
+        "head_value": 3,
+        "reason": "the head changes a field touched by the trim command"
+      },
+      "tags": ["genuine-conflict", "same-field", "refusal"],
+      "expected": {
+        "status": "refused",
+        "effect": "reject the stale trim before mutating the conflicting head"
+      }
+    },
+    {
+      "id": "sdk-tiny3-text-edit",
+      "fixture": "sdk_tiny3.json",
+      "source": "tests/editing_scenarios/fixtures/tiny3.json",
+      "source_sha256": "f9348626c43de93409e25244ea1f81f6e86563a2f8650614fe862d618bcab51f",
+      "provenance": "tests/editing_scenarios/look/look.set.card-text.yaml; tests/sdk/test_fixtures_v2.py::test_edit_on_tiny3_shows_in_edits",
+      "document": "bundle",
+      "edit": {
+        "operation": "clip.set",
+        "selector": "c2-title",
+        "fields": {"text": "Two!"}
+      },
+      "tags": ["sdk-checkout", "nested-document", "metadata"],
+      "expected": {
+        "status": "accepted",
+        "effect": "change only c2-title text and expose c2-title in the SDK edit diff"
+      }
+    },
+    {
+      "id": "sdk-publishable-clear",
+      "fixture": "sdk_tiny_publishable.json",
+      "source": "tests/fixtures/timeline_editing/tiny_publishable.json",
+      "source_sha256": "655a9a0d29af5d483056a90495749c6a9e05cb8f8da3c686560f28fc541cac0c",
+      "provenance": "tests/editing_scenarios/look/look.clear.plate-asset-opaque.yaml",
+      "document": "bundle",
+      "edit": {
+        "operation": "clip.clear_asset",
+        "selector": "c2.plate"
+      },
+      "tags": ["sdk-checkout", "clear", "opaque-metadata"],
+      "expected": {
+        "status": "accepted",
+        "effect": "clear c2.plate's asset while preserving its Astrid metadata"
+      }
+    },
+    {
+      "id": "sample-project-closure-reference",
+      "fixture": "sample_hype_full.json",
+      "source": "examples/hype.timeline.full.json",
+      "source_sha256": "a4968986dc0219fdc3e22717f29ccef2f32ca7be8f340f1b855051235782c778",
+      "provenance": "tests/timeline/test_timeline_roundtrip_fixture.py::TimelineRoundTripFixtureTest::test_round_trip_is_byte_equivalent",
+      "document": "legacy_timeline_config",
+      "edit": "not applicable to Agent Checkout; retained as a real sample-project reference",
+      "tags": ["sample-project", "legacy-loader", "ordered-lists", "metadata"],
+      "expected": {
+        "status": "loaded-by-core-timeline-only",
+        "effect": "preserve tracks, mixed clip types, effects, transitions, and passthrough metadata during core load/save"
+      }
+    },
+    {
+      "id": "sdk-selected-param-accepted-history",
+      "fixture": "sdk_selected_param_accepted.zip",
+      "source": "tests/sdk/fixtures/selected-param-legacy/accepted.zip",
+      "source_sha256": "79f881f95ce13338ee8cd5490529c43a55523819792eed682160a9042770dc56",
+      "provenance": "tests/sdk/fixtures/selected-param-legacy/README.md; tests/sdk/test_timeline_selected_schema_runtime.py",
+      "document": "accepted_runtime_archive",
+      "edit": "first PARAM accepted by the historical provider; no local provider replay",
+      "tags": ["sdk-fixture", "media-reference", "accepted-history", "created-id"],
+      "expected": {
+        "status": "provenance-only",
+        "effect": "retain the authenticated closure/history artifact for later H3 comparison"
+      }
+    }
+  ]
+}

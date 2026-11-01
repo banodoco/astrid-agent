@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
+import json
 import subprocess
 import sys
 import pickle
@@ -24,6 +25,7 @@ from astrid.core.contracts.capability_runner import CapabilityRunner
 from astrid.core.contracts.binding import (omit_absent_optional_flag_values, expand_command,
     assert_provided_inputs_bound, BindingError)
 from astrid.core.contracts.run_status import RunStatus
+from astrid.core.env_vars import ASTRID_INTERNAL_INVOCATION
 from astrid.core.project.guidance import (
     format_project_required_guidance,
     selected_project,
@@ -158,6 +160,9 @@ class OrchestratorRunResult:
 class OrchestratorCapabilityRunner(CapabilityRunner[OrchestratorRunRequest, OrchestratorRunResult, OrchestratorDefinition]):
     """Orchestrator binding of the shared :class:`CapabilityRunner` skeleton."""
 
+    def __init__(self, *, captured_source=None):
+        self._captured_source = captured_source
+
     def load_default_registry(self) -> OrchestratorRegistry:
         return load_default_registry()
 
@@ -189,7 +194,7 @@ class OrchestratorCapabilityRunner(CapabilityRunner[OrchestratorRunRequest, Orch
         return _prepare_dry_run_request(request, definition)
 
     def run_inner(self, request: OrchestratorRunRequest, definition: OrchestratorDefinition) -> OrchestratorRunResult:
-        return _run_orchestrator_inner(request, definition)
+        return _run_orchestrator_inner(request, definition, _captured_source=self._captured_source)
 
     def finalize_project(
         self,
@@ -212,12 +217,16 @@ class OrchestratorCapabilityRunner(CapabilityRunner[OrchestratorRunRequest, Orch
 _ORCHESTRATOR_RUNNER = OrchestratorCapabilityRunner()
 
 
-def run_orchestrator(request: OrchestratorRunRequest, registry: OrchestratorRegistry | None = None) -> OrchestratorRunResult:
-    return _ORCHESTRATOR_RUNNER.run(request, registry)
+def run_orchestrator(request: OrchestratorRunRequest, registry: OrchestratorRegistry | None = None,
+                     *, _captured_source=None) -> OrchestratorRunResult:
+    runner = (OrchestratorCapabilityRunner(captured_source=_captured_source)
+              if _captured_source is not None else _ORCHESTRATOR_RUNNER)
+    return runner.run(request, registry)
 
 
 
-def _run_orchestrator_inner(request: OrchestratorRunRequest, orchestrator: OrchestratorDefinition) -> OrchestratorRunResult:
+def _run_orchestrator_inner(request: OrchestratorRunRequest, orchestrator: OrchestratorDefinition,
+                            *, _captured_source=None) -> OrchestratorRunResult:
     values = _request_values(request, orchestrator)
     _validate_orchestrator_inputs(orchestrator, request)
     _validate_out_requirement(orchestrator, request)
@@ -225,8 +234,10 @@ def _run_orchestrator_inner(request: OrchestratorRunRequest, orchestrator: Orche
         orchestrator.id, orchestrator.inputs, values, noun="orchestrator", error_cls=OrchestratorRunnerError
     )
     if orchestrator.runtime.kind == "python":
-        return _ensure_dry_run_plan(_run_python_orchestrator(orchestrator, request))
+        return _ensure_dry_run_plan(_run_python_orchestrator(orchestrator, request, _captured_source=_captured_source))
     if orchestrator.runtime.kind == "command":
+        if _captured_source is not None:
+            raise OrchestratorRunnerError("captured orchestrators require the existing Python runtime")
         return _ensure_dry_run_plan(_run_command_orchestrator(orchestrator, request, values))
     raise OrchestratorRunnerError(f"unsupported orchestrator runtime kind {orchestrator.runtime.kind!r}")
 
@@ -246,17 +257,19 @@ def build_orchestrator_command(request: OrchestratorRunRequest, registry: Orches
     return command
 
 
-def _run_python_orchestrator(orchestrator: OrchestratorDefinition, request: OrchestratorRunRequest) -> OrchestratorRunResult:
+def _run_python_orchestrator(orchestrator: OrchestratorDefinition, request: OrchestratorRunRequest,
+                             *, _captured_source=None) -> OrchestratorRunResult:
     runtime = orchestrator.runtime
     if not runtime.module or not runtime.function:
         raise OrchestratorRunnerError(f"orchestrator {orchestrator.id!r} has an invalid Python runtime")
     if not request.dry_run:
-        return _run_python_orchestrator_subprocess(orchestrator, request)
+        return _run_python_orchestrator_subprocess(orchestrator, request, _captured_source=_captured_source)
 
 
 def _run_python_orchestrator_subprocess(
     orchestrator: OrchestratorDefinition,
     request: OrchestratorRunRequest,
+    *, _captured_source=None,
 ) -> OrchestratorRunResult:
     """Execute a Python runtime target outside the runner process."""
     runtime = orchestrator.runtime
@@ -265,6 +278,7 @@ def _run_python_orchestrator_subprocess(
     request_path = root / ".astrid-python-orchestrator.request"
     result_path = root / ".astrid-python-orchestrator.result"
     env = {}
+    source_channel = None
     try:
         request_path.write_bytes(
             pickle.dumps(
@@ -294,15 +308,56 @@ def _run_python_orchestrator_subprocess(
             passthrough=orchestrator.isolation.env_passthrough,
             declared_passthrough=orchestrator.isolation.env_passthrough,
         )
-        completed = subprocess.run(
-            [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.python_runtime_worker", str(request_path)],
-            stdin=subprocess.DEVNULL,
-            cwd=str(root),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.python_runtime_worker", str(request_path)]
+        launch_options: dict[str, Any] = {}
+        if _captured_source is not None:
+            from runtime_protocol.verified_host_launch import canonical
+
+            from astrid.core.execution.generic_host import _capability_digest, _captured_worker_argv
+
+            selected, _contents = _captured_source
+            chosen = selected["definition"]
+            if (os.environ.get(ASTRID_INTERNAL_INVOCATION) != "1"
+                    or chosen["capability_kind"] != "orchestrator"
+                    or chosen["capability_id"] != orchestrator.id
+                    or chosen["definition_digest"] != _capability_digest(orchestrator.to_dict())):
+                raise OrchestratorRunnerError("captured orchestrator requires exact internal Runtime selection")
+            module = str(runtime.module)
+            source_root = Path(selected["source"]["root"])
+            relative = ("" if module == source_root.name else
+                        module.removeprefix(source_root.name + ".").replace(".", "/"))
+            module_source = relative + ".py" if relative else "__init__.py"
+            package_source = relative + "/__init__.py" if relative else "__init__.py"
+            if not any(path in selected["source"]["contents"] for path in (module_source, package_source)):
+                raise OrchestratorRunnerError("orchestrator module is outside captured source")
+            source_channel = tempfile.TemporaryFile()
+            source_channel.write(canonical(selected))
+            source_channel.seek(0)
+            # Keep the existing subprocess worker and request/result protocol. Only
+            # its import source changes, through the host's inherited byte loader.
+            command = json.dumps(["-c", "from astrid.core.execution.python_runtime_worker import run; import sys; run(sys.argv[1])",
+                                  str(request_path)])
+            argv = _captured_worker_argv([sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker",
+                "--external-source-fd", str(source_channel.fileno()), "--captured-command", command])
+            launch_options["pass_fds"] = (source_channel.fileno(),)
+        if source_channel is not None:
+            from runtime_protocol import platform
+
+            # The platform launcher translates inherited descriptors to an
+            # authenticated Windows handle handoff before Python starts.
+            with platform.spawn_tree(
+                argv, stdin=subprocess.DEVNULL, cwd=str(root), env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                start_new_session=False,
+                **launch_options,
+            ) as process:
+                stdout, stderr = process.communicate()
+                completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+        else:
+            completed = subprocess.run(
+                argv, stdin=subprocess.DEVNULL, cwd=str(root), env=env,
+                capture_output=True, text=True, check=False,
+            )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
             raise OrchestratorRunnerError(
@@ -318,13 +373,18 @@ def _run_python_orchestrator_subprocess(
         return _normalize_python_result(orchestrator, request, raw_result)
     finally:
         primary_error = sys.exc_info()[1]
-        env.clear()
         cleanup_error = None
+        if source_channel is not None:
+            try:
+                source_channel.close()
+            except BaseException as exc:
+                cleanup_error = exc
         for path in (request_path, result_path):
             try:
                 path.unlink(missing_ok=True)
             except BaseException as exc:
                 cleanup_error = cleanup_error or exc
+        env.clear()
         if request.run_root in (None, ""):
             try:
                 root.rmdir()

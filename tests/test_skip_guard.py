@@ -70,6 +70,18 @@ def test_a_skip_that_pretends_to_be_declared_fails_the_run(run) -> None:
     result.stdout.fnmatch_lines(["*undeclared skip*"])
 
 
+def test_a_copied_reason_on_an_unregistered_node_fails_the_run(run) -> None:
+    result = run("import pytest\n\ndef test_x():\n    pytest.skip('[declared:ffmpeg] needs ffmpeg and ffprobe on PATH')\n")
+    assert result.ret != 0
+    result.stdout.fnmatch_lines(["*copied declared reason for unregistered lane node ffmpeg*"])
+
+
+def test_a_declared_reason_must_match_the_registry_exactly(run) -> None:
+    result = run("import pytest\n\n@pytest.mark.ffmpeg\ndef test_x():\n    pytest.skip('[declared:ffmpeg] a copied explanation')\n")
+    assert result.ret != 0
+    result.stdout.fnmatch_lines(["*declared ffmpeg skip has copied or altered reason*"])
+
+
 def test_an_xfail_fails_the_run(run) -> None:
     result = run("import pytest\n\n@pytest.mark.xfail(reason='known gap')\ndef test_x():\n    assert False\n")
     assert result.ret != 0

@@ -294,14 +294,18 @@ def _validate_render_element_clip_types(
     """
 
     from astrid.core.element import catalog as element_catalog
+    from astrid.core.rendering.project_elements import selections
 
     effect_ids = set(element_catalog.list_effect_ids())
+
     aliases = {"text"} if "text-card" in effect_ids else set()
     for effect_id in effect_ids:
         metadata = element_catalog.read_effect_meta(effect_id)
         raw_aliases = metadata.get("clipTypeAliases")
         if isinstance(raw_aliases, list):
             aliases.update(alias for alias in raw_aliases if isinstance(alias, str) and alias)
+    effect_ids.update(row["reference"]["id"] for row in selections(config)
+                      if row["reference"]["kind"] == "effect")
     builtins = {"media", "video", "image", "audio", "effect-layer"}
     known = builtins | effect_ids | aliases
     for index, clip in enumerate(config.get("clips", [])):
@@ -386,6 +390,9 @@ def _validate_pinned_element_references(
     """Check revision-pinned editor refs against Astrid's registry."""
 
     from astrid.core.element import catalog as element_catalog
+    from astrid.core.rendering.project_elements import selection_key, selections
+
+    selected = {selection_key(row["reference"]): row["descriptor"] for row in selections(config)}
 
     descriptors = {
         (str(descriptor.get("kind")), str(descriptor.get("id"))): descriptor
@@ -426,6 +433,8 @@ def _validate_pinned_element_references(
                 recovery="Publish the element before exporting the timeline.",
                 validator="pinned_element_reference",
             )
+        if "packId" in ref and selection_key(ref) in selected:
+            continue
         descriptor = (
             owned_descriptors.get((ref_kind, ref_id, ref_pack))
             if "packId" in ref else descriptors.get((ref_kind, ref_id))
@@ -953,12 +962,22 @@ def _project_exact_parent_head(
     from astrid.core.timeline.shot_composition_projection import (
         project_runtime_parent_composition,
     )
+    from astrid.sdk.timeline.commit import (
+        INTERNAL_IMAGE_FIELDS,
+        PARENT_IMAGE_FIELDS,
+        SHOT_IMAGE_FIELDS,
+    )
 
     try:
+        # Snapshot canonical images, keeping GET-only decoration on the read rows.
         projected = project_runtime_parent_composition(
-            parent,
-            shot_revisions=shots,
-            internal_timeline_revisions=internals,
+            {**{key: parent[key] for key in PARENT_IMAGE_FIELDS},
+             "project_id": project_id, "timeline_id": timeline_id},
+            shot_revisions=[{**{key: row[key] for key in SHOT_IMAGE_FIELDS},
+                             "project_id": row.get("project_id", project_id)} for row in shots],
+            internal_timeline_revisions=[
+                {**{key: row[key] for key in INTERNAL_IMAGE_FIELDS},
+                 "project_id": row.get("project_id", project_id)} for row in internals],
         )
     except ValueError as exc:
         raise ValueError(f"canonical parent revision closure is not renderable: {exc}") from exc
@@ -970,6 +989,7 @@ def _project_exact_parent_head(
         shot_rows.append({
             "shot_id": shot["shot_id"],
             "revision_id": shot["revision_id"],
+            "content_digest": shot["content_digest"],
             # Authoring shots store their human name on the payload itself
             # (``add_authoring_shot(name=...)``); metadata is the legacy spot.
             "name": str(
@@ -1127,6 +1147,9 @@ def resolve_managed_render_snapshot(
     raw_registry = stored_registry
     config, stored_registry = _render_compatible_projection(config, stored_registry)
     config = _normalize_pinned_element_references(config)
+    from astrid.core.rendering.project_elements import resolve_project_elements
+
+    config = resolve_project_elements(config, project=project_id, client=client)
     registry = _runtime_snapshot_registry(
         stored_registry,
         project_ref=project_ref,

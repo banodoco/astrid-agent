@@ -313,13 +313,16 @@ def test_visualize_prints_page_counts_timing_and_next_commands():
 
     outputs = {
         "pages": ["/x/contact-sheet.png"], "primary_page": "/x/contact-sheet.png",
+        "snapshot_label": {"status": "committed", "label": "committed revision R1",
+                           "actual_revision_id": "R1", "base_revision_id": None},
         "timing": {"frames": 30, "resolution": [480, 270], "wall_s": 61.2, "queued_s": 3.0, "capture_s": 48.0, "compose_s": 6.0},
     }
     text = cli._visualization_summary(outputs, parsed=Namespace(project="demo", beats=None),
                                       inputs={"view": "contact", "timeline_slug": "T1"})
     lines = text.splitlines()
     assert lines[0] == "contact sheet: /x/contact-sheet.png"
-    assert "30 tiles, one per picture cut" in lines[1] and "480x270" in lines[1]
+    assert lines[1] == "  committed revision R1"
+    assert "30 tiles, one per picture cut" in lines[2] and "480x270" in lines[2]
     assert "wall 61 s = queued 3 s + capture 48 s + compose 6 s" in text
     assert "--view motion --cut N" in text and "timelines lint T1" in text and "timelines show T1" in text
     parser_args = cli.build_parser(object()).parse_args(["visualize", "T1", "--project", "demo"])

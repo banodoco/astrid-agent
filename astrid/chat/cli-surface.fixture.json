@@ -2415,6 +2415,65 @@
           ],
           "verbs": {}
         },
+        "pending": {
+          "flags": {},
+          "positionals": [],
+          "verbs": {
+            "drop": {
+              "flags": {
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                },
+                "--reason": {
+                  "required": false
+                }
+              },
+              "positionals": [
+                "ref",
+                "ref_id"
+              ],
+              "verbs": {}
+            },
+            "list": {
+              "flags": {
+                "--all": {
+                  "required": false
+                },
+                "--all-actors": {
+                  "required": false
+                },
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                }
+              },
+              "positionals": [
+                "ref"
+              ],
+              "verbs": {}
+            },
+            "show": {
+              "flags": {
+                "--json": {
+                  "required": false
+                },
+                "--project": {
+                  "required": true
+                }
+              },
+              "positionals": [
+                "ref",
+                "ref_id"
+              ],
+              "verbs": {}
+            }
+          }
+        },
         "publish": {
           "flags": {
             "--draft": {
@@ -2602,6 +2661,24 @@
           },
           "positionals": [
             "ref"
+          ],
+          "verbs": {}
+        },
+        "retry": {
+          "flags": {
+            "--commit": {
+              "required": false
+            },
+            "--json": {
+              "required": false
+            },
+            "--project": {
+              "required": true
+            }
+          },
+          "positionals": [
+            "ref",
+            "ref_id"
           ],
           "verbs": {}
         },

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.lanes import unavailable
 
 
 TOOLS_ROOT = Path(__file__).resolve().parents[3]
@@ -246,5 +247,46 @@ def _build_synthetic_run(tmp_path: Path) -> Path:
     return brief_dir
 
 
+def _discovered_brief_dirs() -> list[Path]:
+    explicit = os.environ.get("HYPE_BRIEF_DIR")
+    if explicit:
+        return [Path(explicit).resolve()]
+    if os.environ.get("HYPE_DISCOVER_RUNS") != "1":
+        return []
+    runs_dir = TOOLS_ROOT / "runs"
+    if not runs_dir.is_dir():
+        return []
+    discovered: list[Path] = []
+    for path in sorted(runs_dir.glob("*/briefs/*")):
+        if not (
+            (path / "arrangement.json").is_file()
+            and (path / "hype.timeline.json").is_file()
+            and (path / "hype.metadata.json").is_file()
+        ):
+            continue
+        debug_dir = path.parent.parent / "_llm_debug"
+        if not list(debug_dir.glob("arrange.*.request.json")) or not list(debug_dir.glob("arrange.*.response.json")):
+            continue
+        try:
+            timeline.load_arrangement(path / "arrangement.json")
+        except Exception:
+            continue
+        discovered.append(path.resolve())
+    return discovered
+
+
 def test_hype_cut_invariants_on_synthetic_run(tmp_path: Path) -> None:
     _assert_hype_cut_invariants(_build_synthetic_run(tmp_path))
+
+
+@pytest.mark.integration
+@pytest.mark.opt_in
+def test_hype_cut_invariants_on_discovered_run_dirs() -> None:
+    brief_dirs = _discovered_brief_dirs()
+    if not brief_dirs:
+        unavailable(
+            "No arrangement-mode brief directories selected; set HYPE_BRIEF_DIR to target one "
+            "explicitly or HYPE_DISCOVER_RUNS=1 to scan local tools/runs output."
+        )
+    for brief_dir in brief_dirs:
+        _assert_hype_cut_invariants(brief_dir)
