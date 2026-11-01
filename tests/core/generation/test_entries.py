@@ -94,6 +94,53 @@ def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monke
 from tests.core.generation.test_generate_target_journey import loopback_comfy, PACK
 
 
+def test_catalog_description_has_same_unqualified_reason_and_fix_as_listing(monkeypatch):
+    from astrid.core.model_catalog.registry import ModelRegistry
+    monkeypatch.setattr(entries, 'user_entries', lambda: [])
+    monkeypatch.setattr(entries, 'action_entries', lambda *args: [])
+    monkeypatch.setattr(entries, 'ready_entries', lambda: [])
+    monkeypatch.setattr(listing, 'discover', lambda: SimpleNamespace(actions=[]))
+    description = entries.describe_entry('wan-2.2', registry=ModelRegistry.load_default())
+    rows = [row for row in listing.catalog_rows() if row['id'] == 'wan-2.2']
+    assert rows
+    for key in ('availability', 'reason', 'fix'):
+        assert description[key] == rows[0][key]
+    assert description['availability'] == 'unavailable'
+    assert description['reason'] and description['fix']
+    assert all(row['availability'] == 'unavailable' and row['fix']
+               for row in description['mode_descriptions'].values())
+
+
+@pytest.mark.parametrize('qualified', [False, True])
+@pytest.mark.parametrize('source', ['action', 'ready-template', 'user'])
+def test_description_projects_qualification_without_gating_user_workflows(monkeypatch, source, qualified):
+    from astrid.core.generation import availability
+    from astrid.core.model_catalog.registry import ModelRegistry
+    record = {'available': qualified, 'error': {'code': 'generation_route_unqualified',
+        'message': 'synthetic route qualification missing'}}
+    monkeypatch.setattr(availability, 'availability_declaration', lambda: {
+        'actions': {'fake.animate': record}, 'models': {'fake': record},
+        'template_models': {'video/wan': 'fake'}})
+    entry = {'id': 'video/wan_fake', 'kind': 'video', 'modes': ['i2v'],
+             'inputs': [], 'bundle': 'unused.py', 'source': source}
+    if source == 'action':
+        entry['action'] = 'fake.animate'
+    elif source == 'user':
+        entry['source'] = 'ready-template'  # Imported metadata does not confer bundled provenance.
+    monkeypatch.setattr(entries, 'action_entries', lambda: [entry] if source == 'action' else [])
+    monkeypatch.setattr(entries, 'user_entries', lambda: [entry] if source == 'user' else [])
+    monkeypatch.setattr(entries, '_ready_entries_for', lambda _id: [entry])
+    monkeypatch.setattr(entries, '_ready_ids', lambda: set())
+    monkeypatch.setattr(entries, '_load_entry_workflow', lambda _: object())
+    monkeypatch.setattr(entries, '_workflow_inputs', lambda *a, **k: [])
+    description = entries.describe_entry(entry['id'], registry=ModelRegistry([]))
+    expected_available = qualified or source == 'user'
+    assert description['availability'] == ('available' if expected_available else 'unavailable')
+    if not expected_available:
+        assert description['reason'] == record['error']['message']
+        assert description['fix']
+
+
 def test_import_list_and_generate_entry(loopback_comfy, tmp_path, monkeypatch, capsys, real_runtime):
     from concurrent.futures import ThreadPoolExecutor
     from astrid import console
