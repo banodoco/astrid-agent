@@ -14,6 +14,7 @@ SCHEMA_RELATIVE_PATH = Path("astrid/core/timeline/schema/timeline-config.schema.
 READER_INPUTS = (
     Path("astrid/__init__.py"),
     Path("astrid/core/__init__.py"),
+    Path("astrid/core/product_resources.py"),
     Path("astrid/core/timeline/banodoco_schema.py"),
     Path("astrid/core/rendering/_local_schema.py"),
     Path("astrid/core/timeline/__init__.py"),
