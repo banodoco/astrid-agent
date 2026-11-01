@@ -781,6 +781,7 @@ class TestShippedRegistry:
     """Verify the shipped models.yaml loads correctly with all expected entries."""
 
     EXPECTED_SHIPPED_IDS = {
+        "hunyuan-foley-local",
         "hunyuan-video-foley",
         "minimax-h3",
         "seedance-2.0",
@@ -970,6 +971,7 @@ class TestListByModalityV2:
         registry = ModelRegistry.load_default()
         audio_models = registry.list_by_modality("audio")
         assert {m.id for m in audio_models} == {
+            "hunyuan-foley-local",
             "hunyuan-video-foley",
             "lava-sr",
             "deepfilternet3",
