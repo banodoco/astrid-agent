@@ -571,18 +571,10 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # (runtime_checkout); neither is a Git checkout root.
         if installed is not None:
             if (state != "live" and installed.release == 0 and installed.managed_by is None):
-                from .legacy_identity import admitted as legacy_admitted
-                if (self.process_control is None or self.managed_by is not None or state != "stale"
-                        or not self._legacy_doors_stopped(discovery, installed)
-                        or not self.service.legacy_manager_stopped(data)
-                        or not legacy_admitted(installed, {}, discovery, program_root=self.root, stopped=True)
-                        or paths.discovery_path.read_bytes() != discovery_bytes
-                        or self._discovery_owner_state(discovery) != "stale"
-                        or not self._legacy_doors_stopped(discovery, installed)
-                        or not self.service.legacy_manager_stopped(data)
-                        or paths.discovery_path.read_bytes() != discovery_bytes):
-                    raise RuntimeError("Cannot prove the selected Release-0 predecessor is stopped; refusing to update it.")
-                self._legacy_identity_admitted = True
+                # The retained door and unit observations do not prove that
+                # a detached owner or an unadvertised door is absent. Keep
+                # this boundary closed until those observations are bound.
+                raise RuntimeError("Cannot prove the selected Release-0 predecessor is stopped; refusing to update it.")
             return False
 
         profile_path = paths.source_profiles_dir / "astrid.json"

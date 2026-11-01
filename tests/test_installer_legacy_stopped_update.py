@@ -15,14 +15,16 @@ def backend_for(root):
     return Backend(root, root / 'install.log', root / 'uv', process_control='strict')
 
 
-def test_exact_stale_row_with_positive_observations_is_admitted(legacy, monkeypatch):
+def test_exact_stale_row_with_partial_observations_is_refused(legacy, monkeypatch):
     root, data, _, _, _ = legacy
     backend = backend_for(root)
     monkeypatch.setattr('runtime_protocol.platform.process_identity', lambda pid: None)
     monkeypatch.setattr(backend, '_legacy_doors_stopped', lambda discovery, version: True)
     monkeypatch.setattr(backend.service, 'legacy_manager_stopped', lambda data: True)
-    assert backend.source_checkout_ownership(data, current(root)) is False
-    assert backend._legacy_identity_admitted
+    from astrid.installer import legacy_identity
+    assert legacy_identity.admitted(current(root), {}, legacy[3], program_root=root, stopped=True)
+    with pytest.raises(RuntimeError, match='Cannot prove.*stopped'):
+        backend.source_checkout_ownership(data, current(root))
 
 
 @pytest.mark.parametrize('case', ['missing', 'live', 'unknown_process', 'door', 'manager', 'row', 'policy', 'changed'])
@@ -131,5 +133,7 @@ def test_stale_selected_row_with_native_observations_composed(legacy, monkeypatc
         def settimeout(self, timeout): pass
         def connect_ex(self, address): return errno.ECONNREFUSED
     monkeypatch.setattr(socket, 'socket', RefusedSocket)
-    assert backend.source_checkout_ownership(data, current(root)) is False
-    assert backend._legacy_identity_admitted
+    assert backend._legacy_doors_stopped(discovery, current(root))
+    assert backend.service.legacy_manager_stopped(data)
+    with pytest.raises(RuntimeError, match='Cannot prove.*stopped'):
+        backend.source_checkout_ownership(data, current(root))
