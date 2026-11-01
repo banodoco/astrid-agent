@@ -13,6 +13,32 @@ from astrid.core.execution.generic_host import HostError, HostCancelled
 from tests.test_generic_host_result_json import host_case, _success_boundary
 
 
+@pytest.mark.parametrize("operation", ["settle", "fail"])
+def test_terminal_transport_without_evidence_does_not_replay_unknown_outcome(monkeypatch, operation):
+    from tests.core.execution.test_terminal_evidence_transport_f05 import _client
+
+    client = _client(None)
+    client._claimed_runtime_epoch = lambda attempt_id: 9
+    primary = OSError("committed completion reply lost")
+    calls = []
+
+    def lost(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise primary
+
+    monkeypatch.setattr(client.generated, operation + "_attempt", lost, raising=False)
+    monkeypatch.setattr(client.generated, "get_task", lambda *a: pytest.fail("task state cannot authenticate this request"))
+    with pytest.raises(OSError) as raised:
+        if operation == "settle":
+            client.settle("task-1", "lease-1", result={"cpu_fixture": True}, outputs=[], effect=None,
+                          attempt_id="attempt-1", fence=3)
+        else:
+            client.fail("task-1", "lease-1", "execution failed", attempt_id="attempt-1", fence=3)
+    assert raised.value is primary
+    assert len(calls) == 1
+    assert calls[0][1]["idempotency_key"] == operation + "-attempt-1-3"
+
+
 def test_concurrent_failures_share_one_completion(host_case, monkeypatch):
     case = host_case
     entered, release, joining = threading.Event(), threading.Event(), threading.Event()

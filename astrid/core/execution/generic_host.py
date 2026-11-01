@@ -5148,11 +5148,14 @@ class RuntimeProtocolClient:
                 response = mutation()
             except Exception as exc:
                 last_error = exc
-                if expected_result is not None:
-                    try:
-                        return self._verify_terminal_evidence_readback(task_id, expected_result, None)
-                    except Exception:
-                        pass
+                if expected_result is None:
+                    # Without durable request evidence, leave acknowledgement
+                    # unknown for the attempt arbiter instead of replaying it.
+                    raise
+                try:
+                    return self._verify_terminal_evidence_readback(task_id, expected_result, None)
+                except Exception:
+                    pass
                 if attempt == 0:
                     continue
                 raise
