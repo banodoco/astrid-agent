@@ -10,12 +10,48 @@ on:
   merge_group:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: CI / Select affected paths
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.paths.outputs.docs }}
+      typescript: ${{ steps.paths.outputs.typescript }}
+      appui: ${{ steps.paths.outputs.appui }}
+    steps:
+      - id: paths
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            // An absent output means run everything. Never trust a partial file list.
+            const {owner, repo} = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const pr = await github.rest.pulls.get({owner, repo, pull_number});
+            const count = pr.data.changed_files;
+            if (!Number.isInteger(count) || count < 1 || count >= 3000) return;
+            const files = await github.paginate(github.rest.pulls.listFiles,
+              {owner, repo, pull_number, per_page: 100});
+            if (files.length !== count || files.some(f =>
+              !['added', 'modified'].includes(f.status) || typeof f.filename !== 'string')) return;
+            const paths = files.map(f => f.filename);
+            core.setOutput('docs', String(paths.every(p =>
+              p === 'README.md' || /^docs\/.*\.md$/i.test(p))));
+            core.setOutput('typescript', String(paths.every(p => p.startsWith('packages/typescript/'))));
+            core.setOutput('appui', String(paths.every(p =>
+              p.startsWith('src/features/') || p.startsWith('src/pages/'))));
   windows-native-and-installer:
+    needs: changes
+    if: ${{ always() && (github.event_name != 'pull_request' || (needs.changes.outputs.docs != 'true')) }}
     runs-on: windows-latest
     env:
       ASTRID_CI_JOB: windows-native-and-installer
@@ -47,6 +83,8 @@ jobs:
           tests/test_windows_child_stdin.py -rP
 
   checks:
+    needs: changes
+    if: ${{ always() && (github.event_name != 'pull_request' || (needs.changes.outputs.docs != 'true')) }}
     name: fast checks
     runs-on: ubuntu-latest
 
@@ -87,6 +125,8 @@ jobs:
         run: make cycles
 
   unit-shard:
+    needs: changes
+    if: ${{ always() && (github.event_name != 'pull_request' || (needs.changes.outputs.docs != 'true')) }}
     name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # Shard 7 has a ~35-minute tail after ~15 minutes of tests; 60 minutes cancels healthy runs.
@@ -166,12 +206,27 @@ jobs:
   unit:
     name: unit
     runs-on: ubuntu-latest
-    needs: [checks, unit-shard]
+    needs: [changes, checks, unit-shard]
+    if: ${{ always() }}
     steps:
-      - name: All unit shards and fast checks passed
-        run: echo "unit passed"
+      - name: Check selected unit results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          n = json.loads(os.environ['RESULTS'])
+          skip = os.environ['EVENT'] == 'pull_request' and n['changes']['outputs'].get('docs') == 'true'
+          expected = 'skipped' if skip else 'success'
+          for job in ('checks', 'unit-shard'):
+              if n[job]['result'] != expected:
+                  raise SystemExit(f"{job}: expected {expected}, got {n[job]['result']}")
+          PYCODE
 
   darwin-native:
+    needs: changes
+    if: ${{ always() && (github.event_name != 'pull_request' || (needs.changes.outputs.docs != 'true')) }}
     name: darwin native
     runs-on: macos-latest
     env:
@@ -236,6 +291,8 @@ jobs:
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
   # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
   release:
+    needs: changes
+    if: ${{ always() && (github.event_name != 'pull_request' || (needs.changes.outputs.docs != 'true')) }}
     name: release wheel / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
@@ -291,6 +348,8 @@ jobs:
   # Boundary: every vendored copy matches the immutable Runtime commit selected by runtime.lock.json.
   # The default-lane test catches local edits; this job also verifies producer manifest and source bytes.
   boundary:
+    needs: changes
+    if: ${{ always() && (github.event_name != 'pull_request' || (needs.changes.outputs.docs != 'true')) }}
     name: boundary
     runs-on: ubuntu-latest
 
@@ -316,3 +375,31 @@ jobs:
 
       - name: All vendored Runtime artifacts match the pinned producer
         run: python scripts/vendor_lock.py check runtime.lock.json --producer runtime-producer
+
+  pr-gate:
+    name: CI / PR aggregate
+    if: ${{ always() }}
+    needs: [changes, windows-native-and-installer, checks, unit-shard, darwin-native, release, boundary, unit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify selected jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          needs = json.loads(os.environ['RESULTS'])
+          outputs = needs['changes'].get('outputs', {})
+          is_pr = os.environ['EVENT'] == 'pull_request'
+          classes = {'windows-native-and-installer': '', 'checks': '', 'unit-shard': '', 'darwin-native': '', 'release': '', 'boundary': ''}
+          for job, special in classes.items():
+              skipped = is_pr and (outputs.get('docs') == 'true' or
+                                    (special and outputs.get(special) == 'true'))
+              expected = 'skipped' if skipped else 'success'
+              result = needs[job]['result']
+              if result != expected:
+                  raise SystemExit(f"{job}: expected {expected}, got {result}")
+          if needs['unit']['result'] != 'success':
+              raise SystemExit("unit aggregate failed")
+          PYCODE
