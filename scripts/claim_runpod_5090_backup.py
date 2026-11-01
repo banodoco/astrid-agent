@@ -40,10 +40,12 @@ from runpod_lifecycle import (
 from astrid.core.util.time import utc_now_iso
 from astrid.packs.runpod.worker_preparation import (
     AcquiredRunPodTarget,
+    _release_exact_target_after_quiescence,
     acquire_target,
     reconcile_target,
     replace_target_record,
     resolve_existing_volume,
+    unactivated_target_quiescence,
 )
 from astrid.packs.runpod.worker_preparation import (
     create_target_record_exclusive as _create_json_exclusive,
@@ -62,6 +64,10 @@ DEFAULT_READY_TIMEOUT_SECONDS = 900
 DEFAULT_WORKER_IMAGE = "runpod/base:1.0.3-dev-fix-pytorch-version-verification-cuda1300-ubuntu2404"
 DEFAULT_ALLOWED_CUDA_VERSIONS = ("13.0",)
 DEFAULT_RELEASE_ROOT = "/workspace/h3-golden/releases/h3-cu130-v1-candidate"
+# The engine installs into CANONICAL_RELEASE_ROOT. The old candidate path stays
+# accepted; any other root is refused before the pod is contacted.
+CANONICAL_RELEASE_ROOT = "/workspace/astrid/engines/vibecomfy-h3"
+ACCEPTED_RELEASE_ROOTS = (CANONICAL_RELEASE_ROOT, DEFAULT_RELEASE_ROOT)
 DEFAULT_HANDLE_PATH = Path(
     ".otto/runs/h3-av-simplicity-20260924-T2/runpod/claim-handle.json"
 )
@@ -70,6 +76,8 @@ DEFAULT_LIFECYCLE_POLICY = "leave_running"
 
 async def _preflight_release(pod: Any, release_root: str) -> dict[str, str]:
     """Check mounted release paths and interpreter version without GPU probes."""
+    if release_root not in ACCEPTED_RELEASE_ROOTS:
+        raise RuntimeError(f"H3 release root {release_root!r} is not an accepted install root")
     python_path = f"{release_root}/runtime/venv/bin/python"
     launcher_path = f"{release_root}/runtime/launch-comfy.sh"
     command = f"""
@@ -257,6 +265,7 @@ def _start_allocation_attempt(
         "api_key_ref": "RUNPOD_API_KEY",
         "provider_account_ref": args.provider_account_ref,
         "acquisition_mode": "allocate" if pod_id is None else "attach",
+        "worker_activation": "not_started" if pod_id is None else "unknown",
         "release_authorized": (
             True if pod_id is None else bool(getattr(args, "allow_pod_release", False))
         ),
@@ -426,7 +435,9 @@ def _handle(
         "request_name": attempt.get("request_name") or str(pod.name),
         "pod_id": str(pod.id),
         "name": str(pod.name),
-        "ssh": f"root@{ssh['ip']} -p {ssh['port']}",
+        "ssh": f"root@{ssh['ip']} -p {ssh['port']}" if config.transport == "ssh" else "",
+        "transport": config.transport,
+        **({"https_token_file": attempt["https_token_file"]} if config.transport == "https" else {}),
         "claimed_at": claimed_at,
         "gpu_type": selected_gpu,
         "storage_name": selected_storage,
@@ -474,9 +485,9 @@ async def _finish_claim(
     allocated = dict(attempt)
     observation = acquired.observation
 
-    failure_phase = "ssh"
+    failure_phase = "transport"
     try:
-        ssh = await pod._ensure_ssh_details()
+        ssh = {} if config.transport == "https" else await pod._ensure_ssh_details()
         failure_phase = "release_preflight"
         preflight = await _preflight_release(pod, args.release_root)
         final_attempt = {
@@ -510,12 +521,14 @@ async def _finish_claim(
         _replace_allocation_attempt(handle_path, failed, operation_id=operation_id)
         _log(
             f"pod {pod_id} failed during {failure_phase}: {type(exc).__name__}; "
-            "leave_running keeps the exact pod running"
+            "recorded allocation custody for failure cleanup"
         )
         raise
 
 
 async def _claim(args: argparse.Namespace) -> dict[str, Any]:
+    from runpod_lifecycle.preflight import preflight_transport
+    preflight_transport(getattr(args, "transport", "ssh"))
     provider_account_ref = getattr(args, "provider_account_ref", None)
     if not isinstance(provider_account_ref, str) or not provider_account_ref.strip():
         raise RuntimeError(
@@ -538,6 +551,9 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
     # explicit values below prevent ambient GPU/storage fallbacks from changing
     # the request this waiter is intended to claim.
     config = RunPodConfig.from_env(
+        transport=getattr(args, "transport", "ssh"),
+        # Fresh claims never inherit a previous claim's bearer from ambient env.
+        https_token=None,
         gpu_type=args.gpu_type,
         storage_name=args.storage_name,
         storage_volumes=(args.storage_name,),
@@ -554,6 +570,21 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         disk_size_gb=0,
         attach_only=True,
     )
+    if config.transport == "https":
+        from runpod_lifecycle.https import read_token_file, write_token_file
+        if prior_attempt and prior_attempt.get("transport") != "https":
+            raise RuntimeError("resume transport differs from recorded claim")
+        token_file = (Path(prior_attempt["https_token_file"]) if prior_attempt
+                      else handle_path.with_name(handle_path.name + "." + uuid.uuid4().hex + ".token"))
+        if prior_attempt:
+            config.https_token = read_token_file(token_file)
+        else:
+            if getattr(args, "pod_id", None):
+                raise RuntimeError("HTTPS attach requires --resume of a claim with its original token")
+            handle_path.parent.mkdir(parents=True, exist_ok=True)
+            write_token_file(token_file, config.https_token)
+    elif prior_attempt and prior_attempt.get("transport", "ssh") != "ssh":
+        raise RuntimeError("resume transport differs from recorded claim")
     volume = await _require_existing_volume(config, args.storage_name)
     if prior_attempt is not None:
         _validate_resume_request(prior_attempt, args=args, volume=volume)
@@ -566,6 +597,9 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
             rollover=rollover,
             pod_id=getattr(args, "pod_id", None),
         )
+    if config.transport == "https":
+        attempt.update({"transport": "https", "https_token_file": str(token_file)})
+        _replace_allocation_attempt(handle_path, attempt, operation_id=str(attempt["operation_id"]))
     operation_id = str(attempt["operation_id"])
     request_name = str(attempt.get("request_name") or "")
     _log(
@@ -577,40 +611,69 @@ async def _claim(args: argparse.Namespace) -> dict[str, Any]:
         f"poll_seconds={args.poll_seconds} max_wait_seconds={args.max_wait_seconds} "
         f"lifecycle={args.lifecycle_policy!r} handle_path={str(handle_path)!r}"
     )
-    if resuming and attempt.get("state") not in {
-        "capacity_retry_ready",
-        "capacity_exhausted",
-    }:
-        acquired = await reconcile_target(
-            config,
-            handle_path=handle_path,
-            attempt=attempt,
-            volume=volume,
-            ready_timeout_seconds=args.ready_timeout_seconds,
-        )
-    else:
-        acquired = await acquire_target(
-            config,
-            handle_path=handle_path,
-            attempt=attempt,
-            volume=volume,
-            pod_id=getattr(args, "pod_id", None),
-            max_wait_seconds=args.max_wait_seconds,
-            capacity_window_seconds=args.capacity_window_seconds,
-            retry_interval_seconds=args.poll_seconds,
-            ready_timeout_seconds=args.ready_timeout_seconds,
-            allow_capacity_retry=resuming,
-        )
-    return await _finish_claim(
-        args=args,
-        handle_path=handle_path,
-        config=config,
-        acquired=acquired,
+    allocating_here = (
+        attempt.get("acquisition_mode") == "allocate"
+        and (not resuming or attempt.get("state") in {"capacity_retry_ready", "capacity_exhausted"})
     )
+    try:
+        if resuming and attempt.get("state") not in {
+            "capacity_retry_ready",
+            "capacity_exhausted",
+        }:
+            acquired = await reconcile_target(
+                config,
+                handle_path=handle_path,
+                attempt=attempt,
+                volume=volume,
+                ready_timeout_seconds=args.ready_timeout_seconds,
+            )
+        else:
+            acquired = await acquire_target(
+                config,
+                handle_path=handle_path,
+                attempt=attempt,
+                volume=volume,
+                pod_id=getattr(args, "pod_id", None),
+                max_wait_seconds=args.max_wait_seconds,
+                capacity_window_seconds=args.capacity_window_seconds,
+                retry_interval_seconds=args.poll_seconds,
+                ready_timeout_seconds=args.ready_timeout_seconds,
+                allow_capacity_retry=resuming,
+            )
+        return await _finish_claim(
+            args=args,
+            handle_path=handle_path,
+            config=config,
+            acquired=acquired,
+        )
+    except BaseException:
+        # Re-read durable custody: allocation/readiness may fail before acquire
+        # returns a pod, and release may itself have an interrupted journal.
+        try:
+            failed = json.loads(handle_path.read_text(encoding="utf-8"))
+            if failed.get("operation_id") != operation_id:
+                raise RuntimeError("claim custody changed before failure cleanup")
+            policy = getattr(args, "on_failure", None) or (
+                "release" if allocating_here else "leave_running"
+            )
+            if policy == "release" and failed.get("pod_id"):
+                async def quiesce(record):
+                    return unactivated_target_quiescence(record)
+                await _release_exact_target_after_quiescence(
+                    config, handle_path=handle_path, attempt=failed,
+                    quiesce_worker=quiesce,
+                )
+                _log(f"released failed allocation {failed['pod_id']}; persistent volume preserved")
+        except BaseException as cleanup_error:
+            # Preserve the original failure and the exact resumable cleanup
+            # record. Never turn uncertain cleanup into another allocation.
+            _log(f"failure cleanup unresolved: {type(cleanup_error).__name__}; inspect {handle_path}")
+        raise
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--transport", choices=("ssh", "https"), default="ssh")
     parser.add_argument("--gpu-type", default=DEFAULT_GPU)
     parser.add_argument("--storage-name", default=DEFAULT_STORAGE)
     parser.add_argument(
@@ -660,6 +723,10 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_WAIT_SECONDS,
         help="Overall capacity-wait limit (default: 43200 / 12 hours); 0 waits indefinitely.",
     )
+    parser.add_argument(
+        "--on-failure", choices=("release", "leave_running"), default=None,
+        help="Failure policy: defaults to release for a new allocation, leave_running for attached/resumed pods. Release requires unactivated allocation custody.",
+    )
     parser.add_argument("--ready-timeout-seconds", type=int, default=DEFAULT_READY_TIMEOUT_SECONDS)
     parser.add_argument("--name-prefix", default="astrid-claim-5090-backup")
     parser.add_argument(
@@ -671,7 +738,7 @@ def _parser() -> argparse.ArgumentParser:
         "--lifecycle-policy",
         choices=(DEFAULT_LIFECYCLE_POLICY,),
         default=DEFAULT_LIFECYCLE_POLICY,
-        help="Claim postcondition; leave_running never terminates an allocated pod.",
+        help="Successful claim postcondition; failure cleanup is controlled by --on-failure.",
     )
     return parser
 
