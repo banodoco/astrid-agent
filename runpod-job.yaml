@@ -55,6 +55,11 @@ run:
     printf '%s\n' 'vibecomfy=3bebae39655eb4604548850404be3d4aefaf2ef31' 'lifecycle=96360a2' > runpod-evidence/producer-authorities.txt
     "$TASK_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" > runpod-evidence/vendor-check.log 2>&1
     sha256sum runtime.lock.json astrid_runtime_client/*.py astrid/core/timeline/schema/timeline-config.schema.json artifacts.json > runpod-evidence/generated-SHA256SUMS
+    SKILL_BIN="$PROOF_ROOT/skill-bin"
+    mkdir -p "$SKILL_BIN"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$TASK_PYTHON" > "$SKILL_BIN/python3"
+    chmod 755 "$SKILL_BIN/python3"
+    PATH="$SKILL_BIN:$PATH" python3 -c 'import PIL; print(PIL.__version__)' > runpod-evidence/wrapper-import-pil.txt
     set +e
     "$TASK_PYTHON" -m pytest -o addopts= -q --collect-only \
       tests/v10/test_timelines_create.py::test_remote_create_empty_creates_shell_then_empty_head \
@@ -71,7 +76,7 @@ run:
       tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first \
       > runpod-evidence/correction-collection.txt 2>&1
     collect_code=$?
-    "$TASK_PYTHON" -m pytest -o addopts= -q --maxfail=1 --junitxml=runpod-evidence/correction.xml \
+    "$TASK_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/correction.xml \
       tests/v10/test_timelines_create.py::test_remote_create_empty_creates_shell_then_empty_head \
       tests/v10/test_domain_cli_projects_timelines.py::test_first_run_timeline_journey_uses_selection_recent_history_and_project_list \
       tests/test_skills.py::test_timeline_main_skill_code_blocks_run_with_scratch_runtime \
@@ -108,6 +113,7 @@ artifacts:
   - runpod-evidence/vendor-check.log
   - runpod-evidence/final-vendor-check.log
   - runpod-evidence/generated-SHA256SUMS
+  - runpod-evidence/wrapper-import-pil.txt
   - runpod-evidence/correction-collection.txt
   - runpod-evidence/correction-collection.exit
   - runpod-evidence/correction.log
