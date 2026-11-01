@@ -29,6 +29,7 @@ jobs:
       pinokio_sha: ${{ steps.bind.outputs.pinokio_sha }}
       vibecomfy_sha: ${{ steps.bind.outputs.vibecomfy_sha }}
       tuple_digest: ${{ steps.bind.outputs.tuple_digest }}
+      manifest_sha256: ${{ steps.bind.outputs.manifest_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,6 +83,7 @@ jobs:
               for name in names:
                   out.write(f"{name}_sha={value['repos'][name]['sha']}\n")
               out.write(f"tuple_digest={expected}\n")
+              out.write(f"manifest_sha256={value['generated']['app_install_manifest_sha256']}\n")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
               summary.write(f"CP2 tuple digest: `{expected}`\n\n```json\n")
               summary.write(json.dumps(value, indent=2))
@@ -137,6 +139,7 @@ jobs:
           APP_SHA: ${{ needs.tuple.outputs.app_sha }}
           PINOKIO_SHA: ${{ needs.tuple.outputs.pinokio_sha }}
           VIBECOMFY_SHA: ${{ needs.tuple.outputs.vibecomfy_sha }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.tuple.outputs.manifest_sha256 }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -173,6 +176,8 @@ jobs:
           if manifest.get("runtime", {}).get("sha") != expected["runtime"]:
               raise SystemExit("App install manifest does not name the selected Runtime")
           manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+          if manifest_sha256 != os.environ["EXPECTED_MANIFEST_SHA256"]:
+              raise SystemExit("App install manifest SHA-256 does not match the selected tuple")
           summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
           with summary.open("a", encoding="utf-8") as out:
               out.write("## Effective source and declared identities\n\n")
