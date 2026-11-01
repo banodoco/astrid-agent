@@ -27,7 +27,6 @@ MOTION_FILE = "motion.ts"
 TIMEOUT_S = 30.0
 MAX_FRAMES = 20_000  # per clip; a longer clip falls back to the mirror
 
-_DEFAULT_MOTION_PACKS = ("astrid_motion", "local")
 _KIND_ALIASES = {
     "animation": "animations",
     "animations": "animations",
@@ -173,10 +172,25 @@ def _pack_declarations(packs_root: Path, pack_id: str) -> tuple[dict[str, Any], 
 
 
 def _default_declarations(packs_root: Path) -> tuple[dict[str, Any], ...]:
-    """Read only the two current V3 packs that declare motion resources."""
+    """Read motion declarations only from packs admitted by the element registry."""
+    from astrid.core.element.registry import load_default_registry
+
+    if not packs_root.is_dir() or not any(
+        (child / "pack.yaml").is_file() for child in packs_root.iterdir() if child.is_dir()
+    ):
+        return ()
+    project_root = packs_root.parent.parent
+    registry = load_default_registry(project_root=project_root)
+    installed_roots: dict[tuple[str, Path], None] = {}
+    for element in registry.list(include_shadowed=True):
+        pack_id = str(element.metadata.get("pack_id") or element.source.removeprefix("pack:"))
+        if not pack_id:
+            continue
+        pack_root = element.root.parents[3]
+        installed_roots[(pack_id, pack_root)] = None
     rows: list[dict[str, Any]] = []
-    for pack_id in _DEFAULT_MOTION_PACKS:
-        rows.extend(_pack_declarations(packs_root, pack_id))
+    for pack_id, pack_root in sorted(installed_roots, key=lambda item: (item[0], str(item[1]))):
+        rows.extend(_pack_declarations(pack_root.parent, pack_id))
     return tuple(rows)
 
 
@@ -420,10 +434,11 @@ def modules(
                 for element in elements
                 if (reference := _element_ref(element)).get("packId", reference.get("pack_id"))
             })
-            rows = tuple(
-                declaration
-                for pack_id in (pack_ids or list(_DEFAULT_MOTION_PACKS))
-                for declaration in _pack_declarations(packs_root, pack_id)
+            installed = _default_declarations(packs_root)
+            rows = (
+                tuple(declaration for declaration in installed if declaration.get("pack_id") in pack_ids)
+                if pack_ids
+                else installed
             )
     elif isinstance(declarations, Mapping):
         rows = (declarations,)

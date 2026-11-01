@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = ROOT / "scripts" / "gen_element_catalog.py"
 
 
-def test_projection_covers_every_editor_element_kind() -> None:
+def test_runtime_projection_uses_registry_and_shipped_projection_is_core_only() -> None:
     descriptors = catalog.list_element_descriptors()
     by_kind = {
         kind: {descriptor["id"] for descriptor in descriptors if descriptor["kind"] == kind}
@@ -25,8 +25,10 @@ def test_projection_covers_every_editor_element_kind() -> None:
     assert by_kind["animation"] == {item.id for item in registry.list(kind="animations")}
     assert by_kind["transition"] == {item.id for item in registry.list(kind="transitions")}
     assert {"scrolling-guide", "audio-reactive-colour"}.issubset(by_kind["effect"])
-    assert {"fade-up", "scale-in"}.issubset(by_kind["animation"])
-    assert {"cross-fade", "fade"}.issubset(by_kind["transition"])
+    shipped = (ROOT / "astrid/packs/rendering/elements/catalog.ts").read_text(encoding="utf-8")
+    assert '"packId": "rendering"' in shipped
+    assert '"packId": "local"' not in shipped
+    assert '"packId": "astrid_motion"' not in shipped
 
 
 def test_projection_is_path_free_and_revision_stable() -> None:

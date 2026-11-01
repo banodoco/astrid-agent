@@ -54,6 +54,11 @@ def generate() -> str:
         logger.removeHandler(warnings)
     if warnings.messages:
         raise ValueError("Cannot generate an incomplete element catalog:\n" + "\n".join(warnings.messages))
+    # This checked-in projection ships with the core rendering pack. Optional
+    # pack descriptors remain available through the live element registry and
+    # must not become accidental defaults merely because their source happens
+    # to be present in this development checkout.
+    descriptors = tuple(item for item in descriptors if item.get("packId") == "rendering")
     descriptors = _preserve_public_renderability(descriptors)
     payload = json.dumps(descriptors, indent=2, sort_keys=True, ensure_ascii=False)
     return "\n".join(
