@@ -142,8 +142,8 @@ def snapshot_label(
         base, contradictory = _candidate_base_revision(markers)
         draft = _first_string(*(marker.get("candidate_parent_revision_id") for marker in markers))
         label = _first_string(*(marker.get("label") for marker in markers)) or "UNCERTIFIED unsaved candidate"
-        if draft and label == "UNCERTIFIED unsaved candidate":
-            label += f" {draft}"
+        if draft and draft not in label:
+            label += f" (candidate parent {draft})"
         if contradictory:
             label += " (base revision unavailable: contradictory markers)"
         else:

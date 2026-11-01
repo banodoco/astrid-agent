@@ -195,6 +195,8 @@ def test_public_package_failure_is_unavailable(installed, broken):
 
 
 def test_invalid_runtime_context_never_becomes_empty_answer(tmp_path, monkeypatch):
+    for key in ("NODE_OPTIONS", "NODE_PATH", "ASTRID_NODE_EXECUTABLE"):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("ASTRID_REMOTION_PROJECT_DIR", str(tmp_path / "missing"))
     with pytest.raises(scene_answers.SceneQueryUnavailable, match="project directory not found"):
         scene_answers.frames_at({"tracks": []}, [0])
