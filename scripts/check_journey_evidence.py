@@ -12,6 +12,10 @@ from pathlib import Path
 
 if __package__:
     from .journey_matrix import (
+        APP_UPDATE_GUARD_MATRIX,
+        DIRECT_LINUX_FAULT_SCENARIOS,
+        DIRECT_MACOS_FAULT_SCENARIOS,
+        DIRECT_WINDOWS_FAULT_SCENARIOS,
         M4_4A_BACKEND_MATRIX,
         M4_4A_BACKEND_SIDECARS,
         M4_4A_OLD_LAUNCHER_REF,
@@ -28,6 +32,10 @@ if __package__:
 else:
     try:
         from journey_matrix import (
+            APP_UPDATE_GUARD_MATRIX,
+            DIRECT_LINUX_FAULT_SCENARIOS,
+            DIRECT_MACOS_FAULT_SCENARIOS,
+            DIRECT_WINDOWS_FAULT_SCENARIOS,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -43,6 +51,10 @@ else:
         )
     except ModuleNotFoundError:  # importlib-loaded unit tests run from the repository root
         from scripts.journey_matrix import (
+            APP_UPDATE_GUARD_MATRIX,
+            DIRECT_LINUX_FAULT_SCENARIOS,
+            DIRECT_MACOS_FAULT_SCENARIOS,
+            DIRECT_WINDOWS_FAULT_SCENARIOS,
             M4_4A_BACKEND_MATRIX,
             M4_4A_BACKEND_SIDECARS,
             M4_4A_OLD_LAUNCHER_REF,
@@ -675,6 +687,173 @@ def evaluate_m4_6_local_matrix(results, candidate):
     return errors
 
 
+def evaluate_installed_faults(candidate, manifest, results):
+    """Validate independently attributed installed-fault and App-guard receipts.
+
+    Step evidence paths are relative to each receipt directory. Fault steps use
+    the shared installed-fault helper's observation contract; replay only checks
+    recorded observations and does not execute an installed journey.
+    """
+    if __package__:
+        from .failure_mode_executor import execute_installed_fault
+    else:
+        try:
+            from failure_mode_executor import execute_installed_fault
+        except ModuleNotFoundError:
+            from scripts.failure_mode_executor import execute_installed_fault
+
+    contracts = (*DIRECT_LINUX_FAULT_SCENARIOS, *DIRECT_MACOS_FAULT_SCENARIOS,
+                 *DIRECT_WINDOWS_FAULT_SCENARIOS, *APP_UPDATE_GUARD_MATRIX)
+    expected = {contract["scenario_id"]: contract for contract in contracts}
+    errors = []
+    if len(expected) != len(contracts):
+        errors.append("installed-fault matrix contains duplicate scenario identities")
+    keys = ("app", "agent", "runtime", "pinokio")
+    if (not isinstance(candidate, dict) or any(not isinstance(candidate.get(k), str)
+            or not SHA.fullmatch(candidate[k]) for k in keys)
+            or not isinstance(candidate.get("manifest_sha256"), str)
+            or not DIGEST.fullmatch(candidate["manifest_sha256"])):
+        return errors + ["candidate tuple or manifest digest is invalid"]
+    if (not isinstance(manifest, dict) or any(not isinstance(manifest.get(k), dict)
+            or manifest[k].get("sha") != candidate[k] for k in ("agent", "runtime"))):
+        return errors + ["manifest sources differ from candidate"]
+    found = {}
+    for path in Path(results).rglob("journey-result.json"):
+        try:
+            row = read(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        name = row.get("scenario_id")
+        if not isinstance(name, str) or name not in expected:
+            errors.append(f"{path}: unknown or absent installed scenario id")
+        elif name in found:
+            errors.append(f"{name}: duplicate receipt")
+        else:
+            found[name] = (row, path.parent)
+
+    for name, contract in expected.items():
+        if name not in found:
+            errors.append(f"{name}: missing receipt")
+            continue
+        row, root = found[name]
+        def fail(message):
+            errors.append(f"{name}: {message}")
+
+        guard = "phases" in contract
+        if (row.get("receipt_kind") != "installed-lifecycle-scenario"
+                or row.get("execution_scope") != "hosted-installed"
+                or row.get("evidence_class") != (contract["evidence_class"] if guard else "installed_native")
+                or row.get("status") != "pass" or row.get("source_override_test_mode") is not False):
+            fail("receipt kind, status or source override is inadmissible")
+        if row.get("candidate_tuple") != {k: candidate[k] for k in keys}:
+            fail("candidate tuple differs from frozen candidate")
+        if row.get("manifest_sha256") != candidate["manifest_sha256"]:
+            fail("manifest digest differs from frozen candidate")
+        if row.get("installed_tuple") != {k: candidate[k] for k in keys}:
+            fail("installed tuple differs from frozen candidate")
+        sources = row.get("sources")
+        if (not isinstance(sources, dict) or sources.get("agent") != manifest["agent"]
+                or sources.get("runtime") != manifest["runtime"]
+                or sources.get("app") != {"sha": candidate["app"]}):
+            fail("installed sources differ from manifest or candidate")
+        expected_os, image = RUNNER_PROVENANCE[contract["runner"]]
+        provenance = row.get("runner_provenance")
+        if (row.get("runner_image") != contract["runner"] or row.get("shell") != contract["shell"]
+                or not isinstance(provenance, dict) or provenance.get("RUNNER_OS") != expected_os
+                or provenance.get("ImageOS") != image
+                or not isinstance(provenance.get("ImageVersion"), str)
+                or not provenance["ImageVersion"].strip()
+                or not isinstance(row.get("os_build"), str)
+                or not row["os_build"].startswith(expected_os + "-")):
+            fail("runner, shell or hosted provenance does not match matrix")
+        if row.get("final_cleanup") != "pass":
+            fail("final cleanup did not pass")
+
+        if guard:
+            identity = row.get("installed_app_identity")
+            if (not isinstance(identity, dict) or identity.get("app_sha") != candidate["app"]
+                    or not isinstance(identity.get("installation_id"), str)
+                    or not identity["installation_id"].strip()):
+                fail("installed App identity is absent or wrong")
+            phases = row.get("phases")
+            if not isinstance(phases, list) or len(phases) != len(contract["phases"]):
+                fail("guard phase observations missing or duplicated")
+                continue
+            used = set()
+            for observed, phase in zip(phases, contract["phases"]):
+                if not isinstance(observed, dict):
+                    fail("guard phase is malformed")
+                    continue
+                count = observed.get("update_post_count")
+                if (observed.get("phase_id") != phase["phase_id"]
+                        or observed.get("save_state") != phase["save_state"]
+                        or observed.get("status") != "pass"
+                        or type(count) is not int or count != phase["expected_update_post_count"]
+                        or observed.get("installation_id") != (identity.get("installation_id") if isinstance(identity, dict) else None)):
+                    fail(f"guard phase {phase['phase_id']} has wrong save or POST observation")
+                if (not isinstance(observed.get("command"), list) or not observed["command"]
+                        or any(not isinstance(v, str) or not v.strip() for v in observed["command"])
+                        or type(observed.get("command_exit")) is not int or observed["command_exit"] != 0
+                        or type(observed.get("inner_exit")) is not int or observed["inner_exit"] != 0):
+                    fail(f"guard phase {phase['phase_id']} lacks successful command exits")
+                evidence = observed.get("evidence")
+                if not isinstance(evidence, list) or not evidence:
+                    fail(f"guard phase {phase['phase_id']} has no evidence")
+                    continue
+                for item in evidence:
+                    path, sha = _sidecar_path(root, item)
+                    if path is None or not path.is_file() or path in used or digest(path) != sha:
+                        fail(f"guard phase {phase['phase_id']} has invalid or reused evidence")
+                    else:
+                        used.add(path)
+            continue
+
+        if row.get("mode") != contract["mode"]:
+            fail("ownership mode differs from matrix")
+        predicates = row.get("predicates")
+        if not isinstance(predicates, dict) or any(predicates.get(key) is not True
+                                                   for key in contract["required_evidence"]):
+            fail("matrix-required evidence predicates are missing or false")
+        manager = row.get("service_manager")
+        manager_name = contract.get("manager", "systemd")
+        if (not isinstance(manager, dict) or manager.get("name") != manager_name
+                or manager.get("native") is not True or manager.get("healthy") is not True
+                or manager.get("foreground_fallback") is not False or manager.get("one_runtime") is not True):
+            fail("native service manager ownership and health are absent")
+        cleanup = row.get("cleanup")
+        if (not isinstance(cleanup, dict) or cleanup.get("keep_data") is not True
+                or cleanup.get("owned_processes_stopped") is not True):
+            fail("keep-data and owned-process cleanup are absent")
+        steps = row.get("steps")
+        if not isinstance(steps, dict) or set(steps) != set(contract["steps"]):
+            fail("fault step observations are missing or unknown")
+            continue
+        baseline = steps.get("baseline")
+        if not isinstance(baseline, dict) or baseline.get("authentic_predecessor") is not True:
+            fail("authentic Release-0 predecessor is absent")
+        fixture = row.get("release0_fixture")
+        baseline_evidence = baseline.get("evidence") if isinstance(baseline, dict) else None
+        evidence_hashes = {item.get("sha256") for item in baseline_evidence
+                           if isinstance(item, dict) and isinstance(item.get("sha256"), str)} if isinstance(baseline_evidence, list) else set()
+        if (not isinstance(fixture, dict) or fixture.get("authenticated") is not True
+                or any(not isinstance(fixture.get(key), str) or not DIGEST.fullmatch(fixture[key])
+                       or fixture[key] not in evidence_hashes for key in ("manifest_sha256", "provenance_sha256"))
+                or fixture.get("manifest_sha256") == fixture.get("provenance_sha256")
+                or not isinstance(baseline, dict)
+                or baseline.get("selected_sha256") != baseline.get("predecessor_sha256")):
+            fail("selected predecessor or hashed Release-0 fixture provenance is absent")
+
+        class RecordedAdapter:
+            def run_step(self, step, previous):
+                return steps[step]
+        try:
+            execute_installed_fault(contract.get("scenario", contract.get("leg")), RecordedAdapter(), root)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            fail(f"fault observations invalid: {exc}")
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path)
@@ -696,11 +875,13 @@ def main():
                         help="require one local-process M4-4b smoke receipt; never hosted evidence")
     parser.add_argument("--aggregate-m4-6-local", action="store_true",
                         help="require all nine separately retained local-disposable M4-6 outputs")
+    parser.add_argument("--installed-faults", action="store_true",
+                        help="require all installed fault and App guard scenario receipts")
     args = parser.parse_args()
     errors = []
     try:
         aggregate_modes = sum((args.aggregate_release1, args.aggregate_m4_4a, args.aggregate_m4_5,
-                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local))
+                               args.aggregate_m4_4b_local, args.aggregate_m4_6_local, args.installed_faults))
         if aggregate_modes > 1:
             raise ValueError("choose one aggregate mode")
         if args.aggregate_m4_4b_local:
@@ -716,7 +897,11 @@ def main():
                 raise ValueError("--candidate and --app-checkout are required for hosted Release-1/M4 aggregates")
             candidate = read(args.candidate)
             manifest = validate_tuple(candidate, args.app_checkout, args.app_checkout / "public/install-manifest.json")
-        if not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
+        if args.installed_faults:
+            if args.results is None or args.allow_source_override or args.prepare_only:
+                raise ValueError("--installed-faults requires results and forbids override and prepare-only")
+            errors.extend(evaluate_installed_faults(candidate, manifest, args.results))
+        elif not args.aggregate_m4_4b_local and not args.aggregate_m4_6_local and args.aggregate_release1:
             if args.results is None:
                 raise ValueError("--results is required with --aggregate-release1")
             errors.extend(evaluate_release1_matrix(candidate, args.results))
