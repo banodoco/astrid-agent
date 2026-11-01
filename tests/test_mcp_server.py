@@ -202,7 +202,12 @@ def test_every_tool_returns_without_following_long_running_work():
     for name, tool in tools.items():
         assert "annotations" not in tool["definition"], name
         path = tool.get("path")
-        assert path != ("tasks", "follow"), name
+        if path == ("tasks", "follow"):
+            assert mcp_server.argv_for(tool, {"project": "p", "task_id": "task-1",
+                                              "poll_seconds": 0.25, "timeout_seconds": 1}) == [
+                "tasks", "follow", "task-1", "--project", "p", "--poll-seconds", "0.25",
+                "--timeout-seconds", "1", "--json",
+            ]
         if path == ("timelines", "render"):
             assert "wait" not in tool["definition"]["inputSchema"]["properties"]
             argv = mcp_server.argv_for(tool, {})
