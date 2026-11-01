@@ -1,8 +1,8 @@
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 import time
@@ -48,6 +48,7 @@ def test_real_supervisor_cancellation_waits_for_owned_command_stop(tmp_path, mon
         outcome = installer.cancel(attempt)
         assert isinstance(outcome, ObservedStop)
         assert outcome.identity == attempt.identity
+        assert installer.cancel(attempt) == outcome
         assert not Path(f'/proc/{pid}').exists()
         record = json.loads((tmp_path / 'engine/.astrid-engine/attempt-custody.json').read_text())
         assert record['attempts'][0]['state'] == 'stopped'
@@ -99,6 +100,25 @@ def test_blocked_real_download_returns_recovery_until_it_has_stopped(tmp_path, m
         assert isinstance(installer.cancel(attempt), RecoveryHandle)
         release.set()
         _wait(attempt._done.is_set)
+        restart = '''
+import json, sys, time
+from astrid.core.generation.engine_attempt import AttemptInstaller
+from astrid.core.generation.engine_contracts import CustodyUnresolved
+from astrid.core.generation.engine_execution import create_local_backend
+from astrid.core.generation.engine_install_task import InstallBinding
+b = InstallBinding.from_dict(json.loads(sys.argv[1]))
+deadline = time.monotonic() + 10
+context, adapter = create_local_backend(engine=b.engine, platform=b.platform, placement=b.placement, root=b.root, deadline=deadline)
+installer = AttemptInstaller(context=context, adapter=adapter, deadline=deadline, receipt_id='new-receipt', on_checkpoint=lambda _: None)
+try:
+    installer.begin_attempt('task', 'new-attempt', 2, b)
+except CustodyUnresolved:
+    pass
+else:
+    raise AssertionError('unresolved cancelled attempt was replayed')
+'''
+        subprocess.run([sys.executable, '-c', restart, json.dumps(binding.as_dict())],
+                       check=True, timeout=15, capture_output=True, text=True)
         other = AttemptInstaller(context=context, adapter=context.adapter, deadline=time.monotonic() + 10,
                                  receipt_id='another-receipt', on_checkpoint=lambda _: None)
         with pytest.raises(CustodyUnresolved):

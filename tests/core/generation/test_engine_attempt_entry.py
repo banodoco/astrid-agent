@@ -80,7 +80,7 @@ def test_root_replacement_blocks_next_callback(fake_install):
     installer = AttemptInstaller(context=context, adapter=context.adapter, deadline=context.deadline,
                                  receipt_id='receipt-2', on_checkpoint=replace_root)
     attempt = installer.begin_attempt('task-2', 'attempt-2', 9, binding)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match='root changed'):
         attempt.wait(15)
     assert len(checkpoints) == 1
     record = json.loads((root.parent / 'old-engine/.astrid-engine/attempt-custody.json').read_text())

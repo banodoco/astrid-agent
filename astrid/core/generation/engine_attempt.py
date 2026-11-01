@@ -72,6 +72,8 @@ class InstallAttempt:
         self._done = threading.Event()
         self._cancel_requested = threading.Event()
         self._gate = threading.Lock()
+        self._cancel_lock = threading.Lock()
+        self._observed_stop = None
         self._completed = False
         self._started_service = False
         self._root_identity = None
@@ -201,6 +203,15 @@ class AttemptInstaller:
         with self._attempts_lock:
             if attempt not in self._attempts:
                 raise ValueError('attempt is not owned by this installer')
+        with attempt._cancel_lock:
+            if attempt._observed_stop is not None:
+                return attempt._observed_stop
+            result = self._cancel_owned(attempt)
+            if isinstance(result, ObservedStop):
+                attempt._observed_stop = result
+            return result
+
+    def _cancel_owned(self, attempt):
         identity = attempt.identity
         with attempt._gate:
             if attempt._completed:
