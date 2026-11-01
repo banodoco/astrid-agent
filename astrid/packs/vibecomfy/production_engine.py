@@ -13,7 +13,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, ContextManager
 
@@ -71,6 +71,7 @@ class ProductionRunResult:
     managed_generation_result: dict[str, Any] | None = None
     producer_run_id: str | None = None
     attempt_id: str | None = None
+    readiness: dict[str, Any] | None = None
 
 
 _LAST_PRODUCTION_RESULT: ProductionRunResult | None = None
@@ -778,6 +779,11 @@ def _run_profile_result(
         raise ProductionEngineError("endpoint_checkout requires checkout_server")
     if comfy_url and profile_id != "local_server":
         raise ProductionEngineError("comfy_url requires the local_server profile")
+    from astrid.core.generation.engine_readiness import current_comfy_provenance
+
+    provenance = current_comfy_provenance()
+    if provenance is not None:
+        provenance.workflow(resolved)
     if profile_id == "local_server":
         if hc03_profile is not None:
             raise ProductionEngineError("local_server cannot use a readiness profile")
@@ -865,15 +871,28 @@ def _run_profile_result(
 
     workflow_comfyui_version = _workflow_comfyui_version_requirement(resolved)
     profile_comfyui_version = _profile_comfyui_version_requirement(hc03_profile)
-    if (
-        workflow_comfyui_version is not None
-        and profile_comfyui_version is not None
-        and workflow_comfyui_version != profile_comfyui_version
-    ):
-        raise ProductionEngineError(
+    # Workflow versions are declarations. The adapter independently verifies
+    # the installed baseline and retains known workflow drift as a warning.
+    from astrid.core.generation.preflight import compare_versions, readiness_envelope
+
+    # The installed profile carries an exact baseline, often written as ==X.
+    # Compare its version against the workflow constraint without treating the
+    # profile as a live system_stats observation. Unknown versions stay silent.
+    baseline = profile_comfyui_version.removeprefix("==") if profile_comfyui_version else None
+    issues = compare_versions({"comfyui": workflow_comfyui_version}, {"comfyui": baseline})
+    for issue in issues:
+        issue["message"] = (
             "workflow and worker profile ComfyUI version contracts disagree: "
             f"workflow={workflow_comfyui_version!r} profile={profile_comfyui_version!r}"
         )
+        issue["details"].update(workflow=workflow_comfyui_version, profile=profile_comfyui_version,
+                                observation_source="installed_profile")
+        import warnings
+
+        warnings.warn(issue["message"], UserWarning, stacklevel=2)
+    version_readiness = readiness_envelope(issues=issues)
+    if provenance is not None:
+        provenance.add_readiness_issues(issues)
     factory = endpoint_checkout if endpoint_checkout is not None else CheckoutServerAdapter.from_host_session
     transport_kwargs = {} if endpoint_transport is None else {"endpoint_transport": endpoint_transport}
     checkout = factory(
@@ -898,9 +917,9 @@ def _run_profile_result(
                     run_inputs=run_inputs,
                 )
             )
-            return _result_from_runtime_result(
+            return replace(_result_from_runtime_result(
                 getattr(adapter, "_last_run_result", None), outputs
-            )
+            ), readiness=version_readiness)
         except BaseException:
             if not was_cancelled():
                 adapter.release(reason="failed")

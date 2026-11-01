@@ -5246,6 +5246,9 @@ class RuntimeProtocolClient:
             raise HostError("runtime cancellation evidence requires a complete attempt fence")
         kwargs = {}
         if evidence:
+            # Runtime's fenced cancel contract requires a boolean. Unknown
+            # producer stop evidence is no observed stop: retain fenced custody.
+            stop_observed = stop_observed is True
             kwargs.update(
                 attempt_id=attempt_id,
                 lease_id=lease_id,
