@@ -151,7 +151,7 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
 
 
 def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
-    """Preserve C1 preflight; give a running incapable Runtime its contract refusal."""
+    """Refuse a running owner before any update writes, then preserve C1 preflight."""
     from runtime_protocol import platform
 
     lock_path = installer_lock_path(backend.service.home, backend.service.system)
@@ -169,7 +169,7 @@ def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
             pass
 
     if held:
-        qualify_running(root, backend, data)
+        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
     backend.preflight_stop(absolute(data))
 
 

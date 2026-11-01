@@ -216,6 +216,8 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
         step = transaction.get("step")
         if step in {"complete", "rolled_back"}:
             return False
+        if version.managed_by == "pinokio" and not custody:
+            raise ValueError("Choose Update to finish")
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
