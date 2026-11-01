@@ -1,6 +1,7 @@
 """M1-9b boundaries for continuing one accepted installer operation."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -134,6 +135,8 @@ def test_explicit_update_continues_same_operation_once_under_lock(
     command = update_job._expected_worker_command(Version.load(original["old_version"]), original)
     descriptor = _descriptor(original, command) if has_descriptor else None
     _set_unresolved(root, original, proof_state, descriptor)
+    prior_attempt = read_json(root / "install.json")["update_job"]["attempt"]
+    accepted_metadata = dict(original["metadata"])
     adapter = _ContinuationAdapter(root, registered=(case != "accepted-without-descriptor"))
     monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
     validations = []
@@ -149,6 +152,13 @@ def test_explicit_update_continues_same_operation_once_under_lock(
     assert result["operation_id"] == original["operation_id"]
     assert result["state"] == "launching"
     assert result["launch_status"] == "acknowledged"
+    assert result["platform"]["name"] == f"astrid-update-{original['operation_id']}.service"
+    assert result["metadata"] == accepted_metadata
+    for name in ("manifest", "bootstrap"):
+        assert hashlib.sha256(Path(result["metadata"][f"{name}_path"]).read_bytes()).hexdigest() == accepted_metadata[f"{name}_sha256"]
+    assert result["attempt"]["epoch"] == prior_attempt["epoch"] + 1
+    assert result["attempt"]["nonce"] != prior_attempt["nonce"]
+    assert result["retired_attempts"][-1]["nonce"] == prior_attempt["nonce"]
     assert adapter.events == expected_events
     assert validations == []  # continuation never performs a second logical acceptance
     assert read_json(root / "install.json")["update_job"]["operation_id"] == original["operation_id"]
