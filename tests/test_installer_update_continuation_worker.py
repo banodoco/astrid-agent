@@ -33,7 +33,30 @@ def test_initial_native_launch_excludes_a_competing_reconciliation(tmp_path, mon
     result = update_job.launch_job(root, accepted["operation_id"])
     assert result["launch_status"] == "acknowledged"
     assert result["operation_id"] == accepted["operation_id"]
+    assert result["attempt"]["handoff"] == {
+        "epoch": result["attempt"]["epoch"], "nonce": result["attempt"]["nonce"]}
     assert adapter.events == ["launch"]
+
+
+@pytest.mark.parametrize("submit,handoff", [
+    ("spent", None), ("unknown", None), ("acknowledged", None),
+    ("acknowledged", {"epoch": 999, "nonce": "f" * 32}),
+])
+def test_unacknowledged_or_unbound_wrapper_cannot_claim(tmp_path, monkeypatch, submit, handoff):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    accepted = update_job.accept(request)
+    adapter = _ContinuationAdapter(root)
+    monkeypatch.setattr(update_job, "_platform_api", lambda: adapter)
+    launched = update_job.launch_job(root, accepted["operation_id"])
+    marker = read_json(root / "install.json")
+    marker["update_job"]["attempt"].update(submit=submit, handoff=handoff)
+    write_json(root / "install.json", marker)
+    before = (root / "install.json").read_bytes()
+    with pytest.raises(ValueError) as refusal:
+        update_job.run_job(root, accepted["operation_id"],
+                           launched["attempt"]["epoch"], launched["attempt"]["nonce"])
+    assert refusal.value.reason == "busy"
+    assert (root / "install.json").read_bytes() == before
 
 
 def test_real_worker_claim_survives_interruption_and_can_continue(tmp_path, monkeypatch):
@@ -55,7 +78,8 @@ def test_real_worker_claim_survives_interruption_and_can_continue(tmp_path, monk
 
     monkeypatch.setattr(update_job, "_validate_worker_binding", interrupted)
     with pytest.raises(SystemExit):
-        update_job.run_job(root, original["operation_id"])
+        update_job.run_job(root, original["operation_id"],
+                           acknowledged["attempt"]["epoch"], acknowledged["attempt"]["nonce"])
     claimed = read_json(root / "install.json")["update_job"]
     assert claimed["state"] == "active"
     monkeypatch.setattr(update_job, "_validate_worker_binding", validate)
