@@ -1,0 +1,75 @@
+name: T-11 fresh installed-pack observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_sha:
+        description: Full published Agent commit SHA
+        required: true
+        type: string
+      runtime_sha:
+        description: Full published Runtime commit SHA
+        required: true
+        type: string
+      app_sha:
+        description: Full published App commit SHA
+        required: true
+        type: string
+      pinokio_sha:
+        description: Full published Pinokio commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  installed-pack-observation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate T-11 observer contract
+        run: |
+          python3 -m py_compile .github/scripts/t11_harness.py .github/scripts/t11_example_render.py .github/scripts/t11_observer.py
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+          json.loads(Path('.github/scripts/t11_receipt_schema.json').read_text())
+          yaml.safe_load(Path('.github/workflows/t11.yml').read_text())
+          PY
+          python3 -m unittest -v tests.test_t11_observer tests.test_t11_harness_contract
+      - name: Run fail-closed installed-pack observation
+        env:
+          AGENT_SHA: ${{ inputs.agent_sha }}
+          RUNTIME_SHA: ${{ inputs.runtime_sha }}
+          APP_SHA: ${{ inputs.app_sha }}
+          PINOKIO_SHA: ${{ inputs.pinokio_sha }}
+          T11_ROOT: ${{ runner.temp }}/t11
+          T11_RECEIPT: ${{ runner.temp }}/t11-receipt.json
+        run: python3 .github/scripts/t11_harness.py
+      - name: Upload sanitized T-11 receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t11-receipt
+          path: ${{ runner.temp }}/t11-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload source-hashed observer refusal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t11-observer-receipt
+          path: ${{ runner.temp }}/t11/t11-observer-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload installed example render
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t11-example-render
+          path: ${{ runner.temp }}/t11/work/t11-example-render.mp4
+          if-no-files-found: ignore
+          retention-days: 7

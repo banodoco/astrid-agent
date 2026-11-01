@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "T-11 installed-pack receipt and fail-closed observation gate",
+  "type": "object",
+  "required": ["status", "qualification", "phase", "observations"],
+  "properties": {
+    "status": {"enum": ["not-qualified", "qualified"]},
+    "qualification": {"type": "boolean"},
+    "phase": {"type": "string", "minLength": 1},
+    "observations": {
+      "type": "object",
+      "required": [
+        "requested_tuple",
+        "schema_consumption",
+        "composition_execution",
+        "same_process_observer"
+      ],
+      "properties": {
+        "requested_tuple": {"$ref": "#/$defs/tuple"},
+        "schema_consumption": {"enum": ["observed", "unobserved", "ambiguous", "unavailable"]},
+        "composition_execution": {"enum": ["observed", "unobserved", "ambiguous", "unavailable"]},
+        "same_process_observer": {
+          "type": "object",
+          "required": ["status", "qualification", "same_process_observation"],
+          "properties": {
+            "status": {"enum": ["observed", "refused-no-product-seam", "observer-failed"]},
+            "qualification": {"type": "boolean"},
+            "same_process_observation": {
+              "type": "object",
+              "required": ["schema_consumption", "composition_execution"],
+              "properties": {
+                "schema_consumption": {"type": "object", "required": ["status"]},
+                "composition_execution": {"type": "object", "required": ["status"]}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "tuple": {
+      "type": "object",
+      "required": ["agent", "runtime", "app", "pinokio"],
+      "properties": {
+        "agent": {"$ref": "#/$defs/sha"},
+        "runtime": {"$ref": "#/$defs/sha"},
+        "app": {"$ref": "#/$defs/sha"},
+        "pinokio": {"$ref": "#/$defs/sha"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "qualified"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "qualification": {"const": true},
+          "observations": {
+            "properties": {
+              "schema_consumption": {"const": "observed"},
+              "composition_execution": {"const": "observed"},
+              "same_process_observer": {
+                "properties": {
+                  "status": {"const": "observed"},
+                  "qualification": {"const": true},
+                  "same_process_observation": {
+                    "properties": {
+                      "schema_consumption": {
+                        "properties": {"status": {"const": "observed"}}
+                      },
+                      "composition_execution": {
+                        "properties": {"status": {"const": "observed"}}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {"properties": {"qualification": {"const": false}}}
+    }
+  ]
+}
