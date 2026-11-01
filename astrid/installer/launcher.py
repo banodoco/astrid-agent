@@ -191,6 +191,11 @@ def _custody_receive(stream):
         raise ValueError("The stopped-update lock owner disconnected.")
     return json.loads(line)
 
+def _custody_identity_matches(expected, observed):
+    return (isinstance(expected, dict) and isinstance(observed, dict)
+            and all(expected.get(field) == observed.get(field)
+                    for field in ("pid", "uid", "birth_id")))
+
 def _CUSTODY_ATTACH(ticket, root, version, data):
     try:
         root, data = absolute(root), absolute(data)
@@ -216,10 +221,10 @@ def _CUSTODY_ATTACH(ticket, root, version, data):
         if binding != ticket["binding"]:
             raise ValueError("The stopped-update activation identity changed.")
         receipt = json.loads((root / ".app-update-custody.json").read_text(encoding="utf-8"))
-        expected_lock = installer_lock_path(Path.home(), sys.platform)
+        observed = platform.process_identity(receipt["identity"]["pid"])
         if (receipt["port"] != ticket["port"] or receipt["root"] != str(root.resolve())
-                or receipt["lock"] != str(expected_lock.resolve())
-                or platform.process_identity(receipt["identity"]["pid"]) != receipt["identity"]):
+                or receipt["lock"] != ticket["lock"]
+                or not _custody_identity_matches(receipt["identity"], observed)):
             raise ValueError("The stopped-update lock owner identity changed.")
         challenge = secrets.token_hex(32)
         connection = socket.create_connection(("127.0.0.1", ticket["port"]), timeout=10)

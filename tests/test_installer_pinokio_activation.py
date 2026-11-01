@@ -60,7 +60,10 @@ def main(argv=None):
     elif args[0] == "run":
         from astrid.installer.app_update import locked
         from astrid.installer.service import installer_lock_path
-        lock = installer_lock_path(Path.home(), sys.platform)
+        program = Path(os.environ["ASTRID_START_COMMAND"]).parent
+        receipt = program / ".app-update-custody.json"
+        lock = (Path(json.loads(receipt.read_text())["lock"]) if receipt.is_file()
+                else installer_lock_path(Path.home(), sys.platform))
         try:
             with locked(lock):
                 custody_blocked = False
@@ -111,13 +114,25 @@ def _install_version(tmp_path, root, name, release, capability, repo, pinned_sit
     else:
         python = environment / "bin" / "python"
         site = next((environment / "lib").glob("python*/site-packages"))
+    # The generated foreground runner imports Runtime paths under -I.  Populate
+    # the isolated version from the pinned Runtime, then replace only its CLI
+    # with the controlled session double below.
+    import astrid_runtime
     package = site / "astrid_runtime"
+    shutil.copytree(Path(astrid_runtime.__file__).parent, package, dirs_exist_ok=True)
     (package / "cli.py").write_text(FAKE_RUNTIME.replace("__DOOR_PORT__", str(door_port)), encoding="utf-8")
     (package / "__main__.py").write_text(
         "from .cli import main\nraise SystemExit(main())\n",
         encoding="utf-8",
     )
-    # The Runtime runs under -I. Add only the task checkout and pinned purelib.
+    # The Runtime runs under -I, so a path to the harness environment does not
+    # process that environment's editable Runtime .pth.  Copy the exact pinned
+    # protocol package into this isolated version just as the release-0
+    # launcher fixture does.
+    import runtime_protocol
+    shutil.copytree(Path(runtime_protocol.__file__).parent, site / "runtime_protocol")
+    # Add only the task checkout and pinned purelib for the retained Agent and
+    # other test-only imports.
     (site / "astrid-test-paths.pth").write_text(
         f"{repo}\n{pinned_site}\n", encoding="utf-8")
 
