@@ -54,7 +54,8 @@ try:
             meta['installer_token'] = token()
         except Exception as exc:
             meta['installer_token_error'] = repr(exc)
-        command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        command = [os.environ.get('OWNER_CAPTURE_SHELL', 'powershell.exe'),
+                   '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                    '-File', os.environ['OWNER_CAPTURE_HELPER'], '-ProductRoot', str(root),
                    '-OutputDirectory', str(out), '-Phase', phase]
         try:

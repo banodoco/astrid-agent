@@ -16,7 +16,8 @@ out.mkdir(parents=True, exist_ok=True)
 tmp = Path(os.environ['RUNNER_TEMP']) / 'owner-caller-temp'
 tmp.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, TEMP=str(tmp), TMP=str(tmp), OWNER_CAPTURE_DIR=str(out),
-           OWNER_CAPTURE_HELPER=str(caller / 'capture-timeline-acl.ps1'))
+           OWNER_CAPTURE_HELPER=str(caller / 'capture-timeline-acl.ps1'),
+           OWNER_CAPTURE_SHELL=sys.argv[1])
 stop = threading.Event()
 def inject():
     while not stop.is_set():
