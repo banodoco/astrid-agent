@@ -1,0 +1,7 @@
+tests/test_update_jobs.py::test_reconcile_helper_failure_preserves_uncertainty[timeout]
+tests/test_update_jobs.py::test_reconcile_helper_failure_preserves_uncertainty[invalid-json]
+tests/test_update_jobs.py::test_reconcile_helper_failure_preserves_uncertainty[non-object]
+tests/test_update_jobs.py::test_reconcile_helper_failure_preserves_uncertainty[unknown-error]
+tests/test_update_jobs.py::test_reconcile_helper_failure_preserves_uncertainty[busy]
+
+5 tests collected in 0.15s
