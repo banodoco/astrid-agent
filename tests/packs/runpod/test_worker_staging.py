@@ -794,6 +794,8 @@ def test_json_selection_uses_production_composition_and_real_cpu_staging(
             "network_volume_id": claim["network_volume_id"],
             "name": claim["network_volume_name"],
         },
+        "mounts": [{"source": claim["network_volume_id"],
+                    "target": claim["volume_mount_path"], "read_only": False}],
     }
     owned_root = Path(_remote_owned_root({
         "operation_id": claim["operation_id"],
