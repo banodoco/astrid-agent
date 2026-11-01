@@ -189,7 +189,9 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
         spec = result["spec"]
         if spec.get("delegated_stage") == "run":
             (binding,) = [row for row in spec["delegated_inputs"] if row["name"] == "managed_assets"]
-            archive_bytes = client.media.read_bytes(binding["object_id"])
+            # This observer runs inside the Runtime claim handler; avoid a
+            # reentrant HTTP call while that handler owns its request scope.
+            archive_bytes = daemon.service.cas.path_for(binding["object_id"].removeprefix("sha256:")).read_bytes()
             assert "sha256:" + hashlib.sha256(archive_bytes).hexdigest() == binding["object_id"]
             with zipfile.ZipFile(io.BytesIO(archive_bytes)) as bundle:
                 (asset,) = json.loads(bundle.read("manifest.json"))["assets"]
