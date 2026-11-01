@@ -95,6 +95,9 @@ class LifecycleBackend:
     def workspace(self, *_args):
         return {"realm_id": "kept-realm", "realm_root": str(self.data / "runtime/realms/kept-realm")}
 
+    def update_workspace(self, version, data):
+        return self.workspace(version, data)
+
     def backup(self, *_args):
         self.calls.append(("backup",))
         return {"root": str(self.root / "backups" / "kept")}

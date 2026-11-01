@@ -611,11 +611,12 @@ class Installer:
 
         has_workspace = self.backend.has_workspace(self.data)
         reinstall = old is None and has_workspace and self.backend.reinstallable(self.data)
-        realm = self.backend.workspace(old, self.data) if old else None
         if not old and has_workspace and not reinstall:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
             self.say("Installing Astrid.")
+            candidate = self.backend.stage(manifest, self.root, self.data)
+            realm = self.backend.update_workspace(candidate, self.data)
             same_schema = False
             prepared_candidate: Version | None = None
 
@@ -623,12 +624,9 @@ class Installer:
                 nonlocal prepared_candidate, same_schema
                 if prepared_candidate is not None:
                     return prepared_candidate
-                candidate = self.backend.stage(manifest, self.root, self.data)
                 self.backend.validate_candidate(candidate, self.data, realm)
-                old_schema = inspect_schema(self.backend, old, realm, require_current=False)
                 candidate_schema = inspect_schema(self.backend, candidate, realm, require_current=False)
-                same_schema = (old_schema == candidate_schema
-                               and candidate_schema["identity"]["version"] == candidate_schema["target"])
+                same_schema = candidate_schema["identity"]["version"] == candidate_schema["target"]
                 prepared_candidate = candidate
                 return candidate
 

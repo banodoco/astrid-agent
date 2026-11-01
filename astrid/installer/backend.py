@@ -423,6 +423,27 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         absolute(value["realm_root"])
         return value
 
+    def update_workspace(self, version: Version, data: Path) -> dict:
+        """Read the selected catalog with target tooling, without opening the realm."""
+        script = (
+            "import json,sys; from pathlib import Path; "
+            "from astrid_runtime.bootstrap import _read_catalog, _selected_realm, _validate_support_paths; "
+            "from astrid_runtime.paths import RuntimePaths; from astrid_runtime.workspace import _root; "
+            "paths=RuntimePaths.current(data_root=Path(sys.argv[1])); _validate_support_paths(paths); "
+            "selected=_selected_realm(_read_catalog(paths))\n"
+            "if selected is None: raise ValueError('No selected workspace')\n"
+            "print(json.dumps({'realm_id':str(selected['realm_id']), "
+            "'realm_root':str(_root(selected['data_root'], must_exist=True))}))"
+        )
+        value = json.loads(self.run(
+            [version.python, "-X", "utf8", "-I", "-c", script, str(data)],
+            extra_env=version.env, timeout=120,
+        ))
+        if not value.get("realm_id") or not value.get("realm_root"):
+            raise ValueError("The selected workspace has no unambiguous identity.")
+        absolute(value["realm_root"])
+        return value
+
     @staticmethod
     def _discovery_owner_state(discovery: dict) -> str:
         """Classify one discovery snapshot without signaling or editing it."""
@@ -1036,7 +1057,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                       str(version.profile)], extra_env=version.env, timeout=120)
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             raise ValueError(f"The candidate Runtime rejected its source profile or services: {exc}") from exc
-        selected = self.workspace(version, data)
+        selected = self.update_workspace(version, data)
         if (selected["realm_id"] != realm["realm_id"]
                 or absolute(selected["realm_root"]) != absolute(realm["realm_root"])):
             raise ValueError("The selected workspace changed while preparing the update.")

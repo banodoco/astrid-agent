@@ -63,7 +63,7 @@ def candidate(tmp_path):
 def test_candidate_admits_supported_old_schema_without_requiring_migration_first(candidate, monkeypatch):
     backend, version, data, realm = candidate
     calls = []
-    monkeypatch.setattr(backend, "workspace", lambda selected, support: realm.copy())
+    monkeypatch.setattr(backend, "update_workspace", lambda selected, support: realm.copy())
     monkeypatch.setattr(core, "inspect_schema", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     backend.validate_candidate(version, data, realm)
@@ -75,7 +75,7 @@ def test_candidate_admits_supported_old_schema_without_requiring_migration_first
 def test_candidate_rejects_workspace_selection_change(candidate, monkeypatch, changed):
     backend, version, data, realm = candidate
     selected = {**realm, changed: "other" if changed == "realm_id" else str(data / "other")}
-    monkeypatch.setattr(backend, "workspace", lambda *_args: selected)
+    monkeypatch.setattr(backend, "update_workspace", lambda *_args: selected)
     monkeypatch.setattr(core, "inspect_schema", lambda *_args, **_kwargs: pytest.fail("schema read after selection mismatch"))
 
     with pytest.raises(ValueError, match="workspace changed"):
@@ -93,7 +93,7 @@ def test_incomplete_or_escaping_candidate_is_rejected_before_workspace_access(ca
         profile = core.read_json(version.profile)
         profile["source_checkout"] = str(data) if damage == "external-source" else ""
         write_json(version.profile, profile)
-    monkeypatch.setattr(backend, "workspace", lambda *_args: pytest.fail("workspace read before candidate admission"))
+    monkeypatch.setattr(backend, "update_workspace", lambda *_args: pytest.fail("workspace read before candidate admission"))
 
     with pytest.raises(ValueError, match="incomplete|outside|missing"):
         backend.validate_candidate(version, data, realm)
@@ -127,7 +127,7 @@ def test_runtime_profile_source_environment_and_services_are_admitted_before_wor
         write_json(version.root / "services.json", {"not": "a declaration"})
     else:
         write_json(version.root / "services.json", {"version": 1, "services": []})
-    monkeypatch.setattr(backend, "workspace", lambda *_args: pytest.fail("workspace read before candidate admission"))
+    monkeypatch.setattr(backend, "update_workspace", lambda *_args: pytest.fail("workspace read before candidate admission"))
 
     with pytest.raises(ValueError):
         backend.validate_candidate(version, data, realm)
@@ -188,6 +188,7 @@ def test_app_prepare_uses_runtime_candidate_admission_before_lifecycle_side_effe
     owner = {"running": True, "version": "old"}
     lifecycle_calls = []
     monkeypatch.setattr(backend, "workspace", lambda *_args: realm.copy())
+    monkeypatch.setattr(backend, "update_workspace", lambda *_args: realm.copy())
     monkeypatch.setattr(backend, "stage", lambda *_args: version)
     monkeypatch.setattr(core, "inspect_schema", lambda *_args, **_kwargs: {"schema": 31})
     monkeypatch.setattr(app_update, "inspect_schema", lambda *_args, **_kwargs: {"schema": 31})
@@ -316,6 +317,7 @@ def test_real_preparation_failure_leaves_old_owner_pointer_and_workspace(candida
     })
     selection_before = backend.service.selection.read_bytes()
     monkeypatch.setattr(backend, "workspace", lambda *_args: realm.copy())
+    monkeypatch.setattr(backend, "update_workspace", lambda *_args: realm.copy())
     monkeypatch.setattr(backend, "has_workspace", lambda _data: True)
     for name in ("stop", "backup", "upgrade", "register"):
         monkeypatch.setattr(backend, name, Mock(side_effect=AssertionError(f"{name} before admission")))
@@ -405,6 +407,7 @@ def test_regular_update_admits_supported_older_schema_and_reaches_migration(
     calls = []
 
     monkeypatch.setattr(backend, "workspace", lambda *_args: realm.copy())
+    monkeypatch.setattr(backend, "update_workspace", lambda *_args: realm.copy())
     monkeypatch.setattr(backend, "has_workspace", lambda _data: True)
     monkeypatch.setattr(backend, "stage", lambda *_args: candidate_version)
     monkeypatch.setattr(backend, "stop", lambda version, _data: calls.append(("stop", version)))
