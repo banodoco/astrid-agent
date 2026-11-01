@@ -622,3 +622,90 @@ def test_read_ownership_loss_stops_before_success(host_case, monkeypatch, observ
     case.host.run_task(case.task, lease_token="lease-result")
     assert not case.runtime.settlements
     assert len(case.runtime.failures) == 1
+
+
+@pytest.mark.parametrize("action_fails", [False, True])
+def test_busy_finalizer_does_not_strand_accounting_or_resettle(host_case, monkeypatch, action_fails):
+    case = host_case
+    terminal = {}
+    original = RuntimeError("original action failure")
+
+    def execute(*args, _terminal, **kwargs):
+        terminal.update(value=_terminal)
+        if action_fails:
+            raise original
+        return _terminal["completion_call"](case.runtime.settle, "task-result", "lease-result", outputs=[])
+
+    def publish(path, delta):
+        if delta == -1:
+            raise OSError("busy publication failed")
+
+    monkeypatch.setattr(case.host, "_run_task_impl", execute)
+    monkeypatch.setattr(gh, "_publish_busy", publish)
+    with pytest.raises(RuntimeError if action_fails else OSError) as raised:
+        case.host.run_task(case.task, lease_token="lease-result")
+    if action_fails:
+        assert raised.value is original
+    assert case.host._handoff_active_attempts == 0
+    assert not terminal["value"]["pump_thread"].is_alive()
+    assert len(case.runtime.settlements) == int(not action_fails)
+    assert len(case.runtime.failures) == int(action_fails)
+
+
+def test_cancellation_read_and_write_share_one_transport_budget(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(gh.time, "monotonic", lambda: now[0])
+    client = gh.RuntimeProtocolClient("http://localhost:8000", "fixture")
+    budgets = []
+
+    def get_task(task_id):
+        now[0] += 1.5
+        return {"attempt_id": "attempt", "version": 7}
+
+    def lifecycle(*, deadline=None):
+        budgets.append(deadline - now[0])
+        return SimpleNamespace(get_task=get_task, cancel_task=lambda *a, **kw: {"state": "cancel_requested"})
+
+    monkeypatch.setattr(client, "_lifecycle_client", lifecycle)
+    assert client.cancel("task", attempt_id="attempt", fence=3)["state"] == "cancel_requested"
+    assert budgets == [2.0, 0.5]
+
+
+def test_stream_finalizer_clears_redaction_material_after_persistence_error(tmp_path, monkeypatch):
+    capture = gh._TaskOutputCapture(tmp_path, {"TOKEN": "stream-private-sentinel"}, gh.GenericPackHost._scrub_secret_text)
+
+    def persist(**kwargs):
+        raise RuntimeError("output persistence failed")
+
+    monkeypatch.setattr(capture, "persist", persist)
+    with pytest.raises(RuntimeError, match="output persistence failed"):
+        capture.finish()
+    assert capture._secrets == () and capture._secret_trie == {}
+
+
+@pytest.mark.parametrize("reason", ["failure", "cancel"])
+def test_renderer_task_leases_release_once_without_draining_peer(tmp_path, monkeypatch, reason):
+    from tests.core.execution.test_remotion_host_session import owner, environment, fake_native, request
+
+    manager, events = owner(tmp_path)
+    env = environment(tmp_path)
+    processes = fake_native(monkeypatch, manager)
+    first = manager.lease(env, attempt=tmp_path)
+    peer = manager.lease(env, attempt=tmp_path)
+    try:
+        result = manager.request(first, request(env))
+        # Both failure and cancellation unwind only this task's lease.
+        try:
+            raise HostCancelled(reason) if reason == "cancel" else HostError(reason)
+        except HostError:
+            first.close()
+        first.close()
+        assert not processes[0].waited
+        assert manager.request(peer, request(env))["pid"] == result["pid"]
+        assert len(processes) == 1
+    finally:
+        first.close()
+        peer.close()
+        manager.close()
+    assert processes[0].waited and manager.process is None
+    assert events == [("track", processes[0]), ("untrack", processes[0])]

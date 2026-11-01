@@ -3868,6 +3868,13 @@ def _invoke_bridge_child(
                 bridge.close()
                 protocol_error = CapabilityInvocationError("child bridge status returned a foreign task resource")
                 raise protocol_error
+            state = observed.get("state", observed.get("status"))
+            if not isinstance(state, str) or state not in {
+                "queued", "running", "cancel_requested", "succeeded", "completed", "failed", "cancelled",
+            }:
+                bridge.close()
+                protocol_error = CapabilityInvocationError("child bridge status returned an invalid task state")
+                raise protocol_error
 
         def status(observed_id: str) -> Any:
             nonlocal latest_status

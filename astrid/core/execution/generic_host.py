@@ -5136,9 +5136,10 @@ class RuntimeProtocolClient:
         fence: int | None = None,
         lease_id: str | None = None,
     ):
+        deadline = time.monotonic() + 2.0
         if attempt_id is None or fence is None:
-            return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
-        task = self._lifecycle_client().get_task(task_id)
+            return self._lifecycle_client(deadline=deadline).cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
+        task = self._lifecycle_client(deadline=deadline).get_task(task_id)
         current_attempt = (
             task.get("attempt_id")
             if isinstance(task, Mapping)
@@ -5149,7 +5150,7 @@ class RuntimeProtocolClient:
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
             raise HostError("runtime cancellation target has no version fence")
-        return self._lifecycle_client().cancel_task(
+        return self._lifecycle_client(deadline=deadline).cancel_task(
             task_id,
             expected_version=version,
             idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
@@ -5635,11 +5636,13 @@ class _TaskOutputCapture:
                 self._diagnostic_errors["stdout"] = type(exc).__name__
 
     def finish(self) -> None:
-        self.wait_for_readers(timeout=2.0)
-        self.persist(force=True)
-        if all(not reader.alive for reader in self._readers.values()):
-            self._secrets = ()
-            self._secret_trie.clear()
+        try:
+            self.wait_for_readers(timeout=2.0)
+            self.persist(force=True)
+        finally:
+            if all(not reader.alive for reader in self._readers.values()):
+                self._secrets = ()
+                self._secret_trie.clear()
 
 
 class GenericPackHost:
@@ -10178,13 +10181,28 @@ class GenericPackHost:
                 if primary_error is None:
                     raise
             finally:
-                stop.set()
-                if pump_thread is not None and pump_thread.ident is not None:
-                    pump_thread.join(timeout=2)
-                if busy_published:
-                    _publish_busy(busy_path, -1)
-                if owns_attempt:
-                    self._handoff_leave_attempt(thread_id)
+                finalizer_error = None
+                active_error = sys.exc_info()[1]
+                try:
+                    stop.set()
+                    if pump_thread is not None and pump_thread.ident is not None:
+                        pump_thread.join(timeout=2)
+                except BaseException as exc:
+                    finalizer_error = exc
+                try:
+                    if busy_published:
+                        _publish_busy(busy_path, -1)
+                except BaseException as exc:
+                    finalizer_error = finalizer_error or exc
+                try:
+                    if owns_attempt:
+                        self._handoff_leave_attempt(thread_id)
+                except BaseException as exc:
+                    finalizer_error = finalizer_error or exc
+                if finalizer_error is not None:
+                    terminal.setdefault("reporting_error", finalizer_error)
+                    if active_error is None:
+                        raise finalizer_error
 
     def _run_task_impl(
         self,
