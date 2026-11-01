@@ -1,3 +1,4 @@
+# Broker trigger refresh: request content and selected proof groups are unchanged.
 repos:
   astrid-agent: bb60de67c0651a2733a56fac85206c4123f62b5e
 cpu:
