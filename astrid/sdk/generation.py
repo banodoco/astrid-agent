@@ -152,6 +152,36 @@ def _generation_controls(*, engine, consent, max_usd, deadline):
             if value is not None and value != ()}
 
 
+def _runpod_paid_controls(controls):
+    """Per-call authority only; saved preferences never supply consent/bounds."""
+    from datetime import datetime, timezone
+    from astrid.core.generation.preflight import generation_error
+    consent = tuple(controls.get('consent', ()))
+    cap, deadline = controls.get('max_usd'), controls.get('deadline')
+    _generation_controls(engine=controls.get('engine'), consent=consent,
+                         max_usd=cap, deadline=deadline)
+    if ('paid' not in consent or cap is None or deadline is None
+            or datetime.fromisoformat(deadline) <= datetime.now(timezone.utc)):
+        raise generation_error(ValueError('RunPod requires fresh paid consent, a positive max_usd and a future UTC deadline'),
+                               code='input_rejected', details={'field': 'consent'})
+    return dict(consent=consent, max_usd=cap, deadline=deadline)
+
+
+def _bind_runpod_preparation(prepared, *, client, owner, recovery_path, capability_id):
+    from astrid.core.generation.preflight import generation_error
+    from .invocation import retain_prepared_owner
+    if not prepared.selection_path or not callable(prepared.endpoint_checkout):
+        raise generation_error(ValueError('RunPod preparation omitted attested endpoint custody'),
+                               code='missing_dependency')
+    request = prepared.selection.execution_request(None)
+    if request.get('target', {}).get('kind') != 'runpod' or request.get('remote_activation_required') is not True:
+        raise generation_error(ValueError('RunPod preparation omitted its exact activation request'),
+                               code='input_rejected')
+    retain_prepared_owner(client, recovery_path=recovery_path, capability_id=capability_id,
+                          monitor=prepared.owner_tick, owner=owner, execution_request=request)
+    return request
+
+
 def _generation_boundary(method):
     """Project legacy SDK failures without changing their exception taxonomy."""
     @wraps(method)

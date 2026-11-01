@@ -17,7 +17,51 @@ from __future__ import annotations
 import importlib.util
 import shutil
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Mapping, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from astrid.packs.runpod.prepared_task import PreparedWorkerSelection
+
+
+@dataclass(frozen=True)
+class PreparedRunPodGeneration:
+    """R03/F07 handoff; endpoint custody stays with the retained host owner.
+
+    The published owner must use ensure_prepared_endpoint and
+    EngineEndpointTransport for endpoint_checkout. A URL is never a handoff.
+    """
+    selection: PreparedWorkerSelection
+    selection_path: str
+    endpoint_checkout: Callable[..., Any]
+    owner_tick: Callable[[Mapping[str, Any]], None]
+
+
+class RunPodGenerationOwner(Protocol):
+    """Typed fake boundary pending R04 and F05/F06/F07 publication.
+
+    validation_target is read-only and must not claim/install. prepare checks
+    a fresh offer/rate/consent and compatibility before beginning warm custody.
+    monitor/retain own activation, timers, recovery and exact endpoint checkout.
+    release dispatches runpod-release:<operation_id>; paid expiry cancels/fences
+    the active task before release_prepared_worker(resume=True). Admission is
+    never release proof: P1 quiescence + GET404 + list absence are required.
+    """
+    def validation_target(self) -> Any: ...
+    def prepare(self, *, workflow: Any, inputs: Mapping[str, Any],
+                consent: tuple[str, ...], max_usd: float, deadline: str) -> PreparedRunPodGeneration: ...
+    def prepare_h3(self, *, inputs: Mapping[str, Any], consent: tuple[str, ...],
+                   max_usd: float, deadline: str) -> PreparedRunPodGeneration: ...
+    def describe(self) -> Mapping[str, Any]: ...
+    def release(self, *, wait: bool) -> Any: ...
+    def retain(self, task: Mapping[str, Any], monitor: Callable[..., None]) -> None: ...
+
+
+def runpod_generation_owner(client: Any) -> RunPodGenerationOwner:
+    owner = getattr(client, 'runpod_generation_owner', None)
+    if owner is None:
+        raise generation_error(ValueError('RunPod host owner is unavailable; R04/F05/F06/F07 publication is required'),
+                               code='missing_dependency', details={'field': 'target'})
+    return owner
 
 from astrid.core.contracts.errors import AstridError
 from astrid.core.generation.interfaces import ReadinessEnvelope, ReadinessFix, ReadinessIssue
@@ -477,9 +521,11 @@ def _select_generation_target(target: str, *, repo=None):
     return client
 
 
-def select_generation_target(target: str, *, repo=None):
+def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None):
     """Read/probe the bound target and expose the shared error envelope."""
     try:
+        if target == 'runpod' and runpod_owner is not None:
+            return runpod_owner.validation_target()
         return _select_generation_target(target, repo=repo)
     except AstridError as exc:
         snapshot = exc.state_snapshot.get('target')
