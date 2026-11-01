@@ -9,7 +9,7 @@ on:
     branches:
       - int/r1
   schedule:
-    - cron: '0 * * * *'
+    - cron: '23 3 * * *'
   workflow_call:
     inputs:
       candidate:
