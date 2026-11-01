@@ -129,7 +129,7 @@ def staged_installer(tmp_path, monkeypatch, release_wheel):
             return ""  # Dependency acquisition is outside this wheel proof.
         assert "--no-deps" in argv
         python = argv[argv.index("--python") + 1]
-        _run([python, "-I", "-m", "pip", "install", "--no-index", "--no-deps",
+        _run([python, "-I", "-m", "pip", "install", "--no-index", "--no-deps", "--ignore-installed",
               release_wheel], cwd=outside)
         if state.damage_at == "wheel":
             _damage(state.product_root / SCHEMA, state.damage, outside)
