@@ -828,8 +828,12 @@ def _terminate_tree(process: subprocess.Popen, *, grace_seconds: float,
     while time.monotonic() < cleanup_deadline:
         process.poll()  # reap our direct child before its absence check
         live = observe_tree(process, **observation_options)
-        if not live:
+        if not live and process.poll() is not None:
             break
+        if process.pid not in live and process.poll() is None and isinstance(custody, ProcessCustody):
+            # A zombie leader task can still have live threads; use its retained capability.
+            custody.signal(process.pid, known[process.pid], platform.KILL,
+                           cleanup_deadline=cleanup_deadline)
         _signal_valid_tree_members(process, live, platform.KILL,
                                   strict=True, cleanup_deadline=cleanup_deadline)
         time.sleep(0.02)
