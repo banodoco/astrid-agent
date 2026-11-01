@@ -109,8 +109,12 @@ def test_catalog_route_compiles_against_fake_comfy(model, mode, template, monkey
             registry=ModelRegistry.load_default(), model=None, mode=mode, modality='image',
             target=client.target.url, execution='local', inputs=params, dry_run=True,
         )
-        assert selected['entry'] == model
-        assert selected['approval']['status'] == 'approved'
+        assert selected['entry']['model'] == model
+        if mode == 'edit':
+            # Media must be staged before a final executable projection is approved.
+            assert 'approval' not in selected['entry']
+        else:
+            assert selected['entry']['approval']['status'] == 'approved'
         assert requests == ['/object_info', '/object_info', '/system_stats', '/object_info']
     finally:
         server.shutdown(); server.server_close(); thread.join()

@@ -272,6 +272,12 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
             continue
         aliases = sorted(set((public, *getattr(spec, 'aliases', ()))) - {name})
         kind = _input_type(spec.type)
+        node = workflow.nodes.get(str(spec.node_id))
+        # IMAGE describes the media, while LoadImage.image's wire value is a
+        # filename. Do not infer a scalar type for arbitrary IMAGE sockets.
+        if (kind == 'image' and getattr(node, 'class_type', None) == 'LoadImage'
+                and spec.field == 'image'):
+            kind = 'file'
         if kind == 'unknown':
             # InputSpec defaults and the bound widget are declared workflow
             # values, so their primitive shape is an authoritative fallback.
