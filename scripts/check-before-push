@@ -14,7 +14,12 @@ changed_files() {
   if [ "$#" -eq 2 ]; then
     while read -r _local_ref local_sha _remote_ref remote_sha; do
       [ -n "${local_sha:-}" ] || continue
-      if [[ "$remote_sha" =~ ^0+$ ]]; then git diff-tree --root --no-commit-id --name-only -r "$local_sha"
+      if [[ "$remote_sha" =~ ^0+$ ]]; then
+        found_base=0
+        for base_ref in refs/remotes/origin/int/r1 refs/remotes/origin/main refs/remotes/origin/release-1; do
+          if git merge-base --is-ancestor "$base_ref" "$local_sha" 2>/dev/null; then git diff --name-only "$base_ref" "$local_sha"; found_base=1; break; fi
+        done
+        [ "$found_base" -eq 1 ] || git diff-tree --root --no-commit-id --name-only -r "$local_sha"
       else git diff --name-only "$remote_sha" "$local_sha"; fi
     done
     return
