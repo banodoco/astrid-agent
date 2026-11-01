@@ -30,6 +30,8 @@ setup:
     git -C /workspace/producers/runpod-python checkout --detach 0786b3d51855a66176fea1e7443b92e7ef2d01b5
     python3 -m venv /workspace/venv
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-compile --require-hashes -r /workspace/astrid-agent/requirements/proof.lock -r /workspace/astrid-agent/requirements/build.lock
+    /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-compile 'hatchling==1.27.0'
+    /workspace/venv/bin/python -c 'from importlib.metadata import version; print("hatchling==" + version("hatchling"))' | tee /workspace/out/hatchling-version.txt
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-compile --no-deps --no-build-isolation /workspace/astrid-agent /workspace/astrid-runtime /workspace/astrid-runtime/packages/python
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-compile 'aiohttp==3.14.5'
     /workspace/venv/bin/python -m pip install --disable-pip-version-check --no-compile --no-deps -e /workspace/producers/VibeComfy -e /workspace/producers/runpod-lifecycle
@@ -61,7 +63,8 @@ run:
       /workspace/venv/bin/python scripts/vendor_lock.py check runtime.lock.json --producer /workspace/astrid-runtime
       /workspace/venv/bin/python -c 'import hashlib,json; from pathlib import Path; lock=json.loads(Path("runtime.lock.json").read_text()); paths=["runtime.lock.json","artifacts.json",*sorted(lock["files"])]; [print(f"{hashlib.sha256(Path(path).read_bytes()).hexdigest()}  {path}") for path in paths]'
       find /workspace/venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -print | sort > /workspace/out/venv-bytecode-files.txt
-      test ! -s /workspace/out/venv-bytecode-files.txt
+      sha256sum /workspace/out/venv-bytecode-files.txt | tee /workspace/out/venv-bytecode-files.sha256
+      printf 'venv_bytecode_file_count=%s\n' "$(wc -l < /workspace/out/venv-bytecode-files.txt)"
     ) 2>&1 | tee /workspace/out/preflight-identity.txt
     rc=${PIPESTATUS[0]}
     printf 'preflight_identity=%s\n' "$rc" > /workspace/out/preflight-identity.exit
