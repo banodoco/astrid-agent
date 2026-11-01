@@ -81,7 +81,7 @@ def test_json_and_convenience_values_use_shared_resolver(monkeypatch, capsys, tm
     expected_description, expected = entries.resolve_entry_inputs("workflow", {**values, "seed": 19},
                                                                  mode="t2i", kind="image")
     monkeypatch.setattr(cli, "_open_client", lambda: nullcontext("client"))
-    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(
+    monkeypatch.setitem(astrid.__dict__, "generate", SimpleNamespace(
         image=lambda **kwargs: captured.append(kwargs) or {"ok": True}))
     assert cli.main(["image", "--entry", "workflow", "--inputs-json", str(file), "--seed", "19", "--json"]) == 0
     assert captured == [{"entry": "workflow", "mode": expected_description["mode"],
@@ -123,11 +123,9 @@ def test_action_json_reaches_fail_closed_sdk_without_opening_runtime(monkeypatch
         captured.append(kwargs)
         raise CapabilityPreconditionError("tracked parent interface is not yet available")
 
-    monkeypatch.setattr(cli, '_generate_facade', lambda: SimpleNamespace(video=reject))
-    assert cli.main(["video", "--entry", "action", "--inputs-json", str(file), '--json']) == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload['issues'][0]['code'] == 'missing_dependency'
-    assert 'tracked parent interface' in payload['issues'][0]['message']
+    monkeypatch.setitem(astrid.__dict__, "generate", SimpleNamespace(video=reject))
+    with pytest.raises(AstridError, match="tracked parent interface"):
+        cli.main(["video", "--entry", "action", "--inputs-json", str(file)])
     assert len(captured) == 1
     assert captured[0]["request"] == request
     assert "client" not in captured[0]

@@ -1,16 +1,13 @@
-# Timeline document inspection and held checkout reference
+# Check out a timeline, edit JSON, check it in
 
-Use this page for the complete closure's read/validation shape, media
-inventory, and migration notes. A checkout is a detached snapshot, not a lock.
-The write path is `tl.commit` from the [timeline skill](../../../timeline/docs/SKILL.md), a guarded
-command commit through `TimelineSession`'s outbox; the broad
-checkout publication described below remains held on this base.
+Use this for an ordinary user-authorized edit starting with a project and
+timeline slug, without a coordinator-supplied target. A checkout is a detached
+snapshot, not a lock. The runtime remains authoritative until publication.
 
 The complete executable example is
 [`../scripts/timeline_document.py`](../scripts/timeline_document.py). It defines
-connection, discovery, immutable-closure, validation, and legacy-writer
-variables; read it only when adapting migration tooling. It is not the general
-timeline writer. `AstridClient.open_from_launcher` resolves
+all connection, discovery, immutable-closure, validation, and writer variables;
+read it when adapting the workflow. `AstridClient.open_from_launcher` resolves
 project/timeline names and pins the head. The public launcher receipt and
 `WorkspaceClient` supply the revision reads and publication port that the
 high-level client does not yet expose as a general checkout method. It never
@@ -23,22 +20,30 @@ Do not guess another root when the expected project is absent. Use project and
 timeline **slugs or IDs**, not display titles.
 
 ```bash
-python3 -m astrid timelines show <timeline> --project <project> --json
-python3 -m astrid timelines edit move <timeline> --project <project> \
-  --clip parent/clip:<id> --on 1.5 --idempotency-key move-42 --json
-python3 -m astrid timelines edit track-label <timeline> --project <project> \
-  --track parent/track:<id> --set "Dialogue" --idempotency-key label-42 --json
+# From this skill directory; replace the two names with the selected scope.
+python3 scripts/timeline_document.py checkout \
+  --project astrid-intro --timeline main-final-blackend2 \
+  --file /tmp/timeline-edit.json
+
+# Edit /tmp/timeline-edit.json with a text editor or a Python transformation.
+python3 scripts/timeline_document.py check --file /tmp/timeline-edit.json
+
+# After inspecting the resulting .check.json and completing the requested edit:
+python3 scripts/timeline_document.py publish --file /tmp/timeline-edit.json \
+  --idempotency-key intro-edit-pass-01
 ```
 
-`show` reads the bounded canonical projection. The native commands open a
-session, capture original guards, persist the exact request and retry identity
-in its real outbox, and commit through Runtime. Use a fresh idempotency key for
-each new intent; repeat the original request/key only to retry an ambiguous
-flight. `--dry-run` validates without publishing.
-
-The script's `checkout`/`check`/`publish` flow is retained for migration and
-read-only closure inspection. Its broad parent-CAS writer, local prepared
-document, and whole-candidate merge are not the current general write path.
+`checkout` reads the full pinned parent → shot revisions → internal timelines,
+not the bounded `timelines show` projection. `check` probes every referenced
+local file, prepares a detached copy with calculated media digests, validates,
+and diffs locally. It does not connect to or write runtime state. Its `.check.json`
+lists the files and import keys that publication will use. `publish` repeats
+that preflight, rechecks the selected head, imports through the existing project
+catalog, validates the durable result, and sends one parent-CAS publication.
+Keep its `.prepared.json` durable rewrite, `.imports.json` catalog receipts,
+and `.publication.json` receipt,
+including `new_head` and `dependency_manifest`; use a new checkout for the next
+edit. Choose a distinct idempotency key for each intended publication.
 
 After publication, report the returned `update`: it counts selected clips by
 identity, with additions/replacements/removals separate in `summary`, and keeps
@@ -93,18 +98,18 @@ pixels or audio playback, and these suggestions do not start a render.
 
 ## The control map
 
-The normal inspection/native-edit loop is deliberately short:
+The normal inspection loop is deliberately short:
 
 ```text
 timelines show       authored structure and timing
         ↓
 timelines visualize  composed pixels, with synchronized input lanes (only on request)
         ↓
-EditCommand          original guards and deterministic intent
+checkout             detached, editable JSON at the current head
         ↓
-TimelineSession      real outbox and exact retry identity
+check                local validation and a readable diff
         ↓
-Runtime /v1 commit   one accepted command publication
+publish              one parent compare-and-swap publication
 ```
 
 Both inspection commands print the next useful command in human output and
@@ -112,8 +117,7 @@ return the complete set of copyable commands in `data.navigation` (or
 `outputs.navigation` for a render-backed result). The visual route retains
 `exact_frame`, sampling, range, resolution, lane, and inspection commands in
 that structured object, so a compact terminal footer does not hide detail.
-The edit guide and helper catalog below describe the detached shape for
-inspection and migration. They are not permission to use a second writer.
+The edit guide and helper catalog below are the stable route for changes.
 
 ## Where to edit
 
@@ -144,8 +148,8 @@ and per-shot base/source fields. They are checkout provenance, not editable
 content. Let compilation allocate revisions, digests, occurrence revision pins,
 and the dependency manifest. `parent.occurrences` is derived from `placements`.
 Keep unrelated and unknown payload fields for a lossless round trip. State the
-ripple/quantization policy for timing changes; changing a duration does not
-implicitly move later placements or extend parent overlays.
+ripple/quantization policy when retiming; changing a duration does not implicitly
+move later placements or extend parent overlays.
 
 ## Add or replace local media
 
@@ -188,12 +192,12 @@ the first import. Repeated references share an import; retries have stable
 import keys and reuse matching imported catalog entries. A different imported
 filename retains its distinct import provenance even when bytes match.
 
-Imports and any legacy parent publication are separate existing transactions.
-If a later import or held parent-CAS attempt fails, the timeline is unchanged;
-completed imports remain ordinary project catalog media. Keep the source JSON
-for migration/debugging and use a native command for supported edits. If the
-parent head advanced, do not merge stale JSON or refresh its guards; inspect the
-new head and capture a fresh command.
+Imports and parent publication are separate existing transactions. If a later
+import or parent CAS fails, the timeline is unchanged; completed imports remain
+ordinary project catalog media. Keep the source JSON and retry after resolving
+the failure. If the parent head advanced, check out a fresh document and reapply
+the edit. The helper preserves the editable source JSON and writes the durable
+rewrite separately.
 
 ## Review and recover
 
@@ -201,12 +205,12 @@ new head and capture a fresh command.
   Astrid App after publication. `timelines visualize --mode inputs` gives declared
   placement evidence without rendering. The default/`--mode auto` route uses a
   matching render when available and otherwise captures bounded composed frames
-  through the canonical Remotion route; use it to check your visual edits
-  ([how to look](how-to-look.md)). Use `--mode inputs` for render-free evidence; a frozen candidate JSON is not a visual preview.
+  through the canonical Remotion route; use it only when the user asks for
+  frames. Use `--mode inputs` for render-free evidence; a frozen candidate JSON is not a visual preview.
 - **Empty or wrong project list:** check the launcher/runtime selection before
   creating a new project or importing data.
-- **Stale head:** inspect the new head and capture a fresh native command. Do
-  not overwrite the base head in an old file or force a held publication.
+- **Stale head:** check out a new file and reapply the intended edits. Do not
+  overwrite the base head in the old file to force publication.
 - **Missing media selector:** use the temporary local input fields above or
   import explicitly through `WorkspaceClient.import_project_media`, then use
   its returned managed identity. `media.import_file` alone manages project bytes
@@ -222,10 +226,9 @@ new head and capture a fresh command.
 
 The public `astrid.sdk.timeline_editing` helpers operate on the detached
 candidate only. They do not publish, rewrite Runtime history, or bypass the
-checkout's provenance fields. Use them for inspection/migration preparation,
-then run `check` and inspect the diff; publication requires a native command
-where one exists. The catalog is grouped by the kind of edit it expresses and
-mirrors the module's `__all__` export list.
+checkout's provenance fields. Use them for ordinary transformations, then run
+`check` and inspect the diff before `publish`. The catalog is grouped by the
+kind of edit it expresses and mirrors the module's `__all__` export list.
 
 ### Components and media
 
@@ -246,10 +249,11 @@ mirrors the module's `__all__` export list.
 ### Timing and frame policy
 
 - `move(container, clip_id, track=..., start=..., end=...)` — move one clip.
-- Native command batches use `clip.trim` for source endpoints and `clip.move`
-  for timeline placement. Record later same-track visual moves explicitly
-  when a duration change is intended to ripple; audio, voice, music, other
-  tracks, and parent occurrences remain unchanged unless separately commanded.
+- `retime(clip, start=..., end=..., ripple="none")` — change one interval;
+  the default leaves later placements where they are.
+- `retime_with_ripple(...)` — opt into a narrow ripple on one visual track;
+  later clips on that same track move with the changed duration. Audio,
+  voice, music, other tracks, and parent occurrences are not moved.
 - `sequence(clips, start=..., durations=..., gap=...)` — lay out clips in
   order; `fit_duration(container, mode="extend")` updates the container to
   the resulting end.
@@ -258,8 +262,23 @@ mirrors the module's `__all__` export list.
 - `quantize_time(seconds, fps, policy=...)` and
   `quantize_interval(...)` — make frame rounding explicit at the boundary.
 
-State the policy in the command-group rationale. A duration change never
-implicitly moves later placements, overlays, or audio.
+For example, to move a visual clip and intentionally ripple later clips on its
+same track:
+
+```python
+from astrid.sdk.timeline_editing import retime_with_ripple
+
+retime_with_ripple(
+    work["shots"]["shot-terminal"]["internal_timeline"],
+    "clip-terminal",
+    start=20.5,
+    end=24.0,
+    parent_duration="extend",
+)
+```
+
+State the policy in the edit note. A duration change never implicitly moves
+later placements, overlays, or audio.
 
 ### Layout and layers
 

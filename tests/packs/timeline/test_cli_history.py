@@ -9,27 +9,11 @@ import json
 from types import SimpleNamespace
 
 from astrid.packs.timeline import cli, cli_history
-from astrid.sdk import workspace_client
 from astrid.sdk.contracts import DomainResult, ErrorObject
-from astrid.sdk.remote import RemoteAstridClient
 
 A = "authoring-parent-revision-aaaa1111"
 B = "authoring-parent-revision-bbbb2222"
 C = "astrid.editor.timeline.cccc3333"
-
-
-def _history_item(publication_id, revision_id, previous=None):
-    return {
-        "publication_id": publication_id,
-        "revision_id": revision_id,
-        "previous": previous,
-        "receipt": {"created_at": f"{publication_id}-time"},
-        "intent": "recorded",
-        "records": {},
-        "provider_version": "astrid-v1",
-        "compiler_version": "compiler-v1",
-        "publisher": "actor-1",
-    }
 
 
 class FakeTimelines:
@@ -78,150 +62,6 @@ def test_history_json_envelope(capsys):
     assert [r["id"] for r in payload["data"]["revisions"]] == [A, B, C]
 
 
-def test_history_uses_selected_project(monkeypatch, capsys):
-    seen = {}
-    def record(parsed):
-        seen["project"] = parsed.project
-        return 0
-
-    monkeypatch.setattr(cli_history, "run_history", record)
-    parsed = SimpleNamespace(
-        project=None,
-        client=SimpleNamespace(projects=SimpleNamespace(current=lambda: DomainResult.success({
-            "project": {"project_id": "P-selected"},
-        }))),
-    )
-    assert cli._cmd_history(parsed) == 0
-    assert seen["project"] == "P-selected"
-
-
-def test_recent_list_uses_latest_revision_and_prints_project(monkeypatch, capsys):
-    class Timelines:
-        def list(self, project, **_kwargs):
-            assert project == "P"
-            return DomainResult.success([[
-                {"timeline_id": "promo", "name": "Promo"},
-                {"timeline_id": "yesterday", "name": "Yesterday cut"},
-            ], None])
-
-    class Projects:
-        def current(self):
-            return DomainResult.success({"project": {"project_id": "P", "slug": "demo"}})
-
-    monkeypatch.setattr(
-        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
-        lambda _self, _project, timeline, *, limit: [SimpleNamespace(
-            created_at="2026-10-30T12:00:00Z" if timeline == "yesterday" else "2026-10-29T12:00:00Z",
-        )],
-    )
-    parsed = SimpleNamespace(
-        client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
-        recent=True, all_projects=False, json=False, include_archived=False,
-    )
-    assert cli._cmd_list(parsed) == 0
-    output = capsys.readouterr().out
-    assert output.splitlines()[1] == "2026-10-30T12:00:00Z  demo  yesterday  Yesterday cut"
-
-
-def test_recent_list_explicit_project_overrides_selected_project(monkeypatch, capsys):
-    calls = []
-
-    class Projects:
-        def show(self, ref):
-            calls.append(("show", ref))
-            return DomainResult.success({"project_id": "P-beta", "slug": "beta"})
-
-        def current(self):
-            calls.append(("current", None))
-            return DomainResult.success({"project": {"project_id": "P-alpha", "slug": "alpha"}})
-
-    class Timelines:
-        def list(self, project, **_kwargs):
-            calls.append(("list", project))
-            assert project == "P-beta"
-            return DomainResult.success([[{"timeline_id": "promo", "name": "Promo"}], None])
-
-    monkeypatch.setattr(
-        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
-        lambda _self, project, timeline, *, limit: [SimpleNamespace(created_at="2026-10-30T12:00:00Z")],
-    )
-    parsed = SimpleNamespace(
-        client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
-        project="beta", recent=True, all_projects=False, json=False, include_archived=False,
-    )
-
-    assert cli._cmd_list(parsed) == 0
-    output = capsys.readouterr().out
-    assert "2026-10-30T12:00:00Z  beta  promo  Promo" in output
-    assert calls == [("show", "beta"), ("list", "P-beta")]
-
-
-def test_recent_all_projects_follows_project_cursor_pages(monkeypatch, capsys):
-    class Projects:
-        def list(self, *, cursor=None, limit=50):
-            assert limit == 50
-            if cursor is None:
-                return DomainResult.success([[{"project_id": "P-1", "slug": "first"}], "p2"])
-            assert cursor == "p2"
-            return DomainResult.success([[{"project_id": "P-2", "slug": "second"}], None])
-
-    class Timelines:
-        def list(self, project, **_kwargs):
-            return DomainResult.success([[{"timeline_id": f"film-{project}", "name": "Film"}], None])
-
-    monkeypatch.setattr(
-        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
-        lambda _self, project, _timeline, *, limit: [SimpleNamespace(created_at=project)],
-    )
-    parsed = SimpleNamespace(
-        client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
-        recent=True, all_projects=True, json=False, include_archived=False,
-    )
-
-    assert cli._cmd_list(parsed) == 0
-    output = capsys.readouterr().out
-    assert "first  film-P-1" in output
-    assert "second  film-P-2" in output
-
-
-def test_recent_all_projects_surfaces_timeline_page_failure(monkeypatch, capsys):
-    class Projects:
-        def list(self, *, cursor=None, limit=50):
-            assert cursor is None
-            return DomainResult.success([[{"project_id": "P-1", "slug": "first"}], None])
-
-    class Timelines:
-        def list(self, project, *, cursor=None, **_kwargs):
-            assert project == "P-1"
-            if cursor is None:
-                return DomainResult.success([[{"timeline_id": "film", "name": "Film"}], "next"])
-            assert cursor == "next"
-            return DomainResult.failure(ErrorObject("unavailable", "later timeline page failed", {"cursor": cursor}))
-
-    monkeypatch.setattr(
-        "astrid.sdk.timeline.revisions.RuntimeRevisions.list",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("revision lookup must not run")),
-    )
-    for as_json in (False, True):
-        parsed = SimpleNamespace(
-            client=SimpleNamespace(projects=Projects(), timelines=Timelines()),
-            recent=True, all_projects=True, json=as_json, include_archived=False,
-        )
-        assert cli._cmd_list(parsed) == 1
-        captured = capsys.readouterr()
-        if as_json:
-            payload = json.loads(captured.out)
-            assert payload["ok"] is False
-            assert payload["error"] == {
-                "code": "unavailable",
-                "message": "later timeline page failed",
-                "details": {"cursor": "next"},
-            }
-        else:
-            assert "error unavailable: later timeline page failed" in captured.err
-            assert captured.out == ""
-
-
 def test_history_prints_the_head_and_says_earlier_revisions_cannot_be_listed(capsys):
     code = cli_history.run_history(_parsed(FakeTimelines(named=False)))
     out = capsys.readouterr().out.splitlines()
@@ -254,50 +94,6 @@ def test_history_routes_through_the_cli_handler(capsys):
     lines = capsys.readouterr().out.splitlines()
     assert code == 0
     assert len(lines) == 3  # header plus the two newest
-
-
-def test_history_uses_real_remote_facade_and_keeps_repeated_publications(monkeypatch, capsys):
-    """Exercise RemoteAstridClient -> RemoteTimelines.history -> WorkspaceClient."""
-
-    same = "authoring-parent-revision-same"
-    later = "authoring-parent-revision-later"
-    pages = {
-        "timelines": ([{"project_id": "project-id", "timeline_id": "timeline-id", "slug": "main"}], None),
-        "history": {
-            "items": [
-                _history_item("pub-0", same),
-                _history_item("pub-1", same, {"publication_id": "pub-0", "revision_id": same}),
-                _history_item("pub-2", later, {"publication_id": "pub-1", "revision_id": same}),
-            ],
-            "next_cursor": None,
-            "head": {"revision_id": later, "publication_id": "pub-2"},
-        },
-    }
-
-    class GeneratedFixture:
-        def __init__(self, endpoint, token):
-            self.endpoint = endpoint
-            self.token = token
-
-        def list_timelines(self, project_id, *, cursor=None, limit=50):
-            assert (project_id, cursor, limit) == ("project", None, 50)
-            return pages["timelines"]
-
-        def list_timeline_commits(self, project_id, timeline_id, *, cursor=None, limit=50):
-            assert (project_id, timeline_id, cursor, limit) == ("project-id", "timeline-id", None, 50)
-            return pages["history"]
-
-    monkeypatch.setattr(workspace_client, "GeneratedWorkspaceClient", GeneratedFixture)
-    workspace = workspace_client.WorkspaceClient("http://127.0.0.1:8765", "token")
-
-    parsed = _parsed(
-        RemoteAstridClient(workspace).timelines,
-        project="project",
-        ref="main",
-    )
-    assert cli_history.run_history(parsed) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert [line.split()[0] for line in lines[1:]] == ["later", "same", "same"]
 
 
 def test_show_ref_resolves_prev_into_revision_id():

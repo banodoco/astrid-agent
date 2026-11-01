@@ -494,12 +494,6 @@ def _join_managed_generation_outputs(
 
 
 def _sdk_exception_from_payload(error: Mapping[str, Any] | None) -> AstridSDKError:
-    if error and isinstance(error.get('issues'), list) and error['issues']:
-        issue = error['issues'][0]
-        if isinstance(issue, Mapping):
-            details = issue.get('details')
-            error = {**(details if isinstance(details, Mapping) else {}),
-                     'message': issue.get('message')}
     message = "generation invocation failed"
     if error:
         raw_message = error.get("message")
@@ -533,80 +527,11 @@ def _load_generation_result_type() -> tuple[str, Any]:
     return GENERATION_RESULT_KEY, GenerationResult
 
 
-def _generation_task_refs(result: InvocationResult) -> dict[str, Any]:
-    """Project existing task/CAS references without exposing attempt paths."""
-    from copy import deepcopy
-    from astrid.core.execution.managed_inputs import managed_file_digest
-
-    def object_ref(value):
-        try:
-            managed_file_digest(value, 'generation result')
-        except ValueError:
-            return False
-        return True
-
-    raw = result.raw_result if isinstance(result.raw_result, Mapping) else {}
-    task = raw.get('task')
-    task = task if isinstance(task, Mapping) else {}
-    settled = task.get('result') or raw.get('result')
-    settled = settled if isinstance(settled, Mapping) else {}
-    refs = {'task_id': task.get('task_id') or result.kernel_task_id}
-    manifest_ref = settled.get('manifest_ref')
-    if isinstance(manifest_ref, str) and object_ref(manifest_ref):
-        refs['manifest_ref'] = manifest_ref
-    association = settled.get('result_manifest')
-    if not isinstance(association, Mapping):
-        rows = raw.get('managed_outputs') or settled.get('outputs') or []
-        rows = rows if isinstance(rows, (tuple, list)) else []
-        association = next((row for row in rows if isinstance(row, Mapping)
-                            and row.get('output_port') == 'result_manifest'), None)
-    if isinstance(association, Mapping):
-        digest = association.get('object_id') or association.get('digest')
-        if object_ref(association):
-            refs['result_manifest'] = deepcopy({key: value for key, value in association.items()
-                                                if key in _MANAGED_OUTPUT_FIELDS})
-            refs.setdefault('manifest_ref', digest)
-
-    spec = task.get('spec') or {}
-    payload = raw.get('payload') or settled.get('payload') or {}
-    manifest = payload.get('manifest') if isinstance(payload, Mapping) else None
-    manifest = manifest or settled.get('manifest') or {}
-    neutral = (manifest.get('managed_generation_result') or manifest
-               if isinstance(manifest, Mapping) else {})
-    # Prefer settled input refs to the request's immutable source descriptor.
-    # Runtime task resources wrap the admitted envelope in spec.spec.
-    admitted = spec.get('spec') if isinstance(spec, Mapping) else None
-    for owner in (spec, admitted, neutral, settled):
-        inputs = owner.get('inputs') if isinstance(owner, Mapping) else None
-        if not isinstance(inputs, Mapping):
-            continue
-        for name in ('source', 'effective_settings'):
-            ref = inputs.get(name)
-            if object_ref(ref):
-                refs[name + '_ref'] = deepcopy(
-                    {key: value for key, value in ref.items()
-                     if key not in {'path', 'manifest_path', 'result_path'}}
-                    if isinstance(ref, Mapping) else ref)
-    return {key: value for key, value in refs.items() if value is not None}
-
-
 def _reconstruct_generation_result(result: InvocationResult) -> Any:
     generation_result_key, generation_result_type = _load_generation_result_type()
-    task_refs = _generation_task_refs(result)
 
     if not result.ok:
-        from astrid.core.generation.preflight import generation_error
-        canonical = generation_error(result.error or {'code': 'generation_failed',
-            'message': 'Generation failed'}, task_id=result.kernel_task_id)
-        error = _sdk_exception_from_payload(result.error)
-        # Retain the existing SDK exception taxonomy while exposing the same
-        # generation envelope used by CLI/MCP and terminal Runtime readback.
-        error.readiness = canonical.readiness
-        error.task_id = canonical.task_id
-        error.to_envelope = canonical.to_envelope
-        for key, value in task_refs.items():
-            setattr(error, key, value)
-        raise error
+        raise _sdk_exception_from_payload(result.error)
 
     raw_result = result.raw_result
     if not isinstance(raw_result, Mapping):
@@ -642,9 +567,6 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
     if not generation_payload_found and managed_outputs:
         generation_payload = {"manifest": {"outputs": managed_outputs}}
         generation_payload_found = True
-    if not generation_payload_found and task_refs.get('manifest_ref'):
-        generation_payload = {}
-        generation_payload_found = True
     if not generation_payload_found:
         if not payload_candidates:
             raise CapabilityRuntimeError("generation executor returned a non-mapping payload")
@@ -652,9 +574,10 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
             f"generation executor payload is missing {generation_result_key!r}"
         )
     if isinstance(generation_payload, generation_result_type):
-        if not managed_outputs and not task_refs:
+        if managed_outputs:
+            generation_payload = generation_payload.to_dict()
+        else:
             return generation_payload
-        generation_payload = generation_payload.to_dict()
     if not isinstance(generation_payload, Mapping):
         raise CapabilityRuntimeError(
             f"generation executor payload {generation_result_key!r} must be a mapping or GenerationResult"
@@ -666,9 +589,6 @@ def _reconstruct_generation_result(result: InvocationResult) -> Any:
         )
     else:
         generation_payload = _normalize_generation_payload(generation_payload)
-    generation_payload = {**generation_payload, **task_refs}
-    if task_refs.get('manifest_ref'):
-        generation_payload.update(run_dir=None, image_paths=[])
     from_dict = getattr(generation_result_type, "from_dict", None)
     if not callable(from_dict):
         raise CapabilityRuntimeError("GenerationResult.from_dict is unavailable")

@@ -1,6 +1,5 @@
 """Update backups reserve disk space and preserve the logs of a failed update."""
 
-import json
 import os
 import shutil
 import tempfile
@@ -315,8 +314,6 @@ def test_windows_failed_update_restores_private_support_and_can_retry(
     backend.publish_launch_admission = Mock()
 
     def restore_realm(argv, **_kwargs):
-        if "inspect_canonical_schema" in str(argv[5]):
-            return json.dumps({"identity": {"version": 29}, "target": 33})
         # Only the offline realm restore subprocess is faked. Support rollback
         # and the transaction below use the real installer implementations.
         shutil.copytree(Path(argv[-3]), Path(argv[-2]))

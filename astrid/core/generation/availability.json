@@ -15,27 +15,6 @@
         "code": "generation_action_unavailable",
         "message": "training checkpoint review sample generation is not implemented"
       }
-    },
-    "wan2gp.generate_video": {
-      "available": false,
-      "error": {
-        "code": "generation_route_unqualified",
-        "message": "wan2gp.generate_video is unavailable because this generation route has not been qualified"
-      }
-    },
-    "video_editing.animate_image": {
-      "available": false,
-      "error": {
-        "code": "generation_route_unqualified",
-        "message": "video_editing.animate_image is unavailable because this generation route has not been qualified"
-      }
-    },
-    "vibecomfy.character_animation": {
-      "available": false,
-      "error": {
-        "code": "generation_route_unqualified",
-        "message": "vibecomfy.character_animation is unavailable because this generation route has not been qualified"
-      }
     }
   },
   "fixture_only_routes": {
@@ -45,24 +24,5 @@
     "astrid_motion:preview/src/Preview.tsx": true,
     "astrid_motion:preview/src/Root.tsx": true,
     "astrid_motion:preview/src/index.ts": true
-  },
-  "models": {
-    "wan-2.2": {
-      "available": false,
-      "error": {
-        "code": "generation_route_unqualified",
-        "message": "wan-2.2 generation is unavailable because this model has not been qualified"
-      }
-    },
-    "wan-templates": {
-      "available": false,
-      "error": {
-        "code": "generation_route_unqualified",
-        "message": "Wan generation templates are unavailable because they have not been qualified"
-      }
-    }
-  },
-  "template_models": {
-    "video/wan": "wan-templates"
   }
 }

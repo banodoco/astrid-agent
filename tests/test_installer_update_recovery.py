@@ -86,8 +86,6 @@ def _setup(base, *, previous_schema=True):
     RealmStore.initialize(realm, realm_id="realm-1").close()
     if previous_schema:
         with sqlite3.connect(realm / "realm.sqlite3") as connection:
-            from tests.installer_schema_fixtures import remove_round1b_schema_objects
-            remove_round1b_schema_objects(connection)
             connection.execute("ALTER TABLE timelines DROP COLUMN name")
             connection.execute("DROP TABLE user_app_state")  # added by schema v31
             connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
@@ -115,7 +113,6 @@ class _Backend(Backend):
         self.say = print
         self.managed_by = None
         self.process_control = None
-        self._foreground_stop_retired = False
         from astrid.installer.service import Service
 
         self.service = Service(self.root, self.log, self.run, home=base / "home", system="linux")
@@ -455,7 +452,7 @@ def test_sigkill_actual_runtime_upgrade_then_recover_before_new_backup(tmp_path,
     result = _run(tmp_path, "runtime:" + state)
     assert result.returncode == -signal.SIGKILL, result.stderr
     journal = read_json(tmp_path / "data/runtime/upgrade-journal.json")
-    assert journal["state"] == ("backup_verified" if state == "migration-committed" else state)
+    assert journal["state"] == ("stopped" if state == "migration-committed" else state)
     transaction = read_json(tmp_path / "program/update-transaction.json")
     assert transaction["backup"]["root"]
     assert transaction["realm"]["realm_id"] == journal["realm_id"]
@@ -679,11 +676,6 @@ def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
     workspace.write_text('{"realm":"kept","payload":"original"}', encoding="utf-8")
     original_workspace = workspace.read_bytes()
     switch(root, candidate if step == "started" else old)
-    if step == "started":
-        workspace.write_text('{"realm":"kept","payload":"written-after-switched"}', encoding="utf-8")
-        post_switched_workspace = workspace.read_bytes()
-    else:
-        post_switched_workspace = original_workspace
     write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
     realm = {"realm_id": "realm-1", "realm_root": str(data)}
     write_json(root / "update-transaction.json", {
@@ -716,7 +708,7 @@ def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
                         switch_old=switch_old, activate_old=activate_old,
                         restore_workspace=False, say=lambda _line: None)
 
-    assert workspace.read_bytes() == post_switched_workspace
+    assert workspace.read_bytes() == original_workspace
     assert running["version"] == "old"
     if step == "staged":
         assert current(root) == old
@@ -726,64 +718,6 @@ def test_app_transaction_recovery_never_mutates_workspace(tmp_path, step):
         assert current(root) == old
         assert events == ["stop:candidate", "switch-old", "start-old"]
         assert read_json(root / "update-transaction.json")["step"] == "rolled_back"
-
-
-def test_same_schema_direct_migration_recovery_preserves_post_switch_workspace(
-        tmp_path, monkeypatch):
-    """A null-backup direct migration replay rolls back selection only."""
-    root, data = tmp_path / "program", tmp_path / "data"
-    old = _version(root, "old", release=17)
-    candidate = _version(root, "candidate", release=18)
-    switch(root, candidate)
-    workspace = data / "workspace.json"
-    workspace.parent.mkdir(parents=True)
-    workspace.write_bytes(b"project written after switched")
-    post_switch_workspace = workspace.read_bytes()
-    write_json(root / "install.json", {"owner": "haus.astrid.runtime", "data_root": str(data)})
-    realm = {"realm_id": "realm-1", "realm_root": str(data)}
-    transaction_path = root / "update-transaction.json"
-    write_json(transaction_path, {
-        "format": "astrid-install-update/v1", "operation_id": uuid.uuid4().hex,
-        "transaction_kind": "migration", "step": "switched", "data_root": str(data),
-        "old": old.document(), "candidate": candidate.document(),
-        "realm": realm, "backup": None,
-    })
-    assert current(root) == candidate
-    events = []
-
-    class NoBackupBackend:
-        def restore(self, *_args):
-            raise AssertionError("null-backup direct recovery must never restore workspace data")
-
-    monkeypatch.setattr(core, "install_runtime", lambda _root: None)
-    monkeypatch.setattr(core, "install_launcher", lambda _root: None)
-
-    def save(step, **details):
-        events.append("save:" + step)
-        transaction = read_json(transaction_path)
-        transaction.update(step=step, **details)
-        write_json(transaction_path, transaction)
-
-    def switch_old(version, _candidate):
-        events.append("switch-old")
-        switch(root, version)
-
-    recover_transaction(
-        root, data, NoBackupBackend(),
-        stop=lambda version, _data: events.append("stop:" + version.root.name),
-        switch_old=switch_old,
-        activate_old=lambda version, _data, _realm: events.append("start:" + version.root.name),
-        say=lambda _line: None, save=save,
-    )
-
-    assert current(root) == old
-    assert workspace.read_bytes() == post_switch_workspace
-    assert events == ["stop:candidate", "save:recovering", "switch-old",
-                      "save:rollback_selected", "start:old", "save:rolled_back"]
-    recovered = read_json(transaction_path)
-    assert recovered["transaction_kind"] == "migration"
-    assert recovered["backup"] is None
-    assert recovered["step"] == "rolled_back"
 
 
 def test_legacy_staged_migration_journal_with_backup_restores_workspace(tmp_path):
@@ -858,8 +792,6 @@ def _runtime(base, kill_at):
         def connect(self, **_kwargs): return SimpleNamespace(doctor=lambda: {"ok": True})
 
     def start(*_args):
-        from tests.installer_schema_fixtures import register_timeline_provider
-        register_timeline_provider(realm)
         discovery = publish()
         return SimpleNamespace(endpoint=discovery["endpoint"], pid=os.getpid(), runtime_instance_id="test-instance")
 
@@ -955,18 +887,6 @@ def _installer(base, kill_at, mode):
     platform.durable_replace = durable_replace_and_kill
     Path.unlink = unlink_and_kill
     backend = _Backend(base, kill_at)
-    if (base / "authenticated").is_file():
-        # These synthetic versions share one interpreter, but this matrix
-        # exercises authenticated backup/restore across distinct installations.
-        # Keep the real schema observation and distinguish only the fixture's
-        # policy input. Current-schema no-touch dispatch has its own real test.
-        actual_inspect = core.inspect_schema
-
-        def distinct_installations(backend, version, realm, **kwargs):
-            return {**actual_inspect(backend, version, realm, **kwargs),
-                    "fixture_installation": version.root.name}
-
-        core.inspect_schema = distinct_installations
     # Service manager effects are the one OS boundary patched in this proof;
     # ordinary update staging/registration/candidate start are deterministic
     # fixture boundaries. Recovery C1, restore, and the old Runtime launch/status

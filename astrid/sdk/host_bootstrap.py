@@ -499,7 +499,7 @@ def _provision_render_runtime_env(
 
     Packaged deployments may supply all three absolute settings themselves.
     For a source checkout, the launcher turns its installed Remotion bundle,
-    canonical schema, and resolved Node executable into the same explicit
+    schema package, and resolved Node executable into the same explicit
     settings before strict host preflight runs.
     """
     from astrid.core.env_vars import (
@@ -516,15 +516,18 @@ def _provision_render_runtime_env(
     ):
         child_env[ASTRID_REMOTION_PROJECT_DIR] = str(project_dir)
 
-    from astrid.core.rendering._local_schema import SCHEMA_RELATIVE_PATH, verified_schema_path
-
-    schema = source_path.absolute() / SCHEMA_RELATIVE_PATH
-    if schema.is_file() or ASTRID_TIMELINE_SCHEMA_PYTHONPATH in child_env:
-        try:
-            child_env[ASTRID_TIMELINE_SCHEMA_PYTHONPATH] = str(
-                verified_schema_path(source_path, child_env.get(ASTRID_TIMELINE_SCHEMA_PYTHONPATH, str(schema))))
-        except (OSError, ValueError) as exc:
-            raise PackHostBootstrapError(f"the pack host was not started: {exc}") from exc
+    schema_root = (
+        project_dir
+        / "node_modules"
+        / "@banodoco"
+        / "timeline-schema"
+        / "python"
+    )
+    if (
+        ASTRID_TIMELINE_SCHEMA_PYTHONPATH not in child_env
+        and (schema_root / "banodoco_timeline_schema" / "__init__.py").is_file()
+    ):
+        child_env[ASTRID_TIMELINE_SCHEMA_PYTHONPATH] = str(schema_root.resolve())
 
     if (project_dir / "package.json").is_file() and (project_dir / "node_modules").is_dir():
         # One resolver (core/rendering/node_pin): the project's engines pin picks the renderer's
@@ -1100,46 +1103,11 @@ def _installed_execution_origins(source_path: Path, python_executable: str) -> d
     The profile must bind the installed product root as its execution source.
     An old provenance checkout is diagnostic data, never import authority.
     """
-    # Even importing the measurement helper would execute unvalidated product
-    # code. Resolve every parent explicitly; dotted util.find_spec imports it.
-    probe = """import importlib.machinery,json,pathlib,sys
-root = pathlib.Path(sys.argv[1]).absolute()
-modules={'host':'astrid.core.execution.generic_host','child':'astrid.core.execution.generic_host_worker','action':'astrid.packs.rendering.actions.render.run','client':'astrid_runtime_client','sdk':'astrid.sdk.invocation','runtime_protocol':'runtime_protocol','runtime_protocol.platform':'runtime_protocol.platform','astrid_runtime':'astrid_runtime'}
-origins = {}
-for key, module in modules.items():
-    parts = module.split('.')
-    for depth in range(1, len(parts) + 1):
-        name = '.'.join(parts[:depth])
-        search = [str(root.joinpath(*parts[:depth - 1]))] if depth > 1 else sys.path
-        # Leaf lookup avoids namespace paths consulting unloaded dotted parents.
-        spec = importlib.machinery.PathFinder.find_spec(parts[depth - 1], search)
-        expected = root.joinpath(*parts[:depth])
-        if spec is None:
-            raise ValueError('missing installed module: ' + name)
-        if spec.submodule_search_locations is not None:
-            if list(spec.submodule_search_locations) != [str(expected)]:
-                raise ValueError('installed package search path differs: ' + name)
-            if spec.origin is None:
-                if depth == len(parts):
-                    raise ValueError('installed entrypoint requires source: ' + name)
-                if any(path.is_symlink() for path in (expected, *expected.parents)):
-                    raise ValueError('installed namespace contains a source alias: ' + name)
-                continue
-            expected = expected / '__init__.py'
-        else:
-            expected = expected.with_suffix('.py')
-        if (spec.origin != str(expected) or not expected.is_file()
-                or not isinstance(spec.loader, importlib.machinery.SourceFileLoader)
-                or any(path.is_symlink() for path in (expected, *expected.parents))):
-            raise ValueError('installed source origin differs: ' + name)
-    origins[key] = str(expected)
-for name in ('runtime_protocol', 'astrid_runtime'):
-    if any(path.is_symlink() for path in (root / name).rglob('*')):
-        raise ValueError('installed Runtime package contains a symlink: ' + name)
-print(json.dumps(origins))
+    probe = """import importlib.util,json
+modules={'host':'astrid.core.execution.generic_host','child':'astrid.core.execution.generic_host_worker','action':'astrid.packs.rendering.actions.render.run','client':'astrid_runtime_client','sdk':'astrid.sdk.invocation'}
+print(json.dumps({key:importlib.util.find_spec(module).origin for key,module in modules.items()}))
 """
-    completed = subprocess.run([python_executable, "-X", "utf8", "-I", "-c", probe,
-                                str(source_path)],
+    completed = subprocess.run([python_executable, "-X", "utf8", "-I", "-c", probe],
                                stdin=subprocess.DEVNULL,
                                cwd=tempfile.gettempdir(), capture_output=True, text=True,
                                timeout=20, check=False,
@@ -1147,9 +1115,7 @@ print(json.dumps(origins))
                                     if key in {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"}})
     try:
         origins = json.loads(completed.stdout) if completed.returncode == 0 else None
-        required = {"host", "child", "action", "client", "sdk",
-                    "runtime_protocol", "runtime_protocol.platform", "astrid_runtime"}
-        if not isinstance(origins, dict) or set(origins) != required:
+        if not isinstance(origins, dict) or set(origins) != {"host", "child", "action", "client", "sdk"}:
             raise ValueError("missing installed origins")
         for name, origin in origins.items():
             path = Path(origin)
@@ -1160,7 +1126,7 @@ print(json.dumps(origins))
         return {name: str(Path(origin).resolve()) for name, origin in origins.items()}
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise PackHostBootstrapError(
-            "installed host profile does not bind actual installed host/child/action/client/Runtime origins; "
+            "installed host profile does not bind actual installed host/child/action/client origins; "
             "rebind the profile to the selected interpreter's noneditable product tree") from exc
 
 
@@ -1190,6 +1156,7 @@ def _verify_remotion_probe_custody(environment: Mapping[str, str]) -> None:
         RemotionProbeCleanupError,
         remotion_runtime_status,
     )
+
     try:
         # Optional rendering failures are handled by capability preflight;
         # unresolved probe custody must stop the host before it is spawned.
@@ -1198,71 +1165,6 @@ def _verify_remotion_probe_custody(environment: Mapping[str, str]) -> None:
         raise PackHostBootstrapError(
             "Remotion probe cleanup is unproved; pack host launch is blocked"
         ) from exc
-
-
-def _prepare_render_validation(source_path: Path, env: dict[str, str],
-                               support_root: Path, python_executable: str,
-                               pack_roots: tuple[Path, ...] = (),
-                               source_closure_digest: str | None = None) -> str | None:
-    from astrid.core.env_vars import (
-        ASTRID_REMOTION_PROJECT_DIR,
-        ASTRID_REMOTION_VALIDATION_LAUNCH,
-        ASTRID_REMOTION_VALIDATION_PATH,
-        ASTRID_REMOTION_VALIDATION_ROLE,
-        ASTRID_REMOTION_VALIDATION_SHA256,
-    )
-    from astrid.core.rendering.remotion_runtime import (
-        RemotionProbeCleanupError,
-        prepare_remotion_validation,
-    )
-    from astrid.core.subprocess_env import build_child_subprocess_env
-
-    for name in (ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
-                 ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE):
-        env.pop(name, None)  # A new launch never imports another host's readiness.
-    if not env.get(ASTRID_REMOTION_PROJECT_DIR):
-        return None  # No provisioned Remotion: existing unavailable capability.
-    # The host does not need dynamic-loader overrides inherited from its launcher.
-    for name in [key for key in env if key.startswith(("LD_", "DYLD_"))]:
-        del env[name]
-    launch_id = secrets.token_hex(16)
-    installed_source = None
-    if _execution_profile() == "installed":
-        from astrid.core.source_identity import source_checkout_closure_digest
-
-        installed_source = (
-            str(source_path),
-            source_closure_digest or source_checkout_closure_digest(source_path),
-        )
-    if pack_roots:
-        from astrid.core.execution.generic_host import _launch_worker_probe_environments
-
-        matrix = source_path / "config" / "astrid-beta-capabilities.json"
-        workers = _launch_worker_probe_environments(
-            pack_roots, env, matrix if matrix.is_file() else None,
-            remotion_only=True,
-            **({"installed_root": source_path} if installed_source else {}),
-        )
-    else:
-        workers = [build_child_subprocess_env(base=env, parent=env)]
-    try:
-        reference = prepare_remotion_validation(
-            artifact_directory=Path(support_root) / "remotion-validation",
-            host_environment=env, python_executable=python_executable,
-            launch_id=launch_id, contexts={"host": dict(env), "worker": workers},
-            **({"installed_source": installed_source} if installed_source else {}),
-        )
-    except RemotionProbeCleanupError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - optional renderer setup must not stop unrelated host work
-        # A failed optional renderer must not stop unrelated host work. A
-        # retained original child (including a prior failed launch) stays fatal.
-        if (getattr(exc, "cleanup_error", None) is not None
-                or getattr(exc.__cause__, "cleanup_error", None) is not None):
-            raise
-        return None  # No reference: render admission reports unavailable.
-    env.update(reference)
-    return launch_id
 
 
 # Launch state the owner holds about a parked host that the host never writes into its ready marker:
@@ -1349,12 +1251,6 @@ class _ParkedPackHostPreparer:
             ))
         env["PYTHONUNBUFFERED"] = "1"
         _provision_render_runtime_env(reference.source_checkout, env)
-        _verify_remotion_probe_custody(env)
-        validation_launch = _prepare_render_validation(
-            reference.source_checkout, env, Path(reference.support_root), str(launch.argv[0]),
-            tuple(Path(root) for root in reference.pack_roots),
-            reference.source_closure_digest.removeprefix("sha256:"),
-        )
         parent, child = socket.socketpair()
         operation_id, channel_id = secrets.token_hex(16), secrets.token_hex(16)
         launch_argv = list(launch.argv)
@@ -1368,8 +1264,6 @@ class _ParkedPackHostPreparer:
                 "--activation-operation-id", operation_id,
                 "--activation-channel-id", channel_id,
                 "--activation-timeout-seconds", str(self.timeout_seconds)]
-        if validation_launch is not None:
-            argv.extend(("--remotion-validation-launch-id", validation_launch))
         log_path = Path(reference.support_root) / f"generic-host-{operation_id}.log"
         launch_digest = _launch_argv_digest(argv)
         try:
@@ -2058,12 +1952,6 @@ def ensure_pack_host(
             argv.extend(("--capability-matrix", str(matrix)))
         child_env = _host_render_environment(source_path)
         _verify_remotion_probe_custody(child_env)
-        validation_launch = _prepare_render_validation(
-            source_path, child_env, runtime_support, host_python,
-            (pack_root, *managed_inventory.roots), source_closure_digest,
-        )
-        if validation_launch is not None:
-            argv.extend(("--remotion-validation-launch-id", validation_launch))
         if _foreground:
             process_state = {
                 "execution_profile": _execution_profile(), "execution_origins": execution_origins,

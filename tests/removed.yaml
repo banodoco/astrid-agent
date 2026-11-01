@@ -1286,3 +1286,18 @@
 - test: tests/editing_conformance/test_platform_safety_net.py::test_preview_matches_render_frame
   reason: "A skipped stub (preview = None, render = None) that could only assert preview == render once the F2 journey wired both. It has no method to reuse: the App preview exists only in a browser and the render only through the Runtime. Its home is F2 step 4 of the journey in the App repo (tests/e2e/local/three-products.spec.ts), which renders a pinned revision with rendering.ffmpeg on Linux (no Remotion) and compares the App preview frame with the rendered frame in Chrome at 1 s, 3 s and 5 s (16x9 cells of mean RGB, at most 12 levels per channel on average and 40 in the worst cell), with the preview of R+1 as the negative control; the differences are also written to the run summary."
   removed_by: "F2 step 4 journey case (astrid-app tests/e2e/local/three-products.spec.ts) and tests/integrations/test_media_only_render_without_remotion.py"
+- test: tests/test_h3_continuation_runner_contract.py::test_h3_runner_reuses_only_a_compatible_named_session (whole file, 3 tests)
+  reason: "Deleted at the owner's call: it could only run on one Mac because it needs a file that was never in git (projects/astrid-intro/build/h3/continuation-poc-v1/run-on-5090.sh)."
+  removed_by: "lanes work: owner decision 23 Oct 2026 (unrunnable outside one workstation)"
+- test: tests/packs/video_editing/test_hype_cut_invariants.py::test_hype_cut_invariants_on_discovered_run_dirs
+  reason: "Deleted at the owner's call: it could only run on one Mac because it needs a file that was never in git (local tools/runs/*/briefs output (its synthetic twin test_hype_cut_invariants_on_synthetic_run covers the logic))."
+  removed_by: "lanes work: owner decision 23 Oct 2026 (unrunnable outside one workstation)"
+- test: tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_h3_public_workspace_helper_pin_matches_current_shared_fixture
+  reason: "Deleted at the owner's call: it could only run on one Mac because it needs a file that was never in git (receiving/coordination/evidence/B/shared-public-workspace-fixture/public_workspace.py)."
+  removed_by: "lanes work: owner decision 23 Oct 2026 (unrunnable outside one workstation)"
+- test: tests/packs/h3_av/test_character_swap_cpu_boundary.py::test_character_swap_public_managed_cpu_boundary
+  reason: "Deleted at the owner's call: it could only run on one Mac because it needs a file that was never in git (.otto/runs/h3-transform-pack-20260923/fixtures/t9-public-h3-20260925-9/support/runtime/t9-vibecomfy-readiness.json)."
+  removed_by: "lanes work: owner decision 23 Oct 2026 (unrunnable outside one workstation)"
+- test: tests/integrations/test_c06_public_timeline_visualizer.py::test_saved_actual_filmstrip_v2_composed_capture_readback (6 parametrized cases)
+  reason: "Deleted at the owner's call: it could only run on one Mac because it needs a file that was never in git (the saved public C06 frame-index artifact named by ASTRID_C06_SAVED_FRAME_INDEX, with its render-snapshot.json sidecar)."
+  removed_by: "lanes work: owner decision 23 Oct 2026 (unrunnable outside one workstation)"

@@ -197,14 +197,6 @@
         },
         {
           "kind": "implementation",
-          "path": "rendering/elements/effects/am-footage/helper.ts"
-        },
-        {
-          "kind": "implementation",
-          "path": "rendering/elements/effects/am-footage/scene.ts"
-        },
-        {
-          "kind": "implementation",
           "path": "rendering/elements/effects/am-footage/element.yaml"
         }
       ]
@@ -312,10 +304,6 @@
         {
           "kind": "implementation",
           "path": "rendering/elements/effects/am-presenter/presenter-core.ts"
-        },
-        {
-          "kind": "implementation",
-          "path": "rendering/elements/effects/am-presenter/scene.ts"
         }
       ]
     },

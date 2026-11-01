@@ -211,16 +211,6 @@ def used_effect_asset_sizes(
     """
 
     if element_registry is None:
-        from pathlib import Path
-        from tempfile import TemporaryDirectory
-
-        from astrid.core.rendering.project_elements import selections, stage_project_elements
-
-        if selections(timeline):
-            with TemporaryDirectory(prefix="project-element-sizes-") as temporary:
-                selected_registry, _ = stage_project_elements(timeline, Path(temporary))
-                sizes = used_effect_asset_sizes(timeline, element_registry=selected_registry)
-                return {key.replace(temporary, "project-elements"): size for key, size in sizes.items()}
         from astrid.core.element.registry import load_default_registry
         from astrid.core.foundation.paths import REPO_ROOT
 
@@ -236,7 +226,7 @@ def used_effect_asset_sizes(
     if "text-card" in effects:
         aliases.setdefault("text", "text-card")
 
-    used = {}
+    used: set[str] = set()
     for clip in timeline.get("clips", []):
         if not isinstance(clip, Mapping):
             continue
@@ -245,16 +235,11 @@ def used_effect_asset_sizes(
             continue
         effect_id = clip_type if clip_type in effects else aliases.get(clip_type)
         if effect_id is not None:
-            ref = clip.get("elementRef")
-            if isinstance(ref, Mapping) and "packId" in ref:
-                element = element_registry.get("effects", effect_id, pack_id=ref["packId"],
-                                               revision=ref.get("revision"))
-            else:
-                element = effects[effect_id]
-            used[str(element.root)] = element
+            used.add(effect_id)
 
     sizes: dict[str, int] = {}
-    for element in used.values():
+    for effect_id in sorted(used):
+        element = effects[effect_id]
         for asset in element.assets:
             path = (element.root / asset.path).resolve()
             if not path.is_file():

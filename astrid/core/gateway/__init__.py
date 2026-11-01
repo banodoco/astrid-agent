@@ -151,8 +151,7 @@ def _main_impl(raw: list[str]) -> int:
 
 
 def _dispatch(raw: list[str]) -> int:
-    if not any(token in {"-h", "--help"} for token in raw):
-        _configure_process_control()
+    _configure_process_control()
     return _gateway_dispatch._dispatch(raw)
 
 

@@ -2,7 +2,6 @@
 
 import io
 import json
-import shutil
 import os
 import subprocess
 import sys
@@ -13,7 +12,7 @@ import pytest
 from runtime_protocol import platform
 
 from astrid.core.generation.vibecomfy_dependency import VIBECOMFY_ENGINE_REVISION
-from astrid.installer import cli, core, tools
+from astrid.installer import cli, tools
 from astrid.installer.backend import Backend
 from astrid.installer.core import (
     RuntimeOperationError,
@@ -223,13 +222,6 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
         if name == "agent":
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
-            canonical = Path(__file__).parents[1] / "astrid/core/timeline/schema/timeline-config.schema.json"
-            staged_canonical = destination / canonical.relative_to(Path(__file__).parents[1])
-            staged_canonical.parent.mkdir(parents=True)
-            staged_canonical.write_bytes(canonical.read_bytes())
-            (destination / "runtime.lock.json").write_bytes(
-                (Path(__file__).parents[1] / "runtime.lock.json").read_bytes()
-            )
         return destination
 
     monkeypatch.setattr("astrid.installer.backend.source", materialize)
@@ -239,16 +231,7 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
     monkeypatch.setattr("astrid.installer.backend.binary", lambda *_args: tmp_path / "npm-cli.js")
     monkeypatch.setattr(backend, "run", lambda *_args, **_kwargs: "uv 1.2.3")
     monkeypatch.setattr(backend, "existing", lambda _data: None)
-    def installed_root(python, _env):
-        product = python.parent / "Lib/site-packages"
-        source = python.parent.parent.parent / "a"
-        for relative in ("astrid/core/timeline/schema/timeline-config.schema.json",):
-            target = product / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / relative, target)
-        return product
-
-    monkeypatch.setattr(backend, "_installed_product_root", installed_root)
+    monkeypatch.setattr(backend, "_installed_product_root", lambda python, _env: python.parent / "Lib/site-packages")
     monkeypatch.setattr(backend, "_declare_services", lambda **kwargs: kwargs["folder"] / "services.json")
 
     version = backend.stage(value, tmp_path / "program", tmp_path / "data")
@@ -307,9 +290,8 @@ def test_stage_refuses_unusable_uv_before_creating_candidate(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("outcome", ["ready", "preparation-failure", "busy", "rollback"])
-@pytest.mark.parametrize("schema_changed", [True, False])
 def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
-        tmp_path, monkeypatch, capsys, outcome, schema_changed):
+        tmp_path, monkeypatch, capsys, outcome):
     """A usable old Runtime/profile can carry ownership while payload is rebuilt."""
     home, root, data = tmp_path / "home", tmp_path / "program", tmp_path / "workspace"
     old_root = root / "versions" / "old"
@@ -366,16 +348,12 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     def verify(version, *_args, **_kwargs):
         calls["verify"].append(version.root)
         if outcome == "rollback" and version.root != old_root:
-            workspace_sentinel.write_bytes(b"project written after switched")
             raise VerificationError("candidate did not become ready")
 
     backend.validate_candidate = validate_candidate
     backend.stop = stop
-    backend.backup = lambda *_args: calls["backup"].append("called") or {
-        "root": str(root / "backups" / "test")}
+    backend.backup = lambda *_args: calls["backup"].append("called")
     backend.upgrade = lambda *_args: calls["upgrade"].append("called")
-    original_workspace = workspace_sentinel.read_bytes()
-    backend.restore = lambda *_args: workspace_sentinel.write_bytes(original_workspace)
     backend.register = lambda version, *_args: calls["register"].append(version.root)
     backend.start = lambda version, *_args: calls["start"].append(version.root)
     backend.verify = verify
@@ -389,12 +367,6 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         if name == "agent":
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
-            checkout = Path(__file__).resolve().parents[1]
-            schema = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-            target = destination / schema
-            target.parent.mkdir(parents=True)
-            shutil.copyfile(checkout / schema, target)
-            shutil.copyfile(checkout / "runtime.lock.json", destination / "runtime.lock.json")
         materialized.append((name, destination))
         return destination
 
@@ -413,10 +385,6 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
             py = Path(args[0]).parent.parent
             purelib = py / "lib/site-packages"
             purelib.mkdir(parents=True, exist_ok=True)
-            schema = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-            target = purelib / schema
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(py.parent / "a" / schema, target)
             origins = {}
             for key in ("host", "child", "action", "client", "sdk"):
                 origin = purelib / f"{key}.py"
@@ -428,13 +396,6 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         return ""
 
     monkeypatch.setattr("astrid.installer.backend.source", source)
-    monkeypatch.setattr(
-        core, "inspect_schema",
-        lambda _backend, version, _realm, require_current=False: {
-            "identity": {"version": 29 if schema_changed and version.root == old_root else 31},
-            "target": 31,
-        },
-    )
     monkeypatch.setattr("astrid.installer.backend.install_tools", lambda _m, dest, *_args: (
         dest.mkdir(parents=True) or {
             "PATH": str(dest), "ASTRID_NODE_EXECUTABLE": str(dest / "node"),
@@ -469,8 +430,7 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
     assert staged["identity"]["release"] == 9
     assert staged["env"]["ASTRID_RUNTIME_DOOR_PORT"] == "17399"
     assert (fresh_root / "profile.json").is_file()
-    if outcome != "rollback":
-        assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
+    assert workspace_sentinel.read_bytes() == b"user workspace stays byte-identical"
 
     selected = (root / "current").read_text(encoding="utf-8").strip()
     transaction = json.loads((root / "update-transaction.json").read_text(encoding="utf-8")) \
@@ -479,10 +439,8 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert result == 0
         assert selected == fresh_root.name
         assert transaction["step"] == "complete"
-        assert (transaction["backup"] is not None) is schema_changed
-        assert calls["stop"] == [old_root] if not schema_changed else [old_root, fresh_root]
-        assert calls["backup"] == (["called"] if schema_changed else [])
-        assert calls["upgrade"] == (["called"] if schema_changed else [])
+        assert calls["stop"] == [old_root, fresh_root]
+        assert calls["backup"] == ["called"] and calls["upgrade"] == ["called"]
         assert calls["finish"] == ["called"]
     elif outcome == "preparation-failure":
         assert result == 1
@@ -503,16 +461,11 @@ def test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate(
         assert result == 1
         assert selected == old_root.name
         assert transaction["step"] == "rolled_back"
-        assert (transaction["backup"] is not None) is schema_changed
-        assert calls["stop"] == ([old_root, fresh_root]
-                                  if not schema_changed else [old_root, fresh_root, fresh_root])
-        assert calls["backup"] == (["called"] if schema_changed else [])
-        assert calls["upgrade"] == (["called"] if schema_changed else [])
+        assert calls["stop"] == [old_root, fresh_root, fresh_root]
+        assert calls["backup"] == ["called"] and calls["upgrade"] == ["called"]
         assert calls["register"] == [fresh_root, old_root]
         assert calls["start"] == [fresh_root, old_root]
         assert calls["verify"] == [fresh_root, old_root]
-        assert workspace_sentinel.read_bytes() == (
-            original_workspace if schema_changed else b"project written after switched")
     output = capsys.readouterr().out.lower()
     assert ("couldn't finish" not in output) is (outcome == "ready")
 

@@ -105,21 +105,12 @@ def _in_repo_packs_only() -> Iterator[None]:
 
 
 def _executor_rows() -> list[tuple[str, str]]:
-    from astrid.core.generation.availability import action_availability, availability_projection
     registry = load_executors()
-    rows = []
-    for executor in registry.list():
-        if not _in_repo_pack(executor.metadata.get("pack_root")):
-            continue
-        short = short_description_or_truncated(executor.short_description, executor.description)
-        try:
-            projection = availability_projection(action_availability(executor.id))
-        except KeyError:
-            projection = {'availability': 'available'}
-        if projection['availability'] == 'unavailable':
-            short = f"Unavailable: {projection['reason']}. Fix: {projection['fix']}. {short}"
-        rows.append((executor.id, short))
-    return rows
+    return [
+        (executor.id, short_description_or_truncated(executor.short_description, executor.description))
+        for executor in registry.list()
+        if _in_repo_pack(executor.metadata.get("pack_root"))
+    ]
 
 
 def _orchestrator_rows() -> list[tuple[str, str]]:

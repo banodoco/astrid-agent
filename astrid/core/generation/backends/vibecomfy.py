@@ -433,7 +433,7 @@ def _bind_target_model_roles(workflow: Any, spec: BackendSpec, roles: Mapping[st
         workflow.metadata["model_assets"] = [item for item in assets if name(item) not in replacements]
 
 
-def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> Any:
+def _load_pinned_catalog_workflow(spec: BackendSpec) -> Any:
     """Use the canonical repository template loader and catalog source pin."""
     from vibecomfy.registry.ready import (
         repo_ready_template_discovery, resolve_ready_template, workflow_from_ready,
@@ -475,14 +475,11 @@ def _load_pinned_catalog_workflow(spec: BackendSpec, *, retain_source=None) -> A
         raise ValueError(
             f"VibeComfy template {canonical_id!r} has no valid sha256 pin"
         )
-    original = template_path_resolved.read_bytes()
-    actual_hash = hashlib.sha256(original).hexdigest()
+    actual_hash = hashlib.sha256(template_path_resolved.read_bytes()).hexdigest()
     if actual_hash.lower() != expected_hash[7:].lower():
         raise ValueError(
             f"VibeComfy template {canonical_id!r} failed its sha256 pin"
         )
-    if retain_source is not None:
-        retain_source(template_path_resolved.name, original)
     return workflow_from_ready(canonical_id, _discovery=discovery)
 
 
@@ -545,16 +542,7 @@ class VibeComfyBackend(BackendAdapter):
             kwargs["comfy_url"] = comfy_url
         if comfy_output_dir:
             kwargs["comfy_output_dir"] = comfy_output_dir
-        from astrid.core.generation.producer_result import (
-            complete_producer_result, preserve_result_on_error, source_input_ref, workflow_transport,
-        )
-        source = source_input_ref(workflow_path, out_dir)
-        transport = workflow_transport(profile_id, comfy_url)
-        with preserve_result_on_error(out_dir, task_id=task_identity, attempt_id=attempt_identity,
-                                      source=source, workflow_path=workflow_path, transport=transport):
-            result = run_workflow_result_path(workflow_path, out_dir, **kwargs)
-            return complete_producer_result(result, out_dir, task_id=task_identity,
-                                            attempt_id=attempt_identity, source=source, transport=transport)
+        return run_workflow_result_path(workflow_path, out_dir, **kwargs)
 
     def _run_workflow(self, workflow: Any, *, schema_provider: Any | None = None) -> Any:
         """Run a workflow through the local embedded VibeComfy runtime."""
@@ -672,7 +660,6 @@ class VibeComfyBackend(BackendAdapter):
         params: dict[str, Any],
         *,
         resolve_target: bool = False,
-        retain_source: Any = None,
     ) -> tuple[Any, dict[str, Any] | None, Any | None]:
         """Resolve and bind a pinned graph for the existing workflow route."""
         # Lazy-import VibeComfy, and snapshot only its repository
@@ -714,8 +701,7 @@ class VibeComfyBackend(BackendAdapter):
         if computed_frames is not None:
             logger.debug("Computed frames=%d from duration * fps", computed_frames)
 
-        wf = (_load_pinned_catalog_workflow(backend_spec, retain_source=retain_source)
-              if retain_source is not None else _load_pinned_catalog_workflow(backend_spec))
+        wf = _load_pinned_catalog_workflow(backend_spec)
         # Features whose param_map key is in the feature list get mapped.
         # Count is not set on the workflow — the caller loops externally.
         for canon, tmpl_param in param_map.items():
@@ -2381,9 +2367,6 @@ class CheckoutServerAdapter(VibeComfyBackend):
                     "the host-owned Comfy session output directory"
                 )
             config_values["output_directory"] = host_output_directory
-            # Keep native attempt evidence in this task's spool, while the
-            # verified host session continues to own the Comfy output root.
-            config_values["runtime_root"] = str(destination / '.vibecomfy-runtime')
             if task_identity is not None:
                 config_values["task_id"] = task_identity
             if attempt_identity is not None:
@@ -2428,33 +2411,16 @@ class CheckoutServerAdapter(VibeComfyBackend):
                 runtime_instance_id=self._runtime_instance_id,
                 model_bytes_digest=model_bytes_digest,
             )
-            from astrid.core.generation.producer_result import (
-                bind_executed_settings, preserve_result_on_error, stage_executed_settings,
-            )
-            settings_ref = stage_executed_settings(approved, destination)
             try:
                 os.environ[environment_key] = json.dumps(
                     environment_values, sort_keys=True, separators=(",", ":")
                 )
-                try:
-                    with preserve_result_on_error(destination, task_id=task_identity, attempt_id=attempt_identity,
-                                                  workflow_bundle=bundle,
-                                                  artifact_roots=(Path(host_output_directory),)):
-                        result = self._run_workflow((approved, bundle), config=runtime_config)
-                except BaseException as exc:
-                    try:
-                        bind_executed_settings(exc, settings_ref, task_id=task_identity,
-                                               attempt_id=attempt_identity, staging_root=destination)
-                    except Exception as evidence_error:
-                        exc.add_note(f'Could not bind executed-settings evidence: {evidence_error}')
-                    raise
+                result = self._run_workflow((approved, bundle), config=runtime_config)
             finally:
                 if previous_environment_configuration is None:
                     os.environ.pop(environment_key, None)
                 else:
                     os.environ[environment_key] = previous_environment_configuration
-            result = bind_executed_settings(result, settings_ref, task_id=task_identity,
-                                           attempt_id=attempt_identity, staging_root=destination)
             outputs = self._collect_outputs(result, destination)
             self._last_run_result = result
             return outputs

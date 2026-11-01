@@ -17,8 +17,6 @@ def build_parser():
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    from astrid.core.generation.availability import require_action_available
-    require_action_available(CAPABILITY_ID)
     request = CharacterAnimationRequest(
         reference_image_ref=args.reference_image_ref or "",
         driving_video_ref=args.driving_video_ref or "",

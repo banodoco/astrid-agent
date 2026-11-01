@@ -17,7 +17,6 @@ from astrid.sdk.timeline._common import (
     TIME_RE,
     WORD_ID_RE,
     TimelineEditError,
-    TimelineSelectionError,
     _norm,
     _num,
     _r,
@@ -152,43 +151,6 @@ class _LookupMixin:
                 return min(matches, key=lambda c: (0 if c.start - 1e-6 <= point < c.end else 1, abs(c.start - point)))
         return self._pick(pool, query, where=f"cut {cut}" if cut is not None else "the timeline")
 
-    def track(self, track: str, *, above: str | None = None, kind: str = "visual"):
-        """Select or create a parent output track, optionally placing it above another track."""
-        if not isinstance(track, str) or not track.strip():
-            raise TimelineEditError("track requires a nonempty ID")
-        track = track.strip()
-        tracks = self._parent_track_list()
-        if tracks is None:
-            tracks = []
-        if above is not None:
-            if not isinstance(above, str) or not any(str(item.get("id")) == above for item in tracks):
-                raise TimelineEditError(f"no parent track {above!r}")
-            if above == track:
-                raise TimelineEditError("a track cannot be placed above itself")
-        row = next((item for item in tracks if str(item.get("id")) == track), None)
-        if row is None:
-            if kind not in {"visual", "audio"}:
-                raise TimelineEditError("track kind must be 'visual' or 'audio'")
-            # The timeline schema requires a label; a new track is labelled with its id.
-            row = {"id": track, "kind": kind, "label": track, "role": "output"}
-            command = getattr(self, "command", None)
-            if callable(command):
-                command({"schema_version": 1, "op": "track.create", "version": "1",
-                         "select": "parent", "args": {"row": row}, "intent": {}},
-                        label="Create track")
-                tracks = self._parent_track_list(create=True) or []
-                row = next(item for item in tracks if str(item.get("id")) == track)
-            else:
-                tracks = self._parent_track_list(create=True) or tracks
-                tracks.append(row)
-        if above is not None:
-            tracks[:] = [item for item in tracks if str(item.get("id")) != track]
-            index = next(i for i, item in enumerate(tracks) if str(item.get("id")) == above)
-            tracks.insert(index, row)
-        from astrid.sdk.timeline.model import _TrackRef
-
-        return _TrackRef(self, track, row)
-
     def _matches(self, c: Clip, query: str) -> bool:
         text = str(query).strip()
         return (c.id == text or c.address == text or c.layer_name == text or c.id.startswith(text) or (c.asset or "").lower() == text.lower()
@@ -202,10 +164,9 @@ class _LookupMixin:
 
     def _word_list(self) -> list[Word]:
         found: list[tuple[float, float, str, str, str, int, str]] = []
-        for sid in [*self._shot_ids(), PARENT_SHOT]:
+        for sid in self._shot_ids():
             start = self._shot_start(sid)
-            clips = self._parent_clips() if sid == PARENT_SHOT else self._internal(sid)["clips"]
-            for clip in clips:
+            for clip in self._internal(sid)["clips"]:
                 if not self._is_audio(sid, clip):
                     continue
                 segment = intent.line(clip) or str(clip.get("id") or "")
@@ -335,23 +296,15 @@ class _LookupMixin:
         span = (f"{plain[0]}…{plain[-1]}" if len(plain) > 1 else ", ".join(plain)) + (f" (+ {', '.join(extra)})" if extra else "")
         return f"no cut {cut_id}; cuts are {span or 'not named in this timeline'}"
 
-    def _cut_spans(self, skip: Iterable[Any] = (), *, by_occurrence: bool = False) -> dict[Any, tuple[float, float | None]]:
+    def _cut_spans(self, skip: Iterable[str] = ()) -> dict[str, tuple[float, float | None]]:
         """``{cut id: (start, end)}``: a cut runs from its start to the next cut's start (end None: the last).
-        Cuts in ``skip`` (orphans) don't end the cut before them. With ``by_occurrence`` the keys are the
-        groups' keys ``(cut id, shot id)``: each occurrence of a repeated cut has its own span."""
+        Cuts in ``skip`` (orphans) don't end the cut before them."""
         skip = set(skip) | set(getattr(self, "_orphan_cuts", set()) or ())
-        groups = [g for g in self._cut_groups(by_occurrence=by_occurrence) if g["id"] not in skip and g["key"] not in skip]
-        return {(g["key"] if by_occurrence else g["id"]):
-                (g["start"], groups[k + 1]["start"] if k + 1 < len(groups) else None) for k, g in enumerate(groups)}
+        groups = [g for g in self._cut_groups() if g["id"] not in skip]
+        return {g["id"]: (g["start"], groups[k + 1]["start"] if k + 1 < len(groups) else None) for k, g in enumerate(groups)}
 
-    def _cut_groups(self, *, by_occurrence: bool = False) -> list[dict[str, Any]]:
-        """Clips grouped by cut id, in time order; each group's picture is its bed clip (first step).
-
-        Each group has a ``key``: ``(cut id, None)``. With ``by_occurrence``, a repeated shot (its copies share their
-        clip ids, so one picture clip id sits in more than one shot) splits its cut id into one group per shot, keyed
-        ``(cut id, shot id)``, so every occurrence has its own picture, start and span. A picture cut at a chapter wall
-        keeps its cut id in two shots but has distinct piece ids, so it stays one group. A clip of a split cut in a
-        shot without its picture joins the occurrence whose picture starts last before it."""
+    def _cut_groups(self) -> list[dict[str, Any]]:
+        """Clips grouped by cut id, in time order; each group's picture is its bed clip (first step)."""
         groups: dict[str, list[Clip]] = {}
         for clip in self.clips():
             cid = intent.cut_of(clip.data)
@@ -359,31 +312,12 @@ class _LookupMixin:
                 groups.setdefault(cid, []).append(clip)
         out = []
         for cid, clips in groups.items():
+            if all(intent.orphan(c.data) for c in clips):
+                continue  # a cut kept only as orphans is not a cut until it is re-homed
             beds = sorted((c for c in clips if c.track == "plate" and not c.is_audio), key=lambda c: (c.start, c.id))
-            first_bed: dict[str, Clip] = {}  # each shot's picture: its first bed clip
-            shots_of_bed: dict[str, set[str]] = {}  # a bed clip id -> the shots it sits in
-            for bed in beds:
-                first_bed.setdefault(bed.shot_id, bed)
-                shots_of_bed.setdefault(bed.id, set()).add(bed.shot_id)
-            repeated = by_occurrence and any(len(shots) > 1 for shots in shots_of_bed.values())
-            if repeated:
-                parts: dict[str | None, list[Clip]] = {shot: [] for shot in first_bed}
-                pictures = sorted(first_bed.values(), key=lambda c: (c.start, c.id))
-                for clip in clips:
-                    if clip.shot_id in first_bed:
-                        parts[clip.shot_id].append(clip)
-                    else:
-                        before = [p for p in pictures if p.start <= clip.start + 1e-6]
-                        parts[(before[-1] if before else pictures[0]).shot_id].append(clip)
-                split = [(shot, members, first_bed[shot]) for shot, members in parts.items()]
-            else:
-                split = [(None, clips, beds[0] if beds else None)]
-            for shot, members, picture in split:
-                if all(intent.orphan(c.data) for c in members):
-                    continue  # a cut kept only as orphans is not a cut until it is re-homed
-                out.append({"id": cid, "key": (cid, shot), "clips": members, "picture": picture,
-                            "start": picture.start if picture is not None else min(c.start for c in members)})
-        return sorted(out, key=lambda g: (g["start"], g["id"], g["key"][1] or ""))
+            out.append({"id": cid, "clips": clips, "picture": beds[0] if beds else None,
+                        "start": beds[0].start if beds else min(c.start for c in clips)})
+        return sorted(out, key=lambda g: (g["start"], g["id"]))
 
     def _is_picture(self, clip: "Clip") -> bool:
         cut = intent.cut_of(clip.data)
@@ -431,30 +365,6 @@ class _LookupMixin:
         directly on the parent, timeline-absolute, with no shot."""
         return [c for c in self._parent_clip_list() or [] if isinstance(c, dict)]
 
-    def _parent_track_list(self, *, create: bool = False) -> list[dict[str, Any]] | None:
-        parent = self.bundle.get("parent")
-        if not isinstance(parent, dict):
-            if not create:
-                return None
-            parent = self.bundle.setdefault("parent", {})
-        config = parent.get("config")
-        own = parent.get("tracks")
-        mirror = config.get("tracks") if isinstance(config, dict) else None
-        if own and mirror and own is not mirror and own != mirror:
-            raise TimelineEditError("the parent holds two different track lists (tracks and config.tracks)")
-        tracks = own or mirror
-        if not isinstance(tracks, list) and create:
-            if not isinstance(config, dict):
-                config = parent.setdefault("config", {})
-            tracks = config.setdefault("tracks", [])
-        if not isinstance(tracks, list):
-            return None
-        if "tracks" in parent:
-            parent["tracks"] = tracks
-        if isinstance(config, dict) and isinstance(config.get("tracks"), list):
-            config["tracks"] = tracks
-        return tracks
-
     def _shot_start(self, shot_id: str) -> float:
         if shot_id == PARENT_SHOT:
             return 0.0
@@ -492,7 +402,7 @@ class _LookupMixin:
 
     def _track_kind(self, shot_id: str, track: str) -> str:
         internal = self._internal(shot_id)
-        tracks = self._parent_track_list() if shot_id == PARENT_SHOT else internal.get("tracks")
+        tracks = internal.get("tracks") or (internal.get("config") or {}).get("tracks") if shot_id == PARENT_SHOT else internal.get("tracks")
         for t in tracks or []:
             if str(t.get("id")) == track:
                 return str(t.get("kind") or "").lower()
@@ -540,13 +450,7 @@ class _LookupMixin:
             if len(unique) > 1:
                 listing = "\n  ".join(f"{c.address:<18} {c.element:<14} {c.start:7.3f}–{c.end:.3f} s" for c in unique[:12])
                 more = f"\n  … {len(unique) - 12} more" if len(unique) > 12 else ""
-                candidates = [{"id": c.address, "track": c.data.get("track"),
-                               "start": c.start, "end": c.end} for c in unique[:12]]
-                error = TimelineSelectionError(text, candidates, len(unique))
-                error.detail = f"{error.detail} {listing}{more}"
-                error.presentation["detail"] = error.detail
-                error.details["detail"] = error.detail
-                raise error
+                raise TimelineEditError(f"{text!r} matches {len(unique)} clips in {where}; name one:\n  {listing}{more}")
         raise TimelineEditError(f"no clip in {where} matches {text!r} (by id, asset, element or text); "
                                 f"list them with tl.clips() or `timelines show --as script`")
 

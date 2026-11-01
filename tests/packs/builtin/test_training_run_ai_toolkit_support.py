@@ -179,28 +179,3 @@ def test_ai_toolkit_support_modules_do_not_hardcode_ssh_key_paths() -> None:
     for path in checked:
         text = path.read_text(encoding="utf-8")
         assert not any(value in text for value in forbidden), str(path)
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_review_downloads_mp4s_and_writes_local_html_with_configurable_text(tmp_path: Path) -> None:
-    remote = FakeRemoteBackend()
-    result = review.generate_review_samples(
-        remote,
-        _handle(tmp_path),
-        checkpoints=[Checkpoint(remote_path="/workspace/out/lora-100.safetensors", step=100, label="chosen checkpoint")],
-        prompts=["prompt one", "prompt two"],
-        local_dir=tmp_path / "review",
-        title="City review",
-        rubric=["style match", "motion quality"],
-        remote_output_dir="/workspace/out",
-        produces_dir=tmp_path / "produces" / "review",
-    )
-
-    html = result.index_path.read_text(encoding="utf-8")
-    assert "City review" in html
-    assert "style match" in html
-    assert "prompt one" in html
-    assert ".mp4" in html
-    assert "/workspace" not in html
-    assert all(sample.local_path.exists() for sample in result.samples)
-    assert "ssh_key" not in remote.pull_calls[0]["config"]

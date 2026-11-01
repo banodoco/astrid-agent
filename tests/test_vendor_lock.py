@@ -64,23 +64,16 @@ def test_one_root_lock_covers_all_known_runtime_paths() -> None:
         "astrid_runtime_client/__init__.py",
         "astrid_runtime_client/contract_metadata.py",
         "astrid_runtime_client/generated.py",
-        "astrid_runtime_client/timeline_commit_types.py",
         "astrid/core/timeline/schema/timeline-config.schema.json",
         "tests/fixtures/visual-boundary-v1.json",
         *[f"tests/fixtures/runtime-responses/{name}.json" for name in (
             "events_page_1_200", "events_page_2_200", "invalid_cursor_400", "managed_outputs_200",
-            "not_found_404", "commit_conflict_409", "retired_route_410", "task_admission_201", "task_read_200", "validation_error_422",
+            "not_found_404", "publish_conflict_409", "task_admission_201", "task_read_200", "validation_error_422",
         )],
     }
     bundle = json.loads(LOCK.read_text())
-    assert bundle["source_commit"] == "1a275bb339ae897e52a5be5e1da99e846e402037"
     assert set(bundle["files"]) == expected
-    # Timeline commit types are now part of the exact published producer.
-    assert (ROOT / "astrid_runtime_client/timeline_commit_types.py").is_file()
-    assert "tests/fixtures/runtime-responses/publish_conflict_409.json" not in bundle["files"]
-    # Preserve the historical publication fixture for legacy conformance assertions.
-    assert (ROOT / "tests/fixtures/runtime-responses/publish_conflict_409.json").is_file()
-    assert len(bundle["files"]) == 16
+    assert len(bundle["files"]) == 14
     assert re.fullmatch(r"[0-9a-f]{40}", bundle["source_commit"])
     assert not any((ROOT / path).exists() for path in (
         "astrid_runtime_client/vendor.lock.json", "astrid/core/timeline/schema/vendor.lock.json",

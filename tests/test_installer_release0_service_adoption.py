@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -73,7 +72,7 @@ def _posix_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system: str)
     runner = Mock(return_value="")
     manager = Service(root, tmp_path / "log", runner, home=tmp_path, system=system)
     if system == "darwin":
-        monkeypatch.setattr(service.platform, "current_user", lambda: os.getuid())
+        monkeypatch.setattr(service.platform, "current_user", lambda: 501)
     write_json(manager.selection, {"owner": LABEL, "program_root": str(root), "data_root": str(data)})
     legacy_settings = _frozen("service-env.json")
     (version.root / "service-env.json").write_bytes(legacy_settings)
@@ -104,7 +103,7 @@ def test_release0_posix_service_is_adopted_and_freshly_registered(tmp_path, monk
     assert read_json(manager.env_file) == {}
     calls = [call.args[0] for call in manager.run.call_args_list]
     if system == "darwin":
-        assert calls == [["launchctl", "bootstrap", f"gui/{os.getuid()}", manager.path]]
+        assert calls == [["launchctl", "bootstrap", "gui/501", manager.path]]
     else:
         assert calls == [
             ["systemctl", "--user", "show-environment"],

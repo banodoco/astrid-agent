@@ -256,12 +256,6 @@ def test_real_c1_refuses_untrusted_owner_before_manager_action(tmp_path, monkeyp
         boundary.identity_error = OSError("owner identity unavailable")
     else:
         boundary.process_birth_identity = lambda _pid: "reused-pid-birth"
-        # The pinned Runtime can prove a matching publication pair stale on
-        # PID reuse. An inconsistent retained lock remains uncertain and must
-        # preserve the refusal/no-mutation contract exercised here.
-        marker = read_json(paths.instance_lock_path)
-        marker["process_birth_id"] = "inconsistent-retained-birth"
-        write_json(paths.instance_lock_path, marker)
 
     before = {
         "catalog": paths.catalog_path.read_bytes(),
@@ -331,18 +325,10 @@ def test_recovery_refuses_unrelated_stale_publication_even_with_copied_operation
         boundary.identity_error = OSError("identity unavailable")
     else:
         boundary.process_birth_identity = lambda _pid: "reused-pid-birth"
-        # The pinned Runtime can prove a matching publication pair stale on
-        # PID reuse. An inconsistent retained lock remains uncertain and must
-        # preserve the refusal/no-mutation contract exercised here.
-        marker = read_json(paths.instance_lock_path)
-        marker["process_birth_id"] = "inconsistent-retained-birth"
-        write_json(paths.instance_lock_path, marker)
 
     journal = backend.root / "update-transaction.json"
     journal_before = journal.read_bytes()
     pointer_before = (backend.root / "current").read_bytes()
-    published = {path: path.read_bytes()
-                 for path in (paths.discovery_path, paths.instance_lock_path)}
     with pytest.raises(RuntimeOperationError) as raised:
         recover()
     assert not core.is_lifecycle_refusal(raised.value)
@@ -351,9 +337,6 @@ def test_recovery_refuses_unrelated_stale_publication_even_with_copied_operation
     assert (backend.root / "current").read_bytes() == pointer_before
     backend.restore.assert_not_called()
     backend.start.assert_not_called()
-    backend.service.disable.assert_not_called()
-    backend.service.stop.assert_not_called()
-    assert {path: path.read_bytes() for path in published} == published
 
 
 def test_recovery_accepts_exact_retained_stale_publication_after_repeated_absence(tmp_path, monkeypatch):
@@ -454,24 +437,17 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     backend, paths, _realm, boundary, _transaction, recover = _stopped_transaction(
         tmp_path, monkeypatch, kind)
     _publish_owner(paths)
-    # Establish genuine old-owner absence before the serialized stop snapshot.
-    boundary.live = False
+    boundary.live = True
     bootstrap = importlib.import_module("astrid_runtime.bootstrap")
-    fence = bootstrap.interruption_fence
-    published = {}
+    mutex = bootstrap._bootstrap_mutex
 
     @contextmanager
-    def replacement_after_absence(*args, **kwargs):
-        with fence(*args, **kwargs) as report:
-            _publish_owner(paths, pid=887, birth="replacement-birth")
-            boundary.live = True
-            boundary.is_pid_alive = lambda pid: pid == 887
-            boundary.process_birth_identity = lambda pid: "replacement-birth" if pid == 887 else None
-            published.update({path: path.read_bytes()
-                              for path in (paths.discovery_path, paths.instance_lock_path)})
-            yield report
+    def replacement_after_absence(paths_arg):
+        with mutex(paths_arg):
+            _publish_owner(paths_arg, pid=887, birth="replacement-birth")
+            yield
 
-    monkeypatch.setattr(bootstrap, "interruption_fence", replacement_after_absence)
+    monkeypatch.setattr(bootstrap, "_bootstrap_mutex", replacement_after_absence)
     journal = backend.root / "update-transaction.json"
     before = journal.read_bytes()
 
@@ -482,13 +458,6 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     assert journal.read_bytes() == before
     assert read_json(paths.discovery_path)["pid"] == 887
     backend.restore.assert_not_called()
-    backend.start.assert_not_called()
-    backend.service.disable.assert_not_called()
-    backend.service.stop.assert_not_called()
-    assert boundary.stop_calls == 0
-    assert boundary.is_pid_alive(887) is True
-    assert boundary.process_birth_identity(887) == "replacement-birth"
-    assert {path: path.read_bytes() for path in published} == published
 
 
 @pytest.mark.parametrize("kind", ["migration", "app"])
@@ -581,9 +550,8 @@ def test_cli_recovers_completed_stop_with_fresh_controller(tmp_path, monkeypatch
         def foreground_start(version, workspace, realm_id):
             lock = installer_lock_path(fresh.service.home, fresh.service.system)
             with lock.open("a+b") as stream:
-                with pytest.raises(BlockingIOError):
-                    platform.lock_file(stream.fileno(), blocking=False)
-            assert fresh._pinokio_custody is not None
+                platform.lock_file(stream.fileno(), blocking=False)
+                platform.unlock_file(stream.fileno())
             verify(version, workspace, realm_id)
 
         lifecycle = SimpleNamespace(validate=lambda *_: None, stop=fresh.stop, start=foreground_start)
@@ -830,13 +798,8 @@ def test_new_interpreter_recovers_real_completed_c1_stop(tmp_path, monkeypatch, 
             if kind == 'app':
                 def start(version, workspace, realm_id):
                     with installer_lock_path(backend.service.home, backend.service.system).open('a+b') as stream:
-                        try:
-                            platform.lock_file(stream.fileno(), blocking=False)
-                        except BlockingIOError:
-                            pass
-                        else:
-                            raise AssertionError('stopped-update custody released before activation')
-                    assert backend._pinokio_custody is not None
+                        platform.lock_file(stream.fileno(), blocking=False)
+                        platform.unlock_file(stream.fileno())
                     verify(version, workspace, realm_id)
                 app_update.PinokioLifecycle = lambda *a: SimpleNamespace(validate=lambda *a: None, stop=backend.stop, start=start)
                 arguments += ['--update-app', '--managed-by', 'pinokio']
@@ -1199,47 +1162,3 @@ def test_pinokio_public_update_recovers_idle_missing_catalog_with_real_backend_c
     assert final_journal["step"] == "rolled_back"
     assert "stop_authority" not in final_journal
     assert backup.is_dir() and (backup / "realm" / "restore-sentinel.txt").read_text(encoding="utf-8") == "old workspace"
-
-
-
-@pytest.mark.parametrize("kind", [None, "migration", "app"])
-def test_matched_reused_pid_publications_clean_without_signaling_replacement(
-        tmp_path, monkeypatch, kind):
-    """Paired stale records admit cleanup while the current PID incarnation lives."""
-    import sqlite3
-
-    if kind is None:
-        backend, data, paths, realm, boundary, manager_calls = _installer_runtime(tmp_path, monkeypatch)
-        operation = lambda: backend.stop(None, data)
-    else:
-        backend, paths, realm, boundary, _transaction, operation = _stopped_transaction(
-            tmp_path, monkeypatch, kind)
-    _publish_owner(paths)
-    observed_live = {777: "reused-pid-birth"}
-    boundary.is_pid_alive = lambda pid: pid in observed_live
-    boundary.process_birth_identity = lambda pid: observed_live.get(pid)
-    signal = Mock(side_effect=AssertionError("the replacement process must stay live"))
-    monkeypatch.setattr(platform, "signal_process", signal)
-    # Successful C1 admission may checkpoint SQLite's WAL. Compare logical
-    # schema and rows rather than checkpoint-dependent physical page bytes.
-    with sqlite3.connect(realm / "realm.sqlite3") as connection:
-        realm_before = list(connection.iterdump())
-    pointer_before = (backend.root / "current").read_bytes() if kind else None
-
-    operation()
-
-    signal.assert_not_called()
-    assert boundary.stop_calls == 0
-    assert observed_live == {777: "reused-pid-birth"}
-    assert boundary.is_pid_alive(777) is True
-    assert not paths.discovery_path.exists()
-    assert not paths.instance_lock_path.exists()
-    with sqlite3.connect(realm / "realm.sqlite3") as connection:
-        assert list(connection.iterdump()) == realm_before
-    if kind is None:
-        assert manager_calls == ["disable", "stop"]
-    else:
-        assert (backend.root / "current").read_bytes() == pointer_before
-        assert read_json(backend.root / "update-transaction.json")["step"] == "rolled_back"
-        backend.restore.assert_not_called()
-        backend.start.assert_called_once()

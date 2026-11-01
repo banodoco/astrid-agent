@@ -252,8 +252,6 @@ def test_training_run_preflight_combines_budget_and_declared_secrets_before_live
 
 
 def test_training_run_main_dry_run_writes_state_and_live_preflight_fails_before_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # This test verifies the missing-secret dry-run path, independent of the host shell.
-    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     clip, caption = _clip_fixture(tmp_path)
     manifest = _flat_manifest(tmp_path / "manifest.json", clip, caption)
     run_dir = tmp_path / "train-run"

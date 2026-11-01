@@ -400,9 +400,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         ) from exc
     _validate_args(parser, args)
-    if not args.skip_animate and not args.dry_run:
-        from astrid.core.generation.availability import require_action_available
-        require_action_available("video_editing.animate_image")
 
     out_root = args.out.expanduser().resolve()
     out_root.mkdir(parents=True, exist_ok=True)

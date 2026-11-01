@@ -39,7 +39,6 @@ def _project(clip, **occurrence_extra):
         occurrence_start=0.0,
         occurrence_end=10.0,
         occurrence_speed=1.0,
-        track_definitions=(),
         path="clip",
     )
 

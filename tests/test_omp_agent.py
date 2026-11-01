@@ -7,7 +7,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -425,116 +424,6 @@ def test_toolkit_families_and_help_delegate_to_gateway(monkeypatch) -> None:
     assert omp_agent.main(["install", "--help"]) == 7
     assert omp_agent.main(["skills", "sync"]) == 7
     assert calls == [["projects", "list", "--json"], ["help"], ["install", "--help"], ["skills", "sync"]]
-
-
-def test_registered_gateway_commands_delegate_without_a_launcher_allowlist(monkeypatch) -> None:
-    from astrid.core.gateway import dispatch
-
-    calls = []
-    monkeypatch.setattr(omp_agent, "_dispatch_toolkit", lambda argv: calls.append(argv) or 7)
-    for command in dispatch._top_level_commands():
-        args = [command, "some-argument", "--json"]
-        assert omp_agent.main(args) == 7
-        assert calls[-1] == args
-
-    # A newly registered command must not require editing this launcher.
-    monkeypatch.setattr(dispatch, "_top_level_commands", lambda: frozenset({"future-command"}))
-    assert omp_agent.main(["future-command", "--json"]) == 7
-    assert calls[-1] == ["future-command", "--json"]
-
-
-def test_generate_managed_dry_run_without_comfyui_returns_target_not_ready(
-    monkeypatch, capsys,
-) -> None:
-    from astrid.core.generation import entries, preflight
-
-    # Exercise the shipped catalog entry without discovering unrelated entries.
-    monkeypatch.setattr(entries, "action_entries", lambda: [])
-    monkeypatch.setattr(entries, "ready_entries", lambda: [])
-    # VibeComfy is available, but neither managed ComfyUI discovery route is.
-    monkeypatch.setattr(preflight, "_module_available", lambda name: name == "vibecomfy")
-    monkeypatch.setattr(preflight.shutil, "which", lambda _name: None)
-
-    assert omp_agent.main([
-        "generate", "image", "--entry", "qwen-image-2.1-turbo", "--mode", "t2i",
-        "--target", "managed", "--dry-run", "a blue lighthouse", "--json",
-    ]) == 2
-
-    output = capsys.readouterr()
-    assert output.out == ""
-    assert "ComfyUI runtime" in output.err
-    assert "code: COMFY_TARGET_NOT_READY" in output.err.splitlines()
-    assert "field: target" in output.err.splitlines()
-
-
-@pytest.mark.parametrize("args,expected", [
-    (["draw a dog"], ["--print", "draw a dog"]),
-    (["-c", "follow-up"], ["--print", "follow-up"]),
-    (["unregistered-word", "more"], ["--print", "unregistered-word", "more"]),
-])
-def test_conversation_still_reaches_omp(monkeypatch, args, expected) -> None:
-    captured = []
-    monkeypatch.setattr(omp_agent, "_dispatch_toolkit", lambda _args: pytest.fail("gateway route"))
-    monkeypatch.setattr(omp_agent, "_installed_pack_families", lambda: frozenset())
-    monkeypatch.setattr(omp_agent, "_has_named_agent_profile", lambda *_a, **_kw: True)
-    monkeypatch.setattr(omp_agent, "_find_launcher", lambda: Path("/fake/agent"))
-    monkeypatch.setattr(omp_agent, "_select_omp_bin", lambda: None)
-    monkeypatch.setattr(omp_agent, "replace_process", lambda argv: captured.append(argv))
-    assert omp_agent.main(args) == 1
-    assert captured[0][:3] == ["/fake/agent", "run", "astrid"]
-    assert captured[0][-len(expected):] == expected
-    if args[0] == "-c":
-        assert "-c" in captured[0]
-
-
-def test_login_keeps_auth_route(monkeypatch) -> None:
-    calls = []
-    monkeypatch.setattr(omp_agent, "run_auth", lambda argv: calls.append(argv) or 13)
-    monkeypatch.setattr(omp_agent, "_dispatch_toolkit", lambda _args: pytest.fail("gateway route"))
-    assert omp_agent.main(["login"]) == 13
-    assert calls == [["login"]]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="the POSIX fake interpreter uses a shebang")
-def test_installed_launcher_dispatches_generate_json(tmp_path) -> None:
-    from astrid.installer.launcher import install
-
-    root = tmp_path / "Astrid Program Folder"
-    version_root = root / "versions" / "v1"
-    python = version_root / "py" / "bin" / "python"
-    python.parent.mkdir(parents=True)
-    (root / "current").write_text("v1\n", encoding="utf-8")
-    (version_root / "version.json").write_text(json.dumps({
-        "root": str(version_root), "python": str(python),
-        "env": {"ASTRID_INSTALL_RELEASE": "0", "ASTRID_INSTALL_MANAGED_BY": ""},
-    }), encoding="utf-8")
-    launcher, _ = install(root)
-    source_root = str(Path(__file__).resolve().parents[1])
-    python.write_text(
-        f"#!{sys.executable}\n"
-        "import runpy, sys\n"
-        f"sys.path.insert(0, {source_root!r})\n"
-        "if sys.argv[4].endswith('run_astrid.py'):\n"
-        "    script = sys.argv[4]; sys.argv = [script, *sys.argv[5:]]\n"
-        "    runpy.run_path(script, run_name='__main__')\n"
-        "else:\n"
-        "    assert sys.argv[1:5] == ['-X', 'utf8', '-I', '-m']\n"
-        "    assert sys.argv[5] == 'astrid.omp_agent'\n"
-        "    from astrid.core.generation import listing\n"
-        "    listing.generation_rows = lambda kind: [{'id': 'fake-generation'}]\n"
-        "    sys.argv = [sys.argv[5], *sys.argv[6:]]\n"
-        "    runpy.run_module('astrid.omp_agent', run_name='__main__')\n",
-        encoding="utf-8",
-    )
-    python.chmod(0o755)
-    result = subprocess.run(
-        [str(launcher), "generate", "list", "--json"], cwd=tmp_path,
-        env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1"},
-        capture_output=True, text=True, check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == [{"id": "fake-generation"}]
-    assert "flags must precede the message" not in result.stderr
 
 
 def test_setup_is_a_conversational_message(monkeypatch) -> None:

@@ -89,11 +89,6 @@ def _release0_environment(environment: Path) -> tuple[Path, Path]:
     ).stdout
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
         source.extractall(site_packages, filter="data")
-    # The selected Runtime supplies its protocol package to isolated Python.
-    import shutil
-    import runtime_protocol
-
-    shutil.copytree(Path(runtime_protocol.__file__).parent, site_packages / "runtime_protocol")
     runtime = site_packages / "astrid_runtime"
     runtime.mkdir(exist_ok=True)
     (runtime / "__init__.py").write_text("", encoding="utf-8")

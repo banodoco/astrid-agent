@@ -928,8 +928,6 @@ def _run_profile(
     global _LAST_PRODUCTION_RESULT
     if endpoint_checkout is not None and endpoint_transport is not None:
         raise ProductionEngineError("endpoint_checkout and endpoint_transport are mutually exclusive")
-    from astrid.core.generation.availability import require_bundled_execution_available
-    require_bundled_execution_available(resolved)
     local_kwargs: dict[str, Any] = {}
     if endpoint_transport is not None:
         local_kwargs["endpoint_transport"] = endpoint_transport

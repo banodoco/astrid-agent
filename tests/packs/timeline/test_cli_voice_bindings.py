@@ -21,7 +21,7 @@ def _fake_checkout(calls):
             checkout.version += 1
 
     class FakeCheckout:
-        music, path = "keep_end", Path("draft.json")
+        music = "keep_end"
         version = 0
 
         def document(self):
@@ -50,8 +50,6 @@ def _fake_checkout(calls):
 
         def check(self):
             return "valid"
-
-        _check_core = check
 
         def reflow(self):
             return []

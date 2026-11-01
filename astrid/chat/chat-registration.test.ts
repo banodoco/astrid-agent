@@ -50,3 +50,4 @@ describe('agent chat registration', () => {
     assert.equal(existsSync(path), true, 'an unparsable file is not ours to remove');
   });
 });
+

@@ -70,31 +70,6 @@ def _runtime_argv(script):
     raise AssertionError('the launch script does not call main() with a Runtime argv')
 
 
-def _service_envelope(rendered, system):
-    """Freeze the platform service shape without coupling it to the live prelude.
-
-    ``service.render`` deliberately embeds the current installer admission
-    prelude.  That prelude has its own custody and recovery coverage; keeping
-    it in these release-0 envelope snapshots would make an unrelated custody
-    change look like a platform-definition regression.
-    """
-    if system == 'darwin':
-        value = plistlib.loads(rendered.encode())
-        arguments = value['ProgramArguments']
-        assert len(arguments) == 6 and arguments[4] == '-c'
-        arguments[5] = '<installer-launch-prelude>'
-        return plistlib.dumps(value).decode()
-    if system == 'linux':
-        prefix, separator, remaining = rendered.partition('"-c" "')
-        prelude, boundary, suffix = remaining.partition('"\nEnvironment=')
-        assert separator and prelude and boundary
-        return prefix + '"-c" "<installer-launch-prelude>"\nEnvironment=' + suffix
-    prefix, separator, remaining = rendered.partition(' -c "')
-    prelude, boundary, suffix = remaining.partition('"</Arguments>')
-    assert separator and prelude and boundary
-    return prefix + ' -c "<installer-launch-prelude>"</Arguments>' + suffix
-
-
 @pytest.mark.parametrize('system,fixture', [('darwin','launchd.plist'), ('linux','systemd.service'), ('win32','task.xml')])
 def test_service_definitions_match_reviewed_snapshots(system, fixture):
     version, data, log = sample(system)
@@ -105,8 +80,7 @@ def test_service_definitions_match_reviewed_snapshots(system, fixture):
         boundary = root.find('t:Triggers/t:TimeTrigger/t:StartBoundary', ns)
         if boundary is not None:
             rendered = rendered.replace(boundary.text, '2000-01-01T00:00:00+00:00')
-    assert _service_envelope(rendered, system) == _service_envelope(
-        (FIXTURES / fixture).read_text(encoding='utf-8'), system)
+    assert rendered == (FIXTURES / fixture).read_text(encoding='utf-8')
     assert 'npm' not in rendered and 'pack_host' not in rendered and 'chat' not in rendered
     assert 'runtime-service.log' in rendered and 'install.log' not in rendered
 
@@ -167,7 +141,6 @@ def test_windows_task_settings_and_no_console_executable():
     xml = service.render('win32', version, data, log)
     assert xml.startswith('<Task ')
     assert '<?xml' not in xml
-    assert 'Hidden' not in service.render('win32', version, data, log)
     assert 'Hidden' not in xml
 
 
@@ -343,16 +316,6 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
         monkeypatch.delenv('ASTRID_RUNTIME_DOOR_PORT', raising=False)
     def source(name, _sha, destination):
         if name == 'agent':
-            root = Path(__file__).parents[1]
-            for relative in (
-                Path('astrid/core/timeline/schema/timeline-config.schema.json'),
-                Path('runtime.lock.json'),
-                Path('remotion/package.json'),
-                Path('remotion/package-lock.json'),
-            ):
-                target = destination / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes((root / relative).read_bytes())
             (destination / 'remotion/node_modules').mkdir(parents=True)
             (destination / 'remotion/package-lock.json').write_text('{}\n')
             (destination / 'remotion/package.json').write_text('{}\n')
@@ -372,9 +335,6 @@ def test_stage_profile_points_to_candidate_service_declaration(tmp_path, monkeyp
     def installed_root(python, _env):
         root = next(product_root.iterdir()) / 'py' / 'Lib' / 'site-packages'
         root.mkdir(parents=True, exist_ok=True)
-        schema = root / 'astrid/core/timeline/schema/timeline-config.schema.json'
-        schema.parent.mkdir(parents=True, exist_ok=True)
-        schema.write_bytes((Path(__file__).parents[1] / 'astrid/core/timeline/schema/timeline-config.schema.json').read_bytes())
         return root
 
     monkeypatch.setattr(backend, '_installed_product_root', installed_root)
@@ -995,25 +955,3 @@ def test_supervision_warning_respects_pinokio_and_other_platforms(tmp_path, monk
     monkeypatch.setattr(service.sys, "platform", "darwin")
     assert service.supervision_warning(tmp_path) is None
     runner.assert_not_called()
-
-
-def test_no_systemd_starts_foreground_runtime_supervisor_with_recorded_birth_identity(tmp_path, monkeypatch):
-    from runtime_protocol import platform
-    run = Mock(side_effect=FileNotFoundError('no systemd'))
-    manager = service.Service(tmp_path / 'program', tmp_path / 'log', run, home=tmp_path, system='linux')
-    version = Version(tmp_path / 'program/versions/v1', tmp_path / 'python', tmp_path / 'profile', {'PATH': '/tools:/bin'})
-    manager.register(version, tmp_path / 'data')
-    spawn = Mock(return_value=Mock(pid=123))
-    monkeypatch.setattr(platform, 'spawn_tree', spawn)
-    monkeypatch.setattr(platform, 'process_identity', lambda pid: {'birth_id': 'birth-123'})
-    manager.start_foreground(version, tmp_path / 'data')
-    # The foreground owner loads the documented settings before invoking Runtime.
-    assert spawn.call_args.args[0][1:5] == ['-X', 'utf8', '-I', '-c']
-    assert 'from astrid_runtime.cli import main' in spawn.call_args.args[0][5]
-    assert str(manager.env_file) in spawn.call_args.args[0][5]
-    assert spawn.call_args.kwargs['detached'] is True
-    assert spawn.call_args.kwargs['env']['PATH'] == '/tools:/bin'
-    assert read_json(manager.selection)['foreground'] == {'pid': 123, 'birth_id': 'birth-123'}
-    # PID reuse cannot make uninstall wait for an unrelated process.
-    monkeypatch.setattr(platform, 'process_identity', lambda pid: {'birth_id': 'new-owner'})
-    manager.stop()

@@ -192,9 +192,9 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
     """Read the selected Runtime's canonical workspace schema without mutation."""
     script = (
         "import json,sys; from pathlib import Path; "
-        "from runtime_protocol.upgrade import inspect_canonical_schema; from runtime_protocol.store import SCHEMA_VERSION; "
+        "from runtime_protocol.upgrade import inspect_canonical_schema, USER_APP_STATE_TARGET_SCHEMA_VERSION; "
         "value=inspect_canonical_schema(Path(sys.argv[1]), expected_realm_id=sys.argv[2]); "
-        "print(json.dumps({'identity':value,'target':SCHEMA_VERSION}))"
+        "print(json.dumps({'identity':value,'target':USER_APP_STATE_TARGET_SCHEMA_VERSION}))"
     )
     value = json.loads(backend.run(
         [version.python, "-X", "utf8", "-I", "-c", script, realm["realm_root"], realm["realm_id"]],
@@ -375,13 +375,6 @@ class Installer:
             self.backend.open()
 
     def _save_update(self, transaction: dict, step: str, **details) -> None:
-        custody = getattr(self.backend, "_pinokio_custody", None)
-        if custody is not None:
-            custody.check()
-            context = transaction.setdefault("transaction_context", {})
-            if not isinstance(context, dict):
-                raise ValueError("Invalid stopped-update activation context.")
-            context["pinokio_lifetime_custody"] = True
         transaction.update(step=step, **details)
         write_json(absolute(self.root / "update-transaction.json"), transaction)
         binding = transaction.get("update_job")
@@ -616,20 +609,10 @@ class Installer:
             raise ValueError("An existing workspace has no usable source profile; repair its profile before installing.")
         if old:
             self.say("Installing Astrid.")
-            same_schema = False
-            prepared_candidate: Version | None = None
 
             def prepare() -> Version:
-                nonlocal prepared_candidate, same_schema
-                if prepared_candidate is not None:
-                    return prepared_candidate
                 candidate = self.backend.stage(manifest, self.root, self.data)
                 self.backend.validate_candidate(candidate, self.data, realm)
-                old_schema = inspect_schema(self.backend, old, realm, require_current=False)
-                candidate_schema = inspect_schema(self.backend, candidate, realm, require_current=False)
-                same_schema = (old_schema == candidate_schema
-                               and candidate_schema["identity"]["version"] == candidate_schema["target"])
-                prepared_candidate = candidate
                 return candidate
 
             def migrate(candidate: Version, data: Path, _realm: dict) -> None:
@@ -665,17 +648,13 @@ class Installer:
 
             if realm is None:
                 raise ValueError("The selected workspace identity is unavailable.")
-            # Choose the workspace policy before constructing the transaction;
-            # the shared runner receives its callbacks as concrete values.
-            prepare()
             self._run_update_transaction(
                 old, realm, prepare=prepare, stop=self.backend.stop,
                 switch_candidate=select, switch_old=select_old,
                 activate=activate,
                 activate_old=lambda previous, _data, selected_realm: self._activate(
                     previous, selected_realm["realm_id"]),
-                backup=None if same_schema else self.backend.backup,
-                migrate=None if same_schema else migrate, kind="migration",
+                backup=self.backend.backup, migrate=migrate, kind="migration",
             )
             backup_image = getattr(self, "_last_update_backup", None)
             if backup_image:

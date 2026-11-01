@@ -229,10 +229,9 @@ class WorkspaceClient:
                 "create_project", "get_project", "update_project", "list_projects",
                 "select_project", "current_project", "create_timeline", "rename_timeline",
                 "create_timeline_document", "update_timeline_document", "list_timelines",
-                "get_timeline", "get_project_timeline", "list_timeline_history",
-                "commit_timeline", "list_timeline_commits", "replace_timeline_clip",
+                "commit_timeline", "list_timeline_commits",
                 "get_project_verified_document", "get_project_verified_document_object",
-                "diff_timeline", "archive_timeline",
+                "get_timeline", "get_project_timeline", "list_timeline_history", "replace_timeline_clip", "diff_timeline", "archive_timeline",
                 "recover_timeline", "list_project_shots", "create_project_shot",
                 "inspect_timeline", "create_timeline_view",
                 "get_project_shot", "update_project_shot", "archive_project_shot",
@@ -253,13 +252,13 @@ class WorkspaceClient:
                 "update_document", "ingest_object", "ingest_project_object", "ingest_project_object_stream",
                 "get_preferences", "update_preferences",
                 "import_project_media", "get_project_media_import",
+                "get_project_media_selection", "get_project_verified_media",
                 "list_project_objects", "get_project_object_location", "create_media_relation", "list_media_relations",
                 "get_object", "head_object", "admit_task", "get_task", "list_project_tasks",
                 "cancel_task", "retry_task", "cancel_run", "retry_run", "get_run",
                 "list_project_runs", "list_run_events", "list_managed_outputs",
                 "list_events",  # Includes the from_=latest polling cursor.
                 "get_managed_output", "list_generations",
-                "get_project_media_selection", "get_project_verified_media",
                 "get_generation", "list_variants", "attach_variant_thumbnail",
                 "get_source_frame_thumbnail", "ensure_source_frame_thumbnail",
                 "mark_variant_viewed", "mark_generation_variants_viewed",
@@ -275,16 +274,9 @@ class WorkspaceClient:
                 generated = getattr(self._generated, operation)
             except AttributeError as exc:
                 raise WorkspaceClientError(
-                    503,
-                    "not_ready",
-                    f"generated Runtime client does not provide {operation!r}",
-                    {
-                        "reason": "runtime_unavailable",
-                        "operation": operation,
-                        "next_action": (
-                            "install the Runtime generated client with Timeline M1 support"
-                        ),
-                    },
+                    503, "not_ready", f"generated Runtime client does not provide {operation!r}",
+                    {"reason": "runtime_unavailable", "operation": operation,
+                     "next_action": "install a Runtime generated client supporting this operation"},
                 ) from exc
             if not callable(generated):
                 raise AttributeError(f"generated workspace operation is not callable: {operation!r}")
@@ -483,45 +475,18 @@ class WorkspaceClient:
     def list_timelines(self, project_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
         return self._call_generated("list_timelines", project_id, cursor=cursor, limit=limit)
 
-    def commit_timeline(
-        self,
-        project_id: str,
-        timeline_id: str,
-        body: Mapping[str, Any],
-        *,
-        idempotency_key: str,
-    ) -> Any:
-        """Commit one command batch through Runtime's canonical timeline route."""
-        return self._call_generated(
-            "commit_timeline",
-            project_id,
-            timeline_id,
-            body,
-            idempotency_key=idempotency_key,
-        )
+    def commit_timeline(self, project_id: str, timeline_id: str, body: Mapping[str, Any], *, idempotency_key: str) -> Any:
+        return self._call_generated("commit_timeline", project_id, timeline_id, body, idempotency_key=idempotency_key)
 
-    def list_timeline_commits(
-        self,
-        project_id: str,
-        timeline_id: str,
-        *,
-        cursor: str | None = None,
-        limit: int = 50,
-    ) -> Any:
-        """Read the immutable accepted publication history and exact head pair."""
-        return self._call_generated(
-            "list_timeline_commits",
-            project_id,
-            timeline_id,
-            cursor=cursor,
-            limit=limit,
-        )
+    def list_timeline_commits(self, project_id: str, timeline_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
+        return self._call_generated("list_timeline_commits", project_id, timeline_id, cursor=cursor, limit=limit)
 
     def get_project_verified_document(self, project_id: str, pin: Mapping[str, Any]) -> Any:
         return self._call_generated("get_project_verified_document", project_id, pin)
 
     def get_project_verified_document_object(self, project_id: str, pin: Mapping[str, Any], object_id: str) -> Any:
         return self._call_generated("get_project_verified_document_object", project_id, pin, object_id)
+
     def get_project_timeline(self, project_id: str, timeline_id: str) -> Any:
         """Read one project timeline head without inspecting or mutating it."""
         return self._call_generated("get_project_timeline", project_id, timeline_id)
@@ -562,20 +527,10 @@ class WorkspaceClient:
         project_id: str,
         timeline_id: str,
         options: Mapping[str, Any] | None = None,
-        *,
-        idempotency_key: str,
     ) -> Any:
-        """Persist a declared-input view with projects:write authority.
-
-        Reuse the same key and options for transport retries; a new logical
-        request needs a fresh key. Inspection remains a read-only operation.
-        """
+        """Create a Runtime-owned declared-input timeline view."""
         return self._call_generated(
-            "create_timeline_view",
-            project_id,
-            timeline_id,
-            options=options or {},
-            idempotency_key=idempotency_key,
+            "create_timeline_view", project_id, timeline_id, options=options or {}
         )
 
     def list_timeline_history(self, timeline_id: str, *, cursor: str | None = None, limit: int = 50) -> Any:
@@ -844,11 +799,9 @@ class WorkspaceClient:
         return self._call_generated("get_project_media_import", project_id, import_operation_id)
 
     def get_project_media_selection(self, project_id: str, selection: Mapping[str, Any]) -> Any:
-        """Read one exact project-owned media selection for a native command."""
         return self._call_generated("get_project_media_selection", project_id, dict(selection))
 
     def get_project_verified_media(self, project_id: str, selection: Mapping[str, Any]) -> Any:
-        """Read Runtime-verified media metadata for a native command."""
         return self._call_generated("get_project_verified_media", project_id, dict(selection))
 
     def list_project_objects(
