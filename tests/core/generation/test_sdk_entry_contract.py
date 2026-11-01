@@ -9,10 +9,16 @@ from astrid.sdk.exceptions import CapabilityPreconditionError, CapabilityValidat
 from astrid.sdk.generation import GenerationFacade
 
 
+@pytest.fixture(scope='module')
+def shipped_catalog():
+    return ModelRegistry.load_default()
+
+
 @pytest.fixture
-def isolated_catalog(monkeypatch):
+def isolated_catalog(monkeypatch, shipped_catalog):
     import astrid.sdk as sdk
-    registry = ModelRegistry.load_default()
+    registry = shipped_catalog
+    monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: registry))
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
     monkeypatch.setattr(entries, "user_entries", lambda: [])
     monkeypatch.setattr(entries, "action_entries", lambda: [])
@@ -55,9 +61,10 @@ def test_sdk_entry_selector_conflict_precedes_target(isolated_catalog, monkeypat
         GenerationFacade().image(entry="z-image", model="other", target="auto", prompt="boat")
 
 
-def test_h3_explicit_sdk_uses_shared_validation_and_retains_parent_boundary(monkeypatch):
+def test_h3_explicit_sdk_uses_shared_validation_and_retains_parent_boundary(monkeypatch, shipped_catalog):
     import astrid.sdk as sdk
     from astrid.sdk.client import AstridClient
+    monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: shipped_catalog))
     digest = "sha256:" + "1" * 64
     action = {"id": "h3", "kind": "video", "modes": ["transform"], "action": "h3_av.transform",
               "inputs": [{"name": name, "type": "file", "required": True}
@@ -130,7 +137,8 @@ def test_actual_catalog_projection_and_context_help_agree_without_probes(monkeyp
     help_text = capsys.readouterr().out
     for port in description["inputs"]:
         assert f"{port['name']} ({port['type']}; " in help_text
-        assert ("required" if port["required"] else "optional") in help_text
+        assert set(port) == {'name', 'type', 'default'}
+        assert 'default=' in help_text
     if mode == "edit":
         assert "seed (integer;" not in help_text
     else:

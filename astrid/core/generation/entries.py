@@ -182,7 +182,7 @@ def _declared_default(port: dict[str, Any]) -> dict[str, Any]:
     return {'default': value}
 
 
-def _catalog_inputs(kind: str, spec: Any) -> list[dict[str, Any]]:
+def _catalog_inputs(kind: str, spec: Any, mode: str | None = None) -> list[dict[str, Any]]:
     """Mode membership comes from the catalog; scalar metadata from action ports."""
     import yaml
     from astrid.core.pack.loader import packs_root
@@ -199,6 +199,21 @@ def _catalog_inputs(kind: str, spec: Any) -> list[dict[str, Any]]:
                        'required': name in spec.requires,
                        **_declared_default(port),
                        **{key: port[key] for key in ('description', 'choices', 'min', 'max') if key in port}})
+    backend = spec.backends.get('local')
+    if backend is not None and backend.template:
+        from astrid.core.generation.backends.vibecomfy import _load_pinned_catalog_workflow
+        try:
+            workflow = _load_pinned_catalog_workflow(backend)
+        except (ImportError, OSError, ValueError, KeyError):
+            return result  # retained declared inputs remain useful offline
+        fields = _workflow_inputs({'binds': {}, 'defaults': {}}, mode or 'workflow', workflow=workflow)
+        for row in fields:
+            if {row['name'], *row.get('aliases', ())} & set(spec.requires):
+                row['required'] = True
+                row['_explicit_required'] = True
+        # Legacy count=1 is an admission control, not another writable widget.
+        fields.extend({**row, '_hidden': True} for row in result if row['name'] == 'count')
+        return fields
     return result
 
 
@@ -233,10 +248,17 @@ def _entry_bindings(workflow: Any, binds: dict[str, Any] | None, mode: str,
 
 
 def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list[dict[str, Any]]:
-    mapping = _entry_bindings(workflow, entry.get('binds'), mode)
+    # Registered names are authoritative. Entry/common spellings are accepted
+    # internally, but never add alias metadata to the public inventory.
+    mapping = _entry_bindings(workflow, {**{name: name for name in workflow.inputs},
+                                       **entry.get('binds', {})}, mode)
+    mapping.update(_writable_node_bindings(workflow))
     fields: dict[tuple[str, str], dict[str, Any]] = {}
     defaults = entry.get('defaults', {})
     for name, target in mapping.items():
+        candidate = workflow._resolve_input(target) if isinstance(target, str) else None
+        if candidate is not None and _linked(workflow, candidate.node_id, candidate.field):
+            continue
         public = _resolve_binding(workflow, name, target)
         spec = workflow.inputs[public]
         identity = (spec.node_id, spec.field)
@@ -254,7 +276,10 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
                     kind = primitive
                     break
         row = {'name': name, 'type': kind, 'required': spec.required,
-               'default': defaults.get(name, spec.default)}
+               'default': defaults.get(name, spec.default), '_binding': identity}
+        for spelling, binding in mapping.items():
+            if binding == target and spelling in defaults:
+                row['default'] = defaults[spelling]
         if aliases:
             row['aliases'] = aliases
         if spec.media_semantics:
@@ -275,7 +300,93 @@ def _workflow_inputs(entry: dict[str, Any], mode: str, *, workflow: Any) -> list
     return result
 
 
-def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = None) -> dict[str, Any]:
+def _schema_provider():
+    from vibecomfy.schema import get_authoring_schema_provider
+    return get_authoring_schema_provider(on_demand_schemas=False)
+
+
+def _linked(workflow: Any, node_id: str, field: str) -> bool:
+    return any(str(edge.to_node) == str(node_id) and edge.to_input == field
+               for edge in workflow.edges)
+
+
+def _writable_node_bindings(workflow: Any, provider: Any = None) -> dict[str, str]:
+    """Expose schema-backed literals through Vibe's existing validated binding.
+
+    Missing schema leaves registered inputs usable; it grants no additional
+    writable fields. No native imports, target probes or schema installation.
+    """
+    provider = provider or _schema_provider()
+    registered = {(str(spec.node_id), spec.field) for spec in workflow.inputs.values()}
+    bindings = {}
+    for node_id, node in workflow.nodes.items():
+        schema = provider.get_schema(node.class_type)
+        if schema is None:
+            continue
+        for field, spec in schema.inputs.items():
+            if (field.startswith('_') or _linked(workflow, node_id, field)
+                    or field not in node.inputs and field not in node.widgets):
+                continue
+            kind = _input_type(spec.type)
+            if kind not in {'string', 'integer', 'number', 'boolean', 'json', 'array', 'object'}:
+                continue
+            name = f'node:{node_id}.{field}'
+            # Also accept the exact node spelling of a registered public input;
+            # it resolves to the same identity for conflict rejection.
+            if (str(node_id), field) in registered:
+                continue
+            value = node.inputs.get(field, node.widgets.get(field))
+            limits = {key: getattr(spec, key) for key in ('choices', 'min', 'max')
+                      if getattr(spec, key, None) is not None}
+            workflow.register_input(name, str(node_id), field, value,
+                                    type=spec.type, default=spec.default, range=limits)
+            bindings[name] = name
+    return bindings
+
+
+def input_inventory(fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The single public row shape; native constraints remain internal."""
+    return [{'name': field['name'], 'type': field['type'], 'default': field.get('default')}
+            for field in fields if not field.get('_hidden')]
+
+
+def public_description(description: dict[str, Any]) -> dict[str, Any]:
+    return {**description, 'inputs': input_inventory(description['inputs']),
+            **({'mode_descriptions': {mode: {**row, 'inputs': input_inventory(row['inputs'])}
+                                      for mode, row in description['mode_descriptions'].items()}}
+               if 'mode_descriptions' in description else {})}
+
+
+def merge_input_values(*sources: Mapping[str, Any], assignments=()) -> dict[str, Any]:
+    """Merge supplied controls without last-wins behavior, before admission."""
+    result = {}
+    for source in sources:
+        if not isinstance(source, Mapping):
+            raise ValueError('inputs must be an object')
+        for name, value in source.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError('input names must be nonempty strings')
+            if name in result:
+                raise ValueError(f'duplicate input values: {name}')
+            result[name] = value
+    for assignment in assignments:
+        if not isinstance(assignment, str) or '=' not in assignment:
+            raise ValueError('--input requires name=value')
+        name, raw = assignment.split('=', 1)
+        if not name:
+            raise ValueError('--input requires a nonempty name')
+        if name in result:
+            raise ValueError(f'duplicate input values: {name}')
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = raw
+        result[name] = value
+    return result
+
+
+def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = None,
+                   _native: bool = False) -> dict[str, Any]:
     """Project the shared entry contract using local declarations only.
 
     No target inventory, readiness checks, Runtime client, provider or installer
@@ -296,6 +407,7 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         entry = actions[0]
         base = {key: entry[key] for key in ('id', 'kind', 'action', 'requirements', 'isolation_requirements') if key in entry}
         base['source'] = 'action'
+        base['engine'] = 'comfyui' if entry['action'] == 'h3_av.transform' else None
         modes = entry['modes']
         schemas = {name: [{**port, 'type': _input_type(port.get('type'))} for port in entry['inputs']]
                    for name in modes}
@@ -307,19 +419,69 @@ def describe_entry(entry_id: str, mode: str | None = None, *, registry: Any = No
         modes = entry['modes']
         if not modes or entry.get('kind') not in {'image', 'video', 'audio'}:
             raise ValueError(f'entry {entry_id!r} kind or mode requires review')
-        base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow'}
+        base = {'id': entry_id, 'kind': entry['kind'], 'source': 'workflow', 'engine': 'comfyui'}
         workflow = _load_entry_workflow(entry)
         schemas = {name: _workflow_inputs(entry, name, workflow=workflow) for name in modes}
     else:
         modes = list(catalog.modes)
-        base = {'id': entry_id, 'kind': catalog.modality, 'source': 'catalog'}
-        schemas = {name: _catalog_inputs(catalog.modality, spec) for name, spec in catalog.modes.items()}
+        base = {'id': entry_id, 'kind': catalog.modality, 'source': 'catalog',
+                'engine': 'comfyui' if any('local' in spec.backends for spec in catalog.modes.values()) else None}
+        schemas = {name: _catalog_inputs(catalog.modality, spec, name) for name, spec in catalog.modes.items()}
     if mode is not None and mode not in modes:
         raise ValueError(f'entry {entry_id!r} does not support mode {mode!r}')
     selected = mode or (modes[0] if len(modes) == 1 else None)
-    return {**base, 'modes': list(modes), 'mode': selected,
+    description = {**base, 'modes': list(modes), 'mode': selected,
             'inputs': schemas[selected] if selected is not None else [],
             'mode_descriptions': {name: {'mode': name, 'inputs': fields} for name, fields in schemas.items()}}
+    return description if _native else public_description(description)
+
+
+def describe_workflow(path: Path, mode: str | None = None, *, _native=False) -> dict[str, Any]:
+    """Describe raw/canonical Comfy work through the same offline input path."""
+    from astrid.packs.vibecomfy.production_engine import load_workflow_path
+    from vibecomfy.entries import draft_entry
+    path = path.expanduser()
+    if path.is_dir():
+        path = path / 'workflow.py'
+    with TemporaryDirectory(prefix='astrid-workflow-describe-') as scratch:
+        loaded = load_workflow_path(path, scratch, comfy_url='')
+        workflow = loaded.resolved.workflow
+        entry = draft_entry(workflow, 'workflow', bundle=str(path.resolve()))
+        selected = mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
+        fields = _workflow_inputs(entry, selected, workflow=workflow)
+    result = {'id': 'workflow', 'engine': 'comfyui', 'source': 'workflow',
+              'kind': entry['kind'], 'modes': [selected], 'mode': selected, 'inputs': fields}
+    return result if _native else public_description(result)
+
+
+def resolve_workflow_inputs(path: Path, inputs: Mapping[str, Any], *, mode=None):
+    description = describe_workflow(path, mode=mode, _native=True)
+    values = validate_inputs(description, _dimension_values(description, inputs))
+    return public_description(description), values
+
+
+def _dimension_values(description, inputs):
+    values = dict(inputs)
+    names = {port['name'] for port in description['inputs']}
+    supplied = {'size', 'resolution'} & values.keys()
+    pair = {'width', 'height'} & values.keys()
+    if len(supplied) > 1 or supplied and pair:
+        raise ValueError('duplicate/conflicting dimensions: size/resolution and width/height')
+    if pair:
+        if pair != {'width', 'height'}:
+            raise ValueError('width and height must be supplied together')
+        if any(type(values[name]) is not int or values[name] <= 0 for name in pair):
+            raise ValueError('width and height require positive integers')
+        if not pair & names and {'size', 'resolution'} & names:
+            values['size' if 'size' in names else 'resolution'] = f"{values.pop('width')}x{values.pop('height')}"
+    elif supplied and {'width', 'height'} <= names:
+        from astrid.core.generation.backends.base import parse_dimension_pair
+        value = values.pop(next(iter(supplied)))
+        dimensions = parse_dimension_pair(value) if isinstance(value, str) else None
+        if dimensions is None or any(dimension <= 0 for dimension in dimensions):
+            raise ValueError('invalid dimensions')
+        values.update(width=dimensions[0], height=dimensions[1])
+    return values
 
 
 def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, required: bool = True) -> dict[str, Any]:
@@ -334,13 +496,24 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
                 raise ValueError(f'ambiguous entry input alias {alias!r}')
             aliases[alias] = port['name']
     values: dict[str, Any] = {}
+    bound_identities: set[tuple[str, str]] = set()
     for supplied, value in inputs.items():
         name = aliases.get(supplied, supplied)
+        if name.startswith('node:') and name not in ports:
+            identity = tuple(name[5:].split('.', 1))
+            matches = [key for key, port in ports.items() if tuple(port.get('_binding', ())) == identity]
+            if len(matches) == 1:
+                name = matches[0]
         if name not in ports:
             raise ValueError('unsupported entry inputs: ' + supplied)
         if name in values:
             raise ValueError(f'duplicate/conflicting entry inputs for {name!r}')
         port = ports[name]
+        identity = tuple(port.get('_binding', ()))
+        if identity and identity in bound_identities:
+            raise ValueError(f'duplicate/conflicting entry inputs for {supplied!r}')
+        if identity:
+            bound_identities.add(identity)
         kind = _input_type(port.get('type'))
         if value is None:
             raise ValueError(f'entry input {name!r} must not be null')
@@ -393,7 +566,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
     if required:
         missing = [name for name, port in ports.items() if port.get('required')
                    and (name in values and (values[name] is None or isinstance(values[name], str) and not values[name].strip())
-                        or name not in values and port.get('default') in (None, ''))]
+                        or name not in values and (port.get('_explicit_required') or port.get('default') in (None, '')))]
         if missing:
             raise ValueError('missing required entry inputs: ' + ', '.join(missing))
     return values
@@ -401,7 +574,7 @@ def validate_inputs(description: dict[str, Any], inputs: Mapping[str, Any], *, r
 
 def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str | None = None,
                          kind: str | None = None, registry: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    description = describe_entry(entry_id, mode=mode, registry=registry)
+    description = describe_entry(entry_id, mode=mode, registry=registry, _native=True)
     if kind is not None and description['kind'] != kind:
         raise ValueError(f'entry {entry_id!r} does not support {kind}')
     if description['mode'] is None:
@@ -418,17 +591,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
         if selected is None:
             raise ValueError(f'entry {entry_id!r} requires an explicit mode')
         description = {**description, **description['mode_descriptions'][selected]}
-    values = dict(inputs)
-    names = {port['name'] for port in description['inputs']}
-    if not {'width', 'height'} & names and {'width', 'height'} & values.keys() and {'size', 'resolution'} & names:
-        if not {'width', 'height'} <= values.keys():
-            raise ValueError('width and height must be supplied together')
-        if {'size', 'resolution'} & values.keys():
-            raise ValueError('duplicate/conflicting dimensions: size/resolution and width/height')
-        dimensions = [values.pop(name) for name in ('width', 'height')]
-        if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in dimensions):
-            raise ValueError('width and height require positive integers')
-        values['size' if 'size' in names else 'resolution'] = f'{dimensions[0]}x{dimensions[1]}'
+    values = _dimension_values(description, inputs)
     validation = description
     ports = {port['name']: port for port in description['inputs']}
     primary = ('request', 'asset_map')
@@ -449,7 +612,7 @@ def resolve_entry_inputs(entry_id: str, inputs: Mapping[str, Any], *, mode: str 
                 {key: value for key, value in port.items() if key != 'file_custody'}
                 if port['name'] in primary else port for port in description['inputs']]}
             description = {**description, 'runtime_parent_required': True}
-    return description, validate_inputs(validation, values)
+    return public_description(description), validate_inputs(validation, values)
 
 
 def infer_kind(workflow: Any) -> str:
@@ -460,12 +623,18 @@ def infer_kind(workflow: Any) -> str:
 def _resolve_binding(workflow: Any, name: str, target: Any) -> str:
     if isinstance(target, dict):
         target = f"{target['node']}.{target['field']}"
+    if isinstance(target, str) and target.startswith('node:'):
+        target = target[5:]
     resolved = workflow._resolve_input(target)
     if resolved is not None:
+        if _linked(workflow, resolved.node_id, resolved.field):
+            raise ValueError(f'entry input {name!r} targets a graph link')
         return resolved.name
     if '.' not in target:
         raise ValueError(f'entry binding {name!r} refers to unknown public input {target!r}')
     node_id, field = target.split('.', 1)
+    if _linked(workflow, node_id, field):
+        raise ValueError(f'entry input {name!r} targets a graph link')
     matches = [item.name for item in workflow.inputs.values() if item.node_id == node_id and item.field == field]
     if len(matches) > 1:
         raise ValueError(f'entry binding {name!r} has ambiguous target {target!r}')
@@ -474,7 +643,14 @@ def _resolve_binding(workflow: Any, name: str, target: Any) -> str:
     from vibecomfy.entries import media_loader_kind
     node = workflow.nodes.get(node_id)
     media = media_loader_kind(node.class_type, field) if node is not None else None
-    workflow.register_input(name, node_id, field, media_semantics=media)
+    schema = _schema_provider().get_schema(node.class_type) if node is not None else None
+    spec = schema.inputs.get(field) if schema is not None else None
+    value = node.inputs.get(field, node.widgets.get(field)) if node is not None else None
+    limits = {key: getattr(spec, key) for key in ('choices', 'min', 'max')
+              if getattr(spec, key, None) is not None}
+    workflow.register_input(name, node_id, field, value,
+                            type=getattr(spec, 'type', None), default=value,
+                            range=limits, media_semantics=media)
     return name
 
 
@@ -486,30 +662,56 @@ def prepare(path: Path, *, target_client: Any, mode: str, binds: dict[str, Any] 
     with TemporaryDirectory(prefix="astrid-entry-inspect-") as scratch:
         loaded = load_workflow_path(path, scratch, comfy_url=target_client.target.url if target_client else "")
         workflow = loaded.resolved.workflow
-        kind = infer_kind(workflow)
-        mapping = _entry_bindings(workflow, binds, mode, param_map)
-        requested = {**(defaults or {}), **{k: v for k, v in values.items() if v is not None}}
-        dimensions = requested.pop("size", requested.pop("resolution", None))
-        if dimensions is not None:
-            from astrid.core.generation.backends.base import parse_dimension_pair
-            pair = parse_dimension_pair(str(dimensions))
-            if pair is None:
-                raise ValueError("invalid dimensions")
-            requested.update(width=pair[0], height=pair[1])
-        requested.pop("count", None)
-        applied, unbound, assets = {}, [], {}
-        for name, value in requested.items():
-            target = mapping.get(name)
-            if target is None:
-                unbound.append(name)
-                continue
-            public = _resolve_binding(workflow, name, target)
-            applied[public] = value
-            if getattr(workflow.inputs[public], "media_semantics", None) in {"image", "video", "audio", "mask"}:
-                assets[public] = Path(value)
-            else:
-                workflow.set_input(public, value)
-        return workflow, {"kind": kind, "bindings": applied, "unbound": sorted(unbound)}, assets
+        return apply_workflow_inputs(workflow, mode=mode, binds=binds, values=values,
+                                     defaults=defaults, param_map=param_map)
+
+
+def apply_workflow_inputs(workflow: Any, *, mode: str, values: dict[str, Any],
+                          binds=None, defaults=None, param_map=None):
+    """One validated native binding path for catalog, entry and raw workflows."""
+    kind = infer_kind(workflow)
+    mapping = _entry_bindings(workflow, {**{name: name for name in workflow.inputs}, **(binds or {})}, mode, param_map)
+    mapping.update(_writable_node_bindings(workflow))
+    fields = _workflow_inputs({'binds': {}, 'defaults': {}}, mode, workflow=workflow)
+    values = _dimension_values({'inputs': fields}, values)
+    requested = {**(defaults or {}), **values}
+    dimensions = requested.pop("size", requested.pop("resolution", None))
+    if dimensions is not None:
+        from astrid.core.generation.backends.base import parse_dimension_pair
+        pair = parse_dimension_pair(str(dimensions))
+        if pair is None:
+            raise ValueError("invalid dimensions")
+        requested.update(width=pair[0], height=pair[1])
+    requested.pop("count", None)
+    applied, unbound, assets = {}, [], {}
+    explicit_bindings = set()
+    for name, value in requested.items():
+        target = mapping.get(name)
+        if target is None and name.startswith('node:'):
+            target = name[5:]
+            node_id, _, field = target.partition('.')
+            known = {(str(spec.node_id), spec.field) for spec in workflow.inputs.values()}
+            if (node_id, field) not in known:
+                raise ValueError(f'unknown or unwritable input {name!r}')
+        if target is None:
+            unbound.append(name)
+            continue
+        public = _resolve_binding(workflow, name, target)
+        identity = (workflow.inputs[public].node_id, workflow.inputs[public].field)
+        if name in values:
+            if identity in explicit_bindings:
+                raise ValueError(f'duplicate/conflicting entry inputs for {name!r}')
+            explicit_bindings.add(identity)
+        # A supplied alias overrides a default for that same binding.
+        elif identity in explicit_bindings:
+            continue
+        validate_inputs({'inputs': fields}, {public: value}, required=False)
+        applied[public] = value
+        if getattr(workflow.inputs[public], "media_semantics", None) in {"image", "video", "audio", "mask"}:
+            assets[public] = Path(value)
+        else:
+            workflow.set_input(public, value)
+    return workflow, {"kind": kind, "bindings": applied, "unbound": sorted(unbound)}, assets
 
 
 def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
@@ -525,9 +727,12 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
     observed = client.object_info()
     if not isinstance(observed, dict):
         raise ValueError("target model inventory is malformed")
-    for node in workflow.runtime_nodes().values():
-        if node.class_type not in observed:
-            raise ValueError(f"target is missing node {node.class_type!r}")
+    from astrid.core.generation.preflight import GenerationReadinessError, readiness_envelope
+    issues = []
+    for class_type in sorted({node.class_type for node in workflow.runtime_nodes().values()} - observed.keys()):
+        issues.append({'code': 'missing_dependency', 'severity': 'error',
+                       'message': f'target is missing node {class_type!r}',
+                       'details': {'engine_code': 'comfyui.missing_node', 'node': class_type, 'bytes': None}})
     roles = {}
     needs_by_key = {}
     for index, need in enumerate(entry.get("needs", [])):
@@ -538,8 +743,20 @@ def target_schema(entry: dict[str, Any], workflow: Any, client: Any):
         roles[key] = SimpleNamespace(node_class=node_class, input=field, names=(value,))
         needs_by_key[key] = need
     _, failures = _resolve_roles(SimpleNamespace(model_roles=roles), observed)
-    if failures:
-        need = needs_by_key[next(iter(failures))]
-        raise ValueError(f"target is missing {need.get('role') or 'model'} {need['value']!r} for {need['class_type']}.{need['field']}")
+    for key in failures:
+        need = needs_by_key[key]
+        if need['class_type'] not in observed:
+            continue  # the missing node already explains this observation
+        issues.append({'code': 'missing_dependency', 'severity': 'error',
+                       'message': f"target is missing {need.get('role') or 'model'} {need['value']!r} for {need['class_type']}.{need['field']}",
+                       'details': {'engine_code': 'comfyui.models_missing', 'model': need['value'],
+                                   'node': need['class_type'], 'field': need['field'], 'bytes': need.get('bytes')}})
+    if issues:
+        raise GenerationReadinessError(readiness_envelope(entry={
+            'id': entry.get('id'), 'engine': 'comfyui',
+            'inputs': input_inventory(_workflow_inputs(entry, entry.get('mode', 'workflow'), workflow=workflow))},
+            target=getattr(client, 'generation_target', None), issues=issues,
+            fixes=[{'argv': ['astrid', 'generate', 'describe', '--entry', entry.get('id', 'workflow')],
+                    'scope': 'read_only', 'details': {'action': 'Provide the listed nodes/models on this selected target using its supported installer.'}}]))
     return TargetSchemaProvider.from_object_info(observed, server_url=client.http_origin,
         model_availability="target", refresh_object_info=client.object_info)

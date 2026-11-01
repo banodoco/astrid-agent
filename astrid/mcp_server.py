@@ -99,8 +99,12 @@ def _tool_name(path: tuple[str, ...]) -> str:
 
 
 def build_tools() -> dict[str, dict[str, Any]]:
+    return _tools_for_parsers(family_parsers())
+
+
+def _tools_for_parsers(parsers) -> dict[str, dict[str, Any]]:
     tools: dict[str, dict[str, Any]] = {}
-    for family, parser in family_parsers().items():
+    for family, parser in parsers.items():
         for path, leaf, summary in _leaves(parser, (family,), ""):
             if path[:2] in EXCLUDED:
                 continue
@@ -235,6 +239,20 @@ def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess | dict[str, 
 
 def call_tool(tool: dict[str, Any], arguments: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
     kind = tool.get("kind", "cli")
+    if kind == 'generation':
+        arguments = dict(arguments)
+        values = arguments.pop('inputs', {})
+        if not isinstance(values, dict):
+            from astrid.core.generation.preflight import generation_error
+            payload = generation_error(ValueError('inputs must be an object')).to_envelope()
+            return _text(json.dumps(payload), error=True, structured=payload)
+        supplied = list(arguments.get('input') or [])
+        supplied.extend(name + '=' + json.dumps(value) for name, value in values.items())
+        if supplied:
+            arguments['input'] = supplied
+        # MCP returns admission immediately; tasks_show/follow observe the same task.
+        if tool['path'][-1] in {'image', 'video', 'workflow'}:
+            arguments['no_wait'] = True
     if kind == "skills_list":
         skills = [{"name": p["definition"]["name"], "description": p["definition"]["description"]}
                   for p in (state or {}).get("prompts", {}).values()]
@@ -434,7 +452,7 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
         }, **extra}
     document = {"type": ["object", "string"],
                 "description": "The timeline document from timeline_document_checkout, edited (JSON)."}
-    return dict([
+    return {**dict([
         tool("skills_list", "List Astrid's pack skills (name and when to use each).", {}, [],
              kind="skills_list"),
         tool("skill_get", "Read one Astrid skill (SKILL.md) before multi-step work in its area.",
@@ -474,7 +492,7 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              "Add one new, empty shot to a timeline document (Astrid SDK add_authoring_shot) and place it; "
              "returns the updated document. For an empty timeline: checkout, add_shot, put a track and clips "
              "in document['shots'][shot_id]['internal_timeline'] (clip times in seconds: at, hold/from/to), "
-             "then check and publish. The rendering skill's document-checkout reference has the clip fields.",
+             "then check and publish. The rendering skill's document-checkout reference has the timeline clip fields.",
              {"document": document,
               "name": {"type": "string", "description": "Shot display name."},
               "shot_id": {"type": "string", "description": "Optional explicit shot ID."},
@@ -490,7 +508,18 @@ def _extra_tools() -> dict[str, dict[str, Any]]:
              {"document": document,
               "idempotency_key": {"type": "string", "description": "A new unique key for this publication."}},
              ["document", "idempotency_key"], kind="timeline_document", command="publish"),
-    ])
+    ]), **_generation_tools()}
+
+
+def _generation_tools():
+    from astrid.core.generation.cli import _parser
+    tools = _tools_for_parsers({'generate': _parser()})
+    for tool in tools.values():
+        tool['kind'] = 'generation'
+        if tool['path'][-1] in {'image', 'video', 'workflow'}:
+            tool['definition']['inputSchema']['properties']['inputs'] = {
+                'type': 'object', 'description': 'Writable inputs from generate_describe, including node:<id>.<field>.'}
+    return tools
 
 
 # --- prompts from pack skills -----------------------------------------------

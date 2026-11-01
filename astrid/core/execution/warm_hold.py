@@ -31,7 +31,10 @@ def idle_seconds(default: float, *, requested: float | None = None,
     """A request's ``lifecycle.idle_timeout_seconds`` wins for its holder,
     then ASTRID_WARM_IDLE_SECONDS for every holder, then the holder's default."""
     if requested is not None:
-        return float(requested)
+        value = float(requested)
+        if isinstance(requested, bool) or not math.isfinite(value) or value < 0:
+            raise ValueError("idle timeout must be finite and non-negative")
+        return value
     configured = (os.environ if environ is None else environ).get(ASTRID_WARM_IDLE_SECONDS)
     try:
         value = float(configured) if configured is not None else math.nan
