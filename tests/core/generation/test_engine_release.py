@@ -131,7 +131,7 @@ print(json.dumps({s.name:{'repository':s.pin.repository,'revision':s.pin.revisio
         'comfyui': {'repository': 'https://github.com/Comfy-Org/ComfyUI.git',
                     'revision': '423cbd20511becb1f16122ab518e92e58bfa03d9', 'path': 'runtime/ComfyUI'},
         'vibecomfy': {'repository': 'https://github.com/banodoco/VibeComfy.git',
-                      'revision': '8cf4c758c3f1f2473f2094478edc8696bb5bf5c0', 'path': 'runtime/vibecomfy'},
+                      'revision': 'b2123edfbe7b950848b5c98d575fd9554302fc73', 'path': 'runtime/vibecomfy'},
     }
 
 
