@@ -1,0 +1,9 @@
+{
+  "agent_ref": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+  "app_ref": "9d3ccda1e81383082258943207745086da2aabe4",
+  "artifact_paths": "r07-proof/collection.log\nr07-proof/focused.log\nr07-proof/inner-exits.txt",
+  "command": "mkdir -p r07-proof; python -m pytest --collect-only -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-proof/collection.log 2>&1; collection_rc=$?; python -m pytest -q tests/test_contract_fixtures.py tests/test_update_jobs.py > r07-proof/focused.log 2>&1; focused_rc=$?; printf 'collection=%s\\nfocused=%s\\n' \"$collection_rc\" \"$focused_rc\" > r07-proof/inner-exits.txt; cat r07-proof/collection.log; cat r07-proof/focused.log; test \"$collection_rc\" -eq 0 && test \"$focused_rc\" -eq 0",
+  "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+  "runtime_ref": "bc1ddc2dbd6c08bc28c6fd1bfe03447de48797cf",
+  "slot": "1"
+}
