@@ -37,6 +37,7 @@ def _hosted_receipts(tmp_path, *, first_click="refused"):
         "start_begin", "start_end",
     )
     for contract in journey_matrix.M4_4A_BACKEND_MATRIX:
+        contract = check_journey_evidence._migrate_macos_receipt_key(contract)
         receipt_dir = tmp_path / contract["job_id"]
         sidecars = {}
         negative_controls = {
@@ -119,7 +120,7 @@ def _hosted_receipts(tmp_path, *, first_click="refused"):
             "final_cleanup": "pass",
             "runner_provenance": {
                 "RUNNER_OS": {"macos": "macOS", "linux": "Linux", "windows": "Windows"}[contract["os"]],
-                "ImageOS": {"macos": "macos14", "linux": "ubuntu24", "windows": "win22"}[contract["os"]],
+                "ImageOS": {"macos": "macos15", "linux": "ubuntu24", "windows": "win22"}[contract["os"]],
                 "ImageVersion": "test",
             },
             "candidate_checkouts": {name: {"sha": value} for name, value in candidate.items()},
