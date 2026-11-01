@@ -1,0 +1,26 @@
+name: Regression evidence aggregate
+
+on:
+  workflow_call:
+    inputs:
+      freshness_result:
+        description: Result of the C-07 job in the calling workflow
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-green:
+    name: int/regression-green
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require local broker evidence evaluation
+        if: ${{ always() }}
+        run: |
+          echo 'The broker journal is not available to GitHub Actions. Run the local regression evaluator on the orchestrator; this hosted check cannot establish regression-green.' >&2
+          exit 1
