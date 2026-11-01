@@ -32,7 +32,7 @@ run:
     PYTHON="$PWD/runpod-tmp/venv/bin/python"
     test "$(git rev-parse HEAD)" = 8f494cb4db0f941fbee634cb3eb28d35795e26cf
     test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 1e6d899efa77a2d6ec247c38250f9748330bb587
-    test -z "$(git status --porcelain)"
+    test -z "$(git status --porcelain --untracked-files=no)"
     test -z "$(git -C "$ASTRID_RUNTIME_CHECKOUT" status --porcelain)"
     git rev-parse HEAD > runpod-evidence/agent-head.txt
     git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
