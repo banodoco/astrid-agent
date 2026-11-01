@@ -226,9 +226,28 @@ def test_upload_and_output_use_the_shared_relay_deadline(tmp_path, network):
     client._opener = opener
     client.upload_media(source, task_id="task-1")
     client.download_output(DESCRIPTOR, output)
-    assert timeouts == [comfy_target.HTTP_TRANSFER_SECONDS] * 2
-    assert all(timeout == 15 for timeout in timeouts)
+    assert timeouts == [comfy_target.HTTP_TRANSFER_SECONDS, comfy_target.LOCAL_HTTP_SECONDS]
+    assert timeouts == [15, 30]
     assert len(requests[0].data) <= comfy_target.MAX_ENGINE_BODY_BYTES
+    assert output.read_bytes() == b"output"
+
+
+def test_local_object_info_and_output_keep_30_second_deadline(tmp_path, network):
+    import io
+
+    output = tmp_path / "result.png"
+    client = attached(network)
+    timeouts = []
+
+    def opener(request, timeout):
+        timeouts.append(timeout)
+        return io.BytesIO(b"{}" if request.full_url.endswith("/object_info") else b"output")
+
+    client._opener = opener
+    client.object_info()
+    client.download_output(DESCRIPTOR, output)
+
+    assert timeouts == [30, 30]
     assert output.read_bytes() == b"output"
 
 

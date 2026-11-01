@@ -35,6 +35,7 @@ MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ENGINE_BODY_BYTES = 1024 * 1024 * 1024
 HTTP_TRANSFER_SECONDS = 15
+LOCAL_HTTP_SECONDS = 30
 _CHUNK_BYTES = 1024 * 1024
 
 
@@ -148,8 +149,8 @@ class ComfyTargetClient:
     def _json(self, path, payload=None, *, timeout=10.0, response_limit=64 * 1024,
               acknowledge_empty=True):
         timeout = float(timeout)
-        if not math.isfinite(timeout) or not 0 < timeout <= HTTP_TRANSFER_SECONDS:
-            raise ValueError("Comfy request timeout must be finite and at most 15 seconds")
+        if not math.isfinite(timeout) or not 0 < timeout <= LOCAL_HTTP_SECONDS:
+            raise ValueError("Comfy request timeout must be finite and at most 30 seconds")
         if not isinstance(response_limit, int) or not 0 < response_limit <= MAX_JSON_BYTES:
             raise ValueError("invalid Comfy response bound")
         body = None if payload is None else json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -194,6 +195,8 @@ class ComfyTargetClient:
             allowed = path in {"/queue", "/interrupt", "/api/free"}
         if not allowed:
             raise ValueError("unsupported Comfy HTTP operation")
+        if timeout > HTTP_TRANSFER_SECONDS and path != "/object_info":
+            raise ValueError("Comfy request timeout must be at most 15 seconds")
         if self.target.kind == "attached" and payload is not None:
             scoped_delete = (path == "/queue" and isinstance(payload, dict)
                              and set(payload) == {"delete"} and isinstance(payload["delete"], list)
@@ -217,7 +220,7 @@ class ComfyTargetClient:
         if self.endpoint_transport is not None:
             payload = self.endpoint_transport.object_info(deadline=time.monotonic() + HTTP_TRANSFER_SECONDS)
         else:
-            payload = self.request_json("/object_info", timeout=HTTP_TRANSFER_SECONDS, response_limit=MAX_JSON_BYTES)
+            payload = self.request_json("/object_info", timeout=LOCAL_HTTP_SECONDS, response_limit=MAX_JSON_BYTES)
         if not isinstance(payload, dict):
             raise ValueError("Comfy object_info response is not an object")
         from astrid.core.generation.engine_readiness import current_comfy_provenance
@@ -390,8 +393,8 @@ class ComfyTargetClient:
                 query = urllib_parse.urlencode({"filename": filename, "subfolder": subfolder, "type": output_type})
                 request = urllib_request.Request(self.http_origin + "/view?" + query,
                                                  headers={"Accept-Encoding": "identity"}, method="GET")
-                deadline = time.monotonic() + HTTP_TRANSFER_SECONDS
-                with self._opener(request, timeout=HTTP_TRANSFER_SECONDS) as response, temporary_path.open("wb") as temporary:
+                deadline = time.monotonic() + LOCAL_HTTP_SECONDS
+                with self._opener(request, timeout=LOCAL_HTTP_SECONDS) as response, temporary_path.open("wb") as temporary:
                     if getattr(response, "status", 200) != 200:
                         raise ValueError("checkout_server /view returned a non-200 status")
                     headers = getattr(response, "headers", {})
