@@ -1,0 +1,22 @@
+{
+  "effective_checkouts": {
+    "agent": "020877f12ea490308a9e5f9564c8f4a4bf77ede1",
+    "app": "36ff224e3c9ad862e3f807e2548b997a36799543",
+    "driver": "0996b27a9e5917d5d9aad15bf6845fff48177adc",
+    "pinokio": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+  },
+  "evidence_step_outcome": "success",
+  "inner_exit": 1,
+  "journey_step_outcome": "failure",
+  "oversize": "false",
+  "row_id": "direct-windows",
+  "run_attempt": "1",
+  "run_id": "41354752074",
+  "runner": "windows-2022",
+  "runner_os": "Windows",
+  "source_ref": "refs/heads/venue/M-QUAL-R-05-FAILURES-REPIN-R1-1",
+  "source_sha": "0996b27a9e5917d5d9aad15bf6845fff48177adc",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/journey-direct.yml@refs/heads/venue/M-QUAL-R-05-FAILURES-REPIN-R1-1",
+  "workflow_sha": "0996b27a9e5917d5d9aad15bf6845fff48177adc"
+}

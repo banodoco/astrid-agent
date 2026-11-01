@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Astrid Runtime</Description>
+    <URI>\Astrid Runtime</URI>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Owner">
+      <UserId>S-1-5-21-3977851545-3833041388-3993362562-500</UserId>
+      <LogonType>InteractiveToken</LogonType>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <RestartOnFailure>
+      <Count>999</Count>
+      <Interval>PT1M</Interval>
+    </RestartOnFailure>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+  </Settings>
+  <Triggers>
+    <LogonTrigger>
+      <Repetition>
+        <Interval>PT1M</Interval>
+      </Repetition>
+      <UserId>runnervmnjgfq\runneradmin</UserId>
+    </LogonTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-11-01T22:01:50+00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT1M</Interval>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Actions Context="Owner">
+    <Exec>
+      <Command>D:\a\_temp\astrid-r1-direct-windows\program\versions\3204bb00-6d53a190-ae2e2e3b\py\Scripts\pythonw.exe</Command>
+      <Arguments>-X utf8 -I -c "import json,os,sys
+from pathlib import Path
+os.environ.update({'PYTHONIOENCODING': 'utf-8', 'ASTRID_BUN_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\bun\\bun-windows-x64\\bun.exe', 'ASTRID_NODE_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\node\\node-v20.19.4-win-x64\\node.exe', 'ASTRID_FFMPEG_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\ffmpeg\\ffmpeg-7.0.2-full_build\\bin\\ffmpeg.exe', 'ASTRID_FFPROBE_EXECUTABLE': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\ffmpeg\\ffmpeg-7.0.2-full_build\\bin\\ffprobe.exe', 'ASTRID_INSTALL_FFMPEG_SOURCE': 'download', 'ASTRID_INSTALL_FFMPEG_VERSION': '7.0.2-full_build-www.gyan.dev', 'ASTRID_INSTALL_FFPROBE_VERSION': '7.0.2-full_build-www.gyan.dev', 'BUN_INSTALL': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\omp', 'BUN_INSTALL_BIN': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\omp\\bin', 'PATH': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\py\\Scripts;D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\omp\\bin;D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\bun\\bun-windows-x64;D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\node\\node-v20.19.4-win-x64;D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\tools\\ffmpeg\\ffmpeg-7.0.2-full_build\\bin;C:\\Windows\\System32', 'ASTRID_INSTALL_OMP_SOURCE': 'fork', 'ASTRID_INSTALL_OMP_VERSION': '18.12.6', 'ASTRID_INSTALL_OMP_COMMIT': '78f0e0960f471c2c62b943272a48c33366f239fe', 'ASTRID_RUNTIME_DATA_ROOT': 'D:\\a\\_temp\\astrid-r1-direct-windows\\data', 'ASTRID_RUNTIME_DOOR_PORT': '17340', 'ASTRID_HOST_EXECUTION_PROFILE': 'installed', 'ASTRID_SOURCE_PROVENANCE_ROOT': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\a', 'ASTRID_REMOTION_PROJECT_DIR': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\a\\remotion', 'ASTRID_TIMELINE_SCHEMA_PYTHONPATH': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\a\\remotion\\node_modules\\@banodoco\\timeline-schema\\python', 'ASTRID_CAPABILITY_MATRIX_PATH': 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\a\\config\\astrid-beta-capabilities.json'})
+sys.stdout=sys.stderr=open('D:\\a\\_temp\\astrid-r1-direct-windows\\localappdata\\Astrid Runtime\\logs\\runtime-service.log','a',encoding='utf-8',buffering=1)
+path=Path('D:\\a\\_temp\\astrid-r1-direct-windows\\program\\service-env.json')
+settings=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+if (not isinstance(settings,dict) or set(settings)-set(['ASTRID_ALLOW_UNQUALIFIED_GPU', 'ASTRID_WARM_IDLE_SECONDS']) or any(not isinstance(value,str) for value in settings.values())):
+    raise ValueError('Invalid Astrid service-env.json; use the documented string settings.')
+os.environ.update(settings)
+from astrid_runtime.cli import main
+sys.exit(main(['run', '--profile', 'astrid', '--data-root', 'D:\\a\\_temp\\astrid-r1-direct-windows\\data', '--source-manifest', 'D:\\a\\_temp\\astrid-r1-direct-windows\\program\\versions\\3204bb00-6d53a190-ae2e2e3b\\profile.json']))"</Arguments>
+      <WorkingDirectory>D:\a\_temp\astrid-r1-direct-windows\program\versions\3204bb00-6d53a190-ae2e2e3b</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
