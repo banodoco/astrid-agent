@@ -119,11 +119,9 @@ actions:
       - name: source
         type: file
         required: true
-        description: Existing source audio to transcribe.
     outputs:
       - name: transcript
         type: file
-        description: Transcript text produced by this action.
         mode: create
 ```
 
@@ -140,12 +138,6 @@ actions:
 
 Port `type` is one of `boolean`, `directory`, `file`, `html`, `integer`,
 `json`, `number`, `path`, `string`. Port names are unique within a list.
-For authored port lists, include `type` and a useful `description` for every
-port, and state `required` for each input. Preserve actual defaults, including
-false, zero, or empty values. Empty input lists are valid. When `inputs` or
-`outputs` uses inline JSON Schema or a relative schema path, keep that schema's
-own descriptions, `required` and `default` structure; do not convert it into a
-port list just to add these fields.
 Composition goes through the public action API (`astrid.sdk.invoke`), not a
 direct import of another action's module; the working example is
 `examples/packs/minimal/`.
@@ -252,12 +244,7 @@ examples, CAS recovery, source-path authority and scaling guidance, follow
   frontmatter; link adjacent guides, references, templates and assets normally.
 - **`agent`**: `purpose`, `normal_entrypoints` (public ids),
   `do_not_use_for`, `required_context` (declared paths an agent should read
-  first). These are optional authoring hints: a useful pack `description` or
-  `agent.purpose` is enough to explain intent; `normal_entrypoints` is a curated
-  subset of declared public contributions or supported aliases, not a required
-  action list. Support-only packs and packs whose public contribution is UI,
-  rendering, or documents do not need action ids. Use `required_context` only
-  for files an agent actually needs to read.
+  first).
 - **`resources`**: `{path, kind}` files projected with the pack (`reference`,
   `template`, `schema`, `shared`, `implementation`, `documentation`, ...).
 - **`authoring_only`**: `{path, kind, reason}` files that live in the tree for
@@ -391,13 +378,6 @@ the pack's tests as described in the
 [pack testing skill](../../astrid/packs/_core/docs/pack-testing/SKILL.md), and
 regenerate the capability catalog after a manifest change with
 `python scripts/gen_capability_index.py`.
-
-For v3 packs, validation also reports advisory warnings when useful intent is
-missing, optional known `agent` hints are malformed, a preferred entrypoint
-does not resolve to a declared contribution, or an authored port list omits
-type, input requiredness, or a useful description. These warnings do not block
-validation; legacy packs remain readable and schema/reference contracts keep
-their declared structure.
 
 ## Reference examples
 

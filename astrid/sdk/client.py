@@ -8,7 +8,6 @@ local application. Runtime discovery and credentials are resolved by
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -43,10 +42,6 @@ _HEALTH_KEYS = frozenset(
         "identity",
     }
 )
-_HEALTH_INSTALLED_IDENTITY_KEYS = frozenset({"release", "managed_by"})
-_HEALTH_SOURCE_IDENTITY_KEYS = _HEALTH_INSTALLED_IDENTITY_KEYS | {
-    "runtime_head", "agent_head", "dirty", "dirty_hash",
-}
 _HEALTH_SERVICE_KEYS = frozenset({"name", "state", "last_exit", "restart_count"})
 _HANDSHAKE_KEYS = frozenset(
     {
@@ -122,34 +117,6 @@ def _require_mapping(value: Any, *, field: str) -> Mapping[str, Any]:
     return value
 
 
-def _validate_health_identity(value: Any) -> None:
-    # A raw RuntimeService has no daemon owner. Daemon identities use one of
-    # the two exact shapes declared by the Runtime health contract.
-    if value is None:
-        return
-    identity = _require_mapping(value, field="health.identity")
-    source = identity.get("managed_by") == "source"
-    expected_keys = _HEALTH_SOURCE_IDENTITY_KEYS if source else _HEALTH_INSTALLED_IDENTITY_KEYS
-    if frozenset(identity) != expected_keys:
-        raise _protocol_error("health.identity", "runtime health identity has an unexpected schema")
-    release = identity["release"]
-    if isinstance(release, bool) or not isinstance(release, int) or release < 0 or (source and release != 0):
-        raise _protocol_error("health.identity.release", "runtime health identity release is invalid")
-    if not source:
-        if identity["managed_by"] not in (None, "pinokio"):
-            raise _protocol_error("health.identity.managed_by", "runtime health identity managed_by is invalid")
-        return
-    for field in ("runtime_head", "agent_head"):
-        head = identity[field]
-        if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", head) is None:
-            raise _protocol_error(f"health.identity.{field}", f"runtime health identity {field} is invalid")
-    if not isinstance(identity["dirty"], bool):
-        raise _protocol_error("health.identity.dirty", "runtime health identity dirty is invalid")
-    dirty_hash = identity["dirty_hash"]
-    if not isinstance(dirty_hash, str) or re.fullmatch(r"[0-9a-f]{64}", dirty_hash) is None:
-        raise _protocol_error("health.identity.dirty_hash", "runtime health identity dirty_hash is invalid")
-
-
 def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str) -> None:
     health = _require_mapping(value, field="health")
     keys = frozenset(health)
@@ -168,7 +135,7 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
         identity = health.get(field)
         if not isinstance(identity, str) or not identity.strip():
             raise _protocol_error(f"health.{field}", f"runtime health {field} is invalid")
-    _validate_health_identity(health["identity"])
+    _validate_startup_identity(health["identity"])
     if "services" in health:
         services = health["services"]
         if not isinstance(services, list):
@@ -193,6 +160,44 @@ def _validate_health(value: Any, *, expected_protocol: str, expected_digest: str
             reason = service.get("reason")
             if reason is not None and not isinstance(reason, str):
                 raise _protocol_error(f"{field}.reason", "runtime health service reason is invalid")
+
+
+def _validate_startup_identity(value: Any) -> None:
+    """Validate the Runtime-owned startup identity included in health."""
+    if value is None:
+        return
+    if not isinstance(value, Mapping):
+        raise _protocol_error("health.identity", "runtime health identity must be an object or null")
+
+    managed_by = value.get("managed_by")
+    if managed_by == "source":
+        expected = {"release", "managed_by", "runtime_head", "agent_head", "dirty", "dirty_hash"}
+        if set(value) != expected:
+            raise _protocol_error("health.identity", "runtime health identity has an unexpected schema")
+        if type(value.get("release")) is not int or value["release"] != 0:
+            raise _protocol_error("health.identity.release", "runtime health identity release is invalid")
+        for field in ("runtime_head", "agent_head"):
+            head = value.get(field)
+            if not isinstance(head, str) or len(head) not in (40, 64) or not _is_lower_hex(head):
+                raise _protocol_error(f"health.identity.{field}", f"runtime health identity {field} is invalid")
+        if type(value.get("dirty")) is not bool:
+            raise _protocol_error("health.identity.dirty", "runtime health identity dirty flag is invalid")
+        dirty_hash = value.get("dirty_hash")
+        if not isinstance(dirty_hash, str) or len(dirty_hash) != 64 or not _is_lower_hex(dirty_hash):
+            raise _protocol_error("health.identity.dirty_hash", "runtime health identity dirty hash is invalid")
+        return
+
+    if set(value) != {"release", "managed_by"}:
+        raise _protocol_error("health.identity", "runtime health identity has an unexpected schema")
+    release = value.get("release")
+    if type(release) is not int or release < 0:
+        raise _protocol_error("health.identity.release", "runtime health identity release is invalid")
+    if managed_by not in (None, "pinokio"):
+        raise _protocol_error("health.identity.managed_by", "runtime health identity management mode is invalid")
+
+
+def _is_lower_hex(value: str) -> bool:
+    return all(character in "0123456789abcdef" for character in value)
 
 
 def _validate_handshake(
@@ -280,6 +285,12 @@ class AstridClient:
                 "runtime realm, actor, and client identity are required; run the Astrid install line again",
                 details={"next_action": "run the Astrid install line again"},
             )
+        # The aggregate validation above establishes these invariants, but
+        # mypy cannot narrow optional values through ``all``.
+        assert realm_id is not None
+        assert actor_id is not None
+        assert client_name is not None
+        assert client_version is not None
 
         def unavailable(exc: Exception, *, operation: str | None = None) -> ServiceUnavailableError:
             from astrid.core.audit.util import redact

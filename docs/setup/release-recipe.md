@@ -256,7 +256,7 @@ Keep these four surfaces separate:
 The shipped `astrid` profile is read from installed package resources. A final
 direct agent launch/reconnect claim must cite the exact agent artifact,
 command, installed origin and receipt; self-description is not route metadata.
-The installed console entry is `astrid = astrid.console:main`, and its
+The installed console entry is `astrid = astrid.omp_agent:main`, and its
 supported direct routes are:
 
 ```bash
@@ -363,6 +363,35 @@ This recipe documents the commands and required evidence inputs now. It does
 not claim that this heavy-end run has passed, and it does not add an acceptance
 gate. Existing I03/I08/I09/I11 remain the owners of those checks.
 
+## Optional native checks (Windows consumer machines and the Pinokio desktop app)
+
+Release qualification runs in GitHub Actions: direct, Pinokio-backend and
+Pinokio fully-local installs on macOS, Linux and Windows, from the authentic
+predecessor release to the candidate, including interruption, rollback,
+uninstall and the next-release bridge. Three behaviours can't be reproduced
+on hosted runners, so they are documented here as **optional native checks**:
+
+1. **The Pinokio desktop app's own Stop and Quit.** CI drives the launcher
+   against a fake Pinokio kernel; the Electron host's Stop button and app Quit
+   behave differently.
+2. **A Windows 11 consumer setup:** a standard (non-admin) user whose name has
+   spaces and non-ASCII characters, a OneDrive-redirected profile, Defender
+   enabled, a real interactive logon starting the Scheduled Task, and Windows
+   PowerShell 5.1. Hosted Windows runners are Windows Server with an
+   administrative service account.
+3. **Logout and reboot** with Astrid installed or mid-update.
+
+Running these checks is not required to publish a release, and passing them is
+not claimed by CI receipts. Run them before advertising Windows or Pinokio
+support more broadly, after changing service registration or Pinokio stop/start
+code, or when a user report points to one of these behaviours.
+
+Follow the canonical [native-check procedure](../testing/NATIVE-TESTS.md),
+using a spare machine or account with no real projects. Record each step as
+pass or fail, attach `Copy diagnostics` output for failures, and file failures
+as next-release bugs. Never publish to production or use the real tracked
+launcher branch for this procedure.
+
 ## Evidence inputs and handoff pointers
 
 The recipe reuses the existing packaging, rendering-resource, OMP and
@@ -373,6 +402,11 @@ publication fragments through:
 The release-recipe evidence root is:
 
 `receiving/coordination/evidence/v3-manager-dispatch-20261009/release-recipe`
+
+Publisher-only deployment is controlled by the parameterized M4-8 publisher
+run sheet in the release coordination record. It remains fail-closed until its
+qualified evidence packet and release-owner gates are recorded; it does not
+turn pending values above into an install or publication instruction.
 
 The route/session evidence is authoritative from the launch record and
 `turn_context` model/effort fields. Model self-description is not metadata and
