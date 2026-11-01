@@ -1,0 +1,1951 @@
+{
+  "input": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "parent_revision": {
+      "revision_id": "parent-1",
+      "payload": {
+        "config": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 8,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                },
+                "astrid": {
+                  "for": 4,
+                  "opaque": {
+                    "for": "literal"
+                  }
+                }
+              },
+              "from": 2,
+              "to": 10,
+              "speed": 2,
+              "opaque": {
+                "nested": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ],
+                "literal": "clip-a"
+              },
+              "params": {
+                "volume": 0.7,
+                "unknown": [
+                  null,
+                  false
+                ]
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 8,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              },
+              "astrid": {
+                "for": 4,
+                "opaque": {
+                  "for": "literal"
+                }
+              }
+            },
+            "from": 2,
+            "to": 10,
+            "speed": 2,
+            "opaque": {
+              "nested": [
+                null,
+                false,
+                0,
+                {},
+                []
+              ],
+              "literal": "clip-a"
+            },
+            "params": {
+              "volume": 0.7,
+              "unknown": [
+                null,
+                false
+              ]
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "registry": {
+          "assets": {
+            "picture": {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "type": "video",
+              "duration": 20
+            }
+          }
+        },
+        "occurrences": [],
+        "name": "Renamed Film",
+        "unknown": {
+          "opaque": [
+            "parent-1",
+            null
+          ]
+        }
+      },
+      "content_digest": "sha256:66e4590cbf1c2d8e06bd3c7e0dbd094dd9e0a1c18ec4b842b8c4839133895953"
+    },
+    "shot_revisions": [],
+    "internal_timeline_revisions": [],
+    "dependency_manifest": {
+      "shots": [],
+      "internal_timelines": [],
+      "media": [
+        {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "documents": []
+    }
+  },
+  "commands": [
+    {
+      "schema_version": 1,
+      "op": "clip.split",
+      "version": "1",
+      "select": "parent/clip:clip-a",
+      "args": {
+        "on": 3,
+        "right_id": "right"
+      },
+      "intent": {},
+      "resolved": [
+        "parent/clip:clip-a"
+      ],
+      "reads": [
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:clip-a",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 8,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                },
+                "astrid": {
+                  "for": 4,
+                  "opaque": {
+                    "for": "literal"
+                  }
+                }
+              },
+              "from": 2,
+              "to": 10,
+              "speed": 2,
+              "opaque": {
+                "nested": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ],
+                "literal": "clip-a"
+              },
+              "params": {
+                "volume": 0.7,
+                "unknown": [
+                  null,
+                  false
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/registry",
+          "path": [
+            "assets",
+            "picture"
+          ],
+          "state": {
+            "state": "present",
+            "value": {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "type": "video",
+              "duration": 20
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "on"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "fixed_start"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "until"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "until_film_end"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "for"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "cut"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "sequence"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "sequence_index"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "sequence_fit"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "orphan"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "formulas"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "anchor"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "standin"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "standin_intent"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "on"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "fixed_start"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "until"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "until_film_end"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "for"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "cut"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "sequence"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "sequence_index"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "sequence_fit"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "orphan"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "formulas"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "anchor"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "standin"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "standin_intent"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "on"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "fixed_start"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "until"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "until_film_end"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "for"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "cut"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "sequence"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "sequence_index"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "sequence_fit"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "orphan"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "formulas"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "anchor"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "standin"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "app",
+            "astrid",
+            "standin_intent"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/clip:clip-b",
+          "path": [
+            "transition"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output",
+            "fps"
+          ],
+          "state": {
+            "state": "present",
+            "value": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:right",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/clip:clip-a",
+            "parent/clip:clip-b"
+          ],
+          "order": [
+            "parent/clip:clip-a",
+            "parent/clip:clip-b"
+          ],
+          "boundaries": [
+            "parent/clip:clip-a",
+            "parent/clip:clip-b"
+          ],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips.after",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/clip:clip-a"
+          ],
+          "order": [
+            "parent/clip:clip-a",
+            "parent/clip:clip-b"
+          ],
+          "boundaries": [
+            "parent/clip:clip-a",
+            "parent/clip:clip-b"
+          ],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {
+        "split.target": "parent/clip:clip-a"
+      },
+      "created": [
+        "parent/clip:right"
+      ],
+      "expect": {
+        "parent/clip:right::": {
+          "state": "absent"
+        },
+        "parent/clip:clip-a::hold": {
+          "state": "present",
+          "value": 8
+        },
+        "parent/clip:clip-a::to": {
+          "state": "present",
+          "value": 10
+        },
+        "parent/clip:clip-a::app.astrid.for": {
+          "state": "present",
+          "value": 4
+        }
+      },
+      "authorship": {
+        "parent/clip:right::": "direct",
+        "parent/clip:clip-a::hold": "direct",
+        "parent/clip:clip-a::to": "direct",
+        "parent/clip:clip-a::app.astrid.for": "direct"
+      }
+    }
+  ],
+  "records": [
+    {
+      "ordinal": 0,
+      "command": {
+        "schema_version": 1,
+        "op": "clip.split",
+        "version": "1",
+        "select": "parent/clip:clip-a",
+        "args": {
+          "on": 3,
+          "right_id": "right"
+        },
+        "intent": {},
+        "resolved": [
+          "parent/clip:clip-a"
+        ],
+        "reads": [
+          {
+            "ref": "parent/collection:clip",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                },
+                "payload_members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/clip:clip-a",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "clip-a",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 1,
+                "hold": 8,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  },
+                  "astrid": {
+                    "for": 4,
+                    "opaque": {
+                      "for": "literal"
+                    }
+                  }
+                },
+                "from": 2,
+                "to": 10,
+                "speed": 2,
+                "opaque": {
+                  "nested": [
+                    null,
+                    false,
+                    0,
+                    {},
+                    []
+                  ],
+                  "literal": "clip-a"
+                },
+                "params": {
+                  "volume": 0.7,
+                  "unknown": [
+                    null,
+                    false
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/registry",
+            "path": [
+              "assets",
+              "picture"
+            ],
+            "state": {
+              "state": "present",
+              "value": {
+                "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "type": "video",
+                "duration": 20
+              }
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "on"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "fixed_start"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "until"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "until_film_end"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "for"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "cut"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "sequence"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "sequence_index"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "sequence_fit"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "orphan"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "formulas"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "anchor"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "standin"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "standin_intent"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "on"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "fixed_start"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "until"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "until_film_end"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "for"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "cut"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "sequence"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "sequence_index"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "sequence_fit"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "orphan"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "formulas"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "anchor"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "standin"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "standin_intent"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "on"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "fixed_start"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "until"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "until_film_end"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "for"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "cut"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "sequence"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "sequence_index"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "sequence_fit"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "orphan"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "formulas"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "anchor"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "standin"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "app",
+              "astrid",
+              "standin_intent"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/clip:clip-b",
+            "path": [
+              "transition"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent",
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "state": {
+              "state": "present",
+              "value": {
+                "numerator": 30000,
+                "denominator": 1001
+              }
+            }
+          },
+          {
+            "ref": "parent/clip:right",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "collection.clips",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [
+              "parent/clip:clip-a",
+              "parent/clip:clip-b"
+            ],
+            "order": [
+              "parent/clip:clip-a",
+              "parent/clip:clip-b"
+            ],
+            "boundaries": [
+              "parent/clip:clip-a",
+              "parent/clip:clip-b"
+            ],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.clips.after",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [
+              "parent/clip:clip-a"
+            ],
+            "order": [
+              "parent/clip:clip-a",
+              "parent/clip:clip-b"
+            ],
+            "boundaries": [
+              "parent/clip:clip-a",
+              "parent/clip:clip-b"
+            ],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {
+          "split.target": "parent/clip:clip-a"
+        },
+        "created": [
+          "parent/clip:right"
+        ],
+        "expect": {
+          "parent/clip:right::": {
+            "state": "absent"
+          },
+          "parent/clip:clip-a::hold": {
+            "state": "present",
+            "value": 8
+          },
+          "parent/clip:clip-a::to": {
+            "state": "present",
+            "value": 10
+          },
+          "parent/clip:clip-a::app.astrid.for": {
+            "state": "present",
+            "value": 4
+          }
+        },
+        "authorship": {
+          "parent/clip:right::": "direct",
+          "parent/clip:clip-a::hold": "direct",
+          "parent/clip:clip-a::to": "direct",
+          "parent/clip:clip-a::app.astrid.for": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/clip:right",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "id": "right",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 3.0,
+              "hold": 4.0,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                },
+                "astrid": {
+                  "for": 2.0,
+                  "opaque": {
+                    "for": "literal"
+                  }
+                }
+              },
+              "from": 6.0,
+              "to": 10,
+              "speed": 2,
+              "opaque": {
+                "nested": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ],
+                "literal": "clip-a"
+              },
+              "params": {
+                "volume": 0.7,
+                "unknown": [
+                  null,
+                  false
+                ]
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:clip-a",
+          "path": [
+            "hold"
+          ],
+          "before": {
+            "state": "present",
+            "value": 8
+          },
+          "after": {
+            "state": "present",
+            "value": 4.0
+          }
+        },
+        {
+          "ref": "parent/clip:clip-a",
+          "path": [
+            "to"
+          ],
+          "before": {
+            "state": "present",
+            "value": 10
+          },
+          "after": {
+            "state": "present",
+            "value": 6.0
+          }
+        },
+        {
+          "ref": "parent/clip:clip-a",
+          "path": [
+            "app",
+            "astrid",
+            "for"
+          ],
+          "before": {
+            "state": "present",
+            "value": 4
+          },
+          "after": {
+            "state": "present",
+            "value": 2.0
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "key": "split.target",
+          "ref": "parent/clip:clip-a",
+          "policy": "fixed",
+          "dependencies": []
+        }
+      ],
+      "created": [
+        {
+          "ref": "parent/clip:right",
+          "kind": "clip",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [],
+      "derived_writes": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "clips"
+          ],
+          "before": {
+            "state": "present",
+            "value": [
+              {
+                "id": "clip-a",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 1,
+                "hold": 8,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  },
+                  "astrid": {
+                    "for": 4,
+                    "opaque": {
+                      "for": "literal"
+                    }
+                  }
+                },
+                "from": 2,
+                "to": 10,
+                "speed": 2,
+                "opaque": {
+                  "nested": [
+                    null,
+                    false,
+                    0,
+                    {},
+                    []
+                  ],
+                  "literal": "clip-a"
+                },
+                "params": {
+                  "volume": 0.7,
+                  "unknown": [
+                    null,
+                    false
+                  ]
+                }
+              },
+              {
+                "id": "clip-b",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 5,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              }
+            ]
+          },
+          "after": {
+            "state": "present",
+            "value": [
+              {
+                "id": "clip-a",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 1,
+                "hold": 4.0,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  },
+                  "astrid": {
+                    "for": 2.0,
+                    "opaque": {
+                      "for": "literal"
+                    }
+                  }
+                },
+                "from": 2,
+                "to": 6.0,
+                "speed": 2,
+                "opaque": {
+                  "nested": [
+                    null,
+                    false,
+                    0,
+                    {},
+                    []
+                  ],
+                  "literal": "clip-a"
+                },
+                "params": {
+                  "volume": 0.7,
+                  "unknown": [
+                    null,
+                    false
+                  ]
+                }
+              },
+              {
+                "id": "right",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 3.0,
+                "hold": 4.0,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  },
+                  "astrid": {
+                    "for": 2.0,
+                    "opaque": {
+                      "for": "literal"
+                    }
+                  }
+                },
+                "from": 6.0,
+                "to": 10,
+                "speed": 2,
+                "opaque": {
+                  "nested": [
+                    null,
+                    false,
+                    0,
+                    {},
+                    []
+                  ],
+                  "literal": "clip-a"
+                },
+                "params": {
+                  "volume": 0.7,
+                  "unknown": [
+                    null,
+                    false
+                  ]
+                }
+              },
+              {
+                "id": "clip-b",
+                "track": "picture",
+                "asset": "picture",
+                "clipType": "media",
+                "at": 5,
+                "hold": 2,
+                "app": {
+                  "org.example": {
+                    "literal": "clip-a",
+                    "clear": null
+                  }
+                }
+              }
+            ]
+          },
+          "cause": 0
+        }
+      ]
+    }
+  ],
+  "output": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "parent_revision": {
+      "revision_id": "authoring-parent-revision-c806c2a6991bf0ba1fc2b0b35bc16f91c443a8c5eaf22cbbe9a4ecfba9999527",
+      "content_digest": "sha256:76192229a72046cec36b533a3d4643ca922dc52da44f57c2090efc663da34167",
+      "payload": {
+        "config": {
+          "tracks": [
+            {
+              "id": "picture",
+              "kind": "visual"
+            }
+          ],
+          "clips": [
+            {
+              "id": "clip-a",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 1,
+              "hold": 4.0,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                },
+                "astrid": {
+                  "for": 2.0,
+                  "opaque": {
+                    "for": "literal"
+                  }
+                }
+              },
+              "from": 2,
+              "to": 6.0,
+              "speed": 2,
+              "opaque": {
+                "nested": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ],
+                "literal": "clip-a"
+              },
+              "params": {
+                "volume": 0.7,
+                "unknown": [
+                  null,
+                  false
+                ]
+              }
+            },
+            {
+              "id": "right",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 3.0,
+              "hold": 4.0,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                },
+                "astrid": {
+                  "for": 2.0,
+                  "opaque": {
+                    "for": "literal"
+                  }
+                }
+              },
+              "from": 6.0,
+              "to": 10,
+              "speed": 2,
+              "opaque": {
+                "nested": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ],
+                "literal": "clip-a"
+              },
+              "params": {
+                "volume": 0.7,
+                "unknown": [
+                  null,
+                  false
+                ]
+              }
+            },
+            {
+              "id": "clip-b",
+              "track": "picture",
+              "asset": "picture",
+              "clipType": "media",
+              "at": 5,
+              "hold": 2,
+              "app": {
+                "org.example": {
+                  "literal": "clip-a",
+                  "clear": null
+                }
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "opaque": {
+            "timestamp": "authored timestamp",
+            "v": [
+              null,
+              false,
+              0
+            ]
+          }
+        },
+        "clips": [
+          {
+            "id": "clip-a",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 1,
+            "hold": 4.0,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              },
+              "astrid": {
+                "for": 2.0,
+                "opaque": {
+                  "for": "literal"
+                }
+              }
+            },
+            "from": 2,
+            "to": 6.0,
+            "speed": 2,
+            "opaque": {
+              "nested": [
+                null,
+                false,
+                0,
+                {},
+                []
+              ],
+              "literal": "clip-a"
+            },
+            "params": {
+              "volume": 0.7,
+              "unknown": [
+                null,
+                false
+              ]
+            }
+          },
+          {
+            "id": "right",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 3.0,
+            "hold": 4.0,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              },
+              "astrid": {
+                "for": 2.0,
+                "opaque": {
+                  "for": "literal"
+                }
+              }
+            },
+            "from": 6.0,
+            "to": 10,
+            "speed": 2,
+            "opaque": {
+              "nested": [
+                null,
+                false,
+                0,
+                {},
+                []
+              ],
+              "literal": "clip-a"
+            },
+            "params": {
+              "volume": 0.7,
+              "unknown": [
+                null,
+                false
+              ]
+            }
+          },
+          {
+            "id": "clip-b",
+            "track": "picture",
+            "asset": "picture",
+            "clipType": "media",
+            "at": 5,
+            "hold": 2,
+            "app": {
+              "org.example": {
+                "literal": "clip-a",
+                "clear": null
+              }
+            }
+          }
+        ],
+        "registry": {
+          "assets": {
+            "picture": {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "type": "video",
+              "duration": 20
+            }
+          }
+        },
+        "name": "Renamed Film",
+        "unknown": {
+          "opaque": [
+            "parent-1",
+            null
+          ]
+        },
+        "occurrences": []
+      }
+    },
+    "shot_revisions": [],
+    "internal_timeline_revisions": [],
+    "dependency_manifest": {
+      "shots": [],
+      "internal_timelines": [],
+      "media": [
+        {
+          "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "documents": []
+    }
+  }
+}

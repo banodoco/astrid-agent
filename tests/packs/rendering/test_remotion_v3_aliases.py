@@ -108,7 +108,7 @@ def test_native_defaults_and_explicit_roots_ignore_later_cwd(tmp_path: Path) -> 
         console.log(JSON.stringify(explicit.resolve.alias));
         """, str(ROOT), str(MODULE), str(tmp_path),
     )
-    assert result['@workspace-effects'].startswith(str(ROOT / 'astrid/packs/rendering/'))
+    assert result['@pack-rendering-elements-effects'].startswith(str(ROOT / 'astrid/packs/rendering/'))
 
 
 @pytest.mark.integration
@@ -129,4 +129,4 @@ def test_cjs_default_requires_native_esm_but_explicit_factory_works(tmp_path: Pa
         console.log(JSON.stringify(fn({}).resolve.alias));
         """, str(ROOT), str(MODULE), str(tmp_path),
     )
-    assert result['@workspace-transitions'].startswith(str(ROOT / 'astrid/packs/rendering/'))
+    assert result['@pack-rendering-elements-transitions'].startswith(str(ROOT / 'astrid/packs/rendering/'))

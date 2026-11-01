@@ -17,7 +17,6 @@ from astrid.core.timeline import astrid_ns as _ns
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.timeline._common import TimelineEditError
 from astrid.sdk.timeline.doc import _serialize
-from astrid.sdk.timeline.revisions import revision_source, short_revision
 
 LOCK_WAIT_ENV = "ASTRID_TIMELINE_LOCK_TIMEOUT"
 LOCK_WAIT_SECONDS = 30.0
@@ -52,7 +51,11 @@ def _stage_step(folder: Path, label: str, state: str) -> tuple[Path, Path]:
     folder.mkdir(parents=True, exist_ok=True)
     name = f"{time.time_ns():020d}-{uuid.uuid4().hex[:4]}.json"
     temporary = folder / f".{name}.tmp"
-    temporary.write_text(json.dumps({"label": str(label), "state": state}), encoding="utf-8")
+    try:
+        temporary.write_text(json.dumps({"label": str(label), "state": state}), encoding="utf-8")
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return temporary, folder / name
 
 
@@ -75,6 +78,54 @@ def _read_step(path: Path) -> tuple[str, str]:
 def _discard_half_written(folder: Path) -> None:
     for temporary in Path(folder).glob(".*.tmp"):
         temporary.unlink(missing_ok=True)
+
+
+def _restore_marker(target: Path) -> Path:
+    return target.with_name(f".{target.name}.restore.json")
+
+
+def _stage_restore(target: Path, temporary: Path, *, redo: bool,
+                   sources: list[Path], staged: list[tuple[Path, Path]]) -> None:
+    """Describe only this local stack move, before atomically replacing its draft."""
+    stat = temporary.stat()
+    marker = _restore_marker(target)
+    pending = marker.with_suffix(".tmp")
+    try:
+        pending.write_text(json.dumps({
+            "redo": redo, "target_identity": [stat.st_dev, stat.st_ino],
+            "temporary": temporary.name, "sources": [step.name for step in sources],
+            "reverse": [step.name for _tmp, step in staged],
+        }), encoding="utf-8")
+        os.replace(pending, marker)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def _reconcile_restore(target: Path) -> None:
+    """Finish an interrupted local restore under the checkout lock; never use JSON equality."""
+    marker = _restore_marker(target)
+    if not marker.is_file():
+        return
+    move = json.loads(marker.read_text(encoding="utf-8"))
+    source, destination = ((_redo_dir, _history_dir) if move["redo"] else
+                           (_history_dir, _redo_dir))
+    stat = target.stat()
+    replaced = [stat.st_dev, stat.st_ino] == move["target_identity"]
+    for name in move["reverse"]:
+        step = destination(target) / name
+        temporary = step.with_name(f".{name}.tmp")
+        if replaced:
+            if temporary.is_file():
+                os.replace(temporary, step)
+            elif not step.is_file():
+                raise TimelineEditError("interrupted draft restore is missing a reverse step")
+        else:
+            temporary.unlink(missing_ok=True)
+    if replaced:
+        for name in move["sources"]:
+            (source(target) / name).unlink(missing_ok=True)
+    (target.parent / move["temporary"]).unlink(missing_ok=True)
+    marker.unlink()
 
 
 @contextlib.contextmanager
@@ -129,209 +180,20 @@ def _journaled(function, kind):
                            + [f"{key}={value!r}"[:40] for key, value in kwargs.items()])
         label = f"{who + '.' if who else ''}{function.__name__}({shown})"
         with checkout.step(label):
-            return function(owner, *args, **kwargs)
+            from . import journal
+
+            capture = None
+            if kind == "clip" and function.__name__ == "nudge":
+                from inspect import signature
+
+                bound = signature(function).bind(owner, *args, **kwargs)
+                bound.apply_defaults()
+                capture = journal.begin_nudge(owner, bound.arguments["seconds"], bound.arguments["frames"])
+            result = function(owner, *args, **kwargs)
+            if capture is not None:
+                journal.finish_nudge(checkout, capture)
+            return result
     return wrapped
-
-
-def _merge(base: Any, head: Any, draft: Any, path: str, conflicts: list[str], force: bool):
-    if head == base:
-        return copy.deepcopy(draft)
-    if draft == base or draft == head:
-        return copy.deepcopy(draft if force and draft != base else head)
-    if all(isinstance(value, dict) for value in (base, head, draft)):
-        out = {}
-        missing = object()
-        for key in set(base) | set(head) | set(draft):
-            b, h, d = base.get(key, missing), head.get(key, missing), draft.get(key, missing)
-            item_path = f"{path}.{key}" if path else str(key)
-            if h is missing and d is missing:
-                continue
-            if b is missing or h is missing or d is missing:
-                if h == b:
-                    value = d
-                elif d == b or h == d:
-                    value = h
-                else:
-                    conflicts.append(item_path)
-                    value = d if force else h
-            else:
-                value = _merge(b, h, d, item_path, conflicts, force)
-            if value is not missing:
-                out[key] = copy.deepcopy(value)
-        return out
-    conflicts.append(path or "bundle")
-    return copy.deepcopy(draft if force else head)
-
-
-def three_way(base: Mapping[str, Any], head: Mapping[str, Any], candidate: Mapping[str, Any], *,
-              force: bool = False, whole: bool = False) -> tuple[dict[str, Any], list[str]]:
-    """Merge the candidate's changes (base → candidate) onto ``head``. Returns (merged, conflicts).
-
-    With conflicts and no ``force`` the merge is not applied. With ``force`` your version wins
-    on the conflicting units; every other unit of the head is kept."""
-    # compare as if all three sides were migrated (a published head may still hold intent in the old
-    # places); the merge itself is applied to the head as it is, so units nobody touched stay verbatim
-    b, h, c = (_units(_ns.normalized(x), whole=whole) for x in (base, head, candidate))
-    same = lambda x, y: json.dumps(x, sort_keys=True, default=str) == json.dumps(y, sort_keys=True, default=str)
-    ours = {k for k in set(b) | set(c) if not same(b.get(k), c.get(k))}
-    theirs = {k for k in set(b) | set(h) if not same(b.get(k), h.get(k))}
-    conflicts = [k for k in sorted(ours & theirs) if not same(c.get(k), h.get(k))]
-    lines = [f"{'/'.join(k[1:])} ({k[0]}) changed in the head since your checkout and in your edit" for k in conflicts]
-    merged = copy.deepcopy(dict(head))
-    if lines and not force:
-        return merged, lines
-    for key in sorted(ours):
-        value = copy.deepcopy(c.get(key))
-        kind = key[0]
-        if kind == "placement":
-            rows = merged.setdefault("placements", [])
-            rows[:] = [r for r in rows if str(r.get("shot_id")) != key[1]] + ([value] if value is not None else [])
-        elif kind in ("tracks", "registry"):
-            shot = merged["shots"].setdefault(key[1], copy.deepcopy(candidate["shots"][key[1]]))
-            shot.setdefault("internal_timeline", {})[kind] = value
-        elif kind == "clip":
-            sid, cid = key[1], key[2]
-            if sid not in merged["shots"]:
-                merged["shots"][sid] = copy.deepcopy(candidate["shots"][sid])
-                continue
-            clips = merged["shots"][sid].setdefault("internal_timeline", {}).setdefault("clips", [])
-            index = next((i for i, x in enumerate(clips) if str(x.get("id")) == cid), None)
-            if value is None and index is not None:
-                clips.pop(index)
-            elif value is not None and index is None:
-                clips.append(value)
-            elif value is not None:
-                clips[index] = value
-        elif kind == "parent-clip":
-            parent = merged.setdefault("parent", {})
-            mirror = (parent.get("config") or {}).get("clips")
-            clips = parent.get("clips") or mirror or []
-            parent["clips"] = clips
-            clips[:] = [x for x in clips if str(x.get("id")) != key[1]] + ([value] if value is not None else [])
-            if isinstance(mirror, list):  # the parent mirrors its clips in config.clips: they stay one list
-                parent["config"]["clips"] = copy.deepcopy(clips)
-        elif kind == "parent-config":
-            config = merged.setdefault("parent", {}).setdefault("config", {})
-            if key[1] in _ns.FILM_INTENT_KEYS:  # Astrid's film intent is written under app.astrid only
-                ns = _ns.film_ns(config)
-                if value is None:
-                    ns.pop(key[1], None)
-                    _ns.tidy_film(config)
-                else:
-                    ns[key[1]] = value
-            elif value is None:
-                config.pop(key[1], None)
-            else:
-                config[key[1]] = value
-        elif kind == "film-intent":
-            config = merged.setdefault("parent", {}).setdefault("config", {})
-            ns = _ns.film_ns(config)
-            if value is None:
-                ns.pop(key[1], None)
-                _ns.tidy_film(config)
-            else:
-                ns[key[1]] = value
-        elif kind == "parent-app":
-            config = merged.setdefault("parent", {}).setdefault("config", {})
-            app = config.get("app")
-            if not isinstance(app, dict):
-                app = config["app"] = {}
-            if value is None:
-                app.pop(key[1], None)
-                _ns.tidy_film(config)
-            else:
-                app[key[1]] = value
-        elif kind == "payload" and key[1] in merged.get("shots", {}):
-            merged["shots"][key[1]]["payload"] = value
-        elif kind == "cut-note":
-            ns = _ns.film_ns(merged.setdefault("parent", {}).setdefault("config", {}))
-            notes = ns.setdefault("cut_notes", {})
-            if value is None:
-                notes.pop(key[1], None)
-            else:
-                notes[key[1]] = value
-            if not notes:
-                ns.pop("cut_notes", None)
-                _ns.tidy_film(merged["parent"]["config"])
-    return merged, lines
-
-
-def publish_bundle(candidate: Mapping[str, Any], idempotency_key: str, *, client: Any = None, force: bool = False) -> dict[str, Any]:
-    from astrid.sdk.timeline.checkout import Checkout
-    """One parent compare-and-swap publication with an overwrite guard (see ``Checkout.publish``)."""
-    from astrid.sdk import AstridClient
-    from astrid.sdk.authoring_bundle import publish_authoring_candidate
-    from astrid.sdk.autobootstrap import ensure_runtime
-    from astrid.sdk.workspace_client import WorkspaceClient, resolve_runtime_connection
-
-    def head(c: Any) -> str:
-        shown = c.timelines.open_composition(candidate["project_id"], candidate["timeline_id"])
-        if not shown.ok:
-            raise TimelineEditError(f"could not read the current head: {shown.error}")
-        return str(shown.data["summary"]["head_revision_id"])
-
-    if client is not None:
-        current = head(client)
-    else:
-        with AstridClient.open_from_launcher(start_pack_host=False) as c:
-            current = head(c)
-    base = str((candidate.get("base_parent") or {}).get("revision_id"))
-    merged_note = None
-    if current != base:
-        from astrid.sdk.timeline_cuts import base_bundle
-
-        head_bundle = fetch_bundle(str(candidate["project_id"]), str(candidate["timeline_id"]), client=client)
-        merged, conflicts = three_way(base_bundle(candidate), head_bundle, candidate, force=force)
-        if conflicts and not force:
-            names = {c.id: c.address for c in Checkout(copy.deepcopy(dict(candidate))).clips()}
-
-            def plain(line: str) -> str:
-                m = re.match(r"^\S+/(\S+) \(clip\) (.*)$", line)
-                return f"{names.get(m.group(1), m.group(1))}  {m.group(2)}" if m else line
-
-            who = "the editor" if revision_source(str(current)) == "app" else "someone"
-            project_id, timeline_id = str(candidate["project_id"]), str(candidate["timeline_id"])
-            # The head is newer than this copy and holds content you have not seen: the way out is to start
-            # again from it, not to overwrite it.
-            raise TimelineEditError(f"not published: {who} published {short_revision(current)} after your checkout "
-                                    f"({short_revision(base)}), and you both changed:\n  "
-                                    + "\n  ".join(plain(c) for c in conflicts)
-                                    + f"\nnext: timelines discard {timeline_id} --project {project_id}, then "
-                                    f"timelines checkout {timeline_id} --project {project_id} --fresh, and re-apply your edit."
-                                    "\n  publish --force overwrites the newer published version.")
-        candidate = merged
-        merged_note = f"merged onto head {current} (your checkout was {base})" + (" with force" if conflicts else "")
-        base = current
-
-    def publish(transport: Any) -> dict[str, Any]:
-        class _Writer:
-            def publish_parent_composition(self, project_id, timeline_id, publication, *, idempotency_key):
-                response = transport.publish_parent_composition(project_id, timeline_id, publication, idempotency_key=idempotency_key)
-                return response.get("data", response)
-
-        result = publish_authoring_candidate(dict(candidate), _Writer(), idempotency_key=idempotency_key)
-        publication = result.get("publication") if isinstance(result, Mapping) else None
-        return {"old_head": base, "new_head": (publication or {}).get("new_head"), "receipt": result,
-                "idempotency_key": idempotency_key, "merged": merged_note}
-
-    # Write through the connection the reads used. Asking the launcher again would send the write to whatever Runtime it
-    # finds (the canonical one, or none: "the Astrid Runtime is not installed") when the caller connected
-    # explicitly, e.g. through ``ASTRID_TIMELINE_EVAL_*``.
-    def own_transport(c: Any) -> Any:
-        transport = getattr(getattr(c, "_remote", None), "_transport", None)
-        return transport if callable(getattr(transport, "publish_parent_composition", None)) else None
-
-    if client is None:
-        with AstridClient.open_from_launcher(start_pack_host=False) as c:
-            transport = own_transport(c)
-            if transport is None:
-                raise RuntimeError("the opened Runtime client has no publish transport")
-            return publish(transport)
-    if own_transport(client) is not None:
-        return publish(own_transport(client))
-    receipt = ensure_runtime(start_pack_host=False)  # a caller-supplied stand-in with no transport of its own
-    endpoint, token = resolve_runtime_connection(receipt["endpoint"], Path(receipt["credential_file"]))
-    return publish(WorkspaceClient(endpoint, token))
 
 
 # Runtime and draft seams added to the isolated modular SDK.
@@ -547,10 +409,16 @@ def draft_path(project_id: str, timeline_id: str, name: str = "main") -> Path:
 
 def resolve_ids(project: str, timeline: str, *, client: Any = None) -> tuple[str, str, str]:
     """(project_id, timeline_id, head) for a project slug/id and a timeline slug/id."""
+    from inspect import Parameter, signature
+
     from astrid.sdk import AstridClient
 
     def read(c: Any) -> tuple[str, str, str]:
-        shown = c.timelines.open_composition(project, timeline)
+        reader = c.timelines.open_composition
+        # Custom readers may retain the two-argument interface.
+        raw = any(parameter.name == "_raw_projection" or parameter.kind == Parameter.VAR_KEYWORD
+                  for parameter in signature(reader).parameters.values())
+        shown = reader(project, timeline, **({"_raw_projection": True} if raw else {}))
         if not shown.ok or not isinstance(shown.data, Mapping):
             raise TimelineEditError(f"could not open timeline {timeline!r} in project {project!r}: {shown.error}")
         native = shown.data.get("native_inspection") or {}
@@ -586,15 +454,48 @@ def set_current_draft(project_id: str, timeline_id: str, name: str) -> None:
     pointer.write_text(name, encoding="utf-8")
 
 
-def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None, client: Any = None) -> dict[str, Any]:
+def fetch_bundle(project: str, timeline: str, *, revision_id: str | None = None,
+                 publication_id: str | None = None, client: Any = None) -> dict[str, Any]:
     """The complete pinned closure (parent → shots → internal timelines) of a head or revision."""
     from astrid.sdk import AstridClient
 
     def read(c: Any) -> dict[str, Any]:
-        opened = c.timelines.open_bundle(project, timeline, revision_id=revision_id)
+        options = {"publication_id": publication_id} if publication_id is not None else {}
+        opened = c.timelines.open_bundle(project, timeline, revision_id=revision_id, **options)
         if not opened.ok or not isinstance(opened.data, Mapping):
             raise TimelineEditError(f"could not open {timeline!r} in {project!r}: {opened.error}")
-        return copy.deepcopy(dict(opened.data["bundle"]))
+        bundle = copy.deepcopy(dict(opened.data["bundle"]))
+        if revision_id is None and publication_id is None:
+            # A restored revision can belong to several publications. Only
+            # Runtime's scoped head pair identifies the current publication.
+            project_id, timeline_id = bundle["project_id"], bundle["timeline_id"]
+            page = c.timelines.history(project_id, timeline_id, cursor=None, limit=1)
+            if not page.ok:
+                raise TimelineEditError(f"could not pin checkout publication: {page.error}")
+            head = page.data.get("head") if isinstance(page.data, Mapping) else None
+            if (not isinstance(head, Mapping)
+                    or not isinstance(head.get("revision_id"), str) or not head["revision_id"]
+                    or not isinstance(head.get("publication_id"), str) or not head["publication_id"]):
+                raise TimelineEditError("checkout history omitted its exact head pair")
+            if head["revision_id"] != bundle["base_parent"]["revision_id"]:
+                raise TimelineEditError("checkout head moved while reading; reopen the timeline")
+            hydrated = c.timelines.open_bundle(
+                project_id, timeline_id, revision_id=head["revision_id"],
+                publication_id=head["publication_id"],
+            )
+            if not hydrated.ok or not isinstance(hydrated.data, Mapping):
+                raise TimelineEditError(f"could not hydrate checkout publication: {hydrated.error}")
+            bundle = copy.deepcopy(dict(hydrated.data["bundle"]))
+            bundle["base_parent"]["publication_id"] = head["publication_id"]
+        pin = bundle.get("base_parent", {})
+        if pin.get("publication_id") and "_runtime_document" not in bundle.get("source_mapping", {}):
+            hydrated = c.timelines.open_bundle(project, timeline, revision_id=pin["revision_id"],
+                                               publication_id=pin["publication_id"])
+            if not hydrated.ok or not isinstance(hydrated.data, Mapping):
+                raise TimelineEditError(f"could not hydrate original checkout publication: {hydrated.error}")
+            bundle = copy.deepcopy(dict(hydrated.data["bundle"]))
+            bundle["base_parent"]["publication_id"] = pin["publication_id"]
+        return bundle
 
     if client is not None:
         return read(client)

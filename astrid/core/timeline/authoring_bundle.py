@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from .parent_registry import ParentRegistryError, effective_parent_registry
+from .validators.meta import validate_meta, validate_timeline_meta_locations
 
 AUTHORING_BUNDLE_SCHEMA_VERSION = 1
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -41,16 +42,27 @@ class UnsupportedAuthoringEditError(AuthoringBundleError):
 
 @runtime_checkable
 class AuthoringCandidateWriter(Protocol):
-    """The existing Runtime publication port consumed by candidate commits."""
+    """Existing authenticated Runtime reads and the canonical commit port."""
 
-    def publish_parent_composition(
+    def commit_timeline(
         self,
         project_id: str,
         timeline_id: str,
-        publication: Mapping[str, Any],
+        body: Mapping[str, Any],
         *,
         idempotency_key: str,
     ) -> Any: ...
+
+    def list_timeline_commits(self, project_id: str, timeline_id: str, *, cursor: str | None = None,
+                              limit: int = 50) -> Any: ...
+
+    def get_project_parent_composition_revision(self, project_id: str, timeline_id: str, revision: str) -> Any: ...
+
+    def get_project_shot_revision(self, project_id: str, shot_id: str, revision: str) -> Any: ...
+
+    def get_project_timeline_revision(self, project_id: str, timeline_id: str, revision: str) -> Any: ...
+
+    def get_project_media_selection(self, project_id: str, selection: Mapping[str, Any]) -> Any: ...
 
 
 def authoring_contract() -> dict[str, Any]:
@@ -176,6 +188,40 @@ def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     return value
 
 
+def _validate_meta_rows(rows: Any, *, path: str) -> None:
+    """Validate meta on an explicit authored row collection only."""
+    if not isinstance(rows, list):
+        return
+    for index, row in enumerate(rows):
+        if isinstance(row, Mapping) and "meta" in row:
+            validate_meta(row["meta"], path=f"{path}[{index}].meta")
+
+
+def _validate_registry_asset_meta(registry: Any, *, path: str) -> None:
+    if not isinstance(registry, Mapping):
+        return
+    assets = registry.get("assets")
+    if not isinstance(assets, Mapping):
+        return
+    for asset_id, entry in assets.items():
+        if isinstance(entry, Mapping) and "meta" in entry:
+            validate_meta(entry["meta"], path=f"{path}.assets[{asset_id!r}].meta")
+
+
+def _validate_timeline_payload_meta(
+    payload: Mapping[str, Any], *, path: str, include_parent_locations: bool = False
+) -> None:
+    """Validate known timeline meta seams without interpreting opaque descendants."""
+    validate_timeline_meta_locations(payload, path=path)
+    _validate_registry_asset_meta(payload.get("registry"), path=f"{path}.registry")
+    if include_parent_locations:
+        _validate_meta_rows(payload.get("occurrences"), path=f"{path}.occurrences")
+        config = payload.get("config")
+        if isinstance(config, Mapping):
+            validate_timeline_meta_locations(config, path=f"{path}.config")
+            _validate_registry_asset_meta(config.get("registry"), path=f"{path}.config.registry")
+
+
 def _sequence(value: Any, path: str) -> Sequence[Any]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise AuthoringBundleError(f"{path} must be a list")
@@ -228,33 +274,53 @@ def _authoring_shot_id(
     return _identity("shot-placement", project_id, timeline_id, occurrence_id, source_shot_id)
 
 
-def _remap_known_item_references(
-    value: Any, item_ids: Mapping[str, str], *, key: str | None = None
-) -> Any:
-    """Remap known item-reference fields without rewriting opaque string data."""
+def _rederive_root_identity(
+    placement: dict[str, Any], project_id: str, timeline_id: str, shot_revision_id: str
+) -> None:
+    """Re-derive a new occurrence's two derived root fields for its compiled destination.
 
-    if isinstance(value, Mapping):
-        result: dict[str, Any] = {}
-        for child_key, child in value.items():
-            if not isinstance(child_key, str):
-                result[child_key] = _copy(child)
-                continue
-            if isinstance(child, str) and (
-                child_key in {"item_id", "source_item_id", "selected_item_id", "parent_item_id"}
-                or child_key.endswith("_item_id")
-            ):
-                result[child_key] = item_ids.get(child, child)
-            elif isinstance(child, list) and child_key.endswith("_item_ids"):
-                result[child_key] = [
-                    item_ids.get(item, item) if isinstance(item, str) else _copy(item)
-                    for item in child
-                ]
-            else:
-                result[child_key] = _remap_known_item_references(child, item_ids, key=child_key)
-        return result
-    if isinstance(value, list):
-        return [_remap_known_item_references(item, item_ids, key=key) for item in value]
-    return _copy(value)
+    Only fields the row already carries are rewritten. The parent document is the
+    row's own ``parent_document_id``, else the timeline id (migration's default).
+    """
+    from .shot_composition import stable_occurrence_deep_link, stable_output_identity
+
+    document_id = placement.get("parent_document_id") or timeline_id
+    if "stable_deep_link" in placement:
+        placement["stable_deep_link"] = stable_occurrence_deep_link(
+            project_id,
+            document_id,
+            placement["shot_id"],
+            shot_revision_id,
+            placement["occurrence_id"],
+        )
+    if "output_identity" in placement:
+        placement["output_identity"] = stable_output_identity(
+            project_id, document_id, placement["occurrence_id"]
+        )
+
+
+def _remap_known_item_references(
+    payload: Mapping[str, Any], item_ids: Mapping[str, str]
+) -> dict[str, Any]:
+    """Remap the shot item codec and its declared source dependency links."""
+
+    result = _copy(dict(payload))
+    for item in result.get("items", []):
+        identity = item.get("item_id", item.get("id"))
+        for field in ("item_id", "id"):
+            if field in item and item[field] == identity:
+                item[field] = item_ids.get(identity, identity)
+        # Shot dependency descriptors use metadata, or the item itself when
+        # metadata is absent. Other fields and namespaces carry no reference
+        # authority merely because their keys end in _item_id.
+        descriptor = item.get("metadata")
+        if not isinstance(descriptor, Mapping):
+            descriptor = item
+        for field in ("source_item_id", "source_item"):
+            source = descriptor.get(field)
+            if isinstance(source, str):
+                descriptor[field] = item_ids.get(source, source)
+    return result
 
 
 def _copy_shot_for_placement(
@@ -311,6 +377,9 @@ def open_authoring_bundle(
     timeline_id = _string(parent.get("timeline_id"), "parent_revision.timeline_id")
     revision_id = _string(parent.get("revision_id"), "parent_revision.revision_id")
     payload = _mapping(parent.get("payload"), "parent_revision.payload")
+    _validate_timeline_payload_meta(
+        payload, path="parent_revision.payload", include_parent_locations=True
+    )
     parent_digest = _verify_digest(
         payload, parent.get("content_digest"), "parent_revision.content_digest"
     )
@@ -362,6 +431,13 @@ def open_authoring_bundle(
         shot_payload = _mapping(
             shot.get("payload"), f"shot_revisions[{source_revision_id}].payload"
         )
+        if "meta" in shot:
+            validate_meta(shot["meta"], path=f"shot_revisions[{source_revision_id}].meta")
+        if "meta" in shot_payload:
+            validate_meta(
+                shot_payload["meta"],
+                path=f"shot_revisions[{source_revision_id}].payload.meta",
+            )
         shot_digest = _verify_digest(
             shot_payload,
             shot.get("content_digest"),
@@ -380,6 +456,10 @@ def open_authoring_bundle(
             )
         internal_payload = _mapping(
             internal.get("payload"), f"internal_timeline_revisions[{internal_revision_id}].payload"
+        )
+        _validate_timeline_payload_meta(
+            internal_payload,
+            path=f"internal_timeline_revisions[{internal_revision_id}].payload",
         )
         internal_digest = _verify_digest(
             internal_payload,
@@ -494,6 +574,52 @@ def _clip_selected_media(clip: Mapping[str, Any], internal: Mapping[str, Any], p
     )
 
 
+def _missing_registry_asset(clip: Mapping[str, Any], internal: Mapping[str, Any]) -> bool:
+    """Return whether a named selector has no authored registry target."""
+
+    selector_key = next((key for key in _MEDIA_SELECTOR_KEYS if key in clip), None)
+    if selector_key not in {"asset", "asset_id"} or not isinstance(clip.get(selector_key), str):
+        return False
+    registry = internal.get("registry", {})
+    assets = registry.get("assets", {}) if isinstance(registry, Mapping) else {}
+    return not isinstance(assets, Mapping) or clip[selector_key] not in assets
+
+
+def _same_media_declaration(base: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+    return all(
+        (key in base, base.get(key)) == (key in candidate, candidate.get(key))
+        for key in _MEDIA_SELECTOR_KEYS
+    )
+
+
+def _clip_selected_media_for_edit(
+    base_clip: Mapping[str, Any], candidate_clip: Mapping[str, Any],
+    base_internal: Mapping[str, Any], candidate_internal: Mapping[str, Any], path: str,
+    source_assets: Mapping[str, Mapping[str, Any]] | None,
+    preserve_legacy_missing: bool,
+) -> str | None:
+    """Resolve media while retaining one unchanged, legacy missing selector.
+
+    A missing selector is retained only when both the declaration and its
+    missing registry target are unchanged.  Any new, modified, or newly
+    resolvable declaration remains a hard authoring error.
+    """
+
+    base_for_media = _with_source_asset_authority(base_internal, source_assets)
+    candidate_for_media = _with_source_asset_authority(candidate_internal, source_assets)
+    base_missing = _missing_registry_asset(base_clip, base_for_media)
+    candidate_missing = _missing_registry_asset(candidate_clip, candidate_for_media)
+    if base_missing and preserve_legacy_missing:
+        if _same_media_declaration(base_clip, candidate_clip) and candidate_missing:
+            return None
+        raise AuthoringBundleError(
+            f"{path} changes a legacy missing registry asset declaration"
+        )
+    if base_missing:
+        return _clip_selected_media(candidate_clip, candidate_for_media, path)
+    return _clip_selected_media(candidate_clip, candidate_for_media, path)
+
+
 def _asset_authority(value: Any) -> dict[str, Mapping[str, Any]]:
     """Collect closed source asset entries without changing authored payloads."""
 
@@ -583,6 +709,7 @@ def _assert_shot_edit_supported(
 def _assert_internal_edit_supported(
     base: Mapping[str, Any], candidate: Mapping[str, Any], *, path: str,
     source_assets: Mapping[str, Mapping[str, Any]] | None = None,
+    preserve_legacy_missing: bool = False,
 ) -> set[str]:
     """Admit authored timeline edits while validating media selectors.
 
@@ -592,7 +719,14 @@ def _assert_internal_edit_supported(
     dangling identity/media references before the existing Runtime boundary.
     """
 
-    del base
+    base_clips = base.get("clips", [])
+    if not isinstance(base_clips, list):
+        raise AuthoringBundleError(f"{path}.base.clips must be a list")
+    base_by_id = {
+        _string(_mapping(raw, f"{path}.base.clips[{index}]").get("id"),
+                f"{path}.base.clips[{index}].id"): _mapping(raw, f"{path}.base.clips[{index}]")
+        for index, raw in enumerate(base_clips)
+    }
     candidate_for_media = _with_source_asset_authority(candidate, source_assets)
     candidate_clips = candidate.get("clips", [])
     if not isinstance(candidate_clips, list):
@@ -609,11 +743,21 @@ def _assert_internal_edit_supported(
         selector_key = next((key for key in _MEDIA_SELECTOR_KEYS if key in candidate_clip), None)
         if selector_key is None:
             continue  # Text/effect/placeholder clips may intentionally have no media.
-        if selector_key in {"asset", "asset_id"}:
-            selected_asset_keys.add(str(candidate_clip[selector_key]))
-        changed_media.add(
-            _clip_selected_media(candidate_clip, candidate_for_media, f"{path}.clips[{index}]")
-        )
+        base_clip = base_by_id.get(clip_id)
+        changed_media_id: str | None
+        if base_clip is None:
+            changed_media_id = _clip_selected_media(
+                candidate_clip, candidate_for_media, f"{path}.clips[{index}]"
+            )
+        else:
+            changed_media_id = _clip_selected_media_for_edit(
+                base_clip, candidate_clip, base, candidate, f"{path}.clips[{index}]", source_assets,
+                preserve_legacy_missing,
+            )
+        if changed_media_id is not None:
+            changed_media.add(changed_media_id)
+            if selector_key in {"asset", "asset_id"}:
+                selected_asset_keys.add(str(candidate_clip[selector_key]))
 
     registry = _mapping(candidate_for_media.get("registry", {}), f"{path}.registry")
     candidate_assets = _mapping(registry.get("assets", {}), f"{path}.registry.assets")
@@ -725,6 +869,7 @@ def _validate_placement_capabilities(
 def _internal_media_set(
     payload: Mapping[str, Any], path: str,
     source_assets: Mapping[str, Mapping[str, Any]] | None = None,
+    *, preserve_legacy_missing: bool = False,
 ) -> set[str]:
     result: set[str] = set()
     clips = payload.get("clips", [])
@@ -734,7 +879,40 @@ def _internal_media_set(
     for index, raw_clip in enumerate(clips):
         clip = _mapping(raw_clip, f"{path}.clips[{index}]")
         if any(key in clip for key in _MEDIA_SELECTOR_KEYS):
-            result.add(_clip_selected_media(clip, payload_for_media, f"{path}.clips[{index}]"))
+            try:
+                result.add(_clip_selected_media(clip, payload_for_media, f"{path}.clips[{index}]"))
+            except AuthoringBundleError:
+                if not (preserve_legacy_missing and _missing_registry_asset(clip, payload_for_media)):
+                    raise
+    return result
+
+
+def _without_meta(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: child for key, child in value.items() if key != "meta"}
+    return value
+
+
+def _timeline_media_view(value: Any, *, include_parent_locations: bool = False) -> Any:
+    """Hide only authored meta seams in a discovery copy, leaving params intact."""
+    if not isinstance(value, Mapping):
+        return value
+    result = _without_meta(value)
+    for collection in ("tracks", "clips"):
+        rows = value.get(collection)
+        if isinstance(rows, list):
+            result[collection] = [_without_meta(row) for row in rows]
+    registry = value.get("registry")
+    if isinstance(registry, Mapping) and isinstance(registry.get("assets"), Mapping):
+        result["registry"] = {
+            **registry,
+            "assets": {key: _without_meta(asset) for key, asset in registry["assets"].items()},
+        }
+    if include_parent_locations:
+        if isinstance(value.get("config"), Mapping):
+            result["config"] = _timeline_media_view(value["config"])
+        if isinstance(value.get("occurrences"), list):
+            result["occurrences"] = [_without_meta(row) for row in value["occurrences"]]
     return result
 
 
@@ -753,6 +931,70 @@ def _collect_media(value: Any) -> set[str]:
         for child in value:
             result.update(_collect_media(child))
     return result
+
+
+class _CopiedShot(dict[str, Any]):
+    """Native copy provenance, kept outside the authored JSON representation."""
+
+    def __init__(self, shot: Mapping[str, Any], source: dict[str, Any]) -> None:
+        super().__init__(shot)
+        self.source = source
+
+
+class _RestoredShot(_CopiedShot):
+    """Accepted inverse baseline, kept outside the authored JSON representation."""
+
+
+def _copied_shot_baseline(
+    root: Mapping[str, Any], shot: _CopiedShot, identity: str,
+) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    from astrid.sdk.timeline.commit import _verify_document
+
+    binding = shot.source
+    document = root["source_mapping"].get("_runtime_document")
+    _verify_document(document)
+    parent = document["parent_revision"]
+    if (document["project_id"] != root["project_id"]
+            or document["timeline_id"] != root["timeline_id"]
+            or root["base_parent"] != {key: parent[key] for key in ("revision_id", "content_digest")}):
+        raise AuthoringBundleError("copied shot source closure changed")
+    if isinstance(shot, _RestoredShot):
+        from astrid.sdk.timeline.commit import bundle_from_document
+
+        _verify_document(binding)
+        if (binding["project_id"], binding["timeline_id"]) != (
+            root["project_id"], root["timeline_id"]
+        ):
+            raise AuthoringBundleError("restored shot source scope changed")
+        historical = bundle_from_document(binding)
+        owners = {row["occurrence_id"] for row in root["placements"]
+                  if row.get("shot_id") == identity}
+        if (not owners or owners != {row["occurrence_id"] for row in historical["placements"]
+                                     if row["shot_id"] == identity}
+                or identity not in historical["shots"]):
+            raise AuthoringBundleError("restored shot source owners changed")
+        prior = historical["shots"][identity]
+        return prior["payload"], prior["internal_timeline"]
+    occurrences = parent["payload"]["occurrences"]
+    source = next((row for row in occurrences
+                   if row["occurrence_id"] == binding.get("source_occurrence_id")), None)
+    if (source is None or binding != {
+            "source_occurrence_id": source["occurrence_id"],
+            "source_shot_id": source["shot_id"],
+            "source_revision_id": source["shot_revision_id"],
+            "occurrence_id": binding.get("occurrence_id"), "shot_id": identity}
+            or not any(row.get("occurrence_id") == binding["occurrence_id"]
+                       and row.get("shot_id") == identity for row in root["placements"])):
+        raise AuthoringBundleError("copied shot source binding changed")
+    source_shot = next(row for row in document["shot_revisions"]
+                       if row["revision_id"] == source["shot_revision_id"])
+    source_internal = next(row for row in document["internal_timeline_revisions"]
+                           if row["revision_id"] == source_shot["internal_timeline_revision_id"])
+    baseline, _ = _copy_shot_for_placement(
+        source_shot["payload"], project_id=root["project_id"], timeline_id=root["timeline_id"],
+        occurrence_id=binding["occurrence_id"], authoring_shot_id=identity,
+        source_shot_id=source["shot_id"])
+    return baseline, source_internal["payload"]
 
 
 def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompilation:
@@ -774,13 +1016,22 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
     base_parent = _mapping(root.get("base_parent"), "candidate.base_parent")
     expected_head = _string(base_parent.get("revision_id"), "candidate.base_parent.revision_id")
     _string(base_parent.get("content_digest"), "candidate.base_parent.content_digest")
-    _mapping(root.get("base_parent_payload"), "candidate.base_parent_payload")
+    base_parent_payload = _mapping(root.get("base_parent_payload"), "candidate.base_parent_payload")
+    _validate_timeline_payload_meta(
+        base_parent_payload,
+        path="candidate.base_parent_payload",
+        include_parent_locations=True,
+    )
     parent_payload = _mapping(root.get("parent"), "candidate.parent")
+    _validate_timeline_payload_meta(
+        parent_payload, path="candidate.parent", include_parent_locations=True
+    )
     if "occurrences" in parent_payload:
         raise UnsupportedAuthoringEditError(
             "candidate.parent.occurrences is derived; edit candidate.placements instead"
         )
     placements = _sequence(root.get("placements"), "candidate.placements")
+    _validate_meta_rows(placements, path="candidate.placements")
     shots = _mapping(root.get("shots"), "candidate.shots")
     source_mapping = _mapping(root.get("source_mapping"), "candidate.source_mapping")
     source_placements = _mapping(
@@ -788,14 +1039,19 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
     )
     base_placements = _mapping(root.get("base_placements"), "candidate.base_placements")
     source_shots = _mapping(source_mapping.get("shots"), "candidate.source_mapping.shots")
-    # A complete candidate may add/remove/reorder placements and independent
-    # authoring shots.  Every authored shot still needs an explicit source
-    # mapping so the compiler can distinguish a copied child from an existing
-    # immutable revision; helpers populate this mapping for new identities.
-    if not set(source_shots).issuperset(shots):
+    preserve_legacy_missing = isinstance(source_mapping.get("_runtime_document"), Mapping)
+    # Recorded root creates have no immutable source. Existing/copy materialization
+    # still requires its exact mapping; opening a virtual slot is not a creation.
+    created_shots = {
+        key for key, shot in shots.items()
+        if isinstance(shot, Mapping) and shot.get("_created") is True and key not in source_shots
+    }
+    if not set(source_shots).union(created_shots).issuperset(shots):
         raise AuthoringBundleError(
             "candidate.source_mapping.shots must include every candidate shot identity"
         )
+    if created_shots - {row.get("shot_id") for row in placements if isinstance(row, Mapping)}:
+        raise AuthoringBundleError("recorded new shots require an occurrence in the same candidate")
 
     # Exact closures occasionally store a clip's selected registry key in the
     # parent/shot authority while the child timeline payload omits its local
@@ -822,23 +1078,47 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
                 f"candidate.shots[{authoring_shot_id!r}].shot_id must match its key"
             )
         source = _mapping(
-            source_shots[authoring_shot_id],
+            source_shots.get(authoring_shot_id, {}),
             f"candidate.source_mapping.shots[{authoring_shot_id!r}]",
         )
-        source_shot_id = _string(source.get("shot_id"), "source shot_id")
+        created = authoring_shot_id in created_shots
+        if isinstance(shot, _CopiedShot) and not created:
+            raise AuthoringBundleError("copied shot requires a recorded creation")
+        copied_baseline = (_copied_shot_baseline(root, shot, authoring_shot_id)
+                           if isinstance(shot, _CopiedShot) else None)
+        source_shot_id = None if created else _string(source.get("shot_id"), "source shot_id")
         base_shot = _mapping(
-            shot.get("base_payload"), f"candidate.shots[{authoring_shot_id!r}].base_payload"
+            copied_baseline[0] if copied_baseline else {} if created else shot.get("base_payload"),
+            f"candidate.shots[{authoring_shot_id!r}].base_payload",
         )
+        if "meta" in base_shot:
+            validate_meta(
+                base_shot["meta"],
+                path=f"candidate.shots[{authoring_shot_id!r}].base_payload.meta",
+            )
         candidate_shot = _mapping(
             shot.get("payload"), f"candidate.shots[{authoring_shot_id!r}].payload"
         )
+        if "meta" in candidate_shot:
+            validate_meta(
+                candidate_shot["meta"],
+                path=f"candidate.shots[{authoring_shot_id!r}].payload.meta",
+            )
         base_internal = _mapping(
-            shot.get("base_internal_timeline"),
+            copied_baseline[1] if copied_baseline else {} if created else shot.get("base_internal_timeline"),
             f"candidate.shots[{authoring_shot_id!r}].base_internal_timeline",
+        )
+        _validate_timeline_payload_meta(
+            base_internal,
+            path=f"candidate.shots[{authoring_shot_id!r}].base_internal_timeline",
         )
         candidate_internal = _mapping(
             shot.get("internal_timeline"),
             f"candidate.shots[{authoring_shot_id!r}].internal_timeline",
+        )
+        _validate_timeline_payload_meta(
+            candidate_internal,
+            path=f"candidate.shots[{authoring_shot_id!r}].internal_timeline",
         )
         shot_media = _assert_shot_edit_supported(
             base_shot, candidate_shot, path=f"shots[{authoring_shot_id}].payload"
@@ -853,12 +1133,14 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
             candidate_internal,
             path=f"shots[{authoring_shot_id}].internal_timeline",
             source_assets=source_assets,
+            preserve_legacy_missing=preserve_legacy_missing,
         )
         base_shot_media = _shot_media_set(base_shot, f"shots[{authoring_shot_id}].base_payload")
         base_internal_media = _internal_media_set(
             base_internal,
             f"shots[{authoring_shot_id}].base_internal_timeline",
             source_assets=source_assets,
+            preserve_legacy_missing=preserve_legacy_missing,
         )
         shot_additions = shot_media - base_shot_media
         internal_additions = internal_media - base_internal_media
@@ -883,8 +1165,8 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
             )
         needs_materialization = (
             authoring_shot_id != source_shot_id
-            or candidate_shot != base_shot
-            or candidate_internal != base_internal
+            or _canonical_json(candidate_shot) != _canonical_json(base_shot)
+            or _canonical_json(candidate_internal) != _canonical_json(base_internal)
         )
         if needs_materialization:
             internal_payload = _copy(dict(candidate_internal))
@@ -1018,6 +1300,8 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
         placement["shot_id"] = authoring_shot_id
         placement["shot_revision_id"] = compiled["revision_id"]
         placement.pop("revision_id", None)
+        if base_placement is None:
+            _rederive_root_identity(placement, project_id, timeline_id, compiled["revision_id"])
         compiled_occurrences.append(placement)
         identity_mapping["placements"][occurrence_id] = {
             "occurrence_id": occurrence_id,
@@ -1033,18 +1317,18 @@ def compile_authoring_candidate(candidate: Mapping[str, Any]) -> CandidateCompil
         "authoring-parent-revision", project_id, timeline_id, expected_head, final_parent
     )
     media = sorted(
-        _collect_media(final_parent)
+        _collect_media(_timeline_media_view(final_parent, include_parent_locations=True))
         | {
             digest
             for shot_id, row in shots.items()
             if shot_id in referenced_shot_ids
-            for digest in _collect_media(row.get("payload"))
+            for digest in _collect_media(_without_meta(row.get("payload")))
         }
         | {
             digest
             for shot_id, row in shots.items()
             if shot_id in referenced_shot_ids
-            for digest in _collect_media(row.get("internal_timeline"))
+            for digest in _collect_media(_timeline_media_view(row.get("internal_timeline")))
         }
     )
     shot_manifest = [
@@ -1188,7 +1472,7 @@ def diff_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
             "placements", {}
         ), "candidate.source_mapping.placements"
     )
-    base = {
+    base: dict[str, Any] = {
         "parent": root.get("base_parent_payload"),
         "placements": list(source_placements.values()),
         "shots": {
@@ -1200,7 +1484,7 @@ def diff_authoring_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(value, Mapping)
         },
     }
-    current = {
+    current: dict[str, Any] = {
         "parent": root.get("parent"),
         "placements": root.get("placements"),
         "shots": {
@@ -1287,20 +1571,26 @@ def authoring_media_inventory(candidate: Mapping[str, Any]) -> dict[str, Any]:
                             unresolved.append({"path": child_path, "selector": child, "error": str(exc)})
                 else:
                     walk(child, child_path, registry)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]", registry)
 
     parent = root.get("parent", {})
     parent_registry = parent.get("registry", {}) if isinstance(parent, Mapping) else {}
-    walk(parent, "parent", parent_registry if isinstance(parent_registry, Mapping) else None)
+    walk(
+        _timeline_media_view(parent, include_parent_locations=True), "parent",
+        parent_registry if isinstance(parent_registry, Mapping) else None,
+    )
     for index, placement in enumerate(_sequence(root.get("placements", []), "candidate.placements")):
-        walk(placement, f"placements[{index}]")
+        walk(_without_meta(placement), f"placements[{index}]")
     for shot_id, shot in _mapping(root.get("shots"), "candidate.shots").items():
         if not isinstance(shot, Mapping):
             continue
         payload = shot.get("payload", {})
-        walk(payload, f"shots[{shot_id!r}].payload")
+        walk(_without_meta(payload), f"shots[{shot_id!r}].payload")
         internal = shot.get("internal_timeline", {})
         registry = internal.get("registry", {}) if isinstance(internal, Mapping) else {}
-        walk(internal, f"shots[{shot_id!r}].internal_timeline", registry if isinstance(registry, Mapping) else None)
+        walk(_timeline_media_view(internal), f"shots[{shot_id!r}].internal_timeline", registry if isinstance(registry, Mapping) else None)
         assets = registry.get("assets", {}) if isinstance(registry, Mapping) else {}
         if isinstance(assets, Mapping):
             for asset_key, metadata in assets.items():
@@ -1540,63 +1830,20 @@ def approve_authoring_candidate(
     }
 
 
-def promote_approved_authoring_candidate(
-    candidate: Mapping[str, Any],
-    approval: Mapping[str, Any],
-    writer: AuthoringCandidateWriter,
-    *,
-    idempotency_key: str,
-) -> dict[str, Any]:
-    """Promote exactly the candidate represented by an approval artifact."""
-
-    if not isinstance(idempotency_key, str) or not idempotency_key:
-        raise AuthoringBundleError("idempotency_key must be a non-empty string")
-    approval_value = _mapping(approval, "approval")
-    if approval_value.get("kind") != "authoring-candidate-approval":
-        raise AuthoringBundleError("approval.kind is invalid")
-    if approval_value.get("schema_version") != AUTHORING_BUNDLE_SCHEMA_VERSION:
-        raise AuthoringBundleError("approval.schema_version is invalid")
-    if approval_value.get("decision") != "approved":
-        raise AuthoringBundleError("candidate is not approved")
-    compilation = compile_authoring_candidate(candidate)
-    root = _mapping(candidate, "candidate")
-    base_parent = _mapping(root.get("base_parent"), "candidate.base_parent")
-    expected = {
-        "project_id": root["project_id"],
-        "timeline_id": root["timeline_id"],
-        "candidate_digest": compilation.candidate_digest,
-        "publication_digest": _digest(compilation.publication),
-        "base_parent": dict(base_parent),
-    }
-    for field, value in expected.items():
-        if approval_value.get(field) != value:
-            raise AuthoringBundleError(
-                f"approval is stale or does not match candidate: {field}"
-            )
-    publication = compilation.publication
-    result = writer.publish_parent_composition(
-        publication["project_id"],
-        publication["timeline_id"],
-        _copy(dict(publication)),
-        idempotency_key=idempotency_key,
-    )
-    return {
-        "approval": _copy(dict(approval_value)),
-        "candidate_digest": compilation.candidate_digest,
-        "identity_mapping": _copy(dict(compilation.identity_mapping)),
-        "changed_identities": _copy(list(compilation.changed_identities)),
-        "publication": result,
-    }
-
-
 def publish_authoring_candidate(
     candidate: Mapping[str, Any],
     writer: AuthoringCandidateWriter,
     *,
     idempotency_key: str,
+    approval: Mapping[str, Any] | None = None,
     media_imports: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Compile and publish through the existing atomic Runtime boundary.
+    """Compile and publish through Runtime's guarded v2 commit boundary.
+
+    When supplied, ``approval`` is a detached authorization for this exact
+    candidate, publication, scope, and base.  It is checked before the commit
+    request is built; it is not added to the Runtime wire request.  Omitting it
+    retains the ordinary authoring commit behavior.
 
     Optional ``media_imports`` are receipts from the existing catalog import
     helper, used only for feedback. Without them, catalog counts stay unknown.
@@ -1605,17 +1852,54 @@ def publish_authoring_candidate(
     if not isinstance(idempotency_key, str) or not idempotency_key:
         raise AuthoringBundleError("idempotency_key must be a non-empty string")
     compilation = compile_authoring_candidate(candidate)
+    approval_value: Mapping[str, Any] | None = None
+    if approval is not None:
+        approval_value = _mapping(approval, "approval")
+        if approval_value.get("kind") != "authoring-candidate-approval":
+            raise AuthoringBundleError("approval.kind is invalid")
+        if approval_value.get("schema_version") != AUTHORING_BUNDLE_SCHEMA_VERSION:
+            raise AuthoringBundleError("approval.schema_version is invalid")
+        if approval_value.get("decision") != "approved":
+            raise AuthoringBundleError("candidate is not approved")
+        root = _mapping(candidate, "candidate")
+        expected = {
+            "project_id": root["project_id"],
+            "timeline_id": root["timeline_id"],
+            "candidate_digest": compilation.candidate_digest,
+            "publication_digest": _digest(compilation.publication),
+            "base_parent": dict(_mapping(root.get("base_parent"), "candidate.base_parent")),
+        }
+        for field, value in expected.items():
+            if approval_value.get(field) != value:
+                raise AuthoringBundleError(
+                    f"approval is stale or does not match candidate: {field}"
+                )
+    from astrid.sdk.timeline.authoring_commit import authoring_commit_request, response_data
+
     from .authoring_feedback import authoring_change_summary, publication_feedback
 
     summary = authoring_change_summary(candidate, media_imports=media_imports)
     publication = compilation.publication
-    result = writer.publish_parent_composition(
+    request = authoring_commit_request(candidate, writer, compilation=compilation)
+    envelope = writer.commit_timeline(
         publication["project_id"],
         publication["timeline_id"],
-        _copy(dict(publication)),
+        request,
         idempotency_key=idempotency_key,
     )
-    return {
+    result = response_data(envelope)
+    if result.get('status') not in ('accepted', 'merged'):
+        raise AuthoringBundleError(f"authoring commit was not accepted: {result}")
+    document = result['canonical_document']
+    accepted_revision_id = result['accepted_revision_id']
+    result.update(new_head=accepted_revision_id, parent_revision_id=accepted_revision_id,
+                  old_head=result['previous_revision_id'],
+                  dependency_manifest=document['dependency_manifest'])
+    if isinstance(envelope, Mapping) and 'data' in envelope:
+        result['data'] = _copy(result)
+    if isinstance(envelope, Mapping) and 'receipt' in envelope:
+        result['receipt'] = _copy(envelope['receipt'])
+    result_value = {
         "candidate_digest": compilation.candidate_digest,
         "identity_mapping": _copy(dict(compilation.identity_mapping)),
         "changed_identities": _copy(list(compilation.changed_identities)),
@@ -1625,6 +1909,9 @@ def publish_authoring_candidate(
             project_id=publication["project_id"], timeline_id=publication["timeline_id"],
         ),
     }
+    if approval_value is not None:
+        result_value["approval"] = _copy(dict(approval_value))
+    return result_value
 
 
 __all__ = [
@@ -1642,7 +1929,6 @@ __all__ = [
     "inspect_authoring_candidate",
     "open_authoring_bundle",
     "publish_authoring_candidate",
-    "promote_approved_authoring_candidate",
     "preview_authoring_candidate",
     "validate_authoring_candidate",
 ]

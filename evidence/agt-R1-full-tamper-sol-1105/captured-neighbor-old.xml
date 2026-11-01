@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.640" timestamp="2026-10-24T11:12:02.401115+00:00" hostname="vm"><testcase classname="tests.editing_conformance.test_captured_nested_redo" name="test_captured_nested_redo_compiles_and_partitions_without_rewriting_source" time="0.187"><failure message="astrid.sdk.timeline._command_state.CommandError: shot item source changed">tests/editing_conformance/test_captured_nested_redo.py:64: in test_captured_nested_redo_compiles_and_partitions_without_rewriting_source
+    plan = execute(bundle, request['commands'], inverse_records=records,
+astrid/sdk/timeline/commands.py:268: in execute
+    apply_inverse(ctx, inverse_records, intervening_records, staged_records=records)
+astrid/sdk/timeline/inverse.py:1094: in apply_inverse
+    _validate_inputs(scratch, record, records)
+astrid/sdk/timeline/inverse.py:882: in _validate_inputs
+    or _input_read_state(state, read, record, records).matches(
+astrid/sdk/timeline/_command_state.py:410: in matches
+    actual = self.get(ref, path)
+             ^^^^^^^^^^^^^^^^^^^
+astrid/sdk/timeline/_command_state.py:396: in get
+    mapping = self.shot_item_map(ref)
+              ^^^^^^^^^^^^^^^^^^^^^^^
+astrid/sdk/timeline/_command_state.py:304: in shot_item_map
+    raise CommandError('shot item source changed', kind='identity_conflict', ref=ref)
+E   astrid.sdk.timeline._command_state.CommandError: shot item source changed</failure></testcase></testsuite></testsuites>

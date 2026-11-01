@@ -1,0 +1,15 @@
+id: look.clear.plate-asset-opaque
+source: new
+intent: Explicitly clear the plate asset while preserving unrelated opaque clip metadata.
+fixture: tiny
+expect: change
+cli: edit --clip c2.plate --clear-asset
+sheet:
+  cuts: [c2]
+  replace:
+    - ['snap-plate  Q', 'snap-plate  ""']
+python: |
+  tl.clip("c2.plate").clear_asset()
+check:
+  - tl.clip("c2.plate").asset is None
+  - 'tl.clip("c2.plate").data["app"] == {"astrid": {"layer": "plate", "why": "live", "cut": "c2"}}'

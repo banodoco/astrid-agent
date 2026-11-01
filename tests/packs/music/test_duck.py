@@ -249,4 +249,3 @@ def test_ducked_asset_preserves_stereo_24_bit_source_format(
     )
     rendered = load_audio(result_path)
     assert (rendered.rate, rendered.bits, rendered.samples.shape[1]) == (_SAMPLE_RATE, 24, 2)
-

@@ -124,19 +124,31 @@ class ElementRegistry(CapabilityRegistry[tuple[str, str], ElementDefinition]):
         )
         return element
 
-    def get(self, kind: ElementKind, element_id: str, *, pack_id: str | None = None) -> ElementDefinition:
+    def get(
+        self, kind: ElementKind, element_id: str, *, pack_id: str | None = None,
+        revision: str | None = None,
+    ) -> ElementDefinition:
         normalized_kind = self.element_kind_registry.normalize(kind, error_cls=ElementRegistryError)
         key = (normalized_kind, element_id)
         try:
             candidates = self._entries[key]
             if pack_id is not None:
                 candidates = [item for item in candidates if self._pack_id(item) == pack_id]
-                if not candidates:
-                    raise KeyError(key)
+            if revision is not None:
+                from .catalog import _element_revision
+
+                if any(item.metadata.get("render_revision") for item in candidates):
+                    candidates = [item for item in candidates if item.metadata.get("render_revision")]
+                candidates = [item for item in candidates if (
+                    item.metadata.get("render_revision") or _element_revision(item)
+                ) == revision]
+            if not candidates:
+                raise KeyError(key)
             definition = self._resolve_entry(candidates)
         except KeyError as exc:
             owner = f" in pack {pack_id!r}" if pack_id is not None else ""
-            raise KeyError(f"unknown {normalized_kind} element {element_id!r}{owner}") from exc
+            pin = f" at revision {revision!r}" if revision is not None else ""
+            raise KeyError(f"unknown {normalized_kind} element {element_id!r}{owner}{pin}") from exc
         return definition
 
     @staticmethod

@@ -262,6 +262,32 @@ def timeline_duration_frames(timeline: Any, fps: float) -> int:
     return _authored_timeline_duration_frames(timeline, fps)
 
 
+def timeline_occurrence_extent_frames(timeline: Any, fps: float) -> int:
+    """Return the frame where the latest shot occurrence placed on the timeline ends.
+
+    A shot placed in the parent as an occurrence can have no clips (a blank
+    window), so the clip extent alone misses it.  The projection records each
+    placed occurrence's window in ``app.astrid_shot_composition.occurrences`` as
+    ``at`` and ``hold`` seconds; this reads those windows, and returns 0 when the
+    timeline carries no occurrences.
+    """
+
+    frame_rate = _positive_fps(fps)
+    app = _field(timeline, "app", None)
+    composition = app.get("astrid_shot_composition") if isinstance(app, Mapping) else None
+    occurrences = composition.get("occurrences") if isinstance(composition, Mapping) else None
+    if not isinstance(occurrences, list):
+        return 0
+    ends = []
+    for occurrence in occurrences:
+        if not isinstance(occurrence, Mapping):
+            continue
+        start = _finite_number(occurrence.get("at", 0), "occurrence.at")
+        hold = _finite_number(occurrence.get("hold", 0), "occurrence.hold")
+        ends.append(_js_round((start + hold) * frame_rate))
+    return max(ends, default=0)
+
+
 def timeline_render_duration_frames(timeline: Any, fps: float) -> int:
     """Return the decoded render duration, including a declared render tail."""
 
