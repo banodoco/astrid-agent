@@ -1713,7 +1713,7 @@ class AdapterRegistry:
             family = explicit
         elif definition.id.startswith("rendering.") or "render" in definition.id:
             family = "render"
-        elif definition.id.startswith(("vibecomfy.", "comfy_wrap.")) or metadata.get("vibecomfy_command"):
+        elif definition.id.startswith("vibecomfy.") or metadata.get("vibecomfy_command"):
             family = "local_generation"
         elif metadata.get("api_provider") or metadata.get("env") or metadata.get("secrets_required") or definition.isolation.network:
             family = "provider"
