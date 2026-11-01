@@ -1,5 +1,5 @@
 """Host contract tests; no Comfy server or provider is contacted."""
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
@@ -10,9 +10,29 @@ from astrid.core.execution.managed_tool_session import (
 )
 
 
-def binding():
-    return SessionBinding("session", "runtime", "process-birth", "http://example.invalid",
-                          "source", "config", "residency", 3, "launch", "engine-birth")
+def binding(*, attached=False, hc03_profile=None, attested_engine_environment=None, session=None):
+    """Build fake owner evidence using the recorded F07 binding mapping."""
+    if hc03_profile is None:
+        hc03_profile = {"residency_digest": "attached-residency"}
+    if attested_engine_environment is None:
+        attested_engine_environment = {"residency_digest": "managed-residency"}
+    if session is None:
+        session = {
+            "process_birth_id": "process-birth",
+            "comfy_process_birth_id": "process-birth",
+            "launch_token": "credential-sentinel",
+        }
+    evidence = hc03_profile if attached else attested_engine_environment
+    residency = evidence.get("residency_digest")
+    if not residency:
+        raise ValueError("residency digest required")
+    return SessionBinding(
+        session_id="session", runtime_instance_id="runtime",
+        process_birth_id=session["process_birth_id"], endpoint="http://example.invalid",
+        source_digest="source", config_digest="config", execution_identity=residency,
+        runtime_epoch=3, launch_generation=session["process_birth_id"],
+        engine_birth_id=session["comfy_process_birth_id"],
+    )
 
 
 class FakeComfy:
@@ -85,6 +105,37 @@ def settle(manager, token):
                     "generation": token.generation, "binding_identity": list(token.binding_identity)})
 
 
+
+@pytest.mark.parametrize("attached", [False, True], ids=["managed", "attached"])
+def test_binding_uses_birth_and_residency_evidence_without_launch_token(attached):
+    profile = {"residency_digest": "profile-residency"}
+    environment = {"residency_digest": "environment-residency"}
+    session = {"process_birth_id": "process-birth", "comfy_process_birth_id": "process-birth",
+               "launch_token": "credential-sentinel"}
+    bound = binding(attached=attached, hc03_profile=profile,
+                    attested_engine_environment=environment, session=session)
+    fake = FakeComfy(bound, attached=attached)
+    assert fake.bound.launch_generation == fake.bound.process_birth_id == session["process_birth_id"]
+    assert fake.bound.engine_birth_id == fake.bound.process_birth_id == session["comfy_process_birth_id"]
+    assert fake.bound.execution_identity == (
+        profile["residency_digest"] if attached else environment["residency_digest"]
+    )
+    assert all(getattr(fake.bound, field.name) != session["launch_token"]
+               for field in fields(SessionBinding))
+
+
+def test_attached_binding_refuses_missing_hc03_residency_digest():
+    with pytest.raises(ValueError, match="residency digest required"):
+        binding(attached=True, hc03_profile={},
+                attested_engine_environment={"residency_digest": "must-not-fallback"})
+
+
+def test_managed_binding_refuses_missing_attested_environment_digest():
+    with pytest.raises(ValueError, match="residency digest required"):
+        binding(hc03_profile={"residency_digest": "must-not-fallback"},
+                attested_engine_environment={})
+
+
 def test_open_passes_complete_binding_to_owner_hook(monkeypatch):
     from astrid.core.generation.backends.vibecomfy import CheckoutServerAdapter
     expected = binding()
@@ -140,7 +191,7 @@ def test_observe_refuses_every_changed_or_missing_binding_field(field):
 
 
 def test_attached_cancel_is_prompt_specific_and_pre_dispatch_never_cancels_old_prompt():
-    fake = FakeComfy(binding(), attached=True)
+    fake = FakeComfy(binding(attached=True), attached=True)
     manager, _ = manager_with(fake)
     first = begin(manager, invocation="first")
     manager.cancel(first, outcome="confirmed")
@@ -153,7 +204,7 @@ def test_attached_cancel_is_prompt_specific_and_pre_dispatch_never_cancels_old_p
 
 
 def test_uncertain_cancel_keeps_slot_fenced_until_quiescence_is_proven():
-    fake = FakeComfy(binding(), attached=True)
+    fake = FakeComfy(binding(attached=True), attached=True)
     manager, _ = manager_with(fake)
     token = begin(manager)
     fake.uncertain = True
