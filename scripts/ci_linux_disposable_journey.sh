@@ -32,6 +32,8 @@ sudo useradd --no-create-home --home-dir "$run_root/home" --shell /bin/bash "$na
 created=1
 uid_owned=$(id -u "$name")
 chmod 755 "$base" "$run_root" "$run_root/home"
+cp "$RUNNER_TEMP/candidate.json" "$base/candidate.json"
+chmod 644 "$base/candidate.json"
 sudo chown -R "$uid_owned:$(id -g "$name")" "$base"
 sudo loginctl enable-linger "$name"
 for ((i=0; i<30; i++)); do
@@ -39,8 +41,6 @@ for ((i=0; i<30; i++)); do
   sleep 1
 done
 [[ -S "/run/user/$uid_owned/bus" ]] || { echo 'Disposable user bus did not start' >&2; exit 1; }
-cp "$RUNNER_TEMP/candidate.json" "$base/candidate.json"
-chmod 644 "$base/candidate.json"
 # Explicit environment excludes provider tokens and never targets the runner's manager.
 sudo -u "$name" env -i PATH="$PATH" HOME="$run_root/home" USER="$name" LOGNAME="$name" \
   XDG_RUNTIME_DIR="/run/user/$uid_owned" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid_owned/bus" \
