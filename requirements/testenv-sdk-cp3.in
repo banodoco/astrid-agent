@@ -1,0 +1,23 @@
+# Declared requirements from runpod-python/requirements.txt at
+# 0786b3d51855a66176fea1e7443b92e7ef2d01b5. Resolve with proof.lock,
+# build.lock and testenv-cp3.lock (staged as extra.lock) as constraints.
+aiohttp[speedups] >= 3.14.3
+aiohttp-retry >= 2.9.1
+
+backoff >= 2.2.1
+boto3 >= 1.43.66
+click >= 8.4.2
+colorama >= 0.4.6, < 0.4.7
+cryptography >= 50.0.0
+fastapi[all] >= 0.141.1
+paramiko >= 5.0.0
+prettytable >= 3.18.0
+psutil >= 7.2.2
+py-cpuinfo >= 9.0.0
+inquirerpy == 0.3.4
+requests >= 2.34.2
+tomli >= 2.4.1
+tomlkit >= 0.15.1
+tqdm-loggable >= 0.4.1
+urllib3 >= 2.7.0
+watchdog >= 6.0.0
