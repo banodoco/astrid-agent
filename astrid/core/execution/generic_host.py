@@ -9833,7 +9833,10 @@ class GenericPackHost:
 
         if terminal.get("receipt_final"):
             with terminal["completion_lock"]:
-                if terminal.get("completion_state") == "acknowledged":
+                # A forced receipt can win before completion is reserved.
+                # Refresh uncertainty as well as acknowledgement while keeping
+                # its forced outcome and evidence unchanged.
+                if terminal.get("completion_state") in {"in_flight", "unknown", "acknowledged"}:
                     path = terminal["root"] / "result.json"
                     receipt = json.loads(path.read_text(encoding="utf-8"))
                     completion_snapshot(receipt)
