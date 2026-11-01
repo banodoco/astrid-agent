@@ -484,3 +484,33 @@ def test_stdio_loop_reports_malformed_json_and_unknown_method(monkeypatch, capsy
     replies = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert replies[0]["error"]["code"] == -32700
     assert replies[1]["id"] == 7 and replies[1]["error"]["code"] == -32601
+
+
+def test_engine_install_timeout_uses_deadline_and_reports_uncertain_outcome(monkeypatch):
+    from astrid import mcp_server
+
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(kwargs['timeout'])
+        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+
+    monkeypatch.setattr(mcp_server.subprocess, 'run', run)
+    tool = mcp_server._engine_install_tools()['engines_install']
+    for args, expected in [({'engine': 'e'}, 3720), ({'engine': 'e', 'deadline': 42.5}, 162.5)]:
+        result = mcp_server.call_tool(tool, args)
+        error = result['structuredContent']['error']
+        assert result['isError'] and error['code'] == 'ENGINE_INSTALL_STILL_RUNNING_OR_TIMED_OUT'
+        assert 'astrid engines status' in error['message'] and '.astrid-engine/install.json' in error['message']
+        assert calls[-1] == expected
+
+
+def test_other_tools_keep_global_timeout(monkeypatch, tmp_path):
+    from astrid import mcp_server
+
+    seen = []
+    def run(argv, **kwargs):
+        seen.append(kwargs['timeout'])
+        return subprocess.CompletedProcess(argv, 0, '', '')
+    monkeypatch.setattr(mcp_server.subprocess, 'run', run)
+    mcp_server._run(['other'], tmp_path)
+    assert seen == [mcp_server.TIMEOUT]
