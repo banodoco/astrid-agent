@@ -195,9 +195,9 @@ def test_generate_and_h3_share_vibecomfy_pin():
     assert generate_sources['comfyui'][1] == '423cbd20511becb1f16122ab518e92e58bfa03d9'  # v0.43.2
     assert h3_sources['comfyui'][1] == 'ee71d5c4993f29086b27fde1629a945ae48425bf'
     assert generate_sources['vibecomfy'] == (
-        'https://github.com/banodoco/VibeComfy.git', 'b2123edfbe7b950848b5c98d575fd9554302fc73')
+        'https://github.com/banodoco/VibeComfy.git', 'e2905d068d5851b9c32856d32b8251852a01d6dd')
     assert h3_sources['vibecomfy'] == (
-        'https://github.com/banodoco/VibeComfy.git', 'b2123edfbe7b950848b5c98d575fd9554302fc73')
+        'https://github.com/banodoco/VibeComfy.git', 'e2905d068d5851b9c32856d32b8251852a01d6dd')
     assert {k: v for k, v in generate_sources.items() if k not in {'comfyui', 'vibecomfy'}} == {
         k: v for k, v in h3_sources.items() if k not in {'comfyui', 'vibecomfy'}}
 

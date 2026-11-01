@@ -70,7 +70,7 @@ def test_comfyui_linux_recipe_is_package_owned_and_h3_entry_is_pinned():
         (recipes._ROOT / comfy_entry.recipe.path).read_bytes()
     ).hexdigest()
     assert h3_entry.recipe.path == "packs/runpod/recipe.linux-cu130.json"
-    assert h3_entry.recipe.sha256 == "ab83572f93892fa8ac252fd592da31d88b32a2739967baf953e805a66511f1b9"
+    assert h3_entry.recipe.sha256 == "9367143c100b66672b07f7706ecd2773e5d2df40e831f106f72fbb132bb87572"
 
     recipe = recipes.load_recipe("comfyui", platform)
     lock = recipes.load_recipe_model_lock("comfyui", platform)
@@ -113,7 +113,7 @@ def test_plain_comfyui_and_packaged_client_share_vibecomfy_authority():
         assert bindings[0].relative_path == "runtime/vibecomfy"
         assert bindings[0].pin == pins["vibecomfy"]
         assert bindings[0].pin.repository == "https://github.com/banodoco/VibeComfy.git"
-        assert bindings[0].pin.revision == "b2123edfbe7b950848b5c98d575fd9554302fc73"
+        assert bindings[0].pin.revision == "e2905d068d5851b9c32856d32b8251852a01d6dd"
         assert next(s.pin.revision for s in recipe.sources if s.name == "comfyui") == (
             "423cbd20511becb1f16122ab518e92e58bfa03d9")
     declarations = sum(path.read_text().count('https://github.com/banodoco/VibeComfy.git')
@@ -130,7 +130,7 @@ def test_runpod_linux_recipe_binds_vibecomfy_to_h3_pin():
     assert bindings[0].pin == pins["vibecomfy-h3"]
     assert {s.name: (s.pin.repository, s.pin.revision) for s in recipe.sources} == {
         "comfyui": ("https://github.com/Comfy-Org/ComfyUI.git", "ee71d5c4993f29086b27fde1629a945ae48425bf"),
-        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "b2123edfbe7b950848b5c98d575fd9554302fc73"),
+        "vibecomfy": ("https://github.com/banodoco/VibeComfy.git", "e2905d068d5851b9c32856d32b8251852a01d6dd"),
         "h3-motion-context": ("https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git", "361624fb406b63eb6694442eac6c895fc1533a70"),
         "videohelpersuite": ("https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git", "4ee72c065db22c9d96c2427954dc69e7b908444b"),
     }

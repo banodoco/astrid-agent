@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 
 WorkflowFile = str | Path | Mapping[str, Any]
 
+# Accepted for explicit use while its default-route qualification is pending.
+_EXPLICIT_ONLY_ENTRIES = frozenset({"hunyuan-foley-local", "audio/hunyuan_foley_v2a"})
+
 
 class WorkflowInvocationClient(Protocol):
     def invoke_result(self, capability_id: str, *, kind: str, **kwargs: Any) -> InvocationResult: ...
@@ -991,11 +994,13 @@ class GenerationFacade:
                     raise CapabilityValidationError(str(exc)) from exc
         else:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
-                          if mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
+                          if entry.id not in _EXPLICIT_ONLY_ENTRIES
+                          and mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
             candidates += [("workflow", entry) for entry in
                            [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
                             *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
                            if entry["kind"] == modality and mode in entry["modes"]
+                           and entry["id"] not in _EXPLICIT_ONLY_ENTRIES
                            and not entry.get("registry_id")]
             candidates.sort(key=rank)
         from astrid.core.generation.availability import (
