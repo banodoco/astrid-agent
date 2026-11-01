@@ -400,6 +400,33 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
             raise ValueError("staged Agent local timeline schema does not match its Runtime source pin")
         return schema
 
+    @staticmethod
+    def _secure_installed_timeline_inputs(product_root: Path) -> None:
+        """Give newly installed schema inputs the ACL required by their reader."""
+        if sys.platform != "win32":
+            return
+        from ..core.rendering._local_schema import READER_INPUTS, SCHEMA_RELATIVE_PATH
+
+        root = product_root.absolute()
+        leaves = [root / path for path in (SCHEMA_RELATIVE_PATH, Path("runtime.lock.json"), *READER_INPUTS)]
+        paths = {root}
+        for leaf in leaves:
+            if leaf.resolve(strict=True) != leaf or not leaf.is_file():
+                raise ValueError("local timeline schema source is aliased or incomplete")
+            path = leaf
+            while path != root:
+                if path.is_symlink():
+                    raise ValueError("local timeline schema source is aliased")
+                paths.add(path)
+                path = path.parent
+        if root.is_symlink() or root.resolve(strict=True) != root:
+            raise ValueError("local timeline schema source is aliased")
+        # Runtime verifies the native owner before changing each DACL and
+        # refuses reparse points or an ACL it cannot protect. Secure parents
+        # first, then each leaf, including those with explicit inherited ACLs.
+        for path in sorted(paths, key=lambda item: (len(item.parts), str(item))):
+            platform.owner_only(path)
+
     def _verify_installed_timeline_schema(self, python: Path, product_root: Path,
                                           env: dict[str, str]) -> None:
         """Prove admission with the reader and validator the selected Python imports."""
@@ -952,6 +979,7 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         shutil.copyfile(agent / "runtime.lock.json", product_root / "runtime.lock.json")
         schema = self._verify_local_timeline_schema(product_root)
         env["ASTRID_TIMELINE_SCHEMA_PYTHONPATH"] = str(schema)
+        self._secure_installed_timeline_inputs(product_root)
         self._verify_installed_timeline_schema(python, product_root, env)
         # Python files execute from the selected venv's noneditable install.
         # Keep source-only resources explicit because they are not wheel data.
