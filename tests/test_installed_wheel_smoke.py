@@ -73,7 +73,14 @@ def test_fresh_wheel_cli(tmp_path: Path) -> None:
     probe = run([str(python), "-I", "-c", "import astrid,vibecomfy,sys; from pathlib import Path; "
                  "assert Path(vibecomfy.__file__).is_relative_to(Path(sys.prefix)); "
                  "assert Path(astrid.__file__).is_relative_to(Path(sys.prefix)); "
-                 "assert all(not Path(p or '.').resolve().is_relative_to(Path(sys.argv[1])) for p in sys.path)", str(ROOT)], env=clean_env)
+                 "assert all(not Path(p or '.').resolve().is_relative_to(Path(root)) for p in sys.path for root in sys.argv[1:]); "
+                 "from astrid.sdk.host_bootstrap import _execution_profile, _capability_matrix_path; "
+                 "from astrid.core.rendering._local_schema import verified_schema_path; "
+                 "root=Path(astrid.__file__).parent.parent; "
+                 "assert _execution_profile() == 'installed'; "
+                 "assert _capability_matrix_path(root).is_file(); "
+                 "schema=root/'astrid/core/timeline/schema/timeline-config.schema.json'; "
+                 "assert verified_schema_path(root,str(schema)) == schema", str(ROOT), str(source), str(runtime_source), str(vibe_source)], env=clean_env)
     assert probe.returncode == 0, probe.stdout + probe.stderr
 
     def cli(name, *args):
