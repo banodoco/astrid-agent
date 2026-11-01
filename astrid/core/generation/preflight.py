@@ -1,9 +1,9 @@
 """Read-only readiness checks for generation backends.
 
 The public generation facade performs these checks before handing work to the
-kernel.  They intentionally inspect only local installation state; they do
-not start ComfyUI, import the optional VibeComfy stack, create staging
-directories, or make a network request.
+kernel. Structural checks inspect local installation state; target selection
+may probe one selected loopback endpoint. Neither starts ComfyUI, imports the
+optional VibeComfy stack, creates staging directories, or writes target config.
 
 Astrid's local adapter uses VibeComfy to start a managed ComfyUI server for a
 one-shot run.  Therefore a live server endpoint is *not* a prerequisite for
@@ -230,26 +230,41 @@ def require_local_generation_readiness(
     )
 
 
-def select_generation_target(target: str):
-    """Probe attached loopback before considering the existing managed owner.
+def select_generation_target(target: str, *, repo=None):
+    """Select and probe one Comfy target without changing machine config.
 
     ``None`` selects managed lifecycle; a returned client owns only HTTP I/O.
-    No installation or process lifecycle operation happens during selection.
+    Only unbound discovery may fall back to the existing managed lifecycle.
+    A saved or transient human address remains bound when unreachable.
     """
     from astrid.core.contracts.errors import AstridError
     from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
+    from astrid.core.generation.targets import TargetConfigError, resolve_target
 
-    if target == "managed":
-        return None
     if target == "runpod":
         raise AstridError(
             "RunPod generation requires an explicitly prepared target; automatic provisioning is unavailable",
             code="COMFY_TARGET_UNSUPPORTED", field="target",
             fix="Use --target managed inside an existing prepared pod, or --target auto locally",
         )
-    url = "http://127.0.0.1:8188" if target == "auto" else target
     try:
+        selection = resolve_target(target, repo=repo)
+        record = selection.record
+        if record is None or record.owner == "astrid":
+            return None
+        if record.endpoint is None:
+            raise AstridError(
+                "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
+                code="COMFY_TARGET_UNAVAILABLE", field="target",
+                fix="Launch the selected ComfyUI and explicitly select its loopback URL",
+            )
+        url = record.endpoint
         client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    except TargetConfigError as exc:
+        raise AstridError(
+            str(exc), code="COMFY_TARGET_INVALID", field="target",
+            fix="Repair the saved ComfyUI config or explicitly select a loopback URL or managed target",
+        ) from exc
     except (TypeError, ValueError) as exc:
         raise AstridError(
             str(exc), code="COMFY_TARGET_INVALID", field="target",
@@ -260,14 +275,14 @@ def select_generation_target(target: str):
         if not isinstance(facts, dict) or not isinstance(facts.get("system"), dict):
             raise ValueError("target did not return ComfyUI system facts")
     except (OSError, ValueError, TimeoutError) as exc:
-        if target == "auto":
+        if not selection.bound:
             return None
         raise AstridError(
             f"ComfyUI target {url} is unavailable: {exc}",
             code="COMFY_TARGET_UNAVAILABLE", field="target",
             fix=f"Start ComfyUI at {url}, or use --target managed with an installed ComfyUI runtime",
         ) from exc
-    return ComfyTargetClient(ComfyTarget(client.target.url, "attached", facts))
+    return ComfyTargetClient(ComfyTarget(client.target.url, "attached", {**record.facts, **facts}))
 
 
 def require_generation_target_readiness(entry: Any, mode: str, client: Any) -> None:

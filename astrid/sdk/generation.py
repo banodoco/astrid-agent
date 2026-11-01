@@ -510,7 +510,7 @@ class GenerationFacade:
         from astrid.core.generation import entries as workflow_entries
         from astrid.packs.vibecomfy.production_engine import ProductionEngineError
 
-        target_client = select_generation_target(target)
+        target_client = select_generation_target(target, repo=controls.get("project_root"))
         # Catalog priority is explicit, stable and per modality/mode. Unknown
         # catalog entries and user entries remain eligible in lexical order.
         preferred = {
