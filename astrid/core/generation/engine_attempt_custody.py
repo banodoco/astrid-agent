@@ -95,3 +95,16 @@ def arm_attempt(context, identity: AttemptIdentity, *, deadline, root_identity):
     record['attempts'].append({'identity': identity.as_dict(), 'state': 'armed'})
     context.write_json_atomic(path, record, deadline=deadline)
     return identity
+
+
+def _complete_attempt(context, identity, *, deadline, root_identity):
+    """Commit normal installer completion, while retaining replay history."""
+    binding = identity.binding
+    recheck_install_under_custody(binding, root_identity=root_identity)
+    path = context.adapter.join(binding.root, _FILE)
+    record = _read(context, path, deadline)
+    matches = [entry for entry in record['attempts'] if entry['identity'] == identity.as_dict()]
+    if len(matches) != 1 or matches[0]['state'] != 'armed':
+        raise CustodyUnresolved('installer attempt custody changed during completion')
+    matches[0]['state'] = 'completed'
+    context.write_json_atomic(path, record, deadline=deadline)

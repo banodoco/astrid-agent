@@ -262,7 +262,7 @@ def helper_manifest(recipe: EngineRecipe) -> Mapping[str, str]:
 
 class _Runner:
     def __init__(self, plan, context, adapter, deadline, model_cache_root=None,
-                 model_cache_device=None, model_cache_mount_id=None):
+                 model_cache_device=None, model_cache_mount_id=None, *, receipt_id=None):
         _deadline(deadline)
         if not isinstance(plan, InstallPlan):
             raise RecipeValidationError("install_engine requires an InstallPlan")
@@ -294,7 +294,7 @@ class _Runner:
         self.step_id = None
         self.locks, self.commits, self.models, self.steps = {}, {}, [], []
         self.health = None
-        self.receipt_id = uuid.uuid4().hex
+        self.receipt_id = uuid.uuid4().hex if receipt_id is None else receipt_id
         self.started_at = _now()
         self.service_owner = None
 
@@ -704,7 +704,8 @@ SANITY_CMD_ENV = "ASTRID_ENGINE_SANITY_CMD"
 def install_engine(plan: InstallPlan, *, context: ExecutionContext,
                    adapter: PlatformAdapter, deadline: Deadline, sanity_cmd: str | None = None,
                    model_cache_root: TargetPath | None = None,
-                   model_cache_device: int | None = None, model_cache_mount_id: int | None = None) -> InstallReceipt:
+                   model_cache_device: int | None = None, model_cache_mount_id: int | None = None,
+                   _receipt_id: str | None = None) -> InstallReceipt:
     """Install the engine. ``sanity_cmd`` (default: ``ASTRID_ENGINE_SANITY_CMD``) runs once after the
     last environment step and before the first model step; a failure aborts the install there.
     ``model_cache_root`` stores exact locked model bytes atomically;
@@ -712,7 +713,8 @@ def install_engine(plan: InstallPlan, *, context: ExecutionContext,
     """
     sanity_cmd = sanity_cmd if sanity_cmd is not None else os.environ.get(SANITY_CMD_ENV, "")
     runner = _Runner(plan, context, adapter, deadline, model_cache_root=model_cache_root,
-                     model_cache_device=model_cache_device, model_cache_mount_id=model_cache_mount_id)
+                     model_cache_device=model_cache_device, model_cache_mount_id=model_cache_mount_id,
+                     receipt_id=_receipt_id)
     with context.acquire_install_lock(plan.root, deadline=deadline):
         # Also bind installed target code/data before any source/environment action.
         runner.step_id = "helper-identity"
