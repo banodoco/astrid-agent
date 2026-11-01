@@ -1,0 +1,40 @@
+{
+  "before": {
+    "ActiveState": "inactive",
+    "FragmentPath": "",
+    "LoadState": "not-found"
+  },
+  "journey_link": "/home/runner/work/_temp/astrid-r1-direct-linux/home/.config/systemd/user",
+  "link_device": 66305,
+  "link_inode": 9194258,
+  "manager_directory": "/home/runner/.config/systemd/user",
+  "manager_unit": "/home/runner/.config/systemd/user/astrid.service",
+  "observations": [
+    {
+      "active_state": "active",
+      "fragment_path": "/home/runner/.config/systemd/user/astrid.service",
+      "load_state": "loaded",
+      "returncode": 0,
+      "unit_sha256": "53cac45e010071e05a4550a4c5ce0deb5ed94c232757f8618701f47a1705a8b2"
+    }
+  ],
+  "owned_unit": "/home/runner/work/_temp/astrid-r1-direct-linux/home/.config/systemd/user/astrid.service",
+  "unit_path": [
+    "/home/runner/.config/systemd/user.control",
+    "/run/user/1001/systemd/user.control",
+    "/run/user/1001/systemd/transient",
+    "/run/user/1001/systemd/generator.early",
+    "/home/runner/.config/systemd/user",
+    "/etc/xdg/systemd/user",
+    "/etc/systemd/user",
+    "/run/user/1001/systemd/user",
+    "/run/systemd/user",
+    "/run/user/1001/systemd/generator",
+    "/home/runner/.local/share/systemd/user",
+    "/usr/local/share/systemd/user",
+    "/usr/share/systemd/user",
+    "/usr/local/lib/systemd/user",
+    "/usr/lib/systemd/user",
+    "/run/user/1001/systemd/generator.late"
+  ]
+}
