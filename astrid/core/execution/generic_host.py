@@ -242,6 +242,21 @@ class HostError(RuntimeError):
         self.safe_message = safe_message
 
 
+class TerminalPublicationRejected(HostError):
+    """A Runtime validation/conflict response with verified nonterminal custody."""
+
+
+def _persist_terminal_request(path: Path, request: Mapping[str, Any]) -> None:
+    """Keep the exact fenced wire request before sending any terminal mutation."""
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(request, stream, separators=(",", ":"), allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
 class _RuntimeSourceCustody:
     """Retain the private launcher's bytes, never a caller's source claims."""
 
@@ -431,6 +446,8 @@ class CommandCleanupUnresolved(HostError):
 
 
 _LEASE_POLL_SECONDS = 5.0
+_TERMINAL_RECONCILE_SECONDS = 30.0
+_TERMINAL_RECONCILE_POLL_SECONDS = 0.25
 
 
 class HostCancelled(HostError):
@@ -5391,7 +5408,7 @@ class RuntimeProtocolClient:
     def child_output(self, association_id: str):
         return self.generated.get_managed_output(association_id)
 
-    def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None):
+    def settle(self, task_id: str, lease_token: str, *, result: Mapping[str, Any], outputs: list[dict[str, Any]], effect: Mapping[str, Any] | None, attempt_id: str | None = None, fence: int | None = None, request_path: Path | None = None):
         if not attempt_id or fence is None:
             raise HostError("generated settlement requires attempt_id and fence")
         epoch = self._claimed_runtime_epoch(attempt_id)
@@ -5404,11 +5421,18 @@ class RuntimeProtocolClient:
             "result": dict(result),
             "runtime_epoch": epoch,
         }
+        idempotency_key = f"settle-{attempt_id}-{fence}"
+        if request_path is not None:
+            _persist_terminal_request(request_path, {
+                "operation": "settle_attempt", "identifier": attempt_id,
+                "idempotency_key": idempotency_key, "body": settlement,
+            })
         return self._terminal_evidence_mutation(
             task_id, result if "manifest_ref" in result else None,
-            lambda: self.generated.settle_attempt(
-                attempt_id, settlement, idempotency_key=f"settle-{attempt_id}-{fence}",
+            lambda: self._lifecycle_client().settle_attempt(
+                attempt_id, settlement, idempotency_key=idempotency_key,
             ),
+            rejected_owner=(attempt_id, int(fence)),
         )
 
     def fail(
@@ -5424,6 +5448,7 @@ class RuntimeProtocolClient:
         structured_error: Mapping[str, Any] | None = None,
         outputs: Sequence[Mapping[str, Any]] | None = None,
         result: Mapping[str, Any] | None = None,
+        request_path: Path | None = None,
     ):
         if not attempt_id or fence is None:
             raise HostError("generated failure requires attempt_id and fence")
@@ -5456,6 +5481,12 @@ class RuntimeProtocolClient:
             lease_id=lease_token, fence=int(fence), error=payload,
             runtime_epoch=epoch, idempotency_key=idempotency_key, **evidence,
         )
+        if request_path is not None:
+            _persist_terminal_request(request_path, {
+                "operation": "fail_attempt", "identifier": attempt_id,
+                "idempotency_key": idempotency_key,
+                "body": {key: value for key, value in request.items() if key != "idempotency_key"},
+            })
         return self._terminal_evidence_mutation(
             task_id, result,
             lambda: self._terminal_evidence_request(completion_client, "fail_attempt", attempt_id, request),
@@ -5491,6 +5522,7 @@ class RuntimeProtocolClient:
     def _terminal_evidence_mutation(
         self, task_id: str, expected_result: Mapping[str, Any] | None,
         mutation: Callable[[], Any],
+        *, rejected_owner: tuple[str, int] | None = None,
     ) -> Any:
         """Retry the same fenced write after checking whether its ACK was lost."""
         last_error: BaseException | None = None
@@ -5503,6 +5535,24 @@ class RuntimeProtocolClient:
                     try:
                         return self._verify_terminal_evidence_readback(task_id, expected_result, None)
                     except Exception:
+                        pass
+                # A transport failure (including a lost ACK) says nothing
+                # about commit. Only a validation/conflict response AND a
+                # read of this same nonterminal owner permit a fenced failure.
+                if rejected_owner is not None and getattr(exc, "status", None) in {400, 409, 422}:
+                    try:
+                        task = self.task(task_id)
+                        task = task.get("task", task) if isinstance(task, Mapping) else task
+                        def field(name, default=None):
+                            return task.get(name, default) if isinstance(task, Mapping) else getattr(task, name, default)
+                        if (str(field("id", field("task_id"))) == task_id
+                                and field("state", field("status")) == "running"
+                                and field("attempt_id") == rejected_owner[0]
+                                and field("fence", field("lease_fence")) == rejected_owner[1]):
+                            raise TerminalPublicationRejected(str(exc)) from exc
+                    except TerminalPublicationRejected:
+                        raise
+                    except Exception:  # noqa: BLE001 - unreadable custody remains ambiguous
                         pass
                 if attempt == 0:
                     continue
@@ -5540,7 +5590,7 @@ class RuntimeProtocolClient:
         )
         result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
         if (task_id_value is not None and str(task_id_value) != task_id) or not contains(result, expected_result):
-            task = self.generated.get_task(task_id)
+            task = self.task(task_id)
             task = task.get("task", task) if isinstance(task, Mapping) else task
             task_id_value = (
                 task.get("task_id", task.get("id")) if isinstance(task, Mapping)
@@ -5563,6 +5613,7 @@ class RuntimeProtocolClient:
         outputs: Sequence[Mapping[str, Any]] | None = None,
         result: Mapping[str, Any] | None = None,
         stop_observed: bool | None = None,
+        request_path: Path | None = None,
     ):
         if attempt_id is None or fence is None:
             return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
@@ -5617,6 +5668,12 @@ class RuntimeProtocolClient:
             idempotency_key=idempotency_key,
             **kwargs,
         )
+        if request_path is not None:
+            _persist_terminal_request(request_path, {
+                "operation": "cancel_task", "identifier": task_id,
+                "idempotency_key": idempotency_key,
+                "body": {key: value for key, value in request.items() if key != "idempotency_key"},
+            })
         return self._terminal_evidence_mutation(
             task_id, result,
             lambda: self._terminal_evidence_request(self._lifecycle_client(), "cancel_task", task_id, request),
@@ -6243,6 +6300,7 @@ class GenericPackHost:
         self._handoff_registration_authorized_id: str | None = None
         self._handoff_attempt_threads: set[int] = set()
         self._handoff_observation_known = True
+        self._reconciliation_owners: dict[str, threading.Thread] = {}
         # A command child is short-lived while the manager-owned VibeComfy
         # server persists across tasks.  Keep only the last successful,
         # verified session/model hint in the host; it is revalidated by the
@@ -10402,6 +10460,13 @@ class GenericPackHost:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
                 if terminal.get("recorded"):
                     return terminal.get("completion")
+            if operation in (self.client.settle, self.client.fail):
+                # Freeze the call once: reconciliation must never rerun the
+                # producer or rebuild outputs from a changing spool.
+                if isinstance(self.client, RuntimeProtocolClient):
+                    kwargs["request_path"] = terminal["root"] / (
+                        "settle-request.json" if operation == self.client.settle else "fail-request.json")
+                terminal["publication_call"] = (operation, copy.deepcopy(args), copy.deepcopy(kwargs))
             result = self._handoff_settlement_call(operation, *args, **kwargs)
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
@@ -10413,7 +10478,9 @@ class GenericPackHost:
             # The adapter bounds each transport and lock wait by the remaining
             # acknowledged validity as well as the independent execution cap.
             if isinstance(getattr(operation, "__self__", None), RuntimeProtocolClient):
-                bounds = [value for value in (lifetime.deadline(), terminal.get("lease_valid_until"))
+                bounds = [value for value in (
+                    None if terminal.get("publication_pending") else lifetime.deadline(),
+                    terminal.get("lease_valid_until"))
                           if value is not None]
                 if bounds:
                     kwargs["deadline"] = min(bounds)
@@ -10554,7 +10621,8 @@ class GenericPackHost:
             with completion_lock:
                 valid_until = terminal.get("lease_valid_until")
                 return (transient and valid_until is not None and time.monotonic() < valid_until
-                        and lifetime.deadline() is not None and not lifetime.expired()
+                        and (terminal.get("publication_pending")
+                             or (lifetime.deadline() is not None and not lifetime.expired()))
                         and not terminal.get("forced") and not terminal.get("recorded")
                         and not stop.is_set())
 
@@ -10564,14 +10632,16 @@ class GenericPackHost:
             progress = read_progress()
             token = (terminal["stage"], _canonical_digest(progress))
             with completion_lock:
-                if stop.is_set() or terminal.get("recorded") or terminal.get("forced") or lifetime.expired():
+                if (stop.is_set() or terminal.get("recorded") or terminal.get("forced")
+                        or (lifetime.expired() and not terminal.get("publication_pending"))):
                     return
                 valid_until = terminal.get("lease_valid_until")
                 if valid_until is not None and time.monotonic() >= valid_until:
                     raise HostError("execution lease expired before renewal")
                 changed = token != terminal.get("renewed_progress")
                 if terminal.get("renewal_inflight") or not (changed or (
-                        liveness and valid_until is not None and lifetime.deadline() is not None)):
+                        liveness and valid_until is not None
+                        and (lifetime.deadline() is not None or terminal.get("publication_pending")))):
                     return
                 terminal["renewal_inflight"] = True
             kwargs = {"attempt_id": exact_attempt, "fence": exact_fence}
@@ -10599,7 +10669,8 @@ class GenericPackHost:
                     except (AttributeError, TypeError, ValueError) as exc:
                         raise HostError("invalid heartbeat lease expiry") from exc
                 with completion_lock:
-                    if terminal.get("forced") or terminal.get("recorded") or lifetime.expired() or stop.is_set():
+                    if (terminal.get("forced") or terminal.get("recorded") or stop.is_set()
+                            or (lifetime.expired() and not terminal.get("publication_pending"))):
                         return
                     now = time.monotonic()
                     prior_until = terminal.get("lease_valid_until")
@@ -10659,8 +10730,11 @@ class GenericPackHost:
             next_poll = time.monotonic() + _LEASE_POLL_SECONDS
             while not stop.wait(0.05):
                 if lifetime.expired():
-                    force_abort("timeout")
-                    return
+                    if terminal.get("publication_pending"):
+                        terminal["reconcile_cancel"] = True
+                    else:
+                        force_abort("timeout")
+                        return
                 if terminal.get("recorded"):
                     return
                 valid_until = terminal.get("lease_valid_until")
@@ -10671,8 +10745,11 @@ class GenericPackHost:
                     force_abort("lease_lost")
                     return
                 if self._shutdown.is_set():
-                    force_abort("cancelled")
-                    return
+                    if terminal.get("publication_pending"):
+                        terminal["reconcile_cancel"] = True
+                    else:
+                        force_abort("cancelled")
+                        return
                 if time.monotonic() < next_poll or self.client is None:
                     continue
                 next_poll = time.monotonic() + _LEASE_POLL_SECONDS
@@ -10684,7 +10761,16 @@ class GenericPackHost:
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
                 record_lease_diagnostic("observing", current=current)
+                if terminal.get("publication_pending") and (
+                        current["status"] in {"completed", "succeeded", "failed", "cancelled"}
+                        or current["attempt_id"] != exact_attempt or current["fence"] != exact_fence):
+                    # The publication owner consumes this authoritative read.
+                    # Do not race it with an unrelated lifecycle failure.
+                    return
                 if current["status"] in {"cancel_requested", "cancelled"}:
+                    if terminal.get("publication_pending"):
+                        terminal["reconcile_cancel"] = True
+                        continue
                     force_abort("cancelled")
                     return
                 state = current["status"]
@@ -10726,12 +10812,127 @@ class GenericPackHost:
                 except BaseException as exc:
                     if lease_transport_fault("heartbeat_exception", exc, current):
                         continue
+                    if terminal.get("publication_pending"):
+                        # Settlement may have committed between the task read
+                        # and heartbeat. Its owner must resolve the stale ACK;
+                        # a lifecycle abort would race successful readback.
+                        terminal["reconcile_cancel"] = True
+                        return
                     force_abort("timeout" if lifetime.expired() else "lease_lost")
                     return
 
         terminal.update(completion_call=completion_call, ensure_failure=ensure_failure,
                         read_progress=read_progress, renew_progress=renew_progress, force_abort=force_abort,
                         lease_transport_fault=lease_transport_fault, task_snapshot=task_snapshot)
+
+        def reconcile_publication():
+            """Own bounded exact replays, then request explicit fenced cancellation.
+
+            If Runtime cannot acknowledge cancellation, this owner stays live
+            and keeps trying. A local spool alone is never a custody transfer.
+            """
+            reconcile_deadline = time.monotonic() + _TERMINAL_RECONCILE_SECONDS
+            while not terminal.get("recorded"):
+                try:
+                    current = self.client.task(str(data["id"]))
+                    current = current.get("task", current) if isinstance(current, Mapping) else current
+                    def field(name, default=None):
+                        return current.get(name, default) if isinstance(current, Mapping) else getattr(current, name, default)
+                    state = field("state", field("status"))
+                    if (state in {"completed", "succeeded", "failed", "cancelled"}
+                            or field("attempt_id", exact_attempt) != exact_attempt
+                            or field("fence", field("lease_fence", exact_fence)) != exact_fence):
+                        terminal.update(recorded=True, completion={"task": current},
+                                        status=("succeeded" if state in {"completed", "succeeded"}
+                                                else state if state in {"failed", "cancelled"} else "failed"),
+                                        settled=state in {"completed", "succeeded"}, settlement={"task": current})
+                        break
+                    if (terminal.get("reconcile_cancel") or self._shutdown.is_set()
+                            or time.monotonic() >= reconcile_deadline):
+                        # The producer has returned and its task scope has
+                        # finished cleanup before this owner is installed.
+                        # Cancellation is the explicit Runtime custody handoff.
+                        cancel = getattr(self.client, "cancel", None)
+                        operation, args, kwargs = terminal["publication_call"]
+                        if operation == self.client.fail:
+                            # Preserve an already chosen failure verbatim,
+                            # including its key, even if its ACK was lost.
+                            response = self._handoff_settlement_call(operation, *args, **kwargs)
+                            terminal.update(recorded=True, completion=response, status="failed")
+                            break
+                        valid_until = terminal.get("lease_valid_until")
+                        expiry = field("lease_expires_at")
+                        observed_expired = (isinstance(expiry, str)
+                                            and datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                                            <= datetime.now(timezone.utc))
+                        if observed_expired or (valid_until is not None and time.monotonic() >= valid_until):
+                            # The pinned Runtime allows the exact owner to
+                            # cede expired custody only without outputs/result.
+                            completion_call(
+                                self.client.fail, str(data["id"]), lease_token,
+                                "terminal publication unresolved after lease expiry; owner cedes custody",
+                                retryable=False, attempt_id=exact_attempt, fence=exact_fence,
+                                structured_error={"code": "reconciliation_required"})
+                            terminal["status"] = "failed"
+                            break
+                        if callable(cancel):
+                            response = self._handoff_settlement_call(
+                                cancel, str(data["id"]), attempt_id=exact_attempt,
+                                fence=exact_fence, lease_id=lease_token,
+                                runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                result={"status": "cancelled", "error": {
+                                    "code": "reconciliation_required",
+                                    "message": "terminal publication acknowledgement remained unresolved"}},
+                                stop_observed=True,
+                                **({"request_path": terminal["root"] / "cancel-request.json"}
+                                   if isinstance(self.client, RuntimeProtocolClient) else {}))
+                            terminal.update(recorded=True, completion=response, status="cancelled")
+                            break
+                    else:
+                        operation, args, kwargs = terminal["publication_call"]
+                        try:
+                            response = self._handoff_settlement_call(operation, *args, **kwargs)
+                        except TerminalPublicationRejected as exc:
+                            reject_publication(exc)
+                        else:
+                            terminal.update(recorded=True, completion=response,
+                                            status=terminal.get("pending_status", "succeeded"),
+                                            settled=terminal.get("pending_status") == "succeeded",
+                                            settlement=response)
+                except Exception as exc:  # noqa: BLE001 - this owner must survive Runtime outages
+                    terminal["reporting_error"] = exc
+                if not terminal.get("recorded"):
+                    time.sleep(_TERMINAL_RECONCILE_POLL_SECONDS)
+            terminal.pop("evidence_pending", None)
+            terminal.pop("publication_pending", None)
+            if terminal.get("status") == "succeeded":
+                for key in ("error", "forced", "minimal", "receipt_final"):
+                    terminal.pop(key, None)
+            terminal["write_attempted"] = False
+            self._write_task_result(terminal)
+
+        def reject_publication(error):
+            # Keep the original success spool, but never attach its conflicting
+            # descriptors or success manifest to the failure mutation.
+            for key in ("evidence_pending", "publication_pending", "pending_outputs", "pending_result", "pending_status"):
+                terminal.pop(key, None)
+            terminal.update(retain_spool=True, error=error, evidence_pending=True,
+                            publication_pending=True, pending_status="failed")
+            try:
+                completion_call(
+                    self.client.fail, str(data["id"]), lease_token, str(error),
+                    retryable=False, attempt_id=exact_attempt, fence=exact_fence,
+                    structured_error={"code": "publication_rejected"},
+                    failure_diagnostic={"category": "publication_rejected", "message": str(error)})
+            except Exception:
+                # A lost failure ACK has the same owner and exact replay rule.
+                terminal.update(evidence_pending=True, publication_pending=True, pending_status="failed")
+                raise
+            else:
+                terminal.pop("evidence_pending", None)
+                terminal.pop("publication_pending", None)
+
+        terminal["reject_publication"] = reject_publication
         pump_thread = None
         try:
             owns_attempt = self._handoff_begin_direct_attempt()
@@ -10819,16 +11020,48 @@ class GenericPackHost:
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
                     if (self.attempt_root is None and not keep_attempt
-                            and not terminal.get("evidence_pending")):
+                            and not terminal.get("evidence_pending") and not terminal.get("retain_spool")):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             finally:
-                stop.set()
-                if pump_thread is not None and pump_thread.ident is not None:
-                    pump_thread.join(timeout=2)
-                if busy_published:
-                    _publish_busy(busy_path, -1)
-                if owns_attempt:
-                    self._handoff_leave_attempt(thread_id)
+                if (terminal.get("evidence_pending") and terminal.get("publication_call")
+                        and not terminal.get("recorded")):
+                    ready = threading.Event()
+
+                    def publication_owner():
+                        owner_thread_id = threading.get_ident()
+                        accounting = self._handoff_accounting_owner
+                        with accounting._handoff_condition:
+                            # Transfer the measured attempt, including attempts
+                            # counted by the claim loop, before run_task returns.
+                            accounting._handoff_attempt_threads.discard(thread_id)
+                            accounting._handoff_attempt_threads.add(owner_thread_id)
+                        ready.set()
+                        try:
+                            reconcile_publication()
+                        finally:
+                            stop.set()
+                            if pump_thread is not None:
+                                pump_thread.join(timeout=2)
+                            if busy_published:
+                                _publish_busy(busy_path, -1)
+                            self._handoff_leave_attempt(owner_thread_id)
+                            with self._handoff_condition:
+                                self._reconciliation_owners.pop(str(exact_attempt), None)
+
+                    owner = threading.Thread(target=publication_owner,
+                                             name=f"astrid-reconcile-{exact_attempt}", daemon=False)
+                    with self._handoff_condition:
+                        self._reconciliation_owners[str(exact_attempt)] = owner
+                    owner.start()
+                    ready.wait()
+                else:
+                    stop.set()
+                    if pump_thread is not None and pump_thread.ident is not None:
+                        pump_thread.join(timeout=2)
+                    if busy_published:
+                        _publish_busy(busy_path, -1)
+                    if owns_attempt:
+                        self._handoff_leave_attempt(thread_id)
 
     def _run_task_impl(
         self,
@@ -12119,11 +12352,10 @@ class GenericPackHost:
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
-            if "manifest_ref" in payload:
-                _terminal.update(
-                    evidence_pending=True, publication_pending=True,
-                    pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
-                )
+            _terminal.update(
+                evidence_pending=True, publication_pending=True,
+                pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
+            )
             settlement = completion_call(self.client.settle,
                 task_id,
                 lease_token,
@@ -12150,6 +12382,14 @@ class GenericPackHost:
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
             _terminal.setdefault("error", exc)
+            if isinstance(exc, TerminalPublicationRejected):
+                _terminal["reject_publication"](exc)
+                raise
+            if isinstance(exc, AstridError) and "manifest_ref" not in _terminal.get("pending_result", {}):
+                # A local typed validation failure, before durable evidence
+                # publication, still uses the ordinary verified failure path.
+                for key in ("evidence_pending", "publication_pending", "pending_outputs", "pending_result", "pending_status"):
+                    _terminal.pop(key, None)
             if _terminal.get("publication_pending"):
                 # The successful fenced publication may have committed while
                 # its response/readback was unavailable. Keep the exact spool
@@ -12236,6 +12476,7 @@ class GenericPackHost:
                 or bool(_terminal.get("evidence_pending"))
                 or (bool(_terminal.get("pending_result")) and not _terminal.get("recorded"))
             )
+            retain_attempt = keep_attempt or bool(_terminal.get("retain_spool")) or retain_for_unresolved_scope
             if retain_for_unresolved_scope:
                 # The task-scope supervisor has evidence of a child writer
                 # that outlived its leader. Keep the attempt even when the
@@ -12251,7 +12492,7 @@ class GenericPackHost:
                     "caller_owned"
                     if self.attempt_root is not None
                     else "retained"
-                    if keep_attempt or retain_for_unresolved_scope
+                    if retain_attempt
                     else "deleted"
                 ),
                 "status": "pending",
@@ -12333,7 +12574,7 @@ class GenericPackHost:
                 cleanup_errors.append(f"terminal result: {exc}")
             # An unverified session release may still own a writer: fail this
             # task and keep its attempt below; the host keeps accepting work.
-            if keep_attempt or retain_for_unresolved_scope:
+            if retain_attempt:
                 try:
                     retained_exists = _strict_root_exists(root)
                 except Exception as exc:
@@ -12381,7 +12622,8 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors and not (_terminal.get("evidence_pending") and sys.exc_info()[1] is not None):
+            if cleanup_errors and not ((_terminal.get("evidence_pending") or _terminal.get("retain_spool"))
+                                       and sys.exc_info()[1] is not None):
                 # Pending evidence retains the spool and latches cleanup above.
                 # Preserve the publication exception already being propagated.
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
