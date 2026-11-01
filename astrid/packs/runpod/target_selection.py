@@ -164,13 +164,21 @@ class RunPodOffer:
     gpu_type: str
     hourly_usd: float
     offer_id: str
+    datacenter_id: str | None = None
+    gpu_type_id: str | None = None
 
     def digest(self, preferences: RunPodPreferences) -> str:
         _number(self.hourly_usd, "observed hourly USD rate")
         _label(self.offer_id, "offer id")
         if (self.provider_account_ref != preferences.provider_account_ref
-                or self.gpu_type not in preferences.gpu_types):
+                or self.gpu_type not in preferences.gpu_types
+                or (self.datacenter_id is not None and preferences.datacenter_id is not None
+                    and self.datacenter_id != preferences.datacenter_id)):
             raise PaidSelectionError("offer differs from the selected account/GPU preferences")
+        if self.datacenter_id is not None:
+            _label(self.datacenter_id, "offer datacenter")
+        if self.gpu_type_id is not None:
+            _label(self.gpu_type_id, "offer GPU id")
         return _digest({"preferences": preferences.as_mapping(), "offer": asdict(self)})
 
 
@@ -235,6 +243,7 @@ class RunPodSelectionOwner:
         observe_offer: Callable[[], RunPodOffer], observed_hourly_usd: Callable[[str], float],
         data_root: Path | None = None, clock: Callable[[], datetime] | None = None,
         compatibility: RunPodLeaseCompatibility | None = None,
+        https_token_file: Path | None = None,
     ) -> None:
         if account_ref != preferences.provider_account_ref:
             raise PaidSelectionError("authenticated account differs from selected preferences")
@@ -243,6 +252,7 @@ class RunPodSelectionOwner:
         self.path = canonical_claim_path(account_ref, data_root=data_root)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.compatibility = compatibility.as_mapping() if compatibility is not None else None
+        self.https_token_file = https_token_file
 
     def _read(self) -> dict[str, Any] | None:
         # Legacy sibling handles cannot quietly become a second product owner.
@@ -271,6 +281,8 @@ class RunPodSelectionOwner:
             "network_volume_id": p.volume_id, "network_volume_name": p.volume_name,
             "network_volume_size_gb": p.volume_size_gb, "volume_mount_path": p.mount_path,
             "gpu_type": offer.gpu_type, "acquisition_mode": "allocate", "release_authorized": True,
+            "network_volume_datacenter_id": offer.datacenter_id or p.datacenter_id,
+            "accepted_gpu_type_id": offer.gpu_type_id,
         }
         if (not isinstance(operation, str) or not re.fullmatch(r"[0-9a-f]{32}", operation)
                 or record.get("request_name") != f"astrid-product-{operation}"
@@ -304,8 +316,13 @@ class RunPodSelectionOwner:
         except Exception:
             raise PaidSelectionError("authenticated RunPod configuration is unavailable") from None
         if (tuple(config.gpu_type_candidates) != (offer.gpu_type,) or config.worker_image != p.image
-                or config.volume_mount_path != p.mount_path):
-            raise PaidSelectionError("provider configuration differs from the consented GPU/image/mount")
+                or config.volume_mount_path != p.mount_path
+                or getattr(config, "network_volume_id", None) != p.volume_id
+                or getattr(config, "data_center_id", None) != (offer.datacenter_id or p.datacenter_id)
+                or getattr(config, "gpu_type_id", None) != offer.gpu_type_id
+                or getattr(config, "storage_name", None) or getattr(config, "storage_volumes", ())):
+            raise PaidSelectionError("provider configuration differs from the consented exact placement")
+        datacenter = offer.datacenter_id or p.datacenter_id
         self._read()  # Reject legacy/symlink custody before creating a lock file.
         with nullcontext() if lock_held else target_owner(self.path):
             record = self._read()
@@ -314,12 +331,29 @@ class RunPodSelectionOwner:
                 _validate_completed_release(record)
                 completed_operation = record["operation_id"]
                 record = None
+            token_reference = {}
+            if self.https_token_file is not None:
+                from runpod_lifecycle.https import read_token_file, write_token_file
+                token_path = self.https_token_file
+                if (not token_path.is_absolute() or token_path.parent != self.path.parent
+                        or token_path.parent.resolve() != token_path.parent):
+                    raise PaidSelectionError("HTTPS token reference must be in the owned account directory")
+                if record is not None and record.get("https_token_file") != str(token_path):
+                    raise AcquisitionUnresolvedError("HTTPS custody reference changed")
+                if config.transport != "https":
+                    raise PaidSelectionError("retained preparation requires HTTPS transport")
+                if not token_path.exists():
+                    if record is not None:
+                        raise AcquisitionUnresolvedError("retained HTTPS token is missing")
+                    write_token_file(token_path, config.https_token)
+                config = config.merge(https_token=read_token_file(token_path))
+                token_reference = {"https_token_file": str(token_path)}
             try:
                 observed_volume = (await resolve_existing_volume(config.api_key, p.volume_id)
                                    if p.volume_id is not None else None)
                 inspect_volume_records(RunPodTargetContract(
                     "unclaimed", offer.gpu_type, p.image, p.volume_id, p.volume_name,
-                    p.volume_size_gb, datacenter_id=p.datacenter_id,
+                    p.volume_size_gb, datacenter_id=datacenter,
                 ), volumes=[observed_volume] if observed_volume is not None else [])
             except Exception:
                 raise AcquisitionUnresolvedError("existing account volume cannot be confirmed before claim or reuse") from None
@@ -348,9 +382,10 @@ class RunPodSelectionOwner:
                     "provider_account_ref": p.provider_account_ref, "acquisition_mode": "allocate",
                     "release_authorized": True, "worker_activation": "not_started", "create_attempts": 0,
                     "gpu_type": offer.gpu_type, "worker_image": p.image,
+                    "accepted_gpu_type_id": offer.gpu_type_id,
                     "network_volume_id": p.volume_id, "network_volume_name": p.volume_name,
                     "network_volume_size_gb": p.volume_size_gb, "volume_mount_path": p.mount_path,
-                    "network_volume_datacenter_id": p.datacenter_id,
+                    "network_volume_datacenter_id": datacenter,
                     "handle_path": str(self.path), "transport": "https",
                     "reconciliation_required": True,
                     "paid_limits": {"invocation_id": consent.invocation_id, "offer_digest": consent.offer_digest,
@@ -358,6 +393,7 @@ class RunPodSelectionOwner:
                                     "deadline": consent.deadline, "expires_at": expires.isoformat(),
                                     "authorized_at": now.isoformat(), "idle_seconds": consent.idle_seconds},
                     "storage_mode": "network_volume" if p.volume_id is not None else "ephemeral",
+                    **token_reference,
                     **({"lease_compatibility": self.compatibility} if self.compatibility is not None else {}),
                     **({"lease": dict(lease)} if lease is not None else {}),
                 }
@@ -369,7 +405,7 @@ class RunPodSelectionOwner:
                     # previous exact release receipt has been validated.
                     write_target_record(self.path, record)
             volume = {"id": p.volume_id, "name": p.volume_name, "size": p.volume_size_gb,
-                      "dataCenterId": p.datacenter_id}
+                      "dataCenterId": datacenter}
             limits = {"invocation_id": consent.invocation_id, "offer_digest": consent.offer_digest,
                       "hourly_usd": offer.hourly_usd, "max_usd": consent.max_usd,
                       "deadline": consent.deadline, "expires_at": expires.isoformat(),
@@ -378,7 +414,7 @@ class RunPodSelectionOwner:
                 try:
                     observation = await observe_exact_target(config.api_key, RunPodTargetContract(
                         str(record["pod_id"]), offer.gpu_type, p.image, p.volume_id, p.volume_name,
-                        p.volume_size_gb, record["request_name"], p.datacenter_id,
+                        p.volume_size_gb, record["request_name"], datacenter,
                     ))
                 except Exception:
                     raise AcquisitionUnresolvedError("exact journal-owned pod observation is unresolved") from None
@@ -411,6 +447,13 @@ class RunPodSelectionOwner:
                         or (p.volume_id is not None and exact.get("volumeMountPath") != p.mount_path)
                         or exact.get("networkVolumeId") != p.volume_id):
                     raise PaidSelectionError("provider did not confirm the exact volume mount")
+                machine = exact.get("machine") if isinstance(exact.get("machine"), Mapping) else {}
+                if (offer.gpu_type_id is not None
+                        and (exact.get("gpuTypeId") or machine.get("gpuTypeId")) != offer.gpu_type_id):
+                    raise PaidSelectionError("provider did not confirm the accepted exact GPU id")
+                if (datacenter is not None
+                        and (exact.get("dataCenterId") or machine.get("dataCenterId")) != datacenter):
+                    raise PaidSelectionError("provider did not confirm the accepted exact datacenter")
                 if _number(self.observed_hourly_usd(observation.pod_id), "actual hourly USD rate") != offer.hourly_usd:
                     raise PaidSelectionError("actual rate changed; fresh consent is required before work")
                 if self.clock() >= expires:

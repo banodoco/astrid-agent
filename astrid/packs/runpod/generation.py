@@ -15,9 +15,9 @@ from typing import Any, Callable, Mapping
 from astrid.core.generation.interfaces import GenerationAdmission, RunPodPreparationRequest
 
 from .prepared_task import PreparedWorkerError, PreparedWorkerSelection, _read_mapping
-from .remote_placement import Claim, RemotePlacement, connect_claimed_for_preparation
+from .remote_placement import Claim, RemotePlacement, RunPodInstallation, connect_claimed_for_preparation, source_digest
 from .target_selection import PaidRunConsent, RunPodSelectionOwner, _utc
-from .worker_owner import _run_sync
+from .worker_owner import RunPodLease, RunPodLeaseOwner, _run_sync
 from .worker_preparation import replace_target_record, target_owner
 
 
@@ -25,6 +25,91 @@ def _digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class PreparedRunPodLease:
+    """A5 consumes this exact retained lease through its attached chain."""
+
+    lease: RunPodLease
+    installed: Mapping[str, Any]
+
+
+def prepare_retained_generation(
+    request: RunPodPreparationRequest, *, consent: PaidRunConsent,
+    lease_owner: RunPodLeaseOwner, placement: RemotePlacement,
+    installation: RunPodInstallation, validate: Callable[[RunPodPreparationRequest], None],
+    requested_idle_seconds: float | None = None,
+) -> PreparedRunPodLease:
+    """A4 handoff under A3's existing lock and journal, without a worker on pod.
+
+    Static request/source/recipe checks precede paid admission. A3 alone owns
+    settle, expiry, reconciliation and release; no second account lock is taken.
+    """
+    if (request.entry.get("engine", "comfyui") != "comfyui"
+            or request.max_usd != consent.max_usd or request.deadline != consent.deadline
+            or request.consent != consent.consent or request.execution_request is not None
+            or lease_owner.selection.preferences.mount_path != "/workspace"
+            or lease_owner.selection.https_token_file is None):
+        raise PreparedWorkerError("unsupported retained route or undisclosed paid limits")
+    validate(request)
+    sources = {}
+    for name, path in (("source", request.source), ("workflow", request.workflow)):
+        if path.is_symlink() or not path.is_file():
+            raise PreparedWorkerError("validated source/workflow must be regular files")
+        sources[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if dict(installation.compatibility) != lease_owner.selection.compatibility:
+        raise PreparedWorkerError("installer and retained lease compatibility differ")
+    bootstrap_digest = installation.validate_sources(placement.source_root)
+    with lease_owner.lock:
+        prior = lease_owner._read()
+        prior_preparation = prior.get("lease", {}).get("preparation") if prior else None
+        if (prior is not None and prior["state"] != "cleanup_complete" and prior_preparation is not None
+                and (prior_preparation["state"] != "prepared"
+                     or prior_preparation["bootstrap_digest"] != bootstrap_digest)):
+            raise PreparedWorkerError("retained preparation is unresolved or has different source bytes")
+        invocation = lease_owner.acquire(consent, requested_idle_seconds=requested_idle_seconds)
+        claimed = lease_owner.preparation_claim(invocation)
+        previous = claimed["lease"].get("preparation")
+        preparation = {
+            "schema": "astrid.runpod.lease-preparation.v1", "state": "preparing",
+            "operation_id": invocation.operation_id, "pod_id": claimed["pod_id"],
+            "compatibility": dict(installation.compatibility), "bootstrap_digest": bootstrap_digest,
+        }
+
+        def save(**changes):
+            nonlocal preparation
+            current = lease_owner.preparation_claim(invocation)
+            preparation = {**preparation, **changes}
+            return lease_owner._save(current, {**current["lease"], "preparation": preparation})
+
+        save()
+        try:
+            claim = connect_claimed_for_preparation(claimed)
+            remaining = (_utc(claimed["paid_limits"]["expires_at"]) - lease_owner.selection.clock()).total_seconds()
+            state = placement.prepare_claimed(
+                claim, out=lease_owner.selection.path.parent / "preparation" / invocation.operation_id,
+                deadline_seconds=remaining, installation=installation,
+                checkpoint=lambda job: save(job=dict(job)),
+                reuse_snapshot=previous["installed"] if previous is not None else None,
+            )
+            if (lease_owner.clock() >= claimed["lease"]["paid_expires_at"]
+                    or source_digest(placement.source_root) != bootstrap_digest
+                    or any(hashlib.sha256(path.read_bytes()).hexdigest() != sources[name]
+                           for name, path in (("source", request.source), ("workflow", request.workflow)))):
+                raise PreparedWorkerError("preparation consumed its paid lifetime or source bytes changed")
+            saved = save(state="prepared", installed=dict(state.installed))
+        except BaseException:
+            # Failure never re-arms warm retention. Preserve any pre-start job
+            # identity for the same A3 release/restart reconciliation path.
+            current = lease_owner._read()
+            lease_owner._save(current, {**current["lease"], "preparation": {**preparation, "state": "unresolved"}},
+                              state="cleanup_pending", reconciliation_required=True)
+            raise
+        return PreparedRunPodLease(
+            RunPodLease(invocation.operation_id, invocation.owner_epoch, invocation.generation,
+                        invocation.invocation_id, saved), state.installed,
+        )
 
 
 @dataclass(frozen=True)

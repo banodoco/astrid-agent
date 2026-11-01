@@ -68,8 +68,12 @@ def case(tmp_path, monkeypatch):
 
     def config(offer):
         state.configs += 1
+        selected = state.owner.preferences
         return SimpleNamespace(api_key="fake-only", gpu_type_candidates=(offer.gpu_type,),
-                               worker_image=prefs.image, volume_mount_path=prefs.mount_path)
+                               worker_image=prefs.image, volume_mount_path=prefs.mount_path,
+                               network_volume_id=selected.volume_id,
+                               data_center_id=offer.datacenter_id or selected.datacenter_id,
+                               gpu_type_id=offer.gpu_type_id)
 
     monkeypatch.setattr(runpod_lifecycle, "launch_when_available", launch)
     monkeypatch.setattr(runpod_lifecycle, "get_pod", get_pod)
@@ -110,6 +114,19 @@ def test_canonical_account_path_and_dry_run_make_no_writes(case):
     assert result["offer"]["hourly_usd"] == 1.0
     assert not path.parent.exists()
     assert case.creates == case.configs == 0
+
+
+@pytest.mark.parametrize("change", [
+    {"network_volume_id": "foreign"}, {"data_center_id": "other"},
+    {"gpu_type_id": "other-gpu"}, {"storage_name": "storage"},
+    {"storage_volumes": ("storage",)},
+])
+def test_config_cannot_substitute_accepted_placement_before_create(case, change):
+    config = case.owner.config_factory(case.offer)
+    case.owner.config_factory = lambda offer: SimpleNamespace(**{**vars(config), **change})
+    with pytest.raises(PaidSelectionError, match="consented exact placement"):
+        asyncio.run(case.owner.select(case.grant))
+    assert not case.owner.path.exists() and case.creates == 0
 
 
 @pytest.mark.parametrize("change", [

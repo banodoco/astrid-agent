@@ -613,11 +613,48 @@ def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
     }, attempt)
 
 
+def validate_lease_preparation(attempt: Mapping[str, Any], *, releasing: bool = False) -> None:
+    """Preparation is child custody of A3, never a second release owner."""
+    lease = attempt.get("lease", {})
+    preparation = lease.get("preparation")
+    if preparation is None:
+        return
+    if (not isinstance(preparation, Mapping)
+            or preparation.get("schema") != "astrid.runpod.lease-preparation.v1"
+            or preparation.get("state") not in {"preparing", "prepared", "unresolved"}
+            or preparation.get("operation_id") != attempt.get("operation_id")
+            or preparation.get("pod_id") != attempt.get("pod_id")
+            or preparation.get("compatibility") != attempt.get("lease_compatibility")
+            or not isinstance(preparation.get("bootstrap_digest"), str)
+            or not re.fullmatch(r"[0-9a-f]{16}", preparation["bootstrap_digest"])):
+        raise TargetObservationError("invalid retained lease preparation custody")
+    job = preparation.get("job")
+    if job is not None and (
+        not isinstance(job, Mapping) or set(job) != {"id", "state"}
+        or not isinstance(job.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", job["id"])
+        or job.get("state") not in {"starting", "running", "exited", "cancelled"}
+    ):
+        raise TargetObservationError("invalid exact preparation job custody")
+    if preparation["state"] == "prepared":
+        snapshot = preparation.get("installed")
+        if (not isinstance(snapshot, Mapping)
+                or snapshot.get("schema") != "astrid.runpod.installed-snapshot.v1"
+                or snapshot.get("compatibility") != attempt.get("lease_compatibility")
+                or not isinstance(snapshot.get("receipt_sha256"), str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot["receipt_sha256"])
+                or (job is not None and job["state"] != "exited")):
+            raise TargetObservationError("retained lease has no verified installed snapshot")
+    if releasing and (preparation["state"] == "preparing"
+                      or (job is not None and job["state"] not in {"exited", "cancelled"})):
+        raise TargetObservationError("preparation job remains unresolved; retain the exact lease")
+
+
 def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict[str, Any]:
     """Accept only durable exact-task drain and process-stop evidence."""
     if attempt.get("state") == "cleanup_complete":
         _validate_absence_receipt(attempt)
     if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.lease-drain.v1":
+        validate_lease_preparation(attempt, releasing=True)
         lease = attempt.get("lease")
         if (not isinstance(lease, Mapping) or lease.get("schema") != "astrid.runpod.lease.v1"
                 or lease.get("state") != "releasing"

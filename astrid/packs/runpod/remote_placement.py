@@ -35,6 +35,7 @@ import json
 import math
 import os
 import shlex
+import subprocess
 import tarfile
 import time
 import uuid
@@ -133,6 +134,54 @@ class ClaimSpec:
     pod_id: str | None = None  # attach to a given handle instead of allocating
 
 
+@dataclass(frozen=True)
+class RunPodInstallation:
+    """Accepted canonical installation; validation happens before renting."""
+
+    compatibility: Mapping[str, str]
+    engine: str = "comfyui"
+    platform: str = "linux-x86_64-cu130"
+    root: str = "/workspace/astrid/engines/comfyui"
+
+    def plan(self):
+        from astrid.core.generation import engine_recipe, engine_runner
+        from .target_selection import RunPodLeaseCompatibility
+
+        expected = RunPodLeaseCompatibility(**dict(self.compatibility)).as_mapping()
+        if (self.engine != "comfyui" or self.platform != "linux-x86_64-cu130"
+                or self.root != "/workspace/astrid/engines/comfyui"):
+            raise RemotePlacementError("unsupported retained installation route")
+        recipe = engine_recipe.load_recipe(self.engine, self.platform)
+        plan = engine_runner.plan_install(recipe, root=self.root, placement="local")
+        vibe = next(s for s in recipe.sources if s.name == "vibecomfy")
+        runtime_lock = Path(__file__).resolve().parents[3] / "runtime.lock.json"
+        if (expected["recipe_digest"] != "sha256:" + plan.recipe_sha256
+                or expected["model_lock_digest"] != "sha256:" + plan.models_lock_sha256
+                or expected["vibecomfy_commit"] != vibe.pin.revision
+                or json.loads(runtime_lock.read_bytes())["source_commit"] != expected["runtime_commit"]):
+            raise RemotePlacementError("installation differs from the accepted recipe/model/source tuple")
+        return plan
+
+    def validate_sources(self, source_root: Path | None) -> str:
+        self.plan()
+        if source_root is None:
+            raise RemotePlacementError("retained preparation requires pinned bootstrap sources")
+        # A commit labels the source association; the bootstrap marker below
+        # binds the actual archive bytes. Do not infer either from the other.
+        for directory, commit in (
+            ("astrid-runtime", self.compatibility["runtime_commit"]),
+            ("VibeComfy", self.compatibility["vibecomfy_commit"]),
+        ):
+            root = source_root / "src" / directory
+            result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True, check=True)
+            clean = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+                                   capture_output=True, text=True, check=True)
+            if result.stdout.strip() != commit or clean.stdout.strip():
+                raise RemotePlacementError("bootstrap sources differ from accepted clean source commits")
+        return source_digest(source_root)
+
+
 @dataclass
 class Limits:
     max_spend_eur: float = DEFAULT_MAX_SPEND_EUR
@@ -170,10 +219,12 @@ def source_digest(source_root: Path) -> str:
     lines: list[tuple[bytes, str]] = []
     for directory in SOURCE_DIRS:
         base = Path(source_root) / directory
-        if not base.is_dir():
+        if base.is_symlink() or not base.is_dir():
             raise RemotePlacementError(f"bootstrap source dir is missing: {directory}")
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__")]
+            if any((Path(dirpath) / name).is_symlink() for name in (*dirnames, *filenames)):
+                raise RemotePlacementError("bootstrap source closure contains a symlink")
             for name in filenames:
                 if name.endswith(".pyc"):
                     continue
@@ -264,6 +315,9 @@ class RemoteRun:
     job_id: str | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
     released: bool = False
+    installation: RunPodInstallation | None = None
+    checkpoint: Callable[[Mapping[str, Any]], None] | None = None
+    installed: Mapping[str, Any] | None = None
 
     @property
     def remote_in(self) -> str:
@@ -312,7 +366,10 @@ class RemotePlacement:
 
     # -- public ------------------------------------------------------------
 
-    def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float) -> RemoteRun:
+    def prepare_claimed(self, claim: Claim, *, out: Path, deadline_seconds: float,
+                        installation: RunPodInstallation | None = None,
+                        checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+                        reuse_snapshot: Mapping[str, Any] | None = None) -> RemoteRun:
         """Bootstrap/install an exact existing claim for ordinary prepared work.
 
         Claim/admission/release stay with their existing journal and Runtime
@@ -324,15 +381,28 @@ class RemotePlacement:
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         run_id = uuid.uuid4().hex
-        state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim)
+        if (installation is None) != (checkpoint is None):
+            raise RemotePlacementError("retained installation requires its lease checkpoint")
+        state = RemoteRun(run_id, f"{RUNS_ROOT}/{run_id}", out, claim=claim,
+                          installation=installation, checkpoint=checkpoint)
         try:
-            self._bootstrap(state)
-            self._install(state)
+            if reuse_snapshot is not None:
+                marker = f"{BOOTSTRAP_ROOT}/{source_digest(self.source_root)}/ok"
+                code, _, _ = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
+                if code != 0 or not self._canonical_installed(state) or state.installed != reuse_snapshot:
+                    raise RemotePlacementError("retained installed snapshot changed; exact lease requires cleanup")
+                state.note("bootstrap", "skipped")
+                state.note("install", "skipped")
+            else:
+                self._bootstrap(state)
+                self._install(state)
             self._check_deadline("prepared install")
         except BaseException:
             if state.job_id is not None:
                 try:
-                    claim.ops.job_cancel(state.job_id)
+                    stopped = claim.ops.job_cancel(state.job_id)
+                    if checkpoint is not None and stopped.get("state") in {"exited", "cancelled"}:
+                        checkpoint({"id": state.job_id, "state": stopped["state"]})
                 except Exception:
                     pass
             raise
@@ -477,7 +547,17 @@ class RemotePlacement:
         assert state.claim is not None
         ops = state.claim.ops
         self._check_deadline(what)
-        started = ops.job_start(command)
+        if state.checkpoint is not None:
+            # Lifecycle accepts the caller's exact detached identity. Flush it
+            # before launch; a lost ACK must never invent or retry another job.
+            state.job_id = uuid.uuid4().hex
+            state.checkpoint({"id": state.job_id, "state": "starting"})
+            started = ops.job_start(command, job_id=state.job_id)
+            if started.get("id") != state.job_id:
+                raise RemotePlacementError("detached job differs from persisted preparation custody")
+            state.checkpoint({"id": state.job_id, "state": "running"})
+        else:
+            started = ops.job_start(command)
         job_id = str(started["id"])
         state.job_id = job_id
         while True:
@@ -489,6 +569,8 @@ class RemotePlacement:
                 raise RemotePlacementError(f"{what} job {job_id} is {record.get('state')}")
             self._sleep(self.limits.poll_seconds)
         state.job_id = None
+        if state.checkpoint is not None:
+            state.checkpoint({"id": job_id, "state": "exited"})
         directory = str(started.get("dir") or "")
         stdout = stderr = ""
         if directory:
@@ -535,8 +617,7 @@ class RemotePlacement:
             script.unlink(missing_ok=True)
         command = (
             f"set -eu; cd {shlex.quote(work)}; tar -xzf sources.tar.gz -C . ; "
-            f"mkdir -p src; for d in runpod-python astrid-runtime runpod-lifecycle astrid-agent VibeComfy; do "
-            f'rm -rf "src/$d"; mv "$d" "src/$d"; done; bash pod_bootstrap.sh'
+            "bash pod_bootstrap.sh"
         )
         self._run_job(state, command, "bootstrap")
         code, _o, _e = self._exec(state, f"test -f {shlex.quote(marker)}", timeout=60)
@@ -547,6 +628,8 @@ class RemotePlacement:
     # -- step 3 ------------------------------------------------------------
 
     def _engine_installed_healthy(self, state: RemoteRun) -> bool:
+        if state.installation is not None:
+            return self._canonical_installed(state)
         command = (
             f"{POD_VENV}/bin/astrid engines status {ENGINE_ID} --placement local "
             f"--root {shlex.quote(ENGINE_ROOT)}"
@@ -567,7 +650,12 @@ class RemotePlacement:
         if self._engine_installed_healthy(state):
             state.note("install", "skipped")
             return
+        installation = state.installation
         command = (
+            f"{POD_VENV}/bin/astrid engines install {installation.engine} "
+            f"--platform {installation.platform} --placement local --root {shlex.quote(installation.root)} "
+            f"--deadline {min(INSTALL_DEADLINE_SECONDS, self._remaining())}"
+        ) if installation is not None else (
             f"{POD_VENV}/bin/astrid engines install {ENGINE_ID} --placement local "
             f"--root {shlex.quote(ENGINE_ROOT)} --deadline {INSTALL_DEADLINE_SECONDS}"
         )
@@ -575,6 +663,45 @@ class RemotePlacement:
         if not self._engine_installed_healthy(state):
             raise RemotePlacementError("engine install finished but status is not installed and healthy")
         state.note("install", "done")
+
+    def _canonical_installed(self, state: RemoteRun) -> bool:
+        from astrid.core.generation import engine_runner
+
+        installation = state.installation
+        plan = installation.plan()
+        command = (f"{POD_VENV}/bin/astrid engines status {installation.engine} "
+                   f"--platform {installation.platform} --placement local "
+                   f"--root {shlex.quote(installation.root)} --deadline {min(120, self._remaining())}")
+        code, stdout, _ = self._exec(state, command, timeout=120)
+        if code != 0 or stdout.strip() in {"", "null"}:
+            return False
+        raw = json.loads(stdout)
+        if raw.get("status") != "installed":
+            return False
+        # Status re-verifies the actual source/model/environment/start/health
+        # through the canonical runner. Parse with that same receipt boundary.
+        live = engine_runner._parse_receipt(raw, plan)
+        path = state.local_out / "installed.json"
+        try:
+            state.claim.ops.get(installation.root + "/.astrid-engine/install.json", path)
+            if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                raise RemotePlacementError("invalid canonical installation receipt file")
+            data = path.read_bytes()
+            saved = engine_runner._parse_receipt(json.loads(data), plan)
+        finally:
+            path.unlink(missing_ok=True)
+        if (saved.status != "installed" or live.receipt_id != saved.receipt_id
+                or live.source_commits != saved.source_commits
+                or live.requirements_locks != saved.requirements_locks
+                or live.health.object_info_sha256 != saved.health.object_info_sha256):
+            raise RemotePlacementError("live installation differs from its canonical receipt")
+        state.installed = {
+            "schema": "astrid.runpod.installed-snapshot.v1", "engine": installation.engine,
+            "platform": installation.platform, "root": installation.root,
+            "compatibility": dict(installation.compatibility), "receipt_id": saved.receipt_id,
+            "receipt_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+        }
+        return True
 
     # -- step 4 ------------------------------------------------------------
 
@@ -823,8 +950,8 @@ class _HttpsOps:
     def get(self, remote: str, local: Path) -> None:
         self._call("get", remote, local)
 
-    def job_start(self, command: str) -> Mapping[str, Any]:
-        return self._call("detached_start", command)
+    def job_start(self, command: str, *, job_id: str | None = None) -> Mapping[str, Any]:
+        return self._call("detached_start", command, **({"job_id": job_id} if job_id is not None else {}))
 
     def job_poll(self, job_id: str) -> Mapping[str, Any]:
         return self._call("detached_poll", job_id)
@@ -837,7 +964,17 @@ def connect_claimed_for_preparation(record: Mapping[str, Any]) -> Claim:
     """Connect existing R02 custody without a provider lookup or another claim."""
     from .prepared_task import _claim_target
 
-    _claim_target(record)
+    if record.get("storage_mode") == "ephemeral":
+        from .worker_preparation import _release_contract_from_record, validate_lease_preparation
+        if (not isinstance(record.get("lease"), Mapping)
+                or record["lease"].get("schema") != "astrid.runpod.lease.v1"
+                or not isinstance(record.get("provider_account_ref"), str)
+                or not record["provider_account_ref"]):
+            raise RemotePlacementError("ephemeral preparation requires exact A3 lease custody")
+        _release_contract_from_record(record)
+        validate_lease_preparation(record)
+    else:
+        _claim_target(record)
     operation = record.get("operation_id")
     if (record.get("state") != "claimed" or record.get("transport") != "https"
             or record.get("acquisition_mode") != "allocate"

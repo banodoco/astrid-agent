@@ -36,6 +36,7 @@ from .worker_preparation import (
     _validate_completed_release,
     replace_target_record,
     target_owner,
+    validate_lease_preparation,
 )
 from .worker_process import (
     RunPodWorkerProcessTransport,
@@ -121,6 +122,7 @@ class RunPodLeaseOwner:
             raise RunPodWorkerOwnerError("lease owner is closed")
         record = self.selection._read()
         if record is not None:
+            validate_lease_preparation(record)
             operation = record.get("operation_id")
             lease = record.get("lease")
             if (not isinstance(operation, str) or not re.fullmatch(r"[0-9a-f]{32}", operation)
@@ -252,6 +254,8 @@ class RunPodLeaseOwner:
                      "owner_epoch": self.epoch, "generation": 1 if previous is None else previous["generation"] + 1,
                      "invocation_id": consent.invocation_id, "idle_seconds": idle,
                      "started_at": self.clock() if previous is None else previous["started_at"]}
+            if previous is not None and previous.get("preparation") is not None:
+                lease["preparation"] = previous["preparation"]
             # Only P1's already-owned account lock is bypassed here, as in R02.
             acquired = False
             try:
@@ -292,10 +296,26 @@ class RunPodLeaseOwner:
                 return  # Release owns the terminal transition; never re-arm it.
             if record["state"] != "claimed" or lease["state"] != "active":
                 raise RunPodWorkerOwnerError("release already fences this invocation")
+            preparation = lease.get("preparation")
+            if preparation is not None and preparation["state"] != "prepared":
+                raise RunPodWorkerOwnerError("unresolved preparation cannot enter warm retention")
             lease.update(state="idle", idle_expires_at=min(self.clock() + lease["idle_seconds"],
                                                           lease["paid_expires_at"]))
             record = self._save(record, lease)
             self._arm(record)
+
+    def preparation_claim(self, invocation: RunPodLease) -> dict[str, Any]:
+        """Only the current active holder may prepare under this account lock."""
+        record = self._read()
+        lease = record["lease"] if record is not None else {}
+        if (self._release_inflight or record is None or record["state"] != "claimed"
+                or lease.get("state") != "active" or invocation.operation_id != record["operation_id"]
+                or invocation.owner_epoch != self.epoch or lease.get("owner_epoch") != self.epoch
+                or invocation.generation != lease.get("generation")
+                or invocation.invocation_id != lease.get("invocation_id")
+                or self.clock() >= lease["paid_expires_at"]):
+            raise RunPodWorkerOwnerError("preparation requires the exact active invocation lease")
+        return record
 
     def release(self, *, reason: str = "explicit", _expected_operation: str | None = None) -> Mapping[str, Any] | None:
         with self.lock:
@@ -353,6 +373,26 @@ class RunPodLeaseOwner:
                 record = self._read()
             lease = {**record["lease"], "state": "releasing", "release_reason": reason}
             record = self._save(record, lease, state="cleanup_pending", reconciliation_required=True)
+            preparation = lease.get("preparation")
+            if preparation is not None:
+                if preparation["state"] == "preparing":
+                    preparation = {**preparation, "state": "unresolved"}
+                    lease = {**lease, "preparation": preparation}
+                    record = self._save(record, lease)
+                job = preparation.get("job")
+                if job is not None and job["state"] not in {"exited", "cancelled"}:
+                    from .remote_placement import connect_claimed_for_preparation
+                    # The original verified claim is still exact custody; no
+                    # new claim or detached start occurs during reconciliation.
+                    claim = connect_claimed_for_preparation({**record, "state": "claimed"})
+                    stopped = claim.ops.job_cancel(job["id"])
+                    if stopped.get("id") != job["id"] or stopped.get("state") not in {"exited", "cancelled"}:
+                        raise AcquisitionUnresolvedError("exact preparation job stop remains unresolved")
+                    preparation = {**preparation, "state": "unresolved",
+                                   "job": {"id": job["id"], "state": stopped["state"]}}
+                    lease = {**lease, "preparation": preparation}
+                    record = self._save(record, lease)
+                validate_lease_preparation(record, releasing=True)
         # Keep the account lock, but let a completing host invocation call
         # settle while quiescence waits for it. Durable releasing state and
         # _release_inflight fence admission and competing release dispatch.
