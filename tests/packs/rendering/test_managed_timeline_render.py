@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from astrid.packs.rendering.actions.render.managed_timeline import (
     resolve_managed_render_snapshot,
     validate_managed_render_snapshot,
 )
+from astrid.core.execution.generic_host import GenericPackHost
 from astrid.sdk.exceptions import CapabilityValidationError
 from astrid.sdk.invocation import _prepare_managed_render_inputs
 
@@ -201,9 +203,10 @@ def test_admission_rejects_range_beyond_pinned_timeline() -> None:
 
 @pytest.mark.parametrize("canonical_record_only", [False, True])
 def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
-    canonical_record_only: bool,
+    canonical_record_only: bool, tmp_path: Path,
 ) -> None:
-    digests = [character * 64 for character in ("a", "b", "c")]
+    media_bytes = [f"preview-{index}".encode() for index in range(3)]
+    digests = [hashlib.sha256(data).hexdigest() for data in media_bytes]
     runtime = _Runtime(
         media=[
             {"media_id": digest, "digest": digest, "project_id": "project-demo"}
@@ -356,6 +359,41 @@ def test_exact_parent_head_projects_pinned_children_with_unique_local_ids(
     ]
     assert authority["head_event_id"] == "parent-committed"
     assert authority["parent_revision_id"] == "parent-committed"
+    assert prepared["timeline_snapshot"]["metadata"] == {
+        "host_transition_contract": "runtime-parent-closure/v1",
+    }
+
+    # Exercise the normal render producer through the real GenericPackHost
+    # snapshot hydration and verified-source binding boundary.
+    snapshot_bytes = json.dumps(
+        prepared["timeline_snapshot"], sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    snapshot_digest = hashlib.sha256(snapshot_bytes).hexdigest()
+    ref = {
+        "project_id": authority["project_id"],
+        "timeline_id": authority["timeline_id"],
+        "revision_id": authority["parent_revision_id"],
+        "revision_digest": authority["parent_content_digest"],
+        "source_kind": "revision",
+        "digest": "sha256:" + snapshot_digest,
+    }
+    runtime_objects = {snapshot_digest: snapshot_bytes}
+    runtime_objects.update(zip(digests, media_bytes))
+    host = GenericPackHost(
+        pack_roots=[tmp_path],
+        client=SimpleNamespace(get_object=lambda key: runtime_objects[key]),
+    )
+    values = host._materialize_inputs(
+        {
+            "input_object_ids": [snapshot_digest, *digests],
+            "spec": {"inputs": {
+                "timeline_snapshot_ref": ref,
+                "timeline_authority": authority,
+            }},
+        },
+        tmp_path / "managed-render-attempt",
+    )
+    assert values.timeline_source.read()["transition_contract"] == "runtime-parent-closure/v1"
 
 
 def test_materialize_writes_deterministic_private_snapshot(tmp_path: Path) -> None:

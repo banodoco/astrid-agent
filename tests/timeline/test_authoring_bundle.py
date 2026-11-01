@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+
 import copy
 import hashlib
 import json
@@ -20,7 +22,6 @@ from astrid.core.timeline.authoring_bundle import (
     inspect_authoring_candidate,
     open_authoring_bundle,
     preview_authoring_candidate,
-    promote_approved_authoring_candidate,
     publish_authoring_candidate,
     validate_authoring_candidate,
 )
@@ -28,6 +29,7 @@ from astrid.core.timeline.shot_composition_projection import (
     ShotCompositionProjectionError,
     project_runtime_parent_composition,
 )
+from astrid.core.timeline.validators.meta import MetaValidationError
 from astrid.packs.rendering.actions.render.managed_timeline import ManagedRenderSnapshot
 from astrid.sdk.authoring_render_preview import (
     candidate_preview_snapshot,
@@ -45,6 +47,7 @@ from astrid.sdk.timeline_editing import (
 OLD = "sha256:" + "1" * 64
 NEW = "sha256:" + "2" * 64
 AUDIO = "sha256:" + "3" * 64
+PHANTOM = "sha256:" + "9" * 64
 
 
 def _digest(value):
@@ -180,6 +183,53 @@ def _closure(*, shared=True):
     return parent, [shot], [internal]
 
 
+def _runtime_document(parent, shots, internals):
+    """Build the immutable closure image consumed by the v2 test port."""
+    def media_ids(value):
+        if isinstance(value, dict):
+            return {media_id for child in value.values() for media_id in media_ids(child)}
+        if isinstance(value, list):
+            return {media_id for child in value for media_id in media_ids(child)}
+        if isinstance(value, str) and value.startswith("sha256:"):
+            return {value}
+        return set()
+
+    parent_image = {key: copy.deepcopy(parent[key]) for key in ("revision_id", "content_digest", "payload")}
+    shot_images = [{key: copy.deepcopy(row[key]) for key in (
+        "shot_id", "revision_id", "internal_timeline_revision_id", "content_digest", "payload"
+    )} for row in shots]
+    internal_images = [{key: copy.deepcopy(row[key]) for key in (
+        "timeline_id", "revision_id", "content_digest", "payload"
+    )} for row in internals]
+    media = sorted(
+        ({"media_id": media_id, "content_digest": media_id}
+         for media_id in media_ids([parent_image, *shot_images, *internal_images])),
+        key=lambda row: row["media_id"],
+    )
+    return {
+        "schema_version": 1,
+        "project_id": parent["project_id"],
+        "timeline_id": parent["timeline_id"],
+        "parent_revision": parent_image,
+        "shot_revisions": sorted(shot_images, key=lambda row: (row["shot_id"], row["revision_id"])),
+        "internal_timeline_revisions": sorted(
+            internal_images, key=lambda row: (row["timeline_id"], row["revision_id"])
+        ),
+        "dependency_manifest": {
+            "shots": sorted(({
+                key: row[key] for key in (
+                    "shot_id", "revision_id", "internal_timeline_revision_id", "content_digest"
+                )
+            } for row in shot_images), key=lambda row: (row["shot_id"], row["revision_id"])),
+            "internal_timelines": sorted(({
+                key: row[key] for key in ("timeline_id", "revision_id", "content_digest")
+            } for row in internal_images), key=lambda row: (row["timeline_id"], row["revision_id"])),
+            "media": media,
+            "documents": [],
+        },
+    }
+
+
 def _replace_selected_media(bundle, shot_id):
     shot = bundle["shots"][shot_id]
     shot["payload"]["items"][0]["media_id"] = NEW
@@ -258,6 +308,155 @@ def test_compile_materializes_shared_identity_and_keeps_untouched_content():
         NEW,
         AUDIO,
     }
+
+
+def test_authored_meta_is_preserved_without_phantom_media_dependencies():
+    parent, shots, timelines = _closure(shared=False)
+    authored_meta = {"org.example.notes": {"media_id": PHANTOM, "note": "keep"}}
+    parent["payload"]["meta"] = authored_meta
+    parent["content_digest"] = _digest(parent["payload"])
+
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    publication = compile_authoring_candidate(candidate).publication
+
+    assert publication["parent_composition"]["meta"] == authored_meta
+    assert PHANTOM not in {
+        row["media_id"] for row in publication["dependency_manifest"]["media"]
+    }
+    assert PHANTOM not in {
+        row["media_id"] for row in authoring_media_inventory(candidate)["media"]
+    }
+
+
+def test_component_params_meta_media_is_discovered_but_authored_meta_is_opaque():
+    parent, shots, timelines = _closure(shared=False)
+    authored_meta = {"org.example.notes": {"media_id": PHANTOM, "note": "keep"}}
+    for payload in (parent["payload"], parent["payload"]["config"], timelines[0]["payload"]):
+        payload["meta"] = copy.deepcopy(authored_meta)
+        for collection in ("tracks", "clips", "occurrences"):
+            for row in payload.get(collection, []):
+                row["meta"] = copy.deepcopy(authored_meta)
+        for asset in payload.get("registry", {}).get("assets", {}).values():
+            asset["meta"] = copy.deepcopy(authored_meta)
+    shots[0]["payload"]["meta"] = copy.deepcopy(authored_meta)
+    for revision in (parent, *shots, *timelines):
+        revision["content_digest"] = _digest(revision["payload"])
+    original_closure = copy.deepcopy((parent, shots, timelines))
+
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    shot = next(iter(candidate["shots"].values()))
+    shot["internal_timeline"]["clips"][0]["params"] = {"meta": {"media_id": NEW}}
+    original_candidate = copy.deepcopy(candidate)
+    publication = compile_authoring_candidate(candidate).publication
+    inventory = authoring_media_inventory(candidate)
+
+    assert {row["media_id"] for row in publication["dependency_manifest"]["media"]} == {
+        OLD, AUDIO, NEW,
+    }
+    assert {row["media_id"] for row in inventory["media"]} == {OLD, AUDIO, NEW}
+    assert publication["parent_composition"] == {
+        **candidate["parent"], "occurrences": publication["parent_composition"]["occurrences"],
+    }
+    assert publication["parent_composition"]["occurrences"][0]["meta"] == authored_meta
+    assert publication["shot_revisions"][0]["payload"]["meta"] == authored_meta
+    assert publication["internal_timeline_revisions"][0]["payload"] == shot["internal_timeline"]
+    assert candidate == original_candidate
+    assert (parent, shots, timelines) == original_closure
+
+
+def test_authoring_open_and_compile_validate_parent_and_shot_payload_meta():
+    parent, shots, timelines = _closure(shared=False)
+    parent["payload"]["meta"] = {"org.example.notes": None}
+    parent["content_digest"] = _digest(parent["payload"])
+    with pytest.raises(MetaValidationError, match="parent_revision.payload.meta"):
+        open_authoring_bundle(
+            parent, shot_revisions=shots, internal_timeline_revisions=timelines
+        )
+
+    parent, shots, timelines = _closure(shared=False)
+    shots[0]["payload"]["meta"] = {"org.example.notes": None}
+    shots[0]["content_digest"] = _digest(shots[0]["payload"])
+    with pytest.raises(MetaValidationError, match=r"shot_revisions\[shot-rev-1\].payload.meta"):
+        open_authoring_bundle(
+            parent, shot_revisions=shots, internal_timeline_revisions=timelines
+        )
+
+    parent, shots, timelines = _closure(shared=False)
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    candidate["parent"]["meta"] = {"org.example.notes": None}
+    with pytest.raises(MetaValidationError, match="candidate.parent.meta"):
+        compile_authoring_candidate(candidate)
+
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    shot_id = candidate["placements"][0]["shot_id"]
+    candidate["shots"][shot_id]["payload"]["meta"] = {"org.example.notes": None}
+    with pytest.raises(MetaValidationError, match="candidate.shots.*payload.meta"):
+        compile_authoring_candidate(candidate)
+
+
+@pytest.mark.parametrize("codec", ["item_id", "id", "both", "opaque-id"])
+@pytest.mark.parametrize("descriptor_location", ["metadata", "root"])
+def test_materialization_remaps_only_item_codec_and_declared_source_links(codec, descriptor_location):
+    parent, shots, timelines = _closure(shared=True)
+    payload = shots[0]["payload"]
+    opaque = {"org.example.notes/v1": {
+        "item_id": "item-1", "id": "item-1", "source_item_id": "item-1",
+        "source_item": "item-audio", "foreign_item_id": "item-audio",
+        "foreign_item_ids": ["item-audio", None, "item-1", "item-audio"],
+        "selected_item_id": "item-1", "parent_item_id": "item-audio",
+        "item-1": None, "literal": "item-1", "nested": [{"item_id": "item-1"}],
+    }}
+    for field in ("data", "app", "opaque", "metadata", "provenance", "selected_variants",
+                  "generation_inputs"):
+        payload[field] = copy.deepcopy(opaque)
+    for field in ("pools", "audio_bindings", "text_bindings"):
+        payload[field] = [copy.deepcopy(opaque)]
+    for item in payload["items"]:
+        if codec in ("id", "both", "opaque-id"):
+            item["id"] = item["item_id"] if codec != "opaque-id" else "opaque-identity"
+        if codec == "id":
+            del item["item_id"]
+        for field in ("data", "app", "opaque"):
+            item[field] = copy.deepcopy(opaque)
+        item["metadata"] = copy.deepcopy(opaque)
+        descriptor = item["metadata"] if descriptor_location == "metadata" else item
+        if descriptor_location == "root":
+            del item["metadata"]
+        descriptor.update(source_item_id="item-1", source_item="item-audio")
+    shots[0]["content_digest"] = _digest(payload)
+    original = copy.deepcopy((parent, shots, timelines))
+    bundle = open_authoring_bundle(parent, shot_revisions=shots, internal_timeline_revisions=timelines)
+    first = bundle["shots"][bundle["placements"][0]["shot_id"]]
+    copied = first["payload"]
+    identity = "id" if codec == "id" else "item_id"
+    remap = {item[identity]: copied_item[identity]
+             for item, copied_item in zip(payload["items"], copied["items"])}
+    expected = copy.deepcopy(payload)
+    for item in expected["items"]:
+        source = item[identity]
+        item[identity] = remap[source]
+        if codec == "both":
+            item["id"] = remap[source]
+        descriptor = item["metadata"] if descriptor_location == "metadata" else item
+        descriptor.update(source_item_id=remap["item-1"], source_item=remap["item-audio"])
+    assert copied == expected
+    assert all(source != target for source, target in remap.items())
+    assert (parent, shots, timelines) == original
+    first["internal_timeline"]["clips"][0]["at"] = 0.25
+    publication = compile_authoring_candidate(bundle).publication
+    materialized = next(row for row in publication["shot_revisions"] if row["shot_id"] == first["shot_id"])
+    # The compiler owns only this derived child revision link.
+    expected["internal_timeline_revision_id"] = materialized["internal_timeline_revision_id"]
+    assert materialized["payload"] == expected
+    assert (parent, shots, timelines) == original
 
 
 def test_independent_unique_shot_reuses_untouched_revision_and_direct_edits_compile_identically():
@@ -353,12 +552,154 @@ def test_target_bound_transport_key_normalizes_digest_prefix_and_punctuation():
 
 
 class _Writer:
-    def __init__(self):
+    def __init__(self, document):
+        self.calls = []
+        self.document = document
+
+    def list_timeline_commits(self, project_id, timeline_id, *, cursor=None, limit=100):
+        return {"data": {"items": [{
+            "publication_id": "publication-1",
+            "revision_id": "parent-1",
+            "receipt": {
+                "receipt_id": "publication-1",
+                "result": {"canonical_document": copy.deepcopy(self.document)},
+            },
+        }], "next_cursor": None}}
+
+    def get_project_parent_composition_revision(self, project_id, timeline_id, revision):
+        return {"data": {
+            **copy.deepcopy(self.document["parent_revision"]),
+            "project_id": project_id,
+            "timeline_id": timeline_id,
+            "dependency_manifest": copy.deepcopy(self.document["dependency_manifest"]),
+        }}
+
+    def get_project_shot_revision(self, project_id, shot_id, revision):
+        row = next(row for row in self.document["shot_revisions"] if row["revision_id"] == revision)
+        return {"data": {**copy.deepcopy(row), "project_id": project_id}}
+
+    def get_project_timeline_revision(self, project_id, timeline_id, revision):
+        row = next(row for row in self.document["internal_timeline_revisions"] if row["revision_id"] == revision)
+        return {"data": {**copy.deepcopy(row), "project_id": project_id}}
+
+    def get_project_media_selection(self, project_id, selection):
+        raise AssertionError(f"unexpected fixture media selection: {selection}")
+
+    def commit_timeline(self, project_id, timeline_id, body, *, idempotency_key):
+        self.calls.append((project_id, timeline_id, body, idempotency_key))
+        return {"data": {
+            "status": "accepted",
+            "accepted_revision_id": "saved-revision",
+            "previous_revision_id": "parent-1",
+            "canonical_document": copy.deepcopy(self.document),
+        }, "receipt": {"receipt_id": "saved-receipt"}}
+
+
+class _RuntimeAuthoringTransport:
+    """Expose the authenticated Runtime reads and commit port to the SDK."""
+
+    def __init__(self, service):
+        self.service = service
         self.calls = []
 
-    def publish_parent_composition(self, project_id, timeline_id, publication, *, idempotency_key):
-        self.calls.append((project_id, timeline_id, publication, idempotency_key))
-        return {"data": {"new_head": publication["parent_revision_id"]}}
+    def list_timeline_commits(self, project_id, timeline_id, **kwargs):
+        return self.service.list_timeline_commits(
+            project_id, timeline_id, authorize=lambda: None, **kwargs
+        )
+
+    def get_project_parent_composition_revision(self, project_id, timeline_id, revision):
+        return self.service.get_project_parent_composition_revision(
+            project_id, timeline_id, revision
+        )
+
+    def get_project_shot_revision(self, project_id, shot_id, revision):
+        return self.service.get_project_shot_revision(project_id, shot_id, revision)
+
+    def get_project_timeline_revision(self, project_id, timeline_id, revision):
+        return self.service.get_project_timeline_revision(project_id, timeline_id, revision)
+
+    def get_project_media_selection(self, project_id, selection):
+        return self.service.get_project_media_selection(
+            project_id, selection, authorize=lambda: None
+        )
+
+    def commit_timeline(self, project_id, timeline_id, body, *, idempotency_key):
+        self.calls.append((project_id, timeline_id, copy.deepcopy(body), idempotency_key))
+        return self.service.commit_timeline(
+            project_id,
+            timeline_id,
+            body,
+            publisher="author",
+            invocation_path=f"/v1/projects/{project_id}/timelines/{timeline_id}/commit",
+            authorize=lambda: None,
+            idempotency_key=idempotency_key,
+        )
+
+
+def _real_authoring_candidate(tmp_path):
+    """Create a real authenticated closure for the authoring commit path."""
+    from tests.helpers.runtime import use_runtime
+    from tests.helpers.trusted_seed import seed_trusted_parent
+
+    use_runtime()
+    from runtime_protocol import service as runtime_service
+    from runtime_protocol import store as runtime_store
+
+    from astrid.sdk.timeline.commit import create_runtime_commit_service
+
+    root = tmp_path / "realm"
+    runtime_store.RealmStore.initialize(root).close()
+    service = runtime_service.RuntimeService(root)
+    service.register_timeline_commit_provider(create_runtime_commit_service())
+    project_id = service.create_project(
+        {"slug": "authoring-approval", "name": "Authoring approval"},
+        idempotency_key="project",
+    )["id"]
+    service.create_timeline(project_id, "main", idempotency_key="timeline")
+    old = service.ingest(
+        project_id, b"old-picture", media_type="image/png", idempotency_key="old"
+    )["data"]["object_id"]
+    audio = service.ingest(
+        project_id, b"voiceover", media_type="audio/wav", idempotency_key="audio"
+    )["data"]["object_id"]
+
+    parent, shots, timelines = _closure(shared=True)
+    shots[0]["payload"]["text_bindings"] = []
+    replacements = {OLD: old, AUDIO: audio, "project-1": project_id}
+    parent = _replace_values(parent, replacements)
+    shots = _replace_values(shots, replacements)
+    timelines = _replace_values(timelines, replacements)
+    for row in (parent, shots[0], timelines[0]):
+        row["content_digest"] = _digest(row["payload"])
+    seed_trusted_parent(
+        service,
+        {
+            "project_id": project_id,
+            "timeline_id": "main",
+            "expected_head": None,
+            "parent_revision_id": "parent-1",
+            "parent_composition": parent["payload"],
+            "internal_timeline_revisions": timelines,
+            "shot_revisions": shots,
+        },
+        idempotency_key="seed-parent",
+    )
+
+    parent_revision = service.get_project_parent_composition_revision(
+        project_id, "main", "parent-1"
+    )
+    shot_revision = service.get_project_shot_revision(
+        project_id, "shot-shared", "shot-rev-1"
+    )
+    internal_revision = service.get_project_timeline_revision(
+        project_id, "main", "internal-1"
+    )
+    candidate = open_authoring_bundle(
+        parent_revision,
+        shot_revisions=[shot_revision],
+        internal_timeline_revisions=[internal_revision],
+    )
+    return service, candidate, _RuntimeAuthoringTransport(service)
 
 
 def test_publish_uses_one_compilation_and_returns_complete_mapping():
@@ -366,17 +707,73 @@ def test_publish_uses_one_compilation_and_returns_complete_mapping():
     candidate = open_authoring_bundle(
         parent, shot_revisions=shots, internal_timeline_revisions=timelines
     )
-    writer = _Writer()
+    candidate["source_mapping"]["_runtime_document"] = _runtime_document(parent, shots, timelines)
+    writer = _Writer(candidate["source_mapping"]["_runtime_document"])
 
     result = publish_authoring_candidate(candidate, writer, idempotency_key="candidate-1")
 
     assert len(writer.calls) == 1
+    request = writer.calls[0][2]
     assert writer.calls[0][3] == "candidate-1"
-    assert result["publication"]["data"]["new_head"] == writer.calls[0][2]["parent_revision_id"]
+    assert request["base_revision_id"] == "parent-1"
+    assert request["merge"] == "atomic"
+    assert all(command["op"] in {"doc.patch", "media.admit"} for command in request["commands"])
+    assert result["publication"]["new_head"] == "saved-revision"
+    assert result["publication"]["canonical_document"] == writer.document
     assert set(result["identity_mapping"]["placements"]) == {"occ-1", "occ-2"}
     assert result["summary"]["new_head"] == result["publication"]["data"]["new_head"]
     assert isinstance(result["update"], str)
-    assert {action["scope"] for action in result["next_actions"]} == {"current_head"}
+    assert [action["scope"] for action in result["next_actions"]] == [
+        "saved_revision_pair", "saved_revision_pair", "current_head", "current_head",
+    ]
+    saved_actions = result["next_actions"][:2]
+    assert [(action["from_revision"], action["to_revision"], action["format"])
+            for action in saved_actions] == [
+        ("parent-1", "saved-revision", "readable"),
+        ("parent-1", "saved-revision", "details"),
+    ]
+    assert all("from_revision" not in action for action in result["next_actions"][2:])
+
+
+def test_publication_data_projects_accepted_parent_revision_without_rewriting_reply():
+    parent, shots, timelines = _closure(shared=True)
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    candidate["source_mapping"]["_runtime_document"] = _runtime_document(parent, shots, timelines)
+
+    class CompleteReplyWriter(_Writer):
+        def commit_timeline(self, project_id, timeline_id, body, *, idempotency_key):
+            envelope = super().commit_timeline(
+                project_id, timeline_id, body, idempotency_key=idempotency_key
+            )
+            envelope["data"].update(
+                base_revision_id=body["base_revision_id"],
+                base_publication_id=body["base_publication_id"],
+                commands=copy.deepcopy(body["commands"]),
+                steps=copy.deepcopy(body["steps"]),
+                merge_mode=body["merge"],
+                label=body["label"],
+                source=copy.deepcopy(body["source"]),
+                rationale=body["rationale"],
+                publisher="test-user",
+            )
+            envelope["receipt"]["result"] = copy.deepcopy(envelope["data"])
+            return envelope
+
+    writer = CompleteReplyWriter(candidate["source_mapping"]["_runtime_document"])
+
+    result = publish_authoring_candidate(candidate, writer, idempotency_key="accepted-parent-alias")
+
+    publication = result["publication"]
+    assert publication["accepted_revision_id"] == "saved-revision"
+    assert publication["parent_revision_id"] == publication["accepted_revision_id"]
+    assert publication["data"]["accepted_revision_id"] == "saved-revision"
+    assert publication["data"]["parent_revision_id"] == "saved-revision"
+    assert publication["canonical_document"] == writer.document
+    assert publication["data"]["canonical_document"] == writer.document
+    assert publication["receipt"]["result"]["accepted_revision_id"] == "saved-revision"
+    assert publication["data"]["steps"] == writer.calls[0][2]["steps"]
 
 
 def test_group_move_compiles_and_uses_existing_publication_boundary():
@@ -385,46 +782,27 @@ def test_group_move_compiles_and_uses_existing_publication_boundary():
         parent, shot_revisions=shots, internal_timeline_revisions=timelines
     )
     move_occurrence_group(candidate, "occ-2", before_occurrence_id="occ-1")
-    writer = _Writer()
+    compiled = compile_authoring_candidate(candidate).publication
+    occurrences = compiled["parent_composition"]["occurrences"]
+    assert [row["occurrence_id"] for row in occurrences] == ["occ-2", "occ-1"]
+    assert [row["placement"]["start_ms"] for row in occurrences] == [0, 1000]
+    assert [row["duration_ms"] for row in occurrences] == [1000, 1000]
+    candidate["source_mapping"]["_runtime_document"] = _runtime_document(parent, shots, timelines)
+    writer = _Writer(candidate["source_mapping"]["_runtime_document"])
 
     result = publish_authoring_candidate(candidate, writer, idempotency_key="a03-group-move")
 
     assert len(writer.calls) == 1
     assert writer.calls[0][3] == "a03-group-move"
-    occurrences = writer.calls[0][2]["parent_composition"]["occurrences"]
-    assert [row["occurrence_id"] for row in occurrences] == ["occ-2", "occ-1"]
-    assert [row["placement"]["start_ms"] for row in occurrences] == [0, 1000]
-    assert [row["duration_ms"] for row in occurrences] == [1000, 1000]
-    assert result["publication"]["data"]["new_head"] == writer.calls[0][2]["parent_revision_id"]
+    request = writer.calls[0][2]
+    assert request["base_revision_id"] == "parent-1"
+    assert request["merge"] == "atomic"
+    assert all(command["op"] == "doc.patch" for command in request["commands"])
+    assert result["publication"]["new_head"] == "saved-revision"
 
 
-def test_approval_is_bound_to_candidate_and_base_revision():
-    parent, shots, timelines = _closure(shared=True)
-    candidate = open_authoring_bundle(
-        parent, shot_revisions=shots, internal_timeline_revisions=timelines
-    )
-    approval = approve_authoring_candidate(
-        candidate, approver="editor-1", approval_id="approval-1"
-    )
-    writer = _Writer()
-
-    changed = copy.deepcopy(candidate)
-    changed["parent"]["config"]["approved-edit"] = True
-    with pytest.raises(AuthoringBundleError, match="stale or does not match"):
-        promote_approved_authoring_candidate(
-            changed, approval, writer, idempotency_key="promote-1"
-        )
-    assert writer.calls == []
-
-    promoted = promote_approved_authoring_candidate(
-        candidate, approval, writer, idempotency_key="promote-1"
-    )
-    assert promoted["approval"]["approval_id"] == "approval-1"
-    assert len(writer.calls) == 1
-
-
-def test_frozen_render_restart_then_approval_promotion_is_single_generation(tmp_path):
-    """Exercise the contract, durable replay, and candidate promotion seam together."""
+def test_frozen_render_restart_is_single_generation(tmp_path):
+    """Exercise the live render contract and durable replay seam together."""
     from astrid.core.execution.reconciler import ExecutionReconciler
     from astrid.core.execution.target_adapter import LocalMachineTargetAdapter
 
@@ -556,19 +934,6 @@ def test_frozen_render_restart_then_approval_promotion_is_single_generation(tmp_
     assert second.phase == "recovery"
     assert render_count == 1
     assert [name for name, _ in runtime.calls].count("claim") == 1
-
-    parent, shots, timelines = _closure(shared=True)
-    candidate = open_authoring_bundle(
-        parent, shot_revisions=shots, internal_timeline_revisions=timelines
-    )
-    approval = approve_authoring_candidate(candidate, approver="editor-1", approval_id="approval-render-1")
-    writer = _Writer()
-    promoted = promote_approved_authoring_candidate(
-        candidate, approval, writer, idempotency_key="promote-render-1"
-    )
-    assert promoted["candidate_digest"] == approval["candidate_digest"]
-    assert len(writer.calls) == 1
-
 
 def test_full_authored_field_edits_compile_without_normalizing_opaque_fields():
     parent, shots, timelines = _closure(shared=False)
@@ -793,6 +1158,8 @@ def test_frozen_candidate_projects_to_labelled_managed_render_without_publicatio
     candidate = open_authoring_bundle(
         parent, shot_revisions=shots, internal_timeline_revisions=timelines
     )
+    # This preview exercises supported placement; group transforms are refused.
+    candidate["placements"][0]["transform"] = {}
     candidate["placements"][0]["duration_ms"] = 1234
     preview = preview_authoring_candidate(candidate)
     candidate["placements"][0]["duration_ms"] = 9999
@@ -979,9 +1346,38 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
     from runtime_protocol import service as runtime_service
     from runtime_protocol import store as runtime_store
 
+    from astrid.sdk.timeline.commit import create_runtime_commit_service
+    from tests.helpers.trusted_seed import seed_trusted_parent
+
     root = tmp_path / "realm"
     runtime_store.RealmStore.initialize(root).close()
     service = runtime_service.RuntimeService(root)
+    service.register_timeline_commit_provider(create_runtime_commit_service())
+
+    class Transport:
+        def list_timeline_commits(self, project_id, timeline_id, **kwargs):
+            return service.list_timeline_commits(project_id, timeline_id, authorize=lambda: None, **kwargs)
+
+        def get_project_parent_composition_revision(self, project_id, timeline_id, revision):
+            return service.get_project_parent_composition_revision(project_id, timeline_id, revision)
+
+        def get_project_shot_revision(self, project_id, shot_id, revision):
+            return service.get_project_shot_revision(project_id, shot_id, revision)
+
+        def get_project_timeline_revision(self, project_id, timeline_id, revision):
+            return service.get_project_timeline_revision(project_id, timeline_id, revision)
+
+        def get_project_media_selection(self, project_id, selection):
+            return service.get_project_media_selection(project_id, selection, authorize=lambda: None)
+
+        def commit_timeline(self, project_id, timeline_id, payload, **kwargs):
+            return service.commit_timeline(
+                project_id, timeline_id, payload, publisher="test-user",
+                invocation_path=f"/v1/projects/{project_id}/timelines/{timeline_id}/commit",
+                authorize=lambda: None, **kwargs
+            )
+
+    transport = Transport()
     try:
         project = service.create_project(
             {"slug": "authoring", "name": "Authoring"}, idempotency_key="project"
@@ -1017,7 +1413,7 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
             "internal_timeline_revisions": timelines,
             "shot_revisions": shots,
         }
-        service.publish_parent_composition(project_id, "main", seed, idempotency_key="seed-parent")
+        seed_trusted_parent(service, seed, idempotency_key="seed-parent")
         exact_parent = service.get_project_parent_composition_revision(
             project_id, "main", "parent-1"
         )
@@ -1037,7 +1433,7 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
         }
 
         committed = publish_authoring_candidate(
-            candidate, service, idempotency_key="complete-candidate"
+            candidate, transport, idempotency_key="complete-candidate"
         )
         new_head = committed["publication"]["data"]["new_head"]
         assert committed["summary"]["new_head"] == new_head
@@ -1049,15 +1445,22 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
 
         assert new_head == committed["publication"]["data"]["parent_revision_id"]
         assert new_head != committed["identity_mapping"]["placements"]["occ-1"]["shot_revision_id"]
-        assert [row["shot_id"] for row in reread["payload"]["occurrences"]] == [
-            row["shot_id"] for row in candidate["placements"]
-        ]
+        assert (
+            reread["payload"]["occurrences"][0]["shot_id"] == next(
+                command["args"]["shot_id"]
+                for command in committed["publication"]["data"]["commands"]
+                if command["op"] == "occurrence.fork"
+            )
+            and (
+                reread["payload"]["occurrences"][1]["shot_id"],
+                reread["payload"]["occurrences"][1]["shot_revision_id"],
+            ) == ("shot-shared", "shot-rev-1")
+        )
         assert reread["payload"]["opaque_parent"] == {"keep": ["all", "fields"]}
         newer_payload = copy.deepcopy(reread["payload"])
         newer_payload["opaque_parent"]["writer"] = "later"
-        service.publish_parent_composition(
-            project_id,
-            "main",
+        seed_trusted_parent(
+            service,
             {
                 "project_id": project_id,
                 "timeline_id": "main",
@@ -1068,10 +1471,197 @@ def test_candidate_compiler_integrates_with_runtime_atomic_publication(tmp_path)
             idempotency_key="later-writer",
         )
         replay = publish_authoring_candidate(
-            candidate, service, idempotency_key="complete-candidate"
+            candidate, transport, idempotency_key="complete-candidate"
         )
         assert replay == committed
         assert service._timeline_resource("main")["head_revision_id"] == "newer-head"
+    finally:
+        service.close()
+
+
+def test_approval_migration_is_bound_to_candidate_and_base_revision(tmp_path):
+    service, candidate, writer = _real_authoring_candidate(tmp_path)
+    try:
+        approval = approve_authoring_candidate(
+            candidate, approver="editor-1", approval_id="approval-1"
+        )
+        assert approval["base_parent"] == candidate["base_parent"]
+
+        changed = copy.deepcopy(candidate)
+        changed["parent"]["config"]["approved-edit"] = True
+        changed["base_parent"]["content_digest"] = "sha256:" + "f" * 64
+        assert compile_authoring_candidate(changed).candidate_digest != approval["candidate_digest"]
+        with pytest.raises(
+            AuthoringBundleError,
+            match="approval is stale or does not match candidate: candidate_digest",
+        ):
+            publish_authoring_candidate(
+                changed, writer, idempotency_key="promote-1", approval=approval
+            )
+        assert writer.calls == []
+
+        published = publish_authoring_candidate(
+            candidate, writer, idempotency_key="promote-1", approval=approval
+        )
+        assert published["approval"] == approval
+        assert published["approval"]["approval_id"] == "approval-1"
+        assert published["candidate_digest"] == approval["candidate_digest"]
+        assert "approval" not in writer.calls[0][2]
+        assert len(writer.calls) == 1
+    finally:
+        service.close()
+
+
+def test_frozen_render_restart_then_approval_promotion_is_single_generation(tmp_path):
+    """Exercise the contract, durable replay, and candidate promotion seam together."""
+    from astrid.core.execution.reconciler import ExecutionReconciler
+    from astrid.core.execution.target_adapter import LocalMachineTargetAdapter
+
+    source = b"deterministically extracted source bytes"
+    source_digest = "sha256:" + hashlib.sha256(source).hexdigest()
+    contract = {
+        "schema_version": 1,
+        "workflow": {
+            "id": "render.authoring-candidate",
+            "contract_digest": "sha256:workflow",
+            "required_bindings": ["source_video"],
+        },
+        "inputs": [
+            {
+                "name": "source_video",
+                "object_id": source_digest,
+                "filename": "source.mp4",
+                "required": True,
+            }
+        ],
+        "target": {"kind": "machine", "id": "local-1"},
+        "retry_policy": {"max_attempts": 2},
+        "checks": {"outputs": ["sha256"]},
+    }
+
+    class Runtime:
+        def __init__(self):
+            self.task = None
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(("create", kwargs))
+            if self.task is None:
+                self.task = {
+                    "task_id": "render-task-1",
+                    "run_id": "render-run-1",
+                    "state": "queued",
+                    "idempotency_key": kwargs["idempotency_key"],
+                    "capability_id": kwargs["capability"],
+                    "spec": {**kwargs["spec"], "execution_request": kwargs["execution_request"]},
+                }
+            return {"task_id": self.task["task_id"], "run_id": self.task["run_id"]}
+
+        def get_task(self, task_id):
+            assert task_id == self.task["task_id"]
+            return dict(self.task)
+
+        def claim(self, **kwargs):
+            self.calls.append(("claim", kwargs))
+            self.task.update({"state": "running", "attempt_id": "render-attempt-1"})
+            return {
+                "task_id": self.task["task_id"],
+                "attempt_id": "render-attempt-1",
+                "lease_id": "render-lease-1",
+                "fence": 1,
+                "runtime_epoch": 1,
+                "idempotency_key": "render-request-1",
+                "capability_id": "render.authoring-candidate",
+                "spec": self.task["spec"],
+            }
+
+        def settle(self, attempt_id, **kwargs):
+            self.calls.append(("settle", kwargs))
+            self.task.update({"state": "completed", "result": {"outputs": kwargs["outputs"]}})
+            return {"ok": True}
+
+        def fail(self, *args, **kwargs):
+            self.calls.append(("fail", kwargs))
+            self.task["state"] = "failed"
+            return {"ok": True}
+
+    runtime = Runtime()
+    adapter = LocalMachineTargetAdapter(
+        {"kind": "machine", "id": "local-1"},
+        observer=lambda: {
+            "kind": "machine",
+            "target_id": "local-1",
+            "live": True,
+            "runtime_epoch": 1,
+            "launch_generation": "launch-1",
+            "process_birth_id": "process-1",
+            "engine_birth_id": "engine-1",
+            "output_root": str(tmp_path),
+        },
+    )
+    render_count = 0
+
+    def execute(_claim, observation):
+        nonlocal render_count
+        render_count += 1
+        output = tmp_path / "render.bin"
+        output.write_bytes(source + b"/rendered")
+        data = output.read_bytes()
+        return {
+            "outputs": [
+                {
+                    "path": output.name,
+                    "content_hash": "sha256:" + hashlib.sha256(data).hexdigest(),
+                    "bytes": len(data),
+                }
+            ],
+            "source_digest": source_digest,
+            "source_filename": "source.mp4",
+            "output_root": observation.output_root,
+        }
+
+    reconciler = ExecutionReconciler(runtime, adapter)
+    first = reconciler.run(
+        contract=contract,
+        project_id="project-1",
+        capability="render.authoring-candidate",
+        spec={"inputs": {}},
+        executor_id="worker-1",
+        execute=execute,
+        idempotency_key="render-request-1",
+    )
+    second = reconciler.run(
+        contract=contract,
+        project_id="project-1",
+        capability="render.authoring-candidate",
+        spec={"inputs": {}},
+        executor_id="worker-1",
+        execute=execute,
+        idempotency_key="render-request-1",
+    )
+
+    assert first.status == "complete"
+    assert second.status == "complete"
+    assert second.phase == "recovery"
+    assert render_count == 1
+    assert [name for name, _ in runtime.calls].count("claim") == 1
+
+    parent, shots, timelines = _closure(shared=True)
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    approval = approve_authoring_candidate(candidate, approver="editor-1", approval_id="approval-render-1")
+    service, candidate, writer = _real_authoring_candidate(tmp_path)
+    try:
+        approval = approve_authoring_candidate(
+            candidate, approver="editor-1", approval_id="approval-render-1"
+        )
+        promoted = publish_authoring_candidate(
+            candidate, writer, idempotency_key="promote-render-1", approval=approval
+        )
+        assert promoted["approval"] == approval
+        assert promoted["candidate_digest"] == approval["candidate_digest"]
+        assert len(writer.calls) == 1
     finally:
         service.close()
 
@@ -1109,3 +1699,217 @@ def test_diff_ignores_float_noise_but_reports_real_clip_edits():
     clip["at"] = 2.8345
     changed = diff_authoring_candidate(candidate)["changed"]
     assert [row["path"].rsplit(".", 2)[-2:] for row in changed] == [[clip["id"], "at"]]
+
+
+# D72 migration of upstream-924 selector 11522.  The detached approval remains
+# bound to the candidate, while publication uses the authenticated commit port.
+def test_d66_upstream_approval_is_bound_to_candidate_and_base_revision(tmp_path):
+    service, candidate, writer = _real_authoring_candidate(tmp_path)
+    try:
+        approval = approve_authoring_candidate(
+            candidate, approver="editor-1", approval_id="approval-1"
+        )
+        assert approval["base_parent"] == candidate["base_parent"]
+
+        changed = copy.deepcopy(candidate)
+        changed["parent"]["config"]["approved-edit"] = True
+        changed["base_parent"]["content_digest"] = "sha256:" + "f" * 64
+        assert compile_authoring_candidate(changed).candidate_digest != approval["candidate_digest"]
+        with pytest.raises(
+            AuthoringBundleError,
+            match="approval is stale or does not match candidate: candidate_digest",
+        ):
+            publish_authoring_candidate(
+                changed, writer, idempotency_key="promote-1", approval=approval
+            )
+        assert writer.calls == []
+
+        published = publish_authoring_candidate(
+            candidate, writer, idempotency_key="promote-1", approval=approval
+        )
+        assert published["approval"] == approval
+        assert published["approval"]["approval_id"] == "approval-1"
+        assert published["candidate_digest"] == approval["candidate_digest"]
+        assert "approval" not in writer.calls[0][2]
+        assert len(writer.calls) == 1
+    finally:
+        service.close()
+
+
+# D72 migration of upstream-924 selector 11523.  Render/restart assertions are
+# retained; the final publication uses the authenticated commit port.
+def test_d66_upstream_frozen_render_restart_then_approval_promotion_is_single_generation(tmp_path):
+    """Exercise the contract, durable replay, and candidate promotion seam together."""
+    from astrid.core.execution.reconciler import ExecutionReconciler
+    from astrid.core.execution.target_adapter import LocalMachineTargetAdapter
+
+    source = b"deterministically extracted source bytes"
+    source_digest = "sha256:" + hashlib.sha256(source).hexdigest()
+    contract = {
+        "schema_version": 1,
+        "workflow": {
+            "id": "render.authoring-candidate",
+            "contract_digest": "sha256:workflow",
+            "required_bindings": ["source_video"],
+        },
+        "inputs": [
+            {
+                "name": "source_video",
+                "object_id": source_digest,
+                "filename": "source.mp4",
+                "required": True,
+            }
+        ],
+        "target": {"kind": "machine", "id": "local-1"},
+        "retry_policy": {"max_attempts": 2},
+        "checks": {"outputs": ["sha256"]},
+    }
+
+    class Runtime:
+        def __init__(self):
+            self.task = None
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(("create", kwargs))
+            if self.task is None:
+                self.task = {
+                    "task_id": "render-task-1",
+                    "run_id": "render-run-1",
+                    "state": "queued",
+                    "idempotency_key": kwargs["idempotency_key"],
+                    "capability_id": kwargs["capability"],
+                    "spec": {**kwargs["spec"], "execution_request": kwargs["execution_request"]},
+                }
+            return {"task_id": self.task["task_id"], "run_id": self.task["run_id"]}
+
+        def get_task(self, task_id):
+            assert task_id == self.task["task_id"]
+            return dict(self.task)
+
+        def claim(self, **kwargs):
+            self.calls.append(("claim", kwargs))
+            self.task.update({"state": "running", "attempt_id": "render-attempt-1"})
+            return {
+                "task_id": self.task["task_id"],
+                "attempt_id": "render-attempt-1",
+                "lease_id": "render-lease-1",
+                "fence": 1,
+                "runtime_epoch": 1,
+                "idempotency_key": "render-request-1",
+                "capability_id": "render.authoring-candidate",
+                "spec": self.task["spec"],
+            }
+
+        def settle(self, attempt_id, **kwargs):
+            self.calls.append(("settle", kwargs))
+            self.task.update({"state": "completed", "result": {"outputs": kwargs["outputs"]}})
+            return {"ok": True}
+
+        def fail(self, *args, **kwargs):
+            self.calls.append(("fail", kwargs))
+            self.task["state"] = "failed"
+            return {"ok": True}
+
+    runtime = Runtime()
+    adapter = LocalMachineTargetAdapter(
+        {"kind": "machine", "id": "local-1"},
+        observer=lambda: {
+            "kind": "machine",
+            "target_id": "local-1",
+            "live": True,
+            "runtime_epoch": 1,
+            "launch_generation": "launch-1",
+            "process_birth_id": "process-1",
+            "engine_birth_id": "engine-1",
+            "output_root": str(tmp_path),
+        },
+    )
+    render_count = 0
+
+    def execute(_claim, observation):
+        nonlocal render_count
+        render_count += 1
+        output = tmp_path / "render.bin"
+        output.write_bytes(source + b"/rendered")
+        data = output.read_bytes()
+        return {
+            "outputs": [
+                {
+                    "path": output.name,
+                    "content_hash": "sha256:" + hashlib.sha256(data).hexdigest(),
+                    "bytes": len(data),
+                }
+            ],
+            "source_digest": source_digest,
+            "source_filename": "source.mp4",
+            "output_root": observation.output_root,
+        }
+
+    reconciler = ExecutionReconciler(runtime, adapter)
+    first = reconciler.run(
+        contract=contract,
+        project_id="project-1",
+        capability="render.authoring-candidate",
+        spec={"inputs": {}},
+        executor_id="worker-1",
+        execute=execute,
+        idempotency_key="render-request-1",
+    )
+    second = reconciler.run(
+        contract=contract,
+        project_id="project-1",
+        capability="render.authoring-candidate",
+        spec={"inputs": {}},
+        executor_id="worker-1",
+        execute=execute,
+        idempotency_key="render-request-1",
+    )
+
+    assert first.status == "complete"
+    assert second.status == "complete"
+    assert second.phase == "recovery"
+    assert render_count == 1
+    assert [name for name, _ in runtime.calls].count("claim") == 1
+
+    service, candidate, writer = _real_authoring_candidate(tmp_path)
+    try:
+        approval = approve_authoring_candidate(
+            candidate, approver="editor-1", approval_id="approval-render-1"
+        )
+        published = publish_authoring_candidate(
+            candidate, writer, idempotency_key="promote-render-1", approval=approval
+        )
+        assert published["approval"] == approval
+        assert published["candidate_digest"] == approval["candidate_digest"]
+        assert len(writer.calls) == 1
+    finally:
+        service.close()
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+def test_approval_is_bound_to_candidate_and_base_revision():
+    from astrid.core.timeline.authoring_bundle import promote_approved_authoring_candidate
+
+    parent, shots, timelines = _closure(shared=True)
+    candidate = open_authoring_bundle(
+        parent, shot_revisions=shots, internal_timeline_revisions=timelines
+    )
+    approval = approve_authoring_candidate(
+        candidate, approver="editor-1", approval_id="approval-1"
+    )
+    writer = _Writer()
+
+    changed = copy.deepcopy(candidate)
+    changed["parent"]["config"]["approved-edit"] = True
+    with pytest.raises(AuthoringBundleError, match="stale or does not match"):
+        promote_approved_authoring_candidate(
+            changed, approval, writer, idempotency_key="promote-1"
+        )
+    assert writer.calls == []
+
+    promoted = promote_approved_authoring_candidate(
+        candidate, approval, writer, idempotency_key="promote-1"
+    )
+    assert promoted["approval"]["approval_id"] == "approval-1"
+    assert len(writer.calls) == 1

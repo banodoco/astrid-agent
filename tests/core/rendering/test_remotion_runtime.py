@@ -1,57 +1,299 @@
-"""Direct render admission checks do not depend on a host launch artifact."""
+"""Remotion admission consumes launch-bound Runtime validation."""
 from __future__ import annotations
 
-import os
 import stat
-import subprocess
 import sys
+from astrid.core.subprocess_env import build_child_subprocess_env
+
+
+import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.core.rendering import remotion_runtime as runtime
-from astrid.core.subprocess_env import build_child_subprocess_env
 from astrid.packs.rendering.rendering.renderers.remotion import run as remotion_run
 
 
 @pytest.fixture
 def installed_runtime(tmp_path, monkeypatch):
-    project = tmp_path / "remotion"
-    project.mkdir()
-    (project / "package.json").write_text('{"engines":{"node":"=20.19.4"}}')
-    for name in runtime._REQUIRED_PACKAGES:
-        manifest = project / "node_modules/@banodoco" / name / "package.json"
-        manifest.parent.mkdir(parents=True)
-        manifest.write_text("{}")
-    cli = project / runtime.REMOTION_CLI_RELATIVE_PATH
-    cli.parent.mkdir(parents=True)
-    cli.write_text("// locked CLI")
-    schema = tmp_path / "schema"
-    for name in runtime._REQUIRED_SCHEMA_FILES:
-        path = schema / "banodoco_timeline_schema" / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{}" if name.endswith(".json") else "# installed")
-    node = tmp_path / "node"
-    node.write_text("server-owned Node")
-    node.chmod(0o700)
-    for name, value in ((runtime.REMOTION_PROJECT_DIR_ENV, project),
-                        (runtime.NODE_EXECUTABLE_ENV, node),
-                        (runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV, schema)):
-        monkeypatch.setenv(name, str(value))
-    calls = []
-    original_probe = runtime._owned_probe
-    def owned(argv, **kwargs):
-        calls.append((argv, kwargs))
-        stdout = "v20.19.4\n" if argv[-1] == "--version" else str(schema / "banodoco_timeline_schema/__init__.py")
-        return subprocess.CompletedProcess(argv, 0, stdout, ""), {}
-    monkeypatch.setattr(runtime, "_owned_probe", owned)
-    return SimpleNamespace(project=project, schema=schema, node=node, cli=cli, calls=calls,
-                           original_probe=original_probe)
+    # Reuse the launch-owner fixture: direct status consumers must carry the
+    # same owned probe and local-schema proof as a real host launch.
+    from tests.packs.rendering.test_render_export_task_adapter import _owned_validation_fixture
+
+    owned_probe = runtime._owned_probe
+    project, schema, node, environment, reference, calls = _owned_validation_fixture(
+        tmp_path, monkeypatch
+    )
+    def admission_probe(argv, *, cwd, env, timeout):
+        assert argv == [str(node), "--version"]
+        assert cwd == project and timeout == 5
+        calls.append((argv, dict(env)))
+        return subprocess.CompletedProcess(argv, 0, "v20.19.4\n", ""), {}
+
+    monkeypatch.setattr(runtime, "_owned_probe", admission_probe)
+    monkeypatch.setattr(runtime, "_UNRESOLVED_PROBE_CUSTODY", [])
+    monkeypatch.setattr(runtime, "_UNRESOLVED_VALIDATION_PROBES", [])
+    return SimpleNamespace(
+        project=project, schema=schema, node=node, environment=environment,
+        reference=reference, calls=calls, owned_probe=owned_probe,
+    )
 
 
-def test_direct_status_runs_bounded_node_and_isolated_schema_checks(installed_runtime):
+def _activate_server_environment(monkeypatch, world, *, overrides=None):
+    # Match the launch fixture exactly; ambient loader and task inputs must not
+    # change the validation context after launch.
+    values = {**world.environment, **world.reference, **(overrides or {})}
+    values = {name: str(value) for name, value in values.items()}
+    monkeypatch.setattr(os, "environ", values)
+    return values
+
+
+def test_status_uses_explicit_server_environment_and_launch_reference(installed_runtime, monkeypatch):
     world = installed_runtime
+    server = {**world.environment, **world.reference}
+    monkeypatch.setenv(runtime.REMOTION_PROJECT_DIR_ENV, "/ambient/foreign-remotion")
+    monkeypatch.setenv(runtime.NODE_EXECUTABLE_ENV, "/ambient/foreign-node")
+    monkeypatch.setenv(runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV, "/ambient/foreign-schema")
+
+    status = runtime.remotion_runtime_status(require_explicit_project=True, environment=server)
+
+    assert status.available, status.reason
+    assert status.project_dir == world.project
+    assert status.node_executable == world.node
+    assert status.remotion_cli == world.project / runtime.REMOTION_CLI_RELATIVE_PATH
+    assert status.node_version == "v20.19.4"
+    # Admission retains the three-probe launch proof and freshly checks Node.
+    assert len(world.calls) == 4
+
+
+@pytest.mark.parametrize("defect", ["node", "cli", "cli_escape", "package", "schema"])
+def test_bad_launch_binding_disables_remotion_before_render_but_keeps_plain_work(
+    installed_runtime, tmp_path, monkeypatch, defect,
+):
+    from astrid.core.execution.generic_host import GenericPackHost
+    from astrid.packs.rendering.actions.render.task_adapter import (
+        RenderExportRefused,
+        RenderExportTaskAdapter,
+    )
+    from tests.packs.rendering.test_render_export_task_adapter import _task
+    from tests.test_generic_host import _write_manifest
+
+    world = installed_runtime
+    overrides = {}
+    if defect == "node":
+        overrides[runtime.NODE_EXECUTABLE_ENV] = "relative-node"
+    elif defect == "cli":
+        (world.project / runtime.REMOTION_CLI_RELATIVE_PATH).unlink()
+    elif defect == "cli_escape":
+        cli = world.project / runtime.REMOTION_CLI_RELATIVE_PATH
+        outside = tmp_path / "foreign-cli.js"
+        outside.write_text("// foreign", encoding="utf-8")
+        cli.unlink()
+        cli.symlink_to(outside)
+    elif defect == "package":
+        (world.project / "node_modules/@banodoco/timeline-composition/package.json").unlink()
+    else:
+        overrides[runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV] = str(tmp_path / "foreign-schema")
+    _activate_server_environment(monkeypatch, world, overrides=overrides)
+
+    packs = tmp_path / "packs"
+    _write_manifest(packs / "plain", capability_id="test.plain")
+    manifest = _write_manifest(packs / "render", capability_id="test.render")
+    definition = json.loads(manifest.read_text(encoding="utf-8"))
+    definition["metadata"].update(adapter_family="cpu", requires_remotion=True)
+    manifest.write_text(json.dumps(definition), encoding="utf-8")
+    host = GenericPackHost(pack_roots=[packs])
+    host.discover()
+    host.preflight()
+
+    assert host.capabilities["test.plain"].ready
+    refused = host.capabilities["test.render"]
+    assert not refused.ready
+    reason = refused.preflight["remotion"]["reason"]
+    task = _task(root=tmp_path)
+    task.spec["timeline_snapshot"]["config"]["clips"] = [
+        {"id": "title", "at": 0, "track": "v", "clipType": "text-card", "hold": 1}
+    ]
+    with pytest.raises(RenderExportRefused) as caught:
+        RenderExportTaskAdapter().execute(task=task, staging_dir=tmp_path / "staging")
+    assert reason in str(caught.value)
+
+
+def test_windows_probe_environment_keeps_only_platform_safe_projection(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    source = {
+        "USERPROFILE": str(tmp_path), "SYSTEMROOT": r"C:\Windows",
+        "NODE_OPTIONS": "--require task-controlled.js", "PYTHONPATH": "/task-controlled",
+    }
+
+    projected = runtime._probe_environment(source)
+
+    assert projected["USERPROFILE"] == str(tmp_path)
+    assert projected["SYSTEMROOT"] == r"C:\Windows"
+    assert "NODE_OPTIONS" not in projected and "PYTHONPATH" not in projected
+
+
+def test_schema_admission_tolerates_windows_fstat_mode_divergence(installed_runtime, monkeypatch):
+    world = installed_runtime
+    original = os.fstat
+
+    def windows_fstat(fd):
+        facts = original(fd)
+        values = list(facts)
+        values[0] = facts.st_mode & 0o170000
+        return os.stat_result(values)
+
+    monkeypatch.setattr(os, "fstat", windows_fstat)
+    status = runtime.remotion_runtime_status(
+        require_explicit_project=True,
+        environment={**world.environment, **world.reference},
+    )
+
+    assert status.available, status.reason
+
+
+def test_unresolved_probe_custody_is_fatal_to_launch_and_host_preflight(
+    installed_runtime, tmp_path, monkeypatch,
+):
+    from astrid.core.execution import process_group
+    from astrid.core.execution.generic_host import GenericPackHost, HostError
+    from astrid.sdk import host_bootstrap
+    from tests.test_generic_host import _write_manifest
+
+    world = installed_runtime
+    _activate_server_environment(monkeypatch, world)
+    monkeypatch.setattr(runtime, "_owned_probe", world.owned_probe)
+    child = SimpleNamespace(pid=12345, returncode=None)
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("node", 5)
+
+    def cleanup_refusal(*_args, **_kwargs):
+        raise RuntimeError("simulated live child; cleanup unproved")
+
+    monkeypatch.setattr(process_group, "popen_owned_group", lambda *_a, **_k: child)
+    monkeypatch.setattr(child, "communicate", timeout, raising=False)
+    monkeypatch.setattr(process_group, "terminate_group", cleanup_refusal)
+    with pytest.raises(runtime.RemotionProbeCleanupError) as probe_error:
+        runtime._owned_probe([str(world.node), "--version"], cwd=world.project,
+                             env={"PATH": os.defpath, "HOME": str(tmp_path)}, timeout=5)
+    assert probe_error.value.process is child
+    assert probe_error.value.cleanup_error.args == ("simulated live child; cleanup unproved",)
+
+    with pytest.raises(host_bootstrap.PackHostBootstrapError, match="launch is blocked") as bootstrap:
+        host_bootstrap._verify_remotion_probe_custody({**world.environment, **world.reference})
+    assert bootstrap.value.__cause__ is probe_error.value
+
+    packs = tmp_path / "packs"
+    manifest = _write_manifest(packs / "render", capability_id="test.render")
+    definition = json.loads(manifest.read_text(encoding="utf-8"))
+    definition["metadata"].update(adapter_family="cpu", requires_remotion=True)
+    manifest.write_text(json.dumps(definition), encoding="utf-8")
+    host = GenericPackHost(pack_roots=[packs])
+    host.discover()
+    with pytest.raises(HostError, match="probe cleanup is unproved") as caught:
+        host.preflight()
+    assert caught.value.__cause__ is probe_error.value
+
+
+def test_direct_backend_validates_schema_before_registry_or_render(
+    installed_runtime, monkeypatch, tmp_path,
+):
+    world = installed_runtime
+    _activate_server_environment(
+        monkeypatch, world,
+        overrides={runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV: str(tmp_path / "foreign-schema")},
+    )
+    launched = []
+    monkeypatch.setattr(
+        remotion_run, "_regenerate_element_registries",
+        lambda *_args: launched.append("registry regeneration"),
+    )
+
+    with pytest.raises(FileNotFoundError, match="timeline schema"):
+        remotion_run.capture_remotion_frames(
+            tmp_path / "timeline.json", tmp_path / "assets.json", tmp_path / "frames", [0],
+            project_dir=world.project,
+        )
+    assert launched == []
+
+
+def test_direct_backend_accepts_launch_bound_schema_before_registry(
+    installed_runtime, monkeypatch, tmp_path,
+):
+    world = installed_runtime
+    _activate_server_environment(monkeypatch, world)
+
+    class ReachedRegistry(Exception):
+        pass
+
+    monkeypatch.setattr(
+        remotion_run, "_regenerate_element_registries",
+        lambda *_args: (_ for _ in ()).throw(ReachedRegistry()),
+    )
+    with pytest.raises(ReachedRegistry):
+        remotion_run.capture_remotion_frames(
+            tmp_path / "timeline.json", tmp_path / "assets.json", tmp_path / "frames", [0],
+            project_dir=world.project,
+        )
+
+
+@pytest.mark.parametrize("generated", ["missing", "stale"])
+def test_renderer_refuses_unsuccessful_registry_repair(tmp_path, monkeypatch, generated):
+    project = tmp_path / "remotion"
+    src = project / "node_modules/@banodoco/timeline-composition/typescript/src"
+    src.mkdir(parents=True)
+    state = {"hash": "current", "content_hashes": {
+        kind: "a" * 64 for kind in ("effects", "animations", "transitions")
+    }}
+    monkeypatch.setattr(remotion_run, "gen_effect_registry", object())
+    monkeypatch.setattr(remotion_run, "_effective_registry_state", lambda _theme: state)
+    if generated == "stale":
+        for path in remotion_run._registry_output_paths(project):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("// stale")
+
+    def generated_process(*args, **kwargs):
+        token = kwargs["env"][remotion_run.remotion_lock.REMOTION_LOCK_TOKEN_ENV]
+        receipt = remotion_run.remotion_lock.REMOTION_LOCK_RECEIPT_PREFIX + token + "\n"
+        return subprocess.CompletedProcess(args[0], 0, receipt, "")
+
+    monkeypatch.setattr(remotion_run.subprocess, "run", generated_process)
+    with remotion_run.remotion_lock.remotion_render_lock():
+        with pytest.raises(RuntimeError, match="missing or stale after regeneration"):
+            remotion_run._regenerate_element_registries_locked(project, None)
+    assert not (project / remotion_run._REGISTRY_STATE_PATH).exists()
+
+
+# Parent coverage retained during the Release-1 + Timeline merge.
+@pytest.fixture
+def parent_installed_runtime(installed_runtime, monkeypatch):
+    """Retain the former direct-consumer fixture view over the launch fixture.
+
+    The launch proof remains real. Its setup probes are distinct from the
+    direct consumer's bounded probes, which the retained assertions inspect.
+    """
+    world = SimpleNamespace(**vars(installed_runtime))
+    world.cli = world.project / runtime.REMOTION_CLI_RELATIVE_PATH
+    world.original_probe = world.owned_probe
+    _activate_server_environment(monkeypatch, world)
+    world.calls = []
+    original = runtime._owned_probe
+
+    def record(argv, **kwargs):
+        world.calls.append((argv, kwargs))
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(runtime, "_owned_probe", record)
+    return world
+
+
+def test_direct_status_runs_bounded_node_and_isolated_schema_checks(parent_installed_runtime):
+    world = parent_installed_runtime
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert status.available, status.reason
     assert (status.node_executable, status.remotion_cli, status.node_version) == (world.node, world.cli, "v20.19.4")
@@ -60,9 +302,8 @@ def test_direct_status_runs_bounded_node_and_isolated_schema_checks(installed_ru
     assert all(kwargs["timeout"] == 5 for _, kwargs in world.calls)
     assert not list(world.project.parent.rglob("remotion-validation-*.json"))
 
-
-def test_status_uses_explicit_server_environment(installed_runtime, monkeypatch):
-    world = installed_runtime
+def test_status_uses_explicit_server_environment(parent_installed_runtime, monkeypatch):
+    world = parent_installed_runtime
     server_env = {
         runtime.REMOTION_PROJECT_DIR_ENV: str(world.project),
         runtime.NODE_EXECUTABLE_ENV: str(world.node),
@@ -80,10 +321,9 @@ def test_status_uses_explicit_server_environment(installed_runtime, monkeypatch)
     assert status.node_executable == world.node
     assert world.calls[0][1]["env"]["PATH"] == os.defpath
 
-
 @pytest.mark.parametrize("configured", ["", "relative-node", "missing-node", "directory", "not-executable"])
-def test_bad_node_is_unavailable_with_reason(installed_runtime, monkeypatch, configured):
-    world = installed_runtime
+def test_bad_node_is_unavailable_with_reason(parent_installed_runtime, monkeypatch, configured):
+    world = parent_installed_runtime
     value = configured
     if configured == "missing-node":
         value = str(world.node.with_name("absent"))
@@ -98,24 +338,21 @@ def test_bad_node_is_unavailable_with_reason(installed_runtime, monkeypatch, con
     assert runtime.NODE_EXECUTABLE_ENV in status.reason
     assert not world.calls
 
-
 @pytest.mark.parametrize("version,code", [("v26.0.0", 0), ("not node", 0), ("v20.19.4", 1)])
-def test_wrong_node_is_unavailable(installed_runtime, monkeypatch, version, code):
+def test_wrong_node_is_unavailable(parent_installed_runtime, monkeypatch, version, code):
     monkeypatch.setattr(runtime, "_owned_probe", lambda argv, **kw: (subprocess.CompletedProcess(argv, code, version, "bad node"), {}))
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert not status.available and "Node" in status.reason
 
-
 @pytest.mark.parametrize("package", runtime._REQUIRED_PACKAGES)
-def test_each_required_package_is_checked(installed_runtime, package):
-    (installed_runtime.project / "node_modules/@banodoco" / package / "package.json").unlink()
+def test_each_required_package_is_checked(parent_installed_runtime, package):
+    (parent_installed_runtime.project / "node_modules/@banodoco" / package / "package.json").unlink()
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert not status.available and f"@banodoco/{package}" in status.reason
-    assert not installed_runtime.calls
+    assert not parent_installed_runtime.calls
 
-
-def test_cli_cannot_escape_server_project(installed_runtime, monkeypatch):
-    world = installed_runtime
+def test_cli_cannot_escape_server_project(parent_installed_runtime, monkeypatch):
+    world = parent_installed_runtime
     outside = world.project.parent / "foreign-cli.js"
     outside.write_text("// foreign")
     original = Path.resolve
@@ -125,9 +362,8 @@ def test_cli_cannot_escape_server_project(installed_runtime, monkeypatch):
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert not status.available and "CLI escapes" in status.reason
 
-
 @pytest.mark.parametrize("origin", ["relative/__init__.py", "/foreign/banodoco_timeline_schema/__init__.py"])
-def test_foreign_schema_origin_is_unavailable(installed_runtime, monkeypatch, origin):
+def test_foreign_schema_origin_is_unavailable(parent_installed_runtime, monkeypatch, origin):
     original = runtime._owned_probe
     def owned(argv, **kwargs):
         if argv[-1] == "--version":
@@ -137,11 +373,10 @@ def test_foreign_schema_origin_is_unavailable(installed_runtime, monkeypatch, or
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert not status.available and "origin escaped trusted root" in status.reason
 
-
 def test_filmstrip_backend_requires_schema_origin_before_registry_or_render(
-    installed_runtime, monkeypatch, tmp_path
+    parent_installed_runtime, monkeypatch, tmp_path
 ):
-    world = installed_runtime
+    world = parent_installed_runtime
     launched = []
 
     def owned(argv, **kwargs):
@@ -168,11 +403,10 @@ def test_filmstrip_backend_requires_schema_origin_before_registry_or_render(
         )
     assert launched == []
 
-
 def test_filmstrip_backend_accepts_good_schema_for_selected_server_project(
-    installed_runtime, monkeypatch, tmp_path
+    parent_installed_runtime, monkeypatch, tmp_path
 ):
-    world = installed_runtime
+    world = parent_installed_runtime
 
     class ReachedRegistry(Exception):
         pass
@@ -192,18 +426,16 @@ def test_filmstrip_backend_accepts_good_schema_for_selected_server_project(
             project_dir=world.project,
         )
 
-
 @pytest.mark.parametrize("failure", [OSError("unreadable runtime"), RuntimeError("probe cleanup unproved"), subprocess.TimeoutExpired("node", 5)])
-def test_probe_failure_returns_unavailable_instead_of_raising(installed_runtime, monkeypatch, failure):
+def test_probe_failure_returns_unavailable_instead_of_raising(parent_installed_runtime, monkeypatch, failure):
     def fail(*args, **kwargs):
         raise failure
     monkeypatch.setattr(runtime, "_owned_probe", fail)
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert not status.available and str(failure) in status.reason
 
-
 def test_real_owned_probe_cleanup_failure_is_fatal_through_host_preflight(
-    installed_runtime, monkeypatch, tmp_path
+    parent_installed_runtime, monkeypatch, tmp_path
 ):
     from astrid.core.execution import process_group
     from astrid.core.execution.generic_host import GenericPackHost, HostError
@@ -222,7 +454,7 @@ def test_real_owned_probe_cleanup_failure_is_fatal_through_host_preflight(
     monkeypatch.setattr(process_group, "popen_owned_group", lambda *_args, **_kwargs: child)
     monkeypatch.setattr(child, "communicate", timed_out, raising=False)
     monkeypatch.setattr(process_group, "terminate_group", failed_cleanup)
-    monkeypatch.setattr(runtime, "_owned_probe", installed_runtime.original_probe)
+    monkeypatch.setattr(runtime, "_owned_probe", parent_installed_runtime.original_probe)
     render_root = tmp_path / "render"
     _write_manifest(render_root, capability_id="test.render")
     manifest = render_root / "executor.yaml"
@@ -236,9 +468,9 @@ def test_real_owned_probe_cleanup_failure_is_fatal_through_host_preflight(
     assert probe_error.value.process is child
     with pytest.raises(host_bootstrap.PackHostBootstrapError, match="pack host launch is blocked"):
         host_bootstrap._verify_remotion_probe_custody({
-            runtime.REMOTION_PROJECT_DIR_ENV: str(installed_runtime.project),
-            runtime.NODE_EXECUTABLE_ENV: str(installed_runtime.node),
-            runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV: str(installed_runtime.schema),
+            runtime.REMOTION_PROJECT_DIR_ENV: str(parent_installed_runtime.project),
+            runtime.NODE_EXECUTABLE_ENV: str(parent_installed_runtime.node),
+            runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV: str(parent_installed_runtime.schema),
         })
     original_status = runtime.remotion_runtime_status
     monkeypatch.setattr(
@@ -256,8 +488,7 @@ def test_real_owned_probe_cleanup_failure_is_fatal_through_host_preflight(
         original_status(require_explicit_project=True)
     assert repeated.value.process is child
 
-
-def test_schema_probe_preserves_real_owned_cleanup_failure(installed_runtime, monkeypatch):
+def test_schema_probe_preserves_real_owned_cleanup_failure(parent_installed_runtime, monkeypatch):
     from astrid.core.execution import process_group
 
     monkeypatch.setattr(runtime, "_UNRESOLVED_PROBE_CUSTODY", [], raising=False)
@@ -270,15 +501,14 @@ def test_schema_probe_preserves_real_owned_cleanup_failure(installed_runtime, mo
     monkeypatch.setattr(
         process_group, "terminate_group", lambda *_args, **_kwargs: (_ for _ in ()).throw(cleanup)
     )
-    monkeypatch.setattr(runtime, "_owned_probe", installed_runtime.original_probe)
+    monkeypatch.setattr(runtime, "_owned_probe", parent_installed_runtime.original_probe)
 
     with pytest.raises(runtime.RemotionProbeCleanupError, match="cleanup is unproved") as caught:
-        runtime._probe_schema(installed_runtime.schema)
+        runtime._probe_schema(parent_installed_runtime.schema)
     assert caught.value.process is child
     assert caught.value.cleanup_error is cleanup
 
-
-def test_real_owned_probe_timeout_with_verified_cleanup_degrades(installed_runtime, monkeypatch):
+def test_real_owned_probe_timeout_with_verified_cleanup_degrades(parent_installed_runtime, monkeypatch):
     from astrid.core.execution import process_group
 
     monkeypatch.setattr(runtime, "_UNRESOLVED_PROBE_CUSTODY", [])
@@ -290,7 +520,7 @@ def test_real_owned_probe_timeout_with_verified_cleanup_degrades(installed_runti
     monkeypatch.setattr(process_group, "terminate_group", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(child, "wait", lambda **_kwargs: setattr(child, "returncode", 0), raising=False)
     monkeypatch.setattr(process_group, "verify_tree_absent", lambda _child: None)
-    monkeypatch.setattr(runtime, "_owned_probe", installed_runtime.original_probe)
+    monkeypatch.setattr(runtime, "_owned_probe", parent_installed_runtime.original_probe)
 
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert not status.available
@@ -298,24 +528,22 @@ def test_real_owned_probe_timeout_with_verified_cleanup_degrades(installed_runti
     assert "timed out" in status.reason
     assert not runtime._UNRESOLVED_PROBE_CUSTODY
 
-
-def test_missing_home_preserves_windows_probe_environment(installed_runtime, monkeypatch):
+def test_missing_home_preserves_windows_probe_environment(parent_installed_runtime, monkeypatch):
     monkeypatch.delenv("HOME", raising=False)
-    monkeypatch.setenv("USERPROFILE", str(installed_runtime.project.parent))
+    monkeypatch.setenv("USERPROFILE", str(parent_installed_runtime.project.parent))
     monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
     monkeypatch.setenv("NODE_OPTIONS", "--require task-controlled.js")
     monkeypatch.setenv("PYTHONPATH", "/task-controlled")
     monkeypatch.setattr(runtime.sys, "platform", "win32")
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert status.available, status.reason
-    for _, kwargs in installed_runtime.calls:
+    for _, kwargs in parent_installed_runtime.calls:
         assert "HOME" not in kwargs["env"]
-        assert kwargs["env"]["USERPROFILE"] == str(installed_runtime.project.parent)
+        assert kwargs["env"]["USERPROFILE"] == str(parent_installed_runtime.project.parent)
         assert kwargs["env"]["SYSTEMROOT"] == r"C:\Windows"
         assert "NODE_OPTIONS" not in kwargs["env"] and "PYTHONPATH" not in kwargs["env"]
 
-
-def test_windows_stat_fstat_mode_divergence_cannot_block_status(installed_runtime, monkeypatch):
+def test_windows_stat_fstat_mode_divergence_cannot_block_status(parent_installed_runtime, monkeypatch):
     original = os.fstat
     def windows_fstat(fd):
         facts = original(fd)
@@ -327,15 +555,13 @@ def test_windows_stat_fstat_mode_divergence_cannot_block_status(installed_runtim
     status = runtime.remotion_runtime_status(require_explicit_project=True)
     assert status.available, status.reason
 
-
-def test_worker_environment_keeps_server_owned_render_paths(installed_runtime):
-    world = installed_runtime
+def test_worker_environment_keeps_server_owned_render_paths(parent_installed_runtime):
+    world = parent_installed_runtime
     server = {runtime.NODE_EXECUTABLE_ENV: str(world.node),
               runtime.REMOTION_PROJECT_DIR_ENV: str(world.project),
               runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV: str(world.schema)}
     child = build_child_subprocess_env(base={}, parent=server, explicit_env={key: "/task-controlled" for key in server})
     assert all(child[key] == value for key, value in server.items())
-
 
 def test_real_isolated_schema_probe_uses_configured_origin(tmp_path):
     import banodoco_timeline_schema
@@ -348,10 +574,9 @@ def test_real_isolated_schema_probe_uses_configured_origin(tmp_path):
     assert result.returncode == 0, result.stderr
     assert Path(result.stdout.strip()).is_relative_to(root / "banodoco_timeline_schema")
 
-
 @pytest.mark.parametrize("defect", ["node", "cli", "package", "schema_origin"])
 def test_bad_runtime_refuses_render_with_preflight_reason_and_host_keeps_other_work(
-    installed_runtime, tmp_path, monkeypatch, defect,
+    parent_installed_runtime, tmp_path, monkeypatch, defect,
 ):
     import json
 
@@ -363,7 +588,7 @@ def test_bad_runtime_refuses_render_with_preflight_reason_and_host_keeps_other_w
     from tests.packs.rendering.test_render_export_task_adapter import _task
     from tests.test_generic_host import _write_manifest
 
-    world = installed_runtime
+    world = parent_installed_runtime
     if defect == "node":
         monkeypatch.setenv(runtime.NODE_EXECUTABLE_ENV, "relative-node")
     elif defect == "cli":
@@ -397,31 +622,6 @@ def test_bad_runtime_refuses_render_with_preflight_reason_and_host_keeps_other_w
     with pytest.raises(RenderExportRefused) as caught:
         RenderExportTaskAdapter().execute(task=task, staging_dir=tmp_path / "staging")
     assert reason in str(caught.value)
-
-
-@pytest.mark.parametrize("generated", ["missing", "stale"])
-def test_renderer_refuses_unsuccessful_registry_repair(tmp_path, monkeypatch, generated):
-    from astrid.packs.rendering.rendering.renderers.remotion import run
-    project = tmp_path / "remotion"
-    src = project / "node_modules/@banodoco/timeline-composition/typescript/src"
-    src.mkdir(parents=True)
-    state = {"hash": "current", "content_hashes": {kind: "a" * 64 for kind in ("effects", "animations", "transitions")}}
-    monkeypatch.setattr(run, "gen_effect_registry", object())
-    monkeypatch.setattr(run, "_effective_registry_state", lambda _theme: state)
-    if generated == "stale":
-        for path in run._registry_output_paths(project):
-            path.write_text("// stale")
-    def generated(*args, **kwargs):
-        token = kwargs["env"][run.remotion_lock.REMOTION_LOCK_TOKEN_ENV]
-        receipt = run.remotion_lock.REMOTION_LOCK_RECEIPT_PREFIX + token + "\n"
-        return subprocess.CompletedProcess(args[0], 0, receipt, "")
-
-    monkeypatch.setattr(run.subprocess, "run", generated)
-    with run.remotion_lock.remotion_render_lock():
-        with pytest.raises(RuntimeError, match="missing or stale after regeneration"):
-            run._regenerate_element_registries_locked(project, None)
-    assert not (project / run._REGISTRY_STATE_PATH).exists()
-
 
 def test_installed_bundle_refuses_stale_provisioned_registry(tmp_path, monkeypatch):
     from astrid.packs.rendering.rendering.renderers.remotion import run

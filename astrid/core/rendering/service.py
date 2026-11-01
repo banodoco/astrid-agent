@@ -77,6 +77,7 @@ from .replay import (
     write_replay_bundle,
 )
 from .transport import CommandTransport
+from .window_inputs import materialize_window_input
 
 _QUALIFIED_ID_RE = re.compile(
     r"^[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+$"
@@ -349,6 +350,12 @@ class RenderService:
                 if isinstance(request, RenderRequest)
                 else RenderRequest.from_dict(request)
             )
+            from .verified_source import inherited_source
+
+            if parsed.verified_source != inherited_source(parsed.timeline_path, parsed.assets_registry_path):
+                raise ValueError("verified source authority is unavailable or replaced")
+            if parsed.verified_source is not None:
+                parsed.verified_source.validate(parsed.timeline_path, parsed.assets_registry_path)
             self._validate_output_name(parsed)
             localized = self._absolute_input_paths(parsed)
             # Keep the caller's absolute-but-unresolved spellings for the
@@ -1060,56 +1067,22 @@ class RenderService:
     ) -> tuple[RenderRequest, dict[str, str]]:
         """Adapt a planned window for full-timeline-only renderers.
 
-        Unlayered window-aware renderers receive the canonical ``window``
-        field unchanged. LayerRef track isolation and alpha stamps remain
-        host-owned, so layered segments are always materialized. A renderer that explicitly declares
+        Window-aware renderers retain the canonical ``window`` and clip clocks.
+        LayerRef track isolation and alpha stamps remain host-owned. A renderer
+        that explicitly declares
         ``supports_windows: false`` receives an invocation-private sliced
         timeline and a null window, preserving the behavior of Astrid's
         existing full-timeline backends without teaching the service any
         concrete backend identities.
         """
 
-        if segment.layer is None and candidate.manifest.capabilities.get("supports_windows") is not False:
-            return request, {}
-        timeline_path = Path(request.timeline_path)
-        try:
-            timeline_data = json.loads(timeline_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise_protocol_error(
-                backend=candidate.id,
-                message=f"cannot materialize planned timeline window: {exc}",
-                recovery_command="repair the timeline JSON and retry the planned render",
-                details={"timeline_path": str(timeline_path)},
-            )
-        if not isinstance(timeline_data, Mapping):
-            raise_protocol_error(
-                backend=candidate.id,
-                message="cannot materialize a window from a non-object timeline",
-                recovery_command="write the timeline as a JSON object and retry",
-                details={"timeline_path": str(timeline_path)},
-            )
-        materialized = self._window_timeline(
-            timeline_data,
-            segment.window,
-            tracks=segment.layer.tracks if segment.layer is not None else None,
-        )
-        if segment.layer is not None:
-            # Stamp the layer hint into the materialized timeline's metadata so
-            # the owning renderer knows it is rendering one z-layer: z > 0 must
-            # emit transparent output (batch 4 consumes the stamp).  Merge into
-            # the copied metadata dict; never clobber existing keys.
-            materialized.setdefault("metadata", {})
-            materialized["metadata"]["astrid_layer"] = {
-                "z": segment.layer.z,
-                "alpha": segment.layer.z > 0,
-            }
-        materialized_path = (
-            workspace / "segment-inputs" / f"{index:04d}-timeline.json"
-        )
-        write_json_atomic(materialized_path, materialized)
-        return (
-            replace(request, timeline_path=str(materialized_path), window=None),
-            {"materialized_timeline": sha256_file(materialized_path)},
+        return materialize_window_input(
+            request,
+            candidate=candidate,
+            segment=segment,
+            index=index,
+            workspace=workspace,
+            slice_timeline=self._window_timeline,
         )
 
     @classmethod
@@ -1185,6 +1158,23 @@ class RenderService:
             return None
 
         result = dict(clip)
+        # The slice rewrites at/from/to, so a fade would restart at the cut.
+        # Record the original source phase (host-owned; overwrites any
+        # authored value) for the audio envelope to translate against.
+        params = clip.get("params")
+        app = clip.get("app")
+        if isinstance(app, Mapping) and "astrid_slice_origin" in app:
+            result["app"] = {k: v for k, v in app.items() if k != "astrid_slice_origin"}
+        if isinstance(params, Mapping) and (params.get("fadeIn") or params.get("fadeOut")):
+            result["app"] = {
+                **(result["app"] if isinstance(result.get("app"), Mapping) else {}),
+                "astrid_slice_origin": {
+                    "id": clip.get("id"),
+                    "at": clip.get("at", 0),
+                    "from": clip.get("from", 0),
+                    "to": clip.get("to"),
+                },
+            }
         result["at"] = float(visible_start - start)
         result["id"] = (
             f"{clip.get('id', 'clip')}_{window.start_frame}_{window.end_frame}"

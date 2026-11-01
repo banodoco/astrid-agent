@@ -1,0 +1,209 @@
+{
+  "base_fixture": "recipe_m2_clip_trim.json",
+  "cases": [
+    {
+      "id": "app-just-below-raw-end",
+      "duration": 9.9999999,
+      "args": {"in_s": 0, "out_s": 9.99999989},
+      "applied": {"from": 0.0, "to": 9.999999, "hold": 9.999999}
+    },
+    {
+      "id": "exact-raw-end",
+      "duration": 9.9999999,
+      "args": {"in_s": 0, "out_s": 9.9999999},
+      "applied": {"from": 0.0, "to": 9.999999, "hold": 9.999999}
+    },
+    {
+      "id": "rounded-end-is-not-a-valid-request",
+      "duration": 9.9999999,
+      "args": {"in_s": 0, "out_s": 10},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "one-binary-step-past-end",
+      "duration": 9.9999999,
+      "args": {"in_s": 0, "out_s": 9.999999900000002},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "interior-end-with-rounded-in",
+      "duration": 9.9999999,
+      "args": {"in_s": 1.0000004, "out_s": 9.99999989},
+      "applied": {"from": 1.0, "to": 9.999999, "hold": 8.999999}
+    },
+    {
+      "id": "hold-follows-applied-endpoints",
+      "duration": 10,
+      "args": {"in_s": 1.0000006, "out_s": 3.0000004},
+      "applied": {"from": 1.000001, "to": 3.0, "hold": 1.999999}
+    },
+    {
+      "id": "exact-six-decimal-end",
+      "duration": 9.999999,
+      "args": {"in_s": 0, "out_s": 9.999999},
+      "applied": {"from": 0.0, "to": 9.999999, "hold": 9.999999}
+    },
+    {
+      "id": "nearest-end-already-interior",
+      "duration": 9.9999994,
+      "args": {"in_s": 0, "out_s": 9.9999994},
+      "applied": {"from": 0.0, "to": 9.999999, "hold": 9.999999}
+    },
+    {
+      "id": "binary-multiplication-floor-trap",
+      "duration": 1.0485929999999999,
+      "args": {"in_s": 0, "out_s": 1.0485929999999999},
+      "applied": {"from": 0.0, "to": 1.048592, "hold": 1.048592}
+    },
+    {
+      "id": "binary-nearest-rounds-above-decimal-tie",
+      "duration": 10,
+      "args": {"in_s": 0, "out_s": 1.0000005},
+      "applied": {"from": 0.0, "to": 1.000001, "hold": 1.000001}
+    },
+    {
+      "id": "binary-nearest-rounds-below-decimal-tie",
+      "duration": 10,
+      "args": {"in_s": 0, "out_s": 1.0000015},
+      "applied": {"from": 0.0, "to": 1.000001, "hold": 1.000001}
+    },
+    {
+      "id": "exact-binary-tie-to-even-down",
+      "duration": 10,
+      "args": {"in_s": 0, "out_s": 0.0078125},
+      "applied": {"from": 0.0, "to": 0.007812, "hold": 0.007812}
+    },
+    {
+      "id": "exact-binary-tie-to-even-up",
+      "duration": 10,
+      "args": {"in_s": 0, "out_s": 0.0234375},
+      "applied": {"from": 0.0, "to": 0.023438, "hold": 0.023438}
+    },
+    {
+      "id": "interior-adjustment-collapses-window",
+      "duration": 9.9999999,
+      "args": {"in_s": 9.9999994, "out_s": 9.9999999},
+      "error": "collapses at authored precision"
+    },
+    {
+      "id": "positive-subprecision-window",
+      "duration": 10,
+      "args": {"in_s": 0, "out_s": 0.0000001},
+      "error": "collapses at authored precision"
+    },
+    {
+      "id": "file-has-no-positive-six-decimal-end",
+      "duration": 0.0000009,
+      "args": {"in_s": 0, "out_s": 0.0000009},
+      "error": "collapses at authored precision"
+    },
+    {
+      "id": "smallest-positive-authored-window",
+      "duration": 0.0000011,
+      "args": {"in_s": 0, "out_s": 0.0000011},
+      "applied": {"from": 0.0, "to": 0.000001, "hold": 0.000001}
+    },
+    {
+      "id": "reviewer-huge-integer-exact-end",
+      "duration": 9007199254740995,
+      "args": {"in_s": 0, "out_s": 9007199254740995},
+      "applied": {"from": 0.0, "to": 9007199254740994.0, "hold": 9007199254740994.0}
+    },
+    {
+      "id": "huge-integer-just-below-end",
+      "duration": 9007199254740995,
+      "args": {"in_s": 0, "out_s": 9007199254740994},
+      "applied": {"from": 0.0, "to": 9007199254740994.0, "hold": 9007199254740994.0}
+    },
+    {
+      "id": "huge-integer-positive-interior-interval",
+      "duration": 9007199254740995,
+      "args": {"in_s": 9007199254740992, "out_s": 9007199254740995},
+      "applied": {"from": 9007199254740992.0, "to": 9007199254740994.0, "hold": 2.0}
+    },
+    {
+      "id": "huge-integer-overrange-one",
+      "duration": 9007199254740995,
+      "args": {"in_s": 0, "out_s": 9007199254740996},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "huge-integer-overrange-float",
+      "duration": 9007199254740995,
+      "args": {"in_s": 0, "out_s": 9007199254740996.0},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "huge-integer-interior-adjustment-collapse",
+      "duration": 9007199254740995,
+      "args": {"in_s": 9007199254740994, "out_s": 9007199254740995},
+      "error": "collapses at authored precision"
+    },
+    {
+      "id": "huge-integer-next-upward-tie",
+      "duration": 9007199254740997,
+      "args": {"in_s": 0, "out_s": 9007199254740997},
+      "applied": {"from": 0.0, "to": 9007199254740996.0, "hold": 9007199254740996.0}
+    },
+    {
+      "id": "integer-below-binary64-exact-range",
+      "duration": 9007199254740991,
+      "args": {"in_s": 0, "out_s": 9007199254740991},
+      "applied": {"from": 0.0, "to": 9007199254740991.0, "hold": 9007199254740991.0}
+    },
+    {
+      "id": "integer-at-binary64-exact-range",
+      "duration": 9007199254740992,
+      "args": {"in_s": 0, "out_s": 9007199254740992},
+      "applied": {"from": 0.0, "to": 9007199254740992.0, "hold": 9007199254740992.0}
+    },
+    {
+      "id": "integer-first-downward-tie",
+      "duration": 9007199254740993,
+      "args": {"in_s": 0, "out_s": 9007199254740993},
+      "applied": {"from": 0.0, "to": 9007199254740992.0, "hold": 9007199254740992.0}
+    },
+    {
+      "id": "integer-overrange-rounds-down-to-bound",
+      "duration": 9007199254740992,
+      "args": {"in_s": 0, "out_s": 9007199254740993},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "float-bound-integer-overrange-rounds-down",
+      "duration": 9007199254740992.0,
+      "args": {"in_s": 0, "out_s": 9007199254740993},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "float-bound-rounded-request-is-exact-end",
+      "duration": 9007199254740992.0,
+      "args": {"in_s": 0, "out_s": 9007199254740992.0},
+      "applied": {"from": 0.0, "to": 9007199254740992.0, "hold": 9007199254740992.0}
+    },
+    {
+      "id": "integer-downward-bound-overrange",
+      "duration": 9007199254740993,
+      "args": {"in_s": 0, "out_s": 9007199254740994},
+      "error": "must fit inside the file"
+    },
+    {
+      "id": "float-upward-bound-exact-end",
+      "duration": 9007199254740996.0,
+      "args": {"in_s": 0, "out_s": 9007199254740996.0},
+      "applied": {"from": 0.0, "to": 9007199254740996.0, "hold": 9007199254740996.0}
+    },
+    {
+      "id": "float-upward-bound-integer-interior-request",
+      "duration": 9007199254740996.0,
+      "args": {"in_s": 0, "out_s": 9007199254740995},
+      "applied": {"from": 0.0, "to": 9007199254740996.0, "hold": 9007199254740996.0}
+    },
+    {
+      "id": "float-bound-integer-overrange-rounds-to-bound",
+      "duration": 9007199254740996.0,
+      "args": {"in_s": 0, "out_s": 9007199254740997},
+      "error": "must fit inside the file"
+    }
+  ]
+}

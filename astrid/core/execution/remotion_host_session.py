@@ -25,6 +25,11 @@ from .warm_hold import WarmHolds, idle_seconds
 
 _LIMIT = 8 * 1024 * 1024
 _client = None
+# Environment a render request may carry. Each key is checked in _validate_request;
+# the project itself is already the host-fixed projectDir and is not repeated here.
+_ADMITTED_RENDER_ENVIRONMENT = frozenset({
+    "TMPDIR", "TMP", "TEMP", "ASTRID_TIMELINE_COMPOSITION_SRC", "PYTHONPATH",
+})
 
 
 def frame_owner_idle_seconds(environment: Mapping[str, str] | None = None, *,
@@ -275,8 +280,7 @@ class HostRemotionSession:
         environment = request.get("environment")
         if not isinstance(environment, dict) or any(not isinstance(v, str) for v in environment.values()):
             raise ValueError("renderer request environment is invalid")
-        allowed = {"TMPDIR", "TMP", "TEMP", "ASTRID_TIMELINE_COMPOSITION_SRC", "PYTHONPATH"}
-        if set(environment) - allowed:
+        if set(environment) - _ADMITTED_RENDER_ENVIRONMENT:
             raise ValueError("renderer request environment is outside admitted projection")
         for key in ("TMPDIR", "TMP", "TEMP"):
             if key in environment:

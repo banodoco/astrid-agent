@@ -178,11 +178,7 @@ def _validate_install() -> None:
         for field in ("version", "resolved", "integrity"):
             if field in metadata and metadata.get(field) != expected_packages[package_name].get(field):
                 raise RuntimeError(f"installed lock mismatch for {package_name}: {field}")
-    for package_name in (
-        "@banodoco/timeline-composition",
-        "@banodoco/timeline-schema",
-        "@banodoco/timeline-theme-2rp",
-    ):
+    for package_name in ("@banodoco/timeline-composition",):
         package_dir = REMOTION_ROOT / "node_modules" / "@banodoco" / package_name.removeprefix("@banodoco/")
         if not package_dir.is_dir():
             raise RuntimeError(f"required Remotion package is missing: {package_dir}")

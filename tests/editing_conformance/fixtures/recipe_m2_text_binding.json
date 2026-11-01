@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "op": "text-binding.set",
+  "version": "1",
+  "select": "occurrence:occ-1",
+  "args": {
+    "binding": {
+      "kind": "voiceover_script",
+      "slot": null
+    },
+    "text": {
+      "object_id": "sha256:c57d7e92019708b614c90fa3685cd644f543a60153fb99ec9b67c381a245fb2a",
+      "digest": "sha256:c57d7e92019708b614c90fa3685cd644f543a60153fb99ec9b67c381a245fb2a",
+      "size": 5,
+      "media_type": "text/plain; charset=utf-8"
+    }
+  },
+  "intent": {
+    "ownership": "occurrence"
+  }
+}

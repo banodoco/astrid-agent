@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "merge_head": "886a3183bd4a4a44f0a2c08fabec4e8edcbf7b55",
+  "conflicts": [
+    {
+      "path": "astrid/chat/astrid-local-agents.test.ts",
+      "resolution": "Retained the complete upstream setup-step and recovery test family; ours contributed no semantic bytes beyond the stale EOF overlap.",
+      "predicate_check": "Upstream file hash equals final file hash."
+    },
+    {
+      "path": "astrid/chat/service.mjs",
+      "resolution": "Regenerated from composed service.ts and dependencies; no hand merge.",
+      "predicate_check": "build:chat and check:chat-bundle both pass."
+    },
+    {
+      "path": "astrid/installer/backend.py",
+      "resolution": "Retained upstream command-shim hint behavior and the existing local schema verification; removed only the EOF whitespace overlap.",
+      "predicate_check": "Changed installer test lane passes."
+    },
+    {
+      "path": "docs/install/OMP-LANDING.md",
+      "resolution": "Retained the upstream 18.12.6 release/push/recipe procedure and ledger. Preserved the older local qualification only as an explicitly historical 17.4.0 local-installer statement, with no claim about GitHub, deployment, or 18.12.6 qualification.",
+      "predicate_check": "Documentation contains both the current upstream procedure and scoped historical qualification statement."
+    },
+    {
+      "path": "tests/test_installer_omp_source.py",
+      "resolution": "Retained the complete upstream recipe-refresh tests; ours contributed no semantic bytes beyond the stale EOF overlap.",
+      "predicate_check": "Targeted installer tests pass."
+    },
+    {
+      "path": "tests/test_installer_platforms.py",
+      "resolution": "Retained both live assertions: the existing rendered-service assertion and upstream's parsed-xml assertion.",
+      "predicate_check": "Targeted installer tests pass."
+    }
+  ],
+  "non_conflict_composition": {
+    "doctor_import_relocation": "Preserved in astrid/core/gateway/dispatch.py.",
+    "skills_route": "Preserved _dispatch_skills and the top-level skills route from upstream.",
+    "generated_artifact": "service.mjs was rebuilt after source composition."
+  }
+}

@@ -8,9 +8,9 @@ from typing import Any
 from astrid.sdk import timeline_intent as intent
 from astrid.sdk.media_transcript import (
     NARRATION_SOURCE,
+    _read_transcript_result,
+    _write_transcript_result,
     build_transcript,
-    read_transcript,
-    write_transcript,
 )
 
 _SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -91,11 +91,17 @@ def sync_narration_transcripts(tl: Any, client: Any, project: str, *, dry_run: b
             media_id, content = item["media_id"], item["content"]
             try:
                 if dry_run:
-                    current = read_transcript(client, project, media_id, NARRATION_SOURCE)
+                    current, pin = _read_transcript_result(client, project, media_id, NARRATION_SOURCE)
                     row["status"] = "unchanged" if current and current.get("content") == content else (
                         "would update" if current else "would create")
+                    if pin is not None:
+                        row["pin"] = pin
                 else:
-                    row["status"] = write_transcript(client, project, media_id, NARRATION_SOURCE, content)
+                    row["status"], pin = _write_transcript_result(
+                        client, project, media_id, NARRATION_SOURCE, content,
+                    )
+                    if pin is not None:
+                        row["pin"] = pin
             except Exception as exc:  # noqa: BLE001 - containment: a document failure must never undo a published timeline
                 row["status"], row["reason"] = "skipped", str(exc)
         report.append(row)
