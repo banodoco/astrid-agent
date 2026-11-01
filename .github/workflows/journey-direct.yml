@@ -6,11 +6,9 @@ name: Release-1 direct lifecycle receipts
   push:
     branches:
     - lane/M-QUAL/direct-journey
-    paths:
-    - .github/workflows/journey-direct.yml
-    - scripts/journey_version_jumps.py
+    - venue/**
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: journey-direct-${{ github.ref }}
   cancel-in-progress: false
@@ -107,10 +105,12 @@ jobs:
         printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
         python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
     - name: Run authentic direct release-0 to release-1 lifecycle
+      id: lifecycle
       env:
         ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
       run: |
         $runRoot = Join-Path $env:RUNNER_TEMP "astrid-r1-${{ matrix.job_id }}"
+        Start-Transcript -Path (Join-Path $env:RUNNER_TEMP "journey-${{ matrix.job_id }}.log")
         python -u agent/scripts/ci_journey.py `
           --job-id '${{ matrix.job_id }}' --mode direct --leg release0-to-release1 `
           --candidate "$env:RUNNER_TEMP/candidate.json" `
@@ -118,7 +118,10 @@ jobs:
           --candidate-runtime-checkout "$pwd/runtime" --pinokio-checkout "$pwd/pinokio" `
           --run-root $runRoot --root (Join-Path $runRoot program) --data-root (Join-Path $runRoot data) `
           --shell '${{ matrix.shell }}' --release0-fixture "$pwd/agent/tests/fixtures/release0" --allow-release0-to-release1
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $driverExit = $LASTEXITCODE
+        Stop-Transcript
+        "$driverExit" | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP "journey-${{ matrix.job_id }}-exit.txt")
+        if ($driverExit -ne 0) { exit $driverExit }
     - name: Bind driver identity and enforce compact evidence size
       if: always()
       id: evidence
@@ -150,6 +153,7 @@ jobs:
         "oversize=false" >> $env:GITHUB_OUTPUT
         if ($actual -ne $env:DRIVER_SHA) { throw "Driver checkout does not match workflow SHA" }
     - name: Retain the matrix receipt even after a lifecycle failure
+      id: receipt
       if: always() && steps.evidence.outputs.oversize != 'true'
       uses: actions/upload-artifact@v4
       with:
@@ -157,6 +161,7 @@ jobs:
         path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/
         if-no-files-found: error
     - name: Retain receipt and size diagnostic if evidence is oversized
+      id: oversize_receipt
       if: always() && steps.evidence.outputs.oversize == 'true'
       uses: actions/upload-artifact@v4
       with:
@@ -166,3 +171,115 @@ jobs:
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/driver-identity.json
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/artifact-size.txt
         if-no-files-found: error
+    - name: Record git venue row metadata
+      if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/venue/')
+      env:
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_HEAD: ${{ github.sha }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        WORKFLOW_SHA: ${{ github.workflow_sha }}
+        LIFECYCLE_OUTCOME: ${{ steps.lifecycle.outcome }}
+        EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+        OVERSIZE: ${{ steps.evidence.outputs.oversize }}
+        RECEIPT_OUTCOME: ${{ steps.receipt.outcome }}
+        RECEIPT_ID: ${{ steps.receipt.outputs.artifact-id }}
+        RECEIPT_DIGEST: ${{ steps.receipt.outputs.artifact-digest }}
+        OVERSIZE_OUTCOME: ${{ steps.oversize_receipt.outcome }}
+        OVERSIZE_ID: ${{ steps.oversize_receipt.outputs.artifact-id }}
+        OVERSIZE_DIGEST: ${{ steps.oversize_receipt.outputs.artifact-digest }}
+        ROW_STATUS: ${{ job.status }}
+      run: |
+        $dest = Join-Path $env:RUNNER_TEMP "venue-row-${{ matrix.job_id }}"
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $exitPath = Join-Path $env:RUNNER_TEMP "journey-${{ matrix.job_id }}-exit.txt"
+        $logPath = Join-Path $env:RUNNER_TEMP "journey-${{ matrix.job_id }}.log"
+        if (Test-Path $logPath) { Copy-Item $logPath (Join-Path $dest 'lifecycle.log') }
+        $exitCode = if (Test-Path $exitPath) { [int](Get-Content $exitPath -Raw).Trim() } else { $null }
+        $effective = @{}
+        foreach ($item in @(@('driver','agent'),@('app','app'),@('agent','candidate-agent'),@('runtime','runtime'),@('pinokio','pinokio'))) {
+          $effective[$item[0]] = if (Test-Path (Join-Path $item[1] '.git')) { (git -C $item[1] rev-parse HEAD) } else { $null }
+        }
+        $row = @{ repository=$env:GITHUB_REPOSITORY; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT;
+          source_ref=$env:SOURCE_REF; source_head=$env:SOURCE_HEAD; workflow_ref=$env:WORKFLOW_REF; workflow_sha=$env:WORKFLOW_SHA;
+          job_id='${{ matrix.job_id }}'; actions_job=$env:GITHUB_JOB; runner='${{ matrix.runner }}'; mode='${{ matrix.mode }}'; leg='${{ matrix.leg }}'; shell='${{ matrix.shell }}';
+          effective=$effective; inner_exit_code=$exitCode; lifecycle_outcome=$env:LIFECYCLE_OUTCOME; evidence_outcome=$env:EVIDENCE_OUTCOME;
+          oversize=$env:OVERSIZE; receipt_outcome=$env:RECEIPT_OUTCOME; artifact_id=$env:RECEIPT_ID; artifact_digest=$env:RECEIPT_DIGEST;
+          oversize_outcome=$env:OVERSIZE_OUTCOME; oversize_artifact_id=$env:OVERSIZE_ID; oversize_artifact_digest=$env:OVERSIZE_DIGEST; job_status_at_collection=$env:ROW_STATUS }
+        $row | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $dest 'row.json')
+    - name: Retain git venue row metadata
+      if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/venue/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: venue-row-${{ matrix.job_id }}
+        path: ${{ runner.temp }}/venue-row-${{ matrix.job_id }}/
+        if-no-files-found: error
+  publish-venue:
+    if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/venue/')
+    needs: direct-receipts
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Download available row evidence
+      id: download
+      uses: actions/download-artifact@v4
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/venue-evidence/artifacts
+    - name: Check out source for authenticated result publication
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        path: venue-publish
+        persist-credentials: true
+    - name: Publish collected rows through git
+      env:
+        SOURCE_REF: ${{ github.ref }}
+        SOURCE_HEAD: ${{ github.sha }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        WORKFLOW_SHA: ${{ github.workflow_sha }}
+        MATRIX_RESULT: ${{ needs.direct-receipts.result }}
+        DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "$SOURCE_REF" in refs/heads/venue/*) result_ref="refs/heads/venue-results/${SOURCE_REF#refs/heads/venue/}" ;; *) exit 1 ;; esac
+        git check-ref-format "$result_ref"
+        export EVIDENCE_DIR="$RUNNER_TEMP/venue-evidence"
+        mkdir -p "$EVIDENCE_DIR"
+        python3 - <<'PYCODE'
+        import hashlib, json, os, pathlib
+        root = pathlib.Path(os.environ['EVIDENCE_DIR'])
+        rows = {}
+        for name in ('direct-linux', 'direct-macos', 'direct-windows'):
+            path = root / 'artifacts' / ('venue-row-' + name) / 'row.json'
+            rows[name] = json.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else None
+        receipt = {'repository': os.environ['GITHUB_REPOSITORY'], 'run_id': os.environ['GITHUB_RUN_ID'],
+                   'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'source_ref': os.environ['SOURCE_REF'],
+                   'source_head': os.environ['SOURCE_HEAD'], 'workflow_ref': os.environ['WORKFLOW_REF'],
+                   'workflow_sha': os.environ['WORKFLOW_SHA'], 'matrix_result': os.environ['MATRIX_RESULT'],
+                   'download_outcome': os.environ['DOWNLOAD_OUTCOME'], 'rows': rows}
+        (root / 'receipt.json').write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+        files = sorted(p for p in root.rglob('*') if p.is_file() and p.name != 'SHA256SUMS')
+        (root / 'SHA256SUMS').write_text(''.join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root).as_posix()}\n" for p in files))
+        PYCODE
+        cd venue-publish
+        git config user.name 'github-actions[bot]'
+        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        set +e
+        git ls-remote --exit-code --heads origin "$result_ref" > /dev/null
+        remote_status=$?
+        set -e
+        if [ "$remote_status" -eq 0 ]; then
+          git fetch --no-tags origin "$result_ref:refs/remotes/origin/venue-result"
+          git switch --detach refs/remotes/origin/venue-result
+        elif [ "$remote_status" -eq 2 ]; then
+          git switch --orphan venue-result
+        else
+          exit "$remote_status"
+        fi
+        run_dir="runs/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test ! -e "$run_dir"
+        mkdir -p "$run_dir"
+        cp -a "$EVIDENCE_DIR/." "$run_dir/"
+        git add -f "$run_dir"
+        git commit -m "Venue result $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
+        git push origin "HEAD:$result_ref"
