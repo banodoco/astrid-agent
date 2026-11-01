@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "D:\a\_temp\owner-caller-temp\astrid-install-9a24131ac9a94165a4db9d0216b5ea0e\venv\Lib\site-packages\sitecustomize.py", line 46, in <module>
+    from astrid.installer.backend import Backend
+ModuleNotFoundError: No module named 'astrid'

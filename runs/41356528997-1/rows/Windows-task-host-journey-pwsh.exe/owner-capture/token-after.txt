@@ -1,0 +1,2 @@
+pid=4336 name=runnervmdaln5\runneradmin sid=S-1-5-21-3776380004-1005456608-3524014338-500 token_id=[0,2887308] authentication_id=[0,848956] type=1 impersonation=0 groups=14 privileges=24
+pid=8012 name=runnervmdaln5\runneradmin sid=S-1-5-21-3776380004-1005456608-3524014338-500 token_id=[0,4766074] authentication_id=[0,848956] type=1 impersonation=0 groups=14 privileges=24

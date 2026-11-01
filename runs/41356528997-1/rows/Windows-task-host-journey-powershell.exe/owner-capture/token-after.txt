@@ -1,0 +1,2 @@
+﻿pid=8592 name=runnervmhao91\runneradmin sid=S-1-5-21-3077485881-3661871218-4154919024-500 token_id=[0,2710727] authentication_id=[0,728302] type=1 impersonation=0 groups=14 privileges=24
+pid=6528 name=runnervmhao91\runneradmin sid=S-1-5-21-3077485881-3661871218-4154919024-500 token_id=[0,4475498] authentication_id=[0,728302] type=1 impersonation=0 groups=14 privileges=24

@@ -1,0 +1,8 @@
+{
+  "shell": "pwsh.exe",
+  "job_status": "failure",
+  "run_id": "41356528997",
+  "job": "windows-journey",
+  "attempt": "1",
+  "caller": "1a11c8929e8035e3ff5a0b1c1180d14a9e7d2609"
+}

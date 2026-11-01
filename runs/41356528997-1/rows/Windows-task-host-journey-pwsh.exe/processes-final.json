@@ -1,0 +1,936 @@
+{
+  "processes": [
+    {
+      "pid": 0,
+      "ppid": 0,
+      "created": "2026-11-01T22:18:35.0881970Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 4,
+      "ppid": 0,
+      "created": "2026-11-01T22:18:35.0881970Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 92,
+      "ppid": 4,
+      "created": "2026-11-01T22:18:33.5157490Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 132,
+      "ppid": 4,
+      "created": "2026-11-01T22:18:33.5288420Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 564,
+      "ppid": 4,
+      "created": "2026-11-01T22:18:35.1230760Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 740,
+      "ppid": 728,
+      "created": "2026-11-01T22:18:42.1187840Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 864,
+      "ppid": 728,
+      "created": "2026-11-01T22:18:43.5701700Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 956,
+      "ppid": 864,
+      "created": "2026-11-01T22:18:43.9776750Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 976,
+      "ppid": 864,
+      "created": "2026-11-01T22:18:44.2161760Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 984,
+      "ppid": 864,
+      "created": "2026-11-01T22:18:44.2235140Z",
+      "exe": "C:\\Windows\\system32\\lsass.exe",
+      "command": "C:\\Windows\\system32\\lsass.exe"
+    },
+    {
+      "pid": 816,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:45.8527950Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k DcomLaunch -p"
+    },
+    {
+      "pid": 688,
+      "ppid": 864,
+      "created": "2026-11-01T22:18:45.9529820Z",
+      "exe": "C:\\Windows\\system32\\fontdrvhost.exe",
+      "command": "\"fontdrvhost.exe\""
+    },
+    {
+      "pid": 1088,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.0364800Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k RPCSS -p"
+    },
+    {
+      "pid": 1136,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.1093850Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k DcomLaunch -p -s LSM"
+    },
+    {
+      "pid": 1292,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.5637380Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k termsvcs -s TermService"
+    },
+    {
+      "pid": 1324,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.5689480Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalSystemNetworkRestricted -p -s HvHost"
+    },
+    {
+      "pid": 1464,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.6008930Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p -s NcbService"
+    },
+    {
+      "pid": 1496,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.6346520Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p -s lmhosts"
+    },
+    {
+      "pid": 1568,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.6762250Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalSystemNetworkRestrictedRedirectionGuard -p -s vmickvpexchange"
+    },
+    {
+      "pid": 1576,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.6767290Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k ICService -p -s vmicheartbeat"
+    },
+    {
+      "pid": 1584,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.6810370Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalService -p -s nsi"
+    },
+    {
+      "pid": 1600,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.6863250Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalSystemNetworkRestrictedRedirectionGuard -p -s vmicshutdown"
+    },
+    {
+      "pid": 1632,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.7010550Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s vmictimesync"
+    },
+    {
+      "pid": 1744,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:46.7311110Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k netprofm -p -s netprofm"
+    },
+    {
+      "pid": 1888,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:47.7004960Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Winmgmt"
+    },
+    {
+      "pid": 1928,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:47.8188790Z",
+      "exe": "C:\\Windows\\system32\\vmms.exe",
+      "command": "C:\\Windows\\system32\\vmms.exe"
+    },
+    {
+      "pid": 2016,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:47.9316090Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k NetworkService -p"
+    },
+    {
+      "pid": 2088,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.0515740Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s Dhcp"
+    },
+    {
+      "pid": 2124,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.0690250Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p -s UmRdpService"
+    },
+    {
+      "pid": 2144,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.0735910Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k NetSvcs -p -s hns"
+    },
+    {
+      "pid": 2160,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.0755020Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k GPSvcGroup"
+    },
+    {
+      "pid": 2316,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.1270510Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -s CertPropSvc"
+    },
+    {
+      "pid": 2376,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.1531280Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceHttp -p"
+    },
+    {
+      "pid": 2416,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.1640790Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p -s EventLog"
+    },
+    {
+      "pid": 2492,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2169330Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Schedule"
+    },
+    {
+      "pid": 2512,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2337290Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalService -p -s EventSystem"
+    },
+    {
+      "pid": 2520,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2350850Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k UserProfileService -p -s ProfSvc"
+    },
+    {
+      "pid": 2548,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2480000Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k netsvcs -p -s Themes"
+    },
+    {
+      "pid": 2584,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2703870Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNoNetwork -p"
+    },
+    {
+      "pid": 2600,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2742580Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k NetworkService -p -s LanmanWorkstation"
+    },
+    {
+      "pid": 2680,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.2979730Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k NetSvcs -s nvagent"
+    },
+    {
+      "pid": 2728,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.3262800Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcsRedirectionGuard -p -s SENS"
+    },
+    {
+      "pid": 2792,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.3520560Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p -s AudioEndpointBuilder"
+    },
+    {
+      "pid": 2804,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.3553830Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k SessionEnvSvc -p -s SessionEnv"
+    },
+    {
+      "pid": 2816,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.3613460Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalService -p -s FontCache"
+    },
+    {
+      "pid": 2868,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.3876850Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNoNetworkFirewall -p"
+    },
+    {
+      "pid": 2196,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.5268790Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p"
+    },
+    {
+      "pid": 2660,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.5403830Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s TimeBrokerSvc"
+    },
+    {
+      "pid": 3112,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.5841840Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p -s TextInputManagementService"
+    },
+    {
+      "pid": 3180,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.6544130Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s Wcmsvc"
+    },
+    {
+      "pid": 3200,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.6713760Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s UserManager"
+    },
+    {
+      "pid": 3220,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.6800660Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k netsvcs -p -s ShellHWDetection"
+    },
+    {
+      "pid": 3316,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.7615420Z",
+      "exe": "C:\\Windows\\System32\\spoolsv.exe",
+      "command": "C:\\Windows\\System32\\spoolsv.exe"
+    },
+    {
+      "pid": 3472,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.8639390Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k netsvcs -p -s SharedAccess"
+    },
+    {
+      "pid": 3480,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.8677100Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k apphost -s AppHostSvc"
+    },
+    {
+      "pid": 3488,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.8748420Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k appmodel -p -s StateRepository"
+    },
+    {
+      "pid": 3528,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.8921110Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k NetworkService -p"
+    },
+    {
+      "pid": 3552,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.8974020Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalService -p -s DispBrokerDesktopSvc"
+    },
+    {
+      "pid": 3576,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9040270Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k NetSvcs -p -s iphlpsvc"
+    },
+    {
+      "pid": 3664,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9507280Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 3732,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9604340Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k iissvcs"
+    },
+    {
+      "pid": 3764,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9776590Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k netsvcs -p -s sacsvr"
+    },
+    {
+      "pid": 3772,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9795290Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k localService -p -s RemoteRegistry"
+    },
+    {
+      "pid": 3788,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9866560Z",
+      "exe": "C:\\Windows\\system32\\dockerd.exe",
+      "command": "C:\\Windows\\system32\\dockerd.exe --run-service --service-name docker"
+    },
+    {
+      "pid": 3796,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9913040Z",
+      "exe": "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\WaAppAgent.exe",
+      "command": "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\WaAppAgent.exe"
+    },
+    {
+      "pid": 3804,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:48.9988650Z",
+      "exe": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\SMSvcHost.exe",
+      "command": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\SMSvcHost.exe"
+    },
+    {
+      "pid": 3836,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0252010Z",
+      "exe": "C:\\Program Files\\Microsoft SQL Server\\90\\Shared\\sqlwriter.exe",
+      "command": "\"C:\\Program Files\\Microsoft SQL Server\\90\\Shared\\sqlwriter.exe\""
+    },
+    {
+      "pid": 3856,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0298570Z",
+      "exe": "C:\\Windows\\system32\\mqsvc.exe",
+      "command": "C:\\Windows\\system32\\mqsvc.exe"
+    },
+    {
+      "pid": 3868,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0334560Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k smbsvcs -s LanmanServer"
+    },
+    {
+      "pid": 3900,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0398970Z",
+      "exe": "C:\\Windows\\System32\\OpenSSH\\sshd.exe",
+      "command": "C:\\Windows\\System32\\OpenSSH\\sshd.exe"
+    },
+    {
+      "pid": 3908,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0405530Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p -s TrkWks"
+    },
+    {
+      "pid": 3916,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0416040Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalService -s W32Time"
+    },
+    {
+      "pid": 3988,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.0880480Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 4016,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.1074680Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k NetworkService -p -s WinRM"
+    },
+    {
+      "pid": 4024,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.1089150Z",
+      "exe": "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\WindowsAzureGuestAgent.exe",
+      "command": "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\WindowsAzureGuestAgent.exe"
+    },
+    {
+      "pid": 4064,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.1292290Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s WpnService"
+    },
+    {
+      "pid": 2676,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.1594960Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k WSAIFabricSvcGroup -p -s WSAIFabricSvc"
+    },
+    {
+      "pid": 4136,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:49.2285180Z",
+      "exe": "C:\\Program Files\\WSL\\wslservice.exe",
+      "command": "\"C:\\Program Files\\WSL\\wslservice.exe\""
+    },
+    {
+      "pid": 5012,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:50.0490010Z",
+      "exe": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\SMSvcHost.exe",
+      "command": "\"C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\SMSvcHost.exe\" -NetMsmqActivator"
+    },
+    {
+      "pid": 5044,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:50.0837880Z",
+      "exe": "C:\\Windows\\system32\\vmcompute.exe",
+      "command": "C:\\Windows\\system32\\vmcompute.exe"
+    },
+    {
+      "pid": 5068,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:50.5152260Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k osprivacy -p -s camsvc"
+    },
+    {
+      "pid": 5080,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:50.5162360Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 5948,
+      "ppid": 956,
+      "created": "2026-11-01T22:18:58.5506640Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalServiceNetworkRestricted -s RmSvc"
+    },
+    {
+      "pid": 6428,
+      "ppid": 2492,
+      "created": "2026-11-01T22:19:03.0202780Z",
+      "exe": "C:\\Windows\\system32\\taskhostw.exe",
+      "command": "taskhostw.exe GAEvents|$(Arg0)"
+    },
+    {
+      "pid": 6472,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:03.1809890Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s wuauserv"
+    },
+    {
+      "pid": 6492,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:03.1910820Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalServiceNoNetwork -p -s pla"
+    },
+    {
+      "pid": 6888,
+      "ppid": 816,
+      "created": "2026-11-01T22:19:05.2934160Z",
+      "exe": "C:\\Windows\\system32\\wbem\\wmiprvse.exe",
+      "command": "C:\\Windows\\system32\\wbem\\wmiprvse.exe"
+    },
+    {
+      "pid": 6212,
+      "ppid": 3796,
+      "created": "2026-11-01T22:19:07.2604720Z",
+      "exe": "C:\\WindowsAzure\\SecAgent\\WaSecAgentProv.exe",
+      "command": "\"C:\\WindowsAzure\\SecAgent\\WaSecAgentProv.exe\" -startPoll C:\\WindowsAzure\\Logs\\ 168.63.129.16 5248000 3600000 21600000"
+    },
+    {
+      "pid": 6280,
+      "ppid": 6212,
+      "created": "2026-11-01T22:19:07.2641740Z",
+      "exe": "C:\\Windows\\system32\\conhost.exe",
+      "command": "\\??\\C:\\Windows\\system32\\conhost.exe 0x4"
+    },
+    {
+      "pid": 7144,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:12.6384390Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p"
+    },
+    {
+      "pid": 7772,
+      "ppid": 7760,
+      "created": "2026-11-01T22:19:16.9509940Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 7820,
+      "ppid": 7760,
+      "created": "2026-11-01T22:19:16.9620210Z",
+      "exe": "C:\\Windows\\system32\\winlogon.exe",
+      "command": "winlogon.exe {F4816CEC-6F09-4A8B-92F1-7A84F8370000}"
+    },
+    {
+      "pid": 7868,
+      "ppid": 7820,
+      "created": "2026-11-01T22:19:17.0075010Z",
+      "exe": "C:\\Windows\\system32\\fontdrvhost.exe",
+      "command": "\"fontdrvhost.exe\""
+    },
+    {
+      "pid": 7916,
+      "ppid": 7820,
+      "created": "2026-11-01T22:19:17.0290120Z",
+      "exe": "C:\\Windows\\system32\\dwm.exe",
+      "command": "\"dwm.exe\""
+    },
+    {
+      "pid": 7732,
+      "ppid": 3988,
+      "created": "2026-11-01T22:19:19.5567610Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 6088,
+      "ppid": 2492,
+      "created": "2026-11-01T22:19:19.6309580Z",
+      "exe": "C:\\Windows\\system32\\taskhostw.exe",
+      "command": "taskhostw.exe LocalUserSyncDataAvailable"
+    },
+    {
+      "pid": 5672,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:19.6707160Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k UnistackSvcGroup -s WpnUserService"
+    },
+    {
+      "pid": 5796,
+      "ppid": 3200,
+      "created": "2026-11-01T22:19:19.6725350Z",
+      "exe": "C:\\Windows\\system32\\sihost.exe",
+      "command": "sihost.exe"
+    },
+    {
+      "pid": 4624,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:19.7853760Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p -s NgcCtnrSvc"
+    },
+    {
+      "pid": 1924,
+      "ppid": 2492,
+      "created": "2026-11-01T22:19:19.9187530Z",
+      "exe": "C:\\Windows\\system32\\taskhostw.exe",
+      "command": "taskhostw.exe {222A245B-E637-4AE9-A93F-A59CA119A75E}"
+    },
+    {
+      "pid": 6300,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:20.3914100Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalService -p -s LicenseManager"
+    },
+    {
+      "pid": 5312,
+      "ppid": 7204,
+      "created": "2026-11-01T22:19:20.9597970Z",
+      "exe": "C:\\Windows\\Explorer.EXE",
+      "command": "C:\\Windows\\Explorer.EXE"
+    },
+    {
+      "pid": 2484,
+      "ppid": 5796,
+      "created": "2026-11-01T22:19:21.1341160Z",
+      "exe": "C:\\Windows\\System32\\ShellHost.exe",
+      "command": "\"C:\\Windows\\System32\\ShellHost.exe\""
+    },
+    {
+      "pid": 7948,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:21.5677610Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k AppReadiness -p -s AppReadiness"
+    },
+    {
+      "pid": 8544,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:30.2509940Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Appinfo"
+    },
+    {
+      "pid": 8644,
+      "ppid": 816,
+      "created": "2026-11-01T22:19:30.4860660Z",
+      "exe": "C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe",
+      "command": "\"C:\\Windows\\SystemApps\\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\\StartMenuExperienceHost.exe\" -ServerName:FullTrustApp.AppXykjsye98af63ez2annt9djke8trg8stn.mca"
+    },
+    {
+      "pid": 8684,
+      "ppid": 816,
+      "created": "2026-11-01T22:19:30.5191710Z",
+      "exe": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe",
+      "command": "\"C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\SearchHost.exe\" -ServerName:CortanaUI.AppXstmwaab17q5s3y22tp6apqz7a45vwv65.mca"
+    },
+    {
+      "pid": 8776,
+      "ppid": 816,
+      "created": "2026-11-01T22:19:31.0778620Z",
+      "exe": "C:\\Windows\\System32\\RuntimeBroker.exe",
+      "command": "C:\\Windows\\System32\\RuntimeBroker.exe -Embedding"
+    },
+    {
+      "pid": 8848,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:31.2739530Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k UdkSvcGroup -s UdkUserSvc"
+    },
+    {
+      "pid": 8896,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:31.3545940Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s TokenBroker"
+    },
+    {
+      "pid": 8668,
+      "ppid": 3112,
+      "created": "2026-11-01T22:19:34.7439930Z",
+      "exe": "C:\\Windows\\system32\\ctfmon.exe",
+      "command": "/QuitInfo:0000000000000270;0000000000000290; "
+    },
+    {
+      "pid": 9412,
+      "ppid": 956,
+      "created": "2026-11-01T22:19:36.6838000Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalService -p -s CDPSvc"
+    },
+    {
+      "pid": 9588,
+      "ppid": 816,
+      "created": "2026-11-01T22:19:38.2294280Z",
+      "exe": "C:\\Windows\\System32\\oobe\\UserOOBEBroker.exe",
+      "command": "C:\\Windows\\System32\\oobe\\UserOOBEBroker.exe -Embedding"
+    },
+    {
+      "pid": 5768,
+      "ppid": 5312,
+      "created": "2026-11-01T22:20:05.1688200Z",
+      "exe": "C:\\Windows\\AzureArcSetup\\Systray\\AzureArcSysTray.exe",
+      "command": "\"C:\\Windows\\AzureArcSetup\\Systray\\AzureArcSysTray.exe\" "
+    },
+    {
+      "pid": 752,
+      "ppid": 2492,
+      "created": "2026-11-01T22:20:06.1193450Z",
+      "exe": "C:\\ProgramData\\GitHub\\HostedComputeAgent\\hosted-compute-agent",
+      "command": "\"C:\\ProgramData\\GitHub\\HostedComputeAgent\\hosted-compute-agent\""
+    },
+    {
+      "pid": 5652,
+      "ppid": 752,
+      "created": "2026-11-01T22:20:06.1241390Z",
+      "exe": "C:\\Windows\\system32\\conhost.exe",
+      "command": "\\??\\C:\\Windows\\system32\\conhost.exe 0x4"
+    },
+    {
+      "pid": 9660,
+      "ppid": 816,
+      "created": "2026-11-01T22:20:06.1774950Z",
+      "exe": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+      "command": "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+      "pid": 9720,
+      "ppid": 816,
+      "created": "2026-11-01T22:20:06.4266060Z",
+      "exe": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe",
+      "command": "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe\" -Embedding"
+    },
+    {
+      "pid": 1764,
+      "ppid": 752,
+      "created": "2026-11-01T22:20:10.3989400Z",
+      "exe": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\provjobd.exe245983287",
+      "command": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\provjobd.exe245983287"
+    },
+    {
+      "pid": 2456,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:10.9731380Z",
+      "exe": "",
+      "command": ""
+    },
+    {
+      "pid": 7100,
+      "ppid": 5312,
+      "created": "2026-11-01T22:20:12.3481760Z",
+      "exe": "C:\\Program Files\\Microsoft SDKs\\Service Fabric\\Tools\\ServiceFabricLocalClusterManager\\ServiceFabricLocalClusterManager.exe",
+      "command": "\"C:\\Program Files\\Microsoft SDKs\\Service Fabric\\Tools\\ServiceFabricLocalClusterManager\\ServiceFabricLocalClusterManager.exe\" "
+    },
+    {
+      "pid": 6664,
+      "ppid": 752,
+      "created": "2026-11-01T22:20:23.3440980Z",
+      "exe": "C:\\actions-runner\\cached\\2.338.2\\bin\\Runner.Listener.exe",
+      "command": "C:\\actions-runner\\cached\\2.338.2\\bin\\Runner.Listener.exe run"
+    },
+    {
+      "pid": 9896,
+      "ppid": 6664,
+      "created": "2026-11-01T22:20:24.7261710Z",
+      "exe": "C:\\actions-runner\\cached\\2.338.2\\bin\\Runner.Worker.exe",
+      "command": "\"C:\\actions-runner\\cached\\2.338.2\\bin\\Runner.Worker.exe\" spawnclient 1804 1816"
+    },
+    {
+      "pid": 9908,
+      "ppid": 9896,
+      "created": "2026-11-01T22:20:24.7320470Z",
+      "exe": "C:\\Windows\\system32\\conhost.exe",
+      "command": "\\??\\C:\\Windows\\system32\\conhost.exe 0x4"
+    },
+    {
+      "pid": 5968,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:53.4978760Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalServiceNoNetwork -p -s DPS"
+    },
+    {
+      "pid": 7600,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:53.5496330Z",
+      "exe": "C:\\Windows\\System32\\svchost.exe",
+      "command": "C:\\Windows\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p -s WdiSystemHost"
+    },
+    {
+      "pid": 6312,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:53.6038590Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalSystemNetworkRestricted -p -s PcaSvc"
+    },
+    {
+      "pid": 3824,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:53.6528710Z",
+      "exe": "C:\\Windows\\System32\\msdtc.exe",
+      "command": "C:\\Windows\\System32\\msdtc.exe"
+    },
+    {
+      "pid": 7068,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:54.0355680Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k LocalSystemNetworkRestricted -p -s UALSVC"
+    },
+    {
+      "pid": 9312,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:56.0690110Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s UsoSvc"
+    },
+    {
+      "pid": 6048,
+      "ppid": 956,
+      "created": "2026-11-01T22:20:56.4652450Z",
+      "exe": "C:\\Windows\\system32\\svchost.exe",
+      "command": "C:\\Windows\\system32\\svchost.exe -k ClipboardSvcGroup -p -s cbdhsvc"
+    },
+    {
+      "pid": 1420,
+      "ppid": 816,
+      "created": "2026-11-01T22:26:45.7411390Z",
+      "exe": "C:\\Windows\\system32\\wbem\\wmiprvse.exe",
+      "command": "C:\\Windows\\system32\\wbem\\wmiprvse.exe"
+    },
+    {
+      "pid": 4172,
+      "ppid": 9896,
+      "created": "2026-11-01T22:27:03.2552210Z",
+      "exe": "C:\\Program Files\\PowerShell\\7\\pwsh.EXE",
+      "command": "\"C:\\Program Files\\PowerShell\\7\\pwsh.EXE\" -command \". 'D:\\a\\_temp\\4b3ef9d6-2587-4376-bc5e-d25ae68dabc9.ps1'\""
+    }
+  ],
+  "astrid_processes": []
+}

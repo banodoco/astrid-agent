@@ -1,0 +1,449 @@
+﻿{
+    "phase":  "before",
+    "product_root":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages",
+    "identity_name":  "runnervmhao91\\runneradmin",
+    "identity_sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+    "paths":  [
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;OICIID;FA;;;LA)(A;OICIID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;OICIID;FA;;;LA)(A;OICIID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\__init__.py",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;OICIID;FA;;;LA)(A;OICIID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\__init__.py",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\rendering",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;OICIID;FA;;;LA)(A;OICIID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\rendering\\__init__.py",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\rendering\\_local_schema.py",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\timeline",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;OICIID;FA;;;LA)(A;OICIID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\timeline\\__init__.py",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\timeline\\banodoco_schema.py",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\timeline\\schema",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;OICIID;FA;;;LA)(A;OICIID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "ContainerInherit, ObjectInherit",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\astrid\\core\\timeline\\schema\\timeline-config.schema.json",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;;FA;;;BA)(A;ID;FA;;;SY)(A;ID;FA;;;LA)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-32-544",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  false,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  },
+                  {
+                      "path":  "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\3fff57b5-47e59494-144b05fc\\py\\Lib\\site-packages\\runtime.lock.json",
+                      "owner_sid":  "S-1-5-32-544",
+                      "owner":  "BUILTIN\\Administrators",
+                      "access_rules_protected":  false,
+                      "sddl":  "O:BAG:S-1-5-21-3077485881-3661871218-4154919024-513D:(A;ID;FA;;;LA)(A;ID;FA;;;SY)",
+                      "access":  [
+                                     {
+                                         "sid":  "S-1-5-21-3077485881-3661871218-4154919024-500",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     },
+                                     {
+                                         "sid":  "S-1-5-18",
+                                         "type":  "Allow",
+                                         "rights":  "FullControl",
+                                         "rights_numeric":  2032127,
+                                         "inherited":  true,
+                                         "inheritance":  "None",
+                                         "propagation":  "None"
+                                     }
+                                 ]
+                  }
+              ]
+}
