@@ -1,0 +1,28 @@
+{
+  "job": "C-07 installed wheel selector",
+  "node_setup_outcome": "success",
+  "overall_inner_exit": 0,
+  "proof_step_outcome": "success",
+  "pytest_inner_exit": "0",
+  "python_setup_outcome": "success",
+  "repository": "banodoco/astrid-agent",
+  "run_attempt": "1",
+  "run_id": "41352828982",
+  "source_event": "push",
+  "source_head_sha": "46f2cb5a94427992f32bf2cd2572d0655f6a49eb",
+  "source_ref": "refs/heads/venue/M-AG2-I-AG-10-R2-R1-HOSTED-1",
+  "stage_inner_exits": [
+    "composition_identity=0",
+    "apt_install=0",
+    "build_wheel=0",
+    "install_noneditable=0",
+    "npm_ci=0",
+    "registry_generate=0",
+    "registry_verify=0",
+    "pytest_selector=0"
+  ],
+  "workflow_file_sha256": "6e1bec209df0ca76ee9ce676ea1414bf4c701d3fe47a698f4514798a02f9ed5e",
+  "workflow_name": "Venue C-07 installed wheel",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/venue-c07-installed.yml@refs/heads/venue/M-AG2-I-AG-10-R2-R1-HOSTED-1",
+  "workflow_sha": "46f2cb5a94427992f32bf2cd2572d0655f6a49eb"
+}
