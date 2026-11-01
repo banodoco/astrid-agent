@@ -377,6 +377,26 @@ def _managed_install_fix() -> ReadinessFix | None:
                         'guidance': f'{scope}; {size}'}}
 
 
+def _registered_managed_engine() -> dict[str, str] | None:
+    """The registered managed ComfyUI engine's owner and loopback endpoint, or None.
+
+    Deterministic: reads the recorded install root and the recipe's port only.
+    It does not probe health; the run-time verifier does that.
+    """
+    from .engine_contracts import EngineError
+    from .engine_local_endpoint import DEFAULT_PLATFORM, recorded_engine_root
+    from .engine_recipe import load_recipe
+
+    try:
+        root = recorded_engine_root("comfyui")
+    except EngineError:
+        return None
+    if root is None:
+        return None
+    recipe = load_recipe("comfyui", DEFAULT_PLATFORM)
+    return {"owner": "astrid", "endpoint": f"http://127.0.0.1:{recipe.start.port}", "root": root}
+
+
 def check_local_generation_readiness(
     entry: Any,
     mode: str,
@@ -424,7 +444,11 @@ def check_local_generation_readiness(
             ),
         )
 
-    if require_managed_runtime and (not legacy_local or not _comfyui_runtime_available()):
+    managed_ready = (
+        _registered_managed_engine() is not None if not legacy_local
+        else _comfyui_runtime_available()
+    )
+    if require_managed_runtime and not managed_ready:
         install = _managed_install_fix()
         attach = ['astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
         import shlex
