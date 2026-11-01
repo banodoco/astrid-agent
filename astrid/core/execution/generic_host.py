@@ -5839,6 +5839,9 @@ class GenericPackHost:
         self.managed_tool_session = ManagedToolSession(
             manager_id=self.executor_id
         )
+        # One task at a time uses this host object's session slot. Parallel
+        # serving owns separate host objects; this is not a device scheduler.
+        self._session_task_lock = threading.Lock()
 
         self._active_processes: set[subprocess.Popen] = set()
         self._unresolved_task_scopes: list[str] = []
@@ -6150,6 +6153,42 @@ class GenericPackHost:
         """
         manager = self.managed_tool_session
         return self.warm_holds.lease(manager, stop=self._release_idle_session, lock=manager._lock)
+
+    def release_managed_session(
+        self, *, expected_binding: SessionBinding, expected_generation: int,
+        reason: str = "requested",
+    ) -> Mapping[str, Any]:
+        """Control the existing owner, without racing task setup or admission.
+
+        The caller must route an exact observed binding to this host. Native
+        evidence remains separate from any claim of measured memory return.
+        """
+        if not isinstance(expected_binding, SessionBinding) or type(expected_generation) is not int:
+            raise StaleAdmissionError("session release requires exact owner authorization")
+        if not self._session_task_lock.acquire(blocking=False):
+            return {"ok": False, "released": False, "release_pending": True}
+        try:
+            manager = self.managed_tool_session
+            with manager._lock:
+                try:
+                    evidence = manager.release(
+                        reason=reason, expected_binding=expected_binding,
+                        expected_generation=expected_generation, require_quiescent=True,
+                    )
+                except SessionCapacityError as exc:
+                    if manager.occupied and not manager.active:
+                        self._latch_cleanup_uncertainty(f"managed session release remains pending: {exc}")
+                    return {"ok": False, "released": False, "release_pending": True}
+                self._vibecomfy_warmth_hint = None
+                self._vibecomfy_current_warmth_hint = None
+                self._vibecomfy_requested_warmth_hint = None
+                # Retire the old idle callback before another binding can
+                # occupy the slot, even if opened directly by owner control.
+                hold = self._hold_session_slot()
+                self.warm_holds.release(hold, holding=None, idle_seconds=0)
+                return {"ok": True, "released": True, "native": dict(evidence or {})}
+        finally:
+            self._session_task_lock.release()
 
     def _settle_session_hold(self, hold: WarmLease) -> None:
         """At task end, arm idle release for whatever the slot still keeps warm."""
@@ -10253,11 +10292,24 @@ class GenericPackHost:
             contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             terminal["execution_contract"] = contract
             lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
-            return self._run_task_impl(
-                task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
-                keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
-                _terminal=terminal,
-            )
+            # The lease observer continues while waiting for this host's
+            # session. No second task may replace a live binding or overwrite
+            # its request-specific idle policy during setup/collection.
+            while not self._session_task_lock.acquire(timeout=0.05):
+                lifetime.assert_deadline()
+                if abort.is_set() or self._shutdown.is_set():
+                    raise HostCancelled("session wait cancelled")
+            try:
+                lifetime.assert_deadline()
+                if abort.is_set() or self._shutdown.is_set():
+                    raise HostCancelled("session wait cancelled")
+                return self._run_task_impl(
+                    task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
+                    keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+                    _terminal=terminal,
+                )
+            finally:
+                self._session_task_lock.release()
         except BaseException as exc:
             terminal.setdefault("error", exc)
             try:
@@ -11196,6 +11248,8 @@ class GenericPackHost:
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
+                if capability_id != "wan2gp.generate_video":
+                    self.managed_tool_session.adapter_for(managed_token, begin=True)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
