@@ -61,17 +61,17 @@ def test_explicit_entry_plan_is_visible(loopback_comfy, tmp_path, monkeypatch, c
     import_as_entry(source, "mine")
     assert cli.main(["image", "hello", "--entry", "mine", "--target", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
-    assert plan["entry"] == "mine" and plan["reason"] == "explicitly selected workflow entry"
-    assert plan["bindings"]["prompt"] == "hello"
+    assert plan["entry"]["id"] == "mine" and plan["entry"]["reason"] == "explicitly selected workflow entry"
+    assert plan["entry"]["bindings"]["prompt"] == "hello"
 
 
 def test_default_plan_selects_highest_ranked_ready_entry(loopback_comfy, monkeypatch, capsys):
     monkeypatch.setattr(entries, "user_entries", lambda: [])
     assert cli.main(["image", "hello", "--target", loopback_comfy.url, "--dry-run"]) == 0
     plan = json.loads(capsys.readouterr().out)
-    assert plan["entry"] == "z-image"
-    assert "highest-ranked ready" in plan["reason"]
-    assert plan["target"] == loopback_comfy.url
+    assert plan["entry"]["id"] == "z-image"
+    assert "highest-ranked ready" in plan["entry"]["reason"]
+    assert plan["target"]["endpoint"] == loopback_comfy.url
 
 
 def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monkeypatch, capsys):
