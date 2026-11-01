@@ -1,4 +1,5 @@
 """Delegated leaf commands enter strict network startup without a child channel."""
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +33,8 @@ def _command(tmp_path, form):
         (root / "command.py").write_text(code)
         args = ["-m", "command"]
     else:
-        args = ["-c", code]
+        encoded = base64.b64encode(code.encode()).decode()
+        args = ["-c", "exec(__import__('base64').b64decode(" + repr(encoded) + "))"]
     (root / "pack.yaml").write_text(yaml.safe_dump({
         "schema_version": 3, "id": "leaf", "name": "Leaf", "version": "1.0.0",
         "actions": {"run": {
