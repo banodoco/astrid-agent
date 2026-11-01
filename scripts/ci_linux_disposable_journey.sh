@@ -31,8 +31,8 @@ mkdir -p "$run_root/home"
 sudo useradd --no-create-home --home-dir "$run_root/home" --shell /bin/bash "$name"
 created=1
 uid_owned=$(id -u "$name")
-sudo chown -R "$uid_owned:$(id -g "$name")" "$base"
 chmod 755 "$base" "$run_root" "$run_root/home"
+sudo chown -R "$uid_owned:$(id -g "$name")" "$base"
 sudo loginctl enable-linger "$name"
 for ((i=0; i<30; i++)); do
   [[ -S "/run/user/$uid_owned/bus" ]] && break
