@@ -10430,6 +10430,9 @@ class GenericPackHost:
         # exceptions as well as unavailable results settle the exact lease.
         renderer_selection: dict[str, Any] | None = None
         try:
+            if capability_id == "wan2gp.generate_video":
+                from astrid.core.generation.availability import require_action_available
+                require_action_available(capability_id)
             self.preflight(capability_id)
             record = self.capabilities[capability_id]
             _terminal["record"] = record

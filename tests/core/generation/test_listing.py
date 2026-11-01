@@ -358,3 +358,22 @@ def test_text_and_json_listings_are_deterministic(monkeypatch, capsys):
     first_text = capsys.readouterr().out
     listing.main(["list"])
     assert capsys.readouterr().out == first_text
+
+
+def test_wan_catalog_rows_and_animate_actions_are_unavailable():
+    rows = listing.catalog_rows()
+    wan = [row for row in rows if row['id'] == 'wan-2.2']
+    assert wan and all(row['availability'] == 'unavailable' and row['reason'] for row in wan)
+    templates = [row for row in rows if row['source'] == 'ready-template' and row['id'].startswith('video/wan')]
+    assert templates and all(row['availability'] == 'unavailable' and row['reason'] for row in templates)
+    for action in ('wan2gp.generate_video', 'video_editing.animate_image', 'vibecomfy.character_animation'):
+        assert any(row['id'] == action and row['availability'] == 'unavailable' for row in rows)
+
+
+def test_qualified_fake_model_remains_available(monkeypatch):
+    from astrid.core.generation import availability
+    declaration = dict(availability.availability_declaration())
+    declaration['models'] = {'wan-2.2': {'available': True}}
+    monkeypatch.setattr(availability, 'availability_declaration', lambda: declaration)
+    rows = [row for row in listing.catalog_rows() if row['id'] == 'wan-2.2']
+    assert rows and all(row['availability'] == 'available' for row in rows)

@@ -31,14 +31,53 @@ def action_availability(action_id: str) -> dict[str, Any]:
 
 def require_action_available(action_id: str) -> None:
     """Raise the declaration's coded error when an action is unavailable."""
-    record = action_availability(action_id)
+    _require_available(action_id, action_availability(action_id))
+
+
+def model_availability(model: str, mode: str, backend: str) -> dict[str, Any]:
+    """Return a catalog qualification decision; undeclared models retain their existing status."""
+    models = availability_declaration().get("models", {})
+    if not isinstance(models, dict):
+        raise RuntimeError("invalid generation model availability declaration")
+    if model not in models:
+        return {"available": True}
+    record = models[model]
+    if not isinstance(record, dict):
+        raise RuntimeError(f"invalid generation availability for model {model!r}")
+    return record
+
+
+def template_availability(template: str, mode: str, backend: str) -> dict[str, Any]:
+    """Resolve declared template families through the same model decision."""
+    families = availability_declaration().get("template_models", {})
+    if not isinstance(families, dict):
+        raise RuntimeError("invalid generation template availability declaration")
+    matches = [(prefix, model) for prefix, model in families.items()
+               if isinstance(prefix, str) and template.startswith(prefix)]
+    if not matches:
+        return {"available": True}
+    _, model = max(matches, key=lambda item: len(item[0]))
+    if not isinstance(model, str) or not model:
+        raise RuntimeError(f"invalid generation availability mapping for {template!r}")
+    return model_availability(model, mode, backend)
+
+
+def require_model_available(model: str, mode: str, backend: str) -> None:
+    _require_available(f"{model}/{mode}/{backend}", model_availability(model, mode, backend))
+
+
+def _require_available(route: str, record: dict[str, Any]) -> None:
     if record.get("available") is True:
         return
     error = record.get("error")
     if not isinstance(error, dict) or not isinstance(error.get("code"), str):
-        raise RuntimeError(f"unavailable action {action_id!r} has no coded error")
+        raise RuntimeError(f"unavailable route {route!r} has no coded error")
     raise AstridError(
-        str(error.get("message") or f"{action_id} is unavailable"),
+        str(error.get("message") or f"{route} is unavailable"),
         code=error["code"],
-        recovery_command="retry after the generation availability declaration marks this route available",
+        recovery_command=(
+            "use a qualified generation route; retry this route after it is qualified"
+            if error["code"] == "generation_route_unqualified"
+            else "retry after the generation availability declaration marks this route available"
+        ),
     )
