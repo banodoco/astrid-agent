@@ -9572,6 +9572,8 @@ class GenericPackHost:
         )
         if terminal.get("lease_diagnostic", {}).get("category") not in {None, "observing"}:
             receipt["lease_diagnostic"] = dict(terminal["lease_diagnostic"])
+        if terminal.get("completion_state") in {"in_flight", "unknown"}:
+            receipt["completion_diagnostic"] = {"status": "unconfirmed"}
         import_reference = getattr(terminal.get("error"), "child_import_receipt", None)
         if import_reference is not None:
             receipt["child_import_receipt"] = import_reference
@@ -9629,13 +9631,24 @@ class GenericPackHost:
             with completion_lock:
                 if terminal.get("forced") and operation == self.client.settle:
                     raise HostCancelled("attempt already terminated by its lifecycle guard")
-                if terminal.get("recorded"):
-                    return terminal.get("completion")
-            result = self._handoff_settlement_call(operation, *args, **kwargs)
+                state = terminal.get("completion_state", "open")
+                if state != "open":
+                    # Do not return a competing operation's receipt as if it
+                    # acknowledged this call, or wait here while a guard must
+                    # remain free to contain the process.
+                    raise HostError("attempt completion is already reserved or unconfirmed")
+                terminal.update(completion_state="in_flight", completion_operation=operation)
+            try:
+                result = self._handoff_settlement_call(operation, *args, **kwargs)
+            except BaseException:
+                # A transport exception does not prove that Runtime did not
+                # commit. Task.result is worker-controlled, so task readback
+                # cannot authenticate this particular completion request.
+                with completion_lock:
+                    terminal["completion_state"] = "unknown"
+                raise
             with completion_lock:
-                if terminal.get("forced") and operation == self.client.settle:
-                    raise HostCancelled("settlement returned after the attempt was terminated")
-                terminal.update(recorded=True, completion=result)
+                terminal.update(recorded=True, completion=result, completion_state="acknowledged")
             return result
 
         def lease_call(operation, *args, **kwargs):
@@ -9739,12 +9752,9 @@ class GenericPackHost:
                        if terminal.get("forced") == "lease_lost" else {}),
                 )
             except Exception:
-                # Observe cancellation only after attempting the original
-                # failure mutation; a broken read cannot suppress that write.
-                if task_snapshot()["status"] != "cancelled":
-                    raise
-                terminal.update(recorded=True, status="cancelled", forced="cancelled", minimal=True,
-                                error=AstridError("execution cancelled", code="cancelled"))
+                # A state read cannot authenticate the exact completion or
+                # establish that an ambiguous mutation did not commit.
+                raise
 
         def read_progress():
             root = terminal.get("root")
@@ -10008,7 +10018,8 @@ class GenericPackHost:
             try:
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
-                    if self.attempt_root is None and not keep_attempt:
+                    if (self.attempt_root is None and not keep_attempt
+                            and terminal.get("completion_state") not in {"in_flight", "unknown"}):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             finally:
                 stop.set()
@@ -11200,21 +11211,24 @@ class GenericPackHost:
             if isinstance(gpu, Mapping) and (gpu.get("warning") or not gpu.get("qualified")):
                 failure_message += " " + str(gpu.get("warning") or gpu["reason"])
             failure_message += recovery_suffix(original_error)
-            completion_call(self.client.fail,
-                task_id,
-                lease_token,
-                failure_message,
-                retryable=False,
-                attempt_id=attempt_id,
-                fence=fence,
-                failure_diagnostic=(
-                    {**(storage_failure_receipt or evidence_failure_receipt or {}),
-                     "child_import_receipt": original_error.child_import_receipt}
-                    if getattr(original_error, "child_import_receipt", None) is not None
-                    else storage_failure_receipt or evidence_failure_receipt
-                ),
-                **_structured_failure_kwargs(original_error),
-            )
+            try:
+                completion_call(self.client.fail,
+                    task_id,
+                    lease_token,
+                    failure_message,
+                    retryable=False,
+                    attempt_id=attempt_id,
+                    fence=fence,
+                    failure_diagnostic=(
+                        {**(storage_failure_receipt or evidence_failure_receipt or {}),
+                         "child_import_receipt": original_error.child_import_receipt}
+                        if getattr(original_error, "child_import_receipt", None) is not None
+                        else storage_failure_receipt or evidence_failure_receipt
+                    ),
+                    **_structured_failure_kwargs(original_error),
+                )
+            except BaseException as reporting_error:
+                _terminal["reporting_error"] = reporting_error
             raise
         finally:
             # Keep the lease pump alive through harvesting, upload, and
@@ -11245,12 +11259,15 @@ class GenericPackHost:
                 child_bridge.revoke()
                 with self._process_lock:
                     self._child_bridges.discard(child_bridge)
-            retain_for_unresolved_scope = command_cleanup_error is not None
-            if retain_for_unresolved_scope:
-                # The task-scope supervisor has evidence of a child writer
-                # that outlived its leader. Keep the attempt even when the
-                # caller did not request debug retention.
+            retain_for_unresolved_scope = (command_cleanup_error is not None
+                                           or _terminal.get("completion_state") in {"in_flight", "unknown"})
+            if command_cleanup_error is not None:
+                # A child writer may have outlived the original leader.
                 cleanup_errors.append("unresolved command task scope; attempt retained")
+            if _terminal.get("completion_state") in {"in_flight", "unknown"}:
+                # Retain the evidence without masking the original transport
+                # or execution error.
+                self._latch_cleanup_uncertainty("Runtime completion unconfirmed; attempt retained")
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (

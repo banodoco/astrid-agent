@@ -432,7 +432,9 @@ def test_cached_output_facts_are_reverified_before_terminal_result(host_case, mo
     assert receipt["outputs"]["artifacts"] == []
     assert receipt["publication"] == {"status": "not_settled", "receipt": None, "effect": None}
     assert any("terminal output unavailable" in warning for warning in receipt["warnings"])
-    assert len(case.runtime.failures) == 1
+    # An arbitrary exception is not evidence that Runtime rejected the write.
+    assert receipt["completion_diagnostic"] == {"status": "unconfirmed"}
+    assert not case.runtime.failures
 
 
 def _terminal_state(case):
