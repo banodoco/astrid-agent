@@ -15,6 +15,7 @@ import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -120,6 +121,32 @@ def replace_target_record(path: Path, value: dict[str, Any], *, operation_id: st
     write_target_record(path, value)
 
 
+@contextmanager
+def target_owner(handle_path: Path):
+    """Own the existing claim lock, including first creation of its journal.
+
+    Product selection and worker preparation use the same lock pathname.
+    Provider calls happen under this lock, never under the TOML config lock.
+    """
+    path = handle_path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.owner.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            platform.lock_file(fd, blocking=False)
+        except BlockingIOError as exc:
+            raise AcquisitionUnresolvedError(
+                f"another process currently owns RunPod target journal {path}; retry after it exits"
+            ) from exc
+        yield fd
+    finally:
+        try:
+            platform.unlock_file(fd)
+        finally:
+            os.close(fd)
+
+
 def _exclusive_target_owner(function: Any) -> Any:
     """Serialize acquisition/reconciliation and reject stale journal snapshots."""
 
@@ -132,16 +159,7 @@ def _exclusive_target_owner(function: Any) -> Any:
         **kwargs: Any,
     ) -> Any:
         path = handle_path.expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = path.with_name(f".{path.name}.owner.lock")
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            try:
-                platform.lock_file(fd, blocking=False)
-            except BlockingIOError as exc:
-                raise AcquisitionUnresolvedError(
-                    f"another process currently owns RunPod target journal {path}; retry after it exits"
-                ) from exc
+        with target_owner(path):
             try:
                 current = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
@@ -161,12 +179,6 @@ def _exclusive_target_owner(function: Any) -> Any:
                 attempt=current,
                 **kwargs,
             )
-        finally:
-            try:
-                platform.unlock_file(fd)
-            finally:
-                os.close(fd)
-
     return wrapped
 
 
@@ -377,6 +389,35 @@ async def observe_exact_target(
     return await asyncio.to_thread(observe_target, api_key, contract)
 
 
+def read_exact_pod(api_key: str, pod_id: str) -> tuple[int, dict[str, Any] | None]:
+    """Preserve exact REST GET status; null/errors never become absence proof.
+
+    Return only to the owner: provider bodies may contain transport details and
+    must not be copied into custody journals or public error messages.
+    """
+    import httpx
+    from urllib.parse import quote
+    from runpod_lifecycle.api import PODS_URL
+
+    try:
+        response = httpx.get(
+            f"{PODS_URL}/{quote(pod_id, safe='')}",
+            headers={"Authorization": f"Bearer {api_key}"}, timeout=30,
+        )
+        if response.status_code == 404:
+            return 404, None
+        if response.status_code != 200:
+            raise TargetObservationError("exact pod GET did not succeed")
+        record = response.json()
+        if not isinstance(record, dict) or record.get("id") != pod_id:
+            raise TargetObservationError("exact pod GET returned an unverified identity")
+        return 200, record
+    except TargetObservationError:
+        raise
+    except Exception:
+        raise TargetObservationError("exact pod GET could not be confirmed") from None
+
+
 def _target_contract(
     config: Any,
     *,
@@ -392,6 +433,7 @@ def _target_contract(
         network_volume_id=str(volume.get("id") or ""),
         network_volume_name=_text(volume.get("name")),
         network_volume_size_gb=int(volume["size"]),
+        datacenter_id=_text(volume.get("dataCenterId")),
     )
 
 
@@ -474,19 +516,22 @@ async def _release_inventory(
 
     try:
         pods = await asyncio.to_thread(list_pods, config.api_key)
-    except Exception as exc:
+    except Exception:
         raise TargetObservationError(
-            f"could not observe RunPod account pod inventory for exact pod {contract.pod_id!r}: {exc}"
-        ) from exc
+            "could not observe RunPod account pod inventory for exact release"
+        ) from None
     if not isinstance(pods, list):
         raise TargetObservationError("RunPod account pod inventory returned an invalid response")
+    ids = [_text(pod.get("id")) if isinstance(pod, dict) else None for pod in pods]
+    if any(pod_id is None for pod_id in ids) or len(set(ids)) != len(ids):
+        raise TargetObservationError("RunPod account pod inventory is malformed or ambiguous")
 
     try:
         volumes = await asyncio.to_thread(get_network_volumes, config.api_key)
-    except Exception as exc:
+    except Exception:
         raise TargetObservationError(
-            f"could not confirm network volume {contract.network_volume_id!r}: {exc}"
-        ) from exc
+            "could not confirm the persistent release volume"
+        ) from None
     if not isinstance(volumes, list):
         raise TargetObservationError("RunPod network-volume inventory returned an invalid response")
     volume = inspect_volume_records(contract, volumes=volumes)
@@ -507,6 +552,12 @@ async def _release_inventory(
 
 
 def _release_contract_from_record(attempt: Mapping[str, Any]) -> RunPodTargetContract:
+    if (attempt.get("acquisition_mode") != "allocate"
+            or not _text(attempt.get("request_name"))
+            or attempt.get("name", attempt["request_name"]) != attempt["request_name"]
+            or ("ordinary_preparation" in attempt
+                and attempt["request_name"] != "astrid-product-" + str(attempt.get("operation_id")))):
+        raise TargetObservationError("release requires this journal's created pod identity")
     pod_id = _text(attempt.get("pod_id"))
     gpu_type = _text(attempt.get("gpu_type"))
     worker_image = _text(attempt.get("worker_image"))
@@ -546,6 +597,8 @@ def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
 
 def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict[str, Any]:
     """Accept only durable exact-task drain and process-stop evidence."""
+    if attempt.get("state") == "cleanup_complete":
+        _validate_absence_receipt(attempt)
     if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.unactivated-quiescence.v1":
         if (attempt.get("schema_version") != "astrid.runpod.allocation-attempt.v1"
                 or attempt.get("acquisition_mode") != "allocate"
@@ -632,7 +685,45 @@ def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict
                 or stopped_session.get("config_digest") != managed_session.get("config_digest")
                 or stopped_session.get("gpu_qualified") is not False):
             raise TargetObservationError("release lacks exact managed VibeComfy session stop evidence")
+        if managed_session.get("session_ref") == "vibecomfy-h3":
+            receipt = managed_session.get("receipt")
+            if (not isinstance(receipt, Mapping)
+                    or stopped_session.get("supervisor_stop") != "original_installation_owner"
+                    or any(stopped_session.get(key) != receipt.get(key) or not receipt.get(key)
+                           for key in ("daemon_pid", "daemon_birth_id", "comfy_pid", "comfy_birth_id"))):
+                raise TargetObservationError("release lacks original installation supervisor stop evidence")
     return json.loads(json.dumps(dict(value), sort_keys=True, separators=(",", ":")))
+
+
+def _validate_absence_receipt(attempt: Mapping[str, Any]) -> None:
+    cleanup = attempt.get("cleanup")
+    absence = cleanup.get("absence") if isinstance(cleanup, Mapping) else None
+    expected = {
+        "provider_account_ref": attempt.get("provider_account_ref"),
+        "pod_id": attempt.get("pod_id"), "exact_get_status": 404,
+        "account_list_succeeded": True, "account_list_absent": True,
+    }
+    if (not isinstance(absence, Mapping) or dict(absence) != expected
+            or type(absence.get("exact_get_status")) is not int
+            or absence.get("account_list_succeeded") is not True
+            or absence.get("account_list_absent") is not True
+            or not expected["provider_account_ref"] or not expected["pod_id"]):
+        raise TargetObservationError("completed release lacks independent exact GET404 and account-list absence")
+
+
+async def _confirm_release_absence(config: Any, contract: RunPodTargetContract,
+                                   attempt: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    # Lifecycle's DELETE-404 fast path and its list-only reconciliation cannot
+    # establish this product receipt. Always make both independent reads here.
+    status, body = await asyncio.to_thread(read_exact_pod, config.api_key, contract.pod_id)
+    after, volume = await _release_inventory(config, contract)
+    if type(status) is not int or status != 404 or body is not None or after is not None:
+        raise TargetObservationError("exact GET404 and successful account-list absence are both required")
+    return {
+        "provider_account_ref": attempt["provider_account_ref"],
+        "pod_id": contract.pod_id, "exact_get_status": 404,
+        "account_list_succeeded": True, "account_list_absent": True,
+    }, volume
 
 
 def _read_release_checkpoint(path: Path, expected: Mapping[str, Any]) -> dict[str, Any]:
@@ -788,7 +879,7 @@ async def _release_exact_target_after_quiescence(
     except BaseException as exc:
         unresolved = {
             **attempt,
-            "state": "cleanup_pending" if resume else "release_pending",
+            "state": "cleanup_pending",
             "cleanup_failure_type": type(exc).__name__,
             "cleanup_failure_at": utc_now_iso(),
             "reconciliation_required": True,
@@ -808,12 +899,6 @@ async def _release_exact_target_after_quiescence(
         attempt = releasing
         try:
             await asyncio.to_thread(terminate_pod, contract.pod_id, config.api_key)
-            after, volume = await _release_inventory(config, contract)
-            if after is not None:
-                raise CleanupPendingError(
-                    contract.pod_id,
-                    "pod remained present after exact-ID termination and follow-up observation",
-                )
         except BaseException as exc:
             unresolved = {
                 **attempt,
@@ -825,12 +910,22 @@ async def _release_exact_target_after_quiescence(
             replace_target_record(handle_path, unresolved, operation_id=operation_id)
             raise
 
+    try:
+        absence, volume = await _confirm_release_absence(config, contract, attempt)
+    except BaseException as exc:
+        replace_target_record(handle_path, {
+            **attempt, "state": "cleanup_pending", "cleanup_failure_type": type(exc).__name__,
+            "cleanup_failure_at": utc_now_iso(), "reconciliation_required": True,
+        }, operation_id=operation_id)
+        raise
+
     cleanup = {
         "pod_id": contract.pod_id,
         "status": cleanup_status,
         "backup_volume_id": str(volume.get("id")),
         "backup_volume_preserved": True,
         "confirmed_at": utc_now_iso(),
+        "absence": absence,
     }
     complete = {
         **attempt,
