@@ -85,7 +85,14 @@ def _wrapper_environment(tmp_path, broker, *, role="command", target=None, port=
            if not key.startswith(("ASTRID_", "PYTHON"))}
     target = target or [sys.executable, "-c", "raise AssertionError('target must not execute')"]
     env.update({
-        "PYTHONPATH": os.pathsep.join((str(hook), str(Path(custody.__file__).resolve().parents[3]))),
+        # The target restores the original source-mode import context after
+        # the stdlib-only custody registration.  Keep Runtime's source root
+        # in that context so sitecustomize can install the policy hook.
+        "PYTHONPATH": os.pathsep.join((
+            str(hook),
+            str(Path(custody.__file__).resolve().parents[3]),
+            str(Path(custody.platform.__file__).resolve().parent.parent),
+        )),
         "HOOK_MARKER": str(tmp_path / "hook-loaded"),
         "TARGET_MARKER": str(tmp_path / "target-result.json"),
         "CAPTURE_PATH": str(tmp_path / "captured-spawn.json"),

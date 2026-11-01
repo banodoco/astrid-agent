@@ -2,6 +2,8 @@ import json
 import re
 import sys
 import copy
+import hashlib
+import shutil
 from contextlib import contextmanager
 from types import SimpleNamespace
 from astrid.sdk.contracts import DomainResult,ErrorObject
@@ -37,6 +39,25 @@ class FakeDocuments:
     def list(self,*args,**kwargs):raise AssertionError('Must not scan all project documents')
 
 
+class FakeMedia:
+    def __init__(self):
+        self.objects={}
+        self.imports=[]
+        self.reject=False
+        self.metadata={}
+    def import_bytes(self, *, project, data, filename, media_type, idempotency_key):
+        validate_idempotency_key(idempotency_key)
+        self.imports.append((project,data,idempotency_key))
+        if self.reject:
+            return DomainResult.failure(ErrorObject('conflict','ingest failed',{}))
+        digest='sha256:'+hashlib.sha256(data).hexdigest()
+        self.objects[(project,digest)]=data
+        return DomainResult.success({'object_id':digest,'digest':digest,'size':len(data),
+                                     'media_type':media_type,**self.metadata})
+    def read_bytes(self,object_id):
+        return next(data for (_,digest),data in self.objects.items() if digest==object_id)
+
+
 @pytest.fixture(autouse=True)
 def configured(tmp_path,monkeypatch):
     monkeypatch.setenv(packs.ROOT_ENV,str(tmp_path/'user-data'))
@@ -45,7 +66,8 @@ def configured(tmp_path,monkeypatch):
     verifier.write_text("import json,sys,hashlib\nfrom pathlib import Path\np=Path(sys.argv[1]);x=json.loads(p.read_text());print(json.dumps({'schema':'astrid.element-build/v1','selectionDigest':'sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),'elements':[{'projectId':e['projectId'],**{k:e['descriptor'][k] for k in ('packId','id','kind','revision')}} for e in x['elements']]}))")
     monkeypatch.setenv(packs.BUILD_ENV,json.dumps([sys.executable,str(verifier)]))
     documents=FakeDocuments()
-    client=SimpleNamespace(documents=documents)
+    documents.media=FakeMedia()
+    client=SimpleNamespace(documents=documents,media=documents.media)
     @contextmanager
     def connected():yield client
     monkeypatch.setattr(packs,'_open_client',connected)
@@ -61,6 +83,41 @@ def seed(project='project'):
     manifest['rendering']={'effects/reveal':{'type':'element','path':'rendering/elements/effects/reveal/element.yaml','resources':[{'kind':'implementation','path':'rendering/elements/effects/reveal/component.tsx'}]}}
     (root/'pack.yaml').write_text(yaml.safe_dump(manifest))
     return root,directory,manifest
+
+
+def add_second_element(root, directory, manifest):
+    other = directory.parent / 'fade'
+    shutil.copytree(directory, other)
+    definition = yaml.safe_load((other / 'element.yaml').read_text())
+    definition['id'] = 'fade'
+    (other / 'element.yaml').write_text(yaml.safe_dump(definition))
+    declaration = copy.deepcopy(manifest['rendering']['effects/reveal'])
+    declaration['path'] = declaration['path'].replace('/reveal/', '/fade/')
+    for resource in declaration['resources']:
+        resource['path'] = resource['path'].replace('/reveal/', '/fade/')
+    manifest['rendering']['effects/fade'] = declaration
+    (root / 'pack.yaml').write_text(yaml.safe_dump(manifest))
+    return other
+
+
+def test_readmission_of_b_only_keeps_a_unique_and_resolvable(configured):
+    root, directory, manifest = seed()
+    other = add_second_element(root, directory, manifest)
+    first = packs.admit_project_pack('realm', 'project')
+    old = {e['descriptor']['id']: e for e in first['elements']}
+    component = other / 'component.tsx'
+    component.write_text(component.read_text() + '\n// B only\n')
+    second = packs.admit_project_pack('realm', 'project')
+    current = {e['descriptor']['id']: e for e in second['elements']}
+    assert current['reveal']['descriptor']['revision'] == old['reveal']['descriptor']['revision']
+    assert current['fade']['descriptor']['revision'] != old['fade']['descriptor']['revision']
+    row = configured.rows[('project', second['documentId'])]
+    identities = [(a['id'], a['kind'], a['revision']) for a in row['content']['admissions']]
+    # Main appended unchanged A under the new closure, making old A ambiguous.
+    assert len(identities) == len(set(identities)) == 3
+    for record in (old['reveal'], old['fade'], current['fade']):
+        reference = {k: record['descriptor'][k] for k in ('packId', 'id', 'kind', 'revision')}
+        assert packs.resolve_admitted_element('realm', 'project', reference)['descriptor'] == record['descriptor']
 
 def test_reads_lazy_and_init_explicit():
     context=packs.inspect_project_pack('realm','project');assert context['status']=='not-created';assert not Path(context['packRoot']).exists()

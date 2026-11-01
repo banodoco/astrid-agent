@@ -48,16 +48,17 @@ _FIRST_PARTY_PACK_IDS = (
     "wan2gp",
     "youtube",
     "typed_timeline",
+    "timeline",
 )
 _TRACKED_FIRST_PARTY_PACK_IDS = tuple(
     pack_id for pack_id in _FIRST_PARTY_PACK_IDS
     if pack_id not in {"discord_local", "seedance_local"}
 )
-# ``_core`` is a skill-only shell. The three runtime product mount directories
+# ``_core`` is a skill-only shell. Runtime product mount directories
 # retain executable CLI adapters but intentionally have no ``pack.yaml``:
 # their durable state belongs to the neutral workspace runtime, not a local
 # schema host.
-_FIRST_PARTY_INTERNAL_DIRS = {"_core", "references", "shots", "timeline"}
+_FIRST_PARTY_INTERNAL_DIRS = {"_core", "references", "shots"}
 _EXCLUDED_FIRST_PARTY_DIRS = {"external", "hivemind"}
 _IGNORED_PACKS_ROOT_DIRS = {"__pycache__"}
 
@@ -112,13 +113,6 @@ class PackValidationReport:
                         f"[catalog] duplicate active pack id {result.pack_id!r}: "
                         f"{previous} and {result.path}"
                     )
-            if len(result.skill_exports) > 1 and not any(
-                "one authored skill" in error for error in result.errors
-            ):
-                exports = ", ".join(result.skill_exports)
-                errors.append(
-                    f"[skills] {label}: multiple skill exports are not allowed: {exports}"
-                )
         return errors
 
     @property
