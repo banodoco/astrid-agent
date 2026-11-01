@@ -478,11 +478,26 @@ def test_real_lock_and_recipe_pins():
     assert len(models) == 5
     assert sum(row["bytes"] for row in models) == 53484234760
     assert all(len(row["sha256"]) == 64 and len(row["revision"]) == 40 for row in models)
-    assert inputs["recipe"]["vibecomfy_source"]["revision"] == VIBECOMFY_ENGINE_REVISION
     from astrid.core.generation.gpu_environment import _description
 
     _, windows = _description("vibecomfy")
-    assert inputs["recipe"]["source"] == windows["source"]
+    assert VIBECOMFY_ENGINE_REVISION == "2967033970cbb5884651c9565265778482d3b44e"
+    assert inputs["recipe"]["vibecomfy_source"] == {
+        "repository": "https://github.com/peteromallet/VibeComfy.git",
+        "revision": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
+    }
+    assert windows["vibecomfy_source"] == {
+        "repository": "https://github.com/banodoco/VibeComfy.git",
+        "revision": VIBECOMFY_ENGINE_REVISION,
+    }
+    assert inputs["recipe"]["source"] == {
+        "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+        "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf",
+    }
+    assert windows["source"] == {
+        "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+        "revision": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    }
     assert inputs["recipe"]["custom_nodes"] == windows["custom_nodes"]
     assert inputs["recipe"]["torch"] == windows["torch"]
 

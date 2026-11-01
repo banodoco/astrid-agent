@@ -14,7 +14,7 @@ from astrid import mcp_server
 
 EXPECTED = {
     "generate_list", "generate_image", "generate_video", "generate_describe",
-    "generate_workflow", "generate_targets", "generate_release",
+    "generate_workflow", "generate_targets", "generate_launch", "generate_release",
     "tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry",
     "tasks_events", "tasks_follow", "engines_install",
 }
@@ -66,7 +66,7 @@ def test_phase_one_tools_list_and_parser_registration():
     gen_names = {"generate_" + path[-1] for path, _, _ in mcp_server._leaves(
         generation_parser(), ("generate",), "")}
     assert task_names == {"tasks_create", "tasks_list", "tasks_show", "tasks_cancel", "tasks_retry", "tasks_events", "tasks_follow"}
-    assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_release"}
+    assert gen_names == {"generate_list", "generate_image", "generate_video", "generate_describe", "generate_workflow", "generate_targets", "generate_launch", "generate_release"}
 
     state = {"tools": tools, "prompts": {}}
     listed = mcp_server.handle({"jsonrpc": "2.0", "id": 8, "method": "tools/list"}, state)
@@ -145,12 +145,15 @@ def test_generate_schema_and_argv_for_all_leaves():
     expectations = {
         "generate_list": ({"kind": {"type": "string", "enum": ["image", "video", "audio", "generation", "fixture"]}}, [],
                           {"kind": "audio"}, ["generate", "list", "--kind", "audio", "--json"]),
-        "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string"}, [],
-                              {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video"},
-                              ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--json"]),
+        "generate_describe": ({"workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}, [],
+                              {"workflow": "bundle/workflow.py", "entry": "entry-a", "mode": "video", "target": "runpod", "engine": "comfyui"},
+                              ["generate", "describe", "bundle/workflow.py", "--entry", "entry-a", "--mode", "video", "--target", "runpod", "--engine", "comfyui", "--json"]),
         "generate_targets": ({"target": "string", "engine": "string", "save": "boolean", "input": "array"}, [],
                              {"target": "local", "engine": "comfyui", "save": True, "input": ["a=1", "b=true"]},
                              ["generate", "targets", "--target", "local", "--engine", "comfyui", "--save", "--input", "a=1", "--input", "b=true", "--json"]),
+        "generate_launch": ({"target": "string", "engine": "string", "consent": "array", "timeout": "number"}, [],
+                            {"target": "managed", "engine": "comfyui", "consent": ["user_env"], "timeout": 5},
+                            ["generate", "launch", "--target", "managed", "--engine", "comfyui", "--consent", "user_env", "--timeout", "5", "--json"]),
         "generate_release": ({"engine": "string", "target": "string", "no_wait": "boolean"}, ["engine", "target"],
                              {"engine": "engine-a", "target": "local", "no_wait": True},
                              ["generate", "release", "--engine", "engine-a", "--target", "local", "--no-wait", "--json"]),
@@ -165,6 +168,15 @@ def test_generate_schema_and_argv_for_all_leaves():
         assert argv == argv_expected
         assert mcp_server.argv_for(tools[name], {})[-1:] == ["--json"]
 
+    launch = tools["generate_launch"]["definition"]["inputSchema"]
+    assert {key: value["type"] for key, value in launch["properties"].items()} == {
+        "target": "string", "engine": "string", "consent": "array", "timeout": "number"}
+    assert launch["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
+    assert launch["additionalProperties"] is False
+    describe = tools["generate_describe"]["definition"]["inputSchema"]
+    assert {key: value["type"] for key, value in describe["properties"].items()} == {
+        "workflow": "string", "entry": "string", "mode": "string", "target": "string", "engine": "string"}
+
     for name in ("generate_image", "generate_video"):
         props = tools[name]["definition"]["inputSchema"]["properties"]
         expected_types = {
@@ -174,7 +186,7 @@ def test_generate_schema_and_argv_for_all_leaves():
             "width": "integer", "height": "integer", "steps": "integer", "seed": "integer",
             "guidance_scale": "number", "negative_prompt": "string", "frames": "integer", "fps": "number",
             "input": "array", "engine": "string", "no_wait": "boolean", "consent": "array",
-            "max_usd": "number", "deadline": "string", "inputs": "object",
+            "max_usd": "number", "deadline": "string", "recovery_path": "string", "inputs": "object",
         }
         assert {key: value["type"] for key, value in props.items()} == expected_types
         assert props["consent"]["items"]["enum"] == ["user_env", "paid"]
@@ -185,7 +197,7 @@ def test_generate_schema_and_argv_for_all_leaves():
                      "image_ref": "source.png", "width": 640, "height": 480, "steps": 22, "seed": 19,
                      "guidance_scale": 4.5, "negative_prompt": "blur", "frames": 9, "fps": 12.5,
                      "input": ["style=soft", "count=2"], "engine": "engine-a", "no_wait": False,
-                     "consent": ["user_env", "paid"], "max_usd": 1.5, "deadline": "2030-01-01T00:00:00Z",
+                     "consent": ["user_env", "paid"], "max_usd": 1.5, "deadline": "2030-01-01T00:00:00Z", "recovery_path": "receipt.json",
                      }
         argv, parsed = _parse_tool(tools[name], arguments)
         assert argv == ["generate", name.removeprefix("generate_"), "portrait", "--prompt", "alternate",
@@ -194,8 +206,9 @@ def test_generate_schema_and_argv_for_all_leaves():
                         "--dry-run", "--edit", "source.png", "--width", "640", "--height", "480", "--steps", "22",
                         "--seed", "19", "--cfg", "4.5", "--negative-prompt", "blur", "--frames", "9", "--fps", "12.5",
                         "--input", "style=soft", "--input", "count=2", "--engine", "engine-a", "--consent", "user_env",
-                        "--consent", "paid", "--max-usd", "1.5", "--deadline", "2030-01-01T00:00:00Z", "--json"]
+                        "--consent", "paid", "--max-usd", "1.5", "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "receipt.json", "--json"]
         assert parsed.consent == ["user_env", "paid"] and parsed.width == 640 and parsed.fps == 12.5
+        assert parsed.recovery_path == "receipt.json"
         with pytest.raises(ValueError, match="unknown arguments"):
             mcp_server.argv_for(tools[name], {"invented": 1})
 
@@ -207,20 +220,17 @@ def test_generate_schema_and_argv_for_all_leaves():
         "negative_prompt": "string", "image_ref": "string", "width": "integer", "height": "integer",
         "seed": "integer", "frames": "integer", "fps": "number", "steps": "integer",
         "guidance_scale": "number", "dry_run": "boolean", "input": "array", "engine": "string",
-        "no_wait": "boolean", "consent": "array", "max_usd": "number", "deadline": "string", "inputs": "object",
+        "no_wait": "boolean", "consent": "array", "max_usd": "number", "deadline": "string", "recovery_path": "string", "inputs": "object",
     }
     assert schema["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
     assert schema["required"] == ["workflow"]
     assert schema["properties"]["inputs"]["type"] == "object"
-    assert "recovery_path" not in schema["properties"]
-    assert "target" not in tools["generate_describe"]["definition"]["inputSchema"]["properties"]
-    assert "engine" not in tools["generate_describe"]["definition"]["inputSchema"]["properties"]
     args = {"workflow": "bundle.json", "as_entry": "new", "replace": True, "inputs_json": "in.json",
             "target": "local", "mode": "video", "project": "p", "out": "o.mp4", "prompt": "p",
             "negative_prompt": "n", "image_ref": "i.png", "width": 640, "height": 360, "seed": 4,
             "frames": 12, "fps": 24.0, "steps": 30, "guidance_scale": 7.0, "dry_run": True,
             "input": ["x=1", "y=2"], "engine": "engine-x", "no_wait": False,
-            "consent": ["paid"], "max_usd": 3.0, "deadline": "2030-01-01T00:00:00Z",
+            "consent": ["paid"], "max_usd": 3.0, "deadline": "2030-01-01T00:00:00Z", "recovery_path": "receipt.json",
             "inputs": {"node:5.value": [1, 2]}}
     mcp_inputs = args.pop("inputs")
     argv, parsed = _parse_tool(workflow, args)
@@ -229,8 +239,9 @@ def test_generate_schema_and_argv_for_all_leaves():
                     "--negative-prompt", "n", "--edit", "i.png", "--width", "640", "--height", "360", "--seed", "4",
                     "--frames", "12", "--fps", "24.0", "--steps", "30", "--cfg", "7.0", "--dry-run", "--input",
                     "x=1", "--input", "y=2", "--engine", "engine-x", "--consent", "paid", "--max-usd", "3.0",
-                    "--deadline", "2030-01-01T00:00:00Z", "--json"]
+                    "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "receipt.json", "--json"]
     assert parsed.workflow == "bundle.json" and parsed.consent == ["paid"]
+    assert parsed.recovery_path == "receipt.json"
     assert mcp_inputs == {"node:5.value": [1, 2]}
 
 
