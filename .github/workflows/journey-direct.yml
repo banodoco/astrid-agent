@@ -20,6 +20,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+        - job_id: direct-linux
+          mode: direct
+          leg: release0-to-release1
+          runner: ubuntu-24.04
+          shell: sh
+          os: linux
         - job_id: direct-macos
           mode: direct
           leg: release0-to-release1
@@ -47,14 +53,14 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-app
-        ref: ad43f06092e1cb7c4155bbb1a9138c847dd4b7ed
+        ref: 7f6f99208100e895efebf39c70bc30af6cee0884
         path: app
         persist-credentials: false
     - name: Check out frozen Agent candidate
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-agent
-        ref: b05ac03a5bcab278bccf99d85b49f4037b5dec10
+        ref: ddd5d278796641901bd11508863a8ea21e6c9697
         path: candidate-agent
         fetch-depth: 0
         persist-credentials: false
@@ -62,14 +68,14 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-runtime
-        ref: f75517d86011140e737782f3f75206408ddc1cf9
+        ref: 1a275bb339ae897e52a5be5e1da99e846e402037
         path: runtime
         persist-credentials: false
     - name: Check out frozen Pinokio candidate
       uses: actions/checkout@v4
       with:
         repository: banodoco/astrid-pinokio
-        ref: c5b42701641889ecb916c60cde09a717f83d62ff
+        ref: 89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4
         path: pinokio
         persist-credentials: false
     - name: Fetch authentic release-0 Agent object
@@ -94,7 +100,7 @@ jobs:
     - name: Freeze and validate candidate inputs
       shell: bash
       env:
-        CANDIDATE: '{"app":"ad43f06092e1cb7c4155bbb1a9138c847dd4b7ed","agent":"b05ac03a5bcab278bccf99d85b49f4037b5dec10","runtime":"f75517d86011140e737782f3f75206408ddc1cf9","pinokio":"c5b42701641889ecb916c60cde09a717f83d62ff","manifest_sha256":"ce9f4944f2e8c844a3246d0e1bf85c830839653d48935f4c734c3198f1e93dd7","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
+        CANDIDATE: '{"app":"7f6f99208100e895efebf39c70bc30af6cee0884","agent":"ddd5d278796641901bd11508863a8ea21e6c9697","runtime":"1a275bb339ae897e52a5be5e1da99e846e402037","pinokio":"89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4","manifest_sha256":"4758572cf02ce7ef2cc8cb42c4f11cf6095dab584f9d54734d258e2eb455776c","artifacts":{"public/install":"100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d","public/install.sh":"591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285","public/install.ps1":"bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"}}'
       run: |
         printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
         python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
@@ -124,6 +130,14 @@ jobs:
         $identity = @{driver_ref=$env:DRIVER_REF; workflow_sha=$env:DRIVER_SHA; driver_checkout_sha=$actual; run_id=$env:GITHUB_RUN_ID; job_id='${{ matrix.job_id }}'}
         $identity | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $upload 'driver-identity.json')
         if (Test-Path (Join-Path $env:RUNNER_TEMP 'candidate.json')) { Copy-Item (Join-Path $env:RUNNER_TEMP 'candidate.json') $upload }
+        $requiredEvidence = @(
+          (Join-Path $upload 'before-cleanup/journey-result.json'),
+          (Join-Path $upload 'after-cleanup/journey-result.json')
+        )
+        $missingEvidence = @($requiredEvidence | Where-Object { -not (Test-Path -LiteralPath $_) })
+        if ($missingEvidence.Count -gt 0) {
+          throw "Named journey evidence is missing before/after cleanup: $($missingEvidence -join ', ')"
+        }
         $bytes = (Get-ChildItem -LiteralPath $upload -Recurse -File | Measure-Object -Property Length -Sum).Sum
         "Evidence bytes before upload: $bytes" | Tee-Object -FilePath (Join-Path $upload 'artifact-size.txt')
         if ($bytes -ge 49000000) {
@@ -139,7 +153,7 @@ jobs:
       with:
         name: journey-receipt-${{ matrix.job_id }}
         path: ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/
-        if-no-files-found: warn
+        if-no-files-found: error
     - name: Retain receipt and size diagnostic if evidence is oversized
       if: always() && steps.evidence.outputs.oversize == 'true'
       uses: actions/upload-artifact@v4
@@ -149,4 +163,4 @@ jobs:
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/**/journey-result.json
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/driver-identity.json
           ${{ runner.temp }}/astrid-r1-${{ matrix.job_id }}/evidence/evidence-upload/artifact-size.txt
-        if-no-files-found: warn
+        if-no-files-found: error
