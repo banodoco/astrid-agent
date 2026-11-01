@@ -701,14 +701,17 @@ def _verify_tree_absent(process: subprocess.Popen, *, deadline: float | None = N
 # over a second, and a 1 s floor turned Ctrl+C into a CustodyError.
 _CLEANUP_FLOOR_SECONDS = 5.0
 
-def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0) -> None:
+def terminate_tree(process: subprocess.Popen, *, grace_seconds: float = 1.0,
+                   cleanup_deadline: float | None = None) -> None:
     """Stop a birth/ancestry-fenced tree, descendants before the leader.
 
     Unlike group cleanup this never signals a containing/inherited group.
     Ownership is remembered during execution, not recovered by name/path after
     a parent exits. Success certifies observed identities absent.
     """
-    deadline = time.monotonic() + max(0.0, grace_seconds) + max(_CLEANUP_FLOOR_SECONDS, grace_seconds)
+    deadline = cleanup_deadline
+    if deadline is None:
+        deadline = time.monotonic() + max(0.0, grace_seconds) + max(_CLEANUP_FLOOR_SECONDS, grace_seconds)
     try:
         _terminate_tree(process, grace_seconds=grace_seconds, cleanup_deadline=deadline)
     except BaseException as exc:

@@ -391,7 +391,7 @@ def test_installed_engine_produces_private_profile_consumed_by_existing_validato
     if recipe.engine == "comfyui":
         assert dict(receipt.source_commits) == {
             "comfyui": "423cbd20511becb1f16122ab518e92e58bfa03d9",
-            "vibecomfy": "2967033970cbb5884651c9565265778482d3b44e",
+            "vibecomfy": "8cf4c758c3f1f2473f2094478edc8696bb5bf5c0",
         }
     inventory = sorted(({"name": Path(m.destination).name, "sha256": "sha256:" + m.sha256, "size": m.bytes,
                          "subdir": str(Path(m.destination).parent)} for m in installation["lock"].models),

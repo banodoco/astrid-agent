@@ -40,6 +40,17 @@ def test_locks_cover_no_deps_vibecomfy_install(name: str) -> None:
     assert {"huggingface-hub", "hf-xet", "httpx", "pyyaml", "websockets"} <= pins.keys()
 
 
+def test_runtime_lock_covers_runpod_source_dependencies_without_source_distributions() -> None:
+    pins = validate_hashed_lock(REPO_ROOT / "requirements" / "runtime.lock")["pins"]
+    assert {
+        "aiohttp", "aiohttp-retry", "backoff", "boto3", "click", "colorama",
+        "cryptography", "fastapi", "inquirerpy", "paramiko", "prettytable",
+        "psutil", "py-cpuinfo", "requests", "tomli", "tomlkit", "tqdm-loggable",
+        "urllib3", "watchdog",
+    } <= pins.keys()
+    assert not {"runpod", "runpod-lifecycle"} & pins.keys()
+
+
 def test_lock_validation_fails_closed_on_ranges_urls_and_missing_hashes(
     tmp_path: Path,
 ) -> None:

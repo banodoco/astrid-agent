@@ -23,6 +23,10 @@ ENCODERS = {"libx264", "libx265", "libvpx-vp9", "libaom-av1", "libopus"}
 FILTERS = {"ebur128", "silencedetect", "astats", "signalstats", "blackdetect",
            "loudnorm", "psnr", "ssim", "scale", "fps", "aresample"}
 DEFAULT_OMP_SOURCE = "@oh-my-pi/pi-coding-agent@18.12.6"
+MANIFEST_SOURCE_REPOSITORIES = {
+    "lifecycle": "https://github.com/banodoco/runpod-lifecycle.git",
+    "runpod": "https://github.com/runpod/runpod-python.git",
+}
 
 
 def omp_source(pin: dict) -> str | dict:
@@ -62,6 +66,21 @@ def validate_manifest(value: dict) -> dict:
     if type(release) is not int or release < 0:
         raise ValueError("The install manifest release must be a nonnegative integer.")
     sources = ("agent", "runtime") + (("vibecomfy",) if "vibecomfy" in value else ())
+    runpod_sources = ("lifecycle", "runpod")
+    if any(name in value for name in runpod_sources):
+        if not all(name in value for name in runpod_sources):
+            raise ValueError("The manifest must pin both lifecycle and runpod sources together.")
+        for name in runpod_sources:
+            pin = value[name]
+            if (not isinstance(pin, dict) or set(pin) != {"repo", "sha", "version"}
+                    or not isinstance(pin["sha"], str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", pin["sha"])
+                    or not isinstance(pin["version"], str)
+                    or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\.dev[0-9]+)?", pin["version"])):
+                raise ValueError(f"The {name} source must include a full git SHA and exact version.")
+            repository = source_repo(pin["repo"])
+            if isinstance(repository, str) and repository != MANIFEST_SOURCE_REPOSITORIES[name]:
+                raise ValueError(f"The {name} source repository does not match its reviewed identity.")
     for name in sources:
         pin = value[name]
         if (not isinstance(pin, dict) or not isinstance(pin.get("sha"), str)
@@ -187,6 +206,16 @@ def local_repository(value: str) -> Path:
     return repository
 
 
+def source_repo(value: str) -> str | Path:
+    """Validate a pinned Python source URL or a local repository override."""
+    if isinstance(value, str) and value.startswith("https://"):
+        match = re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?", value)
+        if not match:
+            raise ValueError("A source repo URL must be an HTTPS GitHub repository.")
+        return value.rstrip("/")
+    return local_repository(value)
+
+
 def local_source(repo: str, sha: str, archive: Path) -> None:
     """Archive a committed Git tree, without consulting the checkout's worktree."""
     repository = local_repository(repo)
@@ -215,6 +244,49 @@ def local_source(repo: str, sha: str, archive: Path) -> None:
             raise ValueError(f"Local source contains a link or submodule: {path}")
     with archive.open("wb") as output:
         git("archive", "--format=tar", sha, stdout=output)
+
+
+def clone_source(repo: str, sha: str, destination: Path) -> Path:
+    """Clone all refs and tags, then admit only the manifest's immutable commit."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("A source must be pinned to a full git SHA.")
+    repository = source_repo(repo)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".clone")
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_NO_REPLACE_OBJECTS": "1"})
+    try:
+        result = subprocess.run(["git", "clone", "--quiet", "--tags", "--no-checkout",
+                                 "--no-hardlinks", "--no-single-branch", str(repository), str(temporary)],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                check=False, timeout=1800)
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(f"Cannot clone pinned source repository: {detail}")
+        check = subprocess.run(["git", "-C", str(temporary), "cat-file", "-t", sha],
+                               env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               check=False, timeout=60)
+        if check.returncode or check.stdout.strip() != b"commit":
+            raise ValueError("The pinned source SHA is not a commit in the cloned repository.")
+        checkout = subprocess.run(["git", "-C", str(temporary), "checkout", "--quiet",
+                                  "--detach", sha], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, check=False, timeout=60)
+        if checkout.returncode:
+            detail = checkout.stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(f"Cannot check out pinned source commit: {detail}")
+        head = subprocess.run(["git", "-C", str(temporary), "rev-parse", "HEAD"], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+                              timeout=60).stdout.decode("ascii").strip()
+        if head != sha:
+            raise ValueError("The cloned source HEAD does not match its manifest SHA.")
+        platform.replace_path(temporary, destination)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return destination
 
 
 def source(name: str, sha: str, destination: Path, *, repo: str | None = None) -> Path:
