@@ -3,7 +3,7 @@ repos:
   astrid-runtime: 1a275bb339ae897e52a5be5e1da99e846e402037
 producer_authorities:
   vibecomfy: 3bebae39655eb4604548850404be3d4aefaf2ef31
-  lifecycle: 96360a2
+  lifecycle: 96360a27a53c4608f780f7b370f747a2aa3c7ca8
 cpu:
   vcpu: 8
 gpu: false
