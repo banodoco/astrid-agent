@@ -28,8 +28,8 @@ def _install_inherited_bridge(fd: str):
     return _install_child_bridge(channel)
 
 
-def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
-    """Install before Python command code, preserving its argv and entry point."""
+def _run_child_command(fd: str | None, encoded: str, *, renderer: bool = False) -> int:
+    """Run Python command code, installing a supplied host channel first."""
     args = json.loads(encoded)
     if not isinstance(args, list) or not args or any(not isinstance(arg, str) for arg in args):
         raise ValueError("invalid private Python command")
@@ -47,8 +47,10 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
     if renderer:
         from .remotion_host_session import install_host_remotion_client
         bridge = install_host_remotion_client(fd)
-    else:
+    elif fd is not None:
         bridge = _install_inherited_bridge(fd)
+    else:
+        bridge = None
     try:
         from ._child_import_receipt import observe_action_entry
 
@@ -73,7 +75,8 @@ def _run_child_command(fd: str, encoded: str, *, renderer: bool = False) -> int:
             runpy.run_path(args[0], run_name="__main__")
         return 0
     finally:
-        bridge.close()
+        if bridge is not None:
+            bridge.close()
 
 
 def _json_value(value: Any) -> Any:
@@ -181,6 +184,8 @@ def run(payload_path: str | Path) -> int:
 
 if __name__ == "__main__":
     try:
+        if len(sys.argv) == 3 and sys.argv[1] == "--python-command":
+            raise SystemExit(_run_child_command(None, sys.argv[2]))
         if len(sys.argv) == 4 and sys.argv[1] in {"--child-command", "--renderer-command"}:
             raise SystemExit(_run_child_command(sys.argv[2], sys.argv[3], renderer=sys.argv[1] == "--renderer-command"))
         bridge = None
