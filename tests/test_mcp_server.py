@@ -269,8 +269,8 @@ def test_shots_and_timeline_file_arguments_take_text(tmp_path):
     text_argv = mcp_server.argv_for(text_tool, {"text_file": "exact narration\n"}, tmp_path)
     sheet_argv = mcp_server.argv_for(sheet_tool, {"sheet_file": "00:00.000\t0\n"}, tmp_path)
     assert Path(text_argv[text_argv.index("--text-file") + 1]).read_text() == "exact narration\n"
-    sheet_file = sheet_argv[-2]
-    assert sheet_argv[-1] == "--json"
+    assert sheet_argv[-2] == "--json"
+    sheet_file = sheet_argv[-1]
     assert Path(sheet_file).read_text() == "00:00.000\t0\n"
     assert Path(text_argv[text_argv.index("--text-file") + 1]).is_absolute()
     assert Path(sheet_file).is_absolute()

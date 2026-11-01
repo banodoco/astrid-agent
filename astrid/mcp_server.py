@@ -218,10 +218,10 @@ def argv_for(tool: dict[str, Any], arguments: dict[str, Any], workdir: Path | No
             flags += [option, str(value)]
     if tool["path"] == ("timelines", "render"):
         flags.append("--detach")
-    if tool["json"]:
-        flags.append("--json")
     if tool["path"] == ("timelines", "edit") and "--no-sweep" not in flags:
         flags.append("--no-sweep")
+    if tool["json"]:
+        flags.append("--json")
     return argv + flags + trailing_files
 
 
