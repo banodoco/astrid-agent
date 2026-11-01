@@ -1,0 +1,11 @@
+{
+  "attempt": "1",
+  "caller_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+  "ref": "refs/heads/venue/M-QUAL-R51-DIRECT-1",
+  "repository": "banodoco/astrid-agent",
+  "reusable_result": "cancelled",
+  "run_id": "41352578046",
+  "workflow": "R51 direct journey dispatch",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/r51-direct-dispatch.yml@refs/heads/venue/M-QUAL-R51-DIRECT-1",
+  "workflow_sha": "420bca07f6a0b742b63f97d507ad384084f79e93"
+}

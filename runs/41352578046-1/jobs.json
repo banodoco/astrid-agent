@@ -1,0 +1,766 @@
+[
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985762331",
+    "completed_at": "2026-11-01T21:33:15Z",
+    "conclusion": "success",
+    "created_at": "2026-11-01T21:33:05Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985762331",
+    "id": 124985762331,
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "name": "journey / config",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbtiGw",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000016563,
+    "runner_name": "GitHub Actions 1000016563",
+    "started_at": "2026-11-01T21:33:07Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed_at": "2026-11-01T21:33:09Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "number": 1,
+        "started_at": "2026-11-01T21:33:08Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:13Z",
+        "conclusion": "success",
+        "name": "Check out reviewed Agent matrix contracts",
+        "number": 2,
+        "started_at": "2026-11-01T21:33:09Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:13Z",
+        "conclusion": "success",
+        "name": "Run python3 - <<'PY'",
+        "number": 3,
+        "started_at": "2026-11-01T21:33:13Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:13Z",
+        "conclusion": "success",
+        "name": "Post Check out reviewed Agent matrix contracts",
+        "number": 6,
+        "started_at": "2026-11-01T21:33:13Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:13Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "number": 7,
+        "started_at": "2026-11-01T21:33:13Z",
+        "status": "completed"
+      }
+    ],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985762331",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985807377",
+    "completed_at": "2026-11-01T21:34:23Z",
+    "conclusion": "failure",
+    "created_at": "2026-11-01T21:33:15Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985807377",
+    "id": 124985807377,
+    "labels": [
+      "windows-2022"
+    ],
+    "name": "journey / journey (direct-windows, direct, release0-to-release1, windows-2022, powershell.exe, windows)",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbwSEQ",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000016566,
+    "runner_name": "GitHub Actions 1000016566",
+    "started_at": "2026-11-01T21:33:17Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed_at": "2026-11-01T21:33:20Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "number": 1,
+        "started_at": "2026-11-01T21:33:18Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:30Z",
+        "conclusion": "success",
+        "name": "Check out reviewed Agent receipt harness",
+        "number": 2,
+        "started_at": "2026-11-01T21:33:20Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:39Z",
+        "conclusion": "success",
+        "name": "Check out frozen App candidate",
+        "number": 3,
+        "started_at": "2026-11-01T21:33:30Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:48Z",
+        "conclusion": "success",
+        "name": "Check out frozen Agent candidate",
+        "number": 4,
+        "started_at": "2026-11-01T21:33:39Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:52Z",
+        "conclusion": "success",
+        "name": "Check out frozen Runtime candidate",
+        "number": 5,
+        "started_at": "2026-11-01T21:33:48Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:56Z",
+        "conclusion": "success",
+        "name": "Check out frozen Pinokio candidate",
+        "number": 6,
+        "started_at": "2026-11-01T21:33:52Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:57Z",
+        "conclusion": "success",
+        "name": "Run actions/setup-python@v5",
+        "number": 7,
+        "started_at": "2026-11-01T21:33:56Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:57Z",
+        "conclusion": "success",
+        "name": "Record effective immutable checkouts",
+        "number": 8,
+        "started_at": "2026-11-01T21:33:57Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:59Z",
+        "conclusion": "success",
+        "name": "Freeze and validate candidate inputs",
+        "number": 9,
+        "started_at": "2026-11-01T21:33:57Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:11Z",
+        "conclusion": "failure",
+        "name": "Run the matrix-owned lifecycle driver",
+        "number": 10,
+        "started_at": "2026-11-01T21:33:59Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:12Z",
+        "conclusion": "success",
+        "name": "Retain the matrix receipt even after a lifecycle failure",
+        "number": 11,
+        "started_at": "2026-11-01T21:34:11Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:12Z",
+        "conclusion": "skipped",
+        "name": "Post Run actions/setup-python@v5",
+        "number": 17,
+        "started_at": "2026-11-01T21:34:12Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:14Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen Pinokio candidate",
+        "number": 18,
+        "started_at": "2026-11-01T21:34:12Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:16Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen Runtime candidate",
+        "number": 19,
+        "started_at": "2026-11-01T21:34:14Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:18Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen Agent candidate",
+        "number": 20,
+        "started_at": "2026-11-01T21:34:16Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:20Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen App candidate",
+        "number": 21,
+        "started_at": "2026-11-01T21:34:18Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:21Z",
+        "conclusion": "success",
+        "name": "Post Check out reviewed Agent receipt harness",
+        "number": 22,
+        "started_at": "2026-11-01T21:34:20Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:21Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "number": 23,
+        "started_at": "2026-11-01T21:34:21Z",
+        "status": "completed"
+      }
+    ],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985807377",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985807381",
+    "completed_at": "2026-11-01T21:35:25Z",
+    "conclusion": "failure",
+    "created_at": "2026-11-01T21:33:15Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985807381",
+    "id": 124985807381,
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "name": "journey / journey (direct-linux, direct, release0-to-release1, ubuntu-24.04, sh, linux)",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbwSFQ",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000016564,
+    "runner_name": "GitHub Actions 1000016564",
+    "started_at": "2026-11-01T21:33:18Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed_at": "2026-11-01T21:33:19Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "number": 1,
+        "started_at": "2026-11-01T21:33:18Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:23Z",
+        "conclusion": "success",
+        "name": "Check out reviewed Agent receipt harness",
+        "number": 2,
+        "started_at": "2026-11-01T21:33:19Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:28Z",
+        "conclusion": "success",
+        "name": "Check out frozen App candidate",
+        "number": 3,
+        "started_at": "2026-11-01T21:33:23Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:33Z",
+        "conclusion": "success",
+        "name": "Check out frozen Agent candidate",
+        "number": 4,
+        "started_at": "2026-11-01T21:33:28Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:34Z",
+        "conclusion": "success",
+        "name": "Check out frozen Runtime candidate",
+        "number": 5,
+        "started_at": "2026-11-01T21:33:33Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:35Z",
+        "conclusion": "success",
+        "name": "Check out frozen Pinokio candidate",
+        "number": 6,
+        "started_at": "2026-11-01T21:33:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:35Z",
+        "conclusion": "success",
+        "name": "Run actions/setup-python@v5",
+        "number": 7,
+        "started_at": "2026-11-01T21:33:35Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:35Z",
+        "conclusion": "success",
+        "name": "Record effective immutable checkouts",
+        "number": 8,
+        "started_at": "2026-11-01T21:33:35Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:33:35Z",
+        "conclusion": "success",
+        "name": "Freeze and validate candidate inputs",
+        "number": 9,
+        "started_at": "2026-11-01T21:33:35Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:34:16Z",
+        "conclusion": "failure",
+        "name": "Run the matrix-owned lifecycle driver",
+        "number": 10,
+        "started_at": "2026-11-01T21:33:35Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:20Z",
+        "conclusion": "success",
+        "name": "Retain the matrix receipt even after a lifecycle failure",
+        "number": 11,
+        "started_at": "2026-11-01T21:34:16Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:20Z",
+        "conclusion": "skipped",
+        "name": "Post Run actions/setup-python@v5",
+        "number": 17,
+        "started_at": "2026-11-01T21:35:20Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:20Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen Pinokio candidate",
+        "number": 18,
+        "started_at": "2026-11-01T21:35:20Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:21Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen Runtime candidate",
+        "number": 19,
+        "started_at": "2026-11-01T21:35:20Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:21Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen Agent candidate",
+        "number": 20,
+        "started_at": "2026-11-01T21:35:21Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:21Z",
+        "conclusion": "success",
+        "name": "Post Check out frozen App candidate",
+        "number": 21,
+        "started_at": "2026-11-01T21:35:21Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:21Z",
+        "conclusion": "success",
+        "name": "Post Check out reviewed Agent receipt harness",
+        "number": 22,
+        "started_at": "2026-11-01T21:35:21Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:21Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "number": 23,
+        "started_at": "2026-11-01T21:35:21Z",
+        "status": "completed"
+      }
+    ],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985807381",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985807429",
+    "completed_at": "2026-11-01T21:33:16Z",
+    "conclusion": "cancelled",
+    "created_at": "2026-11-01T21:33:15Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985807429",
+    "id": 124985807429,
+    "labels": [
+      "macos-14"
+    ],
+    "name": "journey / journey (direct-macos, direct, release0-to-release1, macos-14, sh, macos)",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbwSRQ",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": 0,
+    "runner_group_name": "",
+    "runner_id": 0,
+    "runner_name": "",
+    "started_at": "2026-11-01T21:33:15Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985807429",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985808322",
+    "completed_at": "2026-11-01T21:33:15Z",
+    "conclusion": "skipped",
+    "created_at": "2026-11-01T21:33:16Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985808322",
+    "id": 124985808322,
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "name": "journey / m4_4b_local",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbwVwg",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": null,
+    "runner_group_name": null,
+    "runner_id": null,
+    "runner_name": null,
+    "started_at": "2026-11-01T21:33:16Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985808322",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985808416",
+    "completed_at": "2026-11-01T21:33:15Z",
+    "conclusion": "skipped",
+    "created_at": "2026-11-01T21:33:16Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985808416",
+    "id": 124985808416,
+    "labels": [],
+    "name": "journey / failure_modes",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbwWIA",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": null,
+    "runner_group_name": null,
+    "runner_id": null,
+    "runner_name": null,
+    "started_at": "2026-11-01T21:33:16Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985808416",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124985808747",
+    "completed_at": "2026-11-01T21:33:15Z",
+    "conclusion": "skipped",
+    "created_at": "2026-11-01T21:33:16Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124985808747",
+    "id": 124985808747,
+    "labels": [],
+    "name": "journey / release2",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGbwXaw",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": null,
+    "runner_group_name": null,
+    "runner_id": null,
+    "runner_name": null,
+    "started_at": "2026-11-01T21:33:16Z",
+    "status": "completed",
+    "steps": [],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124985808747",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124986380225",
+    "completed_at": "2026-11-01T21:35:37Z",
+    "conclusion": "failure",
+    "created_at": "2026-11-01T21:35:25Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124986380225",
+    "id": 124986380225,
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "name": "journey / gate",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGcTPwQ",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000016567,
+    "runner_name": "GitHub Actions 1000016567",
+    "started_at": "2026-11-01T21:35:27Z",
+    "status": "completed",
+    "steps": [
+      {
+        "completed_at": "2026-11-01T21:35:30Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "number": 1,
+        "started_at": "2026-11-01T21:35:28Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:30Z",
+        "conclusion": "failure",
+        "name": "Reject skipped, cancelled, or failed matrix dependencies",
+        "number": 2,
+        "started_at": "2026-11-01T21:35:30Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "success",
+        "name": "Check out reviewed Agent receipt harness",
+        "number": 3,
+        "started_at": "2026-11-01T21:35:30Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Check out frozen App candidate for aggregate validation",
+        "number": 4,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "success",
+        "name": "Run actions/setup-python@v5",
+        "number": 5,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Download every per-job receipt",
+        "number": 6,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Aggregate the exact Release-1 receipt matrix",
+        "number": 7,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Aggregate the exact M4-4a Pinokio backend receipts",
+        "number": 8,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Reject skipped M4-5 matrix dependencies",
+        "number": 9,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Download every M4-5 scenario receipt",
+        "number": 10,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Aggregate the exact twelve M4-5 scenario receipts",
+        "number": 11,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Download local-only M4-4b output",
+        "number": 12,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Aggregate M4-4b only as local-process evidence",
+        "number": 13,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Download all separately retained local M4-6 outputs",
+        "number": 14,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Aggregate M4-6 disposable execution outputs",
+        "number": 15,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Fail closed on the unavailable hosted M4-6 native-service aggregate",
+        "number": 16,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "skipped",
+        "name": "Post Run actions/setup-python@v5",
+        "number": 31,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "success",
+        "name": "Post Check out reviewed Agent receipt harness",
+        "number": 32,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": "2026-11-01T21:35:34Z",
+        "conclusion": "success",
+        "name": "Complete job",
+        "number": 33,
+        "started_at": "2026-11-01T21:35:34Z",
+        "status": "completed"
+      }
+    ],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124986380225",
+    "workflow_name": "R51 direct journey dispatch"
+  },
+  {
+    "check_run_url": "https://api.github.com/repos/banodoco/astrid-agent/check-runs/124986430701",
+    "completed_at": null,
+    "conclusion": null,
+    "created_at": "2026-11-01T21:35:37Z",
+    "head_branch": "venue/M-QUAL-R51-DIRECT-1",
+    "head_sha": "420bca07f6a0b742b63f97d507ad384084f79e93",
+    "html_url": "https://github.com/banodoco/astrid-agent/actions/runs/41352578046/job/124986430701",
+    "id": 124986430701,
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "name": "publish",
+    "node_id": "CR_kwDOSOeWsc8AAAAdGcWU7Q",
+    "run_attempt": 1,
+    "run_id": 41352578046,
+    "run_url": "https://api.github.com/repos/banodoco/astrid-agent/actions/runs/41352578046",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions",
+    "runner_id": 1000016568,
+    "runner_name": "GitHub Actions 1000016568",
+    "started_at": "2026-11-01T21:35:39Z",
+    "status": "in_progress",
+    "steps": [
+      {
+        "completed_at": "2026-11-01T21:35:40Z",
+        "conclusion": "success",
+        "name": "Set up job",
+        "number": 1,
+        "started_at": "2026-11-01T21:35:39Z",
+        "status": "completed"
+      },
+      {
+        "completed_at": null,
+        "conclusion": null,
+        "name": "Run actions/checkout@v4",
+        "number": 2,
+        "started_at": "2026-11-01T21:35:40Z",
+        "status": "in_progress"
+      },
+      {
+        "completed_at": null,
+        "conclusion": null,
+        "name": "Collect authenticated job logs and row artifacts",
+        "number": 3,
+        "started_at": null,
+        "status": "pending"
+      },
+      {
+        "completed_at": null,
+        "conclusion": null,
+        "name": "Publish results branch",
+        "number": 4,
+        "started_at": null,
+        "status": "pending"
+      },
+      {
+        "completed_at": null,
+        "conclusion": null,
+        "name": "Post Run actions/checkout@v4",
+        "number": 8,
+        "started_at": null,
+        "status": "pending"
+      }
+    ],
+    "url": "https://api.github.com/repos/banodoco/astrid-agent/actions/jobs/124986430701",
+    "workflow_name": "R51 direct journey dispatch"
+  }
+]

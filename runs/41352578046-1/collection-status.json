@@ -1,0 +1,16 @@
+{
+  "errors": [
+    "job 124985762331 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124985807377 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124985807381 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124985807429 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124985808322 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124985808416 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124985808747 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "job 124986380225 log: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "artifact 13101728633 journey-receipt-direct-windows: HTTPError: HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header.",
+    "artifact 13101614589 journey-receipt-direct-linux: expired or exceeds 90 MiB publication limit",
+    "missing journey-receipt-direct-macos artifact"
+  ],
+  "note": "Job conclusions and steps are in jobs.json; this collector itself is still in progress. Missing logs or artifacts are not passing evidence."
+}
