@@ -55,7 +55,7 @@ VERSION_JUMP_LEGS = ("update-from-served", "update-from-release:pre-updater",
                      "update-over-old-declaration", "old-runtime-busy",
                      "release0-to-release1")
 RUNNER_FAMILY = {"ubuntu-24.04": "linux", "ubuntu-22.04": "linux",
-                 "windows-2022": "win32", "macos-14": "darwin", "runpod-cpu": "linux"}
+                 "windows-2022": "win32", "macos-14": "darwin", "macos-15-intel": "darwin", "runpod-cpu": "linux"}
 GITHUB_RUNNER_OS = {"Linux": "linux", "Windows": "win32", "macOS": "darwin"}
 JOURNEY_EVIDENCE_NAMES = frozenset({
     "journey-result.json", "install.log", "uninstall.log", "final-uninstall.log",
@@ -1421,7 +1421,8 @@ def execute(args: argparse.Namespace) -> dict:
         if getattr(args, "job_id", None):
             expected = validate_job(args.job_id, args.mode)
             if (expected["runner"] != identity["runner_image"] and not
-                    (args.job_id == "direct-linux" and identity["runner_image"] == "runpod-cpu")):
+                    (args.job_id == "direct-linux" and identity["runner_image"] == "runpod-cpu") and not
+                    (args.job_id == "direct-macos" and identity["runner_image"] == "macos-15-intel")):
                 raise RuntimeError(f"Release-1 job {args.job_id} requires {expected['runner']}, not {identity['runner_image']}")
             if expected["shell"] != args.shell:
                 raise RuntimeError(f"Release-1 job {args.job_id} requires shell {expected['shell']}")

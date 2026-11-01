@@ -10,6 +10,7 @@ name: Release-1 direct lifecycle receipts
     paths:
     - .github/workflows/journey-direct.yml
     - scripts/journey_version_jumps.py
+    - scripts/ci_journey.py
 permissions:
   contents: read
 concurrency:
