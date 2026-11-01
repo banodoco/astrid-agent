@@ -86,6 +86,8 @@ class FeatureEvidenceTests(LocalEvidenceTests):
                 entries.append(entries[-1])
                 record_path.write_text(json.dumps(record))
                 self.assertTrue(self.feature_check())
+                self.authenticate()
+                self.assertEqual(self.feature_check(), [])
 
     def test_wrong_tuple_attempt_skipped_predicate_and_strict_json(self):
         self.configure('hosted')
