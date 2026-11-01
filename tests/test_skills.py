@@ -717,6 +717,10 @@ def test_timeline_main_skill_code_blocks_run_with_scratch_runtime(real_runtime, 
         "ASTRID_TIMELINE_EVAL_REALM_ID": daemon.service.realm["id"],
         "ASTRID_TIMELINE_EVAL_ACTOR_ID": "owner",
     }
+    skill_bin = tmp_path / "skill-bin"
+    skill_bin.mkdir()
+    (skill_bin / "python3").symlink_to(sys.executable)
+    env["PATH"] = f"{skill_bin}{os.pathsep}{env['PATH']}"
     project = daemon.service.create_project({"slug": "skill-demo", "name": "Skill demo"})["id"]
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_ENDPOINT", daemon.endpoint)
     monkeypatch.setenv("ASTRID_TIMELINE_EVAL_CREDENTIAL", str(daemon.credential_path))
