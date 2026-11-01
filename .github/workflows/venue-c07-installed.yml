@@ -181,6 +181,7 @@ jobs:
           else printf 'pytest_selector=skipped\n' >> "$RUN_DIR/inner-exits.txt"; fi
           printf '%s\n' "$overall" > "$RUN_DIR/overall-exit.txt"
           printf '%s\n' "${test_rc:-not-run}" > "$RUN_DIR/pytest-exit.txt"
+          cd "$GITHUB_WORKSPACE"
           {
             printf 'Agent requested/effective: %s / %s\n' "$INPUT_AGENT_REF" "$(git -C product rev-parse HEAD 2>/dev/null || printf unavailable)"
             printf 'Runtime requested/effective: %s / %s\n' "$INPUT_RUNTIME_REF" "$(git -C astrid-runtime rev-parse HEAD 2>/dev/null || printf unavailable)"
@@ -301,7 +302,7 @@ jobs:
           }
           (run_dir / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
           PY
-          find "$RUN_DIR" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$RUN_DIR/SHA256SUMS"
+          (cd "$RUN_DIR" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$RUN_DIR/SHA256SUMS"
           (cd "$RUN_DIR" && sha256sum -c SHA256SUMS)
           RESULTS_REPO="$RUNNER_TEMP/venue-c07-results-repo"
           rm -rf "$RESULTS_REPO"
