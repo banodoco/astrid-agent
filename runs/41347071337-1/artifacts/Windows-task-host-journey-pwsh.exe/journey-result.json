@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "receipt_kind": "windows-task-host-journey",
+  "scenario": "windows-task-host",
+  "status": "fail",
+  "evidence_class": "hosted-installed-task-host",
+  "source_override_test_mode": false,
+  "shell": "pwsh.exe",
+  "runner_selector": "windows-latest",
+  "runner_provenance": {
+    "ImageVersion": "20261021.278.1",
+    "ImageOS": "win25-vs2026",
+    "RUNNER_OS": "Windows"
+  },
+  "os_build": "Windows-10.0.26100-26100",
+  "workflow": {
+    "workflow_ref": "banodoco/astrid-agent/.github/workflows/windows-journey.yml@refs/heads/venue/M-VENUE-V-10-WINDOWS-SIGNAL-1",
+    "repository": "banodoco/astrid-agent",
+    "commit": "5676291c379e340d9ddebb1b5981cea58ba0070d",
+    "run_attempt": "1",
+    "run_id": "41347071337",
+    "workflow_sha": "5676291c379e340d9ddebb1b5981cea58ba0070d"
+  },
+  "candidate": {
+    "manifest_sha256": "a63d9bdac6dfcb22e4f4516f2d92f4c880477076512b5115f0cd8f415f34a9ef",
+    "artifacts": {
+      "public/install": "100bab1deb15d620abd910c8fb0c9a6d77f4945428a3229dac6b506705e3fd0d",
+      "public/install.sh": "591c4c51b148fccef2a7d1c45782d9ff949d5fd03d46cd82b5591e3a23d1b285",
+      "public/install.ps1": "bba3f2edc41c047cb51475ceeac4489a04610af73a3af44bdc05287964d28258"
+    },
+    "runtime": "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020",
+    "agent": "3693e6c8b5bb9c83588f1e65d1dc8495f6145f84",
+    "app": "9d3ccda1e81383082258943207745086da2aabe4"
+  },
+  "inner_steps": {
+    "install": {
+      "command": "python -u scripts/ci_windows_journey.py install --installer-shell pwsh.exe",
+      "conclusion": "failure",
+      "outcome": "failure"
+    },
+    "start": {
+      "command": "python -u scripts/ci_windows_journey.py start",
+      "conclusion": "skipped",
+      "outcome": "skipped"
+    },
+    "health": {
+      "command": "python -u scripts/ci_windows_journey.py health",
+      "conclusion": "skipped",
+      "outcome": "skipped"
+    },
+    "host": {
+      "command": "python -u scripts/ci_windows_journey.py host",
+      "conclusion": "skipped",
+      "outcome": "skipped"
+    },
+    "task": {
+      "command": "python -u scripts/ci_windows_journey.py task",
+      "conclusion": "skipped",
+      "outcome": "skipped"
+    },
+    "down": {
+      "command": "python -u scripts/ci_windows_journey.py down",
+      "conclusion": "success",
+      "outcome": "success"
+    },
+    "stopped": {
+      "command": "python -u scripts/ci_windows_journey.py stopped",
+      "conclusion": "success",
+      "outcome": "success"
+    },
+    "collect": {
+      "command": "python -u scripts/ci_windows_journey.py collect",
+      "conclusion": "success",
+      "outcome": "success"
+    }
+  },
+  "coverage": {
+    "journey": "windows-task-host",
+    "installer_shell": "pwsh.exe",
+    "required_evidence": [
+      "install-manifest.json",
+      "installed-manifest.json",
+      "sources.json",
+      "bootstrap.log",
+      "start.log",
+      "health.json",
+      "pack-host-ready.json",
+      "processes-host-ready.json",
+      "installed-profile-binding-summary.json",
+      "sdk-invocation.json",
+      "task-settled.json",
+      "disable-scheduled-task.log",
+      "down.json",
+      "processes-after-down.json",
+      "collection.json"
+    ],
+    "platform": "windows"
+  },
+  "limitations": [
+    "Hosted Windows runner evidence only; this receipt does not claim Windows client coverage.",
+    "This task-host journey does not exercise Pinokio lifecycle ownership."
+  ],
+  "evidence_files": [
+    {
+      "path": "bootstrap.log",
+      "sha256": "5541fff750b23e806a829b604216f6f18b3f8b3ecab22753930bd091737950d2",
+      "bytes": 276
+    },
+    {
+      "path": "collection.json",
+      "sha256": "f415c86694eb94e17cb7933d57737d31e3317282c5bc2a8f69c8aaaa6438ea2e",
+      "bytes": 66
+    },
+    {
+      "path": "disable-scheduled-task.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "health-error.json",
+      "sha256": "1022d49d4ee2a38bf372ebfb6e4f2034cb0ffcb87b3723e7180525c720705330",
+      "bytes": 128
+    },
+    {
+      "path": "health-final.json",
+      "sha256": "53122bbf9be4ea2ab6e9b6134bd576ce5ca40a8b0dec764891104b17a1371ac6",
+      "bytes": 70
+    },
+    {
+      "path": "health.json",
+      "sha256": "1a914679ce58d6c4bfae1130bea60698db18dc3bcd280a05ba594a495cc20099",
+      "bytes": 73
+    },
+    {
+      "path": "install-manifest.json",
+      "sha256": "e3e6558f661510ed469b2fd313c52814ca8974a88e6f9cfef6e3672aa141a93c",
+      "bytes": 4804
+    },
+    {
+      "path": "install.log",
+      "sha256": "70eb234755bb124bdc0c88028f4d80e1718953c5d4a6db2dcb6b57c39cbdbc3f",
+      "bytes": 71498
+    },
+    {
+      "path": "processes-after-down.json",
+      "sha256": "d1311eea17f7ff8180e56913e100a0ecd76c052d4f867508be97919200eaa844",
+      "bytes": 32054
+    },
+    {
+      "path": "processes-before-down.json",
+      "sha256": "310309f3ccb2586d5de41272020f99376190312fa931e2985581a7aa542afd40",
+      "bytes": 32054
+    },
+    {
+      "path": "processes-final.json",
+      "sha256": "4f75b3a94fd816d37de5ff93e217d99d0f1eb0d706feb4cd199d4c82006f8af2",
+      "bytes": 32054
+    },
+    {
+      "path": "sources.json",
+      "sha256": "8d7b1121bfa6d368b63252ce128e9f384afa03e77e38ae77488cc656a73a37d6",
+      "bytes": 390
+    },
+    {
+      "path": "tracked-processes.json",
+      "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f",
+      "bytes": 4
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "matrix_result": "failure",
+  "download_outcome": "success",
+  "errors": [
+    {
+      "path": "/actions/jobs/124980292529/logs",
+      "error": "HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header."
+    },
+    {
+      "path": "/actions/jobs/124980292828/logs",
+      "error": "HTTP Error 401: Server failed to authenticate the request. Please refer to the information in the www-authenticate header."
+    }
+  ]
+}

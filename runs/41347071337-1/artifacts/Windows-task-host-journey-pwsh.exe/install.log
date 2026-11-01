@@ -1,0 +1,1057 @@
+downloading uv 0.11.32 (x86_64-pc-windows-msvc)
+installing to C:\Users\runneradmin\AppData\Local\Astrid Installer\bootstrap
+  uv.exe
+  uvx.exe
+  uvw.exe
+everything's installed!
+Downloading cpython-3.11.13-windows-x86_64-none (download) (24.8MiB)
+ Downloaded cpython-3.11.13-windows-x86_64-none (download)
+Installed Python 3.11.13 in 7.43s
+ + cpython-3.11.13-windows-x86_64-none
+Using CPython 3.11.13
+Creating virtual environment at: C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv
+Activate with: C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Scripts\activate
+Using Python 3.11.13 environment at: C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv
+Resolved 3 packages in 7.55s
+   Building astrid-runtime-client @ https://github.com/banodoco/astrid-runtime/archive/47e5949465cb6f3afdfd1cb8a0e90009fd9d4020.tar.gz#subdirectory=packages/python
+   Building astrid-runtime @ https://github.com/banodoco/astrid-runtime/archive/47e5949465cb6f3afdfd1cb8a0e90009fd9d4020.tar.gz
+   Building astrid @ https://github.com/banodoco/astrid-agent/archive/020877f12ea490308a9e5f9564c8f4a4bf77ede1.tar.gz
+      Built astrid-runtime-client @ https://github.com/banodoco/astrid-runtime/archive/47e5949465cb6f3afdfd1cb8a0e90009fd9d4020.tar.gz#subdirectory=packages/python
+      Built astrid-runtime @ https://github.com/banodoco/astrid-runtime/archive/47e5949465cb6f3afdfd1cb8a0e90009fd9d4020.tar.gz
+      Built astrid @ https://github.com/banodoco/astrid-agent/archive/020877f12ea490308a9e5f9564c8f4a4bf77ede1.tar.gz
+Prepared 3 packages in 18.70s
+Installed 3 packages in 1.68s
+ + astrid==0.1.0 (from https://github.com/banodoco/astrid-agent/archive/020877f12ea490308a9e5f9564c8f4a4bf77ede1.tar.gz)
+ + astrid-runtime==0.1.0 (from https://github.com/banodoco/astrid-runtime/archive/47e5949465cb6f3afdfd1cb8a0e90009fd9d4020.tar.gz)
+ + astrid-runtime-client==0.2.14 (from https://github.com/banodoco/astrid-runtime/archive/47e5949465cb6f3afdfd1cb8a0e90009fd9d4020.tar.gz#subdirectory=packages/python)
+uv 0.11.32 (3010295ae 2026-07-23 x86_64-pc-windows-msvc)
+
+Using CPython 3.11.13
+Creating virtual environment at: C:\Users\runneradmin\AppData\Local\Astrid\versions\020877f1-47e59494-f77df0c3\py
+Activate with: C:\Users\runneradmin\AppData\Local\Astrid\versions\020877f1-47e59494-f77df0c3\py\Scripts\activate
+
+Using Python 3.11.13 environment at: C:\Users\runneradmin\AppData\Local\Astrid\versions\020877f1-47e59494-f77df0c3\py
+Resolved 59 packages in 906ms
+Downloading anthropic (1.1MiB)
+Downloading google-genai (1.0MiB)
+Downloading pydantic-core (2.0MiB)
+Downloading hf-xet (3.6MiB)
+Downloading numpy (15.1MiB)
+Downloading opencv-python-headless (36.8MiB)
+Downloading cryptography (3.6MiB)
+Downloading openai (1.6MiB)
+Downloading pillow (6.9MiB)
+ Downloaded pydantic-core
+ Downloaded hf-xet
+ Downloaded cryptography
+ Downloaded pillow
+ Downloaded google-genai
+ Downloaded opencv-python-headless
+ Downloaded numpy
+ Downloaded anthropic
+ Downloaded openai
+Prepared 58 packages in 5.51s
+Installed 59 packages in 3.75s
+ + aiofiles==25.1.0
+ + annotated-types==0.8.0
+ + anthropic==1.0.0
+ + anyio==4.14.2
+ + asyncstdlib==3.14.0
+ + attrs==26.1.0
+ + certifi==2026.7.22
+ + cffi==2.1.1
+ + charset-normalizer==3.5.1
+ + click==8.4.2
+ + colorama==0.4.6
+ + cryptography==48.0.1
+ + distro==1.9.0
+ + docstring-parser==0.18.0
+ + fal-client==1.0.1
+ + filelock==3.32.4
+ + fsspec==2026.9.0
+ + google-auth==2.56.3
+ + google-genai==2.19.0
+ + h11==0.16.0
+ + hf-xet==1.7.0
+ + httpcore==1.0.9
+ + httpcore2==2.12.0
+ + httpx==0.28.1
+ + httpx-sse==0.4.3
+ + httpx2==2.12.0
+ + huggingface-hub==2.3.0
+ + idna==3.19
+ + jiter==0.16.0
+ + jsonschema==4.26.0
+ + jsonschema-specifications==2025.9.1
+ + msgpack==1.2.1
+ + numpy==1.26.4
+ + openai==2.54.0
+ + opencv-python-headless==4.9.0.80
+ + packaging==26.3
+ + pillow==12.3.0
+ + platformdirs==4.11.3
+ + pyasn1==0.6.4
+ + pyasn1-modules==0.4.2
+ + pycparser==3.0
+ + pydantic==2.13.4
+ + pydantic-core==2.46.4
+ + pyjwt==2.13.0
+ + python-dotenv==1.2.4
+ + pyyaml==6.0.3
+ + referencing==0.37.0
+ + requests==2.34.2
+ + rpds-py==2026.6.3
+ + scenedetect==0.6.4
+ + sniffio==1.3.1
+ + tenacity==9.1.4
+ + tqdm==4.70.0
+ + truststore==0.10.4
+ + typing-extensions==4.16.0
+ + typing-inspection==0.4.4
+ + urllib3==2.7.0
+ + websockets==16.1.1
+ + xxhash==4.0.1
+
+Using Python 3.11.13 environment at: C:\Users\runneradmin\AppData\Local\Astrid\versions\020877f1-47e59494-f77df0c3\py
+Resolved 4 packages in 4ms
+   Building astrid-runtime @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/r
+   Building astrid @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/a
+   Building astrid-runtime-client @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/r/packages/python
+   Building vibecomfy @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/v
+      Built astrid-runtime-client @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/r/packages/python
+      Built astrid-runtime @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/r
+      Built vibecomfy @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/v
+      Built astrid @ file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/a
+Prepared 4 packages in 18.47s
+Installed 4 packages in 2.12s
+ + astrid==0.1.0 (from file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/a)
+ + astrid-runtime==0.1.0 (from file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/r)
+ + astrid-runtime-client==0.2.14 (from file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/r/packages/python)
+ + vibecomfy==2.8.0 (from file:///C:/Users/runneradmin/AppData/Local/Astrid/versions/020877f1-47e59494-f77df0c3/v)
+
+1.3.14
+
+v20.19.4
+
+ffmpeg version 7.0.2-full_build-www.gyan.dev Copyright (c) 2000-2024 the FFmpeg developers
+built with gcc 13.2.0 (Rev5, Built by MSYS2 project)
+configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-fontconfig --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-librav1e --enable-libsvtav1 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libopenjpeg --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint
+libavutil      59.  8.100 / 59.  8.100
+libavcodec     61.  3.100 / 61.  3.100
+libavformat    61.  1.100 / 61.  1.100
+libavdevice    61.  1.100 / 61.  1.100
+libavfilter    10.  1.100 / 10.  1.100
+libswscale      8.  1.100 /  8.  1.100
+libswresample   5.  1.100 /  5.  1.100
+libpostproc    58.  1.100 / 58.  1.100
+
+ffprobe version 7.0.2-full_build-www.gyan.dev Copyright (c) 2007-2024 the FFmpeg developers
+built with gcc 13.2.0 (Rev5, Built by MSYS2 project)
+configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-fontconfig --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray --enable-libcaca --enable-sdl2 --enable-libaribb24 --enable-libaribcaption --enable-libdav1d --enable-libdavs2 --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-librav1e --enable-libsvtav1 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom --enable-libjxl --enable-libopenjpeg --enable-libvpx --enable-mediafoundation --enable-libass --enable-frei0r --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio --enable-libgme --enable-libmodplug --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite --enable-libmysofa --enable-librubberband --enable-libsoxr --enable-chromaprint
+libavutil      59.  8.100 / 59.  8.100
+libavcodec     61.  3.100 / 61.  3.100
+libavformat    61.  1.100 / 61.  1.100
+libavdevice    61.  1.100 / 61.  1.100
+libavfilter    10.  1.100 / 10.  1.100
+libswscale      8.  1.100 /  8.  1.100
+libswresample   5.  1.100 /  5.  1.100
+libpostproc    58.  1.100 / 58.  1.100
+
+Encoders:
+ V..... = Video
+ A..... = Audio
+ S..... = Subtitle
+ .F.... = Frame-level multithreading
+ ..S... = Slice-level multithreading
+ ...X.. = Codec is experimental
+ ....B. = Supports draw_horiz_band
+ .....D = Supports direct rendering method 1
+ ------
+ V....D a64multi             Multicolor charset for Commodore 64 (codec a64_multi)
+ V....D a64multi5            Multicolor charset for Commodore 64, extended with 5th color (colram) (codec a64_multi5)
+ V....D alias_pix            Alias/Wavefront PIX image
+ V..... amv                  AMV Video
+ V....D apng                 APNG (Animated Portable Network Graphics) image
+ V....D asv1                 ASUS V1
+ V....D asv2                 ASUS V2
+ V....D libaom-av1           libaom AV1 (codec av1)
+ V....D librav1e             librav1e AV1 (codec av1)
+ V..... libsvtav1            SVT-AV1(Scalable Video Technology for AV1) encoder (codec av1)
+ V....D av1_nvenc            NVIDIA NVENC av1 encoder (codec av1)
+ V..... av1_qsv              AV1 (Intel Quick Sync Video acceleration) (codec av1)
+ V....D av1_amf              AMD AMF AV1 encoder (codec av1)
+ V....D av1_vaapi            AV1 (VAAPI) (codec av1)
+ V....D avrp                 Avid 1:1 10-bit RGB Packer
+ V....D libxavs2             libxavs2 AVS2-P2/IEEE1857.4 (codec avs2)
+ V..X.D avui                 Avid Meridien Uncompressed
+ VF...D bitpacked            Bitpacked
+ V....D bmp                  BMP (Windows and OS/2 bitmap)
+ VF...D cfhd                 GoPro CineForm HD
+ V....D cinepak              Cinepak
+ V....D cljr                 Cirrus Logic AccuPak
+ V.S..D vc2                  SMPTE VC-2 (codec dirac)
+ VFS..D dnxhd                VC3/DNxHD
+ V....D dpx                  DPX (Digital Picture Exchange) image
+ VFS..D dvvideo              DV (Digital Video)
+ VFS..D dxv                  Resolume DXV
+ V....D libxeve              libxeve MPEG-5 EVC (codec evc)
+ VF...D exr                  OpenEXR image
+ V.S..D ffv1                 FFmpeg video codec #1
+ VF...D ffvhuff              Huffyuv FFmpeg variant
+ V....D fits                 Flexible Image Transport System
+ V....D flashsv              Flash Screen Video
+ V....D flashsv2             Flash Screen Video Version 2
+ V..... flv                  FLV / Sorenson Spark / Sorenson H.263 (Flash Video) (codec flv1)
+ V....D gif                  GIF (Graphics Interchange Format)
+ V..... h261                 H.261
+ V..... h263                 H.263 / H.263-1996
+ V.S... h263p                H.263+ / H.263-1998 / H.263 version 2
+ V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+ V....D libx264rgb           libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB (codec h264)
+ V....D h264_amf             AMD AMF H.264 Encoder (codec h264)
+ V....D h264_mf              H264 via MediaFoundation (codec h264)
+ V....D h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
+ V..... h264_qsv             H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (Intel Quick Sync Video acceleration) (codec h264)
+ V....D h264_vaapi           H.264/AVC (VAAPI) (codec h264)
+ V.S..D hap                  Vidvox Hap
+ VF...D hdr                  HDR (Radiance RGBE format) image
+ V....D libx265              libx265 H.265 / HEVC (codec hevc)
+ V....D hevc_amf             AMD AMF HEVC encoder (codec hevc)
+ V....D hevc_mf              HEVC via MediaFoundation (codec hevc)
+ V....D hevc_nvenc           NVIDIA NVENC hevc encoder (codec hevc)
+ V..... hevc_qsv             HEVC (Intel Quick Sync Video acceleration) (codec hevc)
+ V....D hevc_vaapi           H.265/HEVC (VAAPI) (codec hevc)
+ VF...D huffyuv              Huffyuv / HuffYUV
+ VF...D jpeg2000             JPEG 2000
+ VF.... libopenjpeg          OpenJPEG JPEG 2000 (codec jpeg2000)
+ VF...D jpegls               JPEG-LS
+ V....D libjxl               libjxl JPEG XL (codec jpegxl)
+ VF...D ljpeg                Lossless JPEG
+ VFS..D magicyuv             MagicYUV video
+ VFS... mjpeg                MJPEG (Motion JPEG)
+ V..... mjpeg_qsv            MJPEG (Intel Quick Sync Video acceleration) (codec mjpeg)
+ V....D mjpeg_vaapi          MJPEG (VAAPI) (codec mjpeg)
+ V.S... mpeg1video           MPEG-1 video
+ V.S... mpeg2video           MPEG-2 video
+ V..... mpeg2_qsv            MPEG-2 video (Intel Quick Sync Video acceleration) (codec mpeg2video)
+ V....D mpeg2_vaapi          MPEG-2 (VAAPI) (codec mpeg2video)
+ V.S... mpeg4                MPEG-4 part 2
+ V....D libxvid              libxvidcore MPEG-4 part 2 (codec mpeg4)
+ V..... msmpeg4v2            MPEG-4 part 2 Microsoft variant version 2
+ V..... msmpeg4              MPEG-4 part 2 Microsoft variant version 3 (codec msmpeg4v3)
+ V....D msrle                Microsoft RLE
+ V..... msvideo1             Microsoft Video-1
+ V....D pam                  PAM (Portable AnyMap) image
+ V....D pbm                  PBM (Portable BitMap) image
+ V....D pcx                  PC Paintbrush PCX image
+ V....D pfm                  PFM (Portable FloatMap) image
+ V....D pgm                  PGM (Portable GrayMap) image
+ V....D pgmyuv               PGMYUV (Portable GrayMap YUV) image
+ V....D phm                  PHM (Portable HalfFloatMap) image
+ VF...D png                  PNG (Portable Network Graphics) image
+ V....D ppm                  PPM (Portable PixelMap) image
+ VF...D prores               Apple ProRes
+ VF...D prores_aw            Apple ProRes (codec prores)
+ VFS... prores_ks            Apple ProRes (iCodec Pro) (codec prores)
+ VF...D qoi                  QOI (Quite OK Image format) image
+ V....D qtrle                QuickTime Animation (RLE) video
+ V....D r10k                 AJA Kona 10-bit RGB Codec
+ V....D r210                 Uncompressed RGB 10-bit
+ VF...D rawvideo             raw video
+ V....D roqvideo             id RoQ video (codec roq)
+ V....D rpza                 QuickTime video (RPZA)
+ V..... rv10                 RealVideo 1.0
+ V..... rv20                 RealVideo 2.0
+ V....D sgi                  SGI image
+ V....D smc                  QuickTime Graphics (SMC)
+ V....D snow                 Snow
+ V..... speedhq              NewTek SpeedHQ
+ V....D sunrast              Sun Rasterfile image
+ V....D svq1                 Sorenson Vector Quantizer 1 / Sorenson Video 1 / SVQ1
+ V....D targa                Truevision Targa image
+ V....D libtheora            libtheora Theora (codec theora)
+ VF...D tiff                 TIFF image
+ VF...D utvideo              Ut Video
+ VF...D v210                 Uncompressed 4:2:2 10-bit
+ V....D v308                 Uncompressed packed 4:4:4
+ V....D v408                 Uncompressed packed QT 4:4:4:4
+ V....D v410                 Uncompressed 4:4:4 10-bit
+ V.S..D vbn                  Vizrt Binary Image
+ V..... vnull                null video
+ V....D libvpx               libvpx VP8 (codec vp8)
+ V....D vp8_vaapi            VP8 (VAAPI) (codec vp8)
+ V....D libvpx-vp9           libvpx VP9 (codec vp9)
+ V....D vp9_vaapi            VP9 (VAAPI) (codec vp9)
+ V..... vp9_qsv              VP9 video (Intel Quick Sync Video acceleration) (codec vp9)
+ VF...D wbmp                 WBMP (Wireless Application Protocol Bitmap) image
+ V....D libwebp_anim         libwebp WebP image (codec webp)
+ V....D libwebp              libwebp WebP image (codec webp)
+ V..... wmv1                 Windows Media Video 7
+ V..... wmv2                 Windows Media Video 8
+ V..... wrapped_avframe      AVFrame to AVPacket passthrough
+ V....D xbm                  XBM (X BitMap) image
+ V....D xface                X-face image
+ V....D xwd                  XWD (X Window Dump) image
+ V....D y41p                 Uncompressed YUV 4:1:1 12-bit
+ V....D yuv4                 Uncompressed packed 4:2:0
+ VF...D zlib                 LCL (LossLess Codec Library) ZLIB
+ V....D zmbv                 Zip Motion Blocks Video
+ A....D aac                  AAC (Advanced Audio Coding)
+ A....D aac_mf               AAC via MediaFoundation (codec aac)
+ A....D ac3                  ATSC A/52A (AC-3)
+ A....D ac3_fixed            ATSC A/52A (AC-3) (codec ac3)
+ A....D ac3_mf               AC3 via MediaFoundation (codec ac3)
+ A....D adpcm_adx            SEGA CRI ADX ADPCM
+ A....D adpcm_argo           ADPCM Argonaut Games
+ A....D g722                 G.722 ADPCM (codec adpcm_g722)
+ A....D g726                 G.726 ADPCM (codec adpcm_g726)
+ A....D g726le               G.726 little endian ADPCM ("right-justified") (codec adpcm_g726le)
+ A....D adpcm_ima_alp        ADPCM IMA High Voltage Software ALP
+ A....D adpcm_ima_amv        ADPCM IMA AMV
+ A....D adpcm_ima_apm        ADPCM IMA Ubisoft APM
+ A....D adpcm_ima_qt         ADPCM IMA QuickTime
+ A....D adpcm_ima_ssi        ADPCM IMA Simon & Schuster Interactive
+ A....D adpcm_ima_wav        ADPCM IMA WAV
+ A....D adpcm_ima_ws         ADPCM IMA Westwood
+ A....D adpcm_ms             ADPCM Microsoft
+ A....D adpcm_swf            ADPCM Shockwave Flash
+ A....D adpcm_yamaha         ADPCM Yamaha
+ A....D alac                 ALAC (Apple Lossless Audio Codec)
+ A....D libopencore_amrnb    OpenCORE AMR-NB (Adaptive Multi-Rate Narrow-Band) (codec amr_nb)
+ A....D libvo_amrwbenc       Android VisualOn AMR-WB (Adaptive Multi-Rate Wide-Band) (codec amr_wb)
+ A..... anull                null audio
+ A....D aptx                 aptX (Audio Processing Technology for Bluetooth)
+ A....D aptx_hd              aptX HD (Audio Processing Technology for Bluetooth)
+ A....D libcodec2            codec2 encoder using libcodec2 (codec codec2)
+ A....D comfortnoise         RFC 3389 comfort noise generator
+ A....D dfpwm                DFPWM1a audio
+ A..X.D dca                  DCA (DTS Coherent Acoustics) (codec dts)
+ A....D eac3                 ATSC A/52 E-AC-3
+ A....D flac                 FLAC (Free Lossless Audio Codec)
+ A....D g723_1               G.723.1
+ A....D libgsm               libgsm GSM (codec gsm)
+ A....D libgsm_ms            libgsm GSM Microsoft variant (codec gsm_ms)
+ A....D libilbc              iLBC (Internet Low Bitrate Codec) (codec ilbc)
+ A..X.D mlp                  MLP (Meridian Lossless Packing)
+ A....D mp2                  MP2 (MPEG audio layer 2)
+ A....D mp2fixed             MP2 fixed point (MPEG audio layer 2) (codec mp2)
+ A....D libtwolame           libtwolame MP2 (MPEG audio layer 2) (codec mp2)
+ A....D libmp3lame           libmp3lame MP3 (MPEG audio layer 3) (codec mp3)
+ A....D libshine             libshine MP3 (MPEG audio layer 3) (codec mp3)
+ A....D mp3_mf               MP3 via MediaFoundation (codec mp3)
+ A....D nellymoser           Nellymoser Asao
+ A..X.D opus                 Opus
+ A....D libopus              libopus Opus (codec opus)
+ A....D pcm_alaw             PCM A-law / G.711 A-law
+ A....D pcm_bluray           PCM signed 16|20|24-bit big-endian for Blu-ray media
+ A....D pcm_dvd              PCM signed 16|20|24-bit big-endian for DVD media
+ A....D pcm_f32be            PCM 32-bit floating point big-endian
+ A....D pcm_f32le            PCM 32-bit floating point little-endian
+ A....D pcm_f64be            PCM 64-bit floating point big-endian
+ A....D pcm_f64le            PCM 64-bit floating point little-endian
+ A....D pcm_mulaw            PCM mu-law / G.711 mu-law
+ A....D pcm_s16be            PCM signed 16-bit big-endian
+ A....D pcm_s16be_planar     PCM signed 16-bit big-endian planar
+ A....D pcm_s16le            PCM signed 16-bit little-endian
+ A....D pcm_s16le_planar     PCM signed 16-bit little-endian planar
+ A....D pcm_s24be            PCM signed 24-bit big-endian
+ A....D pcm_s24daud          PCM D-Cinema audio signed 24-bit
+ A....D pcm_s24le            PCM signed 24-bit little-endian
+ A....D pcm_s24le_planar     PCM signed 24-bit little-endian planar
+ A....D pcm_s32be            PCM signed 32-bit big-endian
+ A....D pcm_s32le            PCM signed 32-bit little-endian
+ A....D pcm_s32le_planar     PCM signed 32-bit little-endian planar
+ A....D pcm_s64be            PCM signed 64-bit big-endian
+ A....D pcm_s64le            PCM signed 64-bit little-endian
+ A....D pcm_s8               PCM signed 8-bit
+ A....D pcm_s8_planar        PCM signed 8-bit planar
+ A....D pcm_u16be            PCM unsigned 16-bit big-endian
+ A....D pcm_u16le            PCM unsigned 16-bit little-endian
+ A....D pcm_u24be            PCM unsigned 24-bit big-endian
+ A....D pcm_u24le            PCM unsigned 24-bit little-endian
+ A....D pcm_u32be            PCM unsigned 32-bit big-endian
+ A....D pcm_u32le            PCM unsigned 32-bit little-endian
+ A....D pcm_u8               PCM unsigned 8-bit
+ A....D pcm_vidc             PCM Archimedes VIDC
+ A....D real_144             RealAudio 1.0 (14.4K) (codec ra_144)
+ A....D roq_dpcm             id RoQ DPCM
+ A..X.D s302m                SMPTE 302M
+ A....D sbc                  SBC (low-complexity subband codec)
+ A..X.D sonic                Sonic
+ A..X.D sonicls              Sonic lossless
+ A....D libspeex             libspeex Speex (codec speex)
+ A..X.D truehd               TrueHD
+ A....D tta                  TTA (True Audio)
+ A..X.D vorbis               Vorbis
+ A....D libvorbis            libvorbis (codec vorbis)
+ A....D wavpack              WavPack
+ A....D wmav1                Windows Media Audio 1
+ A....D wmav2                Windows Media Audio 2
+ S..... ssa                  ASS (Advanced SubStation Alpha) subtitle (codec ass)
+ S..... ass                  ASS (Advanced SubStation Alpha) subtitle
+ S..... dvbsub               DVB subtitles (codec dvb_subtitle)
+ S..... dvdsub               DVD subtitles (codec dvd_subtitle)
+ S..... mov_text             3GPP Timed Text subtitle
+ S..... srt                  SubRip subtitle (codec subrip)
+ S..... subrip               SubRip subtitle
+ S..... text                 Raw text subtitle
+ S..... ttml                 TTML subtitle
+ S..... webvtt               WebVTT subtitle
+ S..... xsub                 DivX subtitles (XSUB)
+
+Filters:
+  T.. = Timeline support
+  .S. = Slice threading
+  ..C = Command support
+  A = Audio input/output
+  V = Video input/output
+  N = Dynamic number and/or type of input/output
+  | = Source or sink filter
+ TSC aap               AA->A      Apply Affine Projection algorithm to first audio stream.
+ ... abench            A->A       Benchmark part of a filtergraph.
+ ..C acompressor       A->A       Audio compressor.
+ ... acontrast         A->A       Simple audio dynamic range compression/expansion filter.
+ ... acopy             A->A       Copy the input audio unchanged to the output.
+ ... acue              A->A       Delay filtering to match a cue.
+ ... acrossfade        AA->A      Cross fade two input audio streams.
+ .S. acrossover        A->N       Split audio into per-bands streams.
+ T.C acrusher          A->A       Reduce audio bit resolution.
+ TS. adeclick          A->A       Remove impulsive noise from input audio.
+ TS. adeclip           A->A       Remove clipping from input audio.
+ TS. adecorrelate      A->A       Apply decorrelation to input audio.
+ T.C adelay            A->A       Delay one or more audio channels.
+ TSC adenorm           A->A       Remedy denormals by adding extremely low-level noise.
+ T.. aderivative       A->A       Compute derivative of input audio.
+ TSC adrc              A->A       Audio Spectral Dynamic Range Controller.
+ TSC adynamicequalizer A->A       Apply Dynamic Equalization of input audio.
+ T.C adynamicsmooth    A->A       Apply Dynamic Smoothing of input audio.
+ ... aecho             A->A       Add echoing to the audio.
+ TSC aemphasis         A->A       Audio emphasis.
+ T.. aeval             A->A       Filter audio signal according to a specified expression.
+ T.C aexciter          A->A       Enhance high frequency part of audio.
+ T.C afade             A->A       Fade in/out input audio.
+ TSC afftdn            A->A       Denoise audio samples using FFT.
+ TS. afftfilt          A->A       Apply arbitrary expressions to samples in frequency domain.
+ TSC afir              N->A       Apply Finite Impulse Response filter with supplied coefficients in additional stream(s).
+ ... aformat           A->A       Convert the input audio to one of the specified formats.
+ TSC afreqshift        A->A       Apply frequency shifting to input audio.
+ TSC afwtdn            A->A       Denoise audio stream using Wavelets.
+ T.C agate             A->A       Audio gate.
+ .S. aiir              A->N       Apply Infinite Impulse Response filter with supplied coefficients.
+ T.. aintegral         A->A       Compute integral of input audio.
+ ... ainterleave       N->A       Temporally interleave audio inputs.
+ T.. alatency          A->A       Report audio filtering latency.
+ T.C alimiter          A->A       Audio lookahead limiter.
+ TSC allpass           A->A       Apply a two-pole all-pass filter.
+ ... aloop             A->A       Loop audio samples.
+ ... amerge            N->A       Merge two or more audio streams into a single multi-channel stream.
+ T.. ametadata         A->A       Manipulate audio frame metadata.
+ ..C amix              N->A       Audio mixing.
+ ... amultiply         AA->A      Multiply two audio streams.
+ TSC anequalizer       A->N       Apply high-order audio parametric multi band equalizer.
+ TSC anlmdn            A->A       Reduce broadband noise from stream using Non-Local Means.
+ TSC anlmf             AA->A      Apply Normalized Least-Mean-Fourth algorithm to first audio stream.
+ TSC anlms             AA->A      Apply Normalized Least-Mean-Squares algorithm to first audio stream.
+ ... anull             A->A       Pass the source unchanged to the output.
+ T.. apad              A->A       Pad audio with silence.
+ T.C aperms            A->A       Set permissions for the output audio frame.
+ ... aphaser           A->A       Add a phasing effect to the audio.
+ TSC aphaseshift       A->A       Apply phase shifting to input audio.
+ TS. apsnr             AA->A      Measure Audio Peak Signal-to-Noise Ratio.
+ TSC apsyclip          A->A       Audio Psychoacoustic Clipper.
+ ... apulsator         A->A       Audio pulsator.
+ ..C arealtime         A->A       Slow down filtering to match realtime.
+ ... aresample         A->A       Resample audio data.
+ ... areverse          A->A       Reverse an audio clip.
+ TSC arls              AA->A      Apply Recursive Least Squares algorithm to first audio stream.
+ TSC arnndn            A->A       Reduce noise from speech using Recurrent Neural Networks.
+ TS. asdr              AA->A      Measure Audio Signal-to-Distortion Ratio.
+ ... asegment          A->N       Segment audio stream.
+ ... aselect           A->N       Select audio frames to pass in output.
+ ... asendcmd          A->A       Send commands to filters.
+ T.C asetnsamples      A->A       Set the number of samples for each output audio frames.
+ ..C asetpts           A->A       Set PTS for the output audio frame.
+ ... asetrate          A->A       Change the sample rate without altering the data.
+ ... asettb            A->A       Set timebase for the audio output link.
+ ... ashowinfo         A->A       Show textual information for each audio frame.
+ T.. asidedata         A->A       Manipulate audio frame side data.
+ TS. asisdr            AA->A      Measure Audio Scale-Invariant Signal-to-Distortion Ratio.
+ TSC asoftclip         A->A       Audio Soft Clipper.
+ .S. aspectralstats    A->A       Show frequency domain statistics about audio frames.
+ ... asplit            A->N       Pass on the audio input to N audio outputs.
+ .S. astats            A->A       Show time domain statistics about audio frames.
+ ..C astreamselect     N->N       Select audio streams
+ TSC asubboost         A->A       Boost subwoofer frequencies.
+ TSC asubcut           A->A       Cut subwoofer frequencies.
+ TSC asupercut         A->A       Cut super frequencies.
+ TSC asuperpass        A->A       Apply high order Butterworth band-pass filter.
+ TSC asuperstop        A->A       Apply high order Butterworth band-stop filter.
+ ..C atempo            A->A       Adjust audio tempo.
+ TSC atilt             A->A       Apply spectral tilt to audio.
+ ... atrim             A->A       Pick one continuous section from the input, drop the rest.
+ ... axcorrelate       AA->A      Cross-correlate two audio streams.
+ ... azmq              A->A       Receive commands through ZMQ and broker them to filters.
+ TSC bandpass          A->A       Apply a two-pole Butterworth band-pass filter.
+ TSC bandreject        A->A       Apply a two-pole Butterworth band-reject filter.
+ TSC bass              A->A       Boost or cut lower frequencies.
+ TSC biquad            A->A       Apply a biquad IIR filter with the given coefficients.
+ ... bs2b              A->A       Bauer stereo-to-binaural filter.
+ ... channelmap        A->A       Remap audio channels.
+ ... channelsplit      A->N       Split audio into per-channel streams.
+ ... chorus            A->A       Add a chorus effect to the audio.
+ ... compand           A->A       Compress or expand audio dynamic range.
+ T.C compensationdelay A->A       Audio Compensation Delay Line.
+ T.C crossfeed         A->A       Apply headphone crossfeed filter.
+ TSC crystalizer       A->A       Simple audio noise sharpening filter.
+ T.. dcshift           A->A       Apply a DC shift to the audio.
+ T.. deesser           A->A       Apply de-essing to the audio.
+ T.C dialoguenhance    A->A       Audio Dialogue Enhancement.
+ ... drmeter           A->A       Measure audio dynamic range.
+ TSC dynaudnorm        A->A       Dynamic Audio Normalizer.
+ ... earwax            A->A       Widen the stereo image.
+ ... ebur128           A->N       EBU R128 scanner.
+ TSC equalizer         A->A       Apply two-pole peaking equalization (EQ) filter.
+ T.C extrastereo       A->A       Increase difference between stereo audio channels.
+ ..C firequalizer      A->A       Finite Impulse Response Equalizer.
+ ... flanger           A->A       Apply a flanging effect to the audio.
+ ... haas              A->A       Apply Haas Stereo Enhancer.
+ ... hdcd              A->A       Apply High Definition Compatible Digital (HDCD) decoding.
+ .S. headphone         N->A       Apply headphone binaural spatialization with HRTFs in additional streams.
+ TSC highpass          A->A       Apply a high-pass filter with 3dB point frequency.
+ TSC highshelf         A->A       Apply a high shelf filter.
+ ... join              N->A       Join multiple audio streams into multi-channel output.
+ ..C ladspa            N->A       Apply LADSPA effect.
+ ... loudnorm          A->A       EBU R128 loudness normalization
+ TSC lowpass           A->A       Apply a low-pass filter with 3dB point frequency.
+ TSC lowshelf          A->A       Apply a low shelf filter.
+ ... mcompand          A->A       Multiband Compress or expand audio dynamic range.
+ ... pan               A->A       Remix channels with coefficients (panning).
+ ... replaygain        A->A       ReplayGain scanner.
+ ..C rubberband        A->A       Apply time-stretching and pitch-shifting.
+ ..C sidechaincompress AA->A      Sidechain compressor.
+ T.C sidechaingate     AA->A      Audio sidechain gate.
+ ... silencedetect     A->A       Detect silence.
+ T.C silenceremove     A->A       Remove silence.
+ .S. sofalizer         A->A       SOFAlizer (Spatially Oriented Format for Acoustics).
+ T.C speechnorm        A->A       Speech Normalizer.
+ T.C stereotools       A->A       Apply various stereo tools.
+ T.C stereowiden       A->A       Apply stereo widening effect.
+ ... superequalizer    A->A       Apply 18 band equalization filter.
+ .SC surround          A->A       Apply audio surround upmix filter.
+ TSC tiltshelf         A->A       Apply a tilt shelf filter.
+ TSC treble            A->A       Boost or cut upper frequencies.
+ T.. tremolo           A->A       Apply tremolo effect.
+ T.. vibrato           A->A       Apply vibrato effect.
+ T.C virtualbass       A->A       Audio Virtual Bass.
+ T.C volume            A->A       Change input volume.
+ ... volumedetect      A->A       Detect audio volume.
+ ... aevalsrc          |->A       Generate an audio signal generated by an expression.
+ ... afdelaysrc        |->A       Generate a Fractional delay FIR coefficients.
+ ... afireqsrc         |->A       Generate a FIR equalizer coefficients audio stream.
+ ... afirsrc           |->A       Generate a FIR coefficients audio stream.
+ ... anoisesrc         |->A       Generate a noise audio signal.
+ ... anullsrc          |->A       Null audio source, return empty audio frames.
+ ... flite             |->A       Synthesize voice from text using libflite.
+ ... hilbert           |->A       Generate a Hilbert transform FIR coefficients.
+ ... sinc              |->A       Generate a sinc kaiser-windowed low-pass, high-pass, band-pass, or band-reject FIR coefficients.
+ ... sine              |->A       Generate sine wave audio signal.
+ ... anullsink         A->|       Do absolutely nothing with the input audio.
+ ... addroi            V->V       Add region of interest to frame.
+ ... alphaextract      V->V       Extract an alpha channel as a grayscale image component.
+ T.. alphamerge        VV->V      Copy the luma value of the second input into the alpha channel of the first input.
+ TSC amplify           V->V       Amplify changes between successive video frames.
+ ... ass               V->V       Render ASS subtitles onto input video using the libass library.
+ TSC atadenoise        V->V       Apply an Adaptive Temporal Averaging Denoiser.
+ T.C avgblur           V->V       Apply Average Blur filter.
+ ... avgblur_opencl    V->V       Apply average blur filter
+ ... avgblur_vulkan    V->V       Apply avgblur mask to input video
+ TSC backgroundkey     V->V       Turns a static background into transparency.
+ T.C bbox              V->V       Compute bounding box for each frame.
+ ... bench             V->V       Benchmark part of a filtergraph.
+ TSC bilateral         V->V       Apply Bilateral filter.
+ ... bilateral_cuda    V->V       GPU accelerated bilateral filter
+ T.. bitplanenoise     V->V       Measure bit plane noise.
+ .S. blackdetect       V->V       Detect video intervals that are (almost) black.
+ ... blackframe        V->V       Detect frames that are (almost) black.
+ TSC blend             VV->V      Blend two video frames into each other.
+ ..C blend_vulkan      VV->V      Blend two video frames in Vulkan
+ ... blockdetect       V->V       Blockdetect filter.
+ ... blurdetect        V->V       Blurdetect filter.
+ TS. bm3d              N->V       Block-Matching 3D denoiser.
+ T.. boxblur           V->V       Blur the input.
+ ... boxblur_opencl    V->V       Apply boxblur filter to input video
+ TS. bwdif             V->V       Deinterlace the input image.
+ T.. bwdif_cuda        V->V       Deinterlace CUDA frames
+ T.. bwdif_vulkan      V->V       Deinterlace Vulkan frames via bwdif
+ TSC cas               V->V       Contrast Adaptive Sharpen.
+ ... ccrepack          V->V       Repack CEA-708 closed caption metadata
+ ... chromaber_vulkan  V->V       Offset chroma of input video (chromatic aberration)
+ TSC chromahold        V->V       Turns a certain color range into gray.
+ TSC chromakey         V->V       Turns a certain color into transparency. Operates on YUV colors.
+ ... chromakey_cuda    V->V       GPU accelerated chromakey filter
+ TSC chromanr          V->V       Reduce chrominance noise.
+ TSC chromashift       V->V       Shift chroma.
+ ... ciescope          V->V       Video CIE scope.
+ T.. codecview         V->V       Visualize information about some codecs.
+ TSC colorbalance      V->V       Adjust the color balance.
+ TSC colorchannelmixer V->V       Adjust colors by mixing color channels.
+ TSC colorcontrast     V->V       Adjust color contrast between RGB components.
+ TSC colorcorrect      V->V       Adjust color white balance selectively for blacks and whites.
+ TSC colorize          V->V       Overlay a solid color on the video stream.
+ TSC colorkey          V->V       Turns a certain color into transparency. Operates on RGB colors.
+ ... colorkey_opencl   V->V       Turns a certain color into transparency. Operates on RGB colors.
+ TSC colorhold         V->V       Turns a certain color range into gray. Operates on RGB colors.
+ TSC colorlevels       V->V       Adjust the color levels.
+ TSC colormap          VVV->V     Apply custom Color Maps to video stream.
+ TS. colormatrix       V->V       Convert color matrix.
+ TS. colorspace        V->V       Convert between colorspaces.
+ ... colorspace_cuda   V->V       CUDA accelerated video color converter
+ TSC colortemperature  V->V       Adjust color temperature of video.
+ TSC convolution       V->V       Apply convolution filter.
+ ... convolution_opencl V->V       Apply convolution mask to input video
+ TS. convolve          VV->V      Convolve first video stream with second video stream.
+ ... copy              V->V       Copy the input video unchanged to the output.
+ TS. corr              VV->V      Calculate the correlation between two video streams.
+ ... cover_rect        V->V       Find and cover a user specified object.
+ ..C crop              V->V       Crop the input video.
+ T.C cropdetect        V->V       Auto-detect crop size.
+ ... cue               V->V       Delay filtering to match a cue.
+ TSC curves            V->V       Adjust components curves.
+ .SC datascope         V->V       Video data analysis.
+ T.C dblur             V->V       Apply Directional Blur filter.
+ TS. dctdnoiz          V->V       Denoise frames using 2D DCT.
+ TSC deband            V->V       Debands video.
+ T.C deblock           V->V       Deblock video.
+ ... decimate          N->V       Decimate frames (post field matching filter).
+ TS. deconvolve        VV->V      Deconvolve first video stream with second video stream.
+ TS. dedot             V->V       Reduce cross-luminance and cross-color.
+ TSC deflate           V->V       Apply deflate effect.
+ ... deflicker         V->V       Remove temporal frame luminance variations.
+ ... deinterlace_qsv   V->V       Quick Sync Video "deinterlacing"
+ ... deinterlace_vaapi V->V       Deinterlacing of VAAPI surfaces
+ ... dejudder          V->V       Remove judder produced by pullup.
+ T.. delogo            V->V       Remove logo from input video.
+ ... denoise_vaapi     V->V       VAAPI VPP for de-noise
+ T.. derain            V->V       Apply derain filter to the input.
+ ... deshake           V->V       Stabilize shaky video.
+ ... deshake_opencl    V->V       Feature-point based video stabilization filter
+ TSC despill           V->V       Despill video.
+ ... detelecine        V->V       Apply an inverse telecine pattern.
+ TSC dilation          V->V       Apply dilation effect.
+ ... dilation_opencl   V->V       Apply dilation effect
+ TSC displace          VVV->V     Displace pixels.
+ ... dnn_classify      V->V       Apply DNN classify filter to the input.
+ ... dnn_detect        V->V       Apply DNN detect filter to the input.
+ ... dnn_processing    V->V       Apply DNN processing filter to the input.
+ .S. doubleweave       V->V       Weave input video fields into double number of frames.
+ T.C drawbox           V->V       Draw a colored box on the input video.
+ ... drawgraph         V->V       Draw a graph using input video metadata.
+ T.C drawgrid          V->V       Draw a colored grid on the input video.
+ T.C drawtext          V->V       Draw text on top of video frames using libfreetype library.
+ T.. edgedetect        V->V       Detect and draw edge.
+ ... elbg              V->V       Apply posterize effect, using the ELBG algorithm.
+ T.. entropy           V->V       Measure video frames entropy.
+ .S. epx               V->V       Scale the input using EPX algorithm.
+ T.C eq                V->V       Adjust brightness, contrast, gamma, and saturation.
+ TSC erosion           V->V       Apply erosion effect.
+ ... erosion_opencl    V->V       Apply erosion effect
+ TSC estdif            V->V       Apply Edge Slope Tracing deinterlace.
+ TSC exposure          V->V       Adjust exposure of the video stream.
+ ... extractplanes     V->N       Extract planes as grayscale frames.
+ TS. fade              V->V       Fade in/out input video.
+ T.C feedback          VV->VV     Apply feedback video filter.
+ TSC fftdnoiz          V->V       Denoise frames using 3D FFT.
+ TS. fftfilt           V->V       Apply arbitrary expressions to pixels in frequency domain.
+ ... field             V->V       Extract a field from the input video.
+ ... fieldhint         V->V       Field matching using hints.
+ ... fieldmatch        N->V       Field matching for inverse telecine.
+ T.. fieldorder        V->V       Set the field order.
+ T.C fillborders       V->V       Fill borders of the input video.
+ ... find_rect         V->V       Find a user specified object.
+ ... flip_vulkan       V->V       Flip both horizontally and vertically
+ T.. floodfill         V->V       Fill area with same color with another color.
+ ... format            V->V       Convert the input video to one of the specified pixel formats.
+ ... fps               V->V       Force constant framerate.
+ ... framepack         VV->V      Generate a frame packed stereoscopic video.
+ .S. framerate         V->V       Upsamples or downsamples progressive source between specified frame rates.
+ T.. framestep         V->V       Select one frame every N frames.
+ ... freezedetect      V->V       Detects frozen video input.
+ ... freezeframes      VV->V      Freeze video frames.
+ T.C frei0r            V->V       Apply a frei0r effect.
+ T.. fspp              V->V       Apply Fast Simple Post-processing filter.
+ ... fsync             V->V       Synchronize video frames from external source.
+ TSC gblur             V->V       Apply Gaussian Blur filter.
+ ... gblur_vulkan      V->V       Gaussian Blur in Vulkan
+ TS. geq               V->V       Apply generic equation to each pixel.
+ T.. gradfun           V->V       Debands video quickly using gradients.
+ ..C graphmonitor      V->V       Show various filtergraph stats.
+ TS. grayworld         V->V       Adjust white balance using LAB gray world algorithm
+ TS. greyedge          V->V       Estimates scene illumination by grey edge assumption.
+ TSC guided            N->V       Apply Guided filter.
+ TSC haldclut          VV->V      Adjust colors using a Hald CLUT.
+ TS. hflip             V->V       Horizontally flip the input video.
+ ... hflip_vulkan      V->V       Horizontally flip the input video in Vulkan
+ T.. histeq            V->V       Apply global color histogram equalization.
+ ... histogram         V->V       Compute and draw a histogram.
+ TSC hqdn3d            V->V       Apply a High Quality 3D Denoiser.
+ .S. hqx               V->V       Scale the input by 2, 3 or 4 using the hq*x magnification algorithm.
+ .S. hstack            N->V       Stack video inputs horizontally.
+ TSC hsvhold           V->V       Turns a certain HSV range into gray.
+ TSC hsvkey            V->V       Turns a certain HSV range into transparency. Operates on YUV colors.
+ T.C hue               V->V       Adjust the hue and saturation of the input video.
+ TSC huesaturation     V->V       Apply hue-saturation-intensity adjustments.
+ ... hwdownload        V->V       Download a hardware frame to a normal frame
+ ... hwmap             V->V       Map hardware frames
+ ... hwupload          V->V       Upload a normal frame to a hardware frame
+ ... hwupload_cuda     V->V       Upload a system memory frame to a CUDA device.
+ T.. hysteresis        VV->V      Grow first stream into second stream by connecting components.
+ TS. identity          VV->V      Calculate the Identity between two video streams.
+ ... idet              V->V       Interlace detect Filter.
+ T.C il                V->V       Deinterleave or interleave fields.
+ TSC inflate           V->V       Apply inflate effect.
+ ... interlace         V->V       Convert progressive video into interlaced.
+ ... interleave        N->V       Temporally interleave video inputs.
+ ... kerndeint         V->V       Apply kernel deinterlacing to the input.
+ TSC kirsch            V->V       Apply kirsch operator.
+ TSC lagfun            V->V       Slowly update darker pixels.
+ T.. latency           V->V       Report video filtering latency.
+ TSC lenscorrection    V->V       Rectify the image by correcting for lens distortion.
+ TS. lensfun           V->V       Apply correction to an image based on info derived from the lensfun database.
+ ..C libplacebo        N->V       Apply various GPU filters from libplacebo
+ ... libvmaf           VV->V      Calculate the VMAF between two video streams.
+ TSC limitdiff         N->V       Apply filtering with limiting difference.
+ TSC limiter           V->V       Limit pixels components to the specified range.
+ ... loop              V->V       Loop video frames.
+ TSC lumakey           V->V       Turns a certain luma into transparency.
+ TSC lut               V->V       Compute and apply a lookup table to the RGB/YUV input video.
+ TSC lut1d             V->V       Adjust colors using a 1D LUT.
+ TSC lut2              VV->V      Compute and apply a lookup table from two video inputs.
+ TSC lut3d             V->V       Adjust colors using a 3D LUT.
+ TSC lutrgb            V->V       Compute and apply a lookup table to the RGB input video.
+ TSC lutyuv            V->V       Compute and apply a lookup table to the YUV input video.
+ TSC maskedclamp       VVV->V     Clamp first stream with second stream and third stream.
+ TSC maskedmax         VVV->V     Apply filtering with maximum difference of two streams.
+ TSC maskedmerge       VVV->V     Merge first stream with second stream using third stream as mask.
+ TSC maskedmin         VVV->V     Apply filtering with minimum difference of two streams.
+ TSC maskedthreshold   VV->V      Pick pixels comparing absolute difference of two streams with threshold.
+ TSC maskfun           V->V       Create Mask.
+ ... mcdeint           V->V       Apply motion compensating deinterlacing.
+ TSC median            V->V       Apply Median filter.
+ ... mergeplanes       N->V       Merge planes.
+ ... mestimate         V->V       Generate motion vectors.
+ T.. metadata          V->V       Manipulate video frame metadata.
+ T.. midequalizer      VV->V      Apply Midway Equalization.
+ ... minterpolate      V->V       Frame rate conversion using Motion Interpolation.
+ TSC mix               N->V       Mix video inputs.
+ TSC monochrome        V->V       Convert video to gray using custom color filter.
+ TSC morpho            VV->V      Apply Morphological filter.
+ ... mpdecimate        V->V       Remove near-duplicate frames.
+ TS. msad              VV->V      Calculate the MSAD between two video streams.
+ TSC multiply          VV->V      Multiply first video stream with second video stream.
+ TSC negate            V->V       Negate input video.
+ TS. nlmeans           V->V       Non-local means denoiser.
+ ... nlmeans_opencl    V->V       Non-local means denoiser through OpenCL
+ ... nlmeans_vulkan    V->V       Non-local means denoiser (Vulkan)
+ TSC nnedi             V->V       Apply neural network edge directed interpolation intra-only deinterlacer.
+ ... noformat          V->V       Force libavfilter not to use any of the specified pixel formats for the input to the next filter.
+ TS. noise             V->V       Add noise.
+ T.C normalize         V->V       Normalize RGB video.
+ ... null              V->V       Pass the source unchanged to the output.
+ T.C oscilloscope      V->V       2D Video Oscilloscope.
+ TSC overlay           VV->V      Overlay a video source on top of the input.
+ ... overlay_opencl    VV->V      Overlay one video on top of another
+ ... overlay_qsv       VV->V      Quick Sync Video overlay.
+ ... overlay_vaapi     VV->V      Overlay one video on top of another
+ ... overlay_vulkan    VV->V      Overlay a source on top of another
+ ... overlay_cuda      VV->V      Overlay one video on top of another using CUDA
+ T.. owdenoise         V->V       Denoise using wavelets.
+ ... pad               V->V       Pad the input video.
+ ... pad_opencl        V->V       Pad the input video.
+ ... palettegen        V->V       Find the optimal palette for a given stream.
+ ... paletteuse        VV->V      Use a palette to downsample an input video stream.
+ T.C perms             V->V       Set permissions for the output video frame.
+ TS. perspective       V->V       Correct the perspective of video.
+ T.C phase             V->V       Phase shift fields.
+ ... photosensitivity  V->V       Filter out photosensitive epilepsy seizure-inducing flashes.
+ ... pixdesctest       V->V       Test pixel format definitions.
+ TSC pixelize          V->V       Pixelize video.
+ T.C pixscope          V->V       Pixel data analysis.
+ T.C pp                V->V       Filter video using libpostproc.
+ T.. pp7               V->V       Apply Postprocessing 7 filter.
+ TS. premultiply       N->V       PreMultiply first stream with first plane of second stream.
+ TSC prewitt           V->V       Apply prewitt operator.
+ ... prewitt_opencl    V->V       Apply prewitt operator
+ ... procamp_vaapi     V->V       ProcAmp (color balance) adjustments for hue, saturation, brightness, contrast
+ ... program_opencl    N->V       Filter video using an OpenCL program
+ TSC pseudocolor       V->V       Make pseudocolored video frames.
+ TS. psnr              VV->V      Calculate the PSNR between two video streams.
+ ... pullup            V->V       Pullup from field sequence to frames.
+ T.. qp                V->V       Change video quantization parameters.
+ ... random            V->V       Return random frames.
+ TSC readeia608        V->V       Read EIA-608 Closed Caption codes from input video and write them to frame metadata.
+ ... readvitc          V->V       Read vertical interval timecode and write it to frame metadata.
+ ..C realtime          V->V       Slow down filtering to match realtime.
+ .S. remap             VVV->V     Remap pixels.
+ ... remap_opencl      VVV->V     Remap pixels using OpenCL.
+ TS. removegrain       V->V       Remove grain.
+ T.. removelogo        V->V       Remove a TV logo based on a mask image.
+ ... repeatfields      V->V       Hard repeat fields based on MPEG repeat field flag.
+ ... reverse           V->V       Reverse a clip.
+ TSC rgbashift         V->V       Shift RGBA.
+ TSC roberts           V->V       Apply roberts cross operator.
+ ... roberts_opencl    V->V       Apply roberts operator
+ TSC rotate            V->V       Rotate the input image.
+ T.. sab               V->V       Apply shape adaptive blur.
+ ..C scale             V->V       Scale the input video size and/or convert the image format.
+ ... scale_cuda        V->V       GPU accelerated video resizer
+ ... scale_qsv         V->V       Quick Sync Video "scaling and format conversion"
+ ... scale_vaapi       V->V       Scale to/from VAAPI surfaces.
+ ... scale_vulkan      V->V       Scale Vulkan frames
+ ..C scale2ref         VV->VV     Scale the input video size and/or convert the image format to the given reference.
+ ... scdet             V->V       Detect video scene change
+ TSC scharr            V->V       Apply scharr operator.
+ TSC scroll            V->V       Scroll input video.
+ ... segment           V->N       Segment video stream.
+ ... select            V->N       Select video frames to pass in output.
+ TS. selectivecolor    V->V       Apply CMYK adjustments to specific color ranges.
+ ... sendcmd           V->V       Send commands to filters.
+ ... separatefields    V->V       Split input video frames into fields.
+ ... setdar            V->V       Set the frame display aspect ratio.
+ ... setfield          V->V       Force field for the output video frame.
+ ... setparams         V->V       Force field, or color property for the output video frame.
+ ..C setpts            V->V       Set PTS for the output video frame.
+ ... setrange          V->V       Force color range for the output video frame.
+ ... setsar            V->V       Set the pixel sample aspect ratio.
+ ... settb             V->V       Set timebase for the video output link.
+ ... sharpness_vaapi   V->V       VAAPI VPP for sharpness
+ TSC shear             V->V       Shear transform the input image.
+ ... showinfo          V->V       Show textual information for each video frame.
+ ... showpalette       V->V       Display frame palette.
+ T.. shuffleframes     V->V       Shuffle video frames.
+ TS. shufflepixels     V->V       Shuffle video pixels.
+ T.. shuffleplanes     V->V       Shuffle video planes.
+ T.. sidedata          V->V       Manipulate video frame side data.
+ .S. signalstats       V->V       Generate statistics from video analysis.
+ ... signature         N->V       Calculate the MPEG-7 video signature
+ ... siti              V->V       Calculate spatial information (SI) and temporal information (TI).
+ T.. smartblur         V->V       Blur the input video without impacting the outlines.
+ TSC sobel             V->V       Apply sobel operator.
+ ... sobel_opencl      V->V       Apply sobel operator
+ ... split             V->N       Pass on the input to N video outputs.
+ T.C spp               V->V       Apply a simple post processing filter.
+ ... sr                V->V       Apply DNN-based image super resolution to the input.
+ TS. ssim              VV->V      Calculate the SSIM between two video streams.
+ ... ssim360           VV->V      Calculate the SSIM between two 360 video streams.
+ .S. stereo3d          V->V       Convert video stereoscopic 3D view.
+ ..C streamselect      N->N       Select video streams
+ ... subtitles         V->V       Render text subtitles onto input video using the libass library.
+ .S. super2xsai        V->V       Scale the input by 2x using the Super2xSaI pixel art algorithm.
+ T.C swaprect          V->V       Swap 2 rectangular objects in video.
+ T.. swapuv            V->V       Swap U and V components.
+ TSC tblend            V->V       Blend successive frames.
+ ... telecine          V->V       Apply a telecine pattern.
+ ... thistogram        V->V       Compute and draw a temporal histogram.
+ TSC threshold         VVVV->V    Threshold first video stream using other video streams.
+ TS. thumbnail         V->V       Select the most representative frame in a given sequence of consecutive frames.
+ ... thumbnail_cuda    V->V       Select the most representative frame in a given sequence of consecutive frames.
+ ... tile              V->V       Tile several successive frames together.
+ ... tiltandshift      V->V       Generate a tilt-and-shift'd video.
+ ... tinterlace        V->V       Perform temporal field interlacing.
+ TSC tlut2             V->V       Compute and apply a lookup table from two successive frames.
+ TSC tmedian           V->V       Pick median pixels from successive frames.
+ T.. tmidequalizer     V->V       Apply Temporal Midway Equalization.
+ TSC tmix              V->V       Mix successive video frames.
+ .S. tonemap           V->V       Conversion to/from different dynamic ranges.
+ ... tonemap_opencl    V->V       Perform HDR to SDR conversion with tonemapping.
+ ... tonemap_vaapi     V->V       VAAPI VPP for tone-mapping
+ ... tpad              V->V       Temporarily pad video frames.
+ .S. transpose         V->V       Transpose input video.
+ ... transpose_opencl  V->V       Transpose input video
+ ... transpose_vaapi   V->V       VAAPI VPP for transpose
+ ... transpose_vulkan  V->V       Transpose Vulkan Filter
+ ... trim              V->V       Pick one continuous section from the input, drop the rest.
+ TS. unpremultiply     N->V       UnPreMultiply first stream with first plane of second stream.
+ TS. unsharp           V->V       Sharpen or blur the input video.
+ ... unsharp_opencl    V->V       Apply unsharp mask to input video
+ ... untile            V->V       Untile a frame into a sequence of frames.
+ TS. uspp              V->V       Apply Ultra Simple / Slow Post-processing filter.
+ .SC v360              V->V       Convert 360 projection of video.
+ T.. vaguedenoiser     V->V       Apply a Wavelet based Denoiser.
+ TSC varblur           VV->V      Apply Variable Blur filter.
+ ..C vectorscope       V->V       Video vectorscope.
+ T.. vflip             V->V       Flip the input video vertically.
+ ... vflip_vulkan      V->V       Vertically flip the input video in Vulkan
+ ... vfrdet            V->V       Variable frame rate detect filter.
+ TSC vibrance          V->V       Boost or alter saturation.
+ ... vidstabdetect     V->V       Extract relative transformations, pass 1 of 2 for stabilization (see vidstabtransform for pass 2).
+ ... vidstabtransform  V->V       Transform the frames, pass 2 of 2 for stabilization (see vidstabdetect for pass 1).
+ TS. vif               VV->V      Calculate the VIF between two video streams.
+ T.. vignette          V->V       Make or reverse a vignette effect.
+ ... vmafmotion        V->V       Calculate the VMAF Motion score.
+ ... vpp_qsv           V->V       Quick Sync Video "VPP"
+ .S. vstack            N->V       Stack video inputs vertically.
+ TSC w3fdif            V->V       Apply Martin Weston three field deinterlace.
+ .SC waveform          V->V       Video waveform monitor.
+ .S. weave             V->V       Weave input video fields into frames.
+ .S. xbr               V->V       Scale the input using xBR algorithm.
+ TS. xcorrelate        VV->V      Cross-correlate first video stream with second video stream.
+ .S. xfade             VV->V      Cross fade one video with another video.
+ ... xfade_opencl      VV->V      Cross fade one video with another video.
+ ... xfade_vulkan      VV->V      Cross fade one video with another video.
+ TSC xmedian           N->V       Pick median pixels from several video inputs.
+ .S. xstack            N->V       Stack video inputs into custom layout.
+ TS. yadif             V->V       Deinterlace the input image.
+ T.. yadif_cuda        V->V       Deinterlace CUDA frames
+ TSC yaepblur          V->V       Yet another edge preserving blur filter.
+ ... zmq               V->V       Receive commands through ZMQ and broker them to filters.
+ ... zoompan           V->V       Apply Zoom & Pan effect.
+ .SC zscale            V->V       Apply resizing, colorspace and bit depth conversion.
+ ... hstack_vaapi      N->V       "VA-API" hstack
+ ... vstack_vaapi      N->V       "VA-API" vstack
+ ... xstack_vaapi      N->V       "VA-API" xstack
+ ... hstack_qsv        N->V       "Quick Sync Video" hstack
+ ... vstack_qsv        N->V       "Quick Sync Video" vstack
+ ... xstack_qsv        N->V       "Quick Sync Video" xstack
+ ... allrgb            |->V       Generate all RGB colors.
+ ... allyuv            |->V       Generate all yuv colors.
+ ... cellauto          |->V       Create pattern generated by an elementary cellular automaton.
+ ..C color             |->V       Provide an uniformly colored input.
+ ... color_vulkan      |->V       Generate a constant color (Vulkan)
+ ... colorchart        |->V       Generate color checker chart.
+ ... colorspectrum     |->V       Generate colors spectrum.
+ ... ddagrab           |->V       Grab Windows Desktop images using Desktop Duplication API
+ ... frei0r_src        |->V       Generate a frei0r source.
+ .SC gradients         |->V       Draw a gradients.
+ ... haldclutsrc       |->V       Provide an identity Hald CLUT.
+ ... life              |->V       Create life.
+ ... mandelbrot        |->V       Render a Mandelbrot fractal.
+ ... mptestsrc         |->V       Generate various test pattern.
+ ... nullsrc           |->V       Null video source, return unprocessed video frames.
+ ... openclsrc         |->V       Generate video using an OpenCL program
+ ... pal75bars         |->V       Generate PAL 75% color bars.
+ ... pal100bars        |->V       Generate PAL 100% color bars.
+ ... rgbtestsrc        |->V       Generate RGB test pattern.
+ .S. sierpinski        |->V       Render a Sierpinski fractal.
+ ... smptebars         |->V       Generate SMPTE color bars.
+ ... smptehdbars       |->V       Generate SMPTE HD color bars.
+ ... testsrc           |->V       Generate test pattern.
+ ... testsrc2          |->V       Generate another test pattern.
+ ... yuvtestsrc        |->V       Generate YUV test pattern.
+ .SC zoneplate         |->V       Generate zone-plate.
+ ... nullsink          V->|       Do absolutely nothing with the input video.
+ ..C a3dscope          A->V       Convert input audio to 3d scope video output.
+ ... abitscope         A->V       Convert input audio to audio bit scope video output.
+ ... adrawgraph        A->V       Draw a graph using input audio metadata.
+ ..C agraphmonitor     A->V       Show various filtergraph stats.
+ ... ahistogram        A->V       Convert input audio to histogram video output.
+ ... aphasemeter       A->N       Convert input audio to phase meter video output.
+ .SC avectorscope      A->V       Convert input audio to vectorscope video output.
+ ..C concat            N->N       Concatenate audio and video streams.
+ ... showcqt           A->V       Convert input audio to a CQT (Constant/Clamped Q Transform) spectrum video output.
+ .S. showcwt           A->V       Convert input audio to a CWT (Continuous Wavelet Transform) spectrum video output.
+ ... showfreqs         A->V       Convert input audio to a frequencies video output.
+ .S. showspatial       A->V       Convert input audio to a spatial video output.
+ .S. showspectrum      A->V       Convert input audio to a spectrum video output.
+ .S. showspectrumpic   A->V       Convert input audio to a spectrum video output single picture.
+ ... showvolume        A->V       Convert input audio volume to video output.
+ ... showwaves         A->V       Convert input audio to a video output.
+ ... showwavespic      A->V       Convert input audio to a video output single picture.
+ ... spectrumsynth     VV->A      Convert input spectrum videos to audio output.
+ ..C avsynctest        |->AV      Generate an Audio Video Sync Test.
+ ..C amovie            |->N       Read audio from a movie source.
+ ..C movie             |->N       Read from a movie source.
+ ... abuffer           |->A       Buffer audio frames, and make them accessible to the filterchain.
+ ... buffer            |->V       Buffer video frames, and make them accessible to the filterchain.
+ ... abuffersink       A->|       Buffer audio frames, and make them available to the end of the filter graph.
+ ... buffersink        V->|       Buffer video frames, and make them available to the end of the filter graph.
+
+bun install v1.3.14 (0d9b296a)
+Resolving dependencies
+Resolved, downloaded and extracted [90]
+
++ @types/bun@1.4.2 (v1.4.4 available)
++ @typescript/native-preview@7.0.0-dev.20260707.2
++ lint-staged@17.5.1
++ oxfmt@0.65.0
++ oxlint@1.85.0
++ prettier@3.9.8 (v3.9.10 available)
++ ts-morph@28.0.0
++ typescript@7.0.2
++ sherpa-onnx@1.13.2
++ sherpa-onnx-node@1.13.2 (v2.0.1 available)
+
+352 packages installed [58.63s]
+
+$ bun --cwd=packages/collab-web run gen:tool-views
+$ bun scripts/build-tool-views.ts
+Generated ..\coding-agent\src\export\html\tool-views.generated.js (578.4 KiB)
+
+
+bun link v1.3.14 (0d9b296a)
+Success! Registered "@oh-my-pi/pi-coding-agent"
+
+To use @oh-my-pi/pi-coding-agent in a project, run:
+  bun link @oh-my-pi/pi-coding-agent
+
+Or add it in dependencies in your package.json file:
+  "@oh-my-pi/pi-coding-agent": "link:@oh-my-pi/pi-coding-agent"
+
+
+> postinstall
+> node scripts/apply-renderer-darwin-cpu-patch.mjs
+
+{"package":"@remotion/renderer","version":"4.0.509","patchedFiles":2}
+
+added 278 packages in 3m
+
+Downloading Chrome Headless Shell https://www.remotion.dev/chrome-headless-shell
+Customize this behavior by adding a onBrowserDownload function to ensureBrowser().
+Downloading from: https://storage.googleapis.com/chrome-for-testing-public/149.0.7790.0/win64/chrome-headless-shell-win64.zip
+Downloading Chrome Headless Shell - 9.5 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 19.1 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 28.6 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 38.2 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 47.7 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 57.3 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 66.8 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 76.3 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 85.9 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 95.4 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 105 Mb/113.3 Mb
+Downloading Chrome Headless Shell - 113.3 Mb/113.3 Mb
+shared browser ready: C:\Users\runneradmin\Library\Caches\astrid-remotion-browser\4.0.509\chrome-headless-shell\win64\chrome-headless-shell-win64\chrome-headless-shell.exe
+
+{"prefix": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py", "purelib": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Lib\\site-packages", "origins": {"host": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Lib\\site-packages\\astrid\\core\\execution\\generic_host.py", "child": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Lib\\site-packages\\astrid\\core\\execution\\generic_host_worker.py", "action": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Lib\\site-packages\\astrid\\packs\\rendering\\actions\\render\\run.py", "client": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Lib\\site-packages\\astrid_runtime_client\\__init__.py", "sdk": "C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Lib\\site-packages\\astrid\\sdk\\invocation.py"}}
+
+Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+  File "C:\Users\runneradmin\AppData\Local\Astrid\versions\020877f1-47e59494-f77df0c3\py\Lib\site-packages\astrid\core\rendering\_local_schema.py", line 56, in load_verified_schema
+    path = verified_schema_path(source_root, configured)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\runneradmin\AppData\Local\Astrid\versions\020877f1-47e59494-f77df0c3\py\Lib\site-packages\astrid\core\rendering\_local_schema.py", line 36, in verified_schema_path
+    raise ValueError(f"local timeline schema input has a foreign owner/mode: {path.name}")
+ValueError: local timeline schema input has a foreign owner/mode: timeline-config.schema.json
+
+Traceback (most recent call last):
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Lib\site-packages\astrid\installer\cli.py", line 335, in main
+    installer.run(mode, manifest, delete_data=args.delete_data, bundle=bundle)
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Lib\site-packages\astrid\installer\core.py", line 534, in run
+    return self._run_locked(mode, manifest, delete_data=delete_data, bundle=bundle)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Lib\site-packages\astrid\installer\core.py", line 690, in _run_locked
+    candidate_version = self.backend.stage(manifest, self.root, self.data)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Lib\site-packages\astrid\installer\backend.py", line 955, in stage
+    self._verify_installed_timeline_schema(python, product_root, env)
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Lib\site-packages\astrid\installer\backend.py", line 416, in _verify_installed_timeline_schema
+    self.run([python, "-X", "utf8", "-I", "-B", "-c", script, product_root], extra_env=env)
+  File "C:\Users\runneradmin\AppData\Local\Temp\astrid-install-d8780eb8f15d4e759f269f00fde1a27b\venv\Lib\site-packages\astrid\installer\backend.py", line 135, in run
+    raise subprocess.CalledProcessError(result.returncode, [str(argv[0])], output=result.stdout)
+subprocess.CalledProcessError: Command '['C:\\Users\\runneradmin\\AppData\\Local\\Astrid\\versions\\020877f1-47e59494-f77df0c3\\py\\Scripts\\python.exe']' returned non-zero exit status 1.
+Exception: D:\a\astrid-agent\astrid-agent\journey-app\public\install.ps1:286
+Line |
+ 286 |              throw 'The Astrid installer did not finish; see the log.'
+     |              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | The Astrid installer did not finish; see the log.
+
+
