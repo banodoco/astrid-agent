@@ -32,6 +32,7 @@ PINOKIO_UPDATE_UNINSTALL_REFUSAL = (
     "Astrid on this computer was installed with Pinokio. Choose Pinokio's Update or Uninstall button."
 )
 PINOKIO_STOP_REFUSAL = "Astrid is still running. Choose Pinokio's Stop button, then try again."
+RECOVERED_PREVIOUS_VERSION = "Recovered your previous version — run Update again"
 
 
 def _pinokio_claim_is_live(recorded: dict) -> bool:
@@ -117,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             with operation(root, backend):
                 if pending and pending.get("step") not in TERMINAL_STEPS:
                     recover_app(root, backend)
+                    print(RECOVERED_PREVIOUS_VERSION)
                     return 0
                 # Recovery-only invocations return above; fresh operations preflight
                 # once here before downloads or staging. C1 remains stop authority.
@@ -237,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                         from .app_update import recover_app
 
                         recover_app(root, backend)
+                        print(RECOVERED_PREVIOUS_VERSION)
                     else:
                         from .app_update import locked as app_locked
 
@@ -244,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                             Installer(root, data, backend, managed_by=managed_by)._recover_update()
                         if marker.get("owner") == LABEL:
                             update_job.sweep_owned_jobs(root, locked=True)
+                        print(RECOVERED_PREVIOUS_VERSION)
                     return 0
                 if mode in {"install", "update", "app-update"} and marker.get("owner") == LABEL:
                     # Sweep only jobs and artifacts named by Astrid's durable

@@ -111,7 +111,8 @@ def test_busy_pinokio_mutation_refuses_before_writing_install_state(tmp_path, mo
             pytest.fail("running owner must be refused before C1 preflight")
 
         monkeypatch.setattr(Backend, "preflight_stop", fenced_preflight)
-        # Lock contention must refuse before C1 or interpreter qualification.
+        # This test targets the existing C1 busy refusal after a capable
+        # Runtime qualification; its placeholder interpreter isn't executable.
         monkeypatch.setattr(Backend, "run", lambda *_args, **_kwargs: "")
     marker_before = marker_path.read_bytes() if marker_path.exists() else None
     selection_before = selection_path.read_bytes() if selection_path.exists() else None
@@ -233,7 +234,7 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     events = []
     from runtime_protocol import platform
 
-    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+    monkeypatch.setattr(platform, "process_identity", lambda pid, **_kwargs: {
         "pid": pid, "birth_id": "birth",
     })
     boundary_calls = []
@@ -461,7 +462,7 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     monkeypatch.setattr(cli, "Backend", RefusalBackend)
     monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
     monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
-    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+    monkeypatch.setattr(platform, "process_identity", lambda pid, **_kwargs: {
         "pid": pid, "birth_id": "birth",
     })
 

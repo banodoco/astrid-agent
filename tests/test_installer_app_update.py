@@ -376,9 +376,8 @@ def _use_real_selected_runtime(env, runtime):
     return calls
 
 
-@pytest.mark.parametrize("capability", [0, 1])
-def test_running_runtime_refuses_exact_i1_without_writes(
-        installed, monkeypatch, capsys, capability):
+def test_running_incapable_runtime_refuses_exact_i1_without_writes(
+        installed, monkeypatch, capsys):
     env = installed
     env.owner["running"] = True
     (env.root / "install-manifest.json").write_bytes(b"{}\n")
@@ -386,7 +385,7 @@ def test_running_runtime_refuses_exact_i1_without_writes(
     (env.root / "run_runtime.py").write_bytes(b"legacy runner\n")
     journal = env.root / "update-transaction.json"
     journal.write_bytes(b'{"step":"complete","opaque":"preserve"}\n')
-    runtime = _real_runtime(env, capability)
+    runtime = _real_runtime(env, 0)
     probe_calls = _use_real_selected_runtime(env, runtime)
     env.record.pop("identity")  # Release-0 selection identity is read-only here.
     old_version_path = env.old.root / "version.json"
@@ -420,7 +419,8 @@ def test_running_runtime_refuses_exact_i1_without_writes(
     assert "identity" not in read_json(old_version_path)
     assert "identity" not in env.record
     assert preflight_calls == []
-    assert probe_calls == []
+    assert len(probe_calls) == 2
+    assert all("-B" in call for call in probe_calls)
     assert env.candidate_admissions == []
 
 
@@ -464,11 +464,12 @@ def test_start_racing_stopped_preflight_refuses_exact_i1_before_manifest_write(
     assert "Astrid is still running. Choose Pinokio's Stop button, then try again." in capsys.readouterr().out.splitlines()
     assert _tree_bytes(env.root) == before
     assert not list(env.old.root.rglob("__pycache__"))
-    assert probe_calls == []
+    assert len(probe_calls) == 2
+    assert all("-B" in call for call in probe_calls)
     assert env.candidate_admissions == []
 
 
-def test_running_runtime_refusal_precedes_provenance_probe(
+def test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe(
         installed, monkeypatch):
     env = installed
     runtime = _real_runtime(env, 1)
@@ -487,7 +488,8 @@ def test_running_runtime_refusal_precedes_provenance_probe(
         assert _run_cli_app_update(env, monkeypatch) == 1
     assert _tree_bytes(env.root) == before
     assert not list(env.old.root.rglob("__pycache__"))
-    assert probe_calls == []
+    assert len(probe_calls) == 1
+    assert "-B" in probe_calls[0]
     assert env.candidate_admissions == []
 
 

@@ -20,11 +20,6 @@ import sys
 import threading
 from pathlib import Path
 
-if __package__:
-    from .core import absolute, current, read_json
-    from .service import pinokio_lock_paths, launch_admission
-
-
 def _receive(stream):
     line = stream.readline(65537)
     if not line or len(line) > 65536:
@@ -37,7 +32,16 @@ def _send(stream, value):
     stream.flush()
 
 
+def _same_process_identity(expected, observed):
+    """Compare the immutable process incarnation rather than mutable topology."""
+    return (isinstance(expected, dict) and isinstance(observed, dict)
+            and all(expected.get(field) == observed.get(field)
+                    for field in ("pid", "uid", "birth_id")))
+
+
 def _binding(root, version, data):
+    from astrid.installer.core import absolute, current, read_json
+    from astrid.installer.service import launch_admission
 
     root, data = absolute(root), absolute(data)
     marker = read_json(root / "install.json")
@@ -74,10 +78,10 @@ def attach(ticket, root, version, data):
         receipt = json.loads((Path(root) / ".app-update-custody.json").read_text(encoding="utf-8"))
         from runtime_protocol import platform
 
-        expected_lock = pinokio_lock_paths(Path.home(), sys.platform)[0]
+        observed = platform.process_identity(receipt["identity"]["pid"])
         if (receipt["port"] != ticket["port"] or receipt["root"] != str(Path(root).resolve())
-                or receipt["lock"] != str(expected_lock.resolve())
-                or platform.process_identity(receipt["identity"]["pid"]) != receipt["identity"]):
+                or receipt["lock"] != ticket["lock"]
+                or not _same_process_identity(receipt["identity"], observed)):
             raise ValueError("The stopped-update lock owner identity changed.")
         challenge = secrets.token_hex(32)
         connection = socket.create_connection(("127.0.0.1", ticket["port"]), timeout=10)
@@ -118,8 +122,8 @@ def keeper(fd):
 
 
 class Custody:
-    def __init__(self, process, root):
-        self.process, self.root = process, root
+    def __init__(self, process, root, lock):
+        self.process, self.root, self.lock = process, root, Path(lock).resolve()
 
     def check(self):
         if self.process.poll() is not None:
@@ -135,7 +139,8 @@ class Custody:
         reply = _receive(self.process.stdout)
         if reply.get("armed") is not True:
             raise ValueError("The previous foreground owner has not released update custody.")
-        return {"port": reply["port"], "token": token, "binding": binding}
+        return {"port": reply["port"], "token": token, "binding": binding,
+                "lock": str(self.lock)}
 
     def close(self):
         if self.process.stdin is not None:
@@ -161,7 +166,9 @@ def stopped_custody(root, backend):
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    custody = Custody(process, root)
+    # The foreground path is the identity handed to the Runtime; retain the
+    # legacy updater path as well when XDG differs so neither owner can race it.
+    custody = Custody(process, root, paths[0])
     try:
         if process.stdout is None:
             raise ValueError("The stopped-update lock owner disconnected.")
@@ -179,8 +186,13 @@ def operation(root, backend):
         return
     with stopped_custody(root, backend) as custody:
         if custody is None:
-            # The preflight probe is not admission: a Start can win that race.
-            # Refuse before manifest or journal writes, including recovery.
+            from astrid.installer.app_update import qualify_running, selection
+
+            _old, data, _identity = selection(root, backend, allow_transaction=True)
+            # The preflight probe is not admission: Start can win that race.
+            # Requalify without writing, then refuse the still-running owner
+            # for both fresh updates and unfinished recovery transactions.
+            qualify_running(root, backend, data, allow_transaction=True)
             raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
         backend._pinokio_custody = custody
         try:

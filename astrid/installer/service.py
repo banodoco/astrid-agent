@@ -231,16 +231,16 @@ def launch_admission(version: Version, data: Path, *, custody: bool = False) -> 
             raise ValueError("The pending update does not permit this launch.")
         context = transaction.get("transaction_context") or {}
         if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
-            raise ValueError("Choose Update to finish")
+            raise ValueError("The stopped update requires its authenticated activation lease.")
         if not activation_lock_held(root, version):
             raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if str(exc) == "Choose Update to finish":
             raise
-        action = ("Choose Pinokio's Update button to finish it."
-                  if version.managed_by == "pinokio" else
-                  "Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
+        if version.managed_by == "pinokio":
+            raise ValueError("Choose Update to finish") from exc
+        action = ("Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
                   if os.name != "nt" else
                   "Run the install line to finish it: irm https://astrid.haus/install.ps1 | iex")
         raise ValueError("An Astrid update was interrupted; " + action) from exc

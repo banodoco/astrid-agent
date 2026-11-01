@@ -54,7 +54,6 @@ def launch(root: Path, argv: list[str], *, system: str | None = None) -> None:
         finally:
             connection.close()
         return
-
     lock_path = installer_lock_path(Path.home(), system)
     platform.private_directory(lock_path.parent)
     with lock_path.open("a+b") as lock:

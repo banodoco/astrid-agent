@@ -151,9 +151,13 @@ def selection(root: Path, backend, *, allow_transaction: bool = False) -> tuple[
 
 
 def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
-    """Refuse a running owner before any update writes, then preserve C1 preflight."""
+    """Preserve C1 preflight; give a running incapable Runtime its contract refusal."""
     from runtime_protocol import platform
 
+    held = False
+    # Pinokio's foreground filters XDG_DATA_HOME, while an older updater can
+    # inherit it. Check both aliases before C1 so an old Runtime receives the
+    # exact Stop refusal before any transaction write.
     for lock_path in pinokio_lock_paths(backend.service.home, backend.service.system):
         if lock_path.exists():
             try:
@@ -161,12 +165,18 @@ def preflight_pinokio_update(root: Path, backend, data: Path) -> None:
                     try:
                         platform.lock_file(stream.fileno(), blocking=False)
                     except BlockingIOError:
-                        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.") from None
+                        held = True
                     else:
                         platform.unlock_file(stream.fileno())
             except FileNotFoundError:
                 pass
 
+    if held:
+        qualify_running(root, backend, data)
+        # C1 can only stop a Runtime that has already proved the current
+        # handoff contract. A lock from the retained/old foreground is instead
+        # decisive: never write or invoke C1 while that owner is still alive.
+        raise ValueError("Astrid is still running. Choose Pinokio's Stop button, then try again.")
     backend.preflight_stop(absolute(data))
 
 
