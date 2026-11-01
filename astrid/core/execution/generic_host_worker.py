@@ -46,8 +46,14 @@ def _run_captured_command(encoded: str, selected, contents) -> int:
     from .executor.runner import _PackSourceFinder
 
     args = json.loads(encoded)
-    while args and args[0] in {"-u", "-B"}:
-        args.pop(0)
+    while args:
+        if args[0] in {"-u", "-B"}:
+            if args.pop(0) == "-B":
+                sys.dont_write_bytecode = True
+        elif args[:2] == ["-X", "utf8"]:
+            del args[:2]
+        else:
+            break
     if (not args or args[0].startswith("-") and args[0] not in {"-m", "-c"}
             or args[0] in {"-m", "-c"} and len(args) < 2):
         raise ValueError("unsupported captured Python command")

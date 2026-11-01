@@ -177,6 +177,7 @@ def _positive_int(value: str) -> int:
 def _cmd_create(parsed: argparse.Namespace) -> int:
     width, height = parsed.canvas
     config = {
+        "tracks": [],
         "theme_overrides": {
             "visual": {"canvas": {"width": width, "height": height, "fps": parsed.fps}}
         },

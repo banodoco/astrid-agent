@@ -29,7 +29,7 @@ Choose the route by the requested result. Read only that route's guidance:
 | Find Banodoco advice, model settings, or workflow precedents | [Hivemind contract](../../../../docs/reference/hivemind-pack-contract.md) |
 
 For the exact distinction between managed setup, bring-your-own engines, and
-remote workers, see the [platform and execution matrix](../../../../docs/reference/where-things-run.md).
+remote workers, see the [platform and execution matrix](../../../../docs/reference/compute-profiles.md).
 Linux and macOS can use an existing ComfyUI through `vibecomfy.run` with
 `comfy_url`. H3 (`h3_av`) inference currently requires a RunPod worker.
 For batch timeline edits, narration and beats, or exact-value approval, load

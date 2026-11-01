@@ -692,11 +692,6 @@ def cmd_visualize(parsed: argparse.Namespace) -> int:
         return _cmd_visualize_diff(parsed)
     if getattr(parsed, "view", None) == "overview":
         parsed.view = "contact"
-    if getattr(parsed, "view", None) == "diff" and getattr(parsed, "before_revision_id", None) \
-            and not getattr(parsed, "after_revision_id", None):
-        head = _head_revision(parsed)
-        if head:
-            parsed.after_revision_id = head
     view_was_explicit = getattr(parsed, "view", None) is not None
     try:
         is_diff_view = getattr(parsed, "view", None) == "diff"

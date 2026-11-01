@@ -568,7 +568,7 @@ class RemoteTimelines(_RemoteFamily, _RemoteTimelineRevisionMixin):
                 before, name=canonical_name, slug=slug, output=default_output,
             )]
             initialized = execute(before, commands).bundle
-            authored_config = copy.deepcopy(dict(config)) if config is not None else {}
+            authored_config = copy.deepcopy(dict(config)) if config is not None else {"tracks": []}
             # Runtime owns the canonical bootstrap tracks. Preserve them when
             # the caller has no track preference; an explicit tracks array,
             # including [], remains authoritative.
