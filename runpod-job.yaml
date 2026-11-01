@@ -1,0 +1,71 @@
+repos:
+  astrid-agent: 8f494cb4db0f941fbee634cb3eb28d35795e26cf
+  astrid-runtime: 1e6d899efa77a2d6ec247c38250f9748330bb587
+cpu:
+  vcpu: 8
+gpu: false
+max_minutes: 45
+setup:
+  - |
+    set -euo pipefail
+    mkdir -p "$PWD/runpod-tmp" "$PWD/runpod-evidence" /workspace/out
+    trap 'code=$?; printf "%s\n" "$code" > runpod-evidence/setup-exit.txt; cp -a runpod-evidence/. /workspace/out/; exit "$code"' EXIT
+    export TMPDIR="$PWD/runpod-tmp"
+    avail_kb=$(df -Pk "$PWD" | awk 'NR==2 {print $4}')
+    test "$avail_kb" -ge 2097152
+    python3 -m venv "$PWD/runpod-tmp/venv"
+    PYTHON="$PWD/runpod-tmp/venv/bin/python"
+    "$PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+    "$PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation . ../astrid-runtime ../astrid-runtime/packages/python
+    "$PYTHON" -m pip install --disable-pip-version-check --no-deps "banodoco-timeline-schema @ git+https://github.com/banodoco/astrid-agent.git@242f9c4306bf3b501222cb041a9eb246ef47bc85#subdirectory=packages/timeline-schema/python"
+    "$PYTHON" -m pip freeze > runpod-evidence/environment.txt
+    avail_kb=$(df -Pk "$PWD" | awk 'NR==2 {print $4}')
+    test "$avail_kb" -ge 2097152
+run:
+  - |
+    set -euo pipefail
+    mkdir -p "$PWD/runpod-evidence" "$PWD/runpod-tmp" /workspace/out
+    trap 'code=$?; printf "%s\n" "$code" > runpod-evidence/payload-exit.txt; test -e runpod-evidence/payload-verdict.txt || printf "VERDICT=NO-RESULT\n" > runpod-evidence/payload-verdict.txt; cp -a runpod-evidence/. /workspace/out/; exit "$code"' EXIT
+    export TMPDIR="$PWD/runpod-tmp" PYTHONDONTWRITEBYTECODE=1
+    export ASTRID_RUNTIME_CHECKOUT="$(realpath ../astrid-runtime)"
+    export PYTHONPATH="$PWD:$ASTRID_RUNTIME_CHECKOUT:$ASTRID_RUNTIME_CHECKOUT/packages/python"
+    PYTHON="$PWD/runpod-tmp/venv/bin/python"
+    test "$(git rev-parse HEAD)" = 8f494cb4db0f941fbee634cb3eb28d35795e26cf
+    test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 1e6d899efa77a2d6ec247c38250f9748330bb587
+    test -z "$(git status --porcelain)"
+    test -z "$(git -C "$ASTRID_RUNTIME_CHECKOUT" status --porcelain)"
+    git rev-parse HEAD > runpod-evidence/agent-head.txt
+    git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+    "$PYTHON" --version > runpod-evidence/python.txt
+    "$PYTHON" -m pytest --version > runpod-evidence/pytest.txt
+    uname -a > runpod-evidence/platform.txt
+    df -Pk "$PWD" > runpod-evidence/disk-before-tests.txt
+    sha256sum astrid/installer/tools.py tests/test_installer_tools.py docs/testing/TESTING.md > runpod-evidence/changed-paths.sha256
+    set +e
+    "$PYTHON" -m pytest -p no:cacheprovider -o addopts= --collect-only -q tests/test_installer_tools.py tests/test_installer_asset_checksums.py tests/test_installer_platforms.py tests/test_installer_service_env.py > runpod-evidence/collected-nodes.txt 2>&1
+    collect_exit=$?
+    grep '^tests/.*::' runpod-evidence/collected-nodes.txt | LC_ALL=C sort > runpod-evidence/selection-nodes.txt
+    test "$(wc -l < runpod-evidence/selection-nodes.txt)" -eq 226
+    sha256sum runpod-evidence/selection-nodes.txt > runpod-evidence/selection-nodes.sha256
+    printf 'collection=%s\n' "$collect_exit" > runpod-evidence/selector-exits.txt
+    failures=0
+    if [ "$collect_exit" -ne 0 ]; then failures=1; fi
+    run_selector() {
+      name=$1
+      shift
+      "$PYTHON" -m pytest -p no:cacheprovider -o addopts= -q --basetemp="$TMPDIR/pytest-$name" --junitxml="runpod-evidence/$name.junit.xml" "$@" 2>&1 | tee "runpod-evidence/$name.log"
+      selector_exit=${PIPESTATUS[0]}
+      printf '%s=%s\n' "$name" "$selector_exit" >> runpod-evidence/selector-exits.txt
+      if [ "$selector_exit" -ne 0 ]; then failures=1; fi
+    }
+    run_selector tools tests/test_installer_tools.py
+    run_selector asset-checksums tests/test_installer_asset_checksums.py
+    run_selector platforms tests/test_installer_platforms.py
+    run_selector service-env tests/test_installer_service_env.py
+    df -Pk "$PWD" > runpod-evidence/disk-after-tests.txt
+    sha256sum runpod-evidence/*.txt runpod-evidence/*.log runpod-evidence/*.xml > runpod-evidence/SHA256SUMS
+    if [ "$failures" -eq 0 ]; then printf 'VERDICT=PASS\n' > runpod-evidence/payload-verdict.txt; else printf 'VERDICT=FAIL\n' > runpod-evidence/payload-verdict.txt; fi
+    printf '== run end\n' > runpod-evidence/run-end.txt
+    exit "$failures"
+artifacts:
+  - runpod-evidence/**
