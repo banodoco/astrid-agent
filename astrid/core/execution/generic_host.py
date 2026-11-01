@@ -6164,6 +6164,8 @@ class GenericPackHost:
         The caller must route an exact observed binding to this host. Native
         evidence remains separate from any claim of measured memory return.
         """
+        if not isinstance(expected_binding, SessionBinding) or type(expected_generation) is not int:
+            raise StaleAdmissionError("session release requires exact owner authorization")
         if not self._session_task_lock.acquire(blocking=False):
             return {"ok": False, "released": False, "release_pending": True}
         try:

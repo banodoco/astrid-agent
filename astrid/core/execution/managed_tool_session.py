@@ -482,6 +482,7 @@ class ManagedToolSession:
             if expected_generation is not None or expected_binding is not None:
                 if (
                     self._active is None or expected_binding is None
+                    or type(expected_generation) is not int
                     or expected_generation != self._generation
                     or expected_binding.identity_key != self._active.binding.identity_key
                 ):
