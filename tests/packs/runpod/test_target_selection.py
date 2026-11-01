@@ -335,3 +335,16 @@ def test_bounded_capacity_retries_never_repeat_ambiguous_post(case, monkeypatch)
     record = json.loads(case.owner.path.read_text())
     assert record["state"] == "allocation_unknown"
     assert record["create_attempts"] == 1
+
+
+def test_preferences_default_idle_uses_shared_warm_hold_default(case):
+    from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
+
+    raw = {key: value for key, value in case.raw.items() if key != "idle_timeout_seconds"}
+    parsed = RunPodPreferences.from_mapping(raw)
+    direct = RunPodPreferences(case.prefs.provider_account_ref, case.prefs.gpu_types, case.prefs.image,
+                               case.prefs.volume_id, case.prefs.volume_name, case.prefs.volume_size_gb,
+                               case.prefs.mount_path)
+    assert DEFAULT_IDLE_SECONDS == 1800
+    assert parsed.idle_timeout_seconds == direct.idle_timeout_seconds == DEFAULT_IDLE_SECONDS
+    assert RunPodPreferences.from_mapping(parsed.as_mapping()) == parsed
