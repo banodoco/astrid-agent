@@ -1,0 +1,96 @@
+repos:
+  astrid-agent: c2b5abb3f76bddf16faf9479ec8884e405299cc9
+cpu:
+  vcpu: 8
+max_minutes: 120
+setup:
+  - |
+      set -euo pipefail
+      PROOF_ROOT=/workspace/I-AG-CP2-ASSEMBLY-proof
+      mkdir -p "$PROOF_ROOT/tmp" "$PWD/runpod-evidence" /workspace/out
+      trap 'status=$?; printf "%s\n" "$status" > runpod-evidence/payload-exit.txt; cp -a runpod-evidence/. /workspace/out/; exit "$status"' EXIT
+      export TMPDIR="$PROOF_ROOT/tmp"
+      python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+      python3 -m venv "$PROOF_ROOT/venv"
+      PROOF_PYTHON="$PROOF_ROOT/venv/bin/python"
+      "$PROOF_PYTHON" -m pip install --disable-pip-version-check --require-hashes -r requirements/proof.lock -r requirements/build.lock
+      "$PROOF_PYTHON" -m pip install --disable-pip-version-check hatchling==1.33.0
+      git clone --filter=blob:none --no-checkout https://github.com/banodoco/astrid-runtime.git "$PROOF_ROOT/runtime"
+      git -C "$PROOF_ROOT/runtime" fetch --no-tags origin 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+      git -C "$PROOF_ROOT/runtime" checkout --detach 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+      git clone --filter=blob:none --no-checkout https://github.com/banodoco/runpod-lifecycle.git "$PROOF_ROOT/lifecycle"
+      git -C "$PROOF_ROOT/lifecycle" fetch --no-tags origin 96360a27a53c4608f780f7b370f747a2aa3c7ca8
+      git -C "$PROOF_ROOT/lifecycle" checkout --detach 96360a27a53c4608f780f7b370f747a2aa3c7ca8
+      git clone --filter=blob:none --no-checkout https://github.com/runpod/runpod-python.git "$PROOF_ROOT/runpod"
+      git -C "$PROOF_ROOT/runpod" fetch --no-tags origin 0786b3d51855a66176fea1e7443b92e7ef2d01b5
+      git -C "$PROOF_ROOT/runpod" checkout --detach 0786b3d51855a66176fea1e7443b92e7ef2d01b5
+      "$PROOF_PYTHON" -m pip install --disable-pip-version-check --no-deps --no-build-isolation "$PROOF_ROOT/runtime" "$PROOF_ROOT/runtime/packages/python" .
+      "$PROOF_PYTHON" -m pip freeze > runpod-evidence/environment.txt
+      uname -a > runpod-evidence/platform.txt
+      df -h . > runpod-evidence/disk.txt
+run:
+  - |
+      set -euo pipefail
+      PROOF_ROOT=/workspace/I-AG-CP2-ASSEMBLY-proof
+      PROOF_PYTHON="$PROOF_ROOT/venv/bin/python"
+      export TMPDIR="$PROOF_ROOT/tmp"
+      export ASTRID_AGENT_CHECKOUT="$PWD"
+      export ASTRID_RUNTIME_CHECKOUT="$PROOF_ROOT/runtime"
+      export ASTRID_RUNPOD_LIFECYCLE_CHECKOUT="$PROOF_ROOT/lifecycle"
+      export ASTRID_RUNPOD_CHECKOUT="$PROOF_ROOT/runpod"
+      test "$(git rev-parse HEAD)" = c2b5abb3f76bddf16faf9479ec8884e405299cc9
+      test "$(git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD)" = 47e5949465cb6f3afdfd1cb8a0e90009fd9d4020
+      git rev-parse HEAD > runpod-evidence/agent-head.txt
+      git -C "$ASTRID_RUNTIME_CHECKOUT" rev-parse HEAD > runpod-evidence/runtime-head.txt
+      git -C "$ASTRID_RUNPOD_LIFECYCLE_CHECKOUT" rev-parse HEAD > runpod-evidence/lifecycle-head.txt
+      git -C "$ASTRID_RUNPOD_CHECKOUT" rev-parse HEAD > runpod-evidence/runpod-head.txt
+      "$PROOF_PYTHON" scripts/vendor_lock.py check runtime.lock.json --producer "$ASTRID_RUNTIME_CHECKOUT" 2>&1 | tee runpod-evidence/vendor-check.txt
+      sha256sum runtime.lock.json artifacts.json astrid_runtime_client/*.py > runpod-evidence/generated-lock-hashes.txt
+      readarray -t t07 < <(printf '%s\n' \
+        'tests/packs/rendering/test_timeline_route_integration.py::test_create_uses_empty_head_route_and_preserves_v3_config' \
+        'tests/packs/rendering/test_timeline_route_integration.py::test_show_visualize_round_trip_keeps_saved_revision_after_newer_head' \
+        'tests/packs/rendering/test_timeline_route_integration.py::test_plain_show_returns_the_canonical_inspection_shape' \
+        'tests/v10/test_domain_cli_projects_timelines.py::test_timelines_show_is_one_sdk_call' \
+        'tests/v10/test_domain_cli_projects_timelines.py::test_timelines_show_allows_runtime_selected_scope')
+      "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/t07.xml "${t07[@]}" 2>&1 | tee runpod-evidence/t07.log
+      readarray -t correction < <(printf '%s\n' \
+        'tests/v10/test_timelines_create.py::test_remote_create_empty_creates_shell_then_empty_head' \
+        'tests/v10/test_domain_cli_projects_timelines.py::test_first_run_timeline_journey_uses_selection_recent_history_and_project_list' \
+        'tests/test_skills.py::test_timeline_main_skill_code_blocks_run_with_scratch_runtime' \
+        'tests/sdk/test_timeline_import_prepare.py::test_prepare_import_builds_fresh_children_and_target_transcript_ids' \
+        'tests/v10/test_domain_cli_projects_timelines.py::test_timelines_visualize_routes_public_sdk_and_normalizes_formats' \
+        'tests/v10/test_domain_cli_projects_timelines.py::test_timelines_visualize_forwards_filmstrip_options' \
+        'tests/v10/test_domain_cli_projects_timelines.py::test_projects_list_default_matches_explicit_json' \
+        'tests/sdk/test_timeline_restructure.py::test_split_stores_chapters_as_shots_and_music_and_crossers_on_the_film' \
+        'tests/sdk/test_timeline_restructure.py::test_restructure_refuses_what_would_change_the_render' \
+        'tests/sdk/test_timeline_restructure.py::test_split_routes_a_new_clip_by_placement_and_a_wall_crosser_to_the_film' \
+        'tests/packs/timeline/test_verbs_working_copy.py::test_show_as_sheet_prints_the_working_copy_sheet_with_a_banner' \
+        'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[astrid.editor.timeline.5fb2249e000000000000000000000000-the editor published 5fb2249e after your checkout (rev-0)]' \
+        'tests/packs/timeline/test_verbs_working_copy.py::test_publish_conflict_names_the_writer_and_offers_discard_first[authoring-parent-revision-38cecaa5ffffffffffffffffffffffff-someone published 38cecaa5 after your checkout (rev-0)]')
+      "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/correction.xml "${correction[@]}" 2>&1 | tee runpod-evidence/correction.log
+      readarray -t retained < <(printf '%s\n' \
+        'tests/v10/test_timelines_create.py' \
+        'tests/sdk/test_timeline_runtime_track_defaults.py' \
+        'tests/sdk/test_timeline_pristine_initialize_runtime.py::test_remote_create_empty_uses_live_commit_bootstrap_and_exact_replay' \
+        'tests/sdk/test_timeline_create_content.py' \
+        'tests/timeline/test_authoring_bundle.py::test_timing_is_admitted_but_competing_selected_media_fails_before_publish' \
+        'tests/editing_conformance/test_occurrence_fork_source_baseline.py::test_new_competing_selection_after_fork_refuses_without_mutating_input' \
+        'tests/editing_conformance/test_captured_redo_media_closure.py::test_restored_baseline_is_native_only_and_preserves_all_authored_bytes' \
+        'tests/sdk/test_timeline_commit_graph_roots.py')
+      "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/retained.xml "${retained[@]}" 2>&1 | tee runpod-evidence/retained.log
+      readarray -t installed < <(printf '%s\n' \
+        'tests/test_installer_installed_schema.py::test_stage_binds_installed_reader_validator_and_service_to_verified_schema' \
+        'tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[missing-source]' \
+        'tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[missing-wheel]' \
+        'tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[symlink-source]' \
+        'tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[symlink-wheel]' \
+        'tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[mismatch-source]' \
+        'tests/test_installer_installed_schema.py::test_stage_rejects_damaged_source_or_installed_schema_before_declaration[mismatch-wheel]' \
+        'tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[missing]' \
+        'tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[symlink]' \
+        'tests/test_installer_installed_schema.py::test_cached_installed_consumers_and_update_refuse_changed_schema_before_stop[mismatch]')
+      "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/installed-schema.xml "${installed[@]}" 2>&1 | tee runpod-evidence/installed-schema.log
+      "$PROOF_PYTHON" -m pytest -o addopts= -q --junitxml=runpod-evidence/gpu-engine-release.xml tests/core/generation/test_engine_release.py 2>&1 | tee runpod-evidence/gpu-engine-release.log
+      sha256sum runpod-evidence/*.txt runpod-evidence/*.log runpod-evidence/*.xml > runpod-evidence/SHA256SUMS
+artifacts:
+  - runpod-evidence/**
