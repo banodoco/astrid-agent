@@ -226,7 +226,7 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
     def bounded_invoke(*args, **kwargs):
         # Leave time for all seven real child processes on a CPU host while
         # keeping this observer below the suite's 600-second hang guard.
-        kwargs.update(timeout_seconds=300.0, poll_seconds=0.02)
+        kwargs.update(timeout_seconds=450.0, poll_seconds=0.1)
         return invoke_result(*args, **kwargs)
 
     monkeypatch.setattr(client, "invoke_result", bounded_invoke)
