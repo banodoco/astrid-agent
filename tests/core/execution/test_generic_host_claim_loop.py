@@ -416,3 +416,24 @@ def test_runtime_slot_fork_does_not_share_transport_or_attempt_heartbeat_state()
     assert other._attempt_runtime_epochs == {}
     assert other._heartbeat_lock is not client._heartbeat_lock
     assert other._heartbeat_session != client._heartbeat_session
+
+
+def test_slot_discovery_refresh_failure_retries_before_claim(world, monkeypatch):
+    backend = Backend(2)
+    backend.release.set()
+    host = host_for(world, backend)
+    host._registration_refresh_deadline = float("inf")
+    reads = []
+    def refresh(client):
+        reads.append(time.monotonic())
+        if len(reads) <= 2:
+            raise FileNotFoundError("transient discovery loss")
+        return False
+    monkeypatch.setattr(Client, "refresh_local_connection", refresh)
+    try:
+        assert len(host.run(poll_seconds=0.01, max_tasks=2)) == 2
+        assert len(reads) >= 4
+        assert reads[2] - reads[0] >= 0.045
+        assert sorted(backend.claimed) == ["0", "1"]
+    finally:
+        host.shutdown()

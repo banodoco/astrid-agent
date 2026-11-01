@@ -146,3 +146,103 @@ def test_host_refreshes_only_at_idle_registration_boundary(monkeypatch, idle, ex
     monkeypatch.setattr(host, "_register_impl", lambda **_: events.append("register"))
     host._renew_executor_registration(idle=idle)
     assert events == expected
+
+
+@pytest.mark.integration
+def test_live_host_recovers_through_public_up_after_discovery_loss(
+    tmp_path, monkeypatch, owned_process_groups,
+):
+    import subprocess
+    import sys
+    import threading
+    from tests.helpers.runtime import use_runtime
+
+    runtime_root = use_runtime()
+    from astrid_runtime import BootstrapConfig, LocalRuntimeBoundary, RuntimePaths, SourceProfile, bootstrap, configure_workspace
+    from runtime_protocol import process_control
+    from astrid_runtime_client import WorkspaceClient
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("ASTRID_INSTALL_RELEASE", "0")
+    monkeypatch.setenv("ASTRID_INSTALL_MANAGED_BY", "")
+    paths = RuntimePaths.current(tmp_path / "home", data_root=tmp_path / "data")
+    paths.ensure_support_dirs()
+    process_control.write_setting(paths.runtime_support, "sandbox")
+    config = BootstrapConfig(source_profile=SourceProfile(
+        "astrid", str(runtime_root), str(Path(__file__).resolve().parents[3]),
+    ))
+    boundary = LocalRuntimeBoundary()
+    owned_process_groups.add_cleanup(boundary.stop)
+    configure_workspace(paths, boundary, config, mode="create",
+                        realm_root=paths.realms_dir / "recovery", realm_id="recovery")
+    live = bootstrap(paths, boundary, config)
+    discovery = json.loads(paths.discovery_path.read_text())
+    worker_file = Path(discovery["worker_credential_file"])
+    client = RuntimeProtocolClient(live.endpoint, worker_file.read_text().strip(), credential_file=worker_file)
+    client.bind_local_runtime(paths.discovery_path)
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "executor.yaml").write_text(json.dumps({
+        "schema_version": 1, "id": "cpu.discovery-recovery", "name": "Recovery",
+        "kind": "external", "version": "1.0",
+        "command": {"argv": ["{python_exec}", "-c", "pass"]}, "outputs": [],
+        "metadata": {"adapter_family": "cpu", "resource_keys": ["cpu"]},
+    }))
+    host = GenericPackHost(pack_roots=[pack], executor_id=ACTOR, client=client, max_concurrency=2)
+    host.register()
+    record = host.capabilities["cpu.discovery-recovery"]
+    api = WorkspaceClient(live.endpoint,
+                          (paths.runtime_support / "credentials" / "owner.token").read_text().strip())
+    project = api.create_project("Recovery", idempotency_key="recovery-project")
+    lost = threading.Event()
+    reread = threading.Event()
+    original_read = RuntimeProtocolClient._local_runtime_advertisement
+    def observe_read(self, path):
+        try:
+            value = original_read(self, path)
+        except FileNotFoundError:
+            lost.set()
+            raise
+        if lost.is_set():
+            reread.set()
+        return value
+    monkeypatch.setattr(RuntimeProtocolClient, "_local_runtime_advertisement", observe_read)
+    paths.discovery_path.unlink()
+    outcome = {}
+    def serve():
+        try:
+            outcome["results"] = host.run(poll_seconds=0.02, max_tasks=1)
+        except BaseException as exc:
+            outcome["error"] = exc
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    def command(verb):
+        return subprocess.run([
+            sys.executable, "-m", "astrid_runtime", verb, "--profile", "astrid",
+            "--data-root", str(paths.app_support), "--json",
+        ], capture_output=True, text=True, timeout=30)
+    try:
+        assert lost.wait(5), outcome
+        stopped = command("down")
+        assert stopped.returncode == 1, stopped.stdout + stopped.stderr
+        assert "owner lock has no matching discovery" in stopped.stdout + stopped.stderr
+        assert '"status": "stopped"' not in stopped.stdout
+        assert api.health()["status"] == "ok"
+        recovered = command("up")
+        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert json.loads(recovered.stdout)["status"] == "reconnected"
+        assert json.loads(paths.discovery_path.read_text())["runtime_instance_id"] == live.runtime_instance_id
+        assert reread.wait(5), outcome
+        admitted = api.admit_task(capability_id=record.id, capability_digest=record.capability_digest,
+                                  input_object_ids=[], project_id=project.project_id,
+                                  idempotency_key="recovery-task")
+        thread.join(timeout=20)
+        assert not thread.is_alive(), outcome
+        assert "error" not in outcome, outcome
+        assert len(outcome["results"]) == 1
+        assert api.get_task(admitted.task_id).state == "succeeded"
+    finally:
+        host.shutdown()
+        thread.join(timeout=5)
