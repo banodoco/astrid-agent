@@ -1,9 +1,9 @@
 {
-  "agent_ref": "ddd5d278796641901bd11508863a8ea21e6c9697",
-  "runtime_ref": "1a275bb339ae897e52a5be5e1da99e846e402037",
-  "app_ref": "7f6f99208100e895efebf39c70bc30af6cee0884",
-  "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
-  "slot": "1",
-  "command": "mkdir -p suite-proof; printf \"venue smoke\\n\" > suite-proof/result.txt; exit 7",
-  "artifact_paths": "suite-proof/result.txt"
+  "agent_ref": "f44acb319644b74d0167ef1b103329bce1776895",
+  "app_ref": "d3e8f92e465f78931561db0fb5b54979a5bdd560",
+  "artifact_paths": "runtime-focused/**",
+  "command": "set +e\nif python -m pip install -e 'runtime/.[test]'; then\n  setup_exit=0\nelse\n  setup_exit=$?\nfi\nmkdir -p runtime-focused\nprintf '%s\\n' \"$setup_exit\" > runtime-focused/setup.exit\nselectors=(\n  test_reconcile_before_manifest_and_newer_target_checks\n  test_unknown_reconciliation_never_prepares_or_launches\n  test_unconfirmed_terminal_reconciliation_is_observe_only\n  test_reconcile_helper_failure_preserves_uncertainty\n  test_unacknowledged_continuation_reply_is_observe_only\n  test_reconcile_terminal_result_prevents_preparation_and_new_launch\n  test_update_route_h3_returns_confirmed_reconciliation_conflict\n  test_update_route_h4_returns_recovery_refusal\n  test_update_route_h5_returns_uncertain_acknowledgement\n  test_authenticated_continuation_keeps_operation_and_journal\n  test_update_route_malformed_acceptance_is_uncertain\n  test_status_reads_authoritative_job_and_c2_journal_without_recovery\n  test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal\n  test_status_projects_unacknowledged_launching_as_recovery_needed\n  test_production_daemon_door_advertises_and_executes_selected_updater\n)\nfor name in \"${selectors[@]}\"; do\n  marker=()\n  if [ \"$name\" = test_production_daemon_door_advertises_and_executes_selected_updater ]; then marker=(-m integration); fi\n  if pytest -q \"${marker[@]}\" --collect-only \"runtime/tests/test_update_jobs.py::$name\" > \"runtime-focused/$name.collect.log\" 2>&1; then\n    collect_exit=0\n  else\n    collect_exit=$?\n  fi\n  printf '%s\\n' \"$collect_exit\" > \"runtime-focused/$name.collect.exit\"\n  if pytest -q \"${marker[@]}\" \"runtime/tests/test_update_jobs.py::$name\" > \"runtime-focused/$name.log\" 2>&1; then\n    test_exit=0\n  else\n    test_exit=$?\n  fi\n  printf '%s\\n' \"$test_exit\" > \"runtime-focused/$name.exit\"\ndone",
+  "pinokio_ref": "c5b42701641889ecb916c60cde09a717f83d62ff",
+  "runtime_ref": "896e10b0ba53110f8b64fafa2841ac1d46904ee3",
+  "slot": "1"
 }
