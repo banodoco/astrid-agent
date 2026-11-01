@@ -219,7 +219,10 @@ def _schema(backend: Backend, version: Version, data: Path) -> tuple[dict, dict]
         if callable(hook):
             realm, schema = hook(version, data)
         else:
-            realm = backend.workspace(version, data)
+            # Read the catalog without opening the realm with the strict
+            # current-schema workspace command. Recovery may inspect data
+            # written by a different release.
+            realm = backend.update_workspace(version, data)
             schema = inspect_schema(backend, version, realm, require_current=False)
         if not isinstance(realm, dict) or not isinstance(realm.get("realm_id"), str):
             raise ValueError("workspace realm is not known")

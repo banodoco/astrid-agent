@@ -11,6 +11,28 @@ from astrid.installer.core import Version, read_json, write_json
 from astrid.installer.service import LABEL, install_selection
 
 
+def test_maintenance_inspects_with_selected_tooling_before_opening_workspace(tmp_path, monkeypatch):
+    version = Version(tmp_path / "target", tmp_path / "target/python", tmp_path / "target/profile", {})
+    realm = {"realm_id": "realm-1", "realm_root": str(tmp_path / "realm")}
+    calls = []
+
+    class Backend:
+        def update_workspace(self, selected, data):
+            calls.append(("catalog", selected, data))
+            return realm
+
+        def workspace(self, *_args):
+            raise AssertionError("strict workspace must not run before inspection")
+
+    def inspect(backend, selected, selected_realm, *, require_current):
+        calls.append(("inspect", selected, selected_realm, require_current))
+        return {"identity": {"version": 31}, "target": 33}
+
+    monkeypatch.setattr(maintenance, "inspect_schema", inspect)
+    assert maintenance._schema(Backend(), version, tmp_path) == (realm, {"identity": {"version": 31}, "target": 33})
+    assert calls == [("catalog", version, tmp_path), ("inspect", version, realm, False)]
+
+
 def _files(root: Path) -> dict[str, bytes]:
     result = {}
     for path in sorted(root.rglob("*")):
