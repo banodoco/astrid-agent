@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any
 
-from astrid.core.generation.availability import availability_declaration, model_availability, template_availability
+from astrid.core.generation.availability import availability_declaration, availability_projection, model_availability, template_availability
 from astrid.core.generation.backends.comfy_target import (
     ComfyModelMissing, ComfyTarget, ComfyTargetClient, MAX_JSON_BYTES,
     resolve_comfy_models,
@@ -94,6 +94,18 @@ def catalog_rows() -> list[dict[str, Any]]:
             if decision.get("available") is not True:
                 rows[-1]["availability"] = "unavailable"
                 rows[-1]["reason"] = decision.get("error", {}).get("message", "")
+    for row in rows:
+        record = None
+        if row['source'] == 'catalog':
+            record = model_availability(row['id'], row['mode'], row['backend'])
+        elif row['source'] in {'action', 'action-entry'}:
+            record = actions.get(row['id'] if row['source'] == 'action' else row['template'])
+        elif row['source'] == 'ready-template':
+            record = template_availability(row['id'], row['mode'], row['backend'])
+            if record.get('available') is True and row.get('registry_id'):
+                record = model_availability(row['registry_id'], row['mode'], row['backend'])
+        if record is not None and record.get('available') is not True:
+            row.update(availability_projection(record))
     return sorted(rows, key=lambda row: (row["id"], row["kind"], row["mode"], row["backend"], row["source"], row["template"]))
 
 
@@ -196,7 +208,7 @@ def generation_rows(kind: str | None = None) -> list[dict[str, Any]]:
     for row in rows:
         base = dict(row)
         if row["availability"] != "available":
-            output.append({**base, "target": "declaration", "ready": False, "reason": row["reason"], "fix": "Use an implemented generation route; see the availability declaration.", "models_present": []})
+            output.append({**base, "target": "declaration", "ready": False, "reason": row["reason"], "fix": row.get("fix") or "Use an implemented generation route; see the availability declaration.", "models_present": []})
         elif row["source"] == "action-entry":
             output.append({**base, "target": "action", "ready": False,
                            "readiness_scope": "requirements_unverified",

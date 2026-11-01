@@ -94,23 +94,23 @@
 | `understanding.understand` | Dispatch to the audio, visual, or video understanding action based on --mode. |
 | `understanding.video_understand` | Inspect synchronized audio/video windows with a video-understanding model. |
 | `understanding.visual_understand` | Inspect images or sampled video frames with a vision LLM — free-text or JSON-schema-constrained. |
-| `vibecomfy.character_animation` | Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
+| `vibecomfy.character_animation` | Unavailable: vibecomfy.character_animation is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Bounded Wan 2.2 Animate character animation with ordered CAS inputs. |
 | `vibecomfy.edit` | Create an immutable canonical successor through a typed edit or explicit capture. |
 | `vibecomfy.import` | Import a ComfyUI workflow into VibeComfy's canonical editable bundle. |
 | `vibecomfy.inspect` | Render a ComfyUI workflow as readable Python-like VibeComfy IR. |
 | `vibecomfy.run` | Run a VibeComfy / ComfyUI workflow and settle its artifact inventory. |
 | `vibecomfy.validate` | Validate workflow structure offline; runtime checks belong to vibecomfy.run. |
 | `vibecomfy.video_enhance` | Bounded VibeComfy video upscale with source-FPS/audio preservation. |
-| `video_editing.animate_image` | Restyle a video opening frame and animate it using the reference video's motion. |
+| `video_editing.animate_image` | Unavailable: video_editing.animate_image is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Restyle a video opening frame and animate it using the reference video's motion. |
 | `video_editing.cut` | Assemble an editorial arrangement into a timeline, asset registry, and metadata files. |
 | `video_editing.event_talks` | Plan event-talk work and run local template, transcript, and holding-screen steps. |
 | `video_editing.hype` | Run the cache-aware hype pipeline from source video and creative brief to a rendered edit. |
 | `video_editing.iteration_video` | Assemble one admitted historical iteration selection and render it through the public Rendering action. |
 | `video_editing.logo_ideas` | Draft distinct logo concepts and render them as a contact sheet or individual images. |
 | `video_editing.sync_draft_voiceover` | Reconcile temporary narration with pinned timeline scripts. |
-| `video_editing.thumbnail_maker` | Plan source evidence and prepare references for a thumbnail request. |
+| `video_editing.thumbnail_maker` | Unavailable: video_editing.thumbnail_maker generation is not implemented. Fix: retry after the generation availability declaration marks this route available. Plan source evidence and prepare references for a thumbnail request. |
 | `video_editing.vary_grid` | Select cells from an image grid and generate a new grid of variations. |
-| `wan2gp.generate_video` | Host-mediated native Wan2GP video generation. |
+| `wan2gp.generate_video` | Unavailable: wan2gp.generate_video is unavailable because this generation route has not been qualified. Fix: use a qualified generation route; retry this route after it is qualified. Host-mediated native Wan2GP video generation. |
 | `wan2gp.validate_settings` | Compile and validate Wan2GP settings (no engine execution). |
 | `youtube.upload` | Upload a finished video to YouTube via the shared banodoco-social Zapier integration. |
 | `youtube.youtube_audio` | Download a YouTube video's audio (MP3) or video (MP4) — by search query or direct URL. |

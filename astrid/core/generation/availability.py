@@ -66,6 +66,79 @@ def require_model_available(model: str, mode: str, backend: str) -> None:
     _require_available(f"{model}/{mode}/{backend}", model_availability(model, mode, backend))
 
 
+def require_template_available(template: str, mode: str = "", backend: str = "local") -> None:
+    _require_available(f"{template}/{mode}/{backend}", template_availability(template, mode, backend))
+
+
+def availability_projection(record: dict[str, Any]) -> dict[str, str]:
+    """Use the same reason and fix in discovery, documentation and refusals."""
+    if record.get("available") is True:
+        return {"availability": "available", "reason": "", "fix": ""}
+    error = record.get("error", {})
+    fix = (
+        "use a qualified generation route; retry this route after it is qualified"
+        if error.get("code") == "generation_route_unqualified"
+        else "retry after the generation availability declaration marks this route available"
+    )
+    return {"availability": "unavailable", "reason": str(error.get("message", "")),
+            "fix": str(error.get("fix") or fix)}
+
+
+def entry_availability(entry: dict[str, Any], mode: str, backend: str = "local") -> dict[str, Any]:
+    """Only declared actions and bundled entries carry release qualification."""
+    if entry.get("action"):
+        try:
+            return action_availability(entry["action"])
+        except KeyError:
+            return {"available": True}
+    if entry.get("source") == "ready-template":
+        decision = template_availability(entry["id"], mode, backend)
+        if decision.get("available") is True and entry.get("registry_id"):
+            return model_availability(entry["registry_id"], mode, backend)
+        return decision
+    return {"available": True}
+
+
+def require_entry_available(entry: dict[str, Any], mode: str, backend: str = "local") -> None:
+    _require_available(f"{entry['id']}/{mode}/{backend}", entry_availability(entry, mode, backend))
+
+
+def require_bundled_workflow_available(path: Any, *, source_path: Any = None) -> None:
+    """Gate bundled sources/selectors, never caller-authored graph metadata."""
+    from collections.abc import Mapping
+    from pathlib import Path
+
+    if path is None:
+        return
+    path = Path(path)
+    if path.suffix.lower() != '.py':
+        try:
+            descriptor = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, UnicodeDecodeError, ValueError):
+            # The existing workflow parser owns malformed or missing inputs.
+            descriptor = None
+        if isinstance(descriptor, Mapping) and isinstance(descriptor.get("template_id"), str) and isinstance(descriptor.get("bindings"), Mapping):
+            require_template_available(descriptor["template_id"])
+    try:
+        import vibecomfy
+    except ImportError:
+        return  # Existing execution readiness owns optional dependency errors.
+    if vibecomfy.__file__:
+        root = Path(vibecomfy.__file__).resolve().parent.parent / "ready_templates"
+        try:
+            relative = Path(source_path or path).resolve().relative_to(root.resolve())
+        except ValueError:
+            return
+        template = relative.parent if relative.name == 'workflow.py' else relative.with_suffix('')
+        require_template_available(template.as_posix())
+
+
+def require_bundled_execution_available(resolved: Any) -> None:
+    """Both file execution and typed template execution retain source provenance."""
+    workflow = getattr(resolved, 'workflow', resolved)
+    require_bundled_workflow_available(getattr(getattr(workflow, 'source', None), 'path', None))
+
+
 def _require_available(route: str, record: dict[str, Any]) -> None:
     if record.get("available") is True:
         return
@@ -73,11 +146,7 @@ def _require_available(route: str, record: dict[str, Any]) -> None:
     if not isinstance(error, dict) or not isinstance(error.get("code"), str):
         raise RuntimeError(f"unavailable route {route!r} has no coded error")
     raise AstridError(
-        str(error.get("message") or f"{route} is unavailable"),
+        f"{route}: {error.get('message') or 'route is unavailable'}",
         code=error["code"],
-        recovery_command=(
-            "use a qualified generation route; retry this route after it is qualified"
-            if error["code"] == "generation_route_unqualified"
-            else "retry after the generation availability declaration marks this route available"
-        ),
+        recovery_command=availability_projection(record)["fix"],
     )

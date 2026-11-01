@@ -377,3 +377,17 @@ def test_qualified_fake_model_remains_available(monkeypatch):
     monkeypatch.setattr(availability, 'availability_declaration', lambda: declaration)
     rows = [row for row in listing.catalog_rows() if row['id'] == 'wan-2.2']
     assert rows and all(row['availability'] == 'available' for row in rows)
+
+
+def test_declared_qualified_synthetic_action_is_retained(monkeypatch):
+    declaration = {**listing.availability_declaration()}
+    declaration['actions'] = {**declaration['actions'], 'synthetic.qualified': {'available': True}}
+    monkeypatch.setattr(listing, 'availability_declaration', lambda: declaration)
+    rows = listing.catalog_rows()
+    qualified = next(row for row in rows if row['id'] == 'synthetic.qualified')
+    assert qualified['source'] == 'action' and qualified['availability'] == 'available'
+    for row in rows:
+        if row['id'] in ('wan-2.2', 'wan2gp.generate_video', 'video_editing.animate_image',
+                          'vibecomfy.character_animation'):
+            assert row['availability'] == 'unavailable'
+            assert row['reason'] and row['fix']
