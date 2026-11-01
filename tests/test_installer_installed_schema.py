@@ -29,7 +29,7 @@ from astrid.installer.service import LABEL
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = Path("astrid/core/timeline/schema/timeline-config.schema.json")
-PRODUCER = "47e5949465cb6f3afdfd1cb8a0e90009fd9d4020"
+PRODUCER = "1e6d899efa77a2d6ec247c38250f9748330bb587"
 SCHEMA_SHA256 = "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
 pytestmark = pytest.mark.linux_native
 
