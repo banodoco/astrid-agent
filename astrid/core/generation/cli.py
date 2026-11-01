@@ -163,7 +163,7 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--json", action="store_true")
     command = sub.add_parser("workflow", help="Run an unregistered VibeComfy bundle or UI workflow.")
     command.add_argument("workflow", help="Canonical bundle directory, workflow.py, or UI JSON.")
-    command.add_argument("--as-entry", help="Save the workflow as an entry before running it.")
+    command.add_argument("--as-entry", action=_Once, help="Save the workflow as an entry before running it.")
     command.add_argument('--replace', action='store_true')
     command.add_argument('--inputs-json', action=_Once, metavar='FILE')
     command.add_argument("--target", action=_Once, default="auto")
@@ -184,8 +184,8 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--json", action="store_true")
     _common_options(command)
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
-    command.add_argument('--target', default='auto')
-    command.add_argument('--engine', default='comfyui')
+    command.add_argument('--target', action=_Once, default='auto')
+    command.add_argument('--engine', action=_Once, default='comfyui')
     command.add_argument('--save', action='store_true')
     command.add_argument('--input', action='append', default=[])
     command.add_argument('--json', action='store_true')
@@ -226,54 +226,16 @@ def _controls(parsed):
 
 
 def _targets_command(parsed):
-    from astrid.core.generation import targets
     from astrid.core.generation.entries import merge_input_values
-    from astrid.core.generation.preflight import readiness_envelope
-    if targets.canonical_engine(parsed.engine) != 'comfyui':
-        raise ValueError('Phase 1 targets support only comfyui')
-    updates = merge_input_values(assignments=parsed.input)
-    if parsed.target == 'runpod':
-        if parsed.save:
-            allowed = {'gpu_types', 'datacenter_id', 'volume', 'image', 'idle_timeout_seconds',
-                       'provider_account_ref', 'credential_ref'}
-            if updates.keys() - allowed:
-                raise ValueError('unsupported RunPod preference: ' + ', '.join(sorted(updates.keys() - allowed)))
-            def save(document):
-                preferences = document.setdefault('runpod', {})
-                if not isinstance(preferences, dict):
-                    raise ValueError('runpod preferences must be a table')
-                for name, value in updates.items():
-                    if value is None:
-                        preferences.pop(name, None)
-                    else:
-                        preferences[name] = value
-            targets.update_config(save)
-        elif updates:
-            raise ValueError('provider inputs require --save')
-        payload = readiness_envelope()
-        payload['preferences'] = targets.read_config().get('runpod', {})
-    else:
-        selection = targets.resolve_target(parsed.target)
-        if updates:
-            raise ValueError('local target input updates are not supported; select an explicit URL')
-        if parsed.save:
-            if selection.record is None:
-                raise ValueError('select an explicit target before saving')
-            targets.save_target(selection.record)
-        payload = readiness_envelope(target=selection.record)
+    payload = _generate_facade().targets(target=parsed.target, engine=parsed.engine,
+        save=parsed.save, inputs=merge_input_values(assignments=parsed.input))
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
 def _workflow_command(parsed: argparse.Namespace) -> int:
     """Route authored workflows through the same target admission as entries."""
-    from pathlib import Path
-    from tempfile import TemporaryDirectory
-    import astrid
     from astrid.core.generation import entries
-    from astrid.core.generation.preflight import select_generation_target
-    from astrid.packs.vibecomfy.production_engine import load_workflow_path
-    from vibecomfy.entries import draft_entry, import_as_entry
 
     values = _values(parsed)
     from astrid.sdk.generation import _generation_controls
@@ -285,6 +247,7 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
     if parsed.replace and not parsed.as_entry:
         raise ValueError('--replace requires --as-entry')
     if parsed.as_entry:
+        from vibecomfy.entries import import_as_entry
         if parsed.dry_run:
             raise ValueError('--as-entry writes an entry; omit it for a read-only dry-run')
         if parsed.replace:
@@ -293,26 +256,23 @@ def _workflow_command(parsed: argparse.Namespace) -> int:
                 from astrid.core.generation.preflight import generation_error
                 raise generation_error(ValueError('The installed VibeComfy entry API does not support atomic replacement'),
                                        code='missing_dependency', details={'field': 'replace'})
+        entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
         entry = import_as_entry(path, parsed.as_entry, **({'replace': True} if parsed.replace else {}))
-    else:
-        # Validate all controls with offline facts before resolving/probing a
-        # target. The execution path revalidates the same native bindings.
-        description, values = entries.resolve_workflow_inputs(path, values, mode=parsed.mode)
-        target = select_generation_target(parsed.target)
-        with TemporaryDirectory(prefix="astrid-workflow-inspect-") as scratch:
-            loaded = load_workflow_path(path, scratch, comfy_url=target.target.url if target else "")
-            entry = draft_entry(loaded.resolved.workflow, "workflow", bundle=str(path.resolve()))
-    mode = parsed.mode or (entry["modes"][0] if len(entry["modes"]) == 1 else "workflow")
-    # Arbitrary workflows need only their output modality for publication.
-    # The temporary mode is not persisted into an ambiguous entry manifest.
-    if mode not in entry["modes"]:
-        entry = dict(entry, modes=[mode], needs=[need for need in entry["needs"]
-            if need.get("ambiguity") != "audio mode is unknown; choose tts, music, or sfx"])
     def generate(client=None):
+        facade = _generate_facade()
+        if not parsed.as_entry:
+            return facade.workflow(workflow=path, target=parsed.target, mode=parsed.mode,
+                inputs=values, dry_run=parsed.dry_run, client=client,
+                project=parsed.project, out=parsed.out, **_controls(parsed))
         from astrid.sdk.generation import _load_model_registry
-        return astrid.generate._generate_on_target(registry=_load_model_registry(), model=None,
-            mode=mode, modality=entry["kind"], target=parsed.target, execution=None,
-            inputs=values, dry_run=parsed.dry_run, workflow_entry=entry,
+        mode = parsed.mode or (entry['modes'][0] if len(entry['modes']) == 1 else 'workflow')
+        selected = entry
+        if mode not in entry['modes']:
+            selected = dict(entry, modes=[mode], needs=[need for need in entry['needs']
+                if need.get('ambiguity') != 'audio mode is unknown; choose tts, music, or sfx'])
+        return facade._generate_on_target(registry=_load_model_registry(), model=None,
+            mode=mode, modality=selected['kind'], target=parsed.target, execution=None,
+            inputs=values, dry_run=False, workflow_entry=selected,
             client=client, project=parsed.project, out=parsed.out, **_controls(parsed))
     if parsed.dry_run:
         result = generate()

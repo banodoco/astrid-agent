@@ -74,19 +74,19 @@ def test_default_plan_selects_highest_ranked_ready_entry(loopback_comfy, monkeyp
     assert plan["target"]["endpoint"] == loopback_comfy.url
 
 
-def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monkeypatch, capsys):
-    import astrid
-    import astrid.core.generation.preflight as preflight
-    import astrid.packs.vibecomfy.production_engine as production
+def test_workflow_audio_runs_with_inferred_kind_without_forcing_audio_mode(monkeypatch, capsys, tmp_path):
     import astrid.sdk.generation as sdk_generation
+    from vibecomfy.workflow_bundle import emit_bundle
     workflow = VibeWorkflow("audio", WorkflowSource("audio"))
-    workflow.nodes["1"] = VibeNode("1", "SaveAudio")
-    monkeypatch.setattr(preflight, "select_generation_target", lambda target: None)
-    monkeypatch.setattr(production, "load_workflow_path", lambda *a, **k: SimpleNamespace(resolved=SimpleNamespace(workflow=workflow)))
-    monkeypatch.setattr(sdk_generation, "_load_model_registry", lambda: object())
+    workflow.nodes["1"] = VibeNode("1", "SaveAudio", uid="save")
+    (tmp_path / 'source.json').write_text(json.dumps({'nodes': [
+        {'id': 1, 'type': 'SaveAudio', 'inputs': [], 'widgets_values': []}], 'links': []}))
+    bundle = emit_bundle(workflow, tmp_path / 'workflow.py', {'operation': 'authored'})
+    monkeypatch.setattr(sdk_generation, "_load_model_registry", lambda **kwargs: object())
     calls = []
-    monkeypatch.setattr(astrid, "generate", SimpleNamespace(_generate_on_target=lambda **kwargs: calls.append(kwargs) or {"kind": kwargs["modality"]}))
-    assert cli.main(["workflow", "audio.json", "--dry-run"]) == 0
+    monkeypatch.setattr(sdk_generation.GenerationFacade, '_generate_on_target',
+        lambda self, **kwargs: calls.append(kwargs) or {"kind": kwargs["modality"]})
+    assert cli.main(["workflow", str(bundle.python_path), "--dry-run"]) == 0
     assert calls[0]["modality"] == "audio" and calls[0]["mode"] == "workflow"
     assert json.loads(capsys.readouterr().out)["kind"] == "audio"
 
