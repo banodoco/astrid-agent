@@ -98,13 +98,17 @@ def _read_installed_support_root() -> Path | None:
     from astrid.installer.core import read_json
     from astrid.installer.service import LABEL, install_selection
 
-    selection = install_selection(Path.home(), sys.platform)
-    if not selection.is_file() or selection.is_symlink():
+    # A linked selection must not look like an absent installation: falling
+    # through could choose a blank root during repair or kept-data reinstall.
+    selection = _safe_absolute(install_selection(Path.home(), sys.platform), base=Path.home())
+    if not selection.is_file():
         return None
     try:
         value = read_json(selection)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Astrid install record is invalid: {selection}") from exc
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(
+            f"Astrid install record is invalid: {selection}; run the Astrid install line again"
+        ) from exc
     if value.get("owner") != LABEL:
         return None
     raw = value.get("data_root")
@@ -149,8 +153,9 @@ def resolve_runtime_data_root() -> Path:
     """Return one stable support root selected by existing config surfaces.
 
     An explicit ``ASTRID_RUNTIME_DATA_ROOT`` override wins. Otherwise a
-    persisted Astrid setup selection is reused when available, followed by the
-    checked-in install config. A wheel without either surface uses
+    recorded installation root wins, including a kept-data uninstall record.
+    Next a persisted Astrid setup selection is reused when available, followed
+    by the checked-in install config. A wheel without these surfaces uses
     ``~/.astrid-data``. Existing selections are read only; this function never
     creates a workspace or moves data.
     """

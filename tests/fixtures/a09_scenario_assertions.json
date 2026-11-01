@@ -1,0 +1,714 @@
+{
+  "schema": "a08-a09-scenario-assertions-v1",
+  "status": "review-only; all four cases blocked",
+  "compatibility": "No exact Pallando R05/R06 submission format or producer interface was locally available. This additive file is a portable assertion handoff, not an upstream contract or executable test.",
+  "cases": [
+    {
+      "id": "human-image",
+      "title": "Human-owned Comfy image",
+      "status": "blocked",
+      "owners": [
+        "A09/A08 (case contract and human fixture)",
+        "G-08 (candidate-installed target owner)"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "A09-A08.human-image-contract",
+          "owner": "A09/A08 (case contract producer)",
+          "status": "unresolved",
+          "needed": "Review and bind this scenario row to the shared journey contract; Radagast alone writes tests/fixtures/generation/agent_journeys.json."
+        },
+        {
+          "dependency_id": "A09-A08.human-comfy-fixture",
+          "owner": "A09/A08 (fixture producer)",
+          "status": "unresolved",
+          "needed": "Isolated human-owned ComfyUI fixture, endpoint, owner identity, PID/birth identity, and queue baseline."
+        },
+        {
+          "dependency_id": "G-08.human-target-output",
+          "owner": "G-08 (candidate-installed target owner)",
+          "status": "unresolved",
+          "needed": "Supported installed command/route, durable task/result/output evidence, and unchanged-human checks."
+        }
+      ],
+      "assertions": [
+        {
+          "id": "human-target-owner",
+          "check": "Bind the selected target to a verified human-owned ComfyUI instance before generation; capture endpoint identity, PID and process birth identity.",
+          "evidence": [
+            "candidate/installed identity",
+            "target ownership record",
+            "PID and birth identity before"
+          ]
+        },
+        {
+          "id": "generate-image",
+          "check": "Run the producer-approved real image-generation journey against the isolated human server; record the exact approved invocation after its interface is supplied.",
+          "evidence": [
+            "approved argv/route",
+            "request identity",
+            "task/result readback"
+          ]
+        },
+        {
+          "id": "durable-output",
+          "check": "Read back the resulting image and verify its SHA-256 against the durable result identity.",
+          "evidence": [
+            "durable output identity",
+            "image bytes or immutable reference",
+            "computed SHA-256"
+          ]
+        },
+        {
+          "id": "human-preserved",
+          "check": "After owned cleanup, prove the human server PID/birth identity and queue state are unchanged; prove no request or stop signal was sent to the human-owned process.",
+          "evidence": [
+            "PID/birth identity after",
+            "queue before/after",
+            "request/stop audit"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "human_target_owner_identity",
+        "human_endpoint",
+        "human_pid_and_birth_before_after",
+        "queue_snapshot_before_after",
+        "approved_command_or_route",
+        "task_and_result_readback",
+        "output_identity",
+        "output_sha256",
+        "no_touch_audit"
+      ],
+      "readiness_state": "blocked",
+      "cpu_status": "blocked: fixture, supported installed route and complete producer-backed journey are absent",
+      "gpu_status": "not run"
+    },
+    {
+      "id": "managed-missing-model",
+      "title": "Managed target missing-model and consented recovery",
+      "status": "blocked",
+      "owners": [
+        "A09/A08 (fixture producer)",
+        "P (supported installer/target identity)",
+        "A07 (repair/consent contract)",
+        "G-08 (readiness and generation)"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "A09-A08.missing-model-fixture",
+          "owner": "A09/A08 (case fixture producer)",
+          "status": "unresolved",
+          "needed": "Frozen workflow/model fixture bytes and digest, exact model identity, managed root, and independently verified initial absent state."
+        },
+        {
+          "dependency_id": "P-36.managed-target-identity",
+          "owner": "P (supported installer / candidate identity owner)",
+          "status": "unresolved",
+          "needed": "Candidate-installed identity and supported owned managed-target verification/readiness interface bound to the tuple target."
+        },
+        {
+          "dependency_id": "A07.supported-model-fix-consent",
+          "owner": "A07 (repair contract owner)",
+          "status": "unresolved",
+          "needed": "Candidate-bound actionable diagnostic, exact supported fix/input/destination, and explicit consent bound to target/model/fix."
+        },
+        {
+          "dependency_id": "G-08.readiness-reprobe-retry-output",
+          "owner": "G-08 (managed generation owner)",
+          "status": "unresolved",
+          "needed": "Repair result identity, ready re-probe, byte-identical original request retry, and durable output identity/SHA-256."
+        }
+      ],
+      "assertions": [
+        {
+          "id": "managed-target-bound",
+          "check": "Verify the tuple-owned managed target identity and record the model-lock/recipe identities before probing.",
+          "evidence": [
+            "candidate and tuple identity",
+            "recipe/model-lock digests",
+            "owned managed target identity"
+          ]
+        },
+        {
+          "id": "missing-model-observed",
+          "check": "Establish initial model absence and capture the candidate-produced blocked readiness diagnostic and its actionable supported fix; do not infer a producer diagnostic from the synthetic adapter.",
+          "evidence": [
+            "initial absence proof",
+            "readiness result",
+            "typed diagnostic",
+            "supported fix description"
+          ]
+        },
+        {
+          "id": "exact-consent-and-fix",
+          "check": "Require explicit consent bound to the exact target, model and supported fix; apply only that fix and record its result identity. If no supported fix/consent contract exists, stop blocked.",
+          "evidence": [
+            "consent record",
+            "approved fix identity/argv and input/destination",
+            "repair result identity"
+          ]
+        },
+        {
+          "id": "reprobe-and-same-request",
+          "check": "Re-probe readiness and require ready state bound to the repair result, then retry the byte-identical original generation request on the same target.",
+          "evidence": [
+            "readiness re-probe",
+            "original request digest",
+            "retry request digest",
+            "same target identity",
+            "retry task/result"
+          ]
+        },
+        {
+          "id": "durable-retry-output",
+          "check": "Verify durable successful output identity and SHA-256 for the retry.",
+          "evidence": [
+            "durable output identity",
+            "output SHA-256",
+            "retry-result linkage"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "tuple_target_identity",
+        "workflow_fixture_sha256",
+        "model_identity_and_lock_sha256",
+        "initial_absence_proof",
+        "typed_diagnostic",
+        "supported_fix",
+        "consent_binding",
+        "repair_result_identity",
+        "readiness_reprobe",
+        "original_request_sha256",
+        "retry_request_sha256",
+        "retry_task_result",
+        "durable_output_identity",
+        "output_sha256"
+      ],
+      "synthetic_fixture_note": "The accepted package's abstract A07 slots, fixture and refusal helper do not establish a supported repair operation, consent contract, real missing-model diagnostic, repair, readiness, or retry.",
+      "readiness_state": "blocked",
+      "cpu_status": "blocked: no verified supported repair command/input or A09 fixture/root is available",
+      "gpu_status": "not run"
+    },
+    {
+      "id": "workflow-input",
+      "title": "Workflow generation with --input",
+      "status": "blocked",
+      "owners": [
+        "A09/A08 (workflow case producer)",
+        "G-08 (candidate-installed workflow owner)"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "A09-A08.workflow-bytes-import",
+          "owner": "A09/A08 (workflow case producer)",
+          "status": "unresolved",
+          "needed": "Owner-approved raw workflow bytes/digest and exact supported import/run form."
+        },
+        {
+          "dependency_id": "A09-A08.workflow-input-binding",
+          "owner": "A09/A08 (workflow case producer)",
+          "status": "unresolved",
+          "needed": "Named writable non-prompt --input binding/value plus approved input bytes/digest."
+        },
+        {
+          "dependency_id": "G-08.workflow-installed-durable-output",
+          "owner": "G-08 (candidate-installed workflow owner)",
+          "status": "unresolved",
+          "needed": "Candidate-installed parser/dry-run evidence and durable task/output readback."
+        }
+      ],
+      "assertions": [
+        {
+          "id": "approved-workflow",
+          "check": "Verify exact owner-approved workflow bytes and SHA-256, then use only its approved import/run form.",
+          "evidence": [
+            "workflow bytes or immutable reference",
+            "workflow SHA-256",
+            "approval and supported invocation"
+          ]
+        },
+        {
+          "id": "input-binding",
+          "check": "Pass the approved named writable non-prompt --input binding and verify its input bytes/digest; do not treat synthetic seed=19 as an approved binding.",
+          "evidence": [
+            "binding name and value",
+            "input bytes or immutable reference",
+            "input SHA-256",
+            "argv"
+          ]
+        },
+        {
+          "id": "workflow-execution",
+          "check": "On the candidate-installed CLI, verify argument parsing/dry-run and then the producer-approved execution route; preserve durable task/result readback.",
+          "evidence": [
+            "candidate-installed identity",
+            "parser/dry-run result",
+            "task identity",
+            "durable result"
+          ]
+        },
+        {
+          "id": "workflow-output",
+          "check": "Read back the generated output and verify its SHA-256 against the durable result.",
+          "evidence": [
+            "output identity",
+            "output SHA-256",
+            "result linkage"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "workflow_bytes_sha256",
+        "workflow_approval",
+        "supported_import_run_form",
+        "input_binding_name",
+        "input_value",
+        "input_bytes_sha256",
+        "exact_argv",
+        "parser_dry_run_result",
+        "task_result_readback",
+        "output_identity",
+        "output_sha256"
+      ],
+      "synthetic_fixture_note": "The accepted adapter uses inert workflow bytes and seed=19; it is package-only evidence and does not supply approved real workflow or input bytes.",
+      "readiness_state": "blocked",
+      "cpu_status": "blocked: approved workflow/input and installed durable-output route are absent",
+      "gpu_status": "not run"
+    },
+    {
+      "id": "failure-owned-release",
+      "title": "Durable failure followed by owned release",
+      "status": "blocked",
+      "owners": [
+        "A09 (failure fixture)",
+        "G-08 (CLI lifecycle)",
+        "F07/R04/R06 (owned lifecycle/release)",
+        "A09/A08 (human-server no-touch fixture)"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "G-08.generate-release-command",
+          "owner": "G-08 (CLI lifecycle owner)",
+          "status": "unresolved",
+          "needed": "Supported candidate release operation; no release verb/argv is established by the accepted package."
+        },
+        {
+          "dependency_id": "A09.failure-fixture-readback",
+          "owner": "A09 (failure-case producer)",
+          "status": "unresolved",
+          "needed": "Failure injection fixture and typed terminal failure/task/CAS readback."
+        },
+        {
+          "dependency_id": "F07-R04-R06.owned-release-evidence",
+          "owner": "F07/R04/R06 (owned lifecycle/release owner)",
+          "status": "unresolved",
+          "needed": "Exact owned release operation, durable release-task readback, measured VRAM method, and independent release readback."
+        },
+        {
+          "dependency_id": "A09.human-no-touch-audit",
+          "owner": "A09/A08 (human-server case producer)",
+          "status": "unresolved",
+          "needed": "Human PID/birth/queue/no-touch audit through release and independent provider GET 404 plus account-list absence procedure where a provider resource is involved."
+        }
+      ],
+      "assertions": [
+        {
+          "id": "durable-terminal-failure",
+          "check": "Inject only the producer-approved failure and verify typed terminal failure plus durable task/CAS/result readback.",
+          "evidence": [
+            "failure fixture identity",
+            "typed failure",
+            "task/CAS identity",
+            "durable terminal readback"
+          ]
+        },
+        {
+          "id": "owned-release-readback",
+          "check": "Release only the resource proven owned by this task using the producer-supported operation; verify durable release-task state and independent final readback. Preserve recovery custody if release is uncertain.",
+          "evidence": [
+            "owned-resource identity",
+            "supported release argv/operation",
+            "release task identity",
+            "durable release readback",
+            "independent final readback"
+          ]
+        },
+        {
+          "id": "measured-vram-release",
+          "check": "Record owned VRAM before and after release using the owner-approved measurement method and tie the delta to the released resource.",
+          "evidence": [
+            "measurement method",
+            "owned VRAM before",
+            "owned VRAM after",
+            "resource identity",
+            "timestamps"
+          ]
+        },
+        {
+          "id": "human-server-preserved",
+          "check": "Prove the human-owned server PID/birth identity and queue are unchanged and the no-touch audit is clean across failure and release.",
+          "evidence": [
+            "PID/birth identity before/after",
+            "queue before/after",
+            "request/stop audit"
+          ]
+        },
+        {
+          "id": "provider-absence-if-applicable",
+          "check": "If an external provider resource is part of the approved owned-release route, independently confirm exact-resource GET 404 and successful account-list absence; this is required evidence, not a synthetic claim.",
+          "evidence": [
+            "independent exact-resource GET result",
+            "successful account list and absence",
+            "resource identity"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "candidate_commit_and_tree",
+        "installed_identity",
+        "failure_fixture_identity",
+        "typed_failure",
+        "task_cas_result_readback",
+        "owned_resource_identity",
+        "supported_release_operation",
+        "release_task_readback",
+        "independent_release_readback",
+        "vram_measurement_method",
+        "owned_vram_before_after",
+        "human_pid_birth_before_after",
+        "queue_before_after",
+        "no_touch_audit",
+        "provider_exact_get_and_list_if_applicable"
+      ],
+      "readiness_state": "blocked",
+      "cpu_status": "blocked: supported release operation, failure readback fixture and measured release method are absent",
+      "gpu_status": "not run"
+    },
+    {
+      "id": "A09-H3-public-generate",
+      "title": "H3 through public astrid generate",
+      "status": "blocked",
+      "readiness_state": "blocked_pending_execution_and_owner_evidence",
+      "gpu_status": "not run",
+      "execution_state": "not_run",
+      "operation": "astrid generate video --entry h3 --mode transform",
+      "input": {
+        "identity": "release-owned H3 request/input; bind exact approved input digest before execution",
+        "sha256": null
+      },
+      "assertions": [
+        {
+          "id": "public-generate-route",
+          "check": "Invoke the public astrid generate entry with H3 transform mode and retain the exact approved argv, request identity, and durable task/result readback.",
+          "evidence": [
+            "approved argv",
+            "request identity",
+            "task identity",
+            "durable result readback"
+          ]
+        },
+        {
+          "id": "generate-completes",
+          "check": "On the release-owned supported H3 route, generation reaches a successful terminal result bound to the approved request and release tuple.",
+          "evidence": [
+            "release tuple",
+            "terminal task result",
+            "request/result linkage"
+          ]
+        },
+        {
+          "id": "playable-output",
+          "check": "Verify the generated output exists, is playable, and fully decodes; record observed media properties against the owner-approved request.",
+          "evidence": [
+            "output identity",
+            "playability/full-decode result",
+            "observed media tuple"
+          ]
+        },
+        {
+          "id": "output-hash-and-readback",
+          "check": "Compute and record output SHA-256, verify the durable output bytes against it, then read the output back and confirm the same hash and media tuple.",
+          "evidence": [
+            "output SHA-256",
+            "durable byte verification",
+            "readback hash",
+            "readback media tuple"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "approved_request_and_input_digest",
+        "exact_argv",
+        "release_tuple_and_pins",
+        "task_result_readback",
+        "output_identity",
+        "playability_and_full_decode",
+        "observed_media_tuple",
+        "output_sha256",
+        "output_hash_readback",
+        "setup",
+        "cost",
+        "release_evidence"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "A09-H3.approved-request-and-input",
+          "owner": "H3 request/input owner",
+          "status": "unresolved",
+          "needed": "Release-owned request, approved input identity/digest, expected media tuple, and supported public-generate route."
+        },
+        {
+          "dependency_id": "A09-H3.render-and-output-readback",
+          "owner": "V09 / owning release run",
+          "status": "unresolved",
+          "needed": "Actual generation result, playable/full-decode output, output SHA-256, and matching durable readback."
+        },
+        {
+          "dependency_id": "A09-H3.setup-cost-release",
+          "owner": "Owning release run",
+          "status": "unresolved",
+          "needed": "Observed setup and cost plus exact release pins/tuple and verified release evidence."
+        }
+      ],
+      "actual_evidence": {
+        "render": "pending; not run",
+        "setup": null,
+        "cost": null,
+        "release_tuple": null,
+        "output_sha256": null,
+        "readback": "pending"
+      }
+    },
+    {
+      "id": "A09-H3-C0-approved",
+      "title": "Approved H-08 C0 request through public astrid generate",
+      "status": "blocked",
+      "readiness_state": "blocked_pending_execution_and_owner_evidence",
+      "gpu_status": "not run",
+      "execution_state": "not_run",
+      "operation": "astrid generate video --entry h3 --mode transform",
+      "input": {
+        "identity": "approved H-08 C0 input identified by SHA-256 only",
+        "sha256": "bc270f1a0e9c0c336e3ba85f0febbcee21d6152480443c21eb2ca5bd9f9c89c7"
+      },
+      "input_hash_assertions": [
+        {
+          "id": "source-sha256",
+          "check": "Approved C0 source SHA-256 equals bc270f1a0e9c0c336e3ba85f0febbcee21d6152480443c21eb2ca5bd9f9c89c7.",
+          "expected_sha256": "bc270f1a0e9c0c336e3ba85f0febbcee21d6152480443c21eb2ca5bd9f9c89c7"
+        },
+        {
+          "id": "mask-sha256",
+          "check": "Approved C0 mask SHA-256 equals 95f2931e6aca567c29ddc8fa62f84a4d03ebd24400645bac5890a9937eb21e04.",
+          "expected_sha256": "95f2931e6aca567c29ddc8fa62f84a4d03ebd24400645bac5890a9937eb21e04"
+        },
+        {
+          "id": "request-sha256",
+          "check": "Approved request metadata SHA-256 equals 03f36b4073273bafa02549fdbedf2124dcd188b9d99c13f77e906b5416d5a03d.",
+          "expected_sha256": "03f36b4073273bafa02549fdbedf2124dcd188b9d99c13f77e906b5416d5a03d"
+        },
+        {
+          "id": "asset-map-sha256",
+          "check": "Approved asset-map metadata SHA-256 equals 60d003701a2aab017b789549d3998c7cc0d6d3611f6fd52d461079d8c2cb4524.",
+          "expected_sha256": "60d003701a2aab017b789549d3998c7cc0d6d3611f6fd52d461079d8c2cb4524"
+        }
+      ],
+      "expected_media": {
+        "frames": 48,
+        "width": 1024,
+        "height": 576,
+        "frame_rate_fps": 24,
+        "audio": "present",
+        "audio_action": "preserve"
+      },
+      "assertions": [
+        {
+          "id": "approved-request-and-generate-route",
+          "check": "Use the approved C0 request and asset-map metadata unchanged through the public astrid generate H3 transform route; retain request, argv, task, and result linkage.",
+          "evidence": [
+            "request SHA-256",
+            "asset-map SHA-256",
+            "exact argv",
+            "task/result readback"
+          ]
+        },
+        {
+          "id": "playable-c0-output-media-tuple",
+          "check": "Verify the generated output exists, is playable and fully decodes, with exactly 48 frames at 1024x576 and 24 fps.",
+          "evidence": [
+            "output identity",
+            "playability/full-decode result",
+            "observed frame count",
+            "observed dimensions",
+            "observed frame rate"
+          ]
+        },
+        {
+          "id": "preserved-audio",
+          "check": "Verify audio is present and compare the output audio to the approved source to establish the requested preserve action.",
+          "evidence": [
+            "audio presence result",
+            "source/output preservation comparison"
+          ]
+        },
+        {
+          "id": "output-hash-and-readback",
+          "check": "Compute and record output SHA-256, verify durable output bytes against it, then read back and confirm the same hash and required media tuple.",
+          "evidence": [
+            "output SHA-256",
+            "durable byte verification",
+            "readback hash",
+            "readback media tuple"
+          ]
+        }
+      ],
+      "required_evidence_fields": [
+        "approved_input_sha256",
+        "mask_sha256",
+        "request_sha256",
+        "asset_map_sha256",
+        "exact_argv",
+        "release_tuple_and_pins",
+        "task_result_readback",
+        "output_identity",
+        "playability_and_full_decode",
+        "frames=48",
+        "width=1024",
+        "height=576",
+        "fps=24",
+        "audio_present_and_preserved",
+        "output_sha256",
+        "output_hash_readback",
+        "setup",
+        "cost",
+        "release_evidence"
+      ],
+      "dependencies": [
+        {
+          "dependency_id": "H-08-C0.approved-input-integrity",
+          "owner": "H-08 input custodian",
+          "status": "resolved_metadata_assertions_only",
+          "needed": "The approved source, mask, request, and asset-map hashes are fixed as assertions; execution-time integrity receipt/readback remains required."
+        },
+        {
+          "dependency_id": "A09-H3-C0.render-and-output-readback",
+          "owner": "V09 / owning release run",
+          "status": "unresolved",
+          "needed": "Actual public-generate render; playable/full-decode result; exact media tuple; output SHA-256 and matching readback."
+        },
+        {
+          "dependency_id": "A09-H3-C0.setup-cost-release",
+          "owner": "Owning release run",
+          "status": "unresolved",
+          "needed": "Observed setup and cost plus exact release pins/tuple and verified release evidence."
+        }
+      ],
+      "actual_evidence": {
+        "render": "pending; not run",
+        "setup": null,
+        "cost": null,
+        "release_tuple": null,
+        "output_sha256": null,
+        "readback": "pending"
+      }
+    }
+  ],
+  "c0_batch_gate": {
+    "applicability": "Shared A09/V08 batch acceptance gate; these four requested image/lifecycle rows do not themselves establish the H3/C0 media journey.",
+    "status": "blocked-pending-owner-evidence",
+    "dependencies": [
+      {
+        "dependency_id": "H18.fixed-vibecomfy-in-candidate",
+        "owner": "H (VibeComfy producer / candidate integration)",
+        "status": "unresolved"
+      },
+      {
+        "dependency_id": "H15.trusted-parent-placement-acceptance",
+        "owner": "H (trusted-parent placement producer)",
+        "status": "unresolved"
+      },
+      {
+        "dependency_id": "M03.candidate-installed-h3-route",
+        "owner": "M03 (candidate tuple and inventory handoff)",
+        "status": "unresolved"
+      },
+      {
+        "dependency_id": "V09.C0-approved-input",
+        "owner": "V-validation C0 input/custody owner",
+        "status": "resolved_metadata_assertions_only",
+        "needed": "Verify approved H-08 digests at execution under V09 custody; no private bytes are included."
+      }
+    ],
+    "required_assertions": [
+      "Verify the H-08 approved source, mask, request and asset-map SHA-256 assertions at execution; record custody and readback.",
+      "Retain exactly 48 frames, or use only an owner-approved replacement digest and frame count.",
+      "Verify playable output, full decode, output SHA-256, 1024x576 dimensions, 24 fps, and audio.",
+      "Capture setup, cost, task/result and release evidence."
+    ],
+    "required_evidence_fields": [
+      "approved_input_identity",
+      "approved_input_sha256",
+      "approved_frame_count_or_replacement_approval",
+      "video_output_identity",
+      "video_output_sha256",
+      "playability_and_full_decode",
+      "width=1024",
+      "height=576",
+      "fps=24",
+      "audio_present",
+      "setup",
+      "cost",
+      "release"
+    ],
+    "approved_input_sha256": "bc270f1a0e9c0c336e3ba85f0febbcee21d6152480443c21eb2ca5bd9f9c89c7",
+    "approved_frame_count": 48,
+    "approved_replacement": null,
+    "evidence_note": "H supplied approved digest metadata; bytes were not read or rehashed. Render, custody, setup, cost and release remain pending.",
+    "metadata_assertions": [
+      {
+        "id": "source-sha256",
+        "check": "Approved C0 source SHA-256 equals bc270f1a0e9c0c336e3ba85f0febbcee21d6152480443c21eb2ca5bd9f9c89c7.",
+        "expected_sha256": "bc270f1a0e9c0c336e3ba85f0febbcee21d6152480443c21eb2ca5bd9f9c89c7"
+      },
+      {
+        "id": "mask-sha256",
+        "check": "Approved C0 mask SHA-256 equals 95f2931e6aca567c29ddc8fa62f84a4d03ebd24400645bac5890a9937eb21e04.",
+        "expected_sha256": "95f2931e6aca567c29ddc8fa62f84a4d03ebd24400645bac5890a9937eb21e04"
+      },
+      {
+        "id": "request-sha256",
+        "check": "Approved request metadata SHA-256 equals 03f36b4073273bafa02549fdbedf2124dcd188b9d99c13f77e906b5416d5a03d.",
+        "expected_sha256": "03f36b4073273bafa02549fdbedf2124dcd188b9d99c13f77e906b5416d5a03d"
+      },
+      {
+        "id": "asset-map-sha256",
+        "check": "Approved asset-map metadata SHA-256 equals 60d003701a2aab017b789549d3998c7cc0d6d3611f6fd52d461079d8c2cb4524.",
+        "expected_sha256": "60d003701a2aab017b789549d3998c7cc0d6d3611f6fd52d461079d8c2cb4524"
+      }
+    ],
+    "expected_media": {
+      "frames": 48,
+      "width": 1024,
+      "height": 576,
+      "frame_rate_fps": 24,
+      "audio": "present",
+      "audio_action": "preserve"
+    }
+  },
+  "fixture_ownership": "This file does not modify tests/fixtures/generation/agent_journeys.json; Radagast remains its sole writer.",
+  "source": {
+    "M_row_file_sha256": "674bb9c9dec424eaf92e748de50504afd657ee0b1c1b4ce04920d3a820b57396",
+    "H_row_file_sha256": "689073e50d6531d3c573ecad32fa37a663ea06c118f525fbeaed7ba92f846f26",
+    "evidence_boundary": "Assertions only. No private media, installed success, render, cost or release proof."
+  },
+  "case_count": 6,
+  "handoff_note": "A08 folds verified M and H submissions. All six cases remain blocked pending owner execution evidence."
+}
