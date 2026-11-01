@@ -99,9 +99,15 @@ def test_h3_video_cli_delivers_parent_media(tmp_path, monkeypatch, capsys, failu
 
 
 def test_h3_parent_manifest_is_harvested_with_its_verified_candidate(tmp_path):
+    import yaml
+
     from astrid.core._shared.result_manifest import harvest_staged_outputs
     from astrid.packs.h3_av.actions.transform.run import _write_parent_manifests
 
+    pack = Path(__file__).parents[3] / 'astrid/packs/h3_av/pack.yaml'
+    declaration = yaml.safe_load(pack.read_text())['actions']['transform']['outputs']
+    assert next(row for row in declaration if row['name'] == 'manifest')['path_template'] == (
+        '{out}/parent-manifest.json')
     (tmp_path / 'verified-candidate.media').write_bytes(b'candidate')
     (tmp_path / 'final-receipt.json').write_bytes(b'{}')
     _write_parent_manifests(tmp_path, 'video/mp4')
