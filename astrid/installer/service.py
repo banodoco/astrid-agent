@@ -167,7 +167,7 @@ def activation_lock_held(root: Path, version: Version) -> bool:
     return False
 
 
-def launch_admission(version: Version, data: Path) -> bool:
+def launch_admission(version: Version, data: Path, *, custody: bool = False) -> bool:
     """Validate the selected managed launch; return whether it is activating.
 
     The pending journal selects a version, never a process or stop authority.
@@ -216,18 +216,23 @@ def launch_admission(version: Version, data: Path) -> bool:
         step = transaction.get("step")
         if step in {"complete", "rolled_back"}:
             return False
+        if version.managed_by == "pinokio" and not custody:
+            raise ValueError("Choose Update to finish")
         allowed = candidate if step == "switched" else old if step == "rollback_selected" else None
         if allowed is None or allowed.document() != version.document():
             raise ValueError("The pending update does not permit this launch.")
+        context = transaction.get("transaction_context") or {}
+        if isinstance(context, dict) and context.get("pinokio_lifetime_custody") and not custody:
+            raise ValueError("The stopped update requires its authenticated activation lease.")
         if not activation_lock_held(root, version):
             raise ValueError("Choose Update to finish")
         return True
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if str(exc) == "Choose Update to finish":
             raise
-        action = ("Choose Pinokio's Update button to finish it."
-                  if version.managed_by == "pinokio" else
-                  "Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
+        if version.managed_by == "pinokio":
+            raise ValueError("Choose Update to finish") from exc
+        action = ("Run the install line to finish it: curl -fsSL https://astrid.haus/install | sh"
                   if os.name != "nt" else
                   "Run the install line to finish it: irm https://astrid.haus/install.ps1 | iex")
         raise ValueError("An Astrid update was interrupted; " + action) from exc
@@ -235,7 +240,7 @@ def launch_admission(version: Version, data: Path) -> bool:
 
 def command(version: Version, data: Path, *, windows: bool = False, log: Path | None = None,
             env_file: Path | None = None, extra_args: list[str] | None = None,
-            lock_fd: int | None = None) -> list[str]:
+            lock_fd: int | None = None, custody_fd: int | None = None) -> list[str]:
     version = Version(version.root, version.python, version.profile,
                       dict(sorted(version.env.items())), version.release, version.managed_by)
     python = version.python.with_name("pythonw.exe") if windows else version.python
@@ -244,10 +249,17 @@ def command(version: Version, data: Path, *, windows: bool = False, log: Path | 
     # Every managed run enters the same admission, including POSIX services.
     source = globals().get("_EMBEDDED_LAUNCH_PRELUDE") or _launch_prelude_source()
     script = (source + "\n"
-              + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}))\n"
+              + f"launch_admission(Version.load({version.document()!r}),Path({str(data)!r}),custody={custody_fd is not None!r})\n"
               + f"os.environ.update({version.env!r})\n")
     if lock_fd is not None:
         script += f"os.set_inheritable({lock_fd},False)\n"
+    if custody_fd is not None:
+        keeper_source = globals().get("_CUSTODY_KEEPER_SOURCE")
+        if keeper_source is None:
+            from . import custody
+
+            keeper_source = inspect.getsource(custody.keeper)
+        script += "import socket,threading\n" + keeper_source + f"\n_custody=keeper({custody_fd})\n"
     if windows:
         if log is None:
             raise ValueError("A log path is required for the Windows Runtime service.")
