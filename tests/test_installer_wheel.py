@@ -7,6 +7,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+from tests.helpers.runtime import locate_runtime
+
 ROOT = Path(__file__).parents[1]
 CHAT_RESOURCES = ("chat/service.mjs", "chat/astrid-acp-local-only.yml", "chat/THIRD_PARTY_LICENSES.txt")
 OMP_RESOURCES = ("installer/omp/recipe.json",)
@@ -92,6 +94,8 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
         destination = source / "astrid" / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "astrid" / name, destination)
+    shutil.copytree(ROOT / "astrid_runtime_client", source / "astrid_runtime_client",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     excluded = [f"packs/example/{kind}/authoring.json" for kind in ("tests", "golden", "build")]
     for name in excluded:
         destination = source / "astrid" / name
@@ -107,11 +111,17 @@ def test_built_wheel_declares_its_bundled_chat_service(tmp_path):
     installed = tmp_path / "unpacked-wheel"
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = set(wheel.namelist())
+        assert "astrid_runtime_client/__init__.py" in names
+        assert "astrid_runtime_client/contract_metadata.py" in names
         assert {f"astrid/{name}" for name in (*CHAT_RESOURCES, *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES)} <= names
         assert not {f"astrid/{name}" for name in (*excluded, "chat/service.ts", "chat/service.test.ts")} & names
         for name in (*CHAT_RESOURCES, *OMP_RESOURCES, *GENERATION_GUIDE_RESOURCES):
             assert wheel.read(f"astrid/{name}") == (ROOT / "astrid" / name).read_bytes()
         wheel.extractall(installed)
+    runtime = locate_runtime()
+    assert runtime is not None, "installer wheel probe needs the pinned Runtime package"
+    shutil.copytree(runtime / "runtime_protocol", installed / "runtime_protocol",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     script = """
 import json,sys
 from pathlib import Path
