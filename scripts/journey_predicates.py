@@ -1,8 +1,9 @@
-"""Fail-closed journey predicates called by M-CI's authenticated evaluator.
+"""Journey predicates called by M-CI's authenticated evaluator.
 
 These functions consume one already-authenticated, selected index entry.  They
-never authenticate artifacts, select executions, close inventory coverage, or
-turn producer fields into R-30 independent observations.
+recompute the R-30 direct/Pinokio semantic relations, but never authenticate
+artifacts, select executions, close inventory coverage, or become a second
+evaluator.  An absent M-CI finalized context is deliberately non-admissible.
 """
 from __future__ import annotations
 
@@ -15,32 +16,23 @@ else:
         from scripts import journey_observations as observations
 
 
-def _closed(label: str, parser, evidence: dict) -> tuple[bool, list[str]]:
+def _check(family: str, parser, evidence: dict) -> tuple[bool, list[str]]:
     parsed, reasons = parser(evidence)
-    if parsed is None or not parsed.producer_supplied:
-        reasons.append(f"{label}: authenticated producer export and collector seal are absent")
-    elif parsed.producer is None:
-        reasons.append(f"{label}: producer export or collector seal is structurally invalid")
-    else:
-        reasons.append(
-            f"{label}: M-CI authenticated finalization, selected attempt, and frozen binding are unavailable"
-        )
-    reasons.append(
-        f"{label}: independent R-30 section 5 observations and frozen bindings unavailable"
-    )
-    return False, reasons
+    if parsed is not None:
+        reasons.extend(observations.semantic_observation_errors(parsed, family))
+    return not reasons, reasons
 
 
 def check_release1(evidence: dict) -> tuple[bool, list[str]]:
-    """Check one selected Release-1 row; it remains non-admissible."""
-    return _closed("Release-1", observations.parse_release1_evidence, evidence)
+    """Check one selected Release-1 row with a finalized M-CI context."""
+    return _check("release1", observations.parse_release1_evidence, evidence)
 
 
 def check_m4_5(evidence: dict) -> tuple[bool, list[str]]:
-    """Check one selected M4-5 scenario; it remains non-admissible."""
-    return _closed("M4-5", observations.parse_m4_5_evidence, evidence)
+    """Check one selected M4-5 scenario with producer semantics."""
+    return _check("m4_5", observations.parse_m4_5_evidence, evidence)
 
 
 def check_m4_6(evidence: dict) -> tuple[bool, list[str]]:
-    """Check one selected M4-6 slot; it remains non-admissible."""
-    return _closed("M4-6", observations.parse_m4_6_evidence, evidence)
+    """Check one selected M4-6 slot with producer semantics."""
+    return _check("m4_6", observations.parse_m4_6_evidence, evidence)
