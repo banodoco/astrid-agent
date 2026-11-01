@@ -1470,7 +1470,10 @@ class GenerationFacade:
             if action_entry["action"] != "h3_av.transform":
                 raise CapabilityPreconditionError("action-backed generation requires a Runtime-admitted parent")
             if target not in (None, "auto", "managed", "runpod") or execution not in (None, "local"):
-                raise CapabilityValidationError("tracked H3 requires the default Runtime target")
+                raise CapabilityValidationError(
+                    "Attached ComfyUI targets are not supported for H3; use local managed "
+                    "(target='managed') or RunPod (target='runpod')."
+                )
             if not inputs.get("request") or not inputs.get("asset_map"):
                 raise CapabilityValidationError("H3 requires request and asset_map")
             if target == 'runpod':
