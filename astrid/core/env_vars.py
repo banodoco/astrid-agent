@@ -55,7 +55,8 @@ ASTRID_VIBECOMFY_CHECKOUT = "ASTRID_VIBECOMFY_CHECKOUT"
 
 ASTRID_WARM_IDLE_SECONDS = "ASTRID_WARM_IDLE_SECONDS"
 """Seconds every warm holder (models, model servers, the Remotion frame owner)
-stays resident after its last task. Overrides each holder's default; a request's
+stays resident after its last task. Model holders default to 1800 seconds.
+Overrides each holder's default; a request's
 ``lifecycle.idle_timeout_seconds`` still wins for its own holder."""
 
 # ---------------------------------------------------------------------------

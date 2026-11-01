@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
+from astrid.core.execution.warm_hold import DEFAULT_IDLE_SECONDS
 from astrid.core.generation.targets import read_config, update_config
 from astrid.sdk.storage_root import resolve_runtime_data_root
 
@@ -73,7 +74,7 @@ class RunPodPreferences:
     volume_size_gb: int
     mount_path: str
     datacenter_id: str | None = None
-    idle_timeout_seconds: int = 600
+    idle_timeout_seconds: int = DEFAULT_IDLE_SECONDS
     credential_ref: str | None = None
 
     @classmethod
@@ -101,7 +102,7 @@ class RunPodPreferences:
         if (not isinstance(mount, str) or not mount.startswith("/")
                 or ".." in PurePosixPath(mount).parts or str(PurePosixPath(mount)) != mount):
             raise PaidSelectionError("volume mount must be a canonical absolute pod path")
-        idle = raw.get("idle_timeout_seconds", 600)
+        idle = raw.get("idle_timeout_seconds", DEFAULT_IDLE_SECONDS)
         if type(idle) is not int or idle < 0:
             raise PaidSelectionError("idle timeout must be a nonnegative integer")
         credential_ref = raw.get("credential_ref")

@@ -222,9 +222,9 @@ def test_idle_expiry_frees_the_warm_vibecomfy_session_and_the_next_task_starts_c
             runtime.tasks[task_id] = task
             assert host.run_task(task, lease_token=f"lease-{task_id}")["task"]["status"] == "completed"
             (hold,) = host.warm_holds.status()
-            assert (hold["holding"], hold["leases"], hold["idle_seconds"]) == ("vibecomfy.run", 0, 600.0)
+            assert (hold["holding"], hold["leases"], hold["idle_seconds"]) == ("vibecomfy.run", 0, 1800.0)
             assert hold["on_idle"] == "models unloaded; engine process kept; memory release not measured"
-            assert timers.live().seconds == 600 and events.count("release:idle") == released
+            assert timers.live().seconds == 1800 and events.count("release:idle") == released
             assert host._vibecomfy_warmth_hint is not None
             timers.fire()
             # Models are unloaded through the session's own release; the slot is empty.

@@ -247,9 +247,8 @@ The install line doesn't set one up (see Known gaps). Skip it otherwise. Keep th
 outside Astrid's program folder; uninstall removes that folder. On Windows, installer-managed GPU environments live
 under `%LOCALAPPDATA%\Astrid GPU`.
 
-Astrid keeps an engine loaded for **10 minutes** after its last task, so the next task starts fast. Then it stops
-the engine, which frees the GPU memory. The window defaults to 600 seconds; set `ASTRID_WARM_IDLE_SECONDS` in the
-service settings file under [Where things live](#where-things-live) if you need to test another value, then run the
+Astrid keeps model holders warm for **30 minutes** after their last task, so the next task starts fast.
+After the 1800-second window, VibeComfy unloads models and keeps its engine process; Wan2GP ends its child. Set `ASTRID_WARM_IDLE_SECONDS` in the service settings file under [Where things live](#where-things-live) if you need to test another value, then run the
 installer line again to restart the service.
 
 **Steps**
@@ -634,7 +633,7 @@ These are known. Report what you see, but don't stop testing for them.
   block it, only the two steps in site settings undo that. Chrome and Edge are expected to work. Safari is blocked
   (see Before you start); Firefox reached the health endpoint but is otherwise untested.
 - The install line doesn't set up a GPU engine.
-- The engine idle window defaults to 10 minutes. It can be changed in the service settings file under [Where things
+- The model-holder idle window defaults to 30 minutes. It can be changed in the service settings file under [Where things
   live](#where-things-live).
 - Reinstalling after an uninstall that kept the workspace is part of journey 8: the installer should adopt the kept
   workspace and start Astrid on it. Repeating uninstall, including `--uninstall --delete-data`, should be safe.
