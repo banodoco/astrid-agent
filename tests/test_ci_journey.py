@@ -111,6 +111,30 @@ def test_journey_workflow_uses_astrid_app_for_all_candidate_checkouts():
     assert "repository: banodoco/reigh-app" not in workflow
 
 
+def test_direct_journey_workflow_is_dispatchable_and_bound_to_round1b():
+    workflow = (journey.ROOT / ".github" / "workflows" / "journey-direct.yml").read_text()
+    assert "workflow_dispatch: {}" in workflow
+    assert "fail-fast: false" in workflow
+    for job_id, runner in (
+        ("direct-linux", "ubuntu-24.04"),
+        ("direct-macos", "macos-14"),
+        ("direct-windows", "windows-2022"),
+    ):
+        assert f"job_id: {job_id}" in workflow
+        assert f"runner: {runner}" in workflow
+    for sha in (
+        "1a275bb339ae897e52a5be5e1da99e846e402037",
+        "ddd5d278796641901bd11508863a8ea21e6c9697",
+        "7f6f99208100e895efebf39c70bc30af6cee0884",
+        "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+        "4758572cf02ce7ef2cc8cb42c4f11cf6095dab584f9d54734d258e2eb455776c",
+    ):
+        assert sha in workflow
+    assert "before-cleanup/journey-result.json" in workflow
+    assert "after-cleanup/journey-result.json" in workflow
+    assert "journey-receipt-${{ matrix.job_id }}" in workflow
+
+
 def test_tst_b1_isolated_roots_reject_aliases_and_preserve_existing_install(tmp_path):
     existing = tmp_path / "existing"
     existing.mkdir()
