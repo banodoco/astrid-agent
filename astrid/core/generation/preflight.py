@@ -472,6 +472,35 @@ def require_local_generation_readiness(
     )
 
 
+def _installed_managed_target():
+    """Bind an installed ComfyUI through its existing receipt/custody verifier."""
+    from .backends.comfy_target import ComfyTarget, ComfyTargetClient
+    from .engine_contracts import EngineError
+    from .engine_local_endpoint import local_engine_endpoint, recorded_engine_root
+    from .targets import TargetRecord
+
+    try:
+        root = recorded_engine_root('comfyui')
+        if root is None:
+            return None
+        installed = local_engine_endpoint('comfyui', root=root)
+    except EngineError as exc:
+        fix = _managed_install_fix()
+        raise generation_error(
+            ValueError('The installed managed ComfyUI engine is not ready; repair its installation.'),
+            code='engine_not_found', details={'field': 'target', 'engine_code': exc.code},
+            fixes=(() if fix is None else (fix,)),
+        ) from exc
+    endpoint = installed.endpoint
+    facts = {'object_info_sha256': endpoint.health.object_info_sha256}
+    client = ComfyTargetClient(ComfyTarget(endpoint.url, 'managed', facts))
+    client.generation_target = TargetRecord(
+        owner='astrid', endpoint=endpoint.url, root=root, layout='git',
+        facts=facts, verified_at=endpoint.health.checked_at,
+    )
+    return client
+
+
 def _select_generation_target(target: str, *, repo=None):
     """Select and probe one Comfy target without changing machine config.
 
@@ -493,7 +522,7 @@ def _select_generation_target(target: str, *, repo=None):
         selection = resolve_target(target, repo=repo)
         record = selection.record
         if record is None or record.owner == "astrid":
-            return None
+            return _installed_managed_target()
         if record.endpoint is None:
             raise AstridError(
                 "Selected human ComfyUI target has no endpoint; launch it with explicit consent first",
@@ -502,6 +531,8 @@ def _select_generation_target(target: str, *, repo=None):
             )
         url = record.endpoint
         client = ComfyTargetClient(ComfyTarget(url, "attached"))
+    except GenerationReadinessError:
+        raise
     except TargetConfigError as exc:
         raise AstridError(
             str(exc), code="COMFY_TARGET_INVALID", field="target",
