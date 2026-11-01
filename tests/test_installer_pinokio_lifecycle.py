@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrid.installer import cli
+from astrid.installer import cli, core
 from astrid.installer.core import (
     Installer,
     RuntimeOperationError,
@@ -144,11 +144,12 @@ def test_pinokio_install_creates_runtime_but_registers_no_login_service(tmp_path
     assert "open" not in names
 
 
-def test_pinokio_update_never_registers_or_starts_login_service(tmp_path):
+def test_pinokio_update_never_registers_or_starts_login_service(tmp_path, monkeypatch):
     root, data = tmp_path / "app", tmp_path / "workspace"
     root.mkdir()
     backend = PinokioBackend(root, data)
     backend.old = _old_version(root)
+    monkeypatch.setattr(core, "inspect_schema", lambda _backend, version, _realm, **_kwargs: version.root.name)
 
     _managed(root, data, backend).run("update", {})
 
@@ -162,12 +163,13 @@ def test_pinokio_update_never_registers_or_starts_login_service(tmp_path):
     assert "sync_skills" in names
 
 
-def test_pinokio_update_rollback_keeps_login_service_unmodified(tmp_path):
+def test_pinokio_update_rollback_keeps_login_service_unmodified(tmp_path, monkeypatch):
     root, data = tmp_path / "app", tmp_path / "workspace"
     root.mkdir()
     backend = PinokioBackend(root, data)
     backend.old = _old_version(root)
     backend.fail_upgrade = True
+    monkeypatch.setattr(core, "inspect_schema", lambda _backend, version, _realm, **_kwargs: version.root.name)
 
     with pytest.raises(RuntimeError, match="migration failed"):
         _managed(root, data, backend).run("update", {})

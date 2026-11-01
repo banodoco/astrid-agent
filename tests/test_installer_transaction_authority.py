@@ -439,15 +439,15 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     _publish_owner(paths)
     boundary.live = True
     bootstrap = importlib.import_module("astrid_runtime.bootstrap")
-    mutex = bootstrap._bootstrap_mutex
+    fence = bootstrap.interruption_fence
 
     @contextmanager
-    def replacement_after_absence(paths_arg):
-        with mutex(paths_arg):
-            _publish_owner(paths_arg, pid=887, birth="replacement-birth")
-            yield
+    def replacement_after_absence(realm_root):
+        with fence(realm_root) as report:
+            _publish_owner(paths, pid=887, birth="replacement-birth")
+            yield report
 
-    monkeypatch.setattr(bootstrap, "_bootstrap_mutex", replacement_after_absence)
+    monkeypatch.setattr(bootstrap, "interruption_fence", replacement_after_absence)
     journal = backend.root / "update-transaction.json"
     before = journal.read_bytes()
 
@@ -457,6 +457,42 @@ def test_recovery_rechecks_exact_stale_pid_absence_at_final_fence(tmp_path, monk
     assert not core.is_lifecycle_refusal(raised.value)
     assert journal.read_bytes() == before
     assert read_json(paths.discovery_path)["pid"] == 887
+    backend.restore.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["migration", "app"])
+def test_recovery_refuses_stale_pid_reappearing_at_final_fence(tmp_path, monkeypatch, kind):
+    """A previously absent exact PID must still be absent at the final fence."""
+    import importlib
+    from contextlib import contextmanager
+
+    from astrid.installer.core import RuntimeOperationError
+
+    backend, paths, _realm, boundary, _transaction, recover = _stopped_transaction(
+        tmp_path, monkeypatch, kind)
+    _publish_owner(paths)
+    boundary.live = False
+    boundary.process_birth_identity = lambda _pid: "birth-1" if boundary.live else None
+    bootstrap = importlib.import_module("astrid_runtime.bootstrap")
+    fence = bootstrap.interruption_fence
+
+    @contextmanager
+    def owner_reappears(realm_root):
+        with fence(realm_root) as report:
+            boundary.live = True
+            yield report
+
+    monkeypatch.setattr(bootstrap, "interruption_fence", owner_reappears)
+    journal = backend.root / "update-transaction.json"
+    before = journal.read_bytes()
+    publications = {path: path.read_bytes() for path in
+                    (paths.discovery_path, paths.instance_lock_path)}
+
+    with pytest.raises(RuntimeOperationError):
+        recover()
+
+    assert journal.read_bytes() == before
+    assert {path: path.read_bytes() for path in publications} == publications
     backend.restore.assert_not_called()
 
 

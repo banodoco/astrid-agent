@@ -241,7 +241,7 @@ def test_cli_recovery_releases_live_runtime_before_workspace_and_returns_recover
     events = []
     from runtime_protocol import platform
 
-    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+    monkeypatch.setattr(platform, "process_identity", lambda pid, **_kwargs: {
         "pid": pid, "birth_id": "birth",
     })
     boundary_calls = []
@@ -469,7 +469,7 @@ def test_cli_recovery_preserves_fenced_busy_refusal_before_workspace_or_backup(
     monkeypatch.setattr(cli, "Backend", RefusalBackend)
     monkeypatch.setattr(cli, "validate_manifest", lambda _value: {})
     monkeypatch.setattr(BootstrapConfig, "resolve_source_profile", lambda *_: object())
-    monkeypatch.setattr(platform, "process_identity", lambda pid: {
+    monkeypatch.setattr(platform, "process_identity", lambda pid, **_kwargs: {
         "pid": pid, "birth_id": "birth",
     })
 

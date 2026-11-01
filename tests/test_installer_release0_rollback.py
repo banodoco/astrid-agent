@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from astrid.installer.app_update import locked
+from astrid.installer.custody import stopped_custody
 from astrid.installer.core import (
     Installer,
     Version,
@@ -108,7 +110,9 @@ def _journal(root: Path, data: Path, old: Version, candidate: Version, step: str
 
 
 @pytest.mark.posix_native
-def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) -> None:
+def test_rollback_selects_and_starts_authentic_release0_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A failed candidate uses the immutable release-0 package after rollback."""
     python, _site_packages = _release0_environment(
         tmp_path / "program" / "versions" / LEGACY_VERSION / "py"
@@ -136,10 +140,15 @@ def test_rollback_selects_and_starts_authentic_release0_runtime(tmp_path: Path) 
     def activate_old(version: Version, _data: Path, _realm: dict) -> None:
         assert current(root) == version
         assert activation_lock_held(root, version)
-        _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
+        environment = _runtime_environment(tmp_path)
+        environment["ASTRID_INSTALL_CUSTODY"] = json.dumps(custody.arm(version, _data))
+        _start_release0_runtime(root, marker, environment)
 
     # Pinokio recovery owns this lock until the selected old Runtime starts.
-    with locked(root / ".app-update.lock"):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    custodian_backend = SimpleNamespace(service=SimpleNamespace(home=tmp_path / "home", system=sys.platform))
+    with locked(root / ".app-update.lock"), stopped_custody(root, custodian_backend) as custody:
+        assert custody is not None
         recover_transaction(
             root,
             data,
@@ -231,11 +240,16 @@ def test_pre_stop_interruption_recovers_and_starts_authentic_release0_runtime(
     def activate_old(version: Version, _data: Path, _realm: dict) -> None:
         assert current(root) == version
         assert activation_lock_held(root, version)
-        _start_release0_runtime(root, marker, _runtime_environment(tmp_path))
+        environment = _runtime_environment(tmp_path)
+        environment["ASTRID_INSTALL_CUSTODY"] = json.dumps(custody.arm(version, _data))
+        _start_release0_runtime(root, marker, environment)
 
     # A restarted Pinokio recovery reacquires its own operation lock before
     # rolling back and activating the retained release-0 Runtime.
-    with locked(root / ".app-update.lock"):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    custodian_backend = SimpleNamespace(service=SimpleNamespace(home=tmp_path / "home", system=sys.platform))
+    with locked(root / ".app-update.lock"), stopped_custody(root, custodian_backend) as custody:
+        assert custody is not None
         recover_transaction(
             root,
             data,

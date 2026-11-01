@@ -68,6 +68,10 @@ def realm_fixture(tmp_path, monkeypatch, *, system='linux', blocker='running'):
         monkeypatch.setattr(value, name, Mock(side_effect=AssertionError(f'unexpected {name}')))
     monkeypatch.setattr(value, 'existing', lambda _data: old)
     monkeypatch.setattr(value, 'workspace', lambda *_: {'realm_id': 'selected', 'realm_root': str(realm)})
+    # This fixture builds only the C1 tables, not a full versioned schema.
+    # Exercise the migration path while leaving Runtime's actual stop fence real.
+    monkeypatch.setattr('astrid.installer.core.inspect_schema',
+                        lambda _backend, version, _realm, **_kwargs: version.root.name)
     monkeypatch.setattr(value, 'verify', Mock(side_effect=VerificationError('restart needed')))
     monkeypatch.setattr(value, 'preflight_remove', lambda *_, **kwargs: None)
     (data / 'workspace-sentinel').write_bytes(b'user work')
