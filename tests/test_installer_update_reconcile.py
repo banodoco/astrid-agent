@@ -120,6 +120,25 @@ def test_accept_holds_installer_lock_through_checks_and_new_admission(tmp_path, 
     assert observed == ["admission"]
 
 
+def test_reconcile_runs_under_the_installer_lock_before_new_input_preparation(tmp_path, monkeypatch):
+    root, _, _, request = _fixture(tmp_path, monkeypatch)
+    observed = []
+    original = update_job._reconcile_existing
+
+    def reconcile_while_locked(selected_root, marker, value):
+        _assert_lock_busy(selected_root)
+        observed.append(value["operation_id"])
+        return original(selected_root, marker, value)
+
+    monkeypatch.setattr(update_job, "_reconcile_existing", reconcile_while_locked)
+    monkeypatch.setattr(update_job, "fetch_update_inputs",
+                        lambda *_args, **_kwargs: pytest.fail("P1 must not prepare inputs"))
+
+    assert update_job.reconcile(request) == {"disposition": "prepare-new"}
+    assert observed == [request["operation_id"]]
+    assert read_json(root / "install.json").get("update_job") is None
+
+
 def test_matching_unfinished_recovery_returns_i3_and_ends_this_update_request(tmp_path, monkeypatch):
     root, data, _, request = _fixture(tmp_path, monkeypatch)
     previous = update_job.accept(request)
