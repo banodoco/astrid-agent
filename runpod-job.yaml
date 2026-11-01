@@ -1,0 +1,49 @@
+stream: M-R1FIX-R-09-FU5
+cpu: {vcpu: 8}
+image: default
+steps:
+  - timeout: 80m
+    run: |
+      set +e
+      mkdir -p /workspace/out
+      (
+        set -eux
+        git clone -q --branch lane/M-R1FIX/R-09-FU5 https://github.com/banodoco/astrid-agent /workspace/agent
+        git -C /workspace/agent checkout -q 1aadf262d23d9cba1c14150b4f3919be9141e610
+        git clone -q https://github.com/banodoco/astrid-runtime /workspace/runtime
+        git -C /workspace/runtime checkout -q c93aa3ce02ba95b07952df3a2a3d6d7cab0b263f
+        git clone -q https://github.com/banodoco/astrid-pinokio /workspace/pinokio
+        git -C /workspace/pinokio checkout -q 8d8e1b46948f6a0cdf8d3f81f4db3f14c21f11b2
+        test "$(git -C /workspace/agent rev-parse HEAD)" = 1aadf262d23d9cba1c14150b4f3919be9141e610
+        test "$(git -C /workspace/runtime rev-parse HEAD)" = c93aa3ce02ba95b07952df3a2a3d6d7cab0b263f
+        test "$(git -C /workspace/pinokio rev-parse HEAD)" = 8d8e1b46948f6a0cdf8d3f81f4db3f14c21f11b2
+        python3 -m venv /workspace/venv
+        /workspace/venv/bin/pip install 'pytest==9.0.2' 'pytest-timeout>=2.4' 'setuptools==80.9.0' wheel pyyaml jsonschema filelock python-dotenv
+        /workspace/venv/bin/pip install --no-deps -e /workspace/runtime
+        { git -C /workspace/agent show -s --format='agent=%H%nparents=%P'; git -C /workspace/runtime rev-parse HEAD; git -C /workspace/pinokio rev-parse HEAD; uname -a; /workspace/venv/bin/python --version; } > /workspace/out/identity.txt
+      ) > /workspace/out/setup.log 2>&1
+      setup_status=$?
+      printf 'setup=%s\n' "$setup_status" > /workspace/out/exit-codes.txt
+      if [ "$setup_status" -ne 0 ]; then exit 0; fi
+      export PYTHONPATH=/workspace/agent:/workspace/runtime:/workspace/runtime/packages/python ASTRID_CHECKOUT=/workspace/agent ASTRID_RUNTIME_CHECKOUT=/workspace/runtime ASTRID_PINOKIO_CHECKOUT=/workspace/pinokio PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR=/tmp/r09-fu5-uv-cache
+      PY=/workspace/venv/bin/python
+      cd /workspace/agent || exit 0
+      run() { label=$1; shift; "$PY" -m pytest -q --timeout=90 "$@" > "/workspace/out/$label.log" 2>&1; result=$?; printf '%s=%s\n' "$label" "$result" >> /workspace/out/exit-codes.txt; }
+      run m1-4a tests/test_installer_app_update.py::test_running_incapable_runtime_refuses_exact_i1_without_writes tests/test_installer_app_update.py::test_selected_runtime_provenance_mismatch_refuses_before_handoff_probe
+      run paired tests/test_installer_app_update.py tests/test_installer_pinokio_locking.py tests/test_installer_pinokio_custody.py tests/test_installer_pinokio_old_stop.py tests/test_installer_busy_fence.py tests/test_installer_cli_recovery.py tests/test_installer_service_env.py tests/test_installer_pre_stop_recovery.py tests/test_installer_pinokio_launcher.py tests/test_installer_pinokio_lifecycle.py tests/test_installer_transaction_authority.py --deselect tests/test_installer_pinokio_lifecycle.py::test_pinokio_install_creates_runtime_but_registers_no_login_service
+      run old-stop tests/test_installer_pinokio_old_stop.py
+      run activation -m integration tests/test_installer_pinokio_activation.py
+      run messages tests/test_installer_app_update.py::test_ordinary_start_refuses_update_publication_and_stop_handoffs tests/test_installer_cli_recovery.py::test_regular_cli_recovers_pending_migration_before_preflight_or_fresh_inputs tests/test_installer_cli_recovery.py::test_update_app_cli_recovers_before_checking_manifest_or_uv tests/test_installer_pinokio_launcher.py::test_generated_foreground_retains_exact_admission_across_rollback tests/test_installer_pinokio_launcher.py::test_generated_foreground_refuses_malformed_pending_journal tests/test_installer_pinokio_custody.py::test_stale_activation_phase_without_operation_lock_refuses_start
+      run messages-integration -m integration tests/test_installer_pinokio_activation.py::test_update_candidate_and_rollback_activate_under_retained_custody
+      run messages-files tests/test_installer_app_update.py tests/test_installer_cli_recovery.py tests/test_installer_pinokio_launcher.py tests/test_installer_pinokio_custody.py tests/test_installer_pre_stop_recovery.py tests/test_installer_transaction_authority.py tests/test_installer_service_env.py
+      run snapshots tests/test_installer_platforms.py::test_service_definitions_match_reviewed_snapshots
+      run xdg tests/test_installer_pinokio_locking.py::test_linux_lock_identity_survives_pinokio_filtering_xdg
+      run installer tests/test_installer_self_contained_launchers.py tests/test_installer_release0_service_adoption.py tests/test_installer_release0_rollback.py tests/test_installer_service_env.py tests/test_installer_pinokio_launcher.py tests/test_installer_pinokio_locking.py tests/test_installer_platforms.py tests/test_installer_startup_stop.py tests/test_installer_sources.py::test_forced_update_restages_damaged_agent_and_tools_from_fresh_candidate tests/test_installer_cli_recovery.py
+      run update-job tests/test_installer_update_job.py tests/test_update_job_platform.py tests/test_installer_update_reconcile.py tests/test_installer_update_continuation.py tests/test_update_job_continuation_platform.py tests/test_installer_update_continuation_worker.py
+      run m1-7 -m integration tests/test_installer_update_recovery.py::test_same_schema_direct_migration_recovery_preserves_post_switch_workspace tests/test_installer_update_recovery.py::test_app_transaction_recovery_never_mutates_workspace
+      cd /workspace/runtime || exit 0
+      run runtime-caller tests/test_update_jobs.py
+      cat /workspace/out/exit-codes.txt
+      exit 0
+download:
+  - {from: /workspace/out/, to: /home/user/merge/ws/M-R1FIX/queue/running/R-09-FU5/runpod/out/}
