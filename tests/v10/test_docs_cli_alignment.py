@@ -48,8 +48,8 @@ _DEV_COMMANDS = frozenset({"status", "promote", "cache", "reclaim", "journey"})
 
 # (family, nested) -> parser module for the manifest-declared nested mounts.
 _NESTED_MOUNTS: dict[tuple[str, str], str] = {
-    ("timelines", "shots"): "astrid.packs.shots.cli",
-    ("media", "references"): "astrid.packs.references.cli",
+    ("timelines", "shots"): "astrid.core.cli.domain_shots",
+    ("media", "references"): "astrid.core.cli.domain_references",
 }
 
 _BACKUP_COMMANDS = frozenset(

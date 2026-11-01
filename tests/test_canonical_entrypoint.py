@@ -71,7 +71,7 @@ def test_shots_product_cli_imports_without_canonical_entrypoint_guard(
 ) -> None:
     """The nested shots product parser retains canonical entrypoint behavior.
 
-    Task T29 mounts ``astrid/packs/shots/cli.py`` beneath the timelines
+    Task T29 mounts ``astrid/core/cli/domain_shots.py`` beneath the timelines
     family. Product parser modules are imported by the gateway dispatch
     path and must stay importable without ``ASTRID_INTERNAL_INVOCATION``:
     ``guard_canonical_entrypoint`` remains reserved for pack ``run.py``
@@ -79,7 +79,7 @@ def test_shots_product_cli_imports_without_canonical_entrypoint_guard(
     ``SystemExit`` (the guard's refusal) at import or build time.
     """
     monkeypatch.delenv("ASTRID_INTERNAL_INVOCATION", raising=False)
-    from astrid.packs.shots import cli as shots_cli
+    from astrid.core.cli import domain_shots as shots_cli
 
     parser = shots_cli.build_parser(object())
     assert parser.prog == "astrid timelines shots"

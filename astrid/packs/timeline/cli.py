@@ -12,7 +12,7 @@ contract.
 
 The parser also mounts the runtime-owned nested ``shots`` family beneath
 ``timelines``: ``astrid timelines shots <verb>`` embeds the shots
-product parser (``astrid/packs/shots/cli.py``) so project-level reusable shot
+product parser (``astrid/core/cli/domain_shots.py``) so project-level reusable shot
 ``list/create/show/add/remove/reorder`` commands are executable only beneath timelines.
 There is **no top-level shots family**.
 
@@ -4221,7 +4221,7 @@ def build_parser(client: Any) -> argparse.ArgumentParser:
     (``astrid timelines shots <verb>``) embedded from the shots product
     parser.
     """
-    from astrid.packs.shots import cli as shots_cli
+    from astrid.core.cli import domain_shots as shots_cli
 
     def _configure_shots(subparser: argparse.ArgumentParser) -> None:
         nested = subparser.add_subparsers(dest="shot_command", required=True)

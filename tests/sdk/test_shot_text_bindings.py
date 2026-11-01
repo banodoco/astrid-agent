@@ -85,7 +85,7 @@ def test_readable_binding_fetches_exact_utf8_and_checks_integrity():
 
 def test_text_cli_reads_and_sets_through_sdk(tmp_path):
     from types import SimpleNamespace
-    from astrid.packs.shots.cli import build_parser
+    from astrid.core.cli.domain_shots import build_parser
     from astrid.sdk.contracts import DomainResult
     calls = []
     def capture(name):
