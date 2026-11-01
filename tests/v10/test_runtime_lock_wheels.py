@@ -64,11 +64,10 @@ def test_runtime_wheel_check_fails_closed_for_an_unavailable_wheel(tmp_path: Pat
         "031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03\n",
     )
 
-    with pytest.raises(
-        ReproducibilityError,
-        match=r"macos-x86_64.*cryptography==50\.0\.0.*no usable wheels",
-    ):
+    with pytest.raises(ReproducibilityError) as raised:
         validate_runtime_lock_wheels(
             tmp_path,
             targets=(("macos-x86_64", "x86_64-apple-darwin"),),
         )
+    assert "macos-x86_64" in str(raised.value)
+    assert "cryptography==50.0.0 has no usable wheels" in str(raised.value)
