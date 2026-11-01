@@ -104,9 +104,55 @@ class FinalizerTests(unittest.TestCase):
                 self.assertEqual(finalizer.main(args), 1)
                 invoked.assert_called_once()
 
+    def test_failed_producer_does_not_skip_successful_collection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'plan').write_text(json.dumps([[sys.executable, '-c', 'import sys; sys.exit(2)']]))
+            (p / 'tuple').write_text('{}')
+            args = ['--status', str(p / 'status'), '--tuple', str(p / 'tuple'), '--ledger', str(p / 'ledger'), '--broker-root', str(p / 'broker'), '--freshness', str(p / 'freshness'), '--producer-plan', str(p / 'plan')]
+            def check(arguments):
+                receipt = json.loads(Path(arguments[arguments.index('--collection') + 1]).read_text())
+                self.assertEqual(receipt, {'collection': 'success', 'prerequisites': 'failure'})
+                return 1
+            with mock.patch.object(finalizer.aggregate, 'read', side_effect=[{'complete': True, 'lanes': []}, {}]), mock.patch.object(hosted, 'download') as download, mock.patch.object(finalizer.aggregate, 'main', side_effect=check) as invoked:
+                self.assertEqual(finalizer.main(args), 1)
+                download.assert_called_once()
+                invoked.assert_called_once()
+
     def test_missing_arguments_writes_failed_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = Path(tmp) / 'status.json'
             result = subprocess.run([sys.executable, str(ROOT / 'scripts/ci/regression_finalizer.py'), '--status', str(status)], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(json.loads(status.read_text())['result'], 'fail')
+
+
+from test_local_regression_green import LocalEvidenceTests
+
+
+class HostedEvaluatorIntegrationTests(LocalEvidenceTests):
+    def test_downloaded_hosted_evidence_reaches_evaluator_and_tampering_fails(self):
+        base = self.p / 'hosted/artifact-1'
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive:
+            archive.writestr('manifest.json', (base / 'manifest.json').read_bytes())
+            archive.writestr('junit.xml', (base / 'junit.xml').read_bytes())
+        raw = stream.getvalue()
+        run = {'id': 1, 'run_attempt': 1, 'head_sha': self.shas['agent'], 'status': 'completed', 'conclusion': 'success', 'path': '.github/workflows/ci.yml', 'repository': {'html_url': self.tuple['repos']['agent']['url']}, 'run_started_at': '2026-10-31T23:01:00Z', 'updated_at': '2026-10-31T23:04:00Z'}
+        jobs = {'total_count': 1, 'jobs': [{'id': 2, 'run_id': 1, 'run_attempt': 1, 'status': 'completed', 'conclusion': 'success'}]}
+        artifacts = {'total_count': 1, 'artifacts': [{'id': 3, 'name': 'artifact-1', 'expired': False, 'workflow_run': {'id': 1}, 'digest': 'sha256:' + hashlib.sha256(raw).hexdigest()}]}
+        def fetch(path, binary=False):
+            if binary:
+                return raw
+            if '/jobs?' in path:
+                return jobs
+            if '/artifacts?' in path:
+                return artifacts
+            return run
+        for path in base.iterdir():
+            path.unlink()
+        base.rmdir()
+        hosted.download(self.tuple, self.lanes, self.p / 'hosted', fetch)
+        self.assertEqual(self.check(), [])
+        (base / 'manifest.json').write_text('{}')
+        self.assertTrue(any('hash or size mismatch' in error for error in self.check()))

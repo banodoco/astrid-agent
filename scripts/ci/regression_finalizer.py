@@ -8,7 +8,6 @@ import sys
 import tempfile
 
 import regression_aggregate as aggregate
-import trusted_hosted_download as hosted
 
 
 def main(argv=None):
@@ -38,6 +37,7 @@ def main(argv=None):
             review = aggregate.read(aggregate.REVIEW)
             if review.get('complete') is not True:
                 raise ValueError('reviewed inventory incomplete')
+            import trusted_hosted_download as hosted
             hosted.download(aggregate.read(args.tuple), review['lanes'], hosted_root)
             collection = 'success'
         except Exception as exc:

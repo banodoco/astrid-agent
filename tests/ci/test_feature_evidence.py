@@ -255,6 +255,8 @@ class FeatureEvidenceTests(LocalEvidenceTests):
             self.mutate(name, tuple_digest=self.identity)
         self.save_inventory()
         self.rehash_downloads()
+        if self.transport == 'broker':
+            self.authenticate_hosted()
         self.authenticate()
 
     def test_tuple_bound_manifest_hash_reaches_predicate(self):
