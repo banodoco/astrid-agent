@@ -16,6 +16,42 @@ def z_image_entry() -> Any:
     return ModelRegistry.load_default().get("z-image")
 
 
+@pytest.mark.parametrize('backend', ['cloud', 'local'])
+def test_catalog_qualification_follows_matrix_and_input_validation(backend):
+    from astrid.core.contracts.errors import AstridError
+    from astrid.core.generation.preflight import validate_generation_request
+    from astrid.sdk.exceptions import CapabilityValidationError, CapabilityMissingInputError
+    registry = ModelRegistry.load_default()
+    valid = {'prompt': 'a boat', 'image_ref': 'start.png'}
+    with pytest.raises(CapabilityValidationError, match='Available backends'):
+        validate_generation_request(registry, model='wan-2.2', mode='i2v', execution='invalid', inputs=valid)
+    with pytest.raises(CapabilityMissingInputError, match='image_ref'):
+        validate_generation_request(registry, model='wan-2.2', mode='i2v', execution=backend, inputs={'prompt': 'boat'})
+    with pytest.raises(AstridError) as caught:
+        validate_generation_request(registry, model='wan-2.2', mode='i2v', execution=backend, inputs=valid)
+    assert caught.value.code == 'generation_route_unqualified'
+    assert 'wan-2.2' in str(caught.value) and 'not been qualified' in str(caught.value)
+    assert 'qualified' in caught.value.fix
+
+
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_generic_catalog_refuses_before_dispatch(tmp_path, monkeypatch, dry_run):
+    import astrid.sdk as sdk
+    from astrid.sdk import invocation
+    from astrid.core.contracts.errors import AstridError
+    from unittest.mock import Mock
+    admitted = Mock(side_effect=AssertionError('unqualified request dispatched'))
+    monkeypatch.setattr(invocation, '_kernel_invoke', admitted)
+    with pytest.raises(AstridError) as caught:
+        sdk.invoke('generation.generate_video', kind='executor', project='demo',
+            project_root=tmp_path, dry_run=dry_run,
+            inputs={'model': 'wan-2.2', 'mode': 't2v', 'execution': 'cloud', 'prompt': 'boat'})
+    assert caught.value.code == 'generation_route_unqualified'
+    assert caught.value.fix
+    admitted.assert_not_called()
+    assert not (tmp_path / '.astrid' / 'astrid.sqlite3').exists()
+
+
 def test_missing_vibecomfy_is_actionable_and_does_not_probe_comfyui(
     z_image_entry: Any,
     monkeypatch: pytest.MonkeyPatch,
