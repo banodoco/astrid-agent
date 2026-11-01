@@ -16,7 +16,15 @@ else:
 
 
 def _closed(label: str, parser, evidence: dict) -> tuple[bool, list[str]]:
-    _parsed, reasons = parser(evidence)
+    parsed, reasons = parser(evidence)
+    if parsed is None or not parsed.producer_supplied:
+        reasons.append(f"{label}: authenticated producer export and collector seal are absent")
+    elif parsed.producer is None:
+        reasons.append(f"{label}: producer export or collector seal is structurally invalid")
+    else:
+        reasons.append(
+            f"{label}: M-CI authenticated finalization, selected attempt, and frozen binding are unavailable"
+        )
     reasons.append(
         f"{label}: independent R-30 section 5 observations and frozen bindings unavailable"
     )
