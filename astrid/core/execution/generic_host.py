@@ -5255,11 +5255,10 @@ _OPTIONAL_EXTERNAL_MATRIX_PREFIXES = ("discord_local.", "hivemind.", "seedance_l
 
 
 def _unapproved_reason(capability_id: str, matrix_path: Path | None) -> str:
-    where = str(matrix_path) if matrix_path is not None else "config/astrid-beta-capabilities.json"
     return (
         f"capability {capability_id!r} has no approved capability-matrix row; "
-        f"add a row to {where} (disposition, evidence_reason, adapter_family, resource_keys), "
-        "then restart the host and run: python -m astrid.core.execution.capability_ledger approve"
+        "add a row to the source capability matrix (disposition, evidence_reason, "
+        "adapter_family, resource_keys), regenerate the capability census, then restart the host"
     )
 
 
@@ -6382,12 +6381,20 @@ class GenericPackHost:
             project_root=self.pack_roots[0] if self.pack_roots else Path.cwd(),
             extra_pack_roots=tuple(str(root) for root in self.pack_roots),
         )
+        from astrid.core.execution.executor.actions import action_is_local_orchestrator
+
+        local_orchestrator_ids: set[str] = set()
         for discovered_pack in discovered_packs:
             pack = discovered_pack.pack
             pack_root = pack.root.resolve()
             if not any(pack_root == root or pack_root.is_relative_to(root) for root in self.pack_roots):
                 continue
             for local_id, declaration in pack.actions.items():
+                try:
+                    if action_is_local_orchestrator(declaration):
+                        local_orchestrator_ids.add(f"{pack.id}.{local_id}")
+                except ExecutorValidationError:
+                    continue
                 try:
                     definition = action_executor_definition(discovered_pack, local_id, declaration)
                     source_roots = _admitted_source_roots(pack_root, definition)
@@ -6421,6 +6428,9 @@ class GenericPackHost:
                 for capability_id in expected - discovered
                 if not capability_id.startswith(_OPTIONAL_EXTERNAL_MATRIX_PREFIXES)
                 and capability_id.split(".", 1)[0] not in quarantined_ids
+                # Declared local orchestrators are registered through the
+                # orchestrator registry, not executor discovery.
+                and capability_id not in local_orchestrator_ids
             ))
             if self.stale_matrix_entries:
                 _LOGGER.warning(

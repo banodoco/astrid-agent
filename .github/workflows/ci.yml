@@ -15,13 +15,15 @@ jobs:
       ASTRID_CI_JOB: windows-native-and-installer
     steps:
       - uses: actions/checkout@v4
+      - name: Restore pip cache (C-08)
+        id: c08-agent-ci-5
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/*.lock
       - name: Install package with dev extras
         run: python -m pip install -e '.[dev]'
       - name: Install the pinned Runtime and client
@@ -40,6 +42,13 @@ jobs:
           tests/test_host_child_stdin.py
           tests/test_windows_child_stdin.py -rP
 
+      - name: Save pip cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-5.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
   checks:
     name: fast checks
     runs-on: ubuntu-latest
@@ -48,14 +57,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Restore pip cache (C-08)
+        id: c08-agent-ci-4
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/*.lock
 
       - name: Install system media tools
         run: |
@@ -80,6 +91,13 @@ jobs:
       - name: Import cycles gate
         run: make cycles
 
+      - name: Save pip cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-4.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
   unit-shard:
     name: unit shard ${{ matrix.group }} / 8 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -88,6 +106,7 @@ jobs:
     env:
       # The test run's skip registry (tests/lanes.py) reads this: a lane this job provides fails, not skips, when its dependency is missing.
       ASTRID_CI_JOB: unit-shard-${{ matrix.os }}
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
     strategy:
       fail-fast: false
       matrix:
@@ -98,14 +117,32 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Read the pinned Runtime commit
+        id: runtime-pin
+        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the Runtime (test fixtures)
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.runtime-pin.outputs.commit }}
+          path: astrid-runtime
+
+      - name: Restore pip cache (C-08)
+        id: c08-agent-ci-3
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/*.lock
+
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
 
       # The product's pinned Node (.node-version), the one the installer ships: the tests run the same Node the product does.
       - name: Set up Node.js from .node-version
@@ -140,6 +177,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+      - name: Save pip cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-3.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
   unit:
     name: unit
     runs-on: ubuntu-latest
@@ -170,21 +214,27 @@ jobs:
           ref: ${{ steps.runtime-pin.outputs.commit }}
           path: astrid-runtime
 
+      - name: Restore pip cache (C-08)
+        id: c08-agent-ci-2
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            requirements/*.lock
 
+      - name: Restore npm cache (C-08)
+        id: c08-agent-ci-1
+        uses: actions/cache/restore@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
+          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
       - name: Set up Node.js from .node-version
         uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
-          cache: npm
-          cache-dependency-path: remotion/package-lock.json
 
       - name: Install ffmpeg
         run: brew install ffmpeg
@@ -212,6 +262,19 @@ jobs:
   # Release wheel (testing plan R-1: kept from the old m8 artifact job). Hashed build tools, one wheel,
   # installed with only the hashed runtime lock, and the toolchain recorded next to it. It is also the
   # one check that every Python pyproject.toml admits (>=3.11) installs and imports Astrid.
+      - name: Save npm cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-1.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/npm-cache' || '~/.npm' }}"
+          key: npm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('remotion/package-lock.json') }}
+      - name: Save pip cache on main or int branches (C-08)
+        if: ${{ always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/int/')) && steps.c08-agent-ci-2.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Local/pip/Cache' || runner.os == 'macOS' && '~/Library/Caches/pip' || '~/.cache/pip' }}"
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py3.11-${{ hashFiles('pyproject.toml', 'requirements/*.lock') }}
+
   release:
     name: release wheel / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

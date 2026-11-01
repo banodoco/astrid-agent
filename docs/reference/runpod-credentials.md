@@ -39,13 +39,6 @@ printed in the missing-key message.
 Astrid writes the value to the shared file with owner-only permissions and
 preserves other entries.
 
-For agents and CI, use `astrid-credential set runpod --from-env CI_RUNPOD_KEY`
-to copy an already injected secret variable, or pipe one line from a secret
-manager into `astrid-credential set runpod --stdin`. These options are mutually
-exclusive, never print the value, and reject empty input. Without either flag,
-the setter keeps its hidden interactive prompt. Do not use shell tracing when
-handling secret-manager output.
-
 The setter changes only the selected shared credential file; it does not
 migrate or delete old credential files or project data. After the replacement
 has been validated, remove only obsolete `RUNPOD_API_KEY` assignments from old

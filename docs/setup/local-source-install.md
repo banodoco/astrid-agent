@@ -71,55 +71,6 @@ to change the editor itself, follow the
 [fully local route](../getting-started.md#run-everything-on-your-computer).
 Creative providers still need their own credentials and qualified artifacts.
 
-## Linux without systemd
-
-Without a working systemd user manager, the installer starts one detached
-Runtime process. It can survive closing the terminal; it has no crash restart
-or startup after reboot. Logout cleanup and container shutdown may stop it.
-Run the install line again for a manual start. `python -m astrid doctor` and
-the installer's `--doctor` bundle warn when no systemd service owns the observed
-Runtime PID. An external supervisor's restart policy must be checked separately.
-
-For a supported foreground launch, use `astrid-runtime run --profile astrid`
-with the selected data root and source manifest, plus the installed version's
-environment. For a managed installation the following launcher preserves those
-settings and `service-env.json` (adjust `program_root` for a custom install):
-
-```sh
-program_root="${XDG_DATA_HOME:-$HOME/.local/share}/astrid"
-version=$(cat "$program_root/current")
-exec "$program_root/versions/$version/py/bin/python" -X utf8 -I - "$program_root" <<'PY'
-import os
-import sys
-from pathlib import Path
-from astrid.installer.core import current, read_json
-from astrid.installer.service import command
-
-root = Path(sys.argv[1])
-version = current(root)
-data = Path(read_json(root / "install.json")["data_root"])
-env = {k: v for k, v in os.environ.items() if k not in {
-    "PYTHONPATH", "PYTHONHOME", "ASTRID_WORKSPACE_ENDPOINT",
-    "ASTRID_WORKSPACE_CREDENTIAL", "ASTRID_RUNTIME_SOURCE_MANIFEST",
-    "ASTRID_RUNTIME_DATA_ROOT", "ASTRID_PACKS_PATH"}}
-env.update(version.env)
-argv = command(version, data, env_file=root / "service-env.json")
-os.chdir(version.root)
-os.execvpe(argv[0], argv, env)
-PY
-```
-
-Stop the existing detached Runtime with its selected version's
-`python -I -m astrid_runtime down --profile astrid --data-root DATA_ROOT`
-before handing ownership to this launcher. In a terminal it runs until stopped;
-it does not restart itself. For containers, use the foreground launch as the
-container workload with the container platform's restart policy enabled. Other
-service managers may run the same command and restart it on exit. Keep program
-and workspace storage persistent, and allow at least 90 seconds for graceful
-shutdown. Stop the external supervisor before installer repair/update/uninstall,
-then start it again after the transaction completes so it selects the new version.
-
-
 ## Developer qualification with local Git sources
 
 Installer developers can exercise unpublished agent, Runtime, or VibeComfy

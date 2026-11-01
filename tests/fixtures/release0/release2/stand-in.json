@@ -1,0 +1,12 @@
+{
+  "fixture_format": "astrid-release-stand-in/v1",
+  "release": 2,
+  "source": {
+    "kind": "M4-2 qualification stand-in",
+    "release_1_agent_base": "2958bacea3e3c7961788fa9c625dd9db0be282de"
+  },
+  "marker": {
+    "path": "release2/stand-in.json",
+    "value": "M4-2 RELEASE 2 STAND-IN — UPDATE LANDED"
+  }
+}
