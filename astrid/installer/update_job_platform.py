@@ -274,7 +274,7 @@ def is_active(descriptor: dict, system: str | None = None) -> bool:
                 return False
             raise _failure("query", result)
         state = result.stdout.strip()
-        if state in {"", "inactive", "failed", "dead", "not-found"}:
+        if state in {"inactive", "failed", "dead", "not-found"}:
             return False
         if state in {"active", "activating", "reloading"}:
             return True
