@@ -1,0 +1,57 @@
+{
+  "artifact_collection_outcome": "success",
+  "command": "set -u\nout=runtime-focused\nmkdir -p \"$out\"\ncd runtime\nselectors=(\n  test_reconcile_before_manifest_and_newer_target_checks\n  test_unknown_reconciliation_never_prepares_or_launches\n  test_unconfirmed_terminal_reconciliation_is_observe_only\n  test_reconcile_helper_failure_preserves_uncertainty\n  test_unacknowledged_continuation_reply_is_observe_only\n  test_reconcile_terminal_result_prevents_preparation_and_new_launch\n  test_update_route_h3_returns_confirmed_reconciliation_conflict\n  test_update_route_h4_returns_recovery_refusal\n  test_update_route_h5_returns_uncertain_acknowledgement\n  test_authenticated_continuation_keeps_operation_and_journal\n  test_update_route_malformed_acceptance_is_uncertain\n  test_status_reads_authoritative_job_and_c2_journal_without_recovery\n  test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal\n  test_status_projects_unacknowledged_launching_as_recovery_needed\n  test_production_daemon_door_advertises_and_executes_selected_updater\n)\nfor name in \"${selectors[@]}\"; do\n  marker=()\n  if [ \"$name\" = test_production_daemon_door_advertises_and_executes_selected_updater ]; then marker=(-m integration); fi\n  pytest -q \"${marker[@]}\" --collect-only \"tests/test_update_jobs.py::$name\" > \"../$out/$name.collect.log\" 2>&1\n  printf '%s\\n' \"$?\" > \"../$out/$name.collect.exit\"\n  pytest -q \"${marker[@]}\" \"tests/test_update_jobs.py::$name\" > \"../$out/$name.log\" 2>&1\n  printf '%s\\n' \"$?\" > \"../$out/$name.exit\"\ndone",
+  "effective_tuple": {
+    "agent": "a721da65a762956995a38cf37ca4ba2cf6f33e5e",
+    "app": "d3e8f92e465f78931561db0fb5b54979a5bdd560",
+    "pinokio": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime": "dc56ddd184e3c203f0970c524daaf3358cd6ae3f"
+  },
+  "event": "push",
+  "inner_exit_code": 127,
+  "inventory": [
+    {
+      "bytes": 41,
+      "path": "artifacts/runtime-focused/test_reconcile_before_manifest_and_newer_target_checks.collect.log",
+      "sha256": "55961fcd940a213d6319568a1a73d45e95fbc32861c0d394b3d72c18ed6b6de0"
+    },
+    {
+      "bytes": 0,
+      "path": "command.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4,
+      "path": "exit-code.txt",
+      "sha256": "743c7850cccfba5e53a9002663ec1ddd1079315a98bdbfdde10e6044f56abefe"
+    },
+    {
+      "bytes": 1826,
+      "path": "requested-inputs.json",
+      "sha256": "f40299b930e785784d24c58fbca5de01fe344c3a60369ece08e7a5aab5a03251"
+    },
+    {
+      "bytes": 431,
+      "path": "tuple.txt",
+      "sha256": "ace0bb8040c29a778cea92ca822f701f4b90f2c5373f0022048f44c5d455d8b3"
+    }
+  ],
+  "repository": "banodoco/astrid-agent",
+  "requested_inputs": {
+    "agent_ref": "a721da65a762956995a38cf37ca4ba2cf6f33e5e",
+    "app_ref": "d3e8f92e465f78931561db0fb5b54979a5bdd560",
+    "artifact_paths": "runtime-focused/**",
+    "command": "set -u\nout=runtime-focused\nmkdir -p \"$out\"\ncd runtime\nselectors=(\n  test_reconcile_before_manifest_and_newer_target_checks\n  test_unknown_reconciliation_never_prepares_or_launches\n  test_unconfirmed_terminal_reconciliation_is_observe_only\n  test_reconcile_helper_failure_preserves_uncertainty\n  test_unacknowledged_continuation_reply_is_observe_only\n  test_reconcile_terminal_result_prevents_preparation_and_new_launch\n  test_update_route_h3_returns_confirmed_reconciliation_conflict\n  test_update_route_h4_returns_recovery_refusal\n  test_update_route_h5_returns_uncertain_acknowledgement\n  test_authenticated_continuation_keeps_operation_and_journal\n  test_update_route_malformed_acceptance_is_uncertain\n  test_status_reads_authoritative_job_and_c2_journal_without_recovery\n  test_status_fails_conservatively_for_unmatched_or_corrupt_c2_journal\n  test_status_projects_unacknowledged_launching_as_recovery_needed\n  test_production_daemon_door_advertises_and_executes_selected_updater\n)\nfor name in \"${selectors[@]}\"; do\n  marker=()\n  if [ \"$name\" = test_production_daemon_door_advertises_and_executes_selected_updater ]; then marker=(-m integration); fi\n  pytest -q \"${marker[@]}\" --collect-only \"tests/test_update_jobs.py::$name\" > \"../$out/$name.collect.log\" 2>&1\n  printf '%s\\n' \"$?\" > \"../$out/$name.collect.exit\"\n  pytest -q \"${marker[@]}\" \"tests/test_update_jobs.py::$name\" > \"../$out/$name.log\" 2>&1\n  printf '%s\\n' \"$?\" > \"../$out/$name.exit\"\ndone",
+    "pinokio_ref": "c5b42701641889ecb916c60cde09a717f83d62ff",
+    "runtime_ref": "dc56ddd184e3c203f0970c524daaf3358cd6ae3f",
+    "slot": "1"
+  },
+  "run_attempt": "1",
+  "run_id": "41349429656",
+  "source_head": "ad9c714ab958cff5a35cb867a7d0254a33c3b029",
+  "source_ref": "refs/heads/venue/M-R1FIX-R15-R31-RUNTIME-1",
+  "suite_step_outcome": "success",
+  "workflow_ref": "banodoco/astrid-agent/.github/workflows/merge-suite.yml@refs/heads/venue/M-R1FIX-R15-R31-RUNTIME-1",
+  "workflow_repository": "banodoco/astrid-agent",
+  "workflow_sha": "ad9c714ab958cff5a35cb867a7d0254a33c3b029"
+}
