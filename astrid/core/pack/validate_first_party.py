@@ -25,6 +25,7 @@ _FIRST_PARTY_PACK_IDS = (
     "capture",
     "chiptune",
     "comfy_wrap",
+    "developer",
     "discord_local",
     "editorial",
     "fal",
