@@ -300,7 +300,9 @@ def test_operational_engine_cli_keeps_its_existing_commands():
 def test_real_catalog_inventory_has_exact_unlocked_models():
     manifests = alignment.catalog_manifests()
     rows = {row['id']: row for row in manifests}
-    assert len(rows) == 32
+    assert len(rows) == 33
+    assert not rows['hunyuan-foley-local']['provider_only']
+    assert rows['hunyuan-foley-local']['modes']
     for entry in ('qwen-image-2.1-turbo', 'qwen-image-2.1-turbo-edit'):
         assert len(rows[entry]['modes'][0]['models']) == 3
         assert rows[entry]['modes'][0]['unlocked'] == []
