@@ -32,9 +32,18 @@ jobs:
       - name: Check out the pinned VibeComfy source
         uses: actions/checkout@v4
         with:
-          repository: peteromallet/VibeComfy
+          repository: AstridPseudon/vibecomfy-proof
           ref: 3bebae39655eb460454885040be4d3aefaf2ef31
           path: journey-vibecomfy
+
+      - name: Verify the pinned VibeComfy commit
+        shell: pwsh
+        run: |
+          $expected = "3bebae39655eb460454885040be4d3aefaf2ef31"
+          $actual = git -C journey-vibecomfy rev-parse HEAD
+          if ($actual -ne $expected) {
+            throw "VibeComfy checkout was $actual; expected $expected"
+          }
 
       - name: Check out the official App installer
         uses: actions/checkout@v4
