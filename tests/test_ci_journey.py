@@ -225,6 +225,32 @@ def test_tst_b1_windows_manager_action_must_be_inside_exact_owned_root():
     assert not journey.windows_task_owned('present\nC:\\Users\\someone\\Astrid\\python.exe\n', root)
 
 
+def test_windows_preflight_handles_absent_tasks_without_hiding_scheduler_errors(tmp_path, monkeypatch):
+    root, data = tmp_path / "run" / "program", tmp_path / "run" / "data"
+    monkeypatch.setattr(journey, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(journey, "program_root", lambda: tmp_path / "missing-default")
+    monkeypatch.setattr(journey, "runtime_processes", lambda unused: [])
+
+    def probe(output):
+        def powershell(code, name, **kwargs):
+            assert "Get-ScheduledTask -ErrorAction Stop" in code
+            assert "SilentlyContinue" not in code
+            assert code.endswith("exit 0")
+            if isinstance(output, Exception):
+                raise output
+            return output
+        monkeypatch.setattr(journey.windows, "powershell", powershell)
+
+    probe("")
+    journey.assert_host_available("fresh-install", root, data)
+    probe("present\nC:\\other\\python.exe\n")
+    with pytest.raises(RuntimeError, match="outside this journey"):
+        journey.assert_host_available("fresh-install", root, data)
+    probe(RuntimeError("scheduler unavailable"))
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        journey.assert_host_available("fresh-install", root, data)
+
+
 def test_tst_b1_final_cleanup_uses_exact_owned_roots_and_rechecks_manager(tmp_path, monkeypatch):
     run_root = tmp_path / "journey"
     root, data = run_root / "program", run_root / "data"

@@ -674,8 +674,9 @@ def assert_host_available(leg: str, root: Path, data: Path) -> None:
                     raise RuntimeError("An Astrid user-manager unit outside this journey is loaded")
     elif sys.platform == "win32":
         existing = windows.powershell(
-            "$t=Get-ScheduledTask -TaskName 'Astrid Runtime' -ErrorAction SilentlyContinue; "
-            "if ($t) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }",
+            "$t=@(Get-ScheduledTask -ErrorAction Stop | "
+            "Where-Object { $_.TaskName -eq 'Astrid Runtime' }); "
+            "if ($t.Count) { 'present'; $t.Actions | ForEach-Object { $_.Execute } }; exit 0",
             "preflight-scheduled-task.txt", show=False, timeout=30)
         if existing.strip() and (fresh or not windows_task_owned(existing, root)):
             raise RuntimeError("An Astrid Scheduled Task outside this journey is registered")
