@@ -54,6 +54,25 @@ class GenerationInputError(CapabilityValidationError):
         return {**self.readiness, 'task_id': None}
 
 
+def _declared_output_count(companion: Path) -> int | None:
+    """Count the sealed graph's declared final sinks, as VibeComfy's runtime does.
+
+    VibeComfy treats an output as a declared sink when it carries a node_id.
+    Returns None when the companion cannot be read or declares no outputs list.
+    """
+    import json
+
+    try:
+        document = json.loads(companion.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    outputs = document.get("outputs") if isinstance(document, dict) else None
+    if not isinstance(outputs, list):
+        return None
+    return sum(1 for item in outputs
+               if isinstance(item, dict) and item.get("node_id") is not None)
+
+
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
     import hashlib
     from astrid.core.execution.managed_inputs import managed_file_digest
@@ -1130,6 +1149,14 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
+            declared = _declared_output_count(root / "workflow.vibe.json")
+            if declared != 1:
+                from astrid.core.generation.preflight import generation_error
+                shown = "an undeterminable number of" if declared is None else str(declared)
+                raise generation_error(
+                    ValueError(f"this workflow produces {shown} outputs; Phase 1 supports exactly one"),
+                    code="unsupported_output_cardinality", details={"field": "workflow"},
+                )
             if runpod_owner is not None:
                 import uuid
                 from astrid.core.generation.preflight import call_runpod_owner

@@ -72,6 +72,12 @@ def deliver_generation(result: Any, *, client: Any, out: str | Path | None, proj
         ) from exc
 
 
+def _result_rows(outputs):
+    """Manifest rows that are deliverable results; other roles are never delivered."""
+    return [row for row in outputs if isinstance(row, Mapping)
+            and row.get('role', 'result') == 'result']
+
+
 def _deliver(payload, rows, *, client, out, managed, project):
     from astrid.sdk.media_open import DEFAULT_MATERIALIZE_BYTES, _materialize
 
@@ -110,7 +116,7 @@ def _deliver(payload, rows, *, client, out, managed, project):
             if not isinstance(sealed_outputs, list):
                 raise ValueError('generation manifest has no output inventory')
             if not rows:
-                rows = [row for row in sealed_outputs if isinstance(row, Mapping)]
+                rows = _result_rows(sealed_outputs)
         if not rows:
             raise ValueError('completed generation has no deliverable media')
 
