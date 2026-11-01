@@ -57,12 +57,12 @@ _PROVIDER_CALL_MIGRATIONS = {
         "fal_client.subscribe",
     ): "G09",
     (
-        "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
+        "astrid/packs/fal/actions/sprite_upscale/upscale.py",
         "ai_upscale_frames_with_fal",
         "fal_client.SyncClient",
     ): "G09",
     (
-        "astrid/packs/rendering/actions/sprite_sheet/upscale.py",
+        "astrid/packs/fal/actions/sprite_upscale/upscale.py",
         "ai_upscale_frames_with_fal",
         "client.subscribe",
     ): "G09",

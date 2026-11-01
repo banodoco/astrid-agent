@@ -39,7 +39,6 @@ class PackRunCliChoicesTests(unittest.TestCase):
             ("astrid.packs.generation.actions.generate_image_openai.run", (), "background"),
             ("astrid.packs.generation.actions.generate_image_openai.run", (), "moderation"),
             ("astrid.packs.rendering.actions.sprite_sheet.run", (), "upscale_filter"),
-            ("astrid.packs.rendering.actions.sprite_sheet.run", (), "ai_upscale_provider"),
             ("astrid.packs.understanding.actions.video_understand.run", (), "mode"),
             ("astrid.packs.understanding.actions.audio_understand.run", (), "audition_reel"),
             ("astrid.packs.understanding.actions.audio_understand.run", (), "mode"),

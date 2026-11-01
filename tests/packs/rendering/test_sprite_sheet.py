@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from astrid.packs.rendering.actions.sprite_sheet.run import choose_layout, main, validate_sheet_dimensions, write_layout_guide
 
 
@@ -56,6 +58,12 @@ def test_sprite_sheet_dry_run(capsys, tmp_path):
     assert "only the parts named by the animation should move" in payload["prompt"]
     assert "no accidental camera movement" in payload["prompt"]
     assert payload["reference_image"] is None
+    assert "ai_upscale_provider" not in payload
+
+
+def test_fal_upscale_is_exposed_by_the_fal_pack_not_sprite_sheet():
+    with pytest.raises(SystemExit):
+        main(["--ai-upscale-provider", "fal", "--dry-run"])
 
 
 def test_sprite_sheet_reference_image_dry_run(capsys, tmp_path):
