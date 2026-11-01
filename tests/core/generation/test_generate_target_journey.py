@@ -307,6 +307,8 @@ def test_public_h3_local_inputs_reach_tracked_runtime_parent(
                 f"{cli_diagnostic}\nadmission record: {admitted!r}"
             )
             assert results and all(result["status"] == "succeeded" for result in results)
+            assert len(results) == 8
+            assert all(result["result"].get("process_evidence") for result in results)
             payload = json.loads(captured.out)
             assert payload["ok"] is True
             task_id = payload["kernel_task_id"]
