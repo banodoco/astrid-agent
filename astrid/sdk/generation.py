@@ -54,23 +54,53 @@ class GenerationInputError(CapabilityValidationError):
         return {**self.readiness, 'task_id': None}
 
 
-def _declared_output_count(companion: Path) -> int | None:
+def _declared_output_count_from_document(document: Any) -> int | None:
     """Count the sealed graph's declared final sinks, as VibeComfy's runtime does.
 
     VibeComfy treats an output as a declared sink when it carries a node_id.
-    Returns None when the companion cannot be read or declares no outputs list.
+    Returns None when the document declares no outputs list.
     """
+    outputs = document.get("outputs") if isinstance(document, Mapping) else None
+    if not isinstance(outputs, list):
+        return None
+    return sum(1 for item in outputs
+               if isinstance(item, Mapping) and item.get("node_id") is not None)
+
+
+def _declared_output_count(companion: Path) -> int | None:
     import json
 
     try:
         document = json.loads(companion.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    outputs = document.get("outputs") if isinstance(document, dict) else None
-    if not isinstance(outputs, list):
-        return None
-    return sum(1 for item in outputs
-               if isinstance(item, dict) and item.get("node_id") is not None)
+    return _declared_output_count_from_document(document)
+
+
+def _require_single_declared_output(*, workflow: Any, companion: Any) -> None:
+    """Refuse before any staging or admission unless exactly one declared sink exists."""
+    from astrid.core.generation.preflight import generation_error
+
+    if companion is not None:
+        if isinstance(companion, Mapping):
+            declared = _declared_output_count_from_document(companion)
+        elif isinstance(companion, (str, Path)):
+            declared = _declared_output_count(Path(companion))
+        else:
+            declared = None
+    elif isinstance(workflow, (str, Path)):
+        original = Path(workflow).expanduser().resolve()
+        if original.is_dir():
+            original = original / "workflow.py"
+        declared = _declared_output_count(original.with_suffix(".vibe.json"))
+    else:
+        declared = None
+    if declared != 1:
+        shown = "an undeterminable number of" if declared is None else str(declared)
+        raise generation_error(
+            ValueError(f"this workflow produces {shown} outputs; Phase 1 supports exactly one"),
+            code="unsupported_output_cardinality", details={"field": "workflow"},
+        )
 
 
 def _import_generation_member(path: Path, controls: dict[str, Any]) -> dict[str, Any]:
@@ -771,6 +801,7 @@ class GenerationFacade:
         Placement validates scheduling intent; it is never a creative input.
         Omitted domain values stay omitted so the action owns its defaults.
         """
+        _require_single_declared_output(workflow=workflow, companion=companion)
         if target is not None:
             from astrid.core.generation.entries import resolve_workflow_inputs
             controls = _generation_controls(engine=engine, consent=consent, max_usd=max_usd, deadline=deadline)
@@ -1149,14 +1180,6 @@ class GenerationFacade:
                     for record in manifest["assets"]:
                         zipped.write(assets[record["binding"]], record["member"])
                 asset_arguments["managed_assets"] = import_member(archive)
-            declared = _declared_output_count(root / "workflow.vibe.json")
-            if declared != 1:
-                from astrid.core.generation.preflight import generation_error
-                shown = "an undeterminable number of" if declared is None else str(declared)
-                raise generation_error(
-                    ValueError(f"this workflow produces {shown} outputs; Phase 1 supports exactly one"),
-                    code="unsupported_output_cardinality", details={"field": "workflow"},
-                )
             if runpod_owner is not None:
                 import uuid
                 from astrid.core.generation.preflight import call_runpod_owner
