@@ -15,8 +15,19 @@ from astrid.packs.rendering.actions.timeline_visualize.filmstrip_options import 
 from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import project_input_window
 
 
-def test_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path):
+def test_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path, monkeypatch):
     """Input-only uses the same manifest/receipt contract as the paired view."""
+    from astrid.packs.rendering.actions.timeline_visualize import filmstrip_cards
+
+    drawn_text = []
+    draw_text = filmstrip_cards._png_draw_text
+
+    def record_text(*args, **kwargs):
+        if len(args) >= 3:
+            drawn_text.append(str(args[2]))
+        return draw_text(*args, **kwargs)
+
+    monkeypatch.setattr(filmstrip_cards, '_png_draw_text', record_text)
     snapshot = {
         'project_slug': 'demo', 'timeline_id': 'main', 'timeline_name': 'Main',
         'render_run_id': 'run-input', 'fps_rational': [30, 1],
@@ -24,7 +35,13 @@ def test_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path):
             {'id': 'picture-1', 'track': 'picture', 'asset': 'still-a', 'at': 0, 'hold': 2},
             {'id': 'vo-1', 'track': 'vo', 'asset': 'voice-a', 'at': 1, 'hold': 2},
         ], 'tracks': [{'id': 'picture', 'kind': 'visual'}, {'id': 'vo', 'kind': 'audio'}],
-        'scripts': [], 'metadata': {},
+        'scripts': [], 'metadata': {
+            'selection': 'input_only',
+            'authority': 'canonical_parent_revision_closure',
+            'parent_revision_id': 'R1',
+            'timeline_identity': {'head_event_id': 'R2'},
+            'requested_revision_id': 'R2',
+        },
     }
     args = Namespace(range_value=None, out=tmp_path / 'output', project_slug='demo')
     result = execution.execute_input_only(
@@ -39,6 +56,12 @@ def test_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path):
     assert 'navigation' not in index
     assert result['outputs']['pages']
     assert all(Path(page).name.startswith('filmstrip-') for page in result['outputs']['pages'])
+    assert result['snapshot_label']['label'] == 'UNCERTIFIED preview (claimed revision R1)'
+    assert index['provenance']['revision'] == result['snapshot_label']
+    markdown = (manifest_path.parent / 'filmstrip.md').read_text()
+    assert '# Input filmstrip · UNCERTIFIED preview (claimed revision R1)' in markdown
+    assert 'Revision: `UNCERTIFIED preview (claimed revision R1)`' in markdown
+    assert any('UNCERTIFIED preview (claimed revision R1)' in text for text in drawn_text)
     assert (manifest_path.parent / 'render-snapshot.json').is_file()
     assert len(json.dumps(index, separators=(',', ':')).encode()) < 8192
 
@@ -665,8 +688,8 @@ def test_synchronized_surface_anchors_samples_to_shared_time_coordinates(tmp_pat
     with Image.open(output) as image:
         # The 5s card starts at the same x-coordinate as the 5s ruler tick:
         # 24 + 5/20 * (1476 - 24) = 387px.
-        assert image.getpixel((50, 200)) == (192, 57, 43)
-        assert image.getpixel((400, 200)) == (39, 174, 96)
+        assert image.getpixel((50, 226)) == (192, 57, 43)
+        assert image.getpixel((400, 226)) == (39, 174, 96)
 
 
 def test_paired_surface_groups_five_samples_and_clips_input_rows(tmp_path):
@@ -971,3 +994,56 @@ def test_filmstrip_successful_capture_does_not_swallow_close_failure(tmp_path, m
     with pytest.raises(RuntimeError) as caught:
         execution.execute_filmstrip(args)
     assert caught.value is cleanup
+
+
+def test_d69_upstream_input_only_is_a_materializable_compact_filmstrip_bundle(tmp_path):
+    """Input-only uses the same manifest/receipt contract as the paired view."""
+    snapshot = {
+        'project_slug': 'demo', 'timeline_id': 'main', 'timeline_name': 'Main',
+        'render_run_id': 'run-input', 'fps_rational': [30, 1],
+        'duration_frames': 120, 'clips': [
+            {'id': 'picture-1', 'track': 'picture', 'asset': 'still-a', 'at': 0, 'hold': 2},
+            {'id': 'vo-1', 'track': 'vo', 'asset': 'voice-a', 'at': 1, 'hold': 2},
+        ], 'tracks': [{'id': 'picture', 'kind': 'visual'}, {'id': 'vo', 'kind': 'audio'}],
+        'scripts': [], 'metadata': {},
+    }
+    args = Namespace(range_value=None, out=tmp_path / 'output', project_slug='demo')
+    result = execution.execute_input_only(
+        args, {'input_snapshot': snapshot, 'mode': 'input_only'},
+    )
+
+    manifest_path = Path(result['manifest_path'])
+    manifest = json.loads(manifest_path.read_text())
+    index = json.loads((manifest_path.parent / 'frame-index.json').read_text())
+    assert manifest['kind'] == 'timeline_filmstrip'
+    assert index['schema'] == 'astrid.filmstrip.v2'
+    assert 'navigation' not in index
+    assert result['outputs']['pages']
+    assert all(Path(page).name.startswith('filmstrip-') for page in result['outputs']['pages'])
+    assert (manifest_path.parent / 'render-snapshot.json').is_file()
+    assert len(json.dumps(index, separators=(',', ':')).encode()) < 8192
+
+    from astrid.packs.rendering.actions.timeline_visualize.inspection_contract import inspect_filmstrip  # noqa: I001
+
+    assert inspect_filmstrip(manifest_path, section='summary')['ok']
+    placements = inspect_filmstrip(manifest_path, section='placements')
+    assert placements['ok']
+    assert {row['id'] for row in placements['data']['records']} == {'picture-1', 'vo-1'}
+    audio = inspect_filmstrip(manifest_path, section='audio')
+    assert audio['ok']
+    assert audio['data']['records'][0]['status'] == 'not_available'
+    pages = inspect_filmstrip(manifest_path, section='pages')
+    assert pages['ok'] and pages['data']['records']
+
+    bundle_bytes = Path(result['outputs']['filmstrip_bundle']).read_bytes()
+    raw = {'outputs': {'artifacts': [{
+        'name': 'filmstrip_bundle',
+        'digest': 'sha256:' + hashlib.sha256(bundle_bytes).hexdigest(),
+        'size': len(bundle_bytes),
+    }]}}
+    client = SimpleNamespace(media=SimpleNamespace(read_bytes=lambda _: bundle_bytes))
+    from astrid.sdk.invocation import _materialize_filmstrip_outputs
+
+    hydrated = _materialize_filmstrip_outputs(raw, client, project='demo', cache_root=tmp_path / 'cache')
+    assert Path(hydrated).is_file()
+    assert json.loads(Path(hydrated).read_text())['kind'] == 'timeline_filmstrip'

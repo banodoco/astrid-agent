@@ -1,0 +1,229 @@
+{
+  "$schema": "timeline.shot-layering/v1",
+  "schema_version": 1,
+  "units": {
+    "authored_timing": "milliseconds",
+    "projected_timing": "seconds",
+    "track_order": "top-first"
+  },
+  "representation": {
+    "group_track_id": "<occurrence_id>~<inner_track_id>",
+    "group_tag": {
+      "path": "track.app.group",
+      "shape": {
+        "id": "<occurrence_id>",
+        "sourceTrack": "<inner_track_id>"
+      }
+    },
+    "placement": "A visual group is contiguous immediately above its occurrence row.",
+    "inner_audio": "Audio tracks merge by authored id only with audio tracks. A child audio id colliding with a parent visual track becomes <occurrence_id>~<inner_track_id>, without app.group.",
+    "empty_area": {
+      "mode": "transparent",
+      "parent_content_visible": true,
+      "opaque_background": false
+    },
+    "runtime_read_path": "This is a Runtime conformance fixture; Runtime production code does not load it. Agent and App consumer tests vendor this file."
+  },
+  "input_shape": {
+    "document": "Each case input is a canonical composition graph.",
+    "occurrences": "Top-level records use occurrence_id, shot_id, revision_id, at_ms, duration_ms, and track.",
+    "child_timeline": "Each shot revision carries its child timeline under internal_timeline_revision.timeline.",
+    "parent_content": "Parent authored rows and loose clips are under parent_composition.config."
+  },
+  "cases": [
+    {
+      "id": "film-picture-over-type",
+      "plan": "The film case: a shot on picture and clip-0 on type.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "film", "role": "project"},
+        "primary_timeline": {
+          "document_id": "film",
+          "role": "primary_timeline",
+          "head": {"revision_id": "film-head", "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        },
+        "parent_composition": {
+          "config": {
+            "tracks": [
+              {"id": "picture", "kind": "visual"},
+              {"id": "type", "kind": "visual"},
+              {"id": "audio", "kind": "audio"}
+            ],
+            "clips": [
+              {"id": "clip-0", "clip_type": "media", "track": "type", "at_ms": 23867, "duration_ms": 5000, "asset_id": "otter-crate", "opacity": 1}
+            ],
+            "registry": {"assets": {"otter-crate": {"media_id": "object-otter-crate", "type": "image"}}}
+          }
+        },
+        "shot_revisions": [
+          {
+            "shot_id": "shot-vision",
+            "revision_id": "vision-rev-1",
+            "document_role": "shot_revision",
+            "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "internal_timeline_revision": {
+              "revision_id": "vision-timeline-1",
+              "content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "timeline": {
+                "tracks": [
+                  {"id": "plate", "kind": "visual"},
+                  {"id": "type", "kind": "visual"},
+                  {"id": "source-plate", "kind": "visual", "role": "source"},
+                  {"id": "audio", "kind": "audio"}
+                ],
+                "clips": [
+                  {"id": "vision-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 12000, "asset_id": "vision-footage"},
+                  {"id": "vision-title", "clip_type": "text", "track": "type", "at_ms": 4000, "duration_ms": 4000, "text": {"content": "The Vision"}},
+                  {"id": "vision-source-plate", "clip_type": "media", "track": "source-plate", "at_ms": 0, "duration_ms": 12000, "asset_id": "vision-footage"},
+                  {"id": "vision-audio", "clip_type": "media", "track": "audio", "at_ms": 0, "duration_ms": 19600, "asset_id": "vision-audio"}
+                ]
+              }
+            },
+            "assets": [
+              {"asset_id": "vision-footage", "object_id": "object-vision-footage", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "scope": {"project_id": "project-shot-layering"}, "role": "source"},
+              {"asset_id": "vision-audio", "object_id": "object-vision-audio", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "scope": {"project_id": "project-shot-layering"}, "role": "source"}
+            ],
+            "generation_inputs": [],
+            "timing": {"duration_ms": 19600},
+            "audio": {"track_id": "audio", "object_id": "object-vision-audio", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "scope": {"project_id": "project-shot-layering"}},
+            "dependencies": [],
+            "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}
+          }
+        ],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "film-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [
+          {"occurrence_id": "occ-vision", "parent_document_id": "film", "shot_id": "shot-vision", "revision_id": "vision-rev-1", "ordinal": 0, "at_ms": 9100, "duration_ms": 19600, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/film/shot/shot-vision/revision/vision-rev-1/occurrence/occ-vision", "output_identity": "project/project-shot-layering/document/film/occurrence/occ-vision/output/final-video"}
+        ]
+      },
+      "expected": {
+        "track_order": ["occ-vision~plate", "occ-vision~type", "occ-vision~source-plate", "picture", "type", "audio"],
+        "group_tracks": [
+          {"id": "occ-vision~plate", "app": {"group": {"id": "occ-vision", "sourceTrack": "plate"}}},
+          {"id": "occ-vision~type", "app": {"group": {"id": "occ-vision", "sourceTrack": "type"}}},
+          {"id": "occ-vision~source-plate", "role": "output", "app": {"group": {"id": "occ-vision", "sourceTrack": "source-plate"}}}
+        ],
+        "clip_tracks": {"clip-0": "type", "vision-plate": "occ-vision~plate", "vision-title": "occ-vision~type", "vision-source-plate": "occ-vision~source-plate", "vision-audio": "audio"},
+        "transparent_windows_ms": [[21100, 28700]],
+        "warnings": []
+      }
+    },
+    {
+      "id": "loose-above-shot",
+      "plan": "A loose visual clip on a row above the occurrence row.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "loose-above", "role": "project"},
+        "primary_timeline": {"document_id": "loose-above", "role": "primary_timeline", "head": {"revision_id": "above-head", "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
+        "parent_composition": {"config": {"tracks": [{"id": "overlay", "kind": "visual"}, {"id": "picture", "kind": "visual"}, {"id": "type", "kind": "visual"}], "clips": [{"id": "above-clip", "clip_type": "media", "track": "overlay", "at_ms": 1000, "duration_ms": 3000, "asset_id": "overlay-art"}], "registry": {"assets": {"overlay-art": {"media_id": "object-overlay-art", "type": "image"}}}}},
+        "shot_revisions": [{"shot_id": "shot-above", "revision_id": "above-rev-1", "document_role": "shot_revision", "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "internal_timeline_revision": {"revision_id": "above-timeline-1", "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}], "clips": [{"id": "above-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 3000, "asset_id": "above-footage"}]}}, "assets": [{"asset_id": "above-footage", "object_id": "object-above-footage", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 3000}, "audio": {"track_id": "audio", "object_id": "object-above-audio", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "above-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-above", "parent_document_id": "loose-above", "shot_id": "shot-above", "revision_id": "above-rev-1", "ordinal": 0, "at_ms": 1000, "duration_ms": 3000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/loose-above/shot/shot-above/revision/above-rev-1/occurrence/occ-above", "output_identity": "project/project-shot-layering/document/loose-above/occurrence/occ-above/output/final-video"}]
+      },
+      "expected": {"track_order": ["overlay", "occ-above~plate", "picture", "type"], "group_tracks": [{"id": "occ-above~plate", "app": {"group": {"id": "occ-above", "sourceTrack": "plate"}}}], "clip_tracks": {"above-clip": "overlay", "above-plate": "occ-above~plate"}, "warnings": []}
+    },
+    {
+      "id": "loose-below-shot",
+      "plan": "A loose visual clip on a row below the occurrence row.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "loose-below", "role": "project"},
+        "primary_timeline": {"document_id": "loose-below", "role": "primary_timeline", "head": {"revision_id": "below-head", "content_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"}},
+        "parent_composition": {"config": {"tracks": [{"id": "picture", "kind": "visual"}, {"id": "type", "kind": "visual"}], "clips": [{"id": "below-clip", "clip_type": "media", "track": "type", "at_ms": 1000, "duration_ms": 3000, "asset_id": "type-art"}], "registry": {"assets": {"type-art": {"media_id": "object-type-art", "type": "image"}}}}},
+        "shot_revisions": [{"shot_id": "shot-below", "revision_id": "below-rev-1", "document_role": "shot_revision", "content_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777", "internal_timeline_revision": {"revision_id": "below-timeline-1", "content_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}], "clips": [{"id": "below-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 3000, "asset_id": "below-footage"}]}}, "assets": [{"asset_id": "below-footage", "object_id": "object-below-footage", "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 3000}, "audio": {"track_id": "audio", "object_id": "object-below-audio", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "below-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-below", "parent_document_id": "loose-below", "shot_id": "shot-below", "revision_id": "below-rev-1", "ordinal": 0, "at_ms": 1000, "duration_ms": 3000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/loose-below/shot/shot-below/revision/below-rev-1/occurrence/occ-below", "output_identity": "project/project-shot-layering/document/loose-below/occurrence/occ-below/output/final-video"}]
+      },
+      "expected": {"track_order": ["occ-below~plate", "picture", "type"], "group_tracks": [{"id": "occ-below~plate", "app": {"group": {"id": "occ-below", "sourceTrack": "plate"}}}], "clip_tracks": {"below-clip": "type", "below-plate": "occ-below~plate"}, "warnings": []}
+    },
+    {
+      "id": "loose-same-row",
+      "plan": "A loose visual clip on the same row as the occurrence; the editor avoids creating this input.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "loose-same", "role": "project"},
+        "primary_timeline": {"document_id": "loose-same", "role": "primary_timeline", "head": {"revision_id": "same-head", "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+        "parent_composition": {"config": {"tracks": [{"id": "picture", "kind": "visual"}, {"id": "type", "kind": "visual"}], "clips": [{"id": "same-clip", "clip_type": "media", "track": "picture", "at_ms": 1000, "duration_ms": 3000, "asset_id": "same-row-art"}], "registry": {"assets": {"same-row-art": {"media_id": "object-same-row-art", "type": "image"}}}}},
+        "shot_revisions": [{"shot_id": "shot-same", "revision_id": "same-rev-1", "document_role": "shot_revision", "content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "internal_timeline_revision": {"revision_id": "same-timeline-1", "content_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}], "clips": [{"id": "same-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 3000, "asset_id": "same-footage"}]}}, "assets": [{"asset_id": "same-footage", "object_id": "object-same-footage", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 3000}, "audio": {"track_id": "audio", "object_id": "object-same-audio", "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "same-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-same", "parent_document_id": "loose-same", "shot_id": "shot-same", "revision_id": "same-rev-1", "ordinal": 0, "at_ms": 1000, "duration_ms": 3000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/loose-same/shot/shot-same/revision/same-rev-1/occurrence/occ-same", "output_identity": "project/project-shot-layering/document/loose-same/occurrence/occ-same/output/final-video"}]
+      },
+      "expected": {"track_order": ["occ-same~plate", "picture", "type"], "group_tracks": [{"id": "occ-same~plate", "app": {"group": {"id": "occ-same", "sourceTrack": "plate"}}}], "clip_tracks": {"same-clip": "picture", "same-plate": "occ-same~plate"}, "same_row_warning": false, "warnings": []}
+    },
+    {
+      "id": "shot-only-suffix-tracks",
+      "plan": "A shot-only suffix track stays with its group instead of being appended below unrelated parent tracks.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "suffix", "role": "project"},
+        "primary_timeline": {"document_id": "suffix", "role": "primary_timeline", "head": {"revision_id": "suffix-head", "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
+        "parent_composition": {"config": {"tracks": [{"id": "picture", "kind": "visual"}, {"id": "plate", "kind": "visual"}, {"id": "music", "kind": "audio"}], "clips": [], "registry": {"assets": {}}}},
+        "shot_revisions": [{"shot_id": "shot-suffix", "revision_id": "suffix-rev-1", "document_role": "shot_revision", "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "internal_timeline_revision": {"revision_id": "suffix-timeline-1", "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}, {"id": "title", "kind": "visual"}], "clips": [{"id": "suffix-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 3000, "asset_id": "suffix-footage"}, {"id": "suffix-title", "clip_type": "text", "track": "title", "at_ms": 0, "duration_ms": 3000, "text": {"content": "Title"}}]}}, "assets": [{"asset_id": "suffix-footage", "object_id": "object-suffix-footage", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 3000}, "audio": {"track_id": "audio", "object_id": "object-suffix-audio", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "suffix-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-suffix", "parent_document_id": "suffix", "shot_id": "shot-suffix", "revision_id": "suffix-rev-1", "ordinal": 0, "at_ms": 2000, "duration_ms": 3000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/suffix/shot/shot-suffix/revision/suffix-rev-1/occurrence/occ-suffix", "output_identity": "project/project-shot-layering/document/suffix/occurrence/occ-suffix/output/final-video"}]
+      },
+      "expected": {"track_order": ["occ-suffix~plate", "occ-suffix~title", "picture", "plate", "music"], "group_tracks": [{"id": "occ-suffix~plate", "app": {"group": {"id": "occ-suffix", "sourceTrack": "plate"}}}, {"id": "occ-suffix~title", "app": {"group": {"id": "occ-suffix", "sourceTrack": "title"}}}], "clip_tracks": {"suffix-plate": "occ-suffix~plate", "suffix-title": "occ-suffix~title"}, "warnings": []}
+    },
+    {
+      "id": "two-shots-one-row",
+      "plan": "Two occurrences share a row; stable occurrence order is input/ordinal order, first group first.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "two-shots", "role": "project"},
+        "primary_timeline": {"document_id": "two-shots", "role": "primary_timeline", "head": {"revision_id": "two-head", "content_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"}},
+        "parent_composition": {"config": {"tracks": [{"id": "picture", "kind": "visual"}, {"id": "type", "kind": "visual"}], "clips": [], "registry": {"assets": {}}}},
+        "shot_revisions": [
+          {"shot_id": "shot-first", "revision_id": "first-rev-1", "document_role": "shot_revision", "content_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777", "internal_timeline_revision": {"revision_id": "first-timeline-1", "content_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}], "clips": [{"id": "first-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 2000, "asset_id": "first-footage"}]}}, "assets": [{"asset_id": "first-footage", "object_id": "object-first-footage", "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 2000}, "audio": {"track_id": "audio", "object_id": "object-first-audio", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}},
+          {"shot_id": "shot-second", "revision_id": "second-rev-1", "document_role": "shot_revision", "content_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "internal_timeline_revision": {"revision_id": "second-timeline-1", "content_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}, {"id": "type", "kind": "visual"}], "clips": [{"id": "second-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 2000, "asset_id": "second-footage"}, {"id": "second-title", "clip_type": "text", "track": "type", "at_ms": 0, "duration_ms": 2000, "text": {"content": "Second"}}]}}, "assets": [{"asset_id": "second-footage", "object_id": "object-second-footage", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 2000}, "audio": {"track_id": "audio", "object_id": "object-second-audio", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}
+        ],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "two-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [
+          {"occurrence_id": "occ-first", "parent_document_id": "two-shots", "shot_id": "shot-first", "revision_id": "first-rev-1", "ordinal": 0, "at_ms": 0, "duration_ms": 2000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/two-shots/shot/shot-first/revision/first-rev-1/occurrence/occ-first", "output_identity": "project/project-shot-layering/document/two-shots/occurrence/occ-first/output/final-video"},
+          {"occurrence_id": "occ-second", "parent_document_id": "two-shots", "shot_id": "shot-second", "revision_id": "second-rev-1", "ordinal": 1, "at_ms": 2500, "duration_ms": 2000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/two-shots/shot/shot-second/revision/second-rev-1/occurrence/occ-second", "output_identity": "project/project-shot-layering/document/two-shots/occurrence/occ-second/output/final-video"}
+        ]
+      },
+      "expected": {"track_order": ["occ-first~plate", "occ-second~plate", "occ-second~type", "picture", "type"], "group_tracks": [{"id": "occ-first~plate", "app": {"group": {"id": "occ-first", "sourceTrack": "plate"}}}, {"id": "occ-second~plate", "app": {"group": {"id": "occ-second", "sourceTrack": "plate"}}}, {"id": "occ-second~type", "app": {"group": {"id": "occ-second", "sourceTrack": "type"}}}], "clip_tracks": {"first-plate": "occ-first~plate", "second-plate": "occ-second~plate", "second-title": "occ-second~type"}, "warnings": []}
+    },
+    {
+      "id": "shot-row-missing",
+      "plan": "A missing occurrence row falls back to the top of the stack and emits the established target-not-found warning shape.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "missing-row", "role": "project"},
+        "primary_timeline": {"document_id": "missing-row", "role": "primary_timeline", "head": {"revision_id": "missing-head", "content_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}},
+        "parent_composition": {"config": {"tracks": [{"id": "type", "kind": "visual"}, {"id": "audio", "kind": "audio"}], "clips": [], "registry": {"assets": {}}}},
+        "shot_revisions": [{"shot_id": "shot-missing", "revision_id": "missing-rev-1", "document_role": "shot_revision", "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "internal_timeline_revision": {"revision_id": "missing-timeline-1", "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "timeline": {"tracks": [{"id": "plate", "kind": "visual"}], "clips": [{"id": "missing-plate", "clip_type": "media", "track": "plate", "at_ms": 0, "duration_ms": 3000, "asset_id": "missing-row-footage"}]}}, "assets": [{"asset_id": "missing-row-footage", "object_id": "object-missing-row-footage", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "scope": {"project_id": "project-shot-layering"}, "role": "source"}], "generation_inputs": [], "timing": {"duration_ms": 3000}, "audio": {"track_id": "audio", "object_id": "object-missing-audio", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "missing-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-missing", "parent_document_id": "missing-row", "shot_id": "shot-missing", "revision_id": "missing-rev-1", "ordinal": 0, "at_ms": 1000, "duration_ms": 3000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/missing-row/shot/shot-missing/revision/missing-rev-1/occurrence/occ-missing", "output_identity": "project/project-shot-layering/document/missing-row/occurrence/occ-missing/output/final-video"}]
+      },
+      "expected": {"track_order": ["occ-missing~plate", "type", "audio"], "group_tracks": [{"id": "occ-missing~plate", "app": {"group": {"id": "occ-missing", "sourceTrack": "plate"}}}], "clip_tracks": {"missing-plate": "occ-missing~plate"}, "warnings": [{"severity": "warning", "code": "timeline-patch/target-not-found", "message": "shot-layering: track \"picture\" not found — placing occurrence \"occ-missing\" at top of stack"}]}
+    },
+    {
+      "id": "child-audio-parent-visual",
+      "plan": "Child declarations control playback; incompatible parent tracks keep their kind and clips. Only visual tracks carry group tags.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "collision", "role": "project"},
+        "primary_timeline": {"document_id": "collision", "role": "primary_timeline", "head": {"revision_id": "collision-head", "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
+        "parent_composition": {"config": {"tracks": [{"id": "picture", "kind": "visual"}, {"id": "shared", "kind": "visual", "label": "Parent track"}, {"id": "music", "kind": "audio"}], "clips": [{"id": "parent-clip", "clip_type": "text", "track": "shared", "at_ms": 500, "duration_ms": 1000}], "registry": {"assets": {}}}},
+        "shot_revisions": [{"shot_id": "shot-collision", "revision_id": "collision-rev-1", "document_role": "shot_revision", "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "internal_timeline_revision": {"revision_id": "collision-timeline-1", "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "timeline": {"tracks": [{"id": "shared", "kind": "audio", "label": "Child track"}, {"id": "music", "kind": "audio"}], "clips": [{"id": "trim-inherited", "clip_type": "media", "track": "shared", "at_ms": 0, "asset_id": "collision-footage", "from": 0.125, "to": 2.125, "duration_ms": 2000}, {"id": "hold-inherited", "clip_type": "media", "track": "shared", "at_ms": 0, "duration_ms": 4000, "asset_id": "collision-footage", "from": 0.125}, {"id": "trim-child-speed", "clip_type": "media", "track": "shared", "at_ms": 0, "speed": 2, "asset_id": "collision-footage", "from": 0.125, "to": 4.125, "duration_ms": 4000}, {"id": "hold-child-speed", "clip_type": "media", "track": "shared", "at_ms": 0, "duration_ms": 4000, "speed": 2, "asset_id": "collision-footage", "from": 0.125}, {"id": "compatible-audio", "clip_type": "media", "track": "music", "at_ms": 0, "asset_id": "collision-footage", "from": 0.125, "to": 2.125, "duration_ms": 2000}]}}, "assets": [{"asset_id": "collision-footage", "object_id": "object-collision-footage", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "scope": {"project_id": "project-shot-layering"}, "role": "source", "media_type": "audio/wav"}], "generation_inputs": [], "timing": {"duration_ms": 4000}, "audio": {"track_id": "audio", "object_id": "object-collision-audio", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "collision-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-collision", "parent_document_id": "collision", "shot_id": "shot-collision", "revision_id": "collision-rev-1", "ordinal": 0, "at_ms": 1000, "duration_ms": 2000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/collision/shot/shot-collision/revision/collision-rev-1/occurrence/occ-collision", "output_identity": "project/project-shot-layering/document/collision/occurrence/occ-collision/output/final-video", "speed": 1.5, "source_offset": 350}]
+      },
+      "expected": {"track_order": ["picture", "shared", "music", "occ-collision~shared"], "group_tracks": [], "clip_tracks": {"parent-clip": "shared", "trim-inherited": "occ-collision~shared", "hold-inherited": "occ-collision~shared", "trim-child-speed": "occ-collision~shared", "hold-child-speed": "occ-collision~shared", "compatible-audio": "music"}, "warnings": [], "track_kinds": {"picture": "visual", "shared": "visual", "music": "audio", "occ-collision~shared": "audio"}}
+    },
+    {
+      "id": "child-visual-parent-audio",
+      "plan": "Child declarations control playback; incompatible parent tracks keep their kind and clips. Only visual tracks carry group tags.",
+      "input": {
+        "schema_version": 1,
+        "project": {"project_id": "project-shot-layering", "document_id": "collision", "role": "project"},
+        "primary_timeline": {"document_id": "collision", "role": "primary_timeline", "head": {"revision_id": "collision-head", "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}},
+        "parent_composition": {"config": {"tracks": [{"id": "picture", "kind": "visual"}, {"id": "shared", "kind": "audio", "label": "Parent track"}, {"id": "music", "kind": "audio"}], "clips": [{"id": "parent-clip", "clip_type": "media", "track": "shared", "at_ms": 500, "duration_ms": 1000}], "registry": {"assets": {}}}},
+        "shot_revisions": [{"shot_id": "shot-collision", "revision_id": "collision-rev-1", "document_role": "shot_revision", "content_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "internal_timeline_revision": {"revision_id": "collision-timeline-1", "content_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "timeline": {"tracks": [{"id": "shared", "kind": "visual", "label": "Child track"}, {"id": "music", "kind": "audio"}], "clips": [{"id": "trim-inherited", "clip_type": "media", "track": "shared", "at_ms": 0, "asset_id": "collision-footage", "from": 0.125, "to": 2.125, "duration_ms": 2000}, {"id": "hold-inherited", "clip_type": "media", "track": "shared", "at_ms": 0, "duration_ms": 4000, "asset_id": "collision-footage", "from": 0.125}, {"id": "trim-child-speed", "clip_type": "media", "track": "shared", "at_ms": 0, "speed": 2, "asset_id": "collision-footage", "from": 0.125, "to": 4.125, "duration_ms": 4000}, {"id": "hold-child-speed", "clip_type": "media", "track": "shared", "at_ms": 0, "duration_ms": 4000, "speed": 2, "asset_id": "collision-footage", "from": 0.125}, {"id": "compatible-audio", "clip_type": "media", "track": "music", "at_ms": 0, "asset_id": "collision-footage", "from": 0.125, "to": 2.125, "duration_ms": 2000}]}}, "assets": [{"asset_id": "collision-footage", "object_id": "object-collision-footage", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "scope": {"project_id": "project-shot-layering"}, "role": "source", "media_type": "video/mp4"}], "generation_inputs": [], "timing": {"duration_ms": 4000}, "audio": {"track_id": "audio", "object_id": "object-collision-audio", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "scope": {"project_id": "project-shot-layering"}}, "dependencies": [], "provenance": {"source": "shot-layering-fixture", "created_by": "fixture"}}],
+        "cases": {"missing_dependency": {"shot_id": "shot-missing", "revision_id": "missing-revision", "expected": "missing_dependency"}, "stale_write_rejection": {"expected_head_revision_id": "collision-head", "submitted_head_revision_id": "stale-head", "expected_status": 409}},
+        "occurrences": [{"occurrence_id": "occ-collision", "parent_document_id": "collision", "shot_id": "shot-collision", "revision_id": "collision-rev-1", "ordinal": 0, "at_ms": 1000, "duration_ms": 2000, "track": "picture", "stable_deep_link": "project/project-shot-layering/document/collision/shot/shot-collision/revision/collision-rev-1/occurrence/occ-collision", "output_identity": "project/project-shot-layering/document/collision/occurrence/occ-collision/output/final-video", "speed": 1.5, "source_offset": 350}]
+      },
+      "expected": {"track_order": ["occ-collision~shared", "picture", "shared", "music"], "group_tracks": [{"id": "occ-collision~shared", "app": {"group": {"id": "occ-collision", "sourceTrack": "shared"}}}], "clip_tracks": {"parent-clip": "shared", "trim-inherited": "occ-collision~shared", "hold-inherited": "occ-collision~shared", "trim-child-speed": "occ-collision~shared", "hold-child-speed": "occ-collision~shared", "compatible-audio": "music"}, "warnings": [], "track_kinds": {"picture": "visual", "shared": "audio", "music": "audio", "occ-collision~shared": "visual"}}
+    }
+  ]
+}

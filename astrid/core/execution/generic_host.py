@@ -16,6 +16,7 @@ import hashlib
 import heapq
 import hmac
 import importlib.util
+import inspect
 import io
 import json
 import logging
@@ -51,6 +52,11 @@ from astrid.core.execution.platform_helpers import (
     configure_process_control,
     owned_by_current_user,
     process_control_support,
+)
+from astrid.core.source_identity import (
+    _source_digest,
+    source_checkout_closure,
+    source_checkout_closure_digest,
 )
 
 # Startup observations use only the existing private stderr sink. Regular-file
@@ -126,6 +132,7 @@ from astrid.core.execution.guards import (
 )
 from astrid.core.execution.host_log import start_stdio_rotator
 from astrid.core.execution.managed_inputs import managed_file_digest
+from astrid.core.rendering.assets import managed_asset_digest
 from astrid.core.execution.managed_tool_session import (
     AdmissionToken,
     CapabilityDescriptor,
@@ -201,6 +208,16 @@ def _managed_input_staging_name(port: str, digest: str, original_name: str | Non
 
 if TYPE_CHECKING:
     from astrid.core.execution.executor.schema import ExecutorDefinition
+    from astrid.core.execution.orchestrator.schema import OrchestratorDefinition
+
+
+def _remotion_readiness_message(exc: BaseException) -> str:
+    """Explain why a worker's launch-bound Remotion context was rejected."""
+    reason = str(exc).strip() or type(exc).__name__
+    message = f"worker Remotion readiness context is unavailable: {reason}"
+    if "registry corpus changed" in reason:
+        message += "; restart Astrid to re-bind it"
+    return message
 
 
 def _structured_failure_kwargs(error: object) -> dict[str, Any]:
@@ -225,6 +242,186 @@ class HostError(RuntimeError):
         self.safe_message = safe_message
 
 
+class _RuntimeSourceCustody:
+    """Retain the private launcher's bytes, never a caller's source claims."""
+
+    def __init__(self, sources: Any):
+        from runtime_protocol import verified_host_launch
+
+        issuer = sys.modules.get(type(sources).__module__)
+        issuer_file = getattr(issuer, "__file__", None)
+        if (issuer is None or type(sources) is not getattr(issuer, "_RuntimeExternalSources", None)
+                or not isinstance(issuer_file, str)
+                or Path(issuer_file).resolve() != Path(verified_host_launch.__file__).resolve()):
+            raise HostError("external sources require the private Runtime launcher handle")
+        self._sources = sources
+        self._payload = sources.inventory()
+        self._bound = False
+        try:
+            value = json.loads(self._payload)
+            from runtime_protocol.external_pack_sources import _validate_grants
+            from runtime_protocol.verified_host_launch import canonical
+
+            if (type(self._payload) is not bytes or canonical(value) != self._payload
+                    or set(value) != {"scope", "selected_profile_digest", "sources"}
+                    or set(value["scope"]) != {"operation_id", "channel_id", "owner_epoch", "custody_scope"}
+                    or any(not isinstance(v, str) or not v for v in value["scope"].values())
+                    or not re.fullmatch(r"[0-9a-f]{64}", value["selected_profile_digest"])
+                    or not isinstance(value["sources"], list) or not value["sources"]):
+                raise ValueError("invalid external source inventory")
+            grants = []
+            for source in value["sources"]:
+                grants.append({key: item for key, item in source.items()
+                               if key not in {"contents", "materialization", "ancestors"}})
+                if (set(source) != set(grants[-1]) | {"contents", "materialization", "ancestors"}
+                        or set(source["contents"]) != set(source["files"])):
+                    raise ValueError("invalid external captured contents")
+                for relative, encoded in source["contents"].items():
+                    data = base64.b64decode(encoded, validate=True)
+                    if hashlib.sha256(data).hexdigest() != source["files"][relative]:
+                        raise ValueError("external captured bytes differ from inventory")
+            _validate_grants(grants)
+            self.verify(require_bound=False)
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise HostError("invalid private Runtime source capture") from exc
+
+    def bind(self, preparation: Mapping[str, Any]) -> None:
+        from runtime_protocol.verified_host_launch import raw_digest
+
+        value = json.loads(self._payload)
+        if ({key: preparation.get(key) for key in value["scope"]} != value["scope"]
+                or raw_digest(preparation.get("profile")) != value["selected_profile_digest"]):
+            raise HostError("external source custody differs from retained preparation")
+        extras = preparation["profile"].get("host_launch", {}).get("additional_pack_roots", [])
+        if extras != [{"path": source["root"], "files": source["files"]} for source in value["sources"]]:
+            raise HostError("external selected roots differ from retained preparation")
+        self._owner_support_root = Path(preparation["profile"]["support_root"])
+        self._workspace_uuid = preparation["profile"]["workspace_uuid"]
+        self._launch_roots = [preparation["profile"].get("host_launch", {}).get("pack_root"),
+                              *(source["root"] for source in value["sources"])]
+        self._bound = True
+        self.verify()
+
+    def verify(self, *, require_bound: bool = True) -> None:
+        if require_bound and not self._bound:
+            raise HostError("external source custody has no retained preparation")
+        if self._sources.inventory() != self._payload:
+            raise HostError("external source custody changed")
+        from runtime_protocol.external_pack_sources import _capture, _read_state, _state_path
+        from runtime_protocol.verified_host_launch import canonical
+
+        state = _read_state(_state_path(self._owner_support_root)) if self._bound else None
+        if state is not None and (not isinstance(state, dict)
+                or set(state) != {"workspace_uuid", "grants"}
+                or state["workspace_uuid"] != self._workspace_uuid):
+            raise HostError("external source owner scope changed")
+        for source in json.loads(self._payload)["sources"]:
+            grant = {key: value for key, value in source.items()
+                     if key not in {"contents", "materialization", "ancestors"}}
+            if state is not None and grant not in state["grants"]:
+                raise HostError("external source owner grant was revoked")
+            if canonical(_capture(grant)) != canonical(source):
+                raise HostError("external repository custody changed")
+
+    def source_for(self, path: Path) -> Mapping[str, Any] | None:
+        return next((source for source in json.loads(self._payload)["sources"]
+                     if path == Path(source["root"]) or path.is_relative_to(source["root"])), None)
+
+    def descriptor(self, record: Any, *, capability_kind: str = "executor"):
+        selected = self.select(record, capability_kind=capability_kind)
+        if selected is None:
+            return None
+        channel = tempfile.TemporaryFile()
+        channel.write(selected)
+        channel.seek(0)
+        return channel
+
+    def select(self, record: Any, *, capability_kind: str = "executor") -> bytes | None:
+        self.verify()
+        source = self.source_for(record.source_root)
+        if source is None:
+            builtin = self._launch_roots[0]
+            if builtin and record.source_root.is_relative_to(builtin):
+                return None
+            raise HostError("external source has no Runtime owner grant")
+        if _capability_digest(record.definition.to_dict()) != record.capability_digest:
+            raise HostError("external definition changed after discovery")
+        value = json.loads(self._payload)
+        matches = [definition for definition in source["definitions"]
+                   if definition["capability_kind"] == capability_kind
+                   and definition["capability_id"] == record.id
+                   and definition["definition_digest"] == record.capability_digest
+                   and record.manifest_path == Path(source["root"]) / definition["path"]]
+        if len(matches) != 1:
+            raise HostError("external definition has no exact Runtime selection")
+        selected = self._sources.select(scope=value["scope"],
+            selected_profile_digest=value["selected_profile_digest"], root=source["root"],
+            definition=matches[0])
+        from runtime_protocol.verified_host_launch import canonical
+
+        if selected != canonical({"scope": value["scope"],
+                "selected_profile_digest": value["selected_profile_digest"],
+                "source": source, "definition": matches[0]}):
+            raise HostError("external selected source custody changed")
+        return selected
+
+    def orchestrator_definitions(self, roots: tuple[Path, ...]):
+        """Read selected static manifests from owner-captured bytes only."""
+        import yaml
+
+        from astrid.core.execution.orchestrator.schema import validate_orchestrator_definition
+
+        self.verify()
+        for source in json.loads(self._payload)["sources"]:
+            root = Path(source["root"])
+            if not any(root == parent or root.is_relative_to(parent) for parent in roots):
+                continue
+            contents = {name: base64.b64decode(data, validate=True)
+                        for name, data in source["contents"].items()}
+            for selected in source["definitions"]:
+                if selected["capability_kind"] != "orchestrator":
+                    continue
+                path = Path(selected["path"])
+                if path.name not in {"orchestrator.yaml", "orchestrator.yml", "orchestrator.json"}:
+                    raise HostError("external orchestrator requires a captured static manifest")
+                data = contents[path.as_posix()]
+                payload = json.loads(data) if path.suffix == ".json" else yaml.safe_load(data)
+                definition = validate_orchestrator_definition(payload)
+                folder = root / path.parent
+                metadata = dict(definition.metadata)
+                metadata.update(source="folder", orchestrator_root=str(folder), folder_id=folder.name,
+                                manifest_file=str(root / path))
+                for filename, key in (("requirements.txt", "requirements_file"),
+                                      ("pyproject.toml", "pyproject_file"), ("STAGE.md", "stage_file")):
+                    relative = (path.parent / filename).as_posix()
+                    if relative in contents:
+                        metadata[key] = str(root / relative)
+                # Match folder/pack metadata without reopening either manifest.
+                pack_path = next((parent / "pack.yaml" for parent in (path.parent, *path.parent.parents)
+                                  if (parent / "pack.yaml").as_posix() in contents), None)
+                if pack_path is not None:
+                    pack_root = root / pack_path.parent
+                    pack = yaml.safe_load(contents[pack_path.as_posix()])
+                    metadata.setdefault("source_pack", str(pack.get("id") or pack_root.name))
+                    metadata.setdefault("pack_root", str(pack_root))
+                definition = replace(definition, metadata=metadata)
+                if (definition.id != selected["capability_id"]
+                        or _capability_digest(definition.to_dict()) != selected["definition_digest"]):
+                    raise HostError("external orchestrator differs from exact Runtime selection")
+                yield folder, definition, root / path
+
+
+_runtime_external_sources: _RuntimeSourceCustody | None = None
+
+
+def _consume_runtime_external_sources(*, sources: Any) -> None:
+    """Called only by Runtime's retained launcher, before CLI/discovery."""
+    global _runtime_external_sources
+    if _runtime_external_sources is not None:
+        raise HostError("external Runtime source custody was already consumed")
+    _runtime_external_sources = _RuntimeSourceCustody(sources)
+
+
 class CommandCleanupUnresolved(HostError):
     """A command finished but its task scope may still own child writers."""
 
@@ -240,7 +437,6 @@ class HostCancelled(HostError):
     """The runtime cancelled the attempt while the subprocess was running."""
 
 
-_CONTENT_ADDRESSED_MEDIA_ID = re.compile(r"(?:sha256:)?([0-9a-f]{64})\Z")
 _MANAGED_ASSET_LOCATOR_KEYS = frozenset({"url", "uri", "path", "source_path", "locator", "realm", "file"})
 
 
@@ -257,11 +453,10 @@ def _managed_asset_identity(key: str, raw: Mapping[str, Any]) -> tuple[str, str]
     if _MANAGED_ASSET_LOCATOR_KEYS.intersection(raw):
         raise HostError(f"managed asset {key!r} contains an unmanaged locator")
     object_id = raw.get("object_id") or raw.get("media_id")
-    raw_digest = raw.get("digest") or raw.get("content_sha256") or raw.get("sha256") or raw.get("hash")
-    media_id = raw.get("media_id")
-    media_match = _CONTENT_ADDRESSED_MEDIA_ID.fullmatch(media_id) if isinstance(media_id, str) else None
-    if not raw_digest and media_match:
-        raw_digest = media_match.group(1)
+    try:
+        raw_digest = managed_asset_digest(raw)
+    except ValueError as exc:
+        raise HostError(f"managed asset {key!r}: {exc}") from exc
     if not isinstance(object_id, str) or not object_id.strip() or not isinstance(raw_digest, str):
         raise HostError(f"managed asset {key!r} requires object_id and digest")
     digest_hex = raw_digest.removeprefix("sha256:")
@@ -1732,7 +1927,8 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
     here, before any child exists. Only an omitted selector is chosen by the
     host: Remotion when this host can run it, else ffmpeg.
     """
-    if record.adapter.remotion != "selected":
+    adapter = getattr(record, "adapter", None)
+    if adapter is None or adapter.remotion != "selected":
         return None
     from astrid.core.rendering.contracts import FFMPEG_RENDERER_ID, REMOTION_RENDERER_ID
 
@@ -1746,8 +1942,13 @@ def _renderer_selection(record: "CapabilityRecord", task_data: Mapping[str, Any]
     else:
         selector, chosen_by = requested, "task"
     if selector == REMOTION_RENDERER_ID and not remotion_ok:
+        from astrid.core.rendering.failure_message import render_failure_message
+
         raise HostError(
-            f"{record.id}: this task renders with {REMOTION_RENDERER_ID}, which this host cannot run: {reason}"
+            render_failure_message(
+                f"{record.id}: this task renders with {REMOTION_RENDERER_ID}, which this host cannot run: {reason}",
+                remotion_reason=reason,
+            )
         )
     return {"selector": selector, "chosen_by": chosen_by, "remotion_ok": remotion_ok, "remotion_reason": reason}
 
@@ -1862,6 +2063,152 @@ def _fixed_worker_environment(record: "CapabilityRecord", explicit_env: Mapping[
         elif name.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")):
             raise HostError(f"undeclared secret environment variable {name!r}")
     return explicit
+
+
+def _record_may_render(record: 'CapabilityRecord') -> bool:
+    """True when a capability can run Remotion (so its worker context needs validation)."""
+    if str(record.definition.metadata.get('source_pack') or '') == 'rendering':
+        return True
+    try:
+        return AdapterRegistry.from_matrix(record.definition, record.matrix).remotion != 'never'
+    except HostError:
+        return True  # Unknown adapter: stay strict rather than skip validation.
+
+
+def _launch_worker_probe_environments(pack_roots: tuple[Path, ...], environment: Mapping[str, str],
+                                     capability_matrix: Path | None = None,
+                                     *, remotion_only: bool = False,
+                                     installed_root: Path | None = None) -> list[dict[str, str]]:
+    """Project only fixed launch-known inputs; never expand task placeholders.
+
+    With ``remotion_only`` just the worker environments of capabilities that
+    can render are kept (matrix/metadata ``requires_remotion`` or the
+    rendering pack itself); the host baseline variant is always present.
+    A render in any other context is refused by ``_validated_runtime``.
+    """
+    from astrid.core.rendering.remotion_runtime import (
+        _NODE_ENV_KEYS, _UNSUPPORTED_PYTHON_STARTUP, _REGISTRY_SELECTORS,
+        _validate_remotion_worker_environment,
+    )
+    from astrid.core.subprocess_env import (
+        _SAFE_BASE_ENV,
+        _WINDOWS_BASE_ENV,
+        _is_secret_name,
+        _normalize_secret_names,
+    )
+    from astrid.core.execution.executor.folder import discover_folder_executor_roots, load_folder_executor
+    from astrid.core.execution.executor.schema import ExecutorValidationError
+    matrix = GenericPackHost._load_matrix(capability_matrix)
+    safe_base_env = set(_SAFE_BASE_ENV)
+    if sys.platform == "win32":
+        safe_base_env.update(_WINDOWS_BASE_ENV)
+    records: dict[str, CapabilityRecord] = {}
+    for root in pack_roots:
+        for executor_root in discover_folder_executor_roots(root):
+            try:
+                definition = load_folder_executor(executor_root)
+            except (ExecutorValidationError, OSError, ValueError):
+                continue  # Same unavailable optional definition as host discovery.
+            definition = _attach_pack_metadata(definition, executor_root)
+            records[definition.id] = CapabilityRecord(
+                definition=definition, capability_digest='', source_digest='',
+                source_root=executor_root, matrix=matrix.get(definition.id, {}))
+    # Match host discovery's strict V3 projection and exact source roots. A
+    # local orchestration action is deliberately not a host worker definition.
+    from astrid.core.pack.discovery import discover_pack_metadata
+    from astrid.sdk.actions import action_executor_definition
+    for discovered_pack in discover_pack_metadata(
+        project_root=pack_roots[0] if pack_roots else Path.cwd(),
+        extra_pack_roots=tuple(str(root) for root in pack_roots),
+    ):
+        pack = discovered_pack.pack
+        pack_root = pack.root.resolve()
+        if not any(pack_root == root or pack_root.is_relative_to(root) for root in pack_roots):
+            continue
+        for local_id, declaration in pack.actions.items():
+            try:
+                definition = action_executor_definition(discovered_pack, local_id, declaration)
+            except (ExecutorValidationError, OSError, ValueError):
+                continue  # Same unavailable optional action as host discovery.
+            records[definition.id] = CapabilityRecord(
+                definition=definition, capability_digest='', source_digest='',
+                source_root=pack_root, matrix=matrix.get(definition.id, {}))
+    # The SDK caller can carry import paths removed from the installed host
+    # launch. Qualify the explicit host mapping, not that caller's ambient env.
+    dependencies = dependency_pythonpath(environment)
+    baseline = build_child_subprocess_env(base=environment, parent=environment)
+    installed = (environment.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed'
+                 or os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed')
+    if installed:
+        from astrid.core.rendering.remotion_runtime import _registry_context
+        _registry_context(environment, generator=False)
+        # The installed host already discovers its selected package tree.
+        # Do not make a worker's pack root or source path a second authority.
+        baseline.pop(ASTRID_PACKS_PATH, None)
+        baseline.pop('PYTHONPATH', None)
+    variants = [baseline]
+    for record in records.values():
+        if remotion_only and not _record_may_render(record):
+            continue
+        if installed and remotion_only and not record.source_root.is_relative_to(
+                (installed_root or Path(__file__).absolute().parents[3]) / 'astrid/packs'):
+            raise HostError('installed Remotion workers require product-owned pack roots')
+        # Startup validation has no task credential channel. Legacy manifests
+        # can still list credentials in passthrough: omit those names entirely,
+        # while retaining their syntax checks without declaring any authority.
+        passthrough = record.definition.isolation.env_passthrough
+        omitted = tuple(name for name in passthrough if _is_secret_name(name))
+        _normalize_secret_names(omitted, 'probe_omitted_secrets')
+        public_passthrough = tuple(name for name in passthrough if not _is_secret_name(name))
+        command = record.definition.command
+        fixed = {str(k): str(v) for k, v in (getattr(command, 'env', {}) or {}).items()
+                 if '{' not in str(v) and '}' not in str(v)} if command is not None else {}
+        fixed = _fixed_worker_environment(record, fixed, environment)
+        relevant = {k: v for k, v in fixed.items()
+                    if k in set(_NODE_ENV_KEYS) | safe_base_env | set(_REGISTRY_SELECTORS) | set(_UNSUPPORTED_PYTHON_STARTUP) | {'XDG_CONFIG_HOME', 'PYTHONPATH'}
+                    or k.startswith(('DYLD_', 'LD_', 'GIT_'))
+                    or k in {'PYTHONEXECUTABLE', '__PYVENV_LAUNCHER__', 'PYTHONHOME',
+                             'NODE_OPTIONS', 'NODE_PATH', 'NODE_ICU_DATA', 'OPENSSL_CONF'}}
+        projected = build_child_subprocess_env(
+            base=environment, parent=environment, explicit_env=relevant,
+            passthrough=public_passthrough,
+            declared_passthrough=public_passthrough)
+        if _record_may_render(record):
+            _validate_remotion_worker_environment(projected)
+        native = dict(projected)
+        if installed:
+            if ASTRID_PACKS_PATH not in fixed:
+                native.pop(ASTRID_PACKS_PATH, None)
+            if 'PYTHONPATH' not in fixed:
+                native.pop('PYTHONPATH', None)
+        else:
+            native[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in pack_roots)
+            native['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
+                str(Path(__file__).resolve().parents[3]), *dependencies,
+                *(str(root) for root in _admitted_python_roots(record.source_root, record.definition)))))
+        variants.append(native)
+        # The command builder supplies a canonical default, then command/env
+        # and required nonsecret configuration override it, in the real order.
+        command_defaults = {} if installed else {
+            'PYTHONPATH': os.pathsep.join((str(Path(__file__).resolve().parents[3]), *dependencies)),
+        }
+        command_fixed = _fixed_worker_environment(record, {
+            **command_defaults, **fixed}, environment)
+        command_relevant = dict(relevant)
+        if 'PYTHONPATH' in command_fixed:
+            command_relevant['PYTHONPATH'] = command_fixed['PYTHONPATH']
+        command_variant = build_child_subprocess_env(
+            base=environment, parent=environment, explicit_env=command_relevant,
+            passthrough=public_passthrough,
+            declared_passthrough=public_passthrough)
+        if _record_may_render(record):
+            _validate_remotion_worker_environment(command_variant)
+        if not installed:
+            command_variant['PYTHONPATH'] = _command_worker_pythonpath(record, command_variant['PYTHONPATH'])
+        elif ASTRID_PACKS_PATH not in fixed:
+            command_variant.pop(ASTRID_PACKS_PATH, None)
+        variants.append(command_variant)
+    return variants
 
 
 def _command_worker_pythonpath(record: 'CapabilityRecord', existing: str) -> str:
@@ -2038,7 +2385,8 @@ site.execsitecustomize = lambda: None
 site.execusercustomize = lambda: None
 site.main()
 sys.path[:0] = list(dict.fromkeys(config['imports']))
-sys.path.insert(0, os.getcwd())
+if not config["captured"]:
+    sys.path.insert(0, os.getcwd())
 import runpy
 sys.argv = [config['module'], *sys.argv[2:]]
 runpy.run_module(config['module'], run_name='__main__', alter_sys=True)
@@ -2068,9 +2416,28 @@ def _network_startup_argv(argv: list[str], attempt: Path, env: Mapping[str, str]
         "imports": [path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path],
         "module": arguments[1],
         "broker_required": broker_required,
+        "captured": "--external-source-fd" in arguments,
     }
     return [argv[0], *flags, "-I", "-S", "-c", _STRICT_NETWORK_STARTUP,
             json.dumps(config, sort_keys=True), *arguments[2:]]
+
+
+def _captured_worker_argv(argv: list[str]) -> list[str]:
+    """Use the existing worker without startup imports from a mutable pack cwd."""
+    if "-I" in argv:
+        return argv
+    roots = []
+    if os.environ.get("ASTRID_HOST_EXECUTION_PROFILE") != "installed":
+        for name in ("astrid", "runtime_protocol", "astrid_runtime_client"):
+            module = sys.modules.get(name)
+            if module is not None and module.__file__:
+                roots.append(str(Path(module.__file__).resolve().parent.parent))
+        roots.extend(_dependency_pythonpath())
+    startup = ("import sys,runpy;sys.path[:0]=" + repr(list(dict.fromkeys(roots)))
+               + ";sys.argv=['astrid.core.execution.generic_host_worker',*sys.argv[1:]];"
+               + "runpy.run_module('astrid.core.execution.generic_host_worker',run_name='__main__')")
+    module_index = argv.index("astrid.core.execution.generic_host_worker")
+    return [argv[0], *argv[1:module_index - 1], "-I", "-c", startup, *argv[module_index + 1:]]
 
 
 def _network_sandbox_argv(argv: list[str], attempt: Path, endpoint: str | None) -> list[str]:
@@ -2185,18 +2552,6 @@ def _hivemind_source_preflight(record: "CapabilityRecord") -> dict[str, Any] | N
     return {"ok": True, "checkout": str(checkout), "revision": revision}
 
 
-def _source_digest(root: Path) -> str:
-    """Hash the complete executor source tree without retaining a source path in a task."""
-    entries: list[tuple[str, str]] = []
-    if root.is_file():
-        return hashlib.sha256(root.read_bytes()).hexdigest()
-    for path in sorted(root.rglob("*"), key=lambda path: path.parts):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
-        entries.append((path.relative_to(root).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()))
-    return _canonical_digest(entries)
-
-
 _TASK_OUTPUT_TAIL_BYTES = 64 * 1024
 _TASK_OUTPUT_TAIL_NAMES = {"stdout": "task-stdout-tail.log", "stderr": "task-stderr-tail.log"}
 _TASK_OUTPUT_METADATA_NAME = "task-output-capture.json"
@@ -2258,6 +2613,7 @@ _RENDERER_WORKSPACE_MARKERS = (
     ".render-service",
     ".render-inputs-",
     ".remotion-runtime-",
+    ".r-",
     "astrid-render-assets-",
 )
 
@@ -4227,50 +4583,6 @@ def source_checkout_digest(checkout: str | Path) -> str:
     return _source_digest(pack_root)
 
 
-def source_checkout_closure(checkout: str | Path) -> dict[str, Any]:
-    """Measure the executable host closure owned by this checkout.
-
-    The legacy pack digest remains the capability-admission identity.  This
-    separate receipt covers the process host, Astrid core, SDK/bootstrap,
-    package entrypoints, launcher, and vendored workspace-client files that
-    can change what an admitted executable does.
-    """
-    root = Path(checkout).expanduser().resolve()
-    components = {
-        "host": root / "astrid" / "core" / "execution" / "generic_host.py",
-        "core": root / "astrid" / "core",
-        "sdk": root / "astrid" / "sdk",
-        "launcher": root / "astrid" / "omp_agent.py",
-        "astrid_entrypoint": root / "astrid" / "__init__.py",
-        "astrid_version": root / "astrid" / "version.py",
-        "astrid_main": root / "astrid" / "__main__.py",
-        "astrid_runtime_cli": root / "astrid" / "runtime_cli.py",
-        "vendored_workspace_client": root / "astrid_runtime_client",
-    }
-    measured: list[dict[str, str]] = []
-    for name, path in components.items():
-        if path.is_symlink() or not path.exists():
-            raise ValueError(f"source closure component is missing or symlinked: {name}")
-        if path.is_dir() and any(child.is_symlink() for child in path.rglob("*")):
-            raise ValueError(f"source closure component contains a symlink: {name}")
-        measured.append({
-            "component": name,
-            "path": str(path.relative_to(root)),
-            "sha256": _source_digest(path),
-        })
-    measured.sort(key=lambda item: item["component"])
-    return {
-        "schema_version": 1,
-        "components": measured,
-        "digest": _canonical_digest(measured),
-    }
-
-
-def source_checkout_closure_digest(checkout: str | Path) -> str:
-    """Return the deterministic digest for the executable source closure."""
-    return str(source_checkout_closure(checkout)["digest"])
-
-
 def process_birth_identity(pid: int | None = None) -> str:
     """Return the OS birth token used to distinguish a reused PID."""
     return _process_birth_identity(pid)
@@ -4428,6 +4740,18 @@ def _attach_pack_metadata(definition: "ExecutorDefinition", executor_root: Path)
     metadata.setdefault("source_pack", pack_id)
     metadata.setdefault("pack_root", str(pack_root))
     return replace(definition, metadata=metadata)
+
+
+@dataclass(frozen=True)
+class _OrchestratorRecord:
+    definition: OrchestratorDefinition
+    capability_digest: str
+    source_root: Path
+    manifest_path: Path
+
+    @property
+    def id(self) -> str:
+        return self.definition.id
 
 
 @dataclass(frozen=True)
@@ -5134,8 +5458,35 @@ class RuntimeProtocolClient:
         )
         return self._terminal_evidence_mutation(
             task_id, result,
-            lambda: completion_client.fail_attempt(attempt_id, **request),
+            lambda: self._terminal_evidence_request(completion_client, "fail_attempt", attempt_id, request),
         )
+
+    @staticmethod
+    def _terminal_evidence_request(client, operation_name, identifier, request):
+        """Carry server-supported terminal fields omitted by a generated signature.
+
+        The published server accepts F05 outputs/result and fenced cancellation.
+        Keep those bytes and the original idempotency key through the generated
+        transport/decoder when its convenience method has the older signature.
+        """
+        operation = getattr(client, operation_name)
+        parameters = inspect.signature(operation).parameters
+        if (any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+                or request.keys() <= parameters.keys()):
+            return operation(identifier, **request)
+        routes = {"fail_attempt": ("attempts", "fail"), "cancel_task": ("tasks", "cancel")}
+        if (operation_name not in routes or not callable(getattr(client, "_request", None))
+                or not callable(getattr(client, "_mutation_json", None))):
+            raise HostError("Runtime client cannot carry the complete terminal evidence request")
+        collection, action = routes[operation_name]
+        payload = dict(request)
+        idempotency_key = payload.pop("idempotency_key")
+        _, _, body = client._request(
+            "POST", f"/v1/{collection}/{quote(str(identifier), safe='')}/{action}",
+            body=json.dumps(payload, separators=(",", ":"), allow_nan=False).encode(),
+            headers={"Content-Type": "application/json", "Idempotency-Key": idempotency_key},
+        )
+        return client._mutation_json(body)
 
     def _terminal_evidence_mutation(
         self, task_id: str, expected_result: Mapping[str, Any] | None,
@@ -5268,7 +5619,7 @@ class RuntimeProtocolClient:
         )
         return self._terminal_evidence_mutation(
             task_id, result,
-            lambda: self._lifecycle_client().cancel_task(task_id, **request),
+            lambda: self._terminal_evidence_request(self._lifecycle_client(), "cancel_task", task_id, request),
         )
 
     def get_object(self, digest: str) -> bytes:
@@ -5781,6 +6132,10 @@ class GenericPackHost:
         for raw_root in os.environ.get(ASTRID_PACKS_PATH, "").split(os.pathsep):
             if raw_root:
                 configured_roots.append(Path(raw_root).expanduser().resolve())
+        if _runtime_external_sources is not None:
+            _runtime_external_sources.verify()
+            if any(str(root) not in _runtime_external_sources._launch_roots for root in configured_roots):
+                raise HostError("discovery root is outside retained Runtime source custody")
         self.pack_roots = tuple(dict.fromkeys(configured_roots))
         self.client = client
         self.executor_id = executor_id
@@ -5790,6 +6145,7 @@ class GenericPackHost:
         self.attempt_root = Path(attempt_root).expanduser().resolve() if attempt_root else None
         self.attempt_base = Path(attempt_base).expanduser().resolve() if attempt_base else None
         self.capabilities: dict[str, CapabilityRecord] = {}
+        self._orchestrators: dict[str, _OrchestratorRecord] = {}
         self.stale_matrix_entries: tuple[str, ...] = ()
         self._registered_digests: dict[str, str] = {}
         self._registered_state: dict[str, dict[str, str]] = {}
@@ -5910,15 +6266,22 @@ class GenericPackHost:
                 platform.private_directory(root)
             else:
                 root.mkdir()
+                root.chmod(0o700)
             return root.resolve()
+        # The lease and progress marker carry the task/attempt/fence identity;
+        # do not put those values in an ephemeral filesystem basename.  Keep
+        # the established reclaim prefix so storage_ownership still finds
+        # crash-abandoned roots.
         if self.attempt_root is None and sys.platform == "win32":
-            root = Path(tempfile.gettempdir()) / f"astrid-attempt-{task_id}-{secrets_module.token_hex(16)}"
+            root = Path(tempfile.gettempdir()) / f"astrid-attempt-{secrets_module.token_hex(16)}"
             platform.private_directory(root)
             return root.resolve()
-        root = self.attempt_root or Path(tempfile.mkdtemp(prefix=f"astrid-attempt-{task_id}-")).resolve()
+        root = self.attempt_root or Path(tempfile.mkdtemp(prefix="astrid-attempt-")).resolve()
         root.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             platform.owner_only(root)
+        elif self.attempt_root is None:
+            root.chmod(0o700)
         return root
 
     @property
@@ -6507,6 +6870,8 @@ class GenericPackHost:
         )
         from astrid.core.execution.executor.schema import ExecutorValidationError
 
+        if _runtime_external_sources is not None:
+            _runtime_external_sources.verify()
         records: dict[str, CapabilityRecord] = {}
         quarantined_dirs, quarantined_ids = _quarantine_scope(self.pack_roots)
         for root in self.pack_roots:
@@ -6598,6 +6963,10 @@ class GenericPackHost:
             key: CapabilityRecord(**{**record.__dict__, "dependency_digest": _dependency_digest(record.definition, records)})
             for key, record in records.items()
         }
+        if _runtime_external_sources is not None:
+            _runtime_external_sources.verify()
+            for record in records.values():
+                _runtime_external_sources.select(record)
         self.capabilities = records
         root = self.pack_roots[0] if self.pack_roots else Path.cwd()
         self.source_epoch = _canonical_digest({
@@ -6650,35 +7019,55 @@ class GenericPackHost:
                 load_folder_orchestrator,
             )
 
-            quarantined_dirs, _quarantined_ids = _quarantine_scope(self.pack_roots)
-            for root in self.pack_roots:
-                for orchestrator_root in discover_folder_orchestrator_roots(root):
-                    if _inside_quarantined(orchestrator_root, quarantined_dirs):
+            def definitions():
+                if _runtime_external_sources is not None:
+                    yield from _runtime_external_sources.orchestrator_definitions(self.pack_roots)
+                quarantined_dirs, _quarantined_ids = _quarantine_scope(self.pack_roots)
+                for root in self.pack_roots:
+                    if _runtime_external_sources is not None and _runtime_external_sources.source_for(root) is not None:
                         continue
-                    try:
-                        definition = load_folder_orchestrator(orchestrator_root)
-                    except (OSError, ValueError):
-                        continue
-                    if definition.id != capability_id:
-                        continue
-                    definition = _attach_pack_metadata(definition, orchestrator_root)
-                    source_roots = _admitted_source_roots(orchestrator_root, definition)
-                    source_digest = _source_digest_for_roots(source_roots)
-                    capability_digest = _capability_digest(definition.to_dict())
-                    return definition.to_dict(), {
-                        "capability_digest": capability_digest,
-                        "source_digest": source_digest,
-                        "dependency_digest": _canonical_digest({
-                            "child_executors": definition.child_executors,
-                            "child_orchestrators": definition.child_orchestrators,
-                        }),
-                        "version": definition.version,
-                        "source_root": str(orchestrator_root),
-                        "source_roots": [str(root) for root in source_roots],
-                        "python_path_roots": [
-                            str(root) for root in _admitted_python_roots(orchestrator_root, definition)
-                        ],
-                    }
+                    for orchestrator_root in discover_folder_orchestrator_roots(root):
+                        if _runtime_external_sources is not None and _runtime_external_sources.source_for(orchestrator_root) is not None:
+                            continue
+                        if _runtime_external_sources is not None:
+                            builtin = _runtime_external_sources._launch_roots[0]
+                            if not builtin or not orchestrator_root.is_relative_to(builtin):
+                                raise HostError("external orchestrator has no Runtime owner grant")
+                        if _inside_quarantined(orchestrator_root, quarantined_dirs):
+                            continue
+                        try:
+                            definition = load_folder_orchestrator(orchestrator_root)
+                        except (OSError, ValueError):
+                            continue
+                        definition = _attach_pack_metadata(definition, orchestrator_root)
+                        manifest = Path(str(definition.metadata.get("manifest_file")
+                                            or definition.metadata.get("orchestrator_file")))
+                        yield orchestrator_root, definition, manifest
+
+            for orchestrator_root, definition, manifest in definitions():
+                if definition.id != capability_id:
+                    continue
+                source_roots = _admitted_source_roots(orchestrator_root, definition)
+                source_digest = _source_digest_for_roots(source_roots)
+                capability_digest = _capability_digest(definition.to_dict())
+                orchestrator_record = _OrchestratorRecord(definition, capability_digest, orchestrator_root, manifest)
+                if _runtime_external_sources is not None:
+                    _runtime_external_sources.select(orchestrator_record, capability_kind="orchestrator")
+                self._orchestrators[capability_id] = orchestrator_record
+                return definition.to_dict(), {
+                    "capability_digest": capability_digest,
+                    "source_digest": source_digest,
+                    "dependency_digest": _canonical_digest({
+                        "child_executors": definition.child_executors,
+                        "child_orchestrators": definition.child_orchestrators,
+                    }),
+                    "version": definition.version,
+                    "source_root": str(orchestrator_root),
+                    "source_roots": [str(root) for root in source_roots],
+                    "python_path_roots": [
+                        str(root) for root in _admitted_python_roots(orchestrator_root, definition)
+                    ],
+                }
             raise HostError(f"capability not discovered: {capability_id}")
         raise HostError(f"unsupported capability kind {capability_kind!r}")
 
@@ -6689,19 +7078,61 @@ class GenericPackHost:
                     owner._registration_refresh_blocked or self._registration_refresh_blocked else None))
 
     def _remotion_idle_context(self) -> str | None:
-        """Key the last readiness observation by server-owned configuration.
+        """Bind idle observation reuse to the successful full launch context.
 
-        Idle renewal does not probe executables; task admission checks them again.
+        This is not a validation receipt or execution admission. The small
+        launch-reference file and exact effective probe/registry context must
+        still match the successful full observation. Tasks always validate
+        all installed inputs again.
         """
-        from astrid.core.rendering.remotion_runtime import (
-            NODE_EXECUTABLE_ENV,
-            REMOTION_PROJECT_DIR_ENV,
-            TIMELINE_SCHEMA_PYTHONPATH_ENV,
-        )
-        values = [os.environ.get(name) for name in (
-            REMOTION_PROJECT_DIR_ENV, NODE_EXECUTABLE_ENV, TIMELINE_SCHEMA_PYTHONPATH_ENV,
-        )]
-        return _canonical_digest(values) if all(values) else None
+        from astrid.core.rendering import remotion_runtime as runtime
+
+        env = os.environ
+        try:
+            context = runtime.probe_context(environment=env, python_executable=sys.executable)
+            context["registry_context"] = runtime._registry_context(env, generator=False)
+            names = (runtime.REMOTION_PROJECT_DIR_ENV, runtime.NODE_EXECUTABLE_ENV,
+                     runtime.TIMELINE_SCHEMA_PYTHONPATH_ENV, *runtime._REF_ENV_KEYS)
+            configuration = {name: env[name] for name in names}
+            if any(not value for value in configuration.values()):
+                return None
+            # Constant-size filesystem checks only: no node_modules/schema
+            # tree enumeration, imports, subprocess probes, or registry writes.
+            selected = {}
+            for name in names[:3]:
+                path = Path(configuration[name]).expanduser()
+                if not path.is_absolute():
+                    return None
+                resolved = path.resolve(strict=True)
+                facts = resolved.stat()
+                selected[name] = (str(resolved), facts.st_dev, facts.st_ino,
+                                  facts.st_mode, facts.st_uid)
+            reference = Path(configuration[runtime.ASTRID_REMOTION_VALIDATION_PATH])
+            before = reference.stat()
+            if (not reference.is_absolute() or reference.is_symlink()
+                    or not stat.S_ISREG(before.st_mode)
+                    or not owned_by_current_user(reference, before, mode=0o600)
+                    or before.st_size > runtime._VALIDATION_MAX_BYTES):
+                return None
+            raw = reference.read_bytes()
+            after = reference.stat()
+
+            def identity(facts):
+                return (facts.st_dev, facts.st_ino, facts.st_mode, facts.st_uid,
+                        facts.st_size, facts.st_mtime_ns, facts.st_ctime_ns)
+
+            if (identity(before) != identity(after)
+                    or hashlib.sha256(raw).hexdigest() != configuration[runtime.ASTRID_REMOTION_VALIDATION_SHA256]):
+                return None
+            context.update(configuration=configuration, selected=selected,
+                           reference_identity=identity(after),
+                           interpreter=(sys.prefix, sys.exec_prefix, sys.base_prefix,
+                                        sys.base_exec_prefix, sys.version,
+                                        sys.implementation.cache_tag, sys.platform,
+                                        getattr(sys, "abiflags", "")))
+            return _canonical_digest(context)
+        except (OSError, KeyError, ValueError, runtime.RemotionValidationError):
+            return None
 
     def _forget_failed_remotion_observation(self, capability_id: str, context: str | None) -> None:
         owner = self._handoff_accounting_owner
@@ -7192,6 +7623,7 @@ class GenericPackHost:
         input_size_limits: Mapping[str, int] | None = None,
         storage_policy_version: str | None = None,
         continuation_id: str | None = None,
+        producer_identity: Mapping[str, Any] | None = None,
         file_input_names: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Materialize digest inputs and managed registry objects in *attempt*.
@@ -7232,6 +7664,12 @@ class GenericPackHost:
 
         input_spec = _admitted_spec_envelope(spec)
         values = dict(input_spec.get("inputs", {})) if isinstance(input_spec.get("inputs", {}), Mapping) else {}
+        from astrid.core.rendering.verified_source import PreparedTimelineInputs
+
+        try:
+            values = PreparedTimelineInputs.prepare(input_spec, values)
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
         params = input_spec.get("params")
         bounded_policy = None
         if storage_policy_version in {
@@ -7341,6 +7779,24 @@ class GenericPackHost:
                 "edges": _json_safe(runtime_dependencies.get("edges", [])),
                 "aggregation": _json_safe(runtime_dependencies.get("aggregation", {})),
             }
+            capture = values.get("resolved_children")
+            if capture is not None:
+                publication = runtime_dependencies.get("publication", {})
+                if (not isinstance(capture, Mapping) or not isinstance(publication, Mapping)
+                        or capture.get("admitted_target") != publication.get("admitted_target")):
+                    raise HostError("assembler capture differs from immutable admitted target")
+                resolved_envelope["capture"] = _json_safe(capture)
+            from astrid.core.contracts.runtime_orchestration import is_native_assembler_spec
+
+            if is_native_assembler_spec(input_spec) and producer_identity is not None:
+                from astrid.core.execution._child_bridge import resource
+
+                resolved_envelope["producer"] = _json_safe(producer_identity)
+                resolved_envelope["associations"] = [
+                    _json_safe(resource(self._client_operation("child_output")(
+                        child["association"]["association_id"])))
+                    for child in capture["children"]
+                ]
             if continuation_id is None:
                 resolved_envelope.pop("continuation_id", None)
             resolved_path = Path(attempt).resolve() / "inputs" / "resolved-children.json"
@@ -7433,6 +7889,12 @@ class GenericPackHost:
                             filmstrip_authority[key] = hydrate_snapshot(ref, key)
                             del filmstrip_authority[key + "_ref"]
                     values["filmstrip_authority"] = json.dumps(filmstrip_authority, sort_keys=True, separators=(",", ":"))
+        try:
+            snapshot = values.prepare_snapshot(input_spec, spec, snapshot, hydrate_snapshot)
+        except json.JSONDecodeError:
+            raise
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
         # The snapshot is an admission envelope, not a renderer input port.
         # Once its derived files are created, do not forward the authoring
         # document as an undeclared child argument.
@@ -7719,13 +8181,10 @@ class GenericPackHost:
         if materialized_objects:
             values["materialized_root"] = str(managed_root)
             values["materialized_objects"] = materialized_objects
-        if materialized_input_metadata:
-            metadata_path = attempt / "inputs" / "managed-input-metadata.json"
-            metadata_path.parent.mkdir(parents=True, exist_ok=True)
-            metadata_path.write_text(
-                json.dumps(materialized_input_metadata, sort_keys=True), encoding="utf-8"
-            )
-        return values
+        try:
+            return values.mint_source(attempt)
+        except ValueError as exc:
+            raise HostError(str(exc)) from exc
 
     def _start_network_broker(
         self,
@@ -8365,6 +8824,7 @@ class GenericPackHost:
         admission: Mapping[str, Any] | None = None,
         network_broker: _NetworkBrokerContext | None = None,
         network_policy: Mapping[str, Any] | None = None,
+        readiness_worker_kind: str = "native",
         allow_runtime_connection: bool = True,
         workflow_execution_request: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -8483,6 +8943,16 @@ class GenericPackHost:
                 workflow_execution_request, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
             )
             env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
+        if _record_may_render(record):
+            from astrid.core.rendering.remotion_runtime import (
+                RemotionValidationError,
+                _validate_remotion_worker_environment,
+            )
+            try:
+                _validate_remotion_worker_environment(env)
+            except RemotionValidationError as exc:
+                secrets.clear()
+                raise HostError(str(exc)) from exc
         if not allow_runtime_connection:
             # A parent has only its inherited three-operation channel.
             # Also remove manifest passthrough aliases of the worker secret.
@@ -8545,6 +9015,53 @@ class GenericPackHost:
             broker = policy.get("broker")
             if allow_runtime_connection and isinstance(broker, Mapping) and broker.get("evidence_path"):
                 env["ASTRID_NETWORK_BROKER_EVIDENCE"] = str(broker["evidence_path"])
+        from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_ROLE, ASTRID_REMOTION_PROJECT_DIR
+        if ASTRID_REMOTION_VALIDATION_ROLE in env and not _record_may_render(record):
+            # Launch validated only render-capable workers; any other worker
+            # carries no Remotion readiness, so it must not claim (or check) one.
+            from astrid.core.env_vars import (
+                ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_PATH,
+                ASTRID_REMOTION_VALIDATION_SHA256,
+            )
+            for name in (ASTRID_REMOTION_VALIDATION_PATH, ASTRID_REMOTION_VALIDATION_SHA256,
+                         ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE):
+                env.pop(name, None)
+        if ASTRID_REMOTION_VALIDATION_ROLE in env:
+            env[ASTRID_REMOTION_VALIDATION_ROLE] = "worker"
+            # Verify the launch-known import context without replacing the
+            # actual command environment's host-installed network-policy hook.
+            readiness_env = dict(env)
+            readiness_path = env.get('PYTHONPATH', '')
+            if policy is not None:
+                installed_hook = str(hook_root)
+                if readiness_path == installed_hook:
+                    readiness_path = ''
+                elif readiness_path.startswith(installed_hook + os.pathsep):
+                    readiness_path = readiness_path[len(installed_hook) + 1:]
+                else:
+                    raise HostError('host network hook context differs before readiness validation')
+            if readiness_worker_kind not in {'native', 'command'}:
+                raise HostError('unknown internal readiness worker projection')
+            if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed':
+                if readiness_path:
+                    readiness_env['PYTHONPATH'] = readiness_path
+                else:
+                    readiness_env.pop('PYTHONPATH', None)
+            elif readiness_worker_kind == 'command':
+                readiness_env['PYTHONPATH'] = _command_worker_pythonpath(record, readiness_path)
+            elif readiness_worker_kind == 'native':
+                readiness_env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+                readiness_env['PYTHONPATH'] = os.pathsep.join(dict.fromkeys((
+                    str(Path(__file__).resolve().parents[3]), *_dependency_pythonpath(),
+                    *(str(root) for root in _admitted_python_roots(record.source_root, record.definition)))))
+            else:
+                raise HostError('unknown internal readiness worker projection')
+            from astrid.core.rendering.remotion_runtime import _validated_runtime
+            try:
+                _validated_runtime(Path(env[ASTRID_REMOTION_PROJECT_DIR]), environment=readiness_env)
+            except Exception as exc:
+                secrets.clear()
+                raise HostError(_remotion_readiness_message(exc)) from exc
         return env, secrets
 
     @staticmethod
@@ -8833,6 +9350,7 @@ class GenericPackHost:
                 safe_label = "".join(char if char.isalnum() or char in "-_." else "_" for char in task_label)
                 output_root = managed_root / "astrid-tasks" / safe_label / "outputs"
                 output_root.mkdir(parents=True, exist_ok=True)
+        prepared_inputs = inputs
         values = {**inputs, "out": str(output_root), "run_root": str(attempt), "python_exec": sys.executable}
         for port in record.definition.inputs:
             if port.name not in values and port.default is not None:
@@ -8922,7 +9440,9 @@ class GenericPackHost:
             ),
             allow_runtime_connection=allow_runtime_connection and child_bridge is None,
             explicit_env={
-                "PYTHONPATH": os.pathsep.join((package_parent, *_dependency_pythonpath())),
+                **({} if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') == 'installed' else {
+                    "PYTHONPATH": os.pathsep.join((package_parent, *_dependency_pythonpath())),
+                }),
                 ASTRID_INTERNAL_INVOCATION: "1",
                 **binding.env,
                 "ASTRID_PROGRESS_PATH": str(attempt / ".astrid-progress.json"),
@@ -8945,7 +9465,11 @@ class GenericPackHost:
         # unrelated same-named checkout in ambient site-packages. The parent
         # remains available for packs whose source package uses the checkout
         # directory name as its import root.
-        env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
+        from astrid.core.rendering.verified_source import PreparedTimelineInputs
+
+        PreparedTimelineInputs.handoff_source(prepared_inputs, env)
+        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+            env['PYTHONPATH'] = _command_worker_pythonpath(record, env.get('PYTHONPATH', ''))
         cwd = _confined_cwd(
             binding.cwd,
             attempt=attempt,
@@ -8953,7 +9477,7 @@ class GenericPackHost:
             values=values,
         )
         broker_endpoint = network_broker.policy.get("proxy") if network_broker is not None else None
-        inherited_fds = ()
+        inherited_fds: tuple[int, ...] = ()
         if child_bridge is not None:
             # Bootstrap in the action interpreter before pack code. Private
             # launch arguments contain a descriptor and command, no authority.
@@ -8980,6 +9504,19 @@ class GenericPackHost:
                 flags = ["-X", "utf8", *flags]
             argv = [sys.executable, *flags, "-m", "astrid.core.execution.generic_host_worker",
                     "--child-command", str(inherited_fds[0]), json.dumps(arguments)]
+        source_channel = _runtime_external_sources.descriptor(record) if _runtime_external_sources is not None else None
+        if source_channel is not None:
+            if Path(argv[0]).resolve() != Path(sys.executable).resolve():
+                source_channel.close()
+                raise HostError("captured external commands require the admitted Python interpreter")
+            inherited_fds += (source_channel.fileno(),)
+            if child_bridge is None:
+                argv = [sys.executable, "-m", "astrid.core.execution.generic_host_worker",
+                        "--captured-command", json.dumps(argv[1:])]
+            worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+            argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
+            # External code is loaded from the descriptor, never PYTHONPATH.
+            env["PYTHONPATH"] = os.pathsep.join((package_parent, *_dependency_pythonpath()))
         remotion_lease = None
         if record.id == "rendering.timeline_visualize":
             if not argv or Path(argv[0]).resolve() != Path(sys.executable).resolve():
@@ -8998,6 +9535,8 @@ class GenericPackHost:
                         "--renderer-command", str(remotion_lease.inherited_fd()), json.dumps(argv[1:])]
             if not allow_runtime_connection and (network_broker is not None or _network_policy(record) is not None):
                 argv = _network_startup_argv(argv, attempt, env, broker_required=network_broker is not None)
+            if source_channel is not None:
+                argv = _captured_worker_argv(argv)
             # Rendering can create native descendants that change groups.
             # Retain their incarnation-bound custody while the leader runs;
             # a group-only census after it exits cannot own those processes.
@@ -9023,6 +9562,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        finally:
+            if source_channel is not None:
+                source_channel.close()
         if import_receipt is not None:
             import_receipt.launched(process)
         self._track_process(process)
@@ -9279,17 +9821,31 @@ class GenericPackHost:
         # Preserve the host-created sitecustomize hook when replacing the
         # worker import path; arbitrary child PYTHONPATH is still excluded.
         network_hook_roots = (str(attempt_path / ".astrid-network-hook"),) if env.get("ASTRID_NETWORK_POLICY") else ()
-        env["PYTHONPATH"] = os.pathsep.join(
-            dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
-        )
-        env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
+        if os.environ.get('ASTRID_HOST_EXECUTION_PROFILE') != 'installed':
+            env["PYTHONPATH"] = os.pathsep.join(
+                dict.fromkeys((*network_hook_roots, package_parent, *_dependency_pythonpath(), *import_roots))
+            )
+            env[ASTRID_PACKS_PATH] = os.pathsep.join(str(root) for root in self.pack_roots)
         secret_values = {
             key: value for key, value in env.items()
             if key.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIAL"))
         }
         broker_endpoint = str((child_env or {}).get("ASTRID_BROKER_PROXY") or "")
         argv = [sys.executable, "-X", "utf8", "-m", "astrid.core.execution.generic_host_worker", str(request_path)]
-        inherited_fds = ()
+        inherited_fds: tuple[int, ...] = ()
+        source_channel = None
+        if _runtime_external_sources is not None:
+            record = (self._orchestrators.get(capability_id) if capability_kind == "orchestrator"
+                      else self.capabilities.get(capability_id))
+            if record is None:
+                raise HostError("external execution requires a discovered definition")
+            if definition != record.definition.to_dict():
+                raise HostError("external execution definition differs from discovery")
+            source_channel = _runtime_external_sources.descriptor(record, capability_kind=capability_kind)
+            if source_channel is not None:
+                inherited_fds = (source_channel.fileno(),)
+                worker_index = argv.index("astrid.core.execution.generic_host_worker") + 1
+                argv[worker_index:worker_index] = ["--external-source-fd", str(source_channel.fileno())]
         try:
             if capability_kind == "executor" and capability_id == "rendering.timeline_visualize":
                 remotion_lease = self._renderer_task_lease(env, attempt_path)
@@ -9302,6 +9858,8 @@ class GenericPackHost:
                 argv.extend(("--child-bridge", str(bridge_fd)))
             if require_network_startup:
                 argv = _network_startup_argv(argv, attempt_path, env, broker_required=network_broker_required)
+            if source_channel is not None:
+                argv = _captured_worker_argv(argv)
             render_scope = capability_id == "rendering.render"
             if render_scope:
                 env["ASTRID_RENDER_INHERIT_PROCESS_GROUP"] = "1"
@@ -9319,6 +9877,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty(str(exc))
                 raise CommandCleanupUnresolved(f"render launch custody unresolved: {type(exc).__name__}") from exc
             raise
+        finally:
+            if source_channel is not None:
+                source_channel.close()
         self._track_process(process)
         output_capture = _TaskOutputCapture(attempt_path, secret_values, self._scrub_secret_text)
         output_capture.start(process)
@@ -9428,98 +9989,6 @@ class GenericPackHost:
                 env.clear()
                 request_path.unlink(missing_ok=True)
                 result_path.unlink(missing_ok=True)
-
-    def _publish_assembled_timeline(
-        self,
-        *,
-        task_data: Mapping[str, Any],
-        attempt_id: str,
-        fence: int,
-        lease_token: str,
-        outputs: Sequence[Mapping[str, Any]],
-        attempt_root: Path,
-    ) -> Mapping[str, Any]:
-        """Publish the authoring result before settling its Runtime attempt."""
-        publish = getattr(self.client, "publish_timeline_render", None)
-        if not callable(publish):
-            raise HostError("runtime client lacks canonical publish_timeline_render operation")
-        proposal_descriptor = next(
-            (
-                item for item in outputs
-                if str(item.get("artifact_type", "")) == "timeline/authoring-proposal"
-                or Path(str(item.get("path", ""))).name == "authoring-proposal.json"
-            ),
-            None,
-        )
-        if proposal_descriptor is None:
-            raise HostError("rendering.assemble_timeline produced no authoring proposal")
-        proposal_path = Path(str(proposal_descriptor.get("path", ""))).expanduser().resolve()
-        if not proposal_path.is_file() or not proposal_path.is_relative_to(Path(attempt_root).resolve()):
-            raise HostError("authoring proposal path is outside the current attempt")
-        try:
-            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise HostError(f"authoring proposal is unreadable: {exc}") from exc
-        if not isinstance(proposal, Mapping):
-            raise HostError("authoring proposal must be an object")
-        publication = proposal.get("publication")
-        timeline = proposal.get("timeline")
-        registry = proposal.get("registry")
-        if not isinstance(publication, Mapping) or publication.get("authority") != "workspace_runtime":
-            raise HostError("authoring proposal is not Runtime-owned")
-        if publication.get("render_capability") != "rendering.render":
-            raise HostError("authoring proposal must use rendering.render")
-        if not isinstance(timeline, Mapping) or not isinstance(registry, Mapping):
-            raise HostError("authoring proposal must contain timeline and registry objects")
-
-        admitted = task_data.get("spec")
-        if not isinstance(admitted, Mapping):
-            raise HostError("authoring task is missing its immutable spec")
-        public_spec = admitted.get("spec") if isinstance(admitted.get("spec"), Mapping) else admitted
-        dependencies = public_spec.get("runtime_dependencies") if isinstance(public_spec, Mapping) else None
-        if not isinstance(dependencies, Mapping):
-            raise HostError("authoring task is missing runtime publication settings")
-        timeline_id = dependencies.get("timeline_id") or dependencies.get("timeline_ref")
-        expected_version = dependencies.get("expected_version")
-        publication_settings = dependencies.get("publication")
-        if isinstance(publication_settings, Mapping):
-            timeline_id = timeline_id or publication_settings.get("timeline_id") or publication_settings.get("timeline_ref")
-            expected_version = expected_version if expected_version is not None else publication_settings.get("expected_version")
-        if not isinstance(timeline_id, str) or not timeline_id.strip():
-            raise HostError("authoring task publication settings require timeline_id")
-        if isinstance(expected_version, bool) or not isinstance(expected_version, int) or expected_version < 1:
-            raise HostError("authoring task publication settings require a positive expected_version")
-
-        render = dependencies.get("render")
-        if render is None and isinstance(publication_settings, Mapping):
-            render = publication_settings.get("render")
-        if not isinstance(render, Mapping):
-            raise HostError("authoring task publication settings require render configuration")
-        render = dict(render)
-        if render.get("capability_id") != "rendering.render":
-            raise HostError("authoring task render configuration must use rendering.render")
-        if not isinstance(render.get("capability_digest"), str) or not render["capability_digest"].startswith("sha256:"):
-            render_record = self.capabilities.get("rendering.render")
-            if render_record is None:
-                raise HostError("rendering.render capability is not registered with this host")
-            render["capability_digest"] = render_record.capability_digest
-        render.setdefault("schema_version", "1")
-        render_spec = render.get("spec")
-        if not isinstance(render_spec, Mapping):
-            render_spec = {"capability_id": "rendering.render", "kind": "executor", "inputs": {}, "outputs": {}}
-        render["spec"] = dict(render_spec)
-        idempotency_key = f"timeline-publication-{task_data.get('id', attempt_id)}"
-        return publish(
-            attempt_id,
-            lease_token,
-            fence=int(fence),
-            timeline_id=timeline_id,
-            expected_version=expected_version,
-            config=dict(timeline),
-            registry=dict(registry),
-            render=render,
-            idempotency_key=idempotency_key,
-        )
 
     def _wan_session_context(self, task_data: Mapping[str, Any]) -> dict[str, Any]:
         """Read the explicitly admitted Wan source/config/interpreter tuple."""
@@ -10160,6 +10629,11 @@ class GenericPackHost:
                                             "error": {"code": "cancelled",
                                                       "message": "execution cancelled"}},
                                     stop_observed=terminal.get("stage") == "admission")
+                elif code == "cancelled":
+                    # Local containment cannot turn an unacknowledged Runtime
+                    # cancellation into a failed task. Keep cancellation as
+                    # the pending status without inventing an evidence upload.
+                    terminal.update(pending_status="cancelled")
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
@@ -10403,11 +10877,21 @@ class GenericPackHost:
         def fail_admission(error: Exception) -> None:
             """Fence deterministic admission failures as terminal attempts."""
             _terminal["error"] = error
+            message = str(error) + recovery_suffix(error)
+            if (record.adapter.family == "render" or record.adapter.remotion != "never") and "\nDetail: " not in message:
+                from astrid.core.rendering.failure_message import render_failure_message
+
+                check = record.preflight.get("remotion", {})
+                remotion_reason = (str(check["reason"]) if isinstance(check, Mapping)
+                                   and check.get("ok") is False and not check.get("gates")
+                                   and check.get("reason") and str(check["reason"]) in message else None)
+                message = render_failure_message(message, remotion_reason=remotion_reason,
+                                                 unavailable=True, recovery=getattr(error, "recovery_command", ""))
             try:
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
-                    str(error) + recovery_suffix(error),
+                    message,
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
@@ -10513,6 +10997,14 @@ class GenericPackHost:
             )
             raise HostError(str(exc)) from exc
         spec = task_data.get("spec", {})
+        if capability_id == "rendering.assemble_timeline":
+            from astrid.core.contracts.runtime_orchestration import is_native_assembler_spec
+
+            if not is_native_assembler_spec(_admitted_spec_envelope(spec)):
+                fail_admission(HostError(
+                    "legacy assembler admission lacks an immutable original target; "
+                    "native assembly admission is required"
+                ))
         private_runtime_context = isinstance(spec, Mapping) and (
             "child_delegation" in spec or "delegated_parent" in spec or "delegated_recoverable_outputs" in spec)
         authorized_input_object_ids = task_data.get("input_object_ids")
@@ -10823,6 +11315,7 @@ class GenericPackHost:
                     task_id,
                     lease_token,
                     _evidence_cap_message(evidence_failure_message),
+                    structured_error={"code": "evidence_cap"},
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
@@ -10910,6 +11403,9 @@ class GenericPackHost:
                     else None
                 ),
                 continuation_id=task_id,
+                producer_identity={"task_id": task_id, "attempt_id": attempt_id,
+                                   "executor_id": self.executor_id, "fence": fence,
+                                   "runtime_epoch": claim_epoch},
                 file_input_names=frozenset(
                     port.name
                     for port in record.definition.inputs
@@ -10932,7 +11428,10 @@ class GenericPackHost:
                 inputs["comfy_url"] = validate_comfy_url(inputs["comfy_url"])
                 if inputs.get("comfy_output_dir"):
                     inputs["comfy_output_dir"] = validate_output_directory(inputs["comfy_output_dir"], root)
-                network_admission["allowed_routes"] = _network_policy(record, inputs)["allowed_destinations"]
+                local_network_policy = _network_policy(record, inputs)
+                if local_network_policy is None:
+                    raise HostError("vibecomfy.run local_server requires a network policy")
+                network_admission["allowed_routes"] = local_network_policy["allowed_destinations"]
                 managed_adapter = _ManagedLocalServerTaskAdapter(
                     cancel_signal, url=inputs["comfy_url"], destination=root / "outputs",
                     process_census=lambda: bool(self._active_processes),
@@ -11436,16 +11935,6 @@ class GenericPackHost:
                 task_data=task_data,
             )
             typed_outputs.extend(thumbnail_outputs)
-            publication_result: Mapping[str, Any] | None = None
-            if capability_id == "rendering.assemble_timeline":
-                publication_result = self._publish_assembled_timeline(
-                    task_data=task_data,
-                    attempt_id=attempt_id,
-                    fence=fence,
-                    lease_token=lease_token,
-                    outputs=typed_outputs,
-                    attempt_root=root,
-                )
             result_names = {
                 descriptor["name"]
                 for descriptor in harvested
@@ -11540,8 +12029,6 @@ class GenericPackHost:
                 payload["renderer_selection"] = dict(renderer_selection)
             if "gpu" in record.preflight:
                 payload["gpu_qualification"] = dict(record.preflight["gpu"])
-            if publication_result is not None:
-                payload["timeline_render_publication"] = dict(publication_result)
             if thumbnail_diagnostics:
                 payload["thumbnail_diagnostics"] = thumbnail_diagnostics
             network_evidence = self._network_evidence(
@@ -11662,6 +12149,7 @@ class GenericPackHost:
                 storage_failure_receipt = dict(original_error.diagnostic)
             _terminal["error"] = original_error
             failure_message = str(exc)
+            remotion_reason = None
             if (render_child_pending and renderer_selection is not None
                     and renderer_selection["chosen_by"] == "host" and not renderer_selection["remotion_ok"]):
                 # The host chose ffmpeg only because Remotion was unavailable, so
@@ -11670,10 +12158,18 @@ class GenericPackHost:
                     f"; {record.id} chose {renderer_selection['selector']} because rendering.remotion "
                     f"is unavailable on this host: {renderer_selection['remotion_reason']}"
                 )
+                remotion_reason = renderer_selection["remotion_reason"]
             gpu = record.preflight.get("gpu")
             if isinstance(gpu, Mapping) and (gpu.get("warning") or not gpu.get("qualified")):
                 failure_message += " " + str(gpu.get("warning") or gpu["reason"])
-            failure_message += recovery_suffix(original_error)
+            failure_message += recovery_suffix(original_error or exc)
+            if record.adapter.family == "render" or record.adapter.remotion != "never":
+                from astrid.core.rendering.failure_message import render_failure_message
+
+                failure_message = render_failure_message(
+                    failure_message, remotion_reason=remotion_reason,
+                    recovery=getattr(original_error or exc, "recovery_command", ""),
+                )
             evidence_outputs, evidence_result = collect_terminal_evidence("failed", original_error)
             completion_call(self.client.fail,
                 task_id,
@@ -15695,6 +16191,7 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     parser.add_argument("--runtime-instance-id", help="runtime instance identity bound to this host")
     parser.add_argument("--source-inventory-identity", help="verified managed source inventory identity bound to this host")
     parser.add_argument("--boot-manifest-path", help="existing explicit boot-manifest path")
+    parser.add_argument("--remotion-validation-launch-id", help=argparse.SUPPRESS)
     parser.add_argument("--boot-manifest-hash", help="expected SHA-256 hash of the boot manifest")
     parser.add_argument("--readiness-profile-path", help="Worker-published readiness profile")
     parser.add_argument("--readiness-profile-hash", help="expected SHA-256 hash of the readiness profile")
@@ -15714,6 +16211,13 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     )
     args = parser.parse_args()
     _emit_startup_phase("cli_args_parsed")
+    from astrid.core.env_vars import ASTRID_REMOTION_VALIDATION_LAUNCH, ASTRID_REMOTION_VALIDATION_ROLE
+
+    declared_validation = os.environ.get(ASTRID_REMOTION_VALIDATION_LAUNCH)
+    if declared_validation != args.remotion_validation_launch_id:
+        parser.error("Remotion readiness reference belongs to a foreign launch")
+    if declared_validation and os.environ.get(ASTRID_REMOTION_VALIDATION_ROLE) != "host":
+        parser.error("Remotion readiness context is not the host launch context")
     if args.attempt_root and args.attempt_base:
         parser.error("--attempt-root and --attempt-base are mutually exclusive")
     if (args.readiness_profile_path is None) != (args.readiness_profile_hash is None):
@@ -15983,6 +16487,11 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
             parser.error(f"host-only attempt directory is not writable: {exc}")
         args.attempt_base = str(owned_attempts)
 
+    if _runtime_external_sources is not None:
+        if preparation is None or preparation._request is None or preparation._aborted:
+            raise HostError("external sources require retained Runtime preparation")
+        _runtime_external_sources.bind(preparation._request)
+
     _emit_startup_phase("host_constructor_begin")
     _install_host_vibecomfy_import_root()
     host = GenericPackHost(
@@ -16124,6 +16633,10 @@ def _cli_impl(managed_shutdowns: list[Any]) -> int:
     if ready_path is not None:
         ready_payload = {
             "status": "ready",
+            "remotion_validation": {
+                key: value for key, value in os.environ.items()
+                if key.startswith("ASTRID_REMOTION_VALIDATION_")
+            } or None,
             "python_executable": os.path.abspath(sys.executable),
             "pid": os.getpid(),
             "process_birth_id": process_birth_identity(),

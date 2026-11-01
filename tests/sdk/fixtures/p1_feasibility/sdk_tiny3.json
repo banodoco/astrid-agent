@@ -1,0 +1,675 @@
+{
+ "project_id": "p",
+ "timeline_id": "t",
+ "base_parent": {
+  "revision_id": "rev-0",
+  "content_digest": "sha256:fixtures-rev-0"
+ },
+ "parent": {
+  "config": {
+   "theme_overrides": {
+    "visual": {
+     "canvas": {
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+     }
+    }
+   },
+   "slots": {},
+   "chapters": [
+    {
+     "name": "01 OPEN",
+     "from": "c1"
+    },
+    {
+     "name": "02 MIDDLE",
+     "from": "c2"
+    }
+   ]
+  },
+  "clips": []
+ },
+ "placements": [
+  {
+   "shot_id": "A",
+   "occurrence_id": "occ-A",
+   "placement": {
+    "start_ms": 0
+   },
+   "duration_ms": 12000
+  }
+ ],
+ "shots": {
+  "A": {
+   "payload": {
+    "name": "SHOT",
+    "text_bindings": [
+     {
+      "kind": "voiceover_script",
+      "content_hash": "sha256:71da0c8c03bcc7d1db02a43d56e35274fca64c605c2134290c7efa6ae5ff1f0f",
+      "head": 1,
+      "shot_id": "A",
+      "text": "one two\nthree four five\n"
+     }
+    ]
+   },
+   "internal_timeline": {
+    "tracks": [
+     {
+      "id": "type",
+      "kind": "visual"
+     },
+     {
+      "id": "sprite",
+      "kind": "visual"
+     },
+     {
+      "id": "plate",
+      "kind": "visual"
+     },
+     {
+      "id": "vo",
+      "kind": "audio"
+     },
+     {
+      "id": "music",
+      "kind": "audio"
+     }
+    ],
+    "clips": [
+     {
+      "id": "c1-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "P",
+      "at": 0.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c1",
+       "layer": "plate",
+       "why": "the opener",
+       "on": "\"one\""
+      }
+     },
+     {
+      "id": "c2-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "Q",
+      "at": 4.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c2",
+       "layer": "plate",
+       "why": "the middle",
+       "on": "\"two\""
+      }
+     },
+     {
+      "id": "c3-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "R",
+      "at": 8.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c3",
+       "layer": "plate",
+       "why": "the close",
+       "on": "\"three\""
+      }
+     },
+     {
+      "id": "c1-callout",
+      "clipType": "am-callout",
+      "track": "type",
+      "at": 0.0,
+      "hold": 3.0,
+      "params": {
+       "title": "One",
+       "x": 1180,
+       "y": 200,
+       "width": 560,
+       "anchor": {
+        "x": 720,
+        "y": 430
+       }
+      },
+      "app": {
+       "cut": "c1",
+       "layer": "label",
+       "role": "label",
+       "for": 3.0
+      }
+     },
+     {
+      "id": "c2-title",
+      "clipType": "am-type",
+      "track": "type",
+      "at": 4.0,
+      "hold": 1.5,
+      "params": {
+       "text": "Two."
+      },
+      "app": {
+       "cut": "c2",
+       "layer": "title",
+       "role": "title",
+       "on": "\"two\"",
+       "for": 1.5
+      }
+     },
+     {
+      "id": "c3-label",
+      "clipType": "am-type",
+      "track": "type",
+      "at": 8.0,
+      "hold": 2.0,
+      "params": {
+       "text": "THREE"
+      },
+      "app": {
+       "cut": "c3",
+       "layer": "label",
+       "role": "label",
+       "on": "\"three\"",
+       "for": 2.0
+      }
+     },
+     {
+      "id": "c2-sprite",
+      "clipType": "am-sprite",
+      "track": "sprite",
+      "asset": "R",
+      "at": 4.0,
+      "hold": 2.0,
+      "params": {
+       "x": 160,
+       "y": 90
+      },
+      "app": {
+       "cut": "c2",
+       "layer": "sprite",
+       "for": 2.0
+      }
+     },
+     {
+      "id": "a-vo1",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "V",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 5.0,
+      "app": {
+       "segment": "s1",
+       "words": [
+        [
+         0.0,
+         0.9,
+         "one"
+        ],
+        [
+         4.0,
+         4.9,
+         "two"
+        ]
+       ],
+       "text": "one two",
+       "gap_after_s": 3.0
+      }
+     },
+     {
+      "id": "a-vo2",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "V",
+      "at": 8.0,
+      "from": 0.0,
+      "to": 3.0,
+      "app": {
+       "segment": "s2",
+       "words": [
+        [
+         0.0,
+         0.9,
+         "three"
+        ],
+        [
+         1.0,
+         1.4,
+         "four"
+        ],
+        [
+         1.5,
+         1.9,
+         "five"
+        ]
+       ],
+       "text": "three four five"
+      }
+     },
+     {
+      "id": "a-music",
+      "clipType": "media",
+      "track": "music",
+      "asset": "M",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 12.0,
+      "app": {
+       "beats": {
+        "beats": [
+         0.0,
+         0.5,
+         1.0,
+         1.5,
+         2.0,
+         2.5,
+         3.0,
+         3.5,
+         4.0,
+         4.5,
+         5.0,
+         5.5,
+         6.0,
+         6.5,
+         7.0,
+         7.5,
+         8.0,
+         8.5,
+         9.0,
+         9.5,
+         10.0,
+         10.5,
+         11.0,
+         11.5,
+         12.0
+        ],
+        "downbeats": [
+         0.0,
+         2.0,
+         4.0,
+         6.0,
+         8.0,
+         10.0,
+         12.0
+        ],
+        "bpm": 120,
+        "time": "cue_seconds",
+        "source": "tiny3.beats"
+       }
+      }
+     }
+    ],
+    "registry": {
+     "assets": {
+      "P": {
+       "media_id": "sha256:a1c21c8e165882f392fc1b375302e15b73e0e498911cc20dba90f37325b71a43"
+      },
+      "Q": {
+       "media_id": "sha256:d4850efa82f7215ebfb938f87c86b22884152f4d269dcf735b102d044cc74c84"
+      },
+      "R": {
+       "media_id": "sha256:85bf7e87911986e6cd1fe7ae367f1bbd4be366c7bfc2c05c032f4ad228ee96e1"
+      },
+      "V": {
+       "media_id": "sha256:0dd7666a77effee73bc843badb0c4c1460dce3f1494307ea8407de285324f110"
+      },
+      "M": {
+       "media_id": "sha256:76fa090fd0aadc67f8e680fbcadc043331e50bee342f62777cf518553324dcd1"
+      }
+     }
+    }
+   },
+   "base_payload": {
+    "name": "SHOT",
+    "text_bindings": [
+     {
+      "kind": "voiceover_script",
+      "content_hash": "sha256:71da0c8c03bcc7d1db02a43d56e35274fca64c605c2134290c7efa6ae5ff1f0f",
+      "head": 1,
+      "shot_id": "A",
+      "text": "one two\nthree four five\n"
+     }
+    ]
+   },
+   "base_internal_timeline": {
+    "tracks": [
+     {
+      "id": "type",
+      "kind": "visual"
+     },
+     {
+      "id": "sprite",
+      "kind": "visual"
+     },
+     {
+      "id": "plate",
+      "kind": "visual"
+     },
+     {
+      "id": "vo",
+      "kind": "audio"
+     },
+     {
+      "id": "music",
+      "kind": "audio"
+     }
+    ],
+    "clips": [
+     {
+      "id": "c1-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "P",
+      "at": 0.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c1",
+       "layer": "plate",
+       "why": "the opener",
+       "on": "\"one\""
+      }
+     },
+     {
+      "id": "c2-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "Q",
+      "at": 4.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c2",
+       "layer": "plate",
+       "why": "the middle",
+       "on": "\"two\""
+      }
+     },
+     {
+      "id": "c3-plate",
+      "clipType": "am-snap-plate",
+      "track": "plate",
+      "asset": "R",
+      "at": 8.0,
+      "hold": 4.0,
+      "params": {},
+      "app": {
+       "cut": "c3",
+       "layer": "plate",
+       "why": "the close",
+       "on": "\"three\""
+      }
+     },
+     {
+      "id": "c1-callout",
+      "clipType": "am-callout",
+      "track": "type",
+      "at": 0.0,
+      "hold": 3.0,
+      "params": {
+       "title": "One",
+       "x": 1180,
+       "y": 200,
+       "width": 560,
+       "anchor": {
+        "x": 720,
+        "y": 430
+       }
+      },
+      "app": {
+       "cut": "c1",
+       "layer": "label",
+       "role": "label",
+       "for": 3.0
+      }
+     },
+     {
+      "id": "c2-title",
+      "clipType": "am-type",
+      "track": "type",
+      "at": 4.0,
+      "hold": 1.5,
+      "params": {
+       "text": "Two."
+      },
+      "app": {
+       "cut": "c2",
+       "layer": "title",
+       "role": "title",
+       "on": "\"two\"",
+       "for": 1.5
+      }
+     },
+     {
+      "id": "c3-label",
+      "clipType": "am-type",
+      "track": "type",
+      "at": 8.0,
+      "hold": 2.0,
+      "params": {
+       "text": "THREE"
+      },
+      "app": {
+       "cut": "c3",
+       "layer": "label",
+       "role": "label",
+       "on": "\"three\"",
+       "for": 2.0
+      }
+     },
+     {
+      "id": "c2-sprite",
+      "clipType": "am-sprite",
+      "track": "sprite",
+      "asset": "R",
+      "at": 4.0,
+      "hold": 2.0,
+      "params": {
+       "x": 160,
+       "y": 90
+      },
+      "app": {
+       "cut": "c2",
+       "layer": "sprite",
+       "for": 2.0
+      }
+     },
+     {
+      "id": "a-vo1",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "V",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 5.0,
+      "app": {
+       "segment": "s1",
+       "words": [
+        [
+         0.0,
+         0.9,
+         "one"
+        ],
+        [
+         4.0,
+         4.9,
+         "two"
+        ]
+       ],
+       "text": "one two",
+       "gap_after_s": 3.0
+      }
+     },
+     {
+      "id": "a-vo2",
+      "clipType": "media",
+      "track": "vo",
+      "asset": "V",
+      "at": 8.0,
+      "from": 0.0,
+      "to": 3.0,
+      "app": {
+       "segment": "s2",
+       "words": [
+        [
+         0.0,
+         0.9,
+         "three"
+        ],
+        [
+         1.0,
+         1.4,
+         "four"
+        ],
+        [
+         1.5,
+         1.9,
+         "five"
+        ]
+       ],
+       "text": "three four five"
+      }
+     },
+     {
+      "id": "a-music",
+      "clipType": "media",
+      "track": "music",
+      "asset": "M",
+      "at": 0.0,
+      "from": 0.0,
+      "to": 12.0,
+      "app": {
+       "beats": {
+        "beats": [
+         0.0,
+         0.5,
+         1.0,
+         1.5,
+         2.0,
+         2.5,
+         3.0,
+         3.5,
+         4.0,
+         4.5,
+         5.0,
+         5.5,
+         6.0,
+         6.5,
+         7.0,
+         7.5,
+         8.0,
+         8.5,
+         9.0,
+         9.5,
+         10.0,
+         10.5,
+         11.0,
+         11.5,
+         12.0
+        ],
+        "downbeats": [
+         0.0,
+         2.0,
+         4.0,
+         6.0,
+         8.0,
+         10.0,
+         12.0
+        ],
+        "bpm": 120,
+        "time": "cue_seconds",
+        "source": "tiny3.beats"
+       }
+      }
+     }
+    ],
+    "registry": {
+     "assets": {
+      "P": {
+       "media_id": "sha256:a1c21c8e165882f392fc1b375302e15b73e0e498911cc20dba90f37325b71a43"
+      },
+      "Q": {
+       "media_id": "sha256:d4850efa82f7215ebfb938f87c86b22884152f4d269dcf735b102d044cc74c84"
+      },
+      "R": {
+       "media_id": "sha256:85bf7e87911986e6cd1fe7ae367f1bbd4be366c7bfc2c05c032f4ad228ee96e1"
+      },
+      "V": {
+       "media_id": "sha256:0dd7666a77effee73bc843badb0c4c1460dce3f1494307ea8407de285324f110"
+      },
+      "M": {
+       "media_id": "sha256:76fa090fd0aadc67f8e680fbcadc043331e50bee342f62777cf518553324dcd1"
+      }
+     }
+    }
+   },
+   "shot_id": "A"
+  }
+ },
+ "schema_version": 1,
+ "base_parent_payload": {
+  "config": {
+   "theme_overrides": {
+    "visual": {
+     "canvas": {
+      "fps": 30,
+      "width": 1920,
+      "height": 1080
+     }
+    }
+   },
+   "slots": {},
+   "chapters": [
+    {
+     "name": "01 OPEN",
+     "from": "c1"
+    },
+    {
+     "name": "02 MIDDLE",
+     "from": "c2"
+    }
+   ]
+  },
+  "clips": []
+ },
+ "base_placements": {
+  "occ-A": {
+   "shot_id": "A",
+   "occurrence_id": "occ-A",
+   "placement": {
+    "start_ms": 0
+   },
+   "duration_ms": 12000
+  }
+ },
+ "source_mapping": {
+  "placements": {
+   "occ-A": {
+    "shot_id": "A",
+    "occurrence_id": "occ-A",
+    "placement": {
+     "start_ms": 0
+    },
+    "duration_ms": 12000
+   }
+  },
+  "shots": {
+   "A": {
+    "shot_id": "A",
+    "revision_id": "rev-shot-A",
+    "content_digest": "sha256:shot-A",
+    "internal_timeline_id": "it-A",
+    "internal_timeline_revision_id": "rev-it-A",
+    "internal_timeline_content_digest": "sha256:it-A",
+    "item_id_map": {}
+   }
+  }
+ }
+}

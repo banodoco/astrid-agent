@@ -314,6 +314,9 @@ def test_visualize_labels_adds_layer_without_reordering_other_layers(monkeypatch
     captured = []
 
     class Timelines:
+        def open_bundle(self, project, ref, revision_id=None, **_):
+            return DomainResult.success({"bundle": {"base_parent": {"revision_id": "rev-1"}}})
+
         def visualize(self, project, timeline_slug, **kwargs):
             captured.append(kwargs)
             return DomainResult.success({"artifacts": []})

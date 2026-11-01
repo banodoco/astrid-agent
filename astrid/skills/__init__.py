@@ -7,7 +7,9 @@ selects one Claude-style frontmatter document per pack.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
+from functools import wraps
 from typing import Iterable
 
 from . import discovery, registry, state
@@ -16,9 +18,7 @@ from .harnesses import ADAPTERS, HarnessAdapter, adapter_for, all_adapters
 from .harnesses.base import target_mechanism
 from .links import LinkScan, scan_links
 
-# Frozen setup composition selected from existing first-party declarations.
-# Broader shipped-pack availability remains unchanged; these are only the
-# stable skill surfaces composed into a normal agent view by default.
+# Legacy setup defaults retained for external and managed pack policy.
 DEFAULT_FIRST_PARTY_SKILL_IDS = (
     "vibecomfy",
     "rendering",
@@ -30,14 +30,7 @@ DEFAULT_FIRST_PARTY_SKILL_IDS = (
 def default_descriptors(
     descriptors: Iterable[SkillDescriptor] | None = None,
 ) -> list[SkillDescriptor]:
-    """Return the gateway plus setup-selected default skill packs.
-
-    Setup policy owns default external-pack selection.  Managed sources are
-    therefore defaults only after they are provisioned and admitted; a v2
-    pack manifest does not need a forbidden installer-specific field.
-    First-party manifests that explicitly declare a legacy taxonomy tier keep
-    their existing behavior.
-    """
+    """Return source-tree mains and the existing external and managed defaults."""
     from astrid.core.pack import load_pack_manifest, pack_manifest_path
     from astrid.core.pack.source_setup import active_source_inventory
 
@@ -51,6 +44,8 @@ def default_descriptors(
     except Exception:
         managed_default_ids = set()
     for descriptor in available:
+        if descriptor.skill_dir.resolve().is_relative_to(discovery.PACKS_DIR.resolve()) and descriptor not in result:
+            result.append(descriptor)
         if descriptor.pack_id in managed_default_ids and descriptor not in result:
             result.append(descriptor)
     for pack_id in DEFAULT_FIRST_PARTY_SKILL_IDS:
@@ -88,6 +83,49 @@ def default_pack_ids(descriptors: Iterable[SkillDescriptor] | None = None) -> tu
 
 
 
+def _locked_operation(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with state.locked(kwargs.get("state_path")):
+            return fn(*args, **kwargs)
+    return wrapped
+
+
+def _units(pack_ids, skill_names, all_skills, *, uninstalling=False):
+    available = list_skills()
+    requested = list(pack_ids) if pack_ids is not None else None
+    if requested is not None:
+        by_id = {d.pack_id: d for d in available}
+        missing = [pid for pid in requested if pid not in by_id]
+        if missing:
+            raise KeyError(f"unknown pack(s): {missing}")
+        mains = [by_id[pid] for pid in requested]
+    else:
+        mains = available
+    extras = discovery.list_extras(available)
+    if skill_names and (pack_ids is None or len(mains) != 1):
+        raise ValueError("--skill requires one pack")
+    if all_skills and (pack_ids is None or len(mains) != 1):
+        raise ValueError("--all-skills requires one pack")
+    if skill_names and all_skills:
+        raise ValueError("--skill and --all-skills cannot be combined")
+    matching = [d for d in extras if d.pack_id in {m.pack_id for m in mains}]
+    if skill_names:
+        missing = set(skill_names) - {d.skill for d in matching}
+        if missing:
+            raise ValueError(f"unknown skill(s): {sorted(missing)}")
+        return [d for d in matching if d.skill in skill_names]
+    return mains + matching if all_skills or uninstalling else mains
+
+
+def _inventory(current_state, harness, descriptor):
+    units = current_state["skills"][harness]["skills"]
+    return units.setdefault(descriptor.skill_id, {
+        "role": "extra" if descriptor.skill else "main", "selected": False, "digest": None,
+    })
+
+
+@_locked_operation
 def install(
     pack_ids: Iterable[str] | None,
     harness_names: Iterable[str] | None,
@@ -96,10 +134,13 @@ def install(
     force: bool = False,
     dry_run: bool = False,
     state_path: Path | None = None,
+    skill_names: Iterable[str] = (),
+    all_skills: bool = False,
 ) -> dict:
-    descriptors = _resolve_descriptors(pack_ids)
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
+    extras_for_digest = discovery.list_extras([d for d in descriptors if d.skill is None])
 
     report: dict = {"actions": []}
     for harness_name, adapter in targets.items():
@@ -117,7 +158,7 @@ def install(
                 state.record_install(
                     current_state,
                     harness_name,
-                    descriptor.pack_id,
+                    descriptor.skill_id,
                     target=str(target),
                     mechanism=(
                         kwargs["mechanism"]
@@ -125,21 +166,35 @@ def install(
                         else target_mechanism(target)
                     ),
                 )
-        report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(s) for s in steps]})
+            for descriptor in descriptors:
+                entry = _inventory(current_state, harness_name, descriptor)
+                entry["selected"] = True
+                entry["digest"] = discovery.unit_digest(descriptor, extras_for_digest)
+                disabled = current_state["disabled_defaults"][harness_name]
+                if descriptor.pack_id in disabled:
+                    disabled.remove(descriptor.pack_id)
+        report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(s) for s in steps],
+                                  **({"visibility": "external-dir: all skills visible"} if harness_name == "hermes" and mechanism == "external-dir" else {})})
 
     if not dry_run:
         state.save(current_state, state_path)
+        if any(d.skill for d in descriptors):
+            return sync.__wrapped__(harness_names=targets, mechanism=mechanism, force=force,
+                                    state_path=state_path, refresh_ids={d.skill_id for d in descriptors})
     return report
 
 
+@_locked_operation
 def uninstall(
     pack_ids: Iterable[str] | None,
     harness_names: Iterable[str] | None,
     *,
     dry_run: bool = False,
     state_path: Path | None = None,
+    skill_names: Iterable[str] = (),
+    all_skills: bool = False,
 ) -> dict:
-    descriptors = _resolve_descriptors(pack_ids)
+    descriptors = _units(pack_ids, tuple(skill_names), all_skills, uninstalling=True)
     targets = _resolve_harnesses(harness_names)
     current_state = state.load(state_path)
 
@@ -156,9 +211,11 @@ def uninstall(
                 state.record_uninstall(
                     current_state,
                     harness_name,
-                    descriptor.pack_id,
-                    default=descriptor in default_descriptors(descriptors),
+                    descriptor.skill_id,
+                    default=descriptor.skill is None and descriptor in default_descriptors(descriptors),
                 )
+            for descriptor in descriptors:
+                _inventory(current_state, harness_name, descriptor)["selected"] = False
         report["actions"].append({"harness": harness_name, "steps": [_step_to_dict(s) for s in steps]})
 
     if not dry_run:
@@ -166,6 +223,7 @@ def uninstall(
     return report
 
 
+@_locked_operation
 def sync(
     *,
     harness_names: Iterable[str] | None = None,
@@ -177,17 +235,16 @@ def sync(
     skill_md_path: Path | None = None,
     selected_pack_ids: Iterable[str] = (),
     proposed_state: dict | None = None,
+    refresh_ids: set[str] | None = None,
+    refresh_selected_only: bool = False,
 ) -> dict:
-    """Refresh the gateway link + registry block (and, with *deep*, per-pack links).
+    """Compose the gateway and selected skills, refresh units, and prune orphans.
 
-    Default (gateway-only) links just the ``_core`` skill as ``astrid`` into
-    every detected harness, composes retained/requested integrations into its
-    pack routes, and regenerates the managed pack registry block in the
-    creative-work supporting reference. With *deep*, every discovered pack skill is also
-    linked as ``astrid-<pack>`` and the block records those skill names.
-    Orphan ``astrid-*`` installs (no longer-discovered packs) are pruned.
+    Deep sync also links enabled discoverable skills without changing selection.
     """
     all_descriptors = list_skills()
+    extras = discovery.list_extras(all_descriptors)
+    all_units = all_descriptors + extras
     selected_pack_ids = tuple(selected_pack_ids)
     targets = _resolve_harnesses(harness_names)
     if proposed_state is not None and not dry_run:
@@ -210,6 +267,11 @@ def sync(
     view_parent = (state_path or state.state_path()).parent / "skills"
 
     for harness_name, adapter in targets.items():
+        state_before = {
+            key: copy.deepcopy(current_state.get(key, {}).get(harness_name))
+            for key in ("skills", "installs", "disabled_defaults")
+        }
+        previous_view_ids: set[str] = set()
         descriptors = _sync_descriptors_for_harness(
             all_descriptors,
             current_state,
@@ -218,28 +280,46 @@ def sync(
             selected_pack_ids=selected_pack_ids,
             view_routes=skill_md_path is None,
         )
+        if skill_md_path is not None:
+            selected = current_state["skills"][harness_name]["skills"]
+            descriptors = [d for d in all_units if (deep or d.pack_id == "_core" or selected.get(d.skill_id, {}).get("selected"))
+                           and d.pack_id not in current_state.get("disabled_defaults", {}).get(harness_name, [])]
         view_steps: list = []
+        effective_refresh = refresh_ids
+        if refresh_selected_only and refresh_ids is not None:
+            selected = current_state["skills"][harness_name]["skills"]
+            extra_ids = {d.skill_id for d in extras}
+            effective_refresh = {sid for sid in refresh_ids if sid not in extra_ids or selected.get(sid, {}).get("selected")}
         if skill_md_path is None:
             from .view import compose_view
 
             core = next(d for d in descriptors if d.pack_id == "_core")
             pack_descriptors = [d for d in descriptors if d.pack_id != "_core"]
             view_root = view_parent / harness_name
+            previous_view_ids = {p.name for p in (view_root / "packs").iterdir()} if (view_root / "packs").is_dir() else set()
             gateway, view_steps, view_packs = compose_view(
-                view_root, core, pack_descriptors, dry_run=dry_run
+                view_root, core, pack_descriptors, dry_run=dry_run,
+                refresh=effective_refresh, extras=extras,
             )
+            from dataclasses import replace
+            view_extras = [replace(d, skill_dir=view_root / "packs" / d.pack_id / d.skill,
+                                   skill_md=view_root / "packs" / d.pack_id / d.skill / "SKILL.md")
+                           for d in extras if d.pack_id in {p.pack_id for p in pack_descriptors}]
+            selected_ids = {sid for sid, item in current_state["skills"][harness_name]["skills"].items() if item.get("selected")}
+            visible = [d for d in [*view_packs, *view_extras] if deep or d.skill_id in selected_ids]
             registry_target = gateway.skill_md.parent / "creative-work" / "references" / "packs.md"
             if not dry_run:
                 changed = registry.regenerate(
                     skill_md_path=registry_target,
-                    descriptors=view_packs,
+                    descriptors=[*view_packs, *view_extras],
                     deep=deep,
+                    selected=selected_ids,
                     view_root=view_root,
                 )
             else:
                 changed = False
             registry_changes[harness_name] = changed
-            descriptors = [gateway, *view_packs] if deep else [gateway]
+            descriptors = [gateway, *visible]
         kwargs: dict = {"force": force}
         if harness_name == "hermes":
             kwargs["mechanism"] = mechanism
@@ -249,12 +329,13 @@ def sync(
             steps = adapter.plan("install", descriptors, **kwargs)
         else:
             steps = adapter.apply("install", descriptors, **kwargs)
+            disabled_before = list(current_state["disabled_defaults"].get(harness_name, []))
             for descriptor in descriptors:
                 target = adapter.target_for(descriptor)
                 state.record_install(
                     current_state,
                     harness_name,
-                    descriptor.pack_id,
+                    descriptor.skill_id,
                     target=str(target),
                     mechanism=(
                         kwargs["mechanism"]
@@ -262,8 +343,9 @@ def sync(
                         else target_mechanism(target)
                     ),
                 )
+            current_state["disabled_defaults"][harness_name] = disabled_before
             # Prune orphan installs from state.
-            installed_ids = {d.pack_id for d in descriptors}
+            installed_ids = {d.skill_id for d in descriptors}
             current_state["installs"][harness_name] = {
                 pid: info
                 for pid, info in current_state["installs"].get(harness_name, {}).items()
@@ -281,7 +363,7 @@ def sync(
                     current_state.get("disabled_defaults", {}).get(harness_name, [])
                 )
                 known_ids = {
-                    d.pack_id for d in all_descriptors if d.pack_id not in disabled_ids
+                    d.skill_id for d in all_units if d.pack_id not in disabled_ids
                 }
                 for removed in prune_orphan_skill_links(skills_dir, known_ids):
                     steps.append(_pruned_step(removed))
@@ -292,11 +374,39 @@ def sync(
                         removed_id,
                         default=removed_id in default_pack_ids(all_descriptors),
                     )
-        report["actions"].append(
-            {
-                "harness": harness_name,
-                "steps": [_step_to_dict(s) for s in [*view_steps, *steps]],
+        outdated = []
+        changed = []
+        composed_ids = {d.pack_id for d in _sync_descriptors_for_harness(
+            all_descriptors, current_state, harness_name, deep=deep, selected_pack_ids=selected_pack_ids
+        )}
+        for unit in all_units:
+            if unit.pack_id not in composed_ids:
+                continue
+            entry = _inventory(current_state, harness_name, unit)
+            digest = discovery.unit_digest(unit, extras)
+            old = entry.get("digest")
+            if old is not None and old != digest:
+                outdated.append(unit.skill_id)
+            if effective_refresh is None or unit.skill_id in effective_refresh or (skill_md_path is None and unit.pack_id not in previous_view_ids):
+                if old is not None and old != digest:
+                    changed.append(unit.skill_id)
+                if not dry_run:
+                    entry["digest"] = digest
+        if not dry_run:
+            state_after = {
+                key: copy.deepcopy(current_state.get(key, {}).get(harness_name))
+                for key in ("skills", "installs", "disabled_defaults")
             }
+            for snapshot in (state_before, state_after):
+                skills_snapshot = snapshot.get("skills")
+                if isinstance(skills_snapshot, dict):
+                    skills_snapshot.pop("synced_at", None)
+            if state_after != state_before:
+                current_state["skills"][harness_name]["synced_at"] = state.now_iso()
+        report["actions"].append(
+            {"harness": harness_name, "steps": [_step_to_dict(s) for s in [*view_steps, *steps]],
+             "outdated": outdated, "changed": changed,
+             **({"visibility": "external-dir: all skills visible"} if harness_name == "hermes" and mechanism == "external-dir" else {})}
         )
 
     if not dry_run:
@@ -340,7 +450,8 @@ def check(
     from .harnesses.base import ours_link_to_pack_id
 
     all_descriptors = list_skills()
-    known_ids = {d.pack_id for d in all_descriptors}
+    extras = discovery.list_extras(all_descriptors)
+    known_ids = {d.skill_id for d in [*all_descriptors, *extras]}
     current_state = state.load(state_path)
 
     detected = {name: adapter for name, adapter in all_adapters().items() if adapter.detect()}
@@ -368,6 +479,11 @@ def check(
             deep=deep,
             view_routes=skill_md_path is None,
         )
+        if skill_md_path is not None:
+            selected = current_state["skills"][harness_name]["skills"]
+            expected = [d for d in [*all_descriptors, *extras]
+                        if (deep or d.pack_id == "_core" or selected.get(d.skill_id, {}).get("selected"))
+                        and d.pack_id not in current_state.get("disabled_defaults", {}).get(harness_name, [])]
         registry_descriptors = expected
         registry_target = skill_md_path
         view_root = None
@@ -380,7 +496,13 @@ def check(
             gateway, _steps, registry_descriptors = compose_view(
                 view_root, core, pack_descriptors, dry_run=True
             )
-            expected = [gateway, *registry_descriptors] if deep else [gateway]
+            from dataclasses import replace
+            view_extras = [replace(d, skill_dir=view_root / "packs" / d.pack_id / d.skill,
+                                   skill_md=view_root / "packs" / d.pack_id / d.skill / "SKILL.md")
+                           for d in extras if d.pack_id in {p.pack_id for p in pack_descriptors}]
+            registry_descriptors = [*registry_descriptors, *view_extras]
+            selected = {sid for sid, item in current_state["skills"][harness_name]["skills"].items() if item.get("selected")}
+            expected = [gateway, *[d for d in registry_descriptors if deep or d.skill_id in selected]]
             registry_target = view_root / "creative-work" / "references" / "packs.md"
         if registry_target is not None and skill_md_path is None:
             if not registry_target.is_file():
@@ -391,6 +513,7 @@ def check(
                     descriptors=registry_descriptors,
                     deep=deep,
                     view_root=view_root,
+                    selected=selected,
                 )
         for descriptor in expected:
             ok, _msg = adapter.verify(descriptor)
@@ -563,18 +686,29 @@ def doctor(*, state_path: Path | None = None, heal: bool = False) -> dict:
 
 
 def list_state(*, state_path: Path | None = None) -> dict:
-    descriptors = list_skills()
+    mains = list_skills()
+    extras = discovery.list_extras(mains)
+    descriptors = mains + extras
     current_state = state.load(state_path)
     detected = {name: adapter for name, adapter in all_adapters().items() if adapter.detect()}
     items = []
     for descriptor in descriptors:
         per_harness = {}
         for harness_name, adapter_cls in ADAPTERS.items():
-            info = current_state["installs"].get(harness_name, {}).get(descriptor.pack_id)
+            info = current_state["installs"].get(harness_name, {}).get(descriptor.skill_id)
             adapter = detected.get(harness_name) or adapter_cls()
             fs_record = None
+            view_root = (state_path or state.state_path()).parent / "skills" / harness_name
+            core_info = current_state["installs"].get(harness_name, {}).get("_core", {})
+            inspected = descriptor
+            if core_info.get("target") and view_root.is_dir() and Path(core_info["target"]).resolve() == view_root.resolve():
+                from dataclasses import replace
+                skill_dir = view_root if descriptor.pack_id == "_core" else view_root / "packs" / descriptor.pack_id
+                if descriptor.skill:
+                    skill_dir = skill_dir / descriptor.skill
+                inspected = replace(descriptor, skill_dir=skill_dir, skill_md=skill_dir / "SKILL.md")
             try:
-                fs_record = adapter.discover_installed(descriptor)
+                fs_record = adapter.discover_installed(inspected)
             except Exception:
                 fs_record = None
             in_state = info is not None
@@ -588,7 +722,11 @@ def list_state(*, state_path: Path | None = None) -> dict:
                 "fs_installed": in_fs,
                 "state_installed": in_state,
                 "drift": drift,
+                "selected": current_state["skills"][harness_name]["skills"].get(descriptor.skill_id, {}).get("selected", False),
+                "outdated": (lambda recorded: recorded is not None and recorded != discovery.unit_digest(descriptor, extras))(current_state["skills"][harness_name]["skills"].get(descriptor.skill_id, {}).get("digest")),
             }
+            if harness_name == "hermes" and fs_record is not None and fs_record.mechanism == "external-dir":
+                entry["visibility"] = "external-dir: all skills visible"
             if fs_record is not None:
                 entry["fs_target"] = str(fs_record.target)
                 entry["fs_mechanism"] = fs_record.mechanism
@@ -596,6 +734,8 @@ def list_state(*, state_path: Path | None = None) -> dict:
         items.append(
             {
                 "pack_id": descriptor.pack_id,
+                "id": descriptor.skill_id,
+                "role": "extra" if descriptor.skill else "main",
                 "name": descriptor.name,
                 "short_description": descriptor.short_description,
                 "harnesses": per_harness,
@@ -640,12 +780,13 @@ def _codex_after_set(
     AGENTS.md should reflect post-state, so we union/diff against the current
     install record.
     """
-    available = {d.pack_id: d for d in list_skills()}
+    mains = list_skills()
+    available = {d.skill_id: d for d in [*mains, *discovery.list_extras(mains)]}
     installed_now = set(current_state["installs"].get("codex", {}).keys())
     if install:
-        result_ids = installed_now.union(d.pack_id for d in changed_descriptors)
+        result_ids = installed_now.union(d.skill_id for d in changed_descriptors)
     else:
-        result_ids = installed_now.difference(d.pack_id for d in changed_descriptors)
+        result_ids = installed_now.difference(d.skill_id for d in changed_descriptors)
     return [available[pid] for pid in sorted(result_ids) if pid in available]
 
 
@@ -710,8 +851,13 @@ def _sync_descriptors_for_harness(
         if isinstance(setup_selection, dict)
         else []
     )
+    selected_ids = {
+        skill_id.split("-", 1)[0]
+        for skill_id, item in current_state.get("skills", {}).get(harness_name, {}).get("skills", {}).items()
+        if item.get("selected")
+    }
     expected_ids = (
-        installed_ids
+        installed_ids | selected_ids
         | set(default_pack_ids(all_descriptors))
         | {str(value) for value in retained_integrations}
         | {str(value) for value in selected_pack_ids}

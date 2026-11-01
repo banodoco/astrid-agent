@@ -1,0 +1,2076 @@
+{
+  "bundle": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "base_parent": {
+      "revision_id": "parent-1",
+      "content_digest": "sha256:df2345b7dbca379c87b5f34665845bf3ddba613a574214a2da4713e3df190cd4"
+    },
+    "base_parent_payload": {
+      "config": {
+        "tracks": [
+          {
+            "id": "visual",
+            "kind": "visual",
+            "opaque": [
+              null,
+              false,
+              "keep track"
+            ]
+          }
+        ],
+        "clips": [],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "base_placements": {},
+    "parent": {
+      "config": {
+        "tracks": [
+          {
+            "id": "visual",
+            "kind": "visual",
+            "opaque": [
+              null,
+              false,
+              "keep track"
+            ]
+          }
+        ],
+        "clips": [],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "placements": [],
+    "shots": {},
+    "source_mapping": {
+      "placements": {},
+      "shots": {},
+      "_runtime_document": {
+        "schema_version": 1,
+        "project_id": "project-1",
+        "timeline_id": "film",
+        "parent_revision": {
+          "revision_id": "parent-1",
+          "payload": {
+            "config": {
+              "tracks": [
+                {
+                  "id": "visual",
+                  "kind": "visual",
+                  "opaque": [
+                    null,
+                    false,
+                    "keep track"
+                  ]
+                }
+              ],
+              "clips": [],
+              "output": {
+                "fps": {
+                  "numerator": 30000,
+                  "denominator": 1001
+                }
+              },
+              "opaque": {
+                "timestamp": "authored timestamp",
+                "v": [
+                  null,
+                  false,
+                  0
+                ]
+              }
+            },
+            "clips": [],
+            "registry": {
+              "assets": {
+                "picture": {
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "type": "image"
+                }
+              }
+            },
+            "occurrences": [],
+            "name": "Renamed Film",
+            "unknown": {
+              "opaque": [
+                "parent-1",
+                null
+              ]
+            }
+          },
+          "content_digest": "sha256:df2345b7dbca379c87b5f34665845bf3ddba613a574214a2da4713e3df190cd4"
+        },
+        "shot_revisions": [],
+        "internal_timeline_revisions": [],
+        "dependency_manifest": {
+          "shots": [],
+          "internal_timelines": [],
+          "media": [
+            {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "documents": []
+        }
+      }
+    }
+  },
+  "verified_media": [
+    {
+      "selection": {
+        "asset": "variant-0",
+        "generation_id": "generation-0",
+        "variant_id": "variant-0",
+        "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "media_type": "video/mp4",
+      "size": 123,
+      "duration_seconds": 2.5
+    },
+    {
+      "selection": {
+        "asset": "variant-1",
+        "generation_id": "generation-1",
+        "variant_id": "variant-1",
+        "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "catalog_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "media_type": "video/mp4",
+      "size": 123,
+      "duration_seconds": 2.5
+    }
+  ],
+  "commands": [
+    {
+      "schema_version": 1,
+      "op": "timeline.assembled-target",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "replace_clips": []
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent/collection:occurrence",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "container": "array"
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.occurrences",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {},
+      "created": [],
+      "expect": {},
+      "authorship": {}
+    },
+    {
+      "schema_version": 1,
+      "op": "clip.add-media",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "row": {
+          "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "at": 0.0,
+          "clipType": "media",
+          "from": 0,
+          "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+          "to": 1.5,
+          "track": "visual",
+          "hold": 1.5
+        },
+        "media": {
+          "asset": "variant-0",
+          "generation_id": "generation-0",
+          "variant_id": "variant-0",
+          "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output",
+            "fps"
+          ],
+          "state": {
+            "state": "present",
+            "value": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        },
+        {
+          "ref": "parent/source",
+          "path": [
+            "source_window"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:track",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/track:visual",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "id": "visual",
+              "kind": "visual",
+              "opaque": [
+                null,
+                false,
+                "keep track"
+              ]
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:occurrence",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "container": "array"
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:asset",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "0": {
+                "registry": {
+                  "state": "present",
+                  "value": {}
+                },
+                "assets": {
+                  "state": "present",
+                  "value": {}
+                }
+              },
+              "1": {
+                "registry": {
+                  "state": "absent"
+                },
+                "assets": {
+                  "state": "absent"
+                }
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.tracks",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/track:visual"
+          ],
+          "order": [
+            "parent/track:visual"
+          ],
+          "boundaries": [
+            "parent/track:visual"
+          ],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.occurrences",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {
+        "media.track": "parent/track:visual"
+      },
+      "created": [
+        "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+        "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+      ],
+      "expect": {
+        "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0::": {
+          "state": "absent"
+        },
+        "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0::": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0::": "direct",
+        "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0::": "direct"
+      }
+    },
+    {
+      "schema_version": 1,
+      "op": "clip.add-media",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "row": {
+          "asset": "continuation-8a4407f84b6809af497fd04e-asset-1",
+          "at": 1.5,
+          "clipType": "media",
+          "from": 0,
+          "id": "continuation-8a4407f84b6809af497fd04e-clip-1",
+          "to": 2.5,
+          "track": "visual",
+          "hold": 2.5
+        },
+        "media": {
+          "asset": "variant-1",
+          "generation_id": "generation-1",
+          "variant_id": "variant-1",
+          "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "catalog_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output",
+            "fps"
+          ],
+          "state": {
+            "state": "present",
+            "value": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        },
+        {
+          "ref": "parent/source",
+          "path": [
+            "source_window"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:track",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/track:visual",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "id": "visual",
+              "kind": "visual",
+              "opaque": [
+                null,
+                false,
+                "keep track"
+              ]
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:occurrence",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "container": "array"
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:asset",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "0": {
+                "registry": {
+                  "state": "present",
+                  "value": {}
+                },
+                "assets": {
+                  "state": "present",
+                  "value": {}
+                }
+              },
+              "1": {
+                "registry": {
+                  "state": "absent"
+                },
+                "assets": {
+                  "state": "absent"
+                }
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.tracks",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/track:visual"
+          ],
+          "order": [
+            "parent/track:visual"
+          ],
+          "boundaries": [
+            "parent/track:visual"
+          ],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.occurrences",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+          ],
+          "order": [
+            "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+          ],
+          "boundaries": [
+            "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+          ],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {
+        "media.track": "parent/track:visual"
+      },
+      "created": [
+        "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+        "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1"
+      ],
+      "expect": {
+        "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1::": {
+          "state": "absent"
+        },
+        "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1::": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1::": "direct",
+        "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1::": "direct"
+      }
+    }
+  ],
+  "records": [
+    {
+      "ordinal": 0,
+      "command": {
+        "schema_version": 1,
+        "op": "timeline.assembled-target",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "replace_clips": []
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent/collection:occurrence",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "ref": "parent/collection:clip",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                },
+                "payload_members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "collection.occurrences",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.clips",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {},
+        "created": [],
+        "expect": {},
+        "authorship": {}
+      },
+      "writes": [],
+      "reads": [
+        {
+          "ref": "parent/collection:occurrence",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "container": "array"
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.occurrences",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": [],
+      "created": [],
+      "dependencies": [],
+      "derived_writes": []
+    },
+    {
+      "ordinal": 1,
+      "command": {
+        "schema_version": 1,
+        "op": "clip.add-media",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "row": {
+            "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+            "at": 0.0,
+            "clipType": "media",
+            "from": 0,
+            "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+            "to": 1.5,
+            "track": "visual",
+            "hold": 1.5
+          },
+          "media": {
+            "asset": "variant-0",
+            "generation_id": "generation-0",
+            "variant_id": "variant-0",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent",
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "state": {
+              "state": "present",
+              "value": {
+                "numerator": 30000,
+                "denominator": 1001
+              }
+            }
+          },
+          {
+            "ref": "parent/source",
+            "path": [
+              "source_window"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/collection:track",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/track:visual",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "visual",
+                "kind": "visual",
+                "opaque": [
+                  null,
+                  false,
+                  "keep track"
+                ]
+              }
+            }
+          },
+          {
+            "ref": "parent/collection:occurrence",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "ref": "parent/collection:asset",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "0": {
+                  "registry": {
+                    "state": "present",
+                    "value": {}
+                  },
+                  "assets": {
+                    "state": "present",
+                    "value": {}
+                  }
+                },
+                "1": {
+                  "registry": {
+                    "state": "absent"
+                  },
+                  "assets": {
+                    "state": "absent"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/collection:clip",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                },
+                "payload_members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "collection.tracks",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [
+              "parent/track:visual"
+            ],
+            "order": [
+              "parent/track:visual"
+            ],
+            "boundaries": [
+              "parent/track:visual"
+            ],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.occurrences",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.clips",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {
+          "media.track": "parent/track:visual"
+        },
+        "created": [
+          "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+        ],
+        "expect": {
+          "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0::": {
+            "state": "absent"
+          },
+          "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0::": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0::": "direct",
+          "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "type": "video",
+              "generationId": "generation-0",
+              "variantId": "variant-0"
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+              "at": 0.0,
+              "clipType": "media",
+              "from": 0,
+              "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+              "to": 1.5,
+              "track": "visual",
+              "hold": 1.5
+            }
+          }
+        }
+      ],
+      "reads": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output",
+            "fps"
+          ],
+          "state": {
+            "state": "present",
+            "value": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        },
+        {
+          "ref": "parent/source",
+          "path": [
+            "source_window"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:track",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/track:visual",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "id": "visual",
+              "kind": "visual",
+              "opaque": [
+                null,
+                false,
+                "keep track"
+              ]
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:occurrence",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "container": "array"
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:asset",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "0": {
+                "registry": {
+                  "state": "present",
+                  "value": {}
+                },
+                "assets": {
+                  "state": "present",
+                  "value": {}
+                }
+              },
+              "1": {
+                "registry": {
+                  "state": "absent"
+                },
+                "assets": {
+                  "state": "absent"
+                }
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.tracks",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/track:visual"
+          ],
+          "order": [
+            "parent/track:visual"
+          ],
+          "boundaries": [
+            "parent/track:visual"
+          ],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.occurrences",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": [
+        {
+          "key": "media.owner",
+          "ref": "parent",
+          "policy": "fixed",
+          "dependencies": []
+        },
+        {
+          "key": "media.track",
+          "ref": "parent/track:visual",
+          "policy": "fixed",
+          "dependencies": []
+        }
+      ],
+      "created": [
+        {
+          "ref": "parent/asset:continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "kind": "asset",
+          "owner": "parent"
+        },
+        {
+          "ref": "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0",
+          "kind": "clip",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [
+        {
+          "key": "media.new",
+          "kind": "media",
+          "pin": {
+            "asset": "variant-0",
+            "generation_id": "generation-0",
+            "variant_id": "variant-0",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "catalog_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "policy": "exact"
+        }
+      ],
+      "derived_writes": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "clips"
+          ],
+          "before": {
+            "state": "present",
+            "value": []
+          },
+          "after": {
+            "state": "present",
+            "value": [
+              {
+                "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+                "at": 0.0,
+                "clipType": "media",
+                "from": 0,
+                "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+                "to": 1.5,
+                "track": "visual",
+                "hold": 1.5
+              }
+            ]
+          },
+          "cause": 1
+        }
+      ]
+    },
+    {
+      "ordinal": 2,
+      "command": {
+        "schema_version": 1,
+        "op": "clip.add-media",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "row": {
+            "asset": "continuation-8a4407f84b6809af497fd04e-asset-1",
+            "at": 1.5,
+            "clipType": "media",
+            "from": 0,
+            "id": "continuation-8a4407f84b6809af497fd04e-clip-1",
+            "to": 2.5,
+            "track": "visual",
+            "hold": 2.5
+          },
+          "media": {
+            "asset": "variant-1",
+            "generation_id": "generation-1",
+            "variant_id": "variant-1",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "catalog_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent",
+            "path": [
+              "config",
+              "output",
+              "fps"
+            ],
+            "state": {
+              "state": "present",
+              "value": {
+                "numerator": 30000,
+                "denominator": 1001
+              }
+            }
+          },
+          {
+            "ref": "parent/source",
+            "path": [
+              "source_window"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/collection:track",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/track:visual",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "id": "visual",
+                "kind": "visual",
+                "opaque": [
+                  null,
+                  false,
+                  "keep track"
+                ]
+              }
+            }
+          },
+          {
+            "ref": "parent/collection:occurrence",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "container": "array"
+              }
+            }
+          },
+          {
+            "ref": "parent/collection:asset",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "0": {
+                  "registry": {
+                    "state": "present",
+                    "value": {}
+                  },
+                  "assets": {
+                    "state": "present",
+                    "value": {}
+                  }
+                },
+                "1": {
+                  "registry": {
+                    "state": "absent"
+                  },
+                  "assets": {
+                    "state": "absent"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/collection:clip",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                },
+                "payload_members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "collection.tracks",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [
+              "parent/track:visual"
+            ],
+            "order": [
+              "parent/track:visual"
+            ],
+            "boundaries": [
+              "parent/track:visual"
+            ],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.occurrences",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          },
+          {
+            "key": "collection.clips",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [
+              "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+            ],
+            "order": [
+              "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+            ],
+            "boundaries": [
+              "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+            ],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {
+          "media.track": "parent/track:visual"
+        },
+        "created": [
+          "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+          "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1"
+        ],
+        "expect": {
+          "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1::": {
+            "state": "absent"
+          },
+          "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1::": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1::": "direct",
+          "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "type": "video",
+              "generationId": "generation-1",
+              "variantId": "variant-1"
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "asset": "continuation-8a4407f84b6809af497fd04e-asset-1",
+              "at": 1.5,
+              "clipType": "media",
+              "from": 0,
+              "id": "continuation-8a4407f84b6809af497fd04e-clip-1",
+              "to": 2.5,
+              "track": "visual",
+              "hold": 2.5
+            }
+          }
+        }
+      ],
+      "reads": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "output",
+            "fps"
+          ],
+          "state": {
+            "state": "present",
+            "value": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          }
+        },
+        {
+          "ref": "parent/source",
+          "path": [
+            "source_window"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:track",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/track:visual",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "id": "visual",
+              "kind": "visual",
+              "opaque": [
+                null,
+                false,
+                "keep track"
+              ]
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:occurrence",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "container": "array"
+            }
+          }
+        },
+        {
+          "ref": "parent/collection:asset",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "0": {
+                "registry": {
+                  "state": "present",
+                  "value": {}
+                },
+                "assets": {
+                  "state": "present",
+                  "value": {}
+                }
+              },
+              "1": {
+                "registry": {
+                  "state": "absent"
+                },
+                "assets": {
+                  "state": "absent"
+                }
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.tracks",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/track:visual"
+          ],
+          "order": [
+            "parent/track:visual"
+          ],
+          "boundaries": [
+            "parent/track:visual"
+          ],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.occurrences",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        },
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [
+            "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+          ],
+          "order": [
+            "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+          ],
+          "boundaries": [
+            "parent/clip:continuation-89ecb0c3b443a882abc3c72c-clip-0"
+          ],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": [
+        {
+          "key": "media.owner",
+          "ref": "parent",
+          "policy": "fixed",
+          "dependencies": []
+        },
+        {
+          "key": "media.track",
+          "ref": "parent/track:visual",
+          "policy": "fixed",
+          "dependencies": []
+        }
+      ],
+      "created": [
+        {
+          "ref": "parent/asset:continuation-8a4407f84b6809af497fd04e-asset-1",
+          "kind": "asset",
+          "owner": "parent"
+        },
+        {
+          "ref": "parent/clip:continuation-8a4407f84b6809af497fd04e-clip-1",
+          "kind": "clip",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [
+        {
+          "key": "media.new",
+          "kind": "media",
+          "pin": {
+            "asset": "variant-1",
+            "generation_id": "generation-1",
+            "variant_id": "variant-1",
+            "object_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "catalog_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "policy": "exact"
+        }
+      ],
+      "derived_writes": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "clips"
+          ],
+          "before": {
+            "state": "present",
+            "value": [
+              {
+                "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+                "at": 0.0,
+                "clipType": "media",
+                "from": 0,
+                "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+                "to": 1.5,
+                "track": "visual",
+                "hold": 1.5
+              }
+            ]
+          },
+          "after": {
+            "state": "present",
+            "value": [
+              {
+                "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+                "at": 0.0,
+                "clipType": "media",
+                "from": 0,
+                "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+                "to": 1.5,
+                "track": "visual",
+                "hold": 1.5
+              },
+              {
+                "asset": "continuation-8a4407f84b6809af497fd04e-asset-1",
+                "at": 1.5,
+                "clipType": "media",
+                "from": 0,
+                "id": "continuation-8a4407f84b6809af497fd04e-clip-1",
+                "to": 2.5,
+                "track": "visual",
+                "hold": 2.5
+              }
+            ]
+          },
+          "cause": 2
+        }
+      ]
+    }
+  ],
+  "after_bundle": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "base_parent": {
+      "revision_id": "parent-1",
+      "content_digest": "sha256:df2345b7dbca379c87b5f34665845bf3ddba613a574214a2da4713e3df190cd4"
+    },
+    "base_parent_payload": {
+      "config": {
+        "tracks": [
+          {
+            "id": "visual",
+            "kind": "visual",
+            "opaque": [
+              null,
+              false,
+              "keep track"
+            ]
+          }
+        ],
+        "clips": [],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "base_placements": {},
+    "parent": {
+      "config": {
+        "tracks": [
+          {
+            "id": "visual",
+            "kind": "visual",
+            "opaque": [
+              null,
+              false,
+              "keep track"
+            ]
+          }
+        ],
+        "clips": [
+          {
+            "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+            "at": 0.0,
+            "clipType": "media",
+            "from": 0,
+            "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+            "to": 1.5,
+            "track": "visual",
+            "hold": 1.5
+          },
+          {
+            "asset": "continuation-8a4407f84b6809af497fd04e-asset-1",
+            "at": 1.5,
+            "clipType": "media",
+            "from": 0,
+            "id": "continuation-8a4407f84b6809af497fd04e-clip-1",
+            "to": 2.5,
+            "track": "visual",
+            "hold": 2.5
+          }
+        ],
+        "output": {
+          "fps": {
+            "numerator": 30000,
+            "denominator": 1001
+          }
+        },
+        "opaque": {
+          "timestamp": "authored timestamp",
+          "v": [
+            null,
+            false,
+            0
+          ]
+        }
+      },
+      "clips": [
+        {
+          "asset": "continuation-89ecb0c3b443a882abc3c72c-asset-0",
+          "at": 0.0,
+          "clipType": "media",
+          "from": 0,
+          "id": "continuation-89ecb0c3b443a882abc3c72c-clip-0",
+          "to": 1.5,
+          "track": "visual",
+          "hold": 1.5
+        },
+        {
+          "asset": "continuation-8a4407f84b6809af497fd04e-asset-1",
+          "at": 1.5,
+          "clipType": "media",
+          "from": 0,
+          "id": "continuation-8a4407f84b6809af497fd04e-clip-1",
+          "to": 2.5,
+          "track": "visual",
+          "hold": 2.5
+        }
+      ],
+      "registry": {
+        "assets": {
+          "picture": {
+            "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "type": "image"
+          },
+          "continuation-89ecb0c3b443a882abc3c72c-asset-0": {
+            "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "type": "video",
+            "generationId": "generation-0",
+            "variantId": "variant-0"
+          },
+          "continuation-8a4407f84b6809af497fd04e-asset-1": {
+            "media_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "type": "video",
+            "generationId": "generation-1",
+            "variantId": "variant-1"
+          }
+        }
+      },
+      "name": "Renamed Film",
+      "unknown": {
+        "opaque": [
+          "parent-1",
+          null
+        ]
+      }
+    },
+    "placements": [],
+    "shots": {},
+    "source_mapping": {
+      "placements": {},
+      "shots": {},
+      "_runtime_document": {
+        "schema_version": 1,
+        "project_id": "project-1",
+        "timeline_id": "film",
+        "parent_revision": {
+          "revision_id": "parent-1",
+          "payload": {
+            "config": {
+              "tracks": [
+                {
+                  "id": "visual",
+                  "kind": "visual",
+                  "opaque": [
+                    null,
+                    false,
+                    "keep track"
+                  ]
+                }
+              ],
+              "clips": [],
+              "output": {
+                "fps": {
+                  "numerator": 30000,
+                  "denominator": 1001
+                }
+              },
+              "opaque": {
+                "timestamp": "authored timestamp",
+                "v": [
+                  null,
+                  false,
+                  0
+                ]
+              }
+            },
+            "clips": [],
+            "registry": {
+              "assets": {
+                "picture": {
+                  "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "type": "image"
+                }
+              }
+            },
+            "occurrences": [],
+            "name": "Renamed Film",
+            "unknown": {
+              "opaque": [
+                "parent-1",
+                null
+              ]
+            }
+          },
+          "content_digest": "sha256:df2345b7dbca379c87b5f34665845bf3ddba613a574214a2da4713e3df190cd4"
+        },
+        "shot_revisions": [],
+        "internal_timeline_revisions": [],
+        "dependency_manifest": {
+          "shots": [],
+          "internal_timelines": [],
+          "media": [
+            {
+              "media_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "content_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          ],
+          "documents": []
+        }
+      }
+    }
+  }
+}

@@ -192,9 +192,9 @@ def inspect_schema(backend, version: Version, realm: dict, *, require_current: b
     """Read the selected Runtime's canonical workspace schema without mutation."""
     script = (
         "import json,sys; from pathlib import Path; "
-        "from runtime_protocol.upgrade import inspect_canonical_schema, USER_APP_STATE_TARGET_SCHEMA_VERSION; "
+        "from runtime_protocol.upgrade import inspect_canonical_schema; from runtime_protocol.store import SCHEMA_VERSION; "
         "value=inspect_canonical_schema(Path(sys.argv[1]), expected_realm_id=sys.argv[2]); "
-        "print(json.dumps({'identity':value,'target':USER_APP_STATE_TARGET_SCHEMA_VERSION}))"
+        "print(json.dumps({'identity':value,'target':SCHEMA_VERSION}))"
     )
     value = json.loads(backend.run(
         [version.python, "-X", "utf8", "-I", "-c", script, realm["realm_root"], realm["realm_id"]],
@@ -625,8 +625,10 @@ class Installer:
                     return prepared_candidate
                 candidate = self.backend.stage(manifest, self.root, self.data)
                 self.backend.validate_candidate(candidate, self.data, realm)
-                same_schema = (inspect_schema(self.backend, old, realm, require_current=False)
-                               == inspect_schema(self.backend, candidate, realm, require_current=False))
+                old_schema = inspect_schema(self.backend, old, realm, require_current=False)
+                candidate_schema = inspect_schema(self.backend, candidate, realm, require_current=False)
+                same_schema = (old_schema == candidate_schema
+                               and candidate_schema["identity"]["version"] == candidate_schema["target"])
                 prepared_candidate = candidate
                 return candidate
 

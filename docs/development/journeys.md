@@ -4,6 +4,45 @@ Run on a machine allowed to start the Runtime, Remotion and process groups, with
 It adopts a private clone of the reference realm into a disposable data root (the reference is never written),
 brings the Runtime up there, and reaps or reports any leftover process group at the end.
 
+## Scratch Runtime for CLI work
+
+Activate the Python virtual environment that has Astrid and Runtime dependencies (so `$VIRTUAL_ENV` is set), then
+point Python at both source checkouts. Use disposable paths; `workspace create` writes a new realm and selects it as
+the workspace. The Runtime source manifest binds that workspace to the exact source and Python environment, and
+must be passed when creating and running it:
+
+```sh
+export ASTRID_CHECKOUT=/absolute/path/to/astrid-agent
+export RUNTIME_CHECKOUT=/absolute/path/to/astrid-runtime
+export PYTHONPATH="$ASTRID_CHECKOUT:$RUNTIME_CHECKOUT${PYTHONPATH:+:$PYTHONPATH}"
+export SCRATCH_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/astrid-runtime-scratch.XXXXXX")"
+
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+Path(os.environ["SCRATCH_ROOT"], "source-manifest.json").write_text(json.dumps({
+    "profile": "astrid",
+    "source_checkout": os.environ["ASTRID_CHECKOUT"],
+    "runtime_checkout": os.environ["RUNTIME_CHECKOUT"],
+    "runtime_environment": os.environ["VIRTUAL_ENV"],
+}, indent=2) + "\n", encoding="utf-8")
+PY
+
+python -m astrid_runtime workspace create --profile astrid \
+  --data-root "$SCRATCH_ROOT" \
+  --realm-root "$SCRATCH_ROOT/runtime/realms/scratch" \
+  --realm-id scratch --source-manifest "$SCRATCH_ROOT/source-manifest.json" \
+  --process-control sandbox --json
+
+python -m astrid_runtime run --profile astrid --data-root "$SCRATCH_ROOT" \
+  --source-manifest "$SCRATCH_ROOT/source-manifest.json" --hosted-origin off
+```
+
+`run` stays in the foreground; press Ctrl+C to stop it. The `sandbox` process-control setting is selected during
+workspace creation, and `--hosted-origin off` leaves out the browser door.
+
 ```sh
 python -m astrid dev journey --tier smoke \
   --reference <stopped data root> --timeline almost-ready/<TIMELINE> --summary /private/tmp/journey.json
