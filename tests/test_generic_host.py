@@ -875,6 +875,55 @@ def _descendant_still_running(pid: int) -> bool:
     return bool(state) and not state.startswith("Z")
 
 
+def _descendant_terminated(pid: int, starttime: str | None) -> bool:
+    """Accept absence or a zombie with the recorded Linux birth identity."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    if starttime is None or not starttime.isdecimal():
+        return False
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = stat.rsplit(")", 1)[1].split()
+        return (stat.startswith(f"{pid} (") and len(fields) >= 20
+                and fields[0] == "Z" and fields[19] == starttime)
+    except (OSError, IndexError, ValueError):
+        return False
+
+
+@pytest.mark.parametrize(
+    ("state", "observed_starttime", "expected"),
+    [("Z", "123", True), ("S", "123", False), ("R", "123", False),
+     ("Z", "456", False), ("?", "123", False)],
+)
+def test_descendant_terminated_requires_matching_zombie(monkeypatch, state, observed_starttime, expected):
+    monkeypatch.setattr(os, "kill", lambda *_: None)
+    fields = [state] + ["0"] * 18 + [observed_starttime]
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: "42 (name with ) paren) " + " ".join(fields))
+    assert _descendant_terminated(42, "123") is expected
+
+
+def test_descendant_terminated_fails_closed_on_observation_errors(monkeypatch):
+    def raises(error):
+        def fail(*_args, **_kwargs):
+            raise error
+        return fail
+
+    monkeypatch.setattr(os, "kill", raises(ProcessLookupError()))
+    assert _descendant_terminated(42, "123")
+    monkeypatch.setattr(os, "kill", raises(PermissionError()))
+    assert not _descendant_terminated(42, "123")
+    monkeypatch.setattr(os, "kill", lambda *_: None)
+    assert not _descendant_terminated(42, None)
+    monkeypatch.setattr(Path, "read_text", raises(OSError()))
+    assert not _descendant_terminated(42, "123")
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: "malformed")
+    assert not _descendant_terminated(42, "123")
+
+
 def test_cancellation_terminates_descendant_process_group(tmp_path):
     root = tmp_path / "group"
     _write_manifest(root)
@@ -917,6 +966,7 @@ def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_p
         "import os,signal,sys,time; from pathlib import Path; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         "Path('{out}/child.pid').write_text(str(os.getpid())); "
+        "Path('{out}/child.starttime').write_text(Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]) if sys.platform.startswith('linux') else None; "
         "os.write(int(sys.argv[1]), b'1'); os.close(int(sys.argv[1])); "
         "time.sleep(30)"
     )
@@ -945,14 +995,13 @@ def test_cancellation_reaps_sigterm_resistant_descendant_after_leader_exit(tmp_p
             host.capabilities["test.echo"], {}, output_root, attempt, cancelled=cancelled
         )
     child_pid = int((output_root / "child.pid").read_text(encoding="utf-8"))
+    starttime = (output_root / "child.starttime").read_text(encoding="utf-8") if sys.platform.startswith("linux") else None
     for _ in range(40):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
+        if _descendant_terminated(child_pid, starttime):
             break
         time.sleep(0.05)
     else:
-        pytest.fail("SIGTERM-resistant descendant survived leader-exit cancellation")
+        pytest.fail("SIGTERM-resistant descendant termination unconfirmed after leader-exit cancellation")
 
 
 def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
@@ -964,6 +1013,7 @@ def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
         "import os,signal,sys,time; from pathlib import Path; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         "Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "Path(sys.argv[1] + '.starttime').write_text(Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19]) if sys.platform.startswith('linux') else None; "
         "os.write(int(sys.argv[2]), b'1'); os.close(int(sys.argv[2])); time.sleep(30)"
     )
     leader_code = (
@@ -989,14 +1039,13 @@ def test_cancellation_reaps_descendant_spawned_by_sigterm_handler(tmp_path):
             host.capabilities["test.echo"], {}, output_root, attempt, cancelled=cancelled
         )
     child_pid = int((root / "child.pid").read_text(encoding="utf-8"))
+    starttime = (root / "child.pid.starttime").read_text(encoding="utf-8") if sys.platform.startswith("linux") else None
     for _ in range(40):
-        try:
-            os.kill(child_pid, 0)
-        except ProcessLookupError:
+        if _descendant_terminated(child_pid, starttime):
             break
         time.sleep(0.05)
     else:
-        pytest.fail("SIGTERM-handler child survived cancellation")
+        pytest.fail("SIGTERM-handler child termination unconfirmed after cancellation")
 
 
 @pytest.mark.posix_native  # POSIX-only process-group API
