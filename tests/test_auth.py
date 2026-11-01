@@ -19,13 +19,24 @@ def test_auth_system_notice_is_non_blocking_when_logged_out(monkeypatch, tmp_pat
     assert "do not block unrelated work" in notice
 
 
-def test_auth_system_notice_does_not_expose_key(monkeypatch, tmp_path: Path) -> None:
+def test_auth_system_notice_does_not_use_local_key_file(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.delenv("HIVEMIND_CONTRIBUTOR_KEY", raising=False)
     key = "hm_" + "a" * 64
     key_path = tmp_path / ".hivemind" / "key"
     key_path.parent.mkdir()
     key_path.write_text(key, encoding="utf-8")
+
+    notice = auth.contributor_auth_system_notice()
+
+    assert "not logged in" in notice
+    assert key not in notice
+
+
+def test_auth_system_notice_uses_injected_key_without_exposing_it(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    key = "hm_" + "b" * 64
+    monkeypatch.setenv("HIVEMIND_CONTRIBUTOR_KEY", key)
 
     notice = auth.contributor_auth_system_notice()
 
