@@ -113,3 +113,9 @@ hooks lane and remains unimplemented here.
 - Managed release signature: open_host_session(..., *, host=None). With a host, managed release routes to host.release_managed_session(expected_binding=..., expected_generation=..., reason=...) WITHOUT a require_quiescent argument: that method has no such parameter (verified against generic_host.py at de43cadfe and a8f0b67fa). Quiescence is enforced inside the host by manager.release(require_quiescent=True). Passing require_quiescent to the host raises TypeError. Without a host, release fails closed.
 - source_digest = source_content_digest.
 - Reference implementation of the shared hooks: lane/M-GPU/p1-f07-comfy-hooks at bd1561f4 (stacked on de43cadf). Radagast owns it.
+
+## Release semantics (decided 16:23Z; M-GPU option (a))
+- AstridClient.release_generation (sdk/client.py, Radagast) resolves the selected managed engine through the installed engine owner on loopback, reads /system_stats VRAM, calls ComfyUI /free with unload_models and free_memory, reads VRAM again, and returns only what it proves.
+- Attached targets fail closed. The _ManagedLocalServerTaskAdapter task slot is not used for release.
+- Residency release is NOT engine stop. Release proves queue cleared, models unloaded, and measured VRAM when available. It never claims process exit, and never claims VRAM returned from an HTTP acknowledgement alone (release_requested is separate from memory_observed_returned).
+- Stopping the engine is a separate operation through the installation supervisor (M-GPU's GPU-CUSTODY worker).
