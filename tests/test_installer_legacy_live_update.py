@@ -193,3 +193,30 @@ def test_missing_shipped_table_fails_closed(legacy, monkeypatch):
     root, _, health, discovery, _ = legacy
     monkeypatch.setattr(legacy_identity, "_policy", lambda: None)
     assert not legacy_identity.admitted(current(root), health, discovery, program_root=root)
+
+
+@pytest.mark.parametrize("discovery_state", ["missing", "stale"])
+def test_selected_legacy_with_no_live_discovery_is_not_admitted(legacy, monkeypatch, discovery_state):
+    root, data, _, _, _ = legacy
+    path = data / "runtime/discovery.json"
+    if discovery_state == "missing":
+        path.unlink()
+    else:
+        monkeypatch.setattr("runtime_protocol.platform.process_identity", lambda pid: None)
+    # Even an exact record, or an unavailable policy, cannot turn a missing
+    # owner observation into a positive stopped proof.
+    backend = Backend(root, root / "install.log", root / "uv", process_control="strict")
+    with pytest.raises(RuntimeError, match="Cannot prove.*stopped"):
+        backend.source_checkout_ownership(data, current(root))
+    monkeypatch.setattr(legacy_identity, "_policy", lambda: None)
+    with pytest.raises(RuntimeError, match="Cannot prove.*stopped"):
+        backend.source_checkout_ownership(data, current(root))
+
+
+def test_selected_legacy_live_identity_cannot_bypass_shipped_policy(legacy, monkeypatch):
+    root, data, health, _, _ = legacy
+    health["identity"] = {"release": 0, "managed_by": None}
+    monkeypatch.setattr("astrid_runtime.identity.validate_live_owner_identity",
+                        lambda *args, **kwargs: health["identity"])
+    with pytest.raises(RuntimeError, match="Live Runtime startup identity cannot be verified"):
+        gate(root, data)

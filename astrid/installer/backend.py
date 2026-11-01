@@ -520,6 +520,8 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
                     self._legacy_identity_admitted = True
                     live_identity = {"release": 0, "managed_by": None}
                 else:
+                    if installed is not None and installed.release == 0 and installed.managed_by is None:
+                        raise ValueError("The selected Release-0 predecessor is not in the shipped policy.")
                     live_identity = validate_live_owner_identity(health, instance_id=instance_id)
                 # Bind the OS and HTTP observations to the same advertisement.
                 if paths.discovery_path.read_bytes() != discovery_bytes:
@@ -536,6 +538,11 @@ print(json.dumps({'prefix':sys.prefix,'purelib':sysconfig.get_path('purelib'),'o
         # product tree (source_checkout) and an unpacked Runtime archive
         # (runtime_checkout); neither is a Git checkout root.
         if installed is not None:
+            if (state != "live" and installed.release == 0 and installed.managed_by is None):
+                # Missing or stale discovery is not proof that the service
+                # manager and browser door are stopped.  Do not admit the
+                # identityless predecessor solely from its selection record.
+                raise RuntimeError("Cannot prove the selected Release-0 predecessor is stopped; refusing to update it.")
             return False
 
         profile_path = paths.source_profiles_dir / "astrid.json"
