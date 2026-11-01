@@ -171,6 +171,43 @@ print(json.dumps(LinuxEngineServiceClient(**identity).call(sys.argv[3],payload,d
                           capture_output=True, text=True, timeout=20, check=True)
 
 
+def test_failed_stop_reaps_original_child_without_retiring_custody(tmp_path, monkeypatch):
+    """DEEP-BUG13: a post-TERM error must not leave the retained Popen zombie."""
+    from astrid.core.execution import process_group as groups
+
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), "test-owner")
+    owned = supervisor.spawn(_request(tmp_path, "import time;time.sleep(60)"))
+    original = groups._signal_valid_tree_members
+    failure = groups.CleanupUncertainError("injected verification failure after root TERM")
+
+    def fail_after_signal(process, members, sig, *args, **kwargs):
+        original(process, members, sig, *args, **kwargs)
+        if process.pid in members and sig == groups.platform.TERM:
+            stat = Path(f"/proc/{process.pid}/stat")
+            _wait(lambda: stat.read_text().rsplit(")", 1)[1].split()[0] == "Z")
+            raise failure
+
+    monkeypatch.setattr(groups, "_signal_valid_tree_members", fail_after_signal)
+    try:
+        with pytest.raises(CustodyUnresolved) as error:
+            supervisor.drain(owned, time.monotonic() + 8)
+        assert error.value.__cause__ is failure
+        assert owned.process.returncode == -groups.platform.TERM
+        assert not Path(f"/proc/{owned.process.pid}").exists()
+        assert owned.process._astrid_tree_uncertain
+        assert owned.process._astrid_retained_containment["original_wait"] == owned.process.returncode
+        assert supervisor.unresolved and supervisor.commands == [owned]
+    finally:
+        monkeypatch.setattr(groups, "_signal_valid_tree_members", original)
+        if owned.process.poll() is None:
+            groups.contain_retained_handles(owned.process, cleanup_deadline=time.monotonic() + 5,
+                                           first_error="test teardown")
+        owned.process.wait(timeout=5)
+        for output in (owned.stdout, owned.stderr):
+            output.thread.join(timeout=5)
+            output.stream.close()
+
+
 def test_constructor_has_no_effects(tmp_path):
     root = tmp_path / "not-created"
     _client(_identity(root))

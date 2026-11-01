@@ -336,9 +336,9 @@ class _Owned:
         return not native.tree_exited(self.process)
 
     def stop(self, deadline):
-        from astrid.core.execution.process_group import _terminate_tree, verify_tree_absent
+        from astrid.core.execution.process_group import terminate_tree, verify_tree_absent
         try:
-            _terminate_tree(self.process, grace_seconds=0.1, cleanup_deadline=deadline)
+            terminate_tree(self.process, grace_seconds=0.1, cleanup_deadline=deadline)
             verify_tree_absent(self.process)
             for output in (getattr(self, "stdout", None), getattr(self, "stderr", None)):
                 if output is None:
