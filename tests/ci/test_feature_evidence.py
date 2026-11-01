@@ -1,9 +1,11 @@
 """Synthetic evaluator-path tests; these files are never qualification receipts."""
 import hashlib
+import importlib.util
+import os
 import json
 from pathlib import Path
 import sys
-from unittest import mock
+from unittest import mock, skipUnless
 
 from test_local_regression_green import LocalEvidenceTests
 import local_regression_green as local
@@ -143,3 +145,50 @@ class FeatureEvidenceTests(LocalEvidenceTests):
         self.assertTrue(self.feature_check([self.feature, self.feature]))
         with mock.patch.object(local, 'PREDICATE_MODULE', 'module_that_does_not_exist'):
             self.assertTrue(self.feature_check())
+
+    def test_predicate_receives_authenticated_snapshot_and_hash(self):
+        for transport in ('broker', 'hosted'):
+            with self.subTest(transport=transport):
+                self.configure(transport)
+                with mock.patch.object(local.importlib, 'import_module') as imported:
+                    imported.return_value.check_demo.return_value = (True, [])
+                    self.assertEqual(self.feature_check(), [])
+                    imported.return_value.check_demo.assert_called_once_with({
+                        'slot_id': 'selected-slot', 'candidate': self.shas,
+                        'files': [{'path': 'feature.json',
+                                   'sha256': hashlib.sha256(b'{"observation":"pass"}').hexdigest(),
+                                   'json': {'observation': 'pass'}}],
+                    })
+
+    def test_predicate_exception_is_a_red_result(self):
+        self.configure('hosted')
+        with mock.patch.object(local.importlib, 'import_module') as imported:
+            imported.return_value.check_demo.side_effect = RuntimeError('broken predicate')
+            errors = self.feature_check()
+        self.assertTrue(any('feature demo/selected-slot: RuntimeError: broken predicate' in e for e in errors), errors)
+
+    def test_predicate_import_exception_is_a_red_result(self):
+        self.configure('broker')
+        with mock.patch.object(local.importlib, 'import_module', side_effect=RuntimeError('broken import')):
+            errors = self.feature_check()
+        self.assertTrue(any('predicate module import failed: RuntimeError: broken import' in e for e in errors), errors)
+
+    @skipUnless(os.environ.get('C06E_QUAL_PREDICATE'), 'unpublished QUAL module not supplied')
+    def test_unpublished_qual_predicate_refuses_authenticated_synthetic_input(self):
+        # Optional integration check for the separately owned, unpublished module.
+        spec = importlib.util.spec_from_file_location(
+            'scripts.journey_predicates', os.environ['C06E_QUAL_PREDICATE'])
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.configure('hosted')
+        self.feature['scenario'] = 'm4_6'
+        self.feature['slot_id'] = 'direct-linux'
+        self.feature['candidate']['manifest_sha256'] = 'a' * 64
+        manifest_path = self.base / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['feature_bindings'][0].update(scenario='m4_6', slot_id='direct-linux')
+        manifest_path.write_text(json.dumps(manifest))
+        self.authenticate()
+        with mock.patch.object(local.importlib, 'import_module', return_value=module):
+            errors = self.feature_check()
+        self.assertTrue(any('independent section 5 observation proofs' in e for e in errors), errors)

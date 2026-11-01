@@ -252,14 +252,23 @@ def local_evaluate(tuple_path, inventory_path, coverage_path, ledger_path, broke
             errors, retirement = core.evaluate(tuple_path, inventory_path, ledger_path, tmp, freshness_path)
             if errors or features is None:
                 return errors, retirement
-            module = importlib.import_module(PREDICATE_MODULE)
+            try:
+                module = importlib.import_module(PREDICATE_MODULE)
+            except Exception as exc:
+                return [f'predicate module import failed: {type(exc).__name__}: {exc}'], retirement
             for feature, entries in pending:
-                predicate = getattr(module, 'check_' + feature['scenario'], None)
-                core.require(callable(predicate), 'missing predicate: ' + feature['scenario'])
-                result = predicate({'slot_id': feature['slot_id'], 'candidate': feature['candidate'], 'files': entries})
-                core.require(isinstance(result, tuple) and len(result) == 2 and type(result[0]) is bool and isinstance(result[1], list) and all(isinstance(x, str) for x in result[1]), 'invalid predicate result')
-                if not result[0] or result[1]:
-                    errors.append('feature %s/%s: %s' % (feature['scenario'], feature['slot_id'], '; '.join(result[1]) or 'predicate failed'))
+                label = 'feature %s/%s' % (feature['scenario'], feature['slot_id'])
+                try:
+                    predicate = getattr(module, 'check_' + feature['scenario'], None)
+                    core.require(callable(predicate), 'missing predicate: ' + feature['scenario'])
+                    result = predicate({'slot_id': feature['slot_id'], 'candidate': feature['candidate'], 'files': entries})
+                    core.require(isinstance(result, tuple) and len(result) == 2 and type(result[0]) is bool and isinstance(result[1], list) and all(isinstance(x, str) for x in result[1]), 'invalid predicate result')
+                    if not result[0] or result[1]:
+                        errors.append('%s: %s' % (label, '; '.join(result[1]) or 'predicate failed'))
+                except Exception as exc:
+                    # A broken or missing predicate must produce a red result at
+                    # this API boundary, including for non-aggregate callers.
+                    errors.append('%s: %s: %s' % (label, type(exc).__name__, exc))
             return errors, retirement
     except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError, yaml.YAMLError, jsonschema.exceptions.ValidationError, ImportError) as exc:
         return [f'invalid or missing provenance: {exc}'], []
