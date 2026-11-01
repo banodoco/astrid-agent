@@ -23,6 +23,7 @@ def case(host_case, monkeypatch):
     case = host_case
     data = case.task["task"]
     data["status"] = "running"
+    data.setdefault("runtime_epoch", 7)
     original_fail = case.runtime.fail
 
     def fail(*args, **kwargs):
@@ -32,7 +33,13 @@ def case(host_case, monkeypatch):
 
     def cancel(task_id, **kwargs):
         assert task_id == data["id"]
-        assert kwargs == {"attempt_id": data["attempt_id"], "fence": data["fence"], "lease_id": "lease-result"}
+        assert kwargs["attempt_id"] == data["attempt_id"]
+        assert kwargs["fence"] == data["fence"]
+        assert kwargs["lease_id"] == "lease-result"
+        assert kwargs["runtime_epoch"] == data["runtime_epoch"]
+        assert kwargs["stop_observed"] is True
+        assert isinstance(kwargs["outputs"], list)
+        assert isinstance(kwargs["result"], dict)
         data["status"] = "cancelled"
         return {"task": dict(data)}
 
@@ -207,6 +214,55 @@ def test_cancellation_records_terminal_state_and_receipt(case, monkeypatch, sour
     assert receipt(case)["status"] == "cancelled"
     assert receipt(case)["error"]["code"] == "cancelled"
     assert not case.runtime.failures
+
+
+@pytest.mark.parametrize("caller_owned", [False, True])
+def test_cancel_completion_error_propagates_and_retains_pending_evidence(case, monkeypatch, caller_owned):
+    attempts = []
+    error = OSError("Runtime cancel transport failed")
+    captured = {}
+    run_impl = case.host._run_task_impl
+
+    def capture_terminal(*args, **kwargs):
+        captured["terminal"] = kwargs["_terminal"]
+        return run_impl(*args, **kwargs)
+
+    monkeypatch.setattr(case.host, "_run_task_impl", capture_terminal)
+    if not caller_owned:
+        case.host.attempt_root = None
+        allocate_root = case.host._allocate_attempt_root
+
+        def capture_root(*args):
+            case.root = allocate_root(*args)
+            return case.root
+
+        monkeypatch.setattr(case.host, "_allocate_attempt_root", capture_root)
+
+    def cancel(task_id, **kwargs):
+        attempts.append((task_id, kwargs))
+        raise error
+
+    monkeypatch.setattr(case.runtime, "cancel", cancel)
+
+    def execute(*args, **kwargs):
+        case.task["task"]["status"] = "cancel_requested"
+        assert kwargs["cancelled"]()
+        raise HostCancelled("cancel this invocation")
+
+    monkeypatch.setattr(case.host, "_run_command_definition", execute)
+    with pytest.raises(OSError, match="Runtime cancel transport failed") as raised:
+        case.host.run_task(case.task, lease_token="lease-result")
+
+    assert raised.value is error
+    assert len(attempts) == 1
+    assert attempts[0][1]["result"]["status"] == "cancelled"
+    assert captured["terminal"]["evidence_pending"] is True
+    assert not captured["terminal"].get("recorded")
+    assert not case.runtime.failures
+    cleanup = case.host.last_cleanup_receipt
+    assert cleanup["intended_disposition"] == ("caller_owned" if caller_owned else "retained")
+    assert case.root.exists()
+    assert receipt(case)["publication"]["status"] == "not_settled"
 
 
 @pytest.mark.parametrize("loss", ["task_read", "queued", "successor", "fence", "heartbeat", "expired", "resource_expired",

@@ -349,7 +349,7 @@ def test_attached_preference_never_silently_selects_managed(ownership, tmp_path)
     original = path.read_bytes(), path.stat().st_mtime_ns
     with pytest.raises(AstridError) as error:
         select_generation_target("auto")
-    assert error.value.code == "COMFY_TARGET_INVALID"
+    assert error.value.code == "input_rejected"
     with pytest.raises(targets.TargetConfigError, match="preference conflicts"):
         targets.save_target(_human())
     assert (path.read_bytes(), path.stat().st_mtime_ns) == original
@@ -467,7 +467,7 @@ def test_bound_unreachable_human_never_silently_switches(source, tmp_path, monke
     with pytest.raises(AstridError) as error:
         select_generation_target("http://localhost:8202" if source == "request" else "auto",
                                  repo=repo if source == "repo" else None)
-    assert error.value.code == "COMFY_TARGET_UNAVAILABLE"
+    assert error.value.code == "target_unreachable"
     assert path.read_bytes() == original
 
 
@@ -485,7 +485,7 @@ def test_human_paths_without_endpoint_request_launch_and_never_managed(tmp_path)
     targets.save_target(targets.TargetRecord(root=str(tmp_path), python=sys.executable))
     with pytest.raises(AstridError) as error:
         select_generation_target("auto")
-    assert error.value.code == "COMFY_TARGET_UNAVAILABLE"
+    assert error.value.code == "target_unreachable"
     assert "launch" in str(error.value).lower()
 
 
@@ -494,5 +494,5 @@ def test_unsupported_bound_primary_does_not_switch():
     _write('[engines]\nschema_version = 1\nprimary = "cloud"\n')
     with pytest.raises(AstridError) as error:
         select_generation_target("auto")
-    assert error.value.code == "COMFY_TARGET_INVALID"
+    assert error.value.code == "input_rejected"
     assert targets.canonical_engine("cloud") == "fal"

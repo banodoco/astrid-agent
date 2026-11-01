@@ -26,9 +26,9 @@ def test_catalog_selected_mode_fields_and_typed_defaults(catalog):
     assert description['mode'] is None and description['inputs'] == []
     assert set(description['mode_descriptions']) == {'t2i', 'edit'}
     fields = {row['name']: row for row in entries.describe_entry('example', 't2i', registry=catalog)['inputs']}
-    assert fields['seed']['type'] == 'integer' and 'default' not in fields['seed']
+    assert fields['seed'] == {'name': 'seed', 'type': 'integer', 'default': None}
     assert fields['count']['default'] == 1
-    assert fields['prompt']['required'] and 'default' not in fields['prompt']
+    assert fields['prompt'] == {'name': 'prompt', 'type': 'string', 'default': None}
     edit = entries.describe_entry('example', 'edit', registry=catalog)
     assert {row['name'] for row in edit['inputs']} == {'prompt', 'image_ref', 'steps'}
     assert json.loads(json.dumps(edit)) == edit
@@ -75,11 +75,10 @@ def test_workflow_nonstandard_input_binding_alias_default_and_range(monkeypatch)
     registry = ModelRegistry([])
     description = entries.describe_entry('custom', registry=registry)
     field = description['inputs'][0]
-    assert field['name'] == 'texture_amount' and field['type'] == 'number'
-    assert field['default'] == 0.6 and field['max'] == 1
+    assert field == {'name': 'texture', 'type': 'number', 'default': 0.6}
     assert description['inputs'][1]['name'] == 'instruction'
     assert description['inputs'][1]['type'] == 'string'
-    assert entries.resolve_entry_inputs('custom', {'grain': 0.8}, registry=registry)[1] == {'texture_amount': 0.8}
+    assert entries.resolve_entry_inputs('custom', {'grain': 0.8}, registry=registry)[1] == {'texture': 0.8}
     with pytest.raises(ValueError, match='duplicate/conflicting'):
         entries.resolve_entry_inputs('custom', {'grain': 0.8, 'texture_amount': 0.8}, registry=registry)
     with pytest.raises(ValueError, match='violates max'):
@@ -87,6 +86,12 @@ def test_workflow_nonstandard_input_binding_alias_default_and_range(monkeypatch)
 
 
 def test_h3_producer_local_ports_describe_and_resolve_without_execution(monkeypatch, capsys):
+    # Reuse the real declarations during the port-validation matrix; repeated
+    # pack discovery is unrelated to validating each managed-file boundary.
+    declared_actions = entries.action_entries()
+    registry = ModelRegistry.load_default()
+    monkeypatch.setattr(entries, 'action_entries', lambda: declared_actions)
+    monkeypatch.setattr(ModelRegistry, 'load_default', classmethod(lambda cls, **kwargs: registry))
     def forbidden(*args, **kwargs):
         pytest.fail('execution/probe operation during entry discovery')
     monkeypatch.setattr(entries, 'target_schema', forbidden)
@@ -96,7 +101,7 @@ def test_h3_producer_local_ports_describe_and_resolve_without_execution(monkeypa
     from astrid.sdk.client import AstridClient
     monkeypatch.setattr(GenerationFacade, '_invoke', forbidden)
     monkeypatch.setattr(AstridClient, 'open_from_launcher', forbidden)
-    description = entries.describe_entry('h3')
+    description = entries.describe_entry('h3', _native=True)
     assert description['mode'] == 'transform' and description['action'] == 'h3_av.transform'
     ports = {row['name']: row for row in description['inputs']}
     local = {'request', 'asset_map'}
@@ -107,7 +112,7 @@ def test_h3_producer_local_ports_describe_and_resolve_without_execution(monkeypa
     assert ports['request']['required'] and not ports['asset_map']['required']
     from astrid import console
     assert console.main(['generate', 'describe', '--entry', 'h3', '--json']) == 0
-    assert json.loads(capsys.readouterr().out) == description
+    assert json.loads(capsys.readouterr().out) == entries.public_description(description)
     values = {'request': '/tmp/request.json', 'asset_map': '/tmp/assets.json'}
     assert entries.resolve_entry_inputs('h3', values)[1] == values
     with pytest.raises(ValueError, match='requires a string'):
@@ -150,7 +155,7 @@ def test_workflow_legacy_translation_is_shared_and_mode_specific(monkeypatch):
     loads = []
     monkeypatch.setattr(entries, '_load_entry_workflow', lambda selected: loads.append(selected) or workflow)
     registry = ModelRegistry([])
-    description = entries.describe_entry('legacy', registry=registry)
+    description = entries.describe_entry('legacy', registry=registry, _native=True)
     assert len(loads) == 1
     t2i = {field['name']: field for field in description['mode_descriptions']['t2i']['inputs']}
     edit = {field['name']: field for field in description['mode_descriptions']['edit']['inputs']}

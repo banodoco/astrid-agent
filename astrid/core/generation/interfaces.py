@@ -115,6 +115,7 @@ class PreparedGeneration(Protocol):
     def execution_request(self, supplied: Mapping[str, Any] | None) -> dict[str, Any]: ...
     def bind_client(
         self, client: Any, *, workflow_path: Path, workflow_bundle_path: Path,
+        workflow_inputs: Mapping[str, Any],
     ) -> Any: ...
 
 
@@ -135,9 +136,21 @@ class GenerationInvocationClient(Protocol):
     def invoke_result(self, capability_id: str, *, kind: str, **kwargs: Any) -> InvocationResult: ...
 
 
+class GenerationReleaseOwner(Protocol):
+    """F07/R04 host bridge admits a release task for its actual bound owner.
+
+    The bridge must refuse ambiguous bindings before mutation, preserve exact
+    originating task/attempt correlation and report external residency unchanged
+    for human targets. A front-door process never frees an endpoint itself.
+    """
+
+    def release_generation(self, *, engine: str, target: str, wait: bool) -> InvocationResult: ...
+
+
 __all__ = [
     "TargetRecord", "TargetSelection", "InputInventoryRow", "ReadinessIssue",
     "ReadinessFix", "ReadinessEnvelope", "GenerationErrorEnvelope", "ResultEvidence",
     "OwnedSessionAdapter", "GenerationAdmission", "RunPodPreparationRequest",
     "PreparedGeneration", "RunPodGenerationPreparation", "GenerationInvocationClient",
+    "GenerationReleaseOwner",
 ]

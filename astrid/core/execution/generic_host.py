@@ -5080,10 +5080,11 @@ class RuntimeProtocolClient:
             "result": dict(result),
             "runtime_epoch": epoch,
         }
-        return self.generated.settle_attempt(
-            attempt_id,
-            settlement,
-            idempotency_key=f"settle-{attempt_id}-{fence}",
+        return self._terminal_evidence_mutation(
+            task_id, result if "manifest_ref" in result else None,
+            lambda: self.generated.settle_attempt(
+                attempt_id, settlement, idempotency_key=f"settle-{attempt_id}-{fence}",
+            ),
         )
 
     def fail(
@@ -5097,6 +5098,8 @@ class RuntimeProtocolClient:
         fence: int | None = None,
         failure_diagnostic: Mapping[str, Any] | None = None,
         structured_error: Mapping[str, Any] | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
     ):
         if not attempt_id or fence is None:
             raise HostError("generated failure requires attempt_id and fence")
@@ -5119,14 +5122,84 @@ class RuntimeProtocolClient:
         epoch = self._attempt_runtime_epochs.get(str(attempt_id))
         if epoch is None:
             raise HostError("attempt runtime epoch was not captured at claim")
-        return completion_client.fail_attempt(
-            attempt_id,
-            lease_id=lease_token,
-            fence=int(fence),
-            error=payload,
-            runtime_epoch=epoch,
-            idempotency_key=f"fail-{attempt_id}-{fence}",
+        evidence = {}
+        if outputs is not None:
+            evidence["outputs"] = [dict(row) for row in outputs]
+        if result is not None:
+            evidence["result"] = dict(result)
+        idempotency_key = f"fail-{attempt_id}-{fence}"
+        request = dict(
+            lease_id=lease_token, fence=int(fence), error=payload,
+            runtime_epoch=epoch, idempotency_key=idempotency_key, **evidence,
         )
+        return self._terminal_evidence_mutation(
+            task_id, result,
+            lambda: completion_client.fail_attempt(attempt_id, **request),
+        )
+
+    def _terminal_evidence_mutation(
+        self, task_id: str, expected_result: Mapping[str, Any] | None,
+        mutation: Callable[[], Any],
+    ) -> Any:
+        """Retry the same fenced write after checking whether its ACK was lost."""
+        last_error: BaseException | None = None
+        for attempt in range(2):
+            try:
+                response = mutation()
+            except Exception as exc:
+                last_error = exc
+                if expected_result is not None:
+                    try:
+                        return self._verify_terminal_evidence_readback(task_id, expected_result, None)
+                    except Exception:
+                        pass
+                if attempt == 0:
+                    continue
+                raise
+            if expected_result is None:
+                return response
+            try:
+                self._verify_terminal_evidence_readback(task_id, expected_result, response)
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    continue
+                raise
+            return response
+        assert last_error is not None
+        raise last_error
+
+    def _verify_terminal_evidence_readback(
+        self, task_id: str, expected_result: Mapping[str, Any], response: Any,
+    ) -> Any:
+        """Require a Runtime task readback to contain the submitted durable result."""
+        def contains(actual: Any, expected: Mapping[str, Any]) -> bool:
+            if not isinstance(actual, Mapping):
+                return False
+            return all(
+                (contains(actual.get(key), value) if isinstance(value, Mapping)
+                 else actual.get(key) == value)
+                for key, value in expected.items()
+            )
+
+        task = response.get("task") if isinstance(response, Mapping) else getattr(response, "task", None)
+        task_id_value = (
+            task.get("task_id", task.get("id")) if isinstance(task, Mapping)
+            else getattr(task, "task_id", getattr(task, "id", None))
+        )
+        result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+        if (task_id_value is not None and str(task_id_value) != task_id) or not contains(result, expected_result):
+            task = self.generated.get_task(task_id)
+            task = task.get("task", task) if isinstance(task, Mapping) else task
+            task_id_value = (
+                task.get("task_id", task.get("id")) if isinstance(task, Mapping)
+                else getattr(task, "task_id", getattr(task, "id", None))
+            )
+            result = task.get("result") if isinstance(task, Mapping) else getattr(task, "result", None)
+            if ((task_id_value is not None and str(task_id_value) != task_id)
+                    or not contains(result, expected_result)):
+                raise HostError("Runtime terminal evidence is not present in durable task readback")
+        return {"task": task} if task is not None else {"result": result}
 
     def cancel(
         self,
@@ -5135,6 +5208,10 @@ class RuntimeProtocolClient:
         attempt_id: str | None = None,
         fence: int | None = None,
         lease_id: str | None = None,
+        runtime_epoch: int | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
+        stop_observed: bool | None = None,
     ):
         if attempt_id is None or fence is None:
             return self._lifecycle_client().cancel_task(task_id, idempotency_key=f"cancel-{task_id}")
@@ -5145,14 +5222,50 @@ class RuntimeProtocolClient:
             else getattr(task, "attempt_id", None)
         )
         if current_attempt != attempt_id:
+            # A prior observed-stop cancellation may already have cleared the
+            # active attempt before its response/readback was lost. Resolve
+            # that replay from durable task.result before rejecting the old
+            # fence; never issue a fresh mutation under a cleared binding.
+            if result is not None:
+                return self._verify_terminal_evidence_readback(
+                    task_id, result, {"task": task},
+                )
             raise HostError("runtime cancellation target no longer matches attempt")
         version = task.get("version") if isinstance(task, Mapping) else getattr(task, "version", None)
         if isinstance(version, bool) or not isinstance(version, int):
             raise HostError("runtime cancellation target has no version fence")
-        return self._lifecycle_client().cancel_task(
-            task_id,
+        epoch = self._attempt_runtime_epochs.get(str(attempt_id))
+        if runtime_epoch is not None and runtime_epoch != epoch:
+            raise HostError("runtime cancellation epoch does not match the claim fence")
+        if isinstance(fence, bool):
+            raise HostError("runtime cancellation fence must be an integer")
+        evidence = outputs is not None or result is not None or stop_observed is not None
+        if stop_observed is not None and not isinstance(stop_observed, bool):
+            raise HostError("runtime stop_observed must be a boolean")
+        if evidence and (lease_id is None or epoch is None):
+            raise HostError("runtime cancellation evidence requires a complete attempt fence")
+        kwargs = {}
+        if evidence:
+            kwargs.update(
+                attempt_id=attempt_id,
+                lease_id=lease_id,
+                fence=int(fence),
+                runtime_epoch=epoch,
+                **({"outputs": [dict(row) for row in outputs]} if outputs is not None else {}),
+                **({"result": dict(result)} if result is not None else {}),
+                stop_observed=stop_observed,
+            )
+        idempotency_key = f"cancel-{task_id}-{attempt_id}-{int(fence)}"
+        if stop_observed is not None:
+            idempotency_key += f"-stop-{int(stop_observed)}"
+        request = dict(
             expected_version=version,
-            idempotency_key=f"cancel-{task_id}-{attempt_id}-{int(fence)}",
+            idempotency_key=idempotency_key,
+            **kwargs,
+        )
+        return self._terminal_evidence_mutation(
+            task_id, result,
+            lambda: self._lifecycle_client().cancel_task(task_id, **request),
         )
 
     def get_object(self, digest: str) -> bytes:
@@ -5726,6 +5839,9 @@ class GenericPackHost:
         self.managed_tool_session = ManagedToolSession(
             manager_id=self.executor_id
         )
+        # One task at a time uses this host object's session slot. Parallel
+        # serving owns separate host objects; this is not a device scheduler.
+        self._session_task_lock = threading.Lock()
 
         self._active_processes: set[subprocess.Popen] = set()
         self._unresolved_task_scopes: list[str] = []
@@ -6037,6 +6153,42 @@ class GenericPackHost:
         """
         manager = self.managed_tool_session
         return self.warm_holds.lease(manager, stop=self._release_idle_session, lock=manager._lock)
+
+    def release_managed_session(
+        self, *, expected_binding: SessionBinding, expected_generation: int,
+        reason: str = "requested",
+    ) -> Mapping[str, Any]:
+        """Control the existing owner, without racing task setup or admission.
+
+        The caller must route an exact observed binding to this host. Native
+        evidence remains separate from any claim of measured memory return.
+        """
+        if not isinstance(expected_binding, SessionBinding) or type(expected_generation) is not int:
+            raise StaleAdmissionError("session release requires exact owner authorization")
+        if not self._session_task_lock.acquire(blocking=False):
+            return {"ok": False, "released": False, "release_pending": True}
+        try:
+            manager = self.managed_tool_session
+            with manager._lock:
+                try:
+                    evidence = manager.release(
+                        reason=reason, expected_binding=expected_binding,
+                        expected_generation=expected_generation, require_quiescent=True,
+                    )
+                except SessionCapacityError as exc:
+                    if manager.occupied and not manager.active:
+                        self._latch_cleanup_uncertainty(f"managed session release remains pending: {exc}")
+                    return {"ok": False, "released": False, "release_pending": True}
+                self._vibecomfy_warmth_hint = None
+                self._vibecomfy_current_warmth_hint = None
+                self._vibecomfy_requested_warmth_hint = None
+                # Retire the old idle callback before another binding can
+                # occupy the slot, even if opened directly by owner control.
+                hold = self._hold_session_slot()
+                self.warm_holds.release(hold, holding=None, idle_seconds=0)
+                return {"ok": True, "released": True, "native": dict(evidence or {})}
+        finally:
+            self._session_task_lock.release()
 
     def _settle_session_hold(self, hold: WarmLease) -> None:
         """At task end, arm idle release for whatever the slot still keeps warm."""
@@ -7681,6 +7833,134 @@ class GenericPackHost:
         self._pending_provider_grants[task_id] = token
         return token
 
+    def _prepare_producer_evidence(self, output_root: Path, task: Mapping[str, Any]) -> None:
+        """Add host-observed identity to the existing producer result object."""
+        receipt_path = output_root / "manifest.json"
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            return
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if not isinstance(receipt, dict) or "managed_generation_result" not in receipt:
+            return
+        payload = receipt["managed_generation_result"]
+        if not isinstance(payload, dict) or payload.get("kind") != "managed-generation-result.v1":
+            raise HostError("managed producer receipt is invalid")
+        validate_result_manifest(receipt, staging_root=output_root)
+        original_payload = payload
+        payload = json.loads(json.dumps(payload))
+        manifests = [row for row in receipt["outputs"] if row.get("name") == "result_manifest"]
+        if len(manifests) != 1:
+            raise HostError("managed producer receipt requires one result_manifest")
+        original = json.loads((output_root / manifests[0]["path"]).read_text(encoding="utf-8"))
+        if original != original_payload:
+            raise HostError("embedded producer result differs from durable manifest")
+        # These are observations from the installed host, never development
+        # repository lookups. Producer evidence remains in its own namespace.
+        producer = payload["evidence"]["producer"]
+        transport = payload["evidence"]["transport"]
+        installed = self.boot_manifest_provenance()
+        if installed is not None:
+            manifest_path = self.boot_manifest_path
+            data = manifest_path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            destination = output_root / "outputs" / "installed-product-manifest.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
+                raise HostError("installed manifest evidence escapes output custody")
+            if destination.exists() and destination.read_bytes() != data:
+                raise HostError("installed manifest evidence destination collides")
+            if not destination.exists():
+                destination.write_bytes(data)
+            build = producer.setdefault("build", {})
+            if build is None:
+                build = producer["build"] = {}
+            build["installed_product"] = {
+                "object_id": f"sha256:{digest}", "sha256": digest,
+                "bytes": len(data), "filename": destination.name, "stamp": installed,
+            }
+            if not any(row.get("content_hash") == f"sha256:{digest}" for row in receipt["outputs"]):
+                receipt["outputs"].append({
+                    "path": destination.relative_to(output_root).as_posix(),
+                    "name": "vibecomfy_run", "output_port": "vibecomfy_run",
+                    "ordinal": max(row["ordinal"] for row in receipt["outputs"]) + 1,
+                    "role": "auxiliary", "is_primary": False, "media_type": "application/json",
+                    "content_hash": f"sha256:{digest}", "bytes": len(data),
+                })
+        request = task.get("execution_request")
+        if isinstance(request, Mapping) and isinstance(request.get("target"), Mapping):
+            transport["target"] = dict(request["target"])
+        if isinstance(task.get("execution_binding"), Mapping):
+            transport["execution_binding"] = dict(task["execution_binding"])
+        from astrid.core.contracts.managed_generation_result import redact_evidence
+
+        payload["evidence"] = redact_evidence(payload["evidence"])
+        receipt["managed_generation_result"] = payload
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded_bytes = encoded.encode("utf-8")
+        digest = hashlib.sha256(encoded_bytes).hexdigest()
+        # Publish a new immutable spool object before atomically changing the
+        # universal receipt, so a crash never invalidates its prior hash.
+        destination = output_root / "outputs" / f"managed-generation-result-{digest}.json"
+        if destination.is_symlink() or not destination.resolve().is_relative_to(output_root.resolve()):
+            raise HostError("managed result manifest escapes output custody")
+        if destination.exists() and destination.read_bytes() != encoded_bytes:
+            raise HostError("managed result manifest destination collides")
+        if not destination.exists():
+            destination.write_bytes(encoded_bytes)
+        for row in receipt["outputs"]:
+            if row.get("name") != "result_manifest":
+                continue
+            row["path"] = destination.relative_to(output_root).as_posix()
+            row["content_hash"] = f"sha256:{digest}"
+            row["bytes"] = len(encoded_bytes)
+            row.pop("sha256", None)
+            receipt["managed_generation_result_path"] = row["path"]
+        write_json_atomic(receipt_path, receipt)
+
+    def _validate_producer_evidence(
+        self, descriptors: Sequence[Mapping[str, Any]], *, output_root: Path,
+        task_id: str, attempt_id: str, successful: bool = False,
+    ) -> None:
+        """Check the durable producer receipt before any terminal publication.
+
+        Universal spool receipts may embed a neutral envelope, but the actual
+        result_manifest object is authoritative. Validate its correlation and
+        every local output/ref, including on the successful harvest path.
+        """
+        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+
+        for descriptor in descriptors:
+            if descriptor.get("name") != "result_manifest":
+                continue
+            path = Path(str(descriptor.get("path", "")))
+            if descriptor.get("media_type") != "application/json" and path.suffix != ".json":
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping) or payload.get("kind") != "managed-generation-result.v1":
+                continue
+            validated = validate_managed_generation_result(
+                payload, staging_root=output_root,
+                expected_task_id=task_id, expected_attempt_id=attempt_id,
+            )
+            if successful and any(
+                validated.outcomes[phase].status != expected
+                for phase, expected in (("execution", "succeeded"), ("retrieval", "succeeded"),
+                                        ("verification", "succeeded"), ("publication", "not_started"))
+            ):
+                raise HostError("successful publication requires a verified successful producer result")
+            for output in validated.outputs:
+                matches = [row for row in descriptors
+                           if Path(str(row.get("path", ""))).resolve() == (output_root / output.path).resolve()
+                           and row.get("bytes") == output.bytes
+                           and row.get("content_hash") == f"sha256:{output.sha256}"
+                           and row.get("ordinal") == output.ordinal
+                           and row.get("output_port", row.get("name")) == output.output_port]
+                if len(matches) != 1:
+                    raise HostError("managed producer output differs from harvested publication")
+            for key in ("source", "effective_settings"):
+                reference = validated.inputs.get(key)
+                if reference is not None and "path" in reference:
+                    raise HostError("managed producer input ref must be portable before publication")
+
     def _typed_outputs(
         self,
         record: CapabilityRecord,
@@ -7707,7 +7987,9 @@ class GenericPackHost:
                     f"harvested output {index} names undeclared port {name!r}"
                 )
             role = harvested.get("role", "result")
-            if role not in {"result", "auxiliary"}:
+            if role not in {"result", "auxiliary"} and not (
+                role == "manifest" and name == "result_manifest"
+            ):
                 raise HostError(f"harvested output {name!r} has invalid role {role!r}")
             is_generation_result = (
                 generation_port is not None
@@ -7789,6 +8071,9 @@ class GenericPackHost:
                     if field in harvested
                 },
             }
+            if name == "result_manifest" and role == "manifest":
+                output["output_port"] = "result_manifest"
+                output["durability"] = harvested.get("durability", "durable")
 
             existing_index = seen_paths.get(path)
             if existing_index is not None:
@@ -9457,6 +9742,7 @@ class GenericPackHost:
         output_root = terminal.get("output_root", root / "outputs")
         payload = {} if minimal else terminal.get("payload") or {}
         warnings = list(payload.get("warnings") or [])
+        warnings.extend(terminal.get("evidence_warnings") or [])
 
         def error_text(error: BaseException) -> str:
             try:
@@ -9717,7 +10003,9 @@ class GenericPackHost:
                 terminal["lease_diagnostic"] = diagnostic
 
         def ensure_failure(error):
-            if terminal.get("recorded") or self.client is None or not exact_attempt or exact_fence is None:
+            if (terminal.get("recorded") or terminal.get("evidence_pending")
+                    or terminal.get("pending_status") == "cancelled"
+                    or self.client is None or not exact_attempt or exact_fence is None):
                 return
             try:
                 normalized = coerce_astrid_error(error)
@@ -9729,16 +10017,27 @@ class GenericPackHost:
                 # Their failure cannot suppress the original fenced mutation.
                 message = type(error).__name__
                 structured_error = {"code": "executor_failed", "field": None, "fix": ""}
+            pending_evidence = {
+                key: terminal[key]
+                for key in ("pending_outputs", "pending_result")
+                if key in terminal
+            }
             try:
                 completion_call(
                     self.client.fail, str(data["id"]), lease_token,
                     message, retryable=False,
                     attempt_id=exact_attempt, fence=exact_fence,
                     structured_error=structured_error,
+                    **({"outputs": pending_evidence["pending_outputs"]}
+                       if "pending_outputs" in pending_evidence else {}),
+                    **({"result": pending_evidence["pending_result"]}
+                       if "pending_result" in pending_evidence else {}),
                     **({"failure_diagnostic": dict(terminal["lease_diagnostic"])}
                        if terminal.get("forced") == "lease_lost" else {}),
                 )
             except Exception:
+                if pending_evidence:
+                    terminal["evidence_pending"] = True
                 # Observe cancellation only after attempting the original
                 # failure mutation; a broken read cannot suppress that write.
                 if task_snapshot()["status"] != "cancelled":
@@ -9848,8 +10147,16 @@ class GenericPackHost:
                 abort.set()
             try:
                 if code == "cancelled" and callable(getattr(self.client, "cancel", None)):
+                    # Admission shutdown happens before the producer starts.
+                    # During execution the observer cannot claim the child
+                    # stopped until the local execution path returns.
                     completion_call(self.client.cancel, str(data["id"]), attempt_id=exact_attempt,
-                                    fence=exact_fence, lease_id=lease_token)
+                                    fence=exact_fence, lease_id=lease_token,
+                                    runtime_epoch=data.get("runtime_epoch"), outputs=[],
+                                    result={"status": "cancelled",
+                                            "error": {"code": "cancelled",
+                                                      "message": "execution cancelled"}},
+                                    stop_observed=terminal.get("stage") == "admission")
                 else:
                     ensure_failure(error)
             except BaseException as reporting_error:
@@ -9985,11 +10292,24 @@ class GenericPackHost:
             contract = _execution_contract(data, runtime_session_id=self.runtime_state.get("runtime_session_id"))
             terminal["execution_contract"] = contract
             lifetime.runtime_limit = (contract or {}).get("limits", {}).get("max_runtime_seconds")
-            return self._run_task_impl(
-                task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
-                keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
-                _terminal=terminal,
-            )
+            # The lease observer continues while waiting for this host's
+            # session. No second task may replace a live binding or overwrite
+            # its request-specific idle policy during setup/collection.
+            while not self._session_task_lock.acquire(timeout=0.05):
+                lifetime.assert_deadline()
+                if abort.is_set() or self._shutdown.is_set():
+                    raise HostCancelled("session wait cancelled")
+            try:
+                lifetime.assert_deadline()
+                if abort.is_set() or self._shutdown.is_set():
+                    raise HostCancelled("session wait cancelled")
+                return self._run_task_impl(
+                    task, lease_token=lease_token, attempt_id=attempt_id, fence=fence,
+                    keep_attempt=keep_attempt, provider_route_grant=provider_route_grant,
+                    _terminal=terminal,
+                )
+            finally:
+                self._session_task_lock.release()
         except BaseException as exc:
             terminal.setdefault("error", exc)
             try:
@@ -10008,7 +10328,8 @@ class GenericPackHost:
             try:
                 if terminal.get("root") is not None and not terminal.get("write_attempted"):
                     self._write_task_result(terminal)
-                    if self.attempt_root is None and not keep_attempt:
+                    if (self.attempt_root is None and not keep_attempt
+                            and not terminal.get("evidence_pending")):
                         self._cleanup_ephemeral_attempt_or_latch(terminal["root"])
             finally:
                 stop.set()
@@ -10357,6 +10678,9 @@ class GenericPackHost:
             """Fence a deadline expiry at Runtime before returning to the worker."""
             nonlocal deadline_failed
             try:
+                deadline_outputs, deadline_result = collect_terminal_evidence(
+                    "failed", AstridError("execution deadline exceeded", code="timeout")
+                )
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
@@ -10365,6 +10689,7 @@ class GenericPackHost:
                     retryable=False,
                     attempt_id=attempt_id,
                     fence=fence,
+                    outputs=deadline_outputs, result=deadline_result,
                 )
                 deadline_failed = True
             except Exception as exc:
@@ -10376,6 +10701,108 @@ class GenericPackHost:
                     raise HostError("deadline terminalization was not accepted by Runtime") from exc
                 deadline_failed = state == "failed"
 
+        def collect_terminal_evidence(status: str, error: BaseException) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            """Harvest and upload verified partial outputs before terminal mutation."""
+            upload_started = False
+            try:
+                normalized = coerce_astrid_error(error)
+                error_value = {
+                    "code": normalized.code or "executor_failed",
+                    "message": normalized.message or type(error).__name__,
+                }
+            except BaseException:
+                # Error normalization is executor controlled and may itself
+                # fail. Terminal evidence must still be attachable with a
+                # bounded fallback description.
+                error_value = {"code": "executor_failed", "message": type(error).__name__}
+            if ("pending_outputs" in _terminal and "pending_result" in _terminal
+                    and _terminal.get("pending_status") == status):
+                return _terminal["pending_outputs"], _terminal["pending_result"]
+            output_root = _terminal.get("output_root")
+            if output_root is None:
+                result_value = {"status": status, "error": error_value}
+                _terminal.update(pending_outputs=[], pending_result=result_value, pending_status=status)
+                return [], result_value
+            try:
+                values = dict(_terminal.get("inputs") or {})
+                values.update({"out": str(output_root), "run_root": str(root), "python_exec": sys.executable})
+                if record.definition.command is not None:
+                    _, values = _bind_host_owned_command_outputs(
+                        record, values, output_root=Path(output_root)
+                    )
+                manifest_path = Path(output_root) / "manifest.json"
+                self._prepare_producer_evidence(Path(output_root), task_data)
+                # A result manifest is mandatory for a successful run, but a
+                # failure before the producer writes one is still publishable
+                # as a terminal result with no outputs. Do not guess output
+                # identities from loose files in that spool.
+                receipt_required = bool(
+                    isinstance(record.definition.metadata, Mapping)
+                    and record.definition.metadata.get("output_result_manifest")
+                )
+                if receipt_required and not manifest_path.exists():
+                    harvested = []
+                else:
+                    harvested = harvest_staged_outputs(
+                        output_root, definition=record.definition,
+                        declared_outputs=record.definition.outputs, values=values, require=False,
+                    )
+                if manifest_path.is_file() and not manifest_path.is_symlink():
+                    manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if manifest_value.get("kind") == "managed-generation-result.v1":
+                        from astrid.core.contracts.managed_generation_result import validate_managed_generation_result
+
+                        validate_managed_generation_result(
+                            manifest_value, staging_root=output_root,
+                            expected_task_id=task_id, expected_attempt_id=attempt_id,
+                        )
+                self._validate_producer_evidence(
+                    harvested, output_root=Path(output_root), task_id=task_id, attempt_id=attempt_id,
+                )
+                typed = self._typed_outputs(record, harvested, root)
+                task_epoch = task_data.get("runtime_epoch")
+                upload_started = bool(typed)
+                uploaded = self._upload_outputs(
+                    typed,
+                    project_id=task_data.get("project_id"), run_id=task_data.get("run_id"),
+                    task_id=task_id, attempt_id=attempt_id, lease_id=lease_token,
+                    fence=fence, runtime_epoch=task_epoch if isinstance(task_epoch, int) else None,
+                ) if typed else []
+                result_value: dict[str, Any] = {
+                    "status": status,
+                    "error": error_value,
+                    "outcomes": {"execution": {"status": status}},
+                }
+                manifest = next((row for row in uploaded
+                                 if row.get("output_port", row.get("name")) == "result_manifest"), None)
+                if manifest is not None:
+                    result_value["manifest_ref"] = {
+                        "object_id": manifest.get("digest"), "size": manifest.get("size"),
+                    }
+            except Exception as evidence_error:
+                # A local manifest/harvest/identity failure means these
+                # outputs cannot be described safely. Preserve the producer's
+                # original failure and publish an empty result; only an upload
+                # failure leaves evidence awaiting Runtime recovery.
+                _terminal["evidence_error"] = type(evidence_error).__name__
+                if not upload_started:
+                    warnings = _terminal.setdefault("evidence_warnings", [])
+                    warnings.append(f"terminal evidence unavailable: {type(evidence_error).__name__}")
+                    result_value = {
+                        "status": status,
+                        "error": error_value,
+                        "outcomes": {"execution": {"status": status}},
+                    }
+                    _terminal.update(
+                        pending_outputs=[], pending_result=result_value, pending_status=status
+                    )
+                    return [], result_value
+                # Keep the attempt spool and expose why evidence could not be attached.
+                _terminal["evidence_pending"] = True
+                raise HostError("terminal evidence publication is pending Runtime recovery") from evidence_error
+            _terminal.update(pending_outputs=uploaded, pending_result=result_value, pending_status=status)
+            return uploaded, result_value
+
         def handle_guard_abort() -> None:
             if _terminal.get("forced") == "lease_lost":
                 raise HostError("execution lease lost")
@@ -10383,6 +10810,9 @@ class GenericPackHost:
                 nonlocal deadline_exceeded
                 deadline_exceeded = True
             if evidence_cap_exceeded:
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "failed", AstridError(_evidence_cap_message(evidence_failure_message), code="evidence_cap")
+                )
                 completion_call(self.client.fail,
                     task_id,
                     lease_token,
@@ -10391,13 +10821,26 @@ class GenericPackHost:
                     attempt_id=attempt_id,
                     fence=fence,
                     failure_diagnostic=evidence_failure_receipt,
+                    outputs=evidence_outputs, result=evidence_result,
                 )
                 raise HostError(_evidence_cap_message(evidence_failure_message))
             if deadline_exceeded:
                 terminalize_deadline()
             elif callable(getattr(self.client, "cancel", None)):
-                completion_call(self.client.cancel, task_id, attempt_id=attempt_id,
-                                fence=fence, lease_id=lease_token)
+                evidence_outputs, evidence_result = collect_terminal_evidence(
+                    "cancelled", AstridError("execution cancelled", code="cancelled")
+                )
+                cancel_kwargs = {
+                    "attempt_id": attempt_id, "fence": fence, "lease_id": lease_token,
+                    "runtime_epoch": task_data.get("runtime_epoch"),
+                    "outputs": evidence_outputs, "result": evidence_result,
+                    "stop_observed": True,
+                }
+                try:
+                    completion_call(self.client.cancel, task_id, **cancel_kwargs)
+                except BaseException:
+                    _terminal["evidence_pending"] = True
+                    raise
 
         read_progress = _terminal["read_progress"]
         try:
@@ -10805,6 +11248,8 @@ class GenericPackHost:
                 lifetime.begin_execution()
                 _terminal["stage"] = "execution"
                 render_child_pending = True
+                if capability_id != "wan2gp.generate_video":
+                    self.managed_tool_session.adapter_for(managed_token, begin=True)
                 if capability_id == "wan2gp.generate_video":
                     result = self._run_wan_session(
                         inputs=inputs,
@@ -10957,6 +11402,7 @@ class GenericPackHost:
                     evidence_failure_message = str(exc)
                 raise HostError(str(exc)) from exc
             try:
+                self._prepare_producer_evidence(output_root, task_data)
                 harvested = harvest_staged_outputs(
                     output_root,
                     definition=record.definition,
@@ -10966,6 +11412,9 @@ class GenericPackHost:
                 )
             except HarvestError as exc:
                 raise HostError(f"capability {record.id!r}: {exc}") from exc
+            self._validate_producer_evidence(
+                harvested, output_root=output_root, task_id=task_id, attempt_id=attempt_id, successful=True,
+            )
             typed_outputs = self._typed_outputs(
                 record,
                 harvested,
@@ -11066,6 +11515,13 @@ class GenericPackHost:
                 "source_digest": record.source_digest,
                 "dependency_digest": record.dependency_digest,
             }
+            producer_manifest = next((row for row in outputs
+                                      if row.get("output_port", row.get("name")) == "result_manifest"
+                                      and row.get("role") == "manifest"), None)
+            if producer_manifest is not None:
+                payload["manifest_ref"] = {
+                    "object_id": producer_manifest["digest"], "size": producer_manifest["size"],
+                }
             if capability_id == "h3_av.transform" and child_bridge is not None:
                 action_result = payload.get("action_result")
                 if not isinstance(action_result, Mapping):
@@ -11157,6 +11613,11 @@ class GenericPackHost:
             payload["managed_tool_session"] = managed_envelope.to_dict()
             lifetime.assert_deadline()
             _terminal["stage"] = "settlement"
+            if "manifest_ref" in payload:
+                _terminal.update(
+                    evidence_pending=True, publication_pending=True,
+                    pending_outputs=outputs, pending_result=payload, pending_status="succeeded",
+                )
             settlement = completion_call(self.client.settle,
                 task_id,
                 lease_token,
@@ -11167,6 +11628,8 @@ class GenericPackHost:
                 fence=fence,
             )
             settled = True
+            _terminal.pop("evidence_pending", None)
+            _terminal.pop("publication_pending", None)
             _terminal.update(settled=True, settlement=settlement, effect=effect)
             if capability_id == "vibecomfy.run" and self._vibecomfy_current_warmth_hint:
                 # The hint becomes reusable only after the Runtime settlement
@@ -11181,6 +11644,11 @@ class GenericPackHost:
             return {"task_id": task_id, "status": "cancelled", "cancelled": True}
         except BaseException as exc:
             _terminal.setdefault("error", exc)
+            if _terminal.get("publication_pending"):
+                # The successful fenced publication may have committed while
+                # its response/readback was unavailable. Keep the exact spool
+                # for idempotent reconciliation instead of publishing failure.
+                raise
             if isinstance(exc, CommandCleanupUnresolved):
                 command_cleanup_error = exc
             original_error = exc.execution_error if isinstance(exc, CommandCleanupUnresolved) else exc
@@ -11200,6 +11668,7 @@ class GenericPackHost:
             if isinstance(gpu, Mapping) and (gpu.get("warning") or not gpu.get("qualified")):
                 failure_message += " " + str(gpu.get("warning") or gpu["reason"])
             failure_message += recovery_suffix(original_error)
+            evidence_outputs, evidence_result = collect_terminal_evidence("failed", original_error)
             completion_call(self.client.fail,
                 task_id,
                 lease_token,
@@ -11213,6 +11682,8 @@ class GenericPackHost:
                     if getattr(original_error, "child_import_receipt", None) is not None
                     else storage_failure_receipt or evidence_failure_receipt
                 ),
+                outputs=evidence_outputs,
+                result=evidence_result,
                 **_structured_failure_kwargs(original_error),
             )
             raise
@@ -11245,12 +11716,20 @@ class GenericPackHost:
                 child_bridge.revoke()
                 with self._process_lock:
                     self._child_bridges.discard(child_bridge)
-            retain_for_unresolved_scope = command_cleanup_error is not None
+            retain_for_unresolved_scope = (
+                command_cleanup_error is not None
+                or bool(_terminal.get("evidence_pending"))
+                or (bool(_terminal.get("pending_result")) and not _terminal.get("recorded"))
+            )
             if retain_for_unresolved_scope:
                 # The task-scope supervisor has evidence of a child writer
                 # that outlived its leader. Keep the attempt even when the
                 # caller did not request debug retention.
-                cleanup_errors.append("unresolved command task scope; attempt retained")
+                cleanup_errors.append(
+                    "unresolved command task scope; attempt retained"
+                    if command_cleanup_error is not None
+                    else "Runtime terminal evidence publication pending; attempt retained"
+                )
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
@@ -11387,7 +11866,9 @@ class GenericPackHost:
                 self._latch_cleanup_uncertainty("; ".join(cleanup_errors))
             self._last_cleanup_receipt = cleanup_receipt
             self._publish_evidence_status()
-            if cleanup_errors:
+            if cleanup_errors and not (_terminal.get("evidence_pending") and sys.exc_info()[1] is not None):
+                # Pending evidence retains the spool and latches cleanup above.
+                # Preserve the publication exception already being propagated.
                 raise HostError("owned cleanup incomplete: " + "; ".join(cleanup_errors))
             self._record_native_cpu_handoff(
                 self.managed_tool_session.current_adapter, managed_token,
@@ -11428,11 +11909,20 @@ class GenericPackHost:
         attempt_id: str | None = None,
         fence: int | None = None,
         lease_id: str | None = None,
+        runtime_epoch: int | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        result: Mapping[str, Any] | None = None,
+        stop_observed: bool | None = None,
         require_fence: bool = False,
     ) -> Any:
         """Propagate cancellation, requiring identity for orphan reclaim."""
         operation = self._client_operation("cancel")
+        has_evidence = outputs is not None or result is not None or stop_observed is not None
+        if has_evidence and (not attempt_id or not lease_id or fence is None or runtime_epoch is None):
+            raise HostError("runtime cancellation evidence requires a complete attempt fence")
         if attempt_id is None or fence is None:
+            if has_evidence:
+                raise HostError("runtime cancellation evidence requires an attempt fence")
             return operation(task_id)
         try:
             return operation(
@@ -11440,9 +11930,13 @@ class GenericPackHost:
                 attempt_id=attempt_id,
                 fence=int(fence),
                 lease_id=lease_id,
+                **({"runtime_epoch": runtime_epoch} if runtime_epoch is not None else {}),
+                **({"outputs": outputs} if outputs is not None else {}),
+                **({"result": result} if result is not None else {}),
+                **({"stop_observed": stop_observed} if stop_observed is not None else {}),
             )
         except TypeError as exc:
-            if require_fence:
+            if require_fence or has_evidence:
                 raise HostError("runtime cancellation lacks an attempt/fence operation") from exc
             return operation(task_id)
 

@@ -108,8 +108,8 @@ def test_gateway_preserves_coded_actionable_target_error(monkeypatch, capsys):
     assert gateway.main(["generate", "image", "a dog"]) == 2
     captured = capsys.readouterr()
     assert not captured.out
-    assert "code: COMFY_TARGET_UNAVAILABLE" in captured.err
-    assert "fix: Use --target http://127.0.0.1:8188" in captured.err
+    assert "code: target_unreachable" in captured.err
+    assert "fix: astrid generate targets --target auto" in captured.err
     assert "this is a bug" not in captured.err
 
 
@@ -143,7 +143,7 @@ def test_gateway_reports_missing_provider_key_as_terminal_precondition(monkeypat
     assert not captured.out
     assert "code: GENERATION_KEY_MISSING" in captured.err
     assert "FAL_KEY is required" in captured.err
-    assert "fix: Configure FAL_KEY and retry." in captured.err
+    assert "fix: astrid generate describe --entry flux-schnell" in captured.err
     assert events == ["client-open", "generation-dispatched", "client-close"]
 
 
