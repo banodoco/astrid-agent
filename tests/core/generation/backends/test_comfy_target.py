@@ -21,6 +21,37 @@ PROMPT = {"prompt": {"1": {"class_type": "Example", "inputs": {}}}}
 DESCRIPTOR = {"filename": "result.png", "subfolder": "renders", "type": "output"}
 
 
+def test_schema_refresh_reuses_only_successful_stats_for_this_client_and_capture(monkeypatch):
+    from astrid.core.generation.engine_readiness import ComfyProvenance
+
+    calls = []
+    def request(self, path, **kwargs):
+        calls.append((self.target.url, path))
+        if path == '/system_stats':
+            if sum(call[1] == path for call in calls) == 1:
+                raise OSError('temporary failure')
+            return {'system': {'comfyui_version': self.target.url}}
+        return {}
+    monkeypatch.setattr(ComfyTargetClient, 'request_json', request)
+    first = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8188', 'attached'))
+    second = ComfyTargetClient(ComfyTarget('http://127.0.0.1:8189', 'attached'))
+    provenance = ComfyProvenance()
+    with provenance.capture():
+        first.object_info()  # Failed stats stay retryable.
+        first.object_info()
+        first.object_info()  # Schema refresh does not repeat successful stats.
+        second.object_info()
+    assert [path for _, path in calls].count('/object_info') == 4
+    assert [path for _, path in calls].count('/system_stats') == 3
+    assert provenance.observed['engine'] == second.target.url
+    with provenance.capture():
+        first.object_info()  # Returning to another target needs fresh evidence.
+    assert provenance.observed['engine'] == first.target.url
+    with ComfyProvenance().capture():
+        first.object_info()
+    assert [path for _, path in calls].count('/system_stats') == 5
+
+
 @pytest.fixture
 def engine_configuration(tmp_path):
     root = tmp_path / "pod-input" / "astrid" / "task-1"

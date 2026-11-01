@@ -223,10 +223,12 @@ class ComfyTargetClient:
             provenance.object_info(payload)
             # Optional version observations cannot turn a reachable, capable
             # human target into a blocker. Never infer ownership from stats.
-            try:
-                provenance.system_stats(self.system_stats())
-            except (ValueError, OSError):
-                provenance.system_stats({})
+            if getattr(provenance, '_system_stats_source', None) is not self:
+                try:
+                    provenance.system_stats(self.system_stats())
+                    provenance._system_stats_source = self
+                except (ValueError, OSError):
+                    provenance.system_stats({})
         return payload
 
     def system_stats(self) -> dict[str, Any]:
