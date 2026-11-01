@@ -219,6 +219,7 @@ def _new_attempt(epoch: int) -> dict:
         "submit": "not-issued",
         "wrapper_sha256": None,
         "descriptor_sha256": None,
+        "handoff": None,
         "claim": None,
         "retirement": None,
     }
@@ -1506,6 +1507,10 @@ def _launch_current_attempt(root: Path, job: dict, old: Version, api, *,
     current = _current_attempt(root, operation_id, epoch, nonce, submitted=True)
     current_attempt = dict(_attempt(current))
     current_attempt["submit"] = "acknowledged"
+    # Publish the grant together with the acknowledgement while the
+    # coordinator still owns the installer lock. A wrapper delivered after an
+    # unknown manager reply must never acquire bootstrap authority.
+    current_attempt["handoff"] = {"epoch": epoch, "nonce": nonce}
     if current.get("state") == "launching":
         return _write_job(root, operation_id, state="launching", message="Update job launched.",
                           fields={"launch_status": "acknowledged", "launch_error": None,
@@ -1881,6 +1886,11 @@ def run_job(root: Path, operation_id: str, epoch: int | None = None,
         # even return/rewrite the replacement job, much less claim or enter it.
         job = _current_attempt(root, operation_id, epoch, nonce,
                                submitted=not direct_call)
+        if not direct_call:
+            attempt = _attempt(job)
+            if (attempt.get("submit") != "acknowledged"
+                    or attempt.get("handoff") != {"epoch": epoch, "nonce": nonce}):
+                _busy("The native update attempt has no acknowledged handoff.")
         if job.get("state") in {"updated", "rolled_back", "failed", "recovery-needed", "active"}:
             return job
         if job.get("state") not in {"accepted", "launching"}:
