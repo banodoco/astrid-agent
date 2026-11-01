@@ -120,8 +120,8 @@ on:
         type: string
 
 concurrency:
-  group: reusable-journey-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: reusable-journey-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

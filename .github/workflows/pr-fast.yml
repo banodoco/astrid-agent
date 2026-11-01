@@ -1,0 +1,103 @@
+name: PR fast lane
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.paths.outputs.docs }}
+    steps:
+      - id: paths
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            // Missing output selects all jobs, including API and pagination failures.
+            const {owner, repo} = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const pr = (await github.rest.pulls.get({owner, repo, pull_number})).data;
+            if (pr.head.sha !== context.payload.pull_request.head.sha ||
+                pr.base.sha !== context.payload.pull_request.base.sha ||
+                !Number.isInteger(pr.changed_files) || pr.changed_files < 1 || pr.changed_files >= 3000) return;
+            const files = await github.paginate(github.rest.pulls.listFiles,
+              {owner, repo, pull_number, per_page: 100});
+            if (files.length !== pr.changed_files || files.some(f =>
+              !['added', 'modified'].includes(f.status) || typeof f.filename !== 'string')) return;
+            const latest = (await github.rest.pulls.get({owner, repo, pull_number})).data;
+            if (latest.head.sha !== pr.head.sha || latest.base.sha !== pr.base.sha ||
+                latest.changed_files !== pr.changed_files) return;
+            // Only this audited, existing document is exempt. Unknown paths run all jobs.
+            core.setOutput('docs', String(files.every(f =>
+              f.status === 'modified' && f.filename === 'docs/architecture/hivemind-hybrid-search-plan.md')));
+  checks:
+    needs: changes
+    if: ${{ always() && (needs.changes.result != 'success' || needs.changes.outputs.docs != 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install -e '.[dev]'
+      - run: python scripts/ci_install_runtime.py
+      - run: make ruff && make mypy && make cycles
+  unit:
+    needs: changes
+    if: ${{ always() && (needs.changes.result != 'success' || needs.changes.outputs.docs != 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ASTRID_CI_JOB: unit-shard-ubuntu-latest
+      ASTRID_RUNTIME_CHECKOUT: ${{ github.workspace }}/astrid-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - id: runtime-pin
+        run: echo "commit=$(python -c 'import json; print(json.load(open("runtime.lock.json"))["source_commit"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-runtime
+          ref: ${{ steps.runtime-pin.outputs.commit }}
+          path: astrid-runtime
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: python -m pip install -e '.[dev]'
+      - run: python scripts/ci_install_runtime.py
+      - run: python -m pytest -q
+  aggregate:
+    name: PR fast lane aggregate
+    if: ${{ always() }}
+    needs: [changes, checks, unit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify selected jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          needs = json.loads(os.environ['RESULTS'])
+          docs = needs['changes']['result'] == 'success' and needs['changes'].get('outputs', {}).get('docs') == 'true'
+          for name in ['checks', 'unit']:
+              expected = 'skipped' if docs else 'success'
+              if needs[name]['result'] != expected:
+                  raise SystemExit(f"{name}: expected {expected}, got {needs[name]['result']}")
+          PYCODE
