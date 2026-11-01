@@ -1,0 +1,172 @@
+name: R51 hosted environment diagnostic
+on:
+  push:
+    branches: ["venue/M-VENUE-R51-ENV-DIAG-1"]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: urllib FFmpeg observation
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/probe"
+          python3 - <<'PY' > "$RUNNER_TEMP/probe/linux.log" 2>&1
+          import hashlib, os, shutil, subprocess, sys, urllib.request
+          from pathlib import Path
+          url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz'
+          expected = 'abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67'
+          target = Path(os.environ['RUNNER_TEMP']) / 'ffmpeg-probe.tar.xz'
+          print('python:', sys.version, flush=True)
+          print('command: urllib.request.Request(url, headers={"User-Agent": "astrid-installer/0.1.0"}); urllib.request.urlopen(request, timeout=120); shutil.copyfileobj(response, output)', flush=True)
+          try:
+              req = urllib.request.Request(url, headers={'User-Agent': 'astrid-installer/0.1.0'})
+              with urllib.request.urlopen(req, timeout=120) as response, target.open('wb') as output:
+                  print('http_status:', response.status, flush=True)
+                  for name in ('Content-Type', 'Content-Length', 'Last-Modified', 'ETag', 'Date', 'Server'):
+                      print('header_' + name + ':', response.headers.get(name), flush=True)
+                  shutil.copyfileobj(response, output)
+              print('download_exit: 0', flush=True)
+              digest = hashlib.sha256(target.read_bytes()).hexdigest()
+              print('bytes:', target.stat().st_size, 'sha256:', digest, 'expected:', expected, 'match:', digest == expected, flush=True)
+              result = subprocess.run(['xz', '-t', str(target)], check=False)
+              print('command: xz -t <download>; xz_exit:', result.returncode, flush=True)
+          except Exception as exc:
+              print('download_exit: 1 exception_type:', type(exc).__name__, 'http_code:', getattr(exc, 'code', None), flush=True)
+          finally:
+              target.unlink(missing_ok=True)
+          PY
+          cat "$RUNNER_TEMP/probe/linux.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: env-linux
+          path: ${{ runner.temp }}/probe/linux.log
+          if-no-files-found: error
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: pwsh to Python to Windows PowerShell isolation probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\probe" | Out-Null
+          @'
+          import os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'isolated-r51'
+          home, local, tmp = root/'home', root/'localappdata', root/'tmp'
+          for p in (home, local, tmp): p.mkdir(parents=True, exist_ok=True)
+          env = dict(os.environ)
+          env.update({'HOME':str(home), 'USERPROFILE':str(home), 'LOCALAPPDATA':str(local), 'APPDATA':str(root/'appdata'), 'TMP':str(tmp), 'TEMP':str(tmp), 'TMPDIR':str(tmp), 'XDG_DATA_HOME':str(home/'.local'/'share'), 'XDG_STATE_HOME':str(home/'.local'/'state'), 'XDG_CONFIG_HOME':str(home/'.config'), 'ASTRID_RUNTIME_DATA_ROOT':str(root/'data'), 'ASTRID_CI_PROGRAM_ROOT':str(root/'program'), 'ASTRID_CI_DATA_ROOT':str(root/'data')})
+          script = pathlib.Path(os.environ['RUNNER_TEMP'])/'probe'/'child.ps1'
+          fixture = pathlib.Path('tests/fixtures/release0/served/install.ps1').read_text(encoding='utf-8')
+          # Retain the exact historical implementation of creation and validation.
+          function = fixture[fixture.index('    function Initialize-PrivateDirectory'):fixture.index('\n    try {', fixture.index('    function Initialize-PrivateDirectory'))]
+          cs = fixture[fixture.index("            Add-Type -TypeDefinition @'"):fixture.index("\n'@", fixture.index("            Add-Type -TypeDefinition @'"))+3]
+          script.write_text('''$ErrorActionPreference = 'Stop'
+          Write-Output "PSVersion: $($PSVersionTable.PSVersion)"
+          Write-Output "PSEdition: $($PSVersionTable.PSEdition)"
+          Write-Output "PSModulePath: $env:PSModulePath"
+          try {
+              Import-Module Microsoft.PowerShell.Security -Verbose -ErrorAction Stop 4>&1 | Out-String -Width 4096 | Write-Output
+              Write-Output "import_exit: 0"
+              Get-Module Microsoft.PowerShell.Security | Select-Object Name,Version,Path | Format-List | Out-String -Width 4096 | Write-Output
+          } catch {
+              Write-Output "import_exit: 1"
+              $_ | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              $_.Exception | Format-List * -Force | Out-String -Width 4096 | Write-Output
+          }
+          ''' + cs + '\n' + function + '''
+          $path = Join-Path $env:TEMP 'owned-private'
+          try {
+              Initialize-PrivateDirectory $path
+              $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+              Write-Output "Get-Acl_exit: 0"
+              $acl | Format-List Owner,AreAccessRulesProtected,Sddl,Access | Out-String -Width 4096 | Write-Output
+              Write-Output "private_owner_protected_full_check_exit: 0"
+          } catch {
+              Write-Output "private_owner_protected_full_check_exit: 1"
+              $_ | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              $_.Exception | Format-List * -Force | Out-String -Width 4096 | Write-Output
+              exit 1
+          }
+          ''', encoding='utf-8')
+          argv = ['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script)]
+          print('parent pwsh -> Python:', sys.version, flush=True)
+          print('inherited PSModulePath:', env.get('PSModulePath'), flush=True)
+          print('command: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <probe>', flush=True)
+          proc = subprocess.run(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+          print(proc.stdout, flush=True)
+          print('child_exit:', proc.returncode, flush=True)
+          '@ | Set-Content -Encoding utf8 "$env:RUNNER_TEMP\probe\driver.py"
+          python -u "$env:RUNNER_TEMP\probe\driver.py" *> "$env:RUNNER_TEMP\probe\windows.log"
+          Add-Content "$env:RUNNER_TEMP\probe\windows.log" "python_exit: $LASTEXITCODE"
+          Get-Content "$env:RUNNER_TEMP\probe\windows.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: env-windows
+          path: ${{ runner.temp }}/probe/windows.log
+          if-no-files-found: error
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - name: Minimal harmless scheduling probe
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/probe"
+          { date -u '+utc=%Y-%m-%dT%H:%M:%SZ'; uname -sm; echo 'probe_exit=0'; } | tee "$RUNNER_TEMP/probe/macos.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: env-macos
+          path: ${{ runner.temp }}/probe/macos.log
+          if-no-files-found: error
+  publish:
+    if: always()
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: env-*
+          path: ${{ runner.temp }}/results/runs/${{ github.run_id }}-${{ github.run_attempt }}/probes
+      - name: Retain authenticated metadata and hash receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_ROOT: ${{ runner.temp }}/results/runs/${{ github.run_id }}-${{ github.run_attempt }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULT_ROOT"
+          printf '%s\n' "$NEEDS_JSON" > "$RESULT_ROOT/needs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" > "$RESULT_ROOT/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > "$RESULT_ROOT/jobs.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$RESULT_ROOT/artifacts.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/124985807429" > "$RESULT_ROOT/prior-job.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/41352578046/attempts/1" > "$RESULT_ROOT/prior-run.json"
+          (cd "$RESULT_ROOT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - name: Publish evidence ref
+        env:
+          RESULTS_DIR: ${{ runner.temp }}/results
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --orphan r51-env-results
+          git rm -r -q --ignore-unmatch .
+          cp -a "$RESULTS_DIR/runs" ./runs
+          git add runs
+          git commit -m "Publish R51 environment diagnostic ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git push origin HEAD:refs/heads/venue-results/M-VENUE-R51-ENV-DIAG-1
