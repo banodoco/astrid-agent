@@ -2,7 +2,7 @@ name: Windows timeline schema owner caller
 
 on:
   push:
-    branches: ["venue/M-R1FIX-WIN-TIMELINE-SCHEMA-OWNER-4"]
+    branches: ["venue/M-R1FIX-R-26-WINDOWS-ACL-R1-1"]
 
 permissions:
   contents: write
@@ -21,7 +21,7 @@ jobs:
       - name: Check out exact source Agent candidate
         uses: actions/checkout@v4
         with:
-          ref: 3fff57b55ab6f51f33b66eedb7203013667cf3b1
+          ref: d6793181ee7a6c035c6e8580b815db8edc3094e4
 
       - name: Check out task-owned caller
         uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
           $appRef = git -C journey-app rev-parse HEAD
           $callerRef = git -C owner-caller rev-parse HEAD
           $manifestHash = (Get-FileHash journey-app/public/install-manifest.json -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($agentRef -cne '3fff57b55ab6f51f33b66eedb7203013667cf3b1' -or $runtimeRef -cne '47e5949465cb6f3afdfd1cb8a0e90009fd9d4020' -or $appRef -cne '36ff224e3c9ad862e3f807e2548b997a36799543' -or $callerRef -cne '${{ github.sha }}' -or $manifestHash -cne 'b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777') { throw 'Candidate tuple or manifest digest mismatch' }
+          if ($agentRef -cne 'd6793181ee7a6c035c6e8580b815db8edc3094e4' -or $runtimeRef -cne '1e6d899efa77a2d6ec247c38250f9748330bb587' -or $appRef -cne '36ff224e3c9ad862e3f807e2548b997a36799543' -or $callerRef -cne '${{ github.sha }}' -or $manifestHash -cne 'b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777') { throw 'Candidate tuple or manifest digest mismatch' }
           $dir = Join-Path $env:RUNNER_TEMP 'X5-windows-journey'
           New-Item -ItemType Directory -Force $dir | Out-Null
           @{agent=$agentRef; runtime=$runtimeRef; app=$appRef; caller=$callerRef; manifest_sha256=$manifestHash; source_override=$true; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; job=$env:GITHUB_JOB; shell='${{ matrix.installer-shell }}'} | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $dir 'checked-out.json')
@@ -178,7 +178,7 @@ jobs:
           python - "$result/$run" <<'PYCODE'
           import json, os, pathlib, subprocess, sys
           root=pathlib.Path(sys.argv[1])
-          (root/'receipt.json').write_text(json.dumps({'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'caller_sha':os.environ['CALLER_SHA'],'workflow_ref':os.environ['GITHUB_WORKFLOW_REF'],'workflow_sha':os.environ['GITHUB_WORKFLOW_SHA'],'matrix_result':os.environ['MATRIX_RESULT'],'requested':{'agent':'3fff57b55ab6f51f33b66eedb7203013667cf3b1','runtime':'47e5949465cb6f3afdfd1cb8a0e90009fd9d4020','app':'36ff224e3c9ad862e3f807e2548b997a36799543','manifest_sha256':'b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777','source_override':True}},indent=2)+'\n')
+          (root/'receipt.json').write_text(json.dumps({'run_id':os.environ['GITHUB_RUN_ID'],'run_attempt':os.environ['GITHUB_RUN_ATTEMPT'],'caller_sha':os.environ['CALLER_SHA'],'workflow_ref':os.environ['GITHUB_WORKFLOW_REF'],'workflow_sha':os.environ['GITHUB_WORKFLOW_SHA'],'matrix_result':os.environ['MATRIX_RESULT'],'requested':{'agent':'d6793181ee7a6c035c6e8580b815db8edc3094e4','runtime':'1e6d899efa77a2d6ec247c38250f9748330bb587','app':'36ff224e3c9ad862e3f807e2548b997a36799543','manifest_sha256':'b78ae7e74188f6e0bbf01950b0d388d4cf36ea990c9bb574fd8aef57a8782777','source_override':True}},indent=2)+'\n')
           for shell in ('powershell.exe','pwsh.exe'):
               p=root/'rows'/('Windows-task-host-journey-'+shell)
               if not p.is_dir():
@@ -202,4 +202,4 @@ jobs:
           cp -a "$result/$run" runs/
           git add runs
           git commit -m "Windows owner evidence ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          git push origin HEAD:refs/heads/venue-results/M-R1FIX-WIN-TIMELINE-SCHEMA-OWNER-4
+          git push origin HEAD:refs/heads/venue-results/M-R1FIX-R-26-WINDOWS-ACL-R1-1
