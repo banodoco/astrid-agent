@@ -512,6 +512,25 @@ def _installed_managed_target():
             return None
         installed = local_engine_endpoint('comfyui', root=root)
     except EngineError as exc:
+        if exc.code == 'engine_not_installed':
+            # A deleted locked model can fail installed health before workflow
+            # compilation. Preserve the refusal, but name the actual asset fix.
+            from .asset_gaps import asset_readiness
+            from .asset_alignment import selected_target
+            from .model_downloader import _root_and_destination, _validate_model
+            try:
+                selected = selected_target()
+                missing = []
+                for model in selected.locked_models:
+                    relative, _url = _validate_model(model)
+                    _, path = _root_and_destination(str(selected.models_root), relative)
+                    if not path.exists():
+                        missing.append(model.destination)
+            except (EngineError, OSError, ValueError):
+                missing = []
+            if missing:
+                raise GenerationReadinessError(asset_readiness(None, models=missing,
+                    target={'root': str(selected.root), 'endpoint': selected.url, 'owner': 'astrid'})) from exc
         fix = _managed_install_fix()
         raise generation_error(
             ValueError('The installed managed ComfyUI engine is not ready; repair its installation.'),
@@ -591,13 +610,21 @@ def _select_generation_target(target: str, *, repo=None):
     return client
 
 
-def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None):
+def select_generation_target(target: str, *, repo=None, runpod_owner: RunPodGenerationOwner | None = None,
+                             entry_id: str | None = None):
     """Read/probe the bound target and expose the shared error envelope."""
     try:
         if target == 'runpod' and runpod_owner is not None:
             return call_runpod_owner(runpod_owner.validation_target)
         return _select_generation_target(target, repo=repo)
     except AstridError as exc:
+        if isinstance(exc, GenerationReadinessError) and entry_id and all(
+                issue['code'] in {'missing_model', 'missing_node_pack'} for issue in exc.readiness['issues']):
+            from .asset_gaps import asset_readiness
+            raise GenerationReadinessError(asset_readiness(entry_id,
+                nodes=[issue['details']['node'] for issue in exc.readiness['issues'] if issue['code'] == 'missing_node_pack'],
+                models=[issue['details']['model'] for issue in exc.readiness['issues'] if issue['code'] == 'missing_model'],
+                target=exc.readiness['target'])) from exc
         snapshot = exc.state_snapshot.get('target')
         selector = (snapshot or {}).get('endpoint') or target
         argv = ['astrid', 'generate', 'targets', '--target', selector]

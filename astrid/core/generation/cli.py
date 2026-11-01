@@ -187,6 +187,13 @@ def _parser(contextual: dict[str, Any] | None = None) -> argparse.ArgumentParser
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--json", action="store_true")
     _common_options(command)
+    command = sub.add_parser('align', help='Inspect locked managed assets; apply with explicit user_env consent.')
+    selection = command.add_mutually_exclusive_group()
+    selection.add_argument('--entry', action=_Once, metavar='ID')
+    selection.add_argument('--all', action='store_true')
+    command.add_argument('--apply', action='store_true')
+    command.add_argument('--consent', action='append', choices=('user_env',), default=[])
+    command.add_argument('--json', action='store_true')
     command = sub.add_parser('targets', help='Inspect or explicitly save the selected Comfy target.')
     command.add_argument('--target', action=_Once, default='auto')
     command.add_argument('--engine', action=_Once, default='comfyui')
@@ -313,6 +320,9 @@ def _main(argv: list[str]) -> int:
     if parsed.modality == 'list':
         from astrid.core.generation.listing import main as list_main
         return list_main(argv)
+    if parsed.modality == 'align':
+        from astrid.core.generation.asset_alignment import main as align_main
+        return align_main(parsed)
     if parsed.modality == 'targets':
         return _targets_command(parsed)
     if parsed.modality == 'launch':

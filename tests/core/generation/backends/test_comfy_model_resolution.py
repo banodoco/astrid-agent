@@ -129,7 +129,8 @@ def test_base_and_similar_names_are_not_turbo(network, unets):
     client, _ = install_target(network, target_info(unets=unets))
     with pytest.raises(ComfyModelMissing) as raised:
         resolve_comfy_models(client, ModelRegistry.load_default(), "z-image", "t2i")
-    assert raised.value.code == "COMFY_MODEL_MISSING"
+    assert raised.value.code == "missing_model"
+    assert raised.value.engine_code == "COMFY_MODEL_MISSING"
     assert raised.value.failures == {"diffusion": []}
     assert raised.value.alternatives == []
 
@@ -145,7 +146,8 @@ def test_ambiguous_required_role_fails_closed(network):
     client, _ = install_target(network, target_info(vaes=("ae.safetensors", EXACT_VAE)))
     with pytest.raises(ComfyModelMissing) as raised:
         resolve_comfy_models(client, ModelRegistry.load_default(), "z-image", "t2i")
-    assert raised.value.code == "COMFY_MODEL_MISSING"
+    assert raised.value.code == "missing_model"
+    assert raised.value.engine_code == "COMFY_MODEL_MISSING"
     assert raised.value.failures == {"vae": ["ae.safetensors", EXACT_VAE]}
 
 
@@ -169,7 +171,10 @@ def test_alternatives_are_declared_role_matches_that_compile_canonically(network
     with pytest.raises(ComfyModelMissing) as raised:
         resolve_comfy_models(client, ModelRegistry([requested, good, bad_pin, bad_binding, undeclared, incomplete]), "wanted", "t2i")
     assert raised.value.alternatives == ["works"]
-    assert raised.value.as_dict()["code"] == "COMFY_MODEL_MISSING"
+    assert raised.value.as_dict()["code"] == "missing_model"
+    assert raised.value.as_dict()["engine_code"] == "COMFY_MODEL_MISSING"
+    assert raised.value.readiness['fixes'][0]['argv'] == [
+        'astrid', 'generate', 'align', '--apply', '--consent', 'user_env', '--entry', 'wanted']
     assert requests == [("GET", "/object_info")]
 
 
