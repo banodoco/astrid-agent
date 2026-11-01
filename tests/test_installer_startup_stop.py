@@ -327,6 +327,7 @@ def test_manager_failure_after_owner_removes_advertisements_allows_installer_rec
     # exercises a later manager failure rather than candidate preparation.
     monkeypatch.setattr(backend, 'stage', lambda *_args: old)
     monkeypatch.setattr(backend, 'validate_candidate', lambda *_args: None)
+    monkeypatch.setattr('astrid.installer.core.inspect_schema', lambda *_args, **_kwargs: 1)
     # The busy-fence fixture has only interruption tables. Schema admission is
     # covered with canonical realms in the cross-controller recovery tests.
     monkeypatch.setattr('runtime_protocol.upgrade.inspect_canonical_schema',

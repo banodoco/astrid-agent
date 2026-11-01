@@ -81,6 +81,10 @@ class LifecycleBackend:
         write_json(folder / "version.json", self.candidate.document())
         return self.candidate
 
+    def run(self, argv, **_kwargs):
+        assert "inspect_canonical_schema" in argv[5]
+        return __import__("json").dumps({"identity": {"version": 29}, "target": 33})
+
     def validate_candidate(self, version, _data, _realm):
         self.calls.append(("validate_candidate", version))
 
@@ -1333,9 +1337,10 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
     (paths.runtime_support / "credentials").mkdir(parents=True, exist_ok=True)
     (paths.runtime_support / "credentials" / "owner.token").write_text("test-owner", encoding="utf-8")
     with sqlite3.connect(realm / "realm.sqlite3") as connection:
+        from tests.installer_schema_fixtures import remove_round1b_schema_objects
+        remove_round1b_schema_objects(connection)
         connection.execute("ALTER TABLE timelines DROP COLUMN name")
         connection.execute("DROP TABLE user_app_state")
-        connection.execute("DROP INDEX idx_generations_gen")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
 
     _publish_owner(paths)
@@ -1349,6 +1354,8 @@ def test_real_runtime_migration_bootstrap_follows_backend_c1_stop(tmp_path, monk
     boundary.current_birth = "birth-1"
 
     def start(**_kwargs):
+        from tests.installer_schema_fixtures import register_timeline_provider
+        register_timeline_provider(realm)
         boundary.live = True
         boundary.current_pid = 778
         boundary.current_instance = "migrated-instance"
@@ -1451,9 +1458,10 @@ def test_real_backend_upgrade_binding_survives_fresh_controller_recovery(tmp_pat
     backend.runtime(candidate, data, "workspace", "create", "--realm-root", str(data / "realm"),
                     "--realm-id", "realm-bound", profile=True, timeout=90)
     with sqlite3.connect(data / "realm" / "realm.sqlite3") as connection:
+        from tests.installer_schema_fixtures import remove_round1b_schema_objects
+        remove_round1b_schema_objects(connection)
         connection.execute("ALTER TABLE timelines DROP COLUMN name")
         connection.execute("DROP TABLE user_app_state")
-        connection.execute("DROP INDEX idx_generations_gen")
         connection.execute("UPDATE runtime_schema SET version=29 WHERE id=1")
 
     transaction = {

@@ -31,14 +31,17 @@ def terminal_result(root):
 
 def storage_client():
     imported = {}
+    snapshots = {}
 
     def import_file(*, project, path):
         assert project == "demo"
         digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         imported[digest] = path
+        snapshots[digest] = path.read_bytes()
         return SimpleNamespace(ok=True, data={"object_id": digest, "filename": path.name})
 
-    return SimpleNamespace(media=SimpleNamespace(import_file=Mock(side_effect=import_file))), imported
+    return SimpleNamespace(media=SimpleNamespace(import_file=Mock(side_effect=import_file),
+                                                 snapshots=snapshots)), imported
 
 
 def attached_without_managed(monkeypatch):
@@ -66,7 +69,13 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
         assert api[sampler["positive"][0]]["inputs"]["text"] == "a silver paper boat"
         assert sampler["seed"] == 42
         assert imported[kwargs["companion"]["digest"]].is_file()
-        assert imported[kwargs["source"]["digest"]].is_file()
+        from vibecomfy.registry.ready import repo_ready_template_discovery, resolve_ready_template
+        original = resolve_ready_template('image/z_image_turbo', repo_ready_template_discovery()).path
+        source = kwargs['source']
+        assert runtime.media.snapshots[source['digest']] == original.read_bytes()
+        assert source['filename'] == original.name
+        assert source['sha256'] == source['digest'].removeprefix('sha256:')
+        assert source['bytes'] == len(original.read_bytes())
         return terminal_result(tmp_path)
 
     workflow = Mock(side_effect=invoke_workflow)
@@ -83,6 +92,46 @@ def test_attached_default_binds_live_models_and_admits_one_canonical_workflow(ne
     assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
     assert runtime.media.import_file.call_count == 3
     assert not imported[seen["python"]["digest"]].exists()
+
+
+def test_workflow_source_is_ingested_before_conversion_and_survives_cleanup(network, monkeypatch, tmp_path):
+    import json
+    from astrid.core.generation import entries
+    from vibecomfy.registry.ready import workflow_from_ready
+    from vibecomfy.workflow_bundle import load_bundle
+
+    client, _ = install_target(network, target_info())
+    attached_without_managed(monkeypatch)
+    original = b' \r\n' + json.dumps(load_bundle(workflow_from_ready('image/z_image_turbo')).materialize_ui(),
+                                    indent=3, ensure_ascii=False).encode() + b'\r\n  '
+    path = tmp_path / 'submitted.json'
+    path.write_bytes(original)
+    runtime, _ = storage_client()
+    prepare = entries.prepare
+    digest = 'sha256:' + hashlib.sha256(original).hexdigest()
+
+    def convert(*args, **kwargs):
+        assert runtime.media.snapshots[digest] == original
+        result = prepare(*args, **kwargs)
+        path.unlink()
+        return result
+
+    monkeypatch.setattr(entries, 'prepare', convert)
+    admitted = InvocationResult('vibecomfy.run', 'executor', 'command', True,
+                               kernel_task_id='task-admitted', raw_result={'task': {'task_id': 'task-admitted'}})
+    calls = []
+    monkeypatch.setattr(GenerationFacade, 'workflow', lambda self, **kwargs: calls.append(kwargs) or admitted)
+    result = GenerationFacade()._generate_on_target(
+        registry=ModelRegistry([]), model=None, mode='t2i', modality='image',
+        target=client.target.url, execution=None, inputs={'prompt': 'new prompt'}, dry_run=False,
+        workflow_entry={'id': 'workflow', 'kind': 'image', 'modes': ['t2i'], 'bundle': str(path)},
+        client=runtime, project='demo', wait=False)
+    assert result is admitted  # Admission remains separate from terminal readback.
+    assert not path.exists()
+    assert calls[0]['wait'] is False
+    assert calls[0]['source'] == {'digest': digest, 'sha256': digest[7:],
+                                   'bytes': len(original), 'filename': 'submitted.json'}
+    assert runtime.media.snapshots[digest] == original
 
 
 @pytest.mark.parametrize("first_candidate", ["wrong-mode", "missing-template"])
@@ -105,8 +154,8 @@ def test_default_selects_mode_compatible_model_before_target_resolution(network,
     ])
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
     plan = GenerationFacade().image(target=client.target.url, prompt="one boat", dry_run=True)
-    assert plan["model"] == "ready-t2i"
-    assert plan["approval"]["status"] == "approved"
+    assert plan["entry"]["model"] == "ready-t2i"
+    assert plan["entry"]["approval"]["status"] == "approved"
 
 
 def test_default_skips_missing_target_model_and_uses_ready_candidate(network, monkeypatch):
@@ -124,7 +173,7 @@ def test_default_skips_missing_target_model_and_uses_ready_candidate(network, mo
     ])
     monkeypatch.setattr(sdk, "_load_model_registry", lambda **kwargs: registry)
     plan = GenerationFacade().image(target=client.target.url, prompt="one boat", dry_run=True)
-    assert plan["model"] == "ready"
+    assert plan["entry"]["model"] == "ready"
 
 
 def test_attached_dry_run_resolves_and_approves_without_destination_or_admission(network, monkeypatch, tmp_path):
@@ -133,8 +182,8 @@ def test_attached_dry_run_resolves_and_approves_without_destination_or_admission
     monkeypatch.setattr(GenerationFacade, "workflow", Mock(side_effect=AssertionError("dry-run admitted")))
     output = tmp_path / "absent"
     plan = GenerationFacade().image(target=client.target.url, prompt="one boat", out=output, dry_run=True)
-    assert plan["approval"]["status"] == "approved"
-    assert plan["target"] == client.target.url
+    assert plan["entry"]["approval"]["status"] == "approved"
+    assert plan["target"]["endpoint"] == client.target.url
     assert requests == [("GET", "/system_stats"), ("GET", "/object_info")]
     assert not output.exists()
 
@@ -151,8 +200,10 @@ def test_auto_probes_attached_before_managed_readiness(monkeypatch):
     monkeypatch.setattr(preflight, "_comfyui_runtime_available", lambda: events.append("managed") or False)
     with pytest.raises(AstridError) as raised:
         GenerationFacade().image(target="auto", prompt="one boat", project="demo")
-    assert raised.value.code == "COMFY_TARGET_NOT_READY"
-    assert "--target http://127.0.0.1:8188" in raised.value.fix
+    assert raised.value.code == "engine_not_found"
+    assert raised.value.fix.startswith('astrid engines install vibecomfy-h3 ')
+    assert raised.value.to_envelope()['fixes'][1]['argv'] == [
+        'astrid', 'generate', 'image', '--target', 'http://127.0.0.1:8188']
     assert events == ["/system_stats", "vibecomfy", "managed"]
 
 
@@ -168,7 +219,7 @@ def test_auto_attached_does_not_require_managed_runtime(network, monkeypatch):
 
     monkeypatch.setattr(ComfyTargetClient, "__init__", default_to_fake)
     plan = GenerationFacade().image(target="auto", prompt="one boat", dry_run=True)
-    assert plan["target"] == client.target.url
+    assert plan["target"]["endpoint"] == client.target.url
     assert requests[0] == ("GET", "/system_stats")
 
 
@@ -187,8 +238,8 @@ def test_managed_retains_install_readiness_and_workflow_owner(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize("target,code", [
-    ("runpod", "COMFY_TARGET_UNSUPPORTED"),
-    ("https://example.com:8188", "COMFY_TARGET_INVALID"),
+    ("runpod", "missing_dependency"),
+    ("https://example.com:8188", "input_rejected"),
 ])
 def test_unsupported_target_is_coded_before_admission(monkeypatch, target, code):
     monkeypatch.setattr(GenerationFacade, "workflow", Mock(side_effect=AssertionError("invalid target admitted")))
@@ -202,6 +253,6 @@ def test_explicit_unready_target_names_working_recovery(monkeypatch):
     monkeypatch.setattr(ComfyTargetClient, "request_json", Mock(side_effect=OSError("offline")))
     with pytest.raises(AstridError) as raised:
         GenerationFacade().image(target="http://127.0.0.1:8123", prompt="one boat")
-    assert raised.value.code == "COMFY_TARGET_UNAVAILABLE"
+    assert raised.value.code == "target_unreachable"
     assert "http://127.0.0.1:8123" in raised.value.fix
-    assert "--target managed" in raised.value.fix
+    assert raised.value.to_envelope()['issues'][0]['details']['engine_code'] == 'COMFY_TARGET_UNAVAILABLE'

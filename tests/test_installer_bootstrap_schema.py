@@ -64,7 +64,7 @@ def test_staged_canonical_schema_reaches_strict_consumer(tmp_path, monkeypatch):
     }, backend.root, tmp_path / "data")
     agent = version.root / "a"
     assert hashlib.sha256((agent / SCHEMA).read_bytes()).hexdigest() == (
-        "f52b82024ecd44a5e6c9c68d5cb326d50d70efe9aaad6f8ac6352ea1c87b97b1"
+        "f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
     )
 
     # Use the exact producer contract, including source-role admission.

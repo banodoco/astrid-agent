@@ -316,7 +316,7 @@ def test_d72_runtime_and_composition_pins_have_no_obsolete_externals():
     assert schema_pin["from"] == "contract/schemas/timeline-config.schema.json"
     assert schema_pin["sha256"] == "sha256:" + hashlib.sha256(canonical_schema.read_bytes()).hexdigest()
     assert schema_pin["sha256"] == (
-        "sha256:f52b82024ecd44a5e6c9c68d5cb326d50d70efe9aaad6f8ac6352ea1c87b97b1"
+        "sha256:f870150ffd0e42365c048965e2f7c08efc959c36db76ed4cba59de2e58ab4e08"
     )
 
     assert not _contains_obsolete_external(package)

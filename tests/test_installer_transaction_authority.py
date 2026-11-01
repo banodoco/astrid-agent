@@ -581,8 +581,9 @@ def test_cli_recovers_completed_stop_with_fresh_controller(tmp_path, monkeypatch
         def foreground_start(version, workspace, realm_id):
             lock = installer_lock_path(fresh.service.home, fresh.service.system)
             with lock.open("a+b") as stream:
-                platform.lock_file(stream.fileno(), blocking=False)
-                platform.unlock_file(stream.fileno())
+                with pytest.raises(BlockingIOError):
+                    platform.lock_file(stream.fileno(), blocking=False)
+            assert fresh._pinokio_custody is not None
             verify(version, workspace, realm_id)
 
         lifecycle = SimpleNamespace(validate=lambda *_: None, stop=fresh.stop, start=foreground_start)
@@ -829,8 +830,13 @@ def test_new_interpreter_recovers_real_completed_c1_stop(tmp_path, monkeypatch, 
             if kind == 'app':
                 def start(version, workspace, realm_id):
                     with installer_lock_path(backend.service.home, backend.service.system).open('a+b') as stream:
-                        platform.lock_file(stream.fileno(), blocking=False)
-                        platform.unlock_file(stream.fileno())
+                        try:
+                            platform.lock_file(stream.fileno(), blocking=False)
+                        except BlockingIOError:
+                            pass
+                        else:
+                            raise AssertionError('stopped-update custody released before activation')
+                    assert backend._pinokio_custody is not None
                     verify(version, workspace, realm_id)
                 app_update.PinokioLifecycle = lambda *a: SimpleNamespace(validate=lambda *a: None, stop=backend.stop, start=start)
                 arguments += ['--update-app', '--managed-by', 'pinokio']
