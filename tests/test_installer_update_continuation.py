@@ -147,7 +147,11 @@ def test_explicit_update_continues_same_operation_once_under_lock(
         return validate(*args, **kwargs)
 
     monkeypatch.setattr(update_job, "_validate_request", count_admission)
-    result = update_job.accept(request)
+    p1_request = {key: request[key] for key in (
+        "root", "data_root", "selection_path", "old_instance_id", "old_identity", "old_version")}
+    reply = update_job.reconcile(p1_request)
+    assert reply["disposition"] == "continued-existing"
+    result = reply["job"]
 
     assert result["operation_id"] == original["operation_id"]
     assert result["state"] == "launching"
