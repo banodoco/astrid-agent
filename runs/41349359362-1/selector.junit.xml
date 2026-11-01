@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="3" time="1.227" timestamp="2026-11-01T21:17:54.379421+00:00" hostname="runnervm48cm3"><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_origins_are_real_and_reject_mixed_source" time="0.673" /><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_actions_retain_candidate_content_pins" time="0.003" /><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_renderer_uses_real_provisioned_outputs" time="0.188"><failure message="AssertionError: assert not True&#10; +  where True = exists()&#10; +    where exists = (PosixPath('/home/runner/work/astrid-agent/astrid-agent/product/remotion') / '.astrid-registry-state.json').exists&#10; +      where '.astrid-registry-state.json' = &lt;module 'astrid.packs.rendering.rendering.renderers.remotion.run' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/packs/rendering/rendering/renderers/remotion/run.py'&gt;._REGISTRY_STATE_PATH">@pytest.mark.installed
+    def test_installed_cpu_renderer_uses_real_provisioned_outputs():
+        import sys
+        from astrid.core.rendering import _registry_origin
+        from astrid.packs.rendering.rendering.renderers.remotion import run
+        from tests.helpers import h3_cpu_runtime as helper
+    
+        assert Path(run.__file__).is_relative_to(helper._INSTALLED_EXECUTION_ROOT)
+        assert run.gen_effect_registry is not None
+        carrier = Path(run.gen_effect_registry.__file__).resolve()
+        assert carrier == helper._INSTALLED_EXECUTION_ROOT / "astrid/core/rendering/_effect_registry.py"
+        assert not carrier.is_relative_to(helper.ASTRID_ROOT)
+        project = Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"])
+        paths = run._registry_output_paths(project)
+        assert len(paths) == 3
+        assert {p.name for p in paths} == {"effects.generated.ts", "animations.generated.ts", "transitions.generated.ts"}
+        # The installed Composition release is a built, immutable package. Host
+        # registries belong beside the host entry point, so an installed run must
+        # work without the retired package TypeScript tree.
+        assert not (project / "node_modules/@banodoco/timeline-composition/typescript/src").exists()
+        assert run.gen_effect_registry.HOST_SRC == project / "src"
+        assert set(run.gen_effect_registry.OUTPUTS.values()) == set(paths)
+&gt;       assert not (project / run._REGISTRY_STATE_PATH).exists()
+E       AssertionError: assert not True
+E        +  where True = exists()
+E        +    where exists = (PosixPath('/home/runner/work/astrid-agent/astrid-agent/product/remotion') / '.astrid-registry-state.json').exists
+E        +      where '.astrid-registry-state.json' = &lt;module 'astrid.packs.rendering.rendering.renderers.remotion.run' from '/home/runner/work/_temp/installed-venv/lib/python3.11/site-packages/astrid/packs/rendering/rendering/renderers/remotion/run.py'&gt;._REGISTRY_STATE_PATH
+
+tests/packs/h3_av/test_character_swap_cpu_boundary.py:218: AssertionError</failure></testcase></testsuite></testsuites>

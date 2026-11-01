@@ -1,0 +1,1 @@
+"$RUNNER_TEMP/installed-venv/bin/pytest" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py

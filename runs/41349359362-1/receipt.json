@@ -1,0 +1,27 @@
+{
+  "overall_inner_exit": 1,
+  "product_sha": "326ac40ae7feba96eb0ebbe8398a9bfaf30a4d13",
+  "pytest_inner_exit": "1",
+  "repository": "banodoco/astrid-agent",
+  "run_attempt": "1",
+  "run_id": "41349359362",
+  "runtime_sha": "1a275bb339ae897e52a5be5e1da99e846e402037",
+  "schema": "venue-c07-installed/v1",
+  "selector": "\"$RUNNER_TEMP/installed-venv/bin/pytest\" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+  "setup_outcomes": {
+    "node": "success",
+    "python": "success"
+  },
+  "stage_inner_exits": [
+    "composition_identity=0",
+    "apt_install=0",
+    "build_wheel=0",
+    "install_noneditable=0",
+    "npm_ci=0",
+    "registry_generate=0",
+    "registry_verify=0",
+    "pytest_selector=1"
+  ],
+  "workflow_file_sha256": "066e615d1137cb5ba08f5042c79307c6d1386d545182c26231b5ff60d6f35c52",
+  "workflow_sha": "8f89e31a4c70f8cc6d37f77a3a5eb7e42c6157a0"
+}

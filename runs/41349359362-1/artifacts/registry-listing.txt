@@ -1,0 +1,23 @@
+total 148
+drwxr-xr-x  2 runner runner  4096 Nov  1 21:17 .
+drwxr-xr-x 11 runner runner  4096 Nov  1 21:17 ..
+-rw-r--r--  1 runner runner  4026 Nov  1 21:16 BoundsProbe.tsx
+-rw-r--r--  1 runner runner  1864 Nov  1 21:16 FrameDiagnostics.tsx
+-rw-r--r--  1 runner runner  1122 Nov  1 21:16 LiveSceneClip.tsx
+-rw-r--r--  1 runner runner  5149 Nov  1 21:16 ReviewOverlay.tsx
+-rw-r--r--  1 runner runner  7590 Nov  1 21:16 Root.tsx
+-rw-r--r--  1 runner runner 16837 Nov  1 21:16 ThreeTimelineComposition.tsx
+-rw-r--r--  1 runner runner  2761 Nov  1 21:17 animations.generated.ts
+-rw-r--r--  1 runner runner   466 Nov  1 21:16 asset-source.ts
+-rw-r--r--  1 runner runner 18569 Nov  1 21:16 astrid-frame-worker.mjs
+-rw-r--r--  1 runner runner  1667 Nov  1 21:16 astrid-frame-worker.test.mjs
+-rw-r--r--  1 runner runner  2568 Nov  1 21:16 astrid-hashed-imports.d.ts
+-rw-r--r--  1 runner runner  2298 Nov  1 21:16 bounds.ts
+-rw-r--r--  1 runner runner 13402 Nov  1 21:17 effects.generated.ts
+-rw-r--r--  1 runner runner  3964 Nov  1 21:16 fonts.ts
+-rw-r--r--  1 runner runner  1418 Nov  1 21:16 host-registries.ts
+-rw-r--r--  1 runner runner  2551 Nov  1 21:16 host-scene.ts
+-rw-r--r--  1 runner runner    89 Nov  1 21:16 index.ts
+-rw-r--r--  1 runner runner  1316 Nov  1 21:17 transitions.generated.ts
+-rw-r--r--  1 runner runner  1493 Nov  1 21:16 types.augmentations.d.ts
+-rw-r--r--  1 runner runner  8866 Nov  1 21:16 types.generated.ts
