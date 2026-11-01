@@ -9,6 +9,50 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import ci_journey as journey
+from scripts import journey_matrix, journey_release2
+
+
+def test_macos_fault_inventory_preserves_existing_journeys():
+    rows = journey_matrix.RELEASE1_MATRIX
+    ids = [row["job_id"] for row in rows]
+    assert len(ids) == len(set(ids))
+    assert {row["job_id"] for row in rows if row.get("leg") == "release0-to-release1"} == {
+        "direct-macos", "direct-linux", "direct-windows"
+    }
+    assert {(row["mode"], row["os"]) for row in rows if row["mode"].startswith("pinokio-")} == {
+        (mode, os_name) for mode in ("pinokio-backend", "pinokio-fully-local")
+        for os_name in ("macos", "linux", "windows")
+    }
+    assert journey_matrix.M4_5_MATRIX == journey_release2.RELEASE2_SCENARIOS
+    assert journey_matrix.M4_5_MATRIX
+
+
+@pytest.mark.parametrize(
+    "leg, steps, evidence",
+    (
+        ("interrupted-update", ("baseline", "interrupt", "recover", "verify"),
+         {"interruption_and_same_operation_terminal_journal", "installed_identity_after_recovery"}),
+        ("rollback", ("baseline", "fail_candidate", "verify"),
+         {"authenticated_selected_release0_predecessor_identity",
+          "candidate_failure_and_rollback_transaction_journal", "restored_predecessor_identity"}),
+    ),
+)
+def test_macos_fault_inventory_binds_shared_helper_and_preservation(leg, steps, evidence):
+    job_id = f"direct-macos-{leg}"
+    row = journey_matrix.release1_job(job_id)
+    assert row["scenario_id"] == job_id
+    assert (row["mode"], row["os"], row["runner"], row["shell"], row["manager"]) == (
+        "direct", "macos", "macos-14", "sh", "launchd"
+    )
+    assert row["leg"] == leg
+    assert row["scenario"] == leg
+    assert row["executor"] == "failure_mode_executor.execute_installed_fault"
+    assert row["steps"] == steps
+    assert evidence | {
+        "release0_fixture_and_installed_identity", "populated_data_before_and_after",
+        "sentinel_identity_and_survival", "launchd_ownership_health_and_one_runtime",
+        "per_step_command_and_inner_exit", "scenario_tuple_runner_and_evidence_file_hashes",
+    } <= set(row["required_evidence"])
 
 
 def app_checkout(tmp_path):
