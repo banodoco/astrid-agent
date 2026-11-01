@@ -317,6 +317,87 @@ def test_generation_call_adapter_forces_admission_and_preserves_cli_envelopes(mo
                                   {"type": "text", "text": "bad input"}]
 
 
+def test_target_launch_cli_and_mcp_envelope(monkeypatch):
+    tool = _tools()["generate_launch"]
+    schema = tool["definition"]["inputSchema"]
+    assert schema["required"] == []
+    assert schema["properties"]["target"]["type"] == "string"
+    assert schema["properties"]["engine"]["type"] == "string"
+    assert schema["properties"]["consent"]["items"]["enum"] == ["user_env", "paid"]
+    assert schema["properties"]["timeout"]["type"] == "number"
+    arguments = {"target": "managed", "engine": "comfyui", "consent": ["user_env", "paid"], "timeout": 7}
+    argv, parsed = _parse_tool(tool, arguments)
+    expected_argv = ["generate", "launch", "--target", "managed", "--engine", "comfyui",
+                     "--consent", "user_env", "--consent", "paid", "--timeout", "7", "--json"]
+    assert argv == expected_argv
+    assert (parsed.target, parsed.engine, parsed.consent, parsed.timeout) == (
+        "managed", "comfyui", ["user_env", "paid"], 7.0)
+
+    calls = []
+    envelope = {"status": "launched", "target": "managed", "engine": "comfyui"}
+    def fake_run(command, cwd):
+        calls.append(command[command.index("generate"):])
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(envelope), stderr="")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    response = mcp_server.handle({"jsonrpc": "2.0", "id": 31, "method": "tools/call",
+                                  "params": {"name": "generate_launch", "arguments": arguments}},
+                                 {"tools": _tools(), "prompts": {}})["result"]
+    assert calls == [expected_argv]
+    assert response == {"content": [{"type": "text", "text": json.dumps(envelope)}],
+                        "isError": False, "structuredContent": envelope}
+
+
+def test_runpod_generation_follow_and_release_cli_and_mcp_envelopes(monkeypatch):
+    tools = _tools()
+    calls = []
+    admission = {"ok": True, "data": {"task_id": "runpod-task-1"}}
+    release = {"ok": True, "data": {"released": True, "target": "runpod"}}
+    follow_text = '{"kind":"observed","task_id":"runpod-task-1","state":"running"}\n' \
+                  '{"kind":"final","task_id":"runpod-task-1","ok":true,"terminal":true}\n'
+
+    def fake_run(command, cwd):
+        argv = command[command.index("generate"):] if "generate" in command else command[command.index("tasks"):]
+        calls.append(argv)
+        if argv[:2] == ["generate", "image"]:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(admission), stderr="")
+        if argv[:2] == ["tasks", "follow"]:
+            return subprocess.CompletedProcess(command, 0, stdout=follow_text, stderr="")
+        if argv[:2] == ["generate", "release"]:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(release), stderr="")
+        raise AssertionError(f"unexpected MCP CLI command: {argv}")
+
+    monkeypatch.setattr(mcp_server, "_run", fake_run)
+    state = {"tools": tools, "prompts": {}}
+    generation_args = {"prompt": "a red paper boat", "target": "runpod", "engine": "comfyui",
+                       "consent": ["paid"], "max_usd": 1.25, "deadline": "2030-01-01T00:00:00Z",
+                       "recovery_path": "runpod-receipt.json", "no_wait": False}
+    generated = mcp_server.handle({"jsonrpc": "2.0", "id": 32, "method": "tools/call",
+                                   "params": {"name": "generate_image", "arguments": generation_args}}, state)["result"]
+    expected_generation = ["generate", "image", "a red paper boat", "--target", "runpod", "--engine", "comfyui",
+                           "--no-wait", "--consent", "paid", "--max-usd", "1.25",
+                           "--deadline", "2030-01-01T00:00:00Z", "--recovery-path", "runpod-receipt.json", "--json"]
+    assert calls[-1] == expected_generation
+    assert generated == {"content": [{"type": "text", "text": json.dumps(admission)}],
+                         "isError": False, "structuredContent": admission}
+
+    follow_args = {"project": "p", "task_id": "runpod-task-1", "poll_seconds": 0.25, "timeout_seconds": 4}
+    followed = mcp_server.handle({"jsonrpc": "2.0", "id": 33, "method": "tools/call",
+                                  "params": {"name": "tasks_follow", "arguments": follow_args}}, state)["result"]
+    expected_follow = ["tasks", "follow", "runpod-task-1", "--project", "p", "--poll-seconds", "0.25",
+                       "--timeout-seconds", "4", "--json"]
+    assert calls[-1] == expected_follow
+    assert followed == {"content": [{"type": "text", "text": follow_text.strip()}], "isError": False}
+
+    release_args = {"engine": "comfyui", "target": "runpod", "no_wait": True}
+    released = mcp_server.handle({"jsonrpc": "2.0", "id": 34, "method": "tools/call",
+                                  "params": {"name": "generate_release", "arguments": release_args}}, state)["result"]
+    expected_release = ["generate", "release", "--engine", "comfyui", "--target", "runpod", "--no-wait", "--json"]
+    assert calls[-1] == expected_release
+    assert released == {"content": [{"type": "text", "text": json.dumps(release)}],
+                        "isError": False, "structuredContent": release}
+
+
 def test_task_follow_tool_runs_real_handler_with_fake_reads(monkeypatch):
     from astrid.core.cli import domain_tasks
     from astrid.core.cli.domain_tasks import build_parser
