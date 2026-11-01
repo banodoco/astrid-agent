@@ -1,0 +1,54 @@
+# Local regression evidence contract
+
+`int/regression-green` is evaluated on the orchestrator, not in GitHub Actions: the broker journal is local and is not transported to GitHub. The existing reusable hosted check is always red, including on dispatch and failed/skipped prerequisites. It must not be interpreted as the local result. The orchestrator must always invoke the CP1 local aggregate even if collection or preceding jobs failed, and publish its status. See the CP1 aggregate section below; the orchestrator must wire the invocation into its own finalization path.
+
+Install Python 3.11+, `jsonschema` and `PyYAML`. For a ledger and provenance diagnostic, run:
+
+```sh
+python scripts/ci/local_regression_green.py \
+  --tuple tuple.json --inventory reviewed-inventory.json --coverage reviewed-coverage.json --ledger ledger.jsonl \
+  --broker-root /home/user/merge/podq --hosted-root downloaded-artifacts \
+  --freshness freshness.json --not-before 2026-10-31T23:10:39Z
+```
+
+All arguments are required. This diagnostic does not evaluate feature obligations and always exits nonzero; use the CP1 aggregate below for `int/regression-green`. The tuple, reviewed **complete** inventory, ledger, freshness receipt, cutoff, broker journal, downloaded artifacts and API metadata are trusted inputs provided by M-INT; this program does not fetch or authenticate them. The cutoff is a timezone-bearing timestamp chosen for this evaluation, at least as late as the start of the required run; the evaluator also requires evidence no older than tuple creation and no later than the current time. A C-07 `{"check":"C-07","result":"pass","tuple_digest":"...","repo_shas":{...}}` receipt is required; M-INT must verify the actual C-07 job succeeded and supply the receipt only then. Local possession of a JSON receipt is not an authentication mechanism.
+
+The separate reviewed coverage file is `{ "lanes": [{"repo":"runtime","lane":"unit-1","platform":"linux"}, ...] }`; its exact suite/shard set must match the test inventory. Both files must be reviewed against the approved coverage; the evaluator cannot detect the same omission from both. The inventory has the prior P-04 shape, extended with one `source` per lane. Its `lanes` array must enumerate **every** required suite, platform, shard and full test node ID, and mark protected journeys. The evaluator checks exactly this reviewed list; it cannot infer omitted suites or prove inventory completeness. C-05's approved inventory and sequential plan must be translated into this file and reviewed, including all eight Agent unit shards, all four integration shards, both release Python versions and hosted OS matrices. A synthetic example (not the production inventory):
+
+```json
+{"tuple_digest":"<digest>","lanes":[
+  {"repo":"runtime","lane":"unit-1","platform":"linux","tests":[{"node_id":"tests/test_a.py::test_a","protected":false}],"source":{"kind":"broker","id":"CI-job-1","job_sha256":"<reviewed sha256 of exact job.yaml>","checkouts":["runtime"]}},
+  {"repo":"agent","lane":"unit-1","platform":"windows","tests":[{"node_id":"tests/test_b.py::test_b","protected":false}],"source":{"kind":"hosted","id":"artifact-1","checkouts":["agent","runtime"],"run_id":123,"run_attempt":1,"job_id":456,"workflow_path":".github/workflows/integration.yml"}}
+]}
+```
+
+Each source id is unique. The tuple digest is SHA-256 of UTF-8 JSON with sorted keys, compact separators and no ASCII escaping, excluding `digest`. Each manifest has `repo`, `lane`, `platform`, `tuple_digest`, the complete `repo_shas` map, `checkouts` (effective repository-to-SHA map exactly matching source.checkouts), `junit_sha256`, `created_at`, `result` and integer `test_exit_code`. A successful test command uses `success` and 0. A completed command with test failures uses `failure` and 1, and must contain corresponding JUnit failures, all matched by admitted ledger rows. Infrastructure errors, skips, collection errors, and contradictory exit/JUnit outcomes are red. A source's identity and checkout list, including every sibling actually used, must be reviewed; the evaluator cannot infer sibling use from arbitrary shell commands. The source job spec digest must be reviewed and obtained independently of the evidence submission. Spec text must include each declared repository URL and exact SHA. This binds the approved command but does not execute or prove arbitrary shell semantics.
+
+For broker lanes the root contains `jobs/<id>/job.yaml`, `result.json`, and root-level `pods.jsonl` as produced by the broker. The job must download `manifest.json` and `junit.xml` under its declared download destination, and manifest must also contain `job_id` and `pod_id`. `result.json` must report successful broker steps and verified release, include sizes and SHA-256 for every download, and match a unique created/released pod with an intent in the shared journal. Test commands must capture their test exit code and still allow the broker step to complete, as directed by ORCHESTRATOR. Logs and all other listed downloads are also hash checked. The downloaded manifest must be produced inside the job during its recorded lifetime; the existing C-05b/c artifacts do not satisfy this contract.
+
+For hosted lanes `downloaded-artifacts/<id>/` contains the artifact's `manifest.json` and `junit.xml`, plus `run.json` built by the trusted downloader from GitHub's run **and job** API responses: `id`, `run_attempt`, `repository` (canonical tuple URL), `head_sha`, `status`, `conclusion`, `workflow_path`, `job_id`, `job_conclusion`, `run_started_at`, `updated_at`, and the artifact association described below. The manifest adds the same `run_id`, `run_attempt`, and `job_id`. The run and job must be completed successfully and exactly match the inventory and tuple. The trusted downloader must verify that the artifact came from that exact run/attempt and that metadata describes the job producing it; these local JSON files are not independently signed. No token or network is used by this evaluator.
+
+JUnit must have at least one testcase, with a `node_id` property equal to the full reviewed test ID. Failure/error cases need `outcome`, `phase`, `fingerprint`, and `semantics_hash` when the ledger row requires it. Duplicate, unexpected, renamed, absent, skipped, malformed, protected-failing, and collection-error cases are red. Ledger rows retain P-04 schema and expiration semantics; a passing admitted case is flagged for retirement. The legacy `regression_green.py` function is the ledger/JUnit engine only; do not use its standalone `--evidence` interface as a provenance-aware aggregate.
+
+## CP1 local aggregate
+
+The orchestrator must invoke `scripts/ci/regression_aggregate.py` unconditionally, including after collection or prerequisites fail. It writes an atomic JSON status with `check`, `result`, errors, retirement notices and CP1 SHAs, prints the same status and exits nonzero on red:
+
+```sh
+python3 scripts/ci/regression_aggregate.py --status /path/to/regression-green-status.json \
+  --tuple /path/to/cp1.json --ledger /path/to/ledger.jsonl \
+  --broker-root /home/user/merge/podq --hosted-root /path/to/downloaded-artifacts \
+  --freshness /path/to/c07.json --collection /path/to/collection.json
+```
+
+`collection.json` must be written by the trusted orchestrator as exactly `{"collection":"success","prerequisites":"success"}` only when both stages actually succeeded. A missing file, any failure, or a malformed file is red. This command performs no collection and does not itself schedule the caller; the orchestrator must put it in its unconditional/finally path and publish the status. The output path must be writable; if it is not, the command emits a failure on stdout and exits nonzero, but cannot write that file.
+
+The fixed `cp1-coverage.json` is the reviewed job/matrix floor; Linux service-manager journey rows use hosted runners. Its `protected` flag makes all cases of those jobs unwaivable. Further protected cases inside other jobs must be independently identified in the reviewed test inventory. `cp1-reviewed-inventory.json` is intentionally incomplete: before production green, review and commit an exhaustive, tuple-digest-bound per-lane test-node list and source bindings (including broker spec hashes, checkout lists and hosted run/job/artifact identities) against the approved inventory, protected obligations and actual test collections. It must have `complete: true`, `tuple_digest`, and `lanes` in the inventory shape above. It cannot be supplied by the evidence producer at runtime. An incomplete or absent review is red. Node-level completeness and job spec semantics require human review and cannot be inferred from the evidence. The nine Release-1 journey rows and the two Windows task-host rows are a conservative protected floor in addition to the explicit G3 suites.
+
+Hosted `run.json` must additionally contain `artifact: {"id": <integer>, "name": "<source id>", "run_id": <id>, "run_attempt": <attempt>, "job_id": <id>}`; `source.artifact_id` must match. The trusted downloader is responsible for establishing artifact-to-job association, since GitHub artifact metadata alone does not establish the producing job. The evaluator does not authenticate the local metadata. CP1 accepts the documented App lock/install-manifest mismatch only through the trusted C-07 result; it does not manufacture a passing C-07 receipt.
+
+## Feature predicate contract
+
+Fixed coverage must list every feature obligation by `repo`, `lane`, `platform`, `scenario` and `slot_id`; the complete reviewed inventory must match that set and select an `attempt`, the exact tuple repository SHA map as `candidate`, and nonempty artifact-relative JSON `files`. Additional candidate fields are rejected until an independent authority and binding are defined. The authenticated manifest binds the scenario, slot and attempt, while its tuple and checkout identities are checked against the reviewed inventory. Feature jobs must succeed without skipped tests. The trusted hosted `run.json` supplies `files` entries with `path`, `bytes` and `sha256`; broker downloads supply the corresponding metadata in `result.json`.
+
+After provenance, byte length, SHA-256, tuple, attempt, ledger and freshness checks succeed, the evaluator imports `scripts.journey_predicates` and invokes `check_<scenario>({"slot_id": ..., "candidate": ..., "files": [{"path": ..., "sha256": ..., "json": ...}]})` on the checked byte snapshots. The return contract is `(bool, list[str])`; false, nonempty reasons, malformed returns, exceptions, missing functions or a missing module are red. The module must come from the published M-QUAL lane; this repository does not supply a substitute. Synthetic fixtures exercise the integration but are not receipts.

@@ -1,0 +1,5 @@
+{
+  "complete": false,
+  "reason": "Approved documents enumerate jobs but not every test node, protected node, reviewed broker spec digest, or hosted run/job/artifact binding. Populate and review these independently before enabling CP1 green.",
+  "lanes": []
+}

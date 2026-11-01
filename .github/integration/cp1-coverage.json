@@ -1,0 +1,503 @@
+{
+  "version": 1,
+  "description": "CP1 approved G3 job and matrix coverage; unit aggregate derives from eight shards. Protected jobs are non-waivable in full. Node-level protected obligations require separate review.",
+  "lanes": [
+    {
+      "repo": "runtime",
+      "lane": "unit",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "typescript-client",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "boundary",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "sandbox-process-control",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "portability-lifecycle",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "nightly-integration",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "chat",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "checks",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-1",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-2",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-3",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-4",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-5",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-6",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-7",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "unit-shard-8",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "release-py3.11",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "release-py3.12",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "boundary",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "integration-1",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "integration-2",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "integration-3",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "integration-4",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "opt-in",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "installed",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "direct-journey",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "three-products",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "dockerfile-check",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "playwright-default",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "playwright-timeline",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "playwright-timeline-chrome-export",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "extension-accessibility",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "extension-visual",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "extension-cross-browser",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "checkout-lanes",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "installer-posix",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "installer-powershell",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "quick-journey",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "vitest",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "boundary",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "pinokio",
+      "lane": "unit",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "pinokio",
+      "lane": "pinokio-smoke",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": false
+    },
+    {
+      "repo": "pinokio",
+      "lane": "fully-local",
+      "platform": "linux",
+      "kind": "broker",
+      "protected": true
+    },
+    {
+      "repo": "runtime",
+      "lane": "unit",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "portability-lifecycle",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "unit",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "portability-lifecycle",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "windows-realm-publication",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "runtime",
+      "lane": "darwin-native",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "windows-launchers",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "windows-native-and-installer",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "darwin-native",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "windows-journey-powershell.exe",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "windows-journey-pwsh.exe",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "release-tooling-macos",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "app",
+      "lane": "installer-posix",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "installer-windows-powershell.exe",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "app",
+      "lane": "installer-windows-pwsh",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "pinokio",
+      "lane": "unit",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "pinokio",
+      "lane": "pinokio-smoke",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "pinokio",
+      "lane": "unit",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "pinokio",
+      "lane": "pinokio-smoke",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": false
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-direct",
+      "platform": "linux",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-direct",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-direct",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-pinokio-backend",
+      "platform": "linux",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-pinokio-backend",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-pinokio-backend",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-pinokio-fully-local",
+      "platform": "linux",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-pinokio-fully-local",
+      "platform": "macos",
+      "kind": "hosted",
+      "protected": true
+    },
+    {
+      "repo": "agent",
+      "lane": "journey-pinokio-fully-local",
+      "platform": "windows",
+      "kind": "hosted",
+      "protected": true
+    }
+  ]
+}
