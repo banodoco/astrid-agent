@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from astrid.core.generation.backends.comfy_schema import TargetSchemaProvider
 from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
-from vibecomfy.runtime.session import _collect_output_entries, _outputs_from_server_history
+from vibecomfy.runtime.session import _collect_output_entries, _history_observation, _outputs_from_server_history
 from vibecomfy.runtime.watchdog import Watchdog
 
 
@@ -59,6 +59,7 @@ def test_live_response_contract_replay(tmp_path):
     assert client.request_json("/queue") == queue
     assert client.request_json("/api/free", {"free_memory": True}) == {"acknowledged": True}
     result = client.history(prompt_id)
+    assert _history_observation(result, prompt_id)["status"] == entry["status"]
     outputs = _outputs_from_server_history(result, prompt_id)
     records = _collect_output_entries(outputs)
     assert len(records) == 1

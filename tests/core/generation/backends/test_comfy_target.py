@@ -185,6 +185,15 @@ def test_json_response_limit_is_enforced(comfy, network):
         attached(network).request_json("/queue", response_limit=8)
 
 
+def test_malformed_get_response_is_not_a_control_acknowledgement(comfy, network):
+    import io
+
+    client = attached(network)
+    client._opener = lambda request, timeout: io.BytesIO(b"not json")
+    with pytest.raises(ValueError, match="not JSON"):
+        client.request_json("/queue")
+
+
 def test_output_response_limit_does_not_publish(comfy, network, tmp_path, monkeypatch):
     monkeypatch.setattr("astrid.core.generation.backends.comfy_target.MAX_OUTPUT_BYTES", 16)
     destination = tmp_path / "result.png"
