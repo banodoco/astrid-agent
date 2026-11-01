@@ -483,8 +483,8 @@ def test_real_lock_and_recipe_pins():
     _, windows = _description("vibecomfy")
     assert VIBECOMFY_ENGINE_REVISION == "2967033970cbb5884651c9565265778482d3b44e"
     assert inputs["recipe"]["vibecomfy_source"] == {
-        "repository": "https://github.com/peteromallet/VibeComfy.git",
-        "revision": "ac0ee1b80991f2414dae27d264af4b5e2890a7a6",
+        "repository": "https://github.com/banodoco/VibeComfy.git",
+        "revision": "2967033970cbb5884651c9565265778482d3b44e",
     }
     assert windows["vibecomfy_source"] == {
         "repository": "https://github.com/banodoco/VibeComfy.git",
