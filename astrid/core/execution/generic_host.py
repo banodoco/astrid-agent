@@ -11267,7 +11267,10 @@ class GenericPackHost:
             if _terminal.get("completion_state") in {"in_flight", "unknown"}:
                 # Retain the evidence without masking the original transport
                 # or execution error.
-                self._latch_cleanup_uncertainty("Runtime completion unconfirmed; attempt retained")
+                try:
+                    self._latch_cleanup_uncertainty("Runtime completion unconfirmed; attempt retained")
+                except Exception as exc:
+                    _terminal["completion_latch_error"] = exc
             cleanup_receipt: dict[str, Any] = {
                 "path": str(root),
                 "intended_disposition": (
