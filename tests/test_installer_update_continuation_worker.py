@@ -175,7 +175,7 @@ def test_legacy_matching_transaction_keeps_m1_9a_reconciliation_path(tmp_path, m
     assert adapter.events == ["liveness"]
 
 
-@pytest.mark.parametrize("mutation", [None, "missing-presence", "false-presence", "changed-journal"])
+@pytest.mark.parametrize("mutation", [None, "missing-presence", "false-presence", "changed-journal", "changed-bytes", "legacy-digest"])
 def test_preexisting_terminal_journal_requires_exact_accepted_snapshot(tmp_path, monkeypatch, mutation):
     root, _, _, request = _fixture(tmp_path, monkeypatch)
     prior = {"operation_id": "d" * 32, "step": "complete"}
@@ -190,6 +190,10 @@ def test_preexisting_terminal_journal_requires_exact_accepted_snapshot(tmp_path,
         marker["update_job"]["prior_transaction_present"] = False
     elif mutation == "changed-journal":
         write_json(journal_path, {**prior, "outcome": "changed-after-acceptance"})
+    elif mutation == "changed-bytes":
+        journal_path.write_bytes(journal_path.read_bytes() + b"\n")
+    elif mutation == "legacy-digest":
+        marker["update_job"].pop("prior_transaction_hash_kind")
     write_json(root / "install.json", marker)
     before_marker = (root / "install.json").read_bytes()
     before_journal = journal_path.read_bytes()
