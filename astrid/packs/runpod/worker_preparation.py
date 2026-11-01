@@ -531,39 +531,8 @@ def _release_contract_from_record(attempt: Mapping[str, Any]) -> RunPodTargetCon
     )
 
 
-def unactivated_target_quiescence(attempt: Mapping[str, Any]) -> dict[str, Any]:
-    """Evidence for a failed allocation before any claim handle was published.
-
-    Claim publication changes the journal schema and drops worker_activation.
-    Attached pods and published/activated workers must use the task drain gate.
-    """
-    return _validate_release_quiescence({
-        "schema": "astrid.runpod.unactivated-quiescence.v1",
-        **{key: attempt.get(key) for key in ("operation_id", "pod_id", "provider_account_ref")},
-        "worker_activation": "not_started",
-    }, attempt)
-
-
 def _validate_release_quiescence(value: Any, attempt: Mapping[str, Any]) -> dict[str, Any]:
     """Accept only durable exact-task drain and process-stop evidence."""
-    if isinstance(value, Mapping) and value.get("schema") == "astrid.runpod.unactivated-quiescence.v1":
-        if (attempt.get("schema_version") != "astrid.runpod.allocation-attempt.v1"
-                or attempt.get("acquisition_mode") != "allocate"
-                or not _text(attempt.get("request_name"))
-                or (attempt.get("name") is not None and attempt["name"] != attempt["request_name"])
-                or attempt.get("worker_activation") != "not_started"
-                or value.get("worker_activation") != "not_started"
-                or attempt.get("state") not in {
-                    "allocated_unverified", "release_pending", "cleanup_pending", "cleanup_complete",
-                }
-                or any(attempt.get(key) is not None for key in (
-                    "managed_worker", "managed_session", "task_id", "activation_id",
-                ))
-                or any(not value.get(key) or value[key] != attempt.get(key) for key in (
-                    "operation_id", "pod_id", "provider_account_ref",
-                ))):
-            raise TargetObservationError("release lacks exclusive unactivated allocation custody")
-        return dict(value)
     if not isinstance(value, Mapping) or value.get("schema") != "astrid.runpod.worker-quiescence.v1":
         raise TargetObservationError("release requires exact persisted worker-quiescence evidence")
     if (value.get("operation_id") != attempt.get("operation_id")
@@ -711,7 +680,7 @@ async def _release_exact_target_after_quiescence(
         raise AcquisitionUnresolvedError(
             "this target already has an interrupted release; resume that exact release"
         )
-    if state not in {"claimed", "allocated_unverified", "release_pending", "cleanup_pending"}:
+    if state not in {"claimed", "release_pending", "cleanup_pending"}:
         raise AcquisitionUnresolvedError(
             f"journal state {state!r} is not a releasable prepared target"
         )

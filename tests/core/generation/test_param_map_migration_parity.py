@@ -46,34 +46,6 @@ _ROUTE_SPECIFIC_REMOTE_MAPS: dict[tuple[str, str, str], dict[str, str]] = {
 }
 
 
-# These newly cataloged aliases have no legacy mode-wide fallback contract.
-# Verify each complete endpoint mapping instead of inventing one shared map
-# for unrelated video/audio APIs. All prior fallback parity cases stay intact.
-_CATALOG_ALIAS_MAPS = {
-    ("hunyuan-video-foley", "sfx", "cloud"): {
-        "video_ref": "video_url", "prompt": "text_prompt",
-    },
-    ("minimax-h3", "t2v", "cloud"): {
-        "prompt": "prompt", "duration": "duration", "resolution": "resolution",
-        "aspect_ratio": "aspect_ratio",
-    },
-    ("minimax-h3", "v2v", "cloud"): {
-        "prompt": "prompt", "duration": "duration", "resolution": "resolution",
-        "aspect_ratio": "aspect_ratio", "image_refs": "reference_image_urls",
-        "video_refs": "reference_video_urls", "audio_refs": "reference_audio_urls",
-    },
-    ("seedance-2.0", "v2v", "cloud"): {
-        "prompt": "prompt", "resolution": "resolution", "duration": "duration",
-        "aspect_ratio": "aspect_ratio", "generate_audio": "generate_audio",
-        "seed": "seed", "image_refs": "image_urls", "video_refs": "video_urls",
-    },
-    ("lava-sr", "sfx", "cloud"): {
-        "audio_ref": "audio_url", "audio_format": "audio_format", "bitrate": "bitrate",
-    },
-    ("deepfilternet3", "sfx", "cloud"): {"audio_ref": "audio_url"},
-}
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -197,11 +169,6 @@ def test_param_map_parity(
     Endpoint-specific mappings use relaxed checking when the remote schema
     differs from the mode-wide default; per-model param_map is authoritative.
     """
-    alias_contract = _CATALOG_ALIAS_MAPS.get((model_id, mode, backend_id))
-    if alias_contract is not None:
-        assert manifest_map == alias_contract
-        return
-
     # 1. Every canonical key in the manifest map MUST exist in the default map
     missing_from_default = set(manifest_map) - set(default_map)
     assert not missing_from_default, (

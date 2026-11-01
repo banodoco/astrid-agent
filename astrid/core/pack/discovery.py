@@ -29,7 +29,6 @@ from astrid.core.pack import (
     iter_element_roots,
     iter_executor_roots,
     iter_orchestrator_roots,
-    loader,
 )
 from astrid.core.pack.canonical import (
     CanonicalPackEntry,
@@ -37,7 +36,6 @@ from astrid.core.pack.canonical import (
     ExternalPackSource,
     read_normalize_validate,
 )
-from astrid.core.pack.loader import discover_packs as _default_discover_packs
 
 DiscoverPacksFn = Callable[..., "tuple[PackDefinition, ...]"]
 
@@ -398,22 +396,13 @@ def discover_pack_metadata(
                 else None,
             )
 
-    source_packs = scan()
-    for pack in source_packs:
+    for pack in scan():
         if pack.id == "local":
             continue
         _add(pack, "source")
 
     if local_pack_root is not None and project_pack_root.is_dir():
-        # Only the built-in scanner guarantees identical strict admission for
-        # these two calls when its actual default root is the project root.
-        # Injected scanners can assign different authority to each argument.
-        local_packs = (
-            source_packs
-            if scan is _default_discover_packs and loader.packs_root().resolve() == project_pack_root
-            else scan(project_pack_root)
-        )
-        for pack in local_packs:
+        for pack in scan(project_pack_root):
             if pack.id == "local" and pack.root.resolve() == local_pack_root.resolve():
                 _add(pack, "local")
 

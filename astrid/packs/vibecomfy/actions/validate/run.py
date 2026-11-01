@@ -330,9 +330,6 @@ def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from astrid.core.execution._child_import_receipt import observe_action_entry
-
-    observe_action_entry()
     args = build_parser().parse_args(argv)
     try:
         with staged_workflow_path(

@@ -6,14 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from astrid.core.contracts.errors import AstridError
-from astrid.core.generation.availability import action_availability
 from astrid.packs.training.shared.interfaces import ArtifactPullResult, RemoteExecResult, RunPodHandle
 from astrid.packs.training.actions.training_run.ai_toolkit import register, review, stage, train
 from astrid.packs.training.actions.training_run.ai_toolkit.train import Checkpoint
-from astrid.packs.training.actions.training_run import run as training_run
 
 
 class FakeRemoteBackend:
@@ -94,58 +89,28 @@ def test_training_mirrors_logs_and_parses_checkpoint_manifest(tmp_path: Path) ->
     assert checkpoints == [Checkpoint(remote_path="/workspace/out/lora-100.safetensors", step=100, label="step 100")]
 
 
-def test_review_html_writer_uses_configurable_text_and_local_media_names(tmp_path: Path) -> None:
-    sample = review.ReviewSample(
-        checkpoint=Checkpoint(remote_path="/workspace/out/lora-100.safetensors", step=100, label="chosen checkpoint"),
-        prompt="prompt one",
-        remote_path="/workspace/out/review/chosen-checkpoint-prompt-1.mp4",
-        local_path=tmp_path / "review" / "chosen.mp4",
-    )
-    index_path = review.write_review_html(
-        tmp_path / "review" / "index.html",
+def test_review_downloads_mp4s_and_writes_local_html_with_configurable_text(tmp_path: Path) -> None:
+    remote = FakeRemoteBackend()
+    result = review.generate_review_samples(
+        remote,
+        _handle(tmp_path),
+        checkpoints=[Checkpoint(remote_path="/workspace/out/lora-100.safetensors", step=100, label="chosen checkpoint")],
+        prompts=["prompt one", "prompt two"],
+        local_dir=tmp_path / "review",
         title="City review",
         rubric=["style match", "motion quality"],
-        samples=[sample],
+        remote_output_dir="/workspace/out",
+        produces_dir=tmp_path / "produces" / "review",
     )
-    html = index_path.read_text(encoding="utf-8")
+
+    html = result.index_path.read_text(encoding="utf-8")
     assert "City review" in html
     assert "style match" in html
     assert "prompt one" in html
     assert ".mp4" in html
     assert "/workspace" not in html
-
-
-def test_checkpoint_review_sampler_is_declared_unavailable_before_remote_work(tmp_path: Path) -> None:
-    record = action_availability("training.checkpoint_review_sampler")
-    assert record["available"] is False
-    assert record["public_action"] == "training.training_run"
-    remote = FakeRemoteBackend()
-
-    with pytest.raises(AstridError) as exc_info:
-        review.generate_review_samples(
-            remote,
-            _handle(tmp_path),
-            checkpoints=[Checkpoint(remote_path="/workspace/out/lora-100.safetensors", step=100)],
-            prompts=["prompt"],
-            local_dir=tmp_path / "review",
-            title="Review",
-            rubric=[],
-            remote_output_dir="/workspace/out",
-        )
-
-    assert exc_info.value.code == record["error"]["code"]
-    assert remote.exec_calls == []
-    assert remote.pull_calls == []
-    assert not (tmp_path / "review").exists()
-
-
-def test_training_public_action_refuses_before_loading_config_or_provisioning(monkeypatch, capsys) -> None:
-    def unexpected_config_load(*_args, **_kwargs):
-        raise AssertionError("config loading must not run for an unavailable sampler")
-
-    monkeypatch.setattr(training_run, "load_training_run_config", unexpected_config_load)
-    assert training_run.main(["--config", "missing.yaml"]) == 2
-    assert "code: generation_action_unavailable" in capsys.readouterr().err
+    assert all(sample.local_path.exists() for sample in result.samples)
+    assert "ssh_key" not in remote.pull_calls[0]["config"]
 
 
 def test_register_pulls_verifies_and_writes_registration_metadata(tmp_path: Path) -> None:
@@ -179,28 +144,3 @@ def test_ai_toolkit_support_modules_do_not_hardcode_ssh_key_paths() -> None:
     for path in checked:
         text = path.read_text(encoding="utf-8")
         assert not any(value in text for value in forbidden), str(path)
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_review_downloads_mp4s_and_writes_local_html_with_configurable_text(tmp_path: Path) -> None:
-    remote = FakeRemoteBackend()
-    result = review.generate_review_samples(
-        remote,
-        _handle(tmp_path),
-        checkpoints=[Checkpoint(remote_path="/workspace/out/lora-100.safetensors", step=100, label="chosen checkpoint")],
-        prompts=["prompt one", "prompt two"],
-        local_dir=tmp_path / "review",
-        title="City review",
-        rubric=["style match", "motion quality"],
-        remote_output_dir="/workspace/out",
-        produces_dir=tmp_path / "produces" / "review",
-    )
-
-    html = result.index_path.read_text(encoding="utf-8")
-    assert "City review" in html
-    assert "style match" in html
-    assert "prompt one" in html
-    assert ".mp4" in html
-    assert "/workspace" not in html
-    assert all(sample.local_path.exists() for sample in result.samples)
-    assert "ssh_key" not in remote.pull_calls[0]["config"]

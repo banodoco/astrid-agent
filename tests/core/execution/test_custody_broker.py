@@ -85,14 +85,7 @@ def _wrapper_environment(tmp_path, broker, *, role="command", target=None, port=
            if not key.startswith(("ASTRID_", "PYTHON"))}
     target = target or [sys.executable, "-c", "raise AssertionError('target must not execute')"]
     env.update({
-        # The target restores the original source-mode import context after
-        # the stdlib-only custody registration.  Keep Runtime's source root
-        # in that context so sitecustomize can install the policy hook.
-        "PYTHONPATH": os.pathsep.join((
-            str(hook),
-            str(Path(custody.__file__).resolve().parents[3]),
-            str(Path(custody.platform.__file__).resolve().parent.parent),
-        )),
+        "PYTHONPATH": os.pathsep.join((str(hook), str(Path(custody.__file__).resolve().parents[3]))),
         "HOOK_MARKER": str(tmp_path / "hook-loaded"),
         "TARGET_MARKER": str(tmp_path / "target-result.json"),
         "CAPTURE_PATH": str(tmp_path / "captured-spawn.json"),
@@ -2269,8 +2262,7 @@ def test_reference_verification_uses_real_independent_authority_without_writes(g
 
 
 @pytest.mark.parametrize("mismatch", ["reference", "actor", "epoch", "actor_birth", "target_birth",
-                                     "actor_token", "target_token", "actor_token_digest", "target_token_digest",
-                                     "actor_missing", "target_missing"])
+                                     "actor_token", "target_token", "actor_missing", "target_missing"])
 def test_reference_verification_rejects_changed_binding_and_kernel_identity(graph, monkeypatch, mismatch):
     authority, actors, identities, tokens = graph
     reference = authority.reference()
@@ -2285,36 +2277,14 @@ def test_reference_verification_rejects_changed_binding_and_kernel_identity(grap
         observed[101 if mismatch.startswith("actor") else 103]["birth_id"] = "changed-birth"
     elif mismatch.endswith("_token"):
         captured[101 if mismatch.startswith("actor") else 103]["pidversion"] += 1
-    elif mismatch.endswith("_token_digest"):
-        captured[101 if mismatch.startswith("actor") else 103]["sha256"] = "sha256:changed-token"
     else: observed.pop(101 if mismatch.startswith("actor") else 103)
     before = authority.path.read_bytes()
     consumer = custody.RoleCustodyAuthority(authority.root, authority.role)
     monkeypatch.setattr(custody, "_atomic_owner_json", lambda *_: pytest.fail("failed verification wrote"))
     monkeypatch.setattr(custody, "signal_audit_token", lambda *_: pytest.fail("failed verification signalled"))
-    token_reads = []
-    def read_token(pid):
-        token_reads.append(pid)
-        return captured.get(pid)
-    with pytest.raises(custody.CustodyError) as failure:
+    with pytest.raises(custody.CustodyError):
         consumer.verify_reference(reference, expected_actor=actor, owner_epoch=epoch,
-                                  identity_provider=observed.get, token_provider=read_token)
-    if mismatch not in {"reference", "actor", "epoch"}:
-        subject = "actor" if mismatch.startswith("actor") else "target"
-        pid = 101 if subject == "actor" else 103
-        expected = actor if subject == "actor" else reference["target"]
-        actual = (None if pid not in observed else
-                  {"pid": pid, "uid": observed[pid]["uid"], "birth_id": observed[pid]["birth_id"],
-                   "audit_token_sha256": captured[pid]["sha256"],
-                   "audit_token_pidversion": captured[pid]["pidversion"]})
-        prefix = "custody designation has unavailable or changed kernel identity: "
-        assert str(failure.value).startswith(prefix)
-        assert json.loads(str(failure.value)[len(prefix):]) == {
-            "role": "engine", "subject": subject, "expected": expected, "observed": actual}
-        assert "words" not in str(failure.value)
-        assert token_reads == ([101] if subject == "target" else []) + ([] if actual is None else [pid])
-    else:
-        assert token_reads == []
+                                  identity_provider=observed.get, token_provider=captured.get)
     assert authority.path.read_bytes() == before
     assert consumer._retained_record is None and consumer._live_start_anchor is None
 

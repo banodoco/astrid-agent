@@ -114,8 +114,8 @@ def test_fal_dry_run_uses_fixture_clip_without_credentials_or_provider(
     out = tmp_path / "dry run output" / "audio.wav"
 
     monkeypatch.setattr(
-        run,
-        "load_provider_key",
+        run.CredentialsScope,
+        "get_local",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("credentials resolved")),
     )
     monkeypatch.setattr(
@@ -218,8 +218,8 @@ def test_host_binding_and_harvesting_keep_declared_files_contained(
         }
 
     monkeypatch.setattr(
-        run,
-        "load_provider_key",
+        run.CredentialsScope,
+        "get_local",
         lambda *_args, **_kwargs: "fixture-fal-key",
     )
     monkeypatch.setattr(run, "default_client", lambda: fake_client)

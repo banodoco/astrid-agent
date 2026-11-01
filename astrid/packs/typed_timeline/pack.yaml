@@ -22,7 +22,7 @@ keywords:
 capabilities:
   - map
 agent:
-  purpose: Map host-admitted typed rows to validated timelines for the runtime render task.
+  purpose: Map typed DB rows to validated timelines for the runtime render task.
   do_not_use_for: Direct timeline hand-editing.
   normal_entrypoints:
     - typed_timeline.map

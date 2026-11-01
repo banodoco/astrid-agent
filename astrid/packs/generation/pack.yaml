@@ -1036,145 +1036,46 @@ actions:
   generate_image_openai:
     cache:
       mode: none
-    description: Generate or edit up to 32 GPT Image outputs through authenticated expanded jobs and ordered
-      managed references.
+    conditions:
+    - input: prompts_file
+      kind: requires_input
+    description: Generate image files with OpenAI GPT Image models from a prompt file.
+    graph:
+      consumes:
+      - image_prompts
+      provides:
+      - generated_images
+      - image_manifest
     inputs:
-    - name: model
-      type: string
-      required: false
-      default: gpt-image-2
-    - name: mode
-      type: string
-      required: false
-      default: t2i
-    - name: execution
-      type: string
-      required: false
-      default: openai
-    - name: prompt
-      type: string
-      required: false
+    - description: Text, JSON, or JSONL prompt list consumed by astrid.packs.generation.actions.generate_image_openai.run.
+      name: prompts_file
+      required: true
+      type: file
       artifact_type: prompt
-    - name: prompts_file
-      type: file
-      required: false
-      artifact_type: prompt
-    - name: jobs
-      type: string
-      required: false
-    - name: count
-      type: integer
-      required: false
-      default: 1
-    - name: n
-      type: integer
-      required: false
-    - name: size
-      type: string
-      required: false
-      default: 1024x1024
-    - name: quality
-      type: string
-      required: false
-      default: medium
-    - name: output_format
-      type: string
-      required: false
-      default: png
-    - name: background
-      type: string
-      required: false
-      default: auto
-    - name: output_compression
-      type: integer
-      required: false
-    - name: moderation
-      type: string
-      required: false
-    - name: timeout
-      type: integer
-      required: false
-      default: 180
-    - name: image_ref_00
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_01
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_02
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_03
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_04
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_05
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_06
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_07
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_08
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_09
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_10
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_11
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_12
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_13
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_14
-      type: file
-      required: false
-      artifact_type: image
-    - name: image_ref_15
-      type: file
-      required: false
-      artifact_type: image
     isolation:
       mode: subprocess
       network: true
+    keywords:
+    - image
+    - generate
+    - openai
+    - gpt-image
+    - prompt
+    - render
     metadata:
       output_result_manifest: true
       requires_timeline: false
       api_provider: openai
       env:
       - OPENAI_API_KEY
-      runtime_entrypoint: run_sdk
-      runtime_file: actions/generate_image/run.py
-      runtime_module: astrid.packs.generation.actions.generate_image.run
+      runtime_entrypoint: main
+      runtime_file: actions/generate_image_openai/run.py
+      runtime_module: astrid.packs.generation.actions.generate_image_openai.run
       manifest_version: 2
       manifest_schema: universal
-      manifest_note: Writes a v2 universal manifest object with schema_version, kind, inputs, outputs, created,
-        warnings, and jobs. Output metadata is enriched through the shared result-manifest contract (complete_output_metadata).
+      manifest_note: Writes a v2 universal manifest object with schema_version, kind,
+        inputs, outputs, created, warnings, and jobs. Output metadata is enriched
+        through the shared result-manifest contract (complete_output_metadata).
       network_policy:
         allowed_protocols:
         - dns
@@ -1195,110 +1096,7 @@ actions:
           observable: true
           route: declared-http-routes
           wrapper: astrid-generic-host
-      secrets_required:
-      - OPENAI_API_KEY
-      storage_estimate_required: true
-      storage_estimate_exact: true
-      fixed_inputs:
-        execution: openai
-      storage_policy_version: astrid.openai-image.v1
-      storage_policy_limits:
-        max_jobs: 32
-        max_count: 32
-        max_references: 16
-        max_prompt_bytes: 1048576
-        max_reference_bytes_each: 16777216
-        max_output_bytes_each: 16777216
-        max_manifest_bytes: 1048576
-      storage_input_max_bytes:
-        prompts_file: 1048576
-        image_ref_00: 16777216
-        image_ref_01: 16777216
-        image_ref_02: 16777216
-        image_ref_03: 16777216
-        image_ref_04: 16777216
-        image_ref_05: 16777216
-        image_ref_06: 16777216
-        image_ref_07: 16777216
-        image_ref_08: 16777216
-        image_ref_09: 16777216
-        image_ref_10: 16777216
-        image_ref_11: 16777216
-        image_ref_12: 16777216
-        image_ref_13: 16777216
-        image_ref_14: 16777216
-        image_ref_15: 16777216
-      estimated_scratch_bytes: 271581184
-      estimated_output_bytes: 537919488
-      hc04_param_ports:
-      - model
-      - mode
-      - execution
-      - prompt
-      - prompts_file
-      - jobs
-      - count
-      - n
-      - size
-      - quality
-      - output_format
-      - background
-      - output_compression
-      - moderation
-      - timeout
-      - image_ref_00
-      - image_ref_01
-      - image_ref_02
-      - image_ref_03
-      - image_ref_04
-      - image_ref_05
-      - image_ref_06
-      - image_ref_07
-      - image_ref_08
-      - image_ref_09
-      - image_ref_10
-      - image_ref_11
-      - image_ref_12
-      - image_ref_13
-      - image_ref_14
-      - image_ref_15
-      hc04_cas_param_ports:
-      - prompts_file
-      - image_ref_00
-      - image_ref_01
-      - image_ref_02
-      - image_ref_03
-      - image_ref_04
-      - image_ref_05
-      - image_ref_06
-      - image_ref_07
-      - image_ref_08
-      - image_ref_09
-      - image_ref_10
-      - image_ref_11
-      - image_ref_12
-      - image_ref_13
-      - image_ref_14
-      - image_ref_15
-      hc04_optional_cas_param_ports:
-      - prompts_file
-      - image_ref_00
-      - image_ref_01
-      - image_ref_02
-      - image_ref_03
-      - image_ref_04
-      - image_ref_05
-      - image_ref_06
-      - image_ref_07
-      - image_ref_08
-      - image_ref_09
-      - image_ref_10
-      - image_ref_11
-      - image_ref_12
-      - image_ref_13
-      - image_ref_14
-      - image_ref_15
-    name: Managed OpenAI Image Generation
+    name: Generate Image (OpenAI)
     outputs:
     - description: Generated image files identified by typed receipt entries.
       mode: create_or_replace
@@ -1310,106 +1108,28 @@ actions:
       name: image_manifest
       path_template: '{out}/manifest.json'
       type: file
-    scoped_configs:
-    - credentials.openai
-    version: '2.1'
+    short_description: Generate image files with OpenAI GPT Image models from a prompt
+      file.
+    version: '2.0'
     invocation:
       kind: command
       command:
         argv:
         - '{python_exec}'
         - -m
-        - astrid.packs.generation.actions.generate_image.run
-        - --model
-        - '{model}'
-        - --mode
-        - '{mode}'
-        - --execution
-        - '{execution}'
-        - --jobs
-        - '{jobs}'
-        - --count
-        - '{count}'
-        - --n
-        - '{n}'
-        - --size
-        - '{size}'
-        - --quality
-        - '{quality}'
-        - --output-format
-        - '{output_format}'
-        - --background
-        - '{background}'
-        - --timeout
-        - '{timeout}'
-        - --storage-policy-version
-        - astrid.openai-image.v1
-        - --out
-        - '{out}'
-        input_args:
-        - input: prompt
-          flag: --prompt
-          optional: true
-        - input: prompts_file
-          flag: --prompts-file
-          optional: true
-        - input: output_compression
-          flag: --output-compression
-          optional: true
-        - input: moderation
-          flag: --moderation
-          optional: true
-        - input: image_ref_00
-          flag: --image-ref-00
-          optional: true
-        - input: image_ref_01
-          flag: --image-ref-01
-          optional: true
-        - input: image_ref_02
-          flag: --image-ref-02
-          optional: true
-        - input: image_ref_03
-          flag: --image-ref-03
-          optional: true
-        - input: image_ref_04
-          flag: --image-ref-04
-          optional: true
-        - input: image_ref_05
-          flag: --image-ref-05
-          optional: true
-        - input: image_ref_06
-          flag: --image-ref-06
-          optional: true
-        - input: image_ref_07
-          flag: --image-ref-07
-          optional: true
-        - input: image_ref_08
-          flag: --image-ref-08
-          optional: true
-        - input: image_ref_09
-          flag: --image-ref-09
-          optional: true
-        - input: image_ref_10
-          flag: --image-ref-10
-          optional: true
-        - input: image_ref_11
-          flag: --image-ref-11
-          optional: true
-        - input: image_ref_12
-          flag: --image-ref-12
-          optional: true
-        - input: image_ref_13
-          flag: --image-ref-13
-          optional: true
-        - input: image_ref_14
-          flag: --image-ref-14
-          optional: true
-        - input: image_ref_15
-          flag: --image-ref-15
-          optional: true
+        - astrid.packs.generation.actions.generate_image_openai.run
+        - --prompts-file
+        - '{prompts_file}'
+        - --out-dir
+        - '{out}/images'
+        - --manifest
+        - '{out}/manifest.json'
+        input_args: []
     resources:
+    - kind: documentation
+      path: actions/generate_image_openai/STAGE.md
     - kind: implementation
-      path: actions/generate_image/run.py
+      path: actions/generate_image_openai/__init__.py
     - kind: implementation
       path: actions/generate_image_openai/run.py
   generate_image_upscale:
@@ -1961,11 +1681,3 @@ resources:
   path: shared/_common.py
 - kind: documentation
   path: docs/generate-image.md
-
-extensions:
-  generation:
-    backends:
-    - id: openai
-      module: astrid.core.generation.backends.openai
-      class: OpenAIBackend
-      label: OpenAI GPT Image

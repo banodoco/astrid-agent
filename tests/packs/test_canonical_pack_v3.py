@@ -56,8 +56,7 @@ def test_minimal_action_has_no_compulsory_categories_or_skill(tmp_path: Path) ->
     assert definition.documentation is None
     assert {p.name for p in root.iterdir()} == {"actions", "pack.yaml"}
     assert definition.to_dict()["actions"]["echo"] == _action()
-    assert "content" not in definition.to_dict()
-    assert definition.to_dict()["extensions"] == {}
+    assert "content" not in definition.to_dict() and "extensions" not in definition.to_dict()
     assert Port(**definition.to_dict()["actions"]["echo"]["inputs"][0]).type == "string"
     assert Output(**definition.to_dict()["actions"]["echo"]["outputs"][0]).mode == "create"
     assert entry.capabilities.actions is definition.actions
@@ -261,7 +260,7 @@ def test_v2_admission_and_manifestless_core_shell_remain_compatible(tmp_path: Pa
     ({"ui": {"tool": {"type": "editor", "entry": "actions/tool.tsx"}}}, "beneath ui"),
     ({"documents": {"note": {"format_version": 1, "schema": "../schema.json"}}}, "documents"),
     ({"content": {}, "actions": {}}, "Additional properties"),
-    ({"unknown_root_field": {}, "ui": {}}, "Additional properties"),
+    ({"extensions": {}, "ui": {}}, "Additional properties"),
     ({"documentation": {"kind": "skill", "path": "docs/SKILL.md", "name": "duplicate"}}, "documentation"),
     ({"documentation": {"skills": {"main": "docs/SKILL.md"}}}, "documentation"),
     ({"documentation": {"kind": "skill", "path": "skill/SKILL.md"}}, "documentation"),

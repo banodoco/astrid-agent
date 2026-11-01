@@ -6,16 +6,6 @@ public request uses `changes.video` and `changes.audio` schedules. The active
 H3 pack contract supports source-backed edits, native continuation, reference-guided generation,
 and explicit mask assets without creating a second project or task database.
 
-`h3_av.transform --dry-run` performs CPU planning only: it normalizes the request,
-resolves preparation and compile bindings, and writes `plan.json` under the
-operation output directory without submitting a local GPU or RunPod task. The
-plan records the resolved spec and bindings, requested and raw timing with trim,
-preview data, sampling-pass count, warnings, and ignored fields. Planning supports
-one canonical modifying operation (`generate`, `extend`, or `regenerate`) with
-preservation constraints. Rectangle regions can be previewed in the plan; the
-compiler still requires supported image-mask inputs for regional edits, so a
-preview does not make a rectangle executable.
-
 ## Character Swap (opt-in native-v2 candidate)
 
 Native-v2 requests may opt into `settings.adapter.id: character_swap_v1`. The route
@@ -26,9 +16,9 @@ finite in `0..2`. It uses the immutable LoRA
 `62407e0cc8089c363abd9ce4b0b27662abb237af`, file
 `h3_character_swap_pro4500_1000.safetensors`, SHA-256
 `4b2a3f420ae804c0aa3422761ff84dbd1bf52eef6900ffab6d2e66df63cb4e79`.
-The Ref2VA base, text encoder, VAEs, and optional Turbo LoRA use immutable
-revisions from the RunPod model lock. Workflow bundles carry those pinned URLs
-directly so they remain portable without importing Astrid.
+The existing Ref2VA base, text encoder, VAEs, and optional Turbo LoRA retain
+their current `resolve/main` asset declarations; only the Character Swap LoRA
+has an immutable revision and checksum in this candidate.
 The selected base remains Ref2VA (`minimax_h3_ref2va_pruned_int8_convrot.safetensors`);
 an explicit different base is rejected rather than rewritten.
 
@@ -54,28 +44,11 @@ publication and local candidate verification remain separate from final managed
 publication; a passing compile or helper test does not establish that final
 publication was accepted.
 
-The request.v2 schema has no `operation` field. It requires `version: 2`, a
-non-empty `prompt`, a `media` list, and `settings`; optional fields include
-`duration` and `continuation`. For example, a source-free request with one
-image reference is:
-
-```json
-{
-  "version": 2,
-  "prompt": "A paper kite drifting over a quiet field.",
-  "duration": 5,
-  "media": [
-    {"id": "look", "asset": "look.png", "role": "reference", "modality": "image"}
-  ],
-  "settings": {}
-}
-```
-
-Each asset-map key must exactly equal the corresponding reference's `asset`
-value, including its spelling and path. `shared/generation.py` builds one
-sampling graph from the existing H3 reference node family. Images are
-simultaneous conditioning inputs, not successive segments or implicit
-keyframes. `edit` and `continue` still require a source.
+`operation: generate` accepts no source and one to nine ordered still-image
+references, a prompt, output duration, and the normal settings overrides.
+`shared/generation.py` builds one sampling graph from the existing H3 reference
+node family. Images are simultaneous conditioning inputs, not successive
+segments or implicit keyframes. `edit` and `continue` still require a source.
 
 The compiler targets the packaged native Seitanism MiniMax H3 AV continuation
 graph and LanPaint source-backed edit graph, plus the opt-in native-v2 Character

@@ -34,8 +34,6 @@ from astrid.core.pack import (
     pack_manifest_path,
     packs_root,
 )
-from astrid.core.pack.alias_resolver import AliasResolutionError, AliasResolver
-from astrid.core.pack.canonical import CanonicalPackDefinition, validate_canonical_pack
 
 # ---------------------------------------------------------------------------
 # STAGE.md excerpt helpers
@@ -240,71 +238,6 @@ def _scan_components(root: Path, content: dict[str, Any]) -> list[dict[str, Any]
     return components
 
 
-def _canonical_components(
-    definition: CanonicalPackDefinition,
-    root: Path,
-    resolvers: dict[str, AliasResolver],
-    normal_entrypoints: list[str],
-) -> list[dict[str, Any]]:
-    """Project admitted v3 declarations without importing or executing pack code."""
-    data = definition.to_dict()
-    components: list[dict[str, Any]] = []
-    for section, fallback_kind in (
-        ("actions", "action"),
-        ("ui", "ui"),
-        ("rendering", "rendering"),
-        ("documents", "document"),
-    ):
-        for key, declaration in data[section].items():
-            identity = definition.declaration_id(section, key)
-            kind = (
-                declaration.get("type", fallback_kind)
-                if section in {"ui", "rendering"} else fallback_kind
-            )
-            if section == "actions":
-                native_kind = (
-                    "orchestrator" if declaration.get("metadata", {}).get("local_orchestrator") is True
-                    else "executor"
-                )
-                alias_kinds = {"action", native_kind}
-            else:
-                alias_kinds = {fallback_kind, kind}
-            aliases = sorted(
-                alias["alias"] for alias in data["aliases"]
-                if alias["kind"] in alias_kinds
-                and resolvers[alias["kind"]].resolve(alias["alias"]) == identity
-            )
-            docs_paths: dict[str, str] = {}
-            for resource in declaration.get("resources", []):
-                if resource.get("kind") == "documentation":
-                    doc_key = (
-                        "documentation" if not docs_paths
-                        else f"documentation_{len(docs_paths) + 1}"
-                    )
-                    docs_paths[doc_key] = str(root / resource["path"])
-            component = {
-                "id": identity,
-                "name": declaration.get("name", identity),
-                "kind": kind,
-                "section": section,
-                "description": declaration.get("description", ""),
-                "runtime": None,
-                "is_entrypoint": any(
-                    ep == identity or ep in aliases for ep in normal_entrypoints
-                ),
-                "docs_paths": docs_paths,
-                "stage_excerpt": None,
-                "aliases": aliases,
-                # Preserve supported descriptors and resource links without inventing contracts.
-                "declaration": declaration,
-            }
-            for field in ("inputs", "outputs", "schema"):
-                if field in declaration:
-                    component[field] = declaration[field]
-            components.append(component)
-    return sorted(components, key=lambda component: component["id"])
-
-
 # ---------------------------------------------------------------------------
 # Main index builder
 # ---------------------------------------------------------------------------
@@ -380,18 +313,25 @@ def build_agent_index(*, pack_id: str | None = None) -> dict[str, Any]:
             trust = {}
 
         manifest = _load_manifest(pack_def.root)
-        canonical = (
-            validate_canonical_pack(pack_def.root, expected_pack_id=pid).definition
-            if pack_def.schema_version == "3" else None
-        )
         pack_map[pid] = _assemble_pack_entry(
-            pack_def.root, pid, manifest, trust, source_type="built-in", canonical=canonical,
-            declared_documentation=pack_def.documentation,
+            pack_def.root, pid, manifest, trust, source_type="built-in"
         )
 
+    # ------------------------------------------------------------------
+    # Filter and sort
+    # ------------------------------------------------------------------
     if pack_id is not None:
         return pack_map.get(pack_id)
-    return {"packs": [pack_map[pid] for pid in sorted(pack_map)]}
+
+    sorted_packs = [pack_map[pid] for pid in sorted(pack_map)]
+
+    # Post-process: mark is_entrypoint on components
+    for pack_entry in sorted_packs:
+        normal_eps = set(pack_entry.get("normal_entrypoints", []))
+        for comp in pack_entry.get("components", []):
+            comp["is_entrypoint"] = comp["id"] in normal_eps
+
+    return {"packs": sorted_packs}
 
 
 def _load_manifest(root: Path) -> dict[str, Any]:
@@ -409,8 +349,6 @@ def _assemble_pack_entry(
     trust: dict[str, Any],
     *,
     source_type: str = "built-in",
-    canonical: CanonicalPackDefinition | None = None,
-    declared_documentation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble a single pack entry dict for the agent index."""
     agent_section = manifest.get("agent", {}) if isinstance(manifest.get("agent"), dict) else {}
@@ -453,24 +391,10 @@ def _assemble_pack_entry(
     # Component counts
     component_counts = trust.get("component_counts", {})
 
-    # V3 declarations and the legacy content-root scan share the component view.
-    if canonical is not None:
-        canonical_data = canonical.to_dict()
-        resolvers: dict[str, AliasResolver] = {}
-        for alias in canonical_data["aliases"]:
-            resolver = resolvers.setdefault(alias["kind"], AliasResolver())
-            try:
-                resolver.register_pack_aliases(pack_id, [alias])
-            except AliasResolutionError:
-                # Admission permits cycles. The resolver rejects the cycle;
-                # retain the declaration but do not invent a resolved target.
-                continue
-        components = _canonical_components(canonical, root, resolvers, normal_entrypoints)
-    else:
-        components = _scan_components(root, content)
-        components.sort(key=lambda c: c["id"])
-        for component in components:
-            component["is_entrypoint"] = component["id"] in normal_entrypoints
+    # Components (scanned from declared content roots)
+    components = _scan_components(root, content)
+    # Sort by id for determinism
+    components.sort(key=lambda c: c["id"])
 
     # Docs paths (at pack level)
     docs = manifest.get("docs", {}) if isinstance(manifest.get("docs"), dict) else {}
@@ -485,16 +409,10 @@ def _assemble_pack_entry(
             default_path = root / default_map[doc_key]
             docs_paths[doc_key] = str(default_path) if default_path.is_file() else None
 
-    documentation = (
-        canonical_data.get("documentation") if canonical is not None else declared_documentation
-    )
-    if documentation and documentation.get("path"):
-        docs_paths["documentation"] = str(root / documentation["path"])
-
     # Warnings from trust summary
     warnings = trust.get("warnings", [])
 
-    entry = {
+    return {
         "pack_id": pack_id,
         "name": trust.get("name", manifest.get("name", pack_id)),
         "version": trust.get("version", manifest.get("version", "0.0.0")),
@@ -518,12 +436,6 @@ def _assemble_pack_entry(
         "permission_ids": trust.get("permission_ids", []),
         "trust": trust.get("trust", {}),
     }
-    if canonical is not None:
-        entry["documentation"] = documentation
-        entry["aliases"] = canonical_data["aliases"]
-    elif documentation:
-        entry["documentation"] = documentation
-    return entry
 
 
 __all__ = [

@@ -128,9 +128,6 @@ def main(argv: list[str] | None = None) -> int:
         "provider",
         help=f"provider ({supported}) or uppercase environment-variable name",
     )
-    source = set_parser.add_mutually_exclusive_group()
-    source.add_argument("--stdin", action="store_true", help="read one credential line from stdin")
-    source.add_argument("--from-env", metavar="VAR", help="read the credential from environment variable VAR")
     args = parser.parse_args(argv)
 
     if args.action == "list":
@@ -153,23 +150,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     try:
-        if args.stdin:
-            value = sys.stdin.readline()
-        elif args.from_env:
-            value = os.environ.get(args.from_env, "")
-        else:
-            # Never permit getpass to fall back to echoed input.
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", getpass.GetPassWarning)
-                value = getpass.getpass(f"Credential for {args.provider}: ")
+        # getpass otherwise warns and falls back to echoed input when it cannot
+        # disable terminal echo. Never accept a credential in that case.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            value = getpass.getpass(f"Credential for {args.provider}: ")
     except getpass.GetPassWarning:
         print(
             "astrid-credential: hidden input requires an interactive terminal",
             file=sys.stderr,
         )
-        return 1
-    except (EOFError, OSError):
-        print("astrid-credential: could not read credential input", file=sys.stderr)
         return 1
     try:
         path = store_credential(args.provider, value)

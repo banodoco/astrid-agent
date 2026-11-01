@@ -5,11 +5,6 @@ description: Request-driven MiniMax H3 audiovisual transformations with explicit
 
 # H3 audiovisual transformations
 
-H3 inference currently runs only on RunPod workers. Select a RunPod worker
-execution request, worker qualification receipt, or prepared worker selection.
-The parent orchestrator runs locally; there is no local H3 inference route on
-Windows, Linux, or macOS. See [where generation runs](../../../../docs/reference/where-things-run.md).
-
 For the short pack contract overview, see [README.md](../README.md). Action-specific
 notes remain linked beside their v3 entrypoints: [prepare](../actions/prepare/STAGE.md),
 [compile](../actions/compile/STAGE.md), [compose](../actions/compose/STAGE.md),
@@ -107,8 +102,8 @@ strength aliases; do not combine an alias with `settings.turbo.strength`. When
 Turbo is disabled, its loader and model requirement are omitted. Effective
 configuration is recorded in the compilation, which lists only connected model
 assets. The Character Swap LoRA is pinned by immutable revision and checksum;
-the Ref2VA base, text encoder, VAEs, and optional Turbo LoRA use immutable
-revisions from the RunPod model lock. The LoRA
+the existing Ref2VA base, text encoder, VAEs, and optional Turbo LoRA retain
+their `resolve/main` declarations and are not content-pinned here. The LoRA
 weights are not downloaded by this route and this candidate makes no
 inference-quality claim.
 

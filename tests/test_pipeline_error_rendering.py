@@ -192,28 +192,3 @@ def test_project_validation_error_renders_via_envelope() -> None:
     assert rc == 2
     assert "source.kind must be one of {...}" in stderr
     assert "Traceback" not in stderr
-
-
-def test_cli_renders_coded_error_field_and_fix() -> None:
-    err = AstridError("bad input", code="invalid_input", field="prompt", fix="supply a prompt")
-    with mock.patch.object(pipeline, "_dispatch", side_effect=err):
-        rc, stderr = _capture(["doctor"])
-    assert rc == 2
-    assert "code: invalid_input" in stderr
-    assert "field: prompt" in stderr
-    assert "fix: supply a prompt" in stderr
-
-
-def test_cli_keeps_degraded_sdk_behavior_and_renders_coded_details() -> None:
-    from astrid.sdk.exceptions import CapabilityValidationError
-
-    error = CapabilityValidationError("bad mode", details={"field": "mode", "fix": "choose fast"})
-    with mock.patch.object(pipeline, "_dispatch", side_effect=error):
-        rc, stderr = _capture(["doctor"])
-
-    assert rc == 1
-    assert stderr.splitlines()[0] == "unstructured - this is a bug."
-    assert "code: validation" in stderr
-    assert "field: mode" in stderr
-    assert "fix: choose fast" in stderr
-    assert "Traceback" not in stderr

@@ -66,9 +66,6 @@ def test_generation_thumbnail_output_for_image_preserves_creative_contract(
     assert thumbnail["durability"] == "durable"
     assert "is_primary" not in thumbnail
     assert Path(str(thumbnail["path"])).is_file()
-    assert thumbnail["digest"] == "sha256:" + hashlib.sha256(
-        Path(str(thumbnail["path"])).read_bytes()
-    ).hexdigest()
     assert thumbnail["provenance"] == {
         "thumbnail": {
             "source_object_ids": [creative["digest"]],

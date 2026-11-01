@@ -18,20 +18,16 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.error import HTTPError, URLError
 
 from astrid.core.cli_choices import (
     AstridArgumentError,
     RecoverableArgumentParser,
     add_choice_arg,
 )
-from astrid.core.util.http import default_client, fal_submit_and_poll
-from astrid.core.util.generation_helpers import (
-    DEFAULT_OUTPUT_MAX_BYTES,
-    download_output,
-    load_provider_key,
-    write_journal_atomic,
-)
+from astrid.core.util.http import FAL_QUEUE_URL, default_client
 from astrid.packs.video_editing.shared.result_receipts import write_action_receipt
+from astrid.core.util.credentials_scope import CredentialsScope
 
 FAL_EDIT_MODEL_ID = "openai/gpt-image-2/edit"
 FAL_ANIMATE_MODEL_ID = "fal-ai/wan/v2.2-14b/animate/move"
@@ -75,11 +71,12 @@ BASE_PROMPT = (
 
 def _load_env_var(name: str, env_file: Path | None) -> str:
     scope = name.lower().removesuffix("_api_key").removesuffix("_key")
-    return load_provider_key(scope, env_file=env_file)
+    return CredentialsScope.get_local(scope, env_file=env_file)
 
 
 def write_json(path: Path, payload: Any) -> None:
-    write_journal_atomic(path, payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _data_uri_for(path: Path, *, override_mime: str | None = None) -> str:
@@ -168,6 +165,65 @@ def _snap_to_gpt_image_2_size(width: int, height: int) -> tuple[int, int]:
     return w, h
 
 
+def _submit_fal(model_id: str, payload: dict[str, Any], api_key: str) -> dict[str, Any]:
+    url = f"{FAL_QUEUE_URL}/{model_id}"
+    headers = {"authorization": f"Key {api_key}"}
+    try:
+        return default_client().post_json(url, payload, headers=headers, timeout=180)
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise AstridError(
+            f"fal submit failed ({exc.code}) for {model_id}: {detail}",
+            recovery_command="check FAL_KEY and retry animate_image",
+            state_snapshot={"model_id": model_id},
+        ) from exc
+    except URLError as exc:
+        raise AstridError(
+            f"fal submit failed for {model_id}: {exc}",
+            recovery_command="check network connectivity and retry animate_image",
+            state_snapshot={"model_id": model_id},
+        ) from exc
+    except SystemExit as exc:
+        raise AstridError(
+            f"fal submit failed for {model_id}: {exc}",
+            recovery_command="check FAL_KEY and retry animate_image",
+            state_snapshot={"model_id": model_id},
+        ) from exc
+
+
+def _poll_fal_result(
+    submission: dict[str, Any],
+    api_key: str,
+    *,
+    max_wait_sec: int,
+) -> dict[str, Any]:
+    status_url = submission.get("status_url")
+    response_url = submission.get("response_url")
+    if not status_url or not response_url:
+        raise AstridError(
+            f"fal submission missing status_url/response_url: {json.dumps(submission)}",
+            recovery_command="retry animate_image",
+            state_snapshot={"submission": submission},
+        )
+    headers = {"authorization": f"Key {api_key}"}
+    try:
+        result = default_client().poll_until(
+            status_url,
+            response_url,
+            headers=headers,
+            max_wait_sec=max_wait_sec,
+        )
+    except SystemExit as exc:
+        raise AstridError(
+            f"fal job failed: {exc}",
+            recovery_command="retry animate_image or inspect fal job status",
+            state_snapshot={"status_url": status_url, "response_url": response_url},
+        ) from exc
+    if "request_id" not in result and "request_id" in submission:
+        result["request_id"] = submission["request_id"]
+    return result
+
+
 def _save_first_image(result: dict[str, Any], dest: Path) -> dict[str, Any]:
     images = result.get("images") or []
     if not images:
@@ -183,18 +239,17 @@ def _save_first_image(result: dict[str, Any], dest: Path) -> dict[str, Any]:
             recovery_command="retry animate_image",
         )
     try:
-        actual_dest, raw = download_output(
-            default_client(), url, dest, timeout=180, max_bytes=DEFAULT_OUTPUT_MAX_BYTES,
-            fallback_suffix=".png", infer_suffix=False,
-        )
+        raw = default_client().get_bytes(url, timeout=180)
     except SystemExit as exc:
         raise AstridError(
             f"failed to download fal image: {exc}",
             recovery_command="retry animate_image",
             state_snapshot={"url": url},
         ) from exc
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
     return {
-        "path": str(actual_dest),
+        "path": str(dest),
         "source_url": url,
         "width": first.get("width"),
         "height": first.get("height"),
@@ -212,18 +267,17 @@ def _save_video(result: dict[str, Any], dest: Path) -> dict[str, Any]:
             recovery_command="retry animate_image",
         )
     try:
-        actual_dest, raw = download_output(
-            default_client(), url, dest, timeout=600, max_bytes=DEFAULT_OUTPUT_MAX_BYTES,
-            fallback_suffix=".mp4", infer_suffix=False,
-        )
+        raw = default_client().get_bytes(url, timeout=600)
     except SystemExit as exc:
         raise AstridError(
             f"failed to download fal video: {exc}",
             recovery_command="retry animate_image",
             state_snapshot={"url": url},
         ) from exc
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
     return {
-        "path": str(actual_dest),
+        "path": str(dest),
         "source_url": url,
         "content_type": video.get("content_type"),
         "file_name": video.get("file_name"),
@@ -268,11 +322,8 @@ def call_gpt_image_edit(
         "num_images": 1,
         "output_format": "jpeg" if output_format == "jpg" else output_format,
     }
-    result = fal_submit_and_poll(
-        default_client(), FAL_EDIT_MODEL_ID, payload, api_key,
-        max_wait_sec=600, submit_timeout=180,
-    )
-    submission = {"request_id": result.get("request_id")}
+    submission = _submit_fal(FAL_EDIT_MODEL_ID, payload, api_key)
+    result = _poll_fal_result(submission, api_key, max_wait_sec=600)
     return submission, result
 
 
@@ -301,11 +352,8 @@ def call_wan_animate_move(
     }
     if seed is not None:
         payload["seed"] = seed
-    result = fal_submit_and_poll(
-        default_client(), FAL_ANIMATE_MODEL_ID, payload, api_key,
-        max_wait_sec=1800, submit_timeout=180,
-    )
-    submission = {"request_id": result.get("request_id")}
+    submission = _submit_fal(FAL_ANIMATE_MODEL_ID, payload, api_key)
+    result = _poll_fal_result(submission, api_key, max_wait_sec=1800)
     return submission, result
 
 

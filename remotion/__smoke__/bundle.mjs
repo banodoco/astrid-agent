@@ -5,7 +5,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 
 import {bundle} from '@remotion/bundler';
 import {selectComposition} from '@remotion/renderer';
-import {remotionPrimitiveAliasesFor} from '../webpack-alias.mjs';
+import {applyWorkspaceEffectsAlias} from '../webpack-alias.mjs';
 import ts from 'typescript';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,14 +20,11 @@ const compositionId = 'TimelineComposition';
 const EXPECTED_ALLOWED = {
   _ASSET_ENTRY_ALLOWED: [
     'content_sha256',
-    'derivedFrom',
     'duration',
     'etag',
     'file',
     'fps',
     'generationId',
-    'media_id',
-    'origin',
     'resolution',
     'thumbnailUrl',
     'type',
@@ -180,7 +177,7 @@ const main = async () => {
   const bundleLocation = await bundle({
     entryPoint,
     onProgress: () => undefined,
-    webpackOverride: remotionPrimitiveAliasesFor(projectDir),
+    webpackOverride: applyWorkspaceEffectsAlias,
   });
 
   const allowedArrays = await importGeneratedAllowedArrays();

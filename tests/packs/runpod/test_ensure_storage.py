@@ -111,7 +111,7 @@ def test_require_existing_storage_fails_without_creating_when_missing() -> None:
         pytest.fail("require_existing_storage should fail without a storage name")
 
     assert ENSURE_STORAGE_HINT in message
-    assert "runpod-lifecycle volumes create <storage-name> <GB> --datacenter <id>" in message
+    assert "python3 -m astrid runpod ensure-storage <storage-name>" in message
 
 
 # ---------------------------------------------------------------------------
@@ -211,32 +211,3 @@ def test_list_volumes_passthrough() -> None:
     finally:
         if os.environ.get("RUNPOD_API_KEY") == "test-key-rpa_0000000000000000000000000000000000000000000000":
             del os.environ["RUNPOD_API_KEY"]
-
-
-def test_storage_availability_uses_credentials_and_never_creates() -> None:
-    import asyncio
-
-    from astrid.core.integrations.runpod.storage import storage_availability
-    from runpod_lifecycle import GpuAvailability
-
-    evidence = GpuAvailability(
-        "RTX 5090", "NVIDIA GeForce RTX 5090", "RTX 5090", "unknown", "now", {},
-        reason="Provider unavailable",
-    )
-    with patch("runpod_lifecycle.gpu_availability", AsyncMock(return_value=evidence)) as discover, \
-         patch("astrid.core.integrations.runpod.storage.CredentialsScope.get_local", return_value="test-key") as credential, \
-         patch("runpod_lifecycle.api.create_network_volume") as create_volume, \
-         patch("runpod_lifecycle.api.create_pod") as create_pod:
-        result = asyncio.run(storage_availability(
-            "RTX 5090", datacenter_ids=["EU-RO-1"], allowed_cuda_versions=["13.0"],
-        ))
-        credential.assert_called_once_with("runpod")
-        discover.assert_awaited_once_with(
-            api_key="test-key", gpu="RTX 5090", datacenter_ids=["EU-RO-1"],
-            allowed_cuda_versions=["13.0"], min_cuda_version=None, container_disk_gb=100,
-            require_secure_cloud=True, require_network_volume=True,
-        )
-        create_volume.assert_not_called()
-        create_pod.assert_not_called()
-    assert result["status"] == "unknown"
-    assert result["reason"] == "Provider unavailable"

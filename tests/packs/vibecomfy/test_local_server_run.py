@@ -4,7 +4,6 @@ import hashlib
 import importlib
 import json
 import threading
-from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,14 +85,6 @@ def comfy(tmp_path, monkeypatch):
                 self.send({} if state.pending else {prompt_id: state.histories[prompt_id]})
             elif self.path == "/queue":
                 self.send({"queue_running": [], "queue_pending": []})
-            elif self.path.startswith("/view?"):
-                name = parse_qs(urlsplit(self.path).query)["filename"][0]
-                data = (user_output / name).read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
             else:
                 self.send({})
 
@@ -186,37 +177,6 @@ def test_missing_live_node_fails_before_queueing(comfy, tmp_path):
             comfy_url=comfy.url, comfy_output_dir=str(comfy.output), profile_id="local_server",
         )
     assert not comfy.prompts
-
-
-def test_attached_workflow_uses_view_custody_without_shared_output_directory(comfy, tmp_path, monkeypatch):
-    from astrid.core.generation.backends.comfy_target import ComfyTargetClient
-
-    action = importlib.import_module("astrid.packs.vibecomfy.actions.run.run")
-    operations = []
-    for name in ("submit_prompt", "history", "download_output"):
-        original = getattr(ComfyTargetClient, name)
-
-        def record(self, *args, _name=name, _original=original, **kwargs):
-            operations.append((_name, self.target.kind, self.target.url))
-            return _original(self, *args, **kwargs)
-
-        monkeypatch.setattr(ComfyTargetClient, name, record)
-    manifest = action._run_and_settle(
-        comfy.workflow, tmp_path / "attempt" / "outputs", task_identity="task-1",
-        attempt_identity="attempt-1", comfy_url=comfy.url,
-    )
-    result = next(row for row in manifest["outputs"] if row["role"] == "result")
-    assert (tmp_path / "attempt" / "outputs" / result["path"]).read_bytes() == (comfy.output / "astrid_1.png").read_bytes()
-    assert {name for name, _, _ in operations} == {"submit_prompt", "history", "download_output"}
-    assert all(kind == "attached" and url == comfy.url for _, kind, url in operations)
-    assert any(path.startswith("/view?") for _, path, _ in comfy.calls)
-    assert [(method, path) for method, path, _ in comfy.calls if method == "POST"] == [("POST", "/prompt")]
-    journal = next((tmp_path / "attempt" / "outputs" / ".vibecomfy-runtime").glob("out/runs/*/attempt.json"))
-    evidence = json.loads(journal.read_text())
-    assert evidence["adapter"]["kind"] == "external"
-    assert evidence["artifact_retrieval"]["transport"] == "comfy-http-view"
-    assert evidence["artifacts"][0]["download_source"] == "external_http"
-    assert "lifecycle_retrieval" not in evidence
 
 
 def test_unknown_connected_node_fails_live_preflight_before_staging(comfy, tmp_path):
@@ -418,7 +378,6 @@ def test_child_termination_and_host_release_contain_only_our_prompt(comfy, tmp_p
     import time
 
     from astrid.core.execution.generic_host import _ManagedLocalServerTaskAdapter
-    import vibecomfy
 
     comfy.pending = True
     attempt = tmp_path / "attempt"
@@ -429,10 +388,7 @@ def test_child_termination_and_host_release_contain_only_our_prompt(comfy, tmp_p
         [sys.executable, "-m", "astrid.packs.vibecomfy.actions.run.run", "run", str(comfy.workflow),
          "--out", str(out), "--task-identity", "task-1", "--attempt-identity", "attempt-1",
          "--comfy-url", comfy.url, "--comfy-output-dir", str(comfy.output)],
-        cwd=attempt, env={**os.environ, "PYTHONPATH": os.pathsep.join((
-            str(Path(__file__).resolve().parents[3]),
-            str(Path(vibecomfy.__file__).resolve().parents[1]),
-        ))},
+        cwd=attempt, env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3])},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     signal = threading.Event()
@@ -467,16 +423,8 @@ def test_child_termination_and_host_release_contain_only_our_prompt(comfy, tmp_p
     assert not any(path in {"/api/free", "/interrupt"} for _, path, _ in comfy.calls)
 
 
-def test_host_command_runs_local_server_on_dynamic_port(comfy, tmp_path, monkeypatch):
+def test_host_command_runs_local_server_on_dynamic_port(comfy, tmp_path):
     from astrid.core.execution.generic_host import GenericPackHost
-    import vibecomfy
-
-    # The shared test environment can install a different dependency pin.
-    # Exercise this checkout in the real child, as in the parent test process.
-    monkeypatch.setattr(
-        "astrid.core.execution.generic_host._dependency_pythonpath",
-        lambda: (str(Path(vibecomfy.__file__).resolve().parents[1]),),
-    )
 
     pack_root = Path(__file__).resolve().parents[3] / "astrid" / "packs" / "vibecomfy"
     host = GenericPackHost(pack_roots=[pack_root])

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import difflib
-import math
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -19,15 +18,24 @@ from astrid.sdk.timeline._common import (
     SAFE_MARGIN,
     TIME_RE,
     TimelineEditError,
-    _media_kind,
     _num,
     _r,
 )
-from astrid.sdk.timeline.doc import _free_key, _row_start, _set_length
+from astrid.sdk.timeline.doc import _free_key, _set_length
 from astrid.sdk.timeline.model import Clip, Cut, Word, music_keyword, validate_param_value
 
 _ASSET_REGISTRY_FIELDS = ("media_id", "content_sha256", "type", "duration", "resolution", "size", "size_bytes",
-                          "handle", "filename", "pixel_provenance", "generationId", "variantId")
+                          "handle", "filename", "pixel_provenance")
+
+
+def _media_kind(entry: Mapping[str, Any]) -> str | None:
+    """Normalize registry MIME types and legacy kind names to image/audio/video."""
+    value = str(entry.get("type") or "").strip().lower().split(";", 1)[0]
+    if "/" in value:
+        value = value.split("/", 1)[0]
+    if value.startswith(("image", "audio", "video")):
+        return value.split("-", 1)[0]
+    return value if value in {"image", "audio", "video"} else None
 
 
 class _EditMixin:
@@ -36,185 +44,7 @@ class _EditMixin:
     _orphan_reason: str  # set by Checkout.__init__; declared so this mixin's readers are typed
     _parent_clips: Callable[[], list[dict[str, Any]]]  # defined on _LookupMixin; declared so this mixin's readers are typed
 
-    def add_text(self, text: str, *, at: float, hold: float, track: str = "titles", id: str | None = None) -> Clip:
-        """Add a literal parent text clip using the existing admitted clip birth."""
-        if not isinstance(text, str) or not text.strip():
-            raise TimelineEditError("text must be a nonempty string")
-        start, duration = float(at), float(hold)
-        if not math.isfinite(start) or start < 0:
-            raise TimelineEditError("at must be finite and nonnegative")
-        if not math.isfinite(duration) or duration <= 0:
-            raise TimelineEditError("hold must be finite and positive")
-        if not isinstance(track, str) or not track:
-            raise TimelineEditError("track must be a nonempty parent track ID")
-        clip_id = id or self._new_id("am-type")
-        if any(clip.id == clip_id for clip in self.clips()):
-            raise TimelineEditError(f"clip ID {clip_id!r} already exists")
-        if self._parent_clip_list() is None:
-            raise TimelineEditError("parent text requires a parent clip collection")
-        row = {"id": clip_id, "clipType": "am-type", "track": track,
-               "at": self.quantize(start), "hold": self.quantize(duration), "params": {"text": text}}
-        self.track(track, kind="visual")
-        command = getattr(self, "command", None)
-        if callable(command):
-            from ._clip_commands import capture_clip_add
-
-            command(capture_clip_add(self.bundle, "parent", row), label="Add text")
-            return self.clip(clip_id)
-        clips = self._parent_clip_list()
-        if clips is None:
-            raise TimelineEditError("parent text requires a parent clip collection")
-        clips.append(row)
-        self._mcache = None
-        return Clip(self, PARENT_SHOT, row)
-
     # ---- structural edits ---------------------------------------------------
-    def arrange(self, ids: Sequence[str], *, at: float = 0, gap: float = 0) -> None:
-        """Place exact occurrence IDs in caller order, preserving their lengths and owners.
-
-        ``at`` and ``gap`` are timeline seconds. Arranging never moves an
-        unselected occurrence or a parent clip to make room; a collision is
-        reported before any arrangement change is staged.
-        """
-        def seconds(value: Any, name: str) -> float:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TimelineEditError(f"{name} must be a finite number of seconds")
-            value = float(value)
-            if not math.isfinite(value) or value < 0:
-                raise TimelineEditError(f"{name} must be a finite, nonnegative number of seconds")
-            return value
-
-        start = seconds(at, "at")
-        spacing = seconds(gap, "gap")
-        if isinstance(ids, (str, bytes)) or not isinstance(ids, Sequence) or not ids:
-            raise TimelineEditError("arrange requires a nonempty sequence of occurrence IDs")
-        requested = list(ids)
-        if any(not isinstance(identity, str) or not identity for identity in requested):
-            raise TimelineEditError("arrange requires nonempty string occurrence IDs")
-        if len(set(requested)) != len(requested):
-            raise TimelineEditError("arrange occurrence IDs must be unique")
-
-        placements = self.bundle.get("placements")
-        if not isinstance(placements, list):
-            raise TimelineEditError("arrange requires physical occurrence placements")
-        by_id = {row.get("occurrence_id"): row for row in placements if isinstance(row, Mapping)}
-        if len(by_id) != len(placements):
-            raise TimelineEditError("arrange requires unique physical occurrence IDs")
-        unknown = [identity for identity in requested if identity not in by_id]
-        if unknown:
-            raise TimelineEditError("unknown occurrence ID(s): " + ", ".join(unknown))
-
-        desired = copy.deepcopy(placements)
-        desired_by_id = {row["occurrence_id"]: row for row in desired}
-        planned: list[tuple[str, float, float, Any]] = []
-        cursor_ms = start * 1000
-        gap_ms = spacing * 1000
-        if not math.isfinite(cursor_ms) or not math.isfinite(gap_ms):
-            raise TimelineEditError("at and gap must fit finite millisecond timing")
-        for identity in requested:
-            row = desired_by_id[identity]
-            duration_ms = row.get("duration_ms")
-            if (isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float))
-                    or not math.isfinite(float(duration_ms)) or float(duration_ms) <= 0):
-                raise TimelineEditError(f"occurrence {identity!r} has unknown duration; arrange needs a known duration")
-            duration_ms = float(duration_ms)
-            planned.append((identity, cursor_ms / 1000.0, (cursor_ms + duration_ms) / 1000.0, row.get("track") or
-                            (row.get("placement") or {}).get("track")))
-            if row.get("at_ms") is not None:
-                row["at_ms"] = cursor_ms
-            else:
-                row.setdefault("placement", {})["start_ms"] = cursor_ms
-            cursor_ms += duration_ms + gap_ms
-            if not math.isfinite(cursor_ms):
-                raise TimelineEditError("arranged placements exceed finite millisecond timing")
-
-        selected = set(requested)
-
-        def same_track(left: Any, right: Any) -> bool:
-            # Missing legacy lane metadata cannot prove that two occupants are
-            # separate, so retain the conservative collision rule.
-            return left is None or right is None or left == right
-
-        parent = self.bundle.get("parent") or {}
-        parent_config = parent.get("config") or {}
-        parent_clips = parent.get("clips") or parent_config.get("clips") or []
-        from astrid.core.timeline.cuts import clip_duration
-
-        for identity, begin, end, track in planned:
-            for row in placements:
-                other_id = row.get("occurrence_id")
-                if other_id in selected:
-                    continue
-                start_value = (row.get("at_ms") if row.get("at_ms") is not None
-                               else (row.get("placement") or {}).get("start_ms"))
-                if (isinstance(start_value, bool) or not isinstance(start_value, (int, float))
-                        or not math.isfinite(float(start_value))):
-                    raise TimelineEditError(f"cannot arrange {identity!r}: unselected occurrence {other_id!r} has unknown start time")
-                other_start = _row_start(row) / 1000.0
-                other_duration = row.get("duration_ms")
-                if (isinstance(other_duration, bool) or not isinstance(other_duration, (int, float))
-                        or not math.isfinite(float(other_duration)) or float(other_duration) <= 0):
-                    raise TimelineEditError(f"cannot arrange {identity!r}: unselected occurrence {other_id!r} has unknown duration")
-                other_track = row.get("track") or (row.get("placement") or {}).get("track")
-                other_end = other_start + float(other_duration) / 1000.0
-                if same_track(track, other_track) and begin < other_end and other_start < end:
-                    raise TimelineEditError(f"arranging {identity!r} to {begin:.3f}–{end:.3f} s overlaps unselected occurrence {other_id!r}")
-
-            # Parent-owned clips occupy the same timeline clock as occurrences.
-            # They are checked by lane when both sides name one, conservatively
-            # treating missing lane metadata as shared.
-            for clip in parent_clips:
-                if not isinstance(clip, Mapping):
-                    continue
-                raw_start = clip.get("at")
-                speed = clip.get("speed", 1)
-                if clip.get("hold") is not None:
-                    raw_duration = clip.get("hold")
-                elif clip.get("to") is not None:
-                    raw_from, raw_to = clip.get("from"), clip.get("to")
-                    if raw_from is None:
-                        raw_from = 0
-                    if (isinstance(raw_from, bool) or not isinstance(raw_from, (int, float))
-                            or isinstance(raw_to, bool) or not isinstance(raw_to, (int, float))
-                            or not math.isfinite(float(raw_from)) or not math.isfinite(float(raw_to))
-                            or float(raw_to) <= float(raw_from)):
-                        raise TimelineEditError(f"cannot arrange {identity!r}: parent clip {clip.get('id')!r} has unknown timing")
-                    raw_duration = float(raw_to) - float(raw_from)
-                else:
-                    raw_duration = clip.get("duration")
-                if (isinstance(raw_start, bool) or not isinstance(raw_start, (int, float))
-                        or isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float))
-                        or not math.isfinite(float(raw_start)) or not math.isfinite(float(raw_duration))
-                        or float(raw_duration) <= 0 or isinstance(speed, bool)
-                        or not isinstance(speed, (int, float)) or not math.isfinite(float(speed))
-                        or float(speed) <= 0):
-                    raise TimelineEditError(f"cannot arrange {identity!r}: parent clip {clip.get('id')!r} has unknown timing")
-                other_start = float(raw_start)
-                other_end = other_start + clip_duration(clip)
-                other_track = clip.get("track")
-                if same_track(track, other_track) and begin < other_end and other_start < end:
-                    raise TimelineEditError(f"arranging {identity!r} to {begin:.3f}–{end:.3f} s overlaps parent clip {clip.get('id')!r}")
-
-        # Replace only the selected slots: unselected occurrence order and all
-        # unselected row fields stay untouched. Caller order remains explicit.
-        replacement = iter(desired_by_id[identity] for identity in requested)
-        desired = [next(replacement) if row.get("occurrence_id") in selected else row
-                   for row in placements]
-        if callable(getattr(self, "command", None)):
-            capture = getattr(self, "_capture_free_edits", None)
-            if callable(capture):
-                capture()
-            from .authoring_commit import physical_occurrence_commands
-
-            execution_bundle = self._execution_bundle(self.bundle) if callable(
-                getattr(self, "_execution_bundle", None)) else self.bundle
-            commands = physical_occurrence_commands(execution_bundle, desired)
-            for command in commands:
-                self.command(command, label="Arrange occurrences")
-        else:
-            self.bundle["placements"] = desired
-            self._mcache = None
-
     def add(self, element: str, *, at: Any, hold: float | None = None, asset: Any = None, params: Mapping[str, Any] | None = None,
             track: str | None = None, corner: str | None = None, anchor: bool = True, clip_id: str | None = None,
             standin: Any = None, layer: str | None = None, cut: str | None = None) -> Clip:
@@ -455,13 +285,9 @@ class _EditMixin:
         sync with its picture. Clips wholly inside the window are removed.
         Returns the seconds removed.
         """
-        raw_a, raw_b = self.time(start), self.time(end)
-        if (not math.isfinite(raw_a) or not math.isfinite(raw_b) or raw_a < 0 or raw_b < 0
-                or raw_b <= raw_a):
-            raise TimelineEditError("the window to remove must have finite start < end")
-        a, b = self.quantize(raw_a), self.quantize(raw_b)
+        a, b = self.quantize(self.time(start)), self.quantize(self.time(end))
         if b <= a:
-            raise TimelineEditError("the window to remove must have finite start < end after frame rounding")
+            raise TimelineEditError("the window to remove must have start < end")
         self._keep_inside = keep_inside
         try:
             return self._shift_after(a, -(b - a), cut_window=(a, b), skip=skip)
@@ -471,10 +297,6 @@ class _EditMixin:
     @music_keyword
     def close_gap(self, *, before: Any, keep: float = 0.0) -> float:
         """Close the silence before a word (and ripple everything after it). Returns the seconds removed."""
-        if (isinstance(keep, bool) or not isinstance(keep, (int, float))
-                or not math.isfinite(float(keep)) or float(keep) < 0):
-            raise TimelineEditError("keep must be a finite, nonnegative number of seconds")
-        keep = float(keep)
         word = self._as_word(before) or self.word(str(before))
         previous = [w for w in self.words() if w.end <= word.start + 1e-6 and w.id != word.id]
         if not previous:
@@ -488,24 +310,14 @@ class _EditMixin:
             removed = self.ripple_delete(gap_start, word.start, keep_inside=True)
         finally:
             self._orphan_reason = reason
-        if self.bundle.get("placements"):
-            self.retime()  # kept shot clips land on their cut's new start
+        self.retime()  # kept clips land on their cut's new start
         return removed
 
     @music_keyword
     def insert_time(self, at: Any, seconds: float, *, skip: Sequence[Mapping[str, Any]] = ()) -> float:
         """Open ``seconds`` at a time and ripple everything after it later (picture spanning it is held longer)."""
-        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
-                or not math.isfinite(float(seconds)) or float(seconds) <= 0):
-            raise TimelineEditError("seconds must be a finite, positive number of seconds")
-        raw_at = self.time(at)
-        if not math.isfinite(raw_at) or raw_at < 0:
-            raise TimelineEditError("at must resolve to a finite, nonnegative timeline time")
-        t = self.quantize(raw_at)
-        delta = self.quantize(float(seconds))
-        if delta <= 0:
-            raise TimelineEditError("seconds must remain positive after frame rounding")
-        return self._shift_after(t, delta, cut_window=None, skip=skip)
+        t = self.quantize(self.time(at))
+        return self._shift_after(t, self.quantize(seconds), cut_window=None, skip=skip)
 
     # ---- slots (real footage to film) and stand-ins ---------------------------
     @property

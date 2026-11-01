@@ -762,80 +762,6 @@ class CloudUnifiedEditStoragePolicy(CloudI2IStoragePolicy):
             raise ImageStoragePolicyError("source-only cloud edit does not admit mask_ref")
 
 
-
-@dataclass(frozen=True, slots=True)
-class OpenAIImageStoragePolicy:
-    """Separate fixed envelope for authenticated GPT Image t2i/edit jobs."""
-
-    version: str = "astrid.openai-image.v1"
-    max_jobs: int = 32
-    max_count: int = 32
-    max_references: int = 16
-    prompt_max_bytes: int = 1 * 1024 * 1024
-    source_max_bytes: int = 16 * 1024 * 1024
-    output_max_bytes: int = 16 * 1024 * 1024
-    manifest_max_bytes: int = 1 * 1024 * 1024
-    control_max_bytes: int = 1 * 1024 * 1024
-
-    @property
-    def estimated_scratch_bytes(self) -> int:
-        return (self.max_references * self.source_max_bytes + self.prompt_max_bytes
-                + self.manifest_max_bytes + self.control_max_bytes)
-
-    @property
-    def estimated_output_bytes(self) -> int:
-        return self.max_count * self.output_max_bytes + self.manifest_max_bytes
-
-    @property
-    def estimate(self) -> dict[str, int]:
-        return {"scratch_bytes": self.estimated_scratch_bytes,
-                "output_bytes": self.estimated_output_bytes}
-
-    def validate_reference_bytes(self, data: bytes, *, index: int = 0) -> str:
-        if not isinstance(data, bytes) or not 0 < len(data) <= self.source_max_bytes:
-            raise ImageStoragePolicyError(f"OpenAI reference {index} exceeds byte bounds")
-        try:
-            from PIL import Image
-            with Image.open(BytesIO(data)) as image:
-                media_type = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}.get(image.format)
-                if media_type is None:
-                    raise ValueError("unsupported reference format")
-                image.load()
-        except Exception as exc:
-            raise ImageStoragePolicyError(
-                f"OpenAI reference {index} must be a decodable PNG, JPEG, or WebP image"
-            ) from exc
-        return media_type
-
-    def validate_reference_descriptor(self, value: Mapping[str, Any], *, index: int = 0) -> None:
-        size = value.get("size_bytes", value.get("bytes"))
-        digest = value.get("digest", value.get("sha256", value.get("content_hash")))
-        if isinstance(digest, str) and digest.startswith("sha256:"):
-            digest = digest[7:]
-        if (type(size) is not int or not 0 < size <= self.source_max_bytes
-                or not isinstance(digest, str) or len(digest) != 64
-                or any(c not in "0123456789abcdef" for c in digest)):
-            raise ImageStoragePolicyError(f"OpenAI reference {index} requires authenticated bounded bytes")
-
-    def validate_task_request(self, *, model: str, mode: str, execution: str,
-                              params: Mapping[str, Any]) -> None:
-        if execution != "openai" or mode not in {"t2i", "edit"}:
-            raise ImageStoragePolicyError("request is outside the OpenAI image profile")
-        from astrid.core.generation.backends.openai import normalize_request
-        try:
-            normalize_request(dict(params, model=model, mode=mode, execution=execution),
-                              require_frozen=True,
-                              prompt_bytes=params.get("_authenticated_prompt_bytes"))
-        except ValueError as exc:
-            raise ImageStoragePolicyError(str(exc)) from exc
-
-    def validate_manifest(self, path: str | Path) -> int:
-        size = Path(path).stat().st_size
-        if size > self.manifest_max_bytes:
-            raise ImageStoragePolicyError("OpenAI image manifest exceeds byte bounds")
-        return size
-
-OPENAI_IMAGE_STORAGE_POLICY = OpenAIImageStoragePolicy()
 CLOUD_T2I_STORAGE_POLICY = CloudT2IStoragePolicy()
 CLOUD_I2I_STORAGE_POLICY = CloudI2IStoragePolicy()
 CLOUD_EDIT_STORAGE_POLICY = CloudEditStoragePolicy()
@@ -843,8 +769,6 @@ CLOUD_UNIFIED_EDIT_STORAGE_POLICY = CloudUnifiedEditStoragePolicy()
 
 
 __all__ = [
-    "OPENAI_IMAGE_STORAGE_POLICY",
-    "OpenAIImageStoragePolicy",
     "CLOUD_I2I_STORAGE_POLICY",
     "CLOUD_EDIT_STORAGE_POLICY",
     "CLOUD_UNIFIED_EDIT_STORAGE_POLICY",

@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-
-
 from fractions import Fraction
 
 import pytest
 
-from astrid.sdk.timeline.units import (
-    frame_time,
-    grid,
-    quantize_interval,
-    quantize_time,
-    source_to_timeline_time,
-    timeline_to_source_time,
-)
 from astrid.sdk.timeline_editing import (
     TimelineEditError,
     add_shot,
@@ -21,12 +11,20 @@ from astrid.sdk.timeline_editing import (
     align,
     duplicate,
     fit_duration,
-    move,
+    frame_time,
+    grid,
     place_media,
+    move,
+    retime,
+    quantize_interval,
+    quantize_time,
     remove,
     reorder_layers,
     replace_media,
+    retime_with_ripple,
     sequence,
+    source_to_timeline_time,
+    timeline_to_source_time,
 )
 
 
@@ -92,30 +90,28 @@ def test_quantize_interval_reports_rounding_and_rejects_collapsed_ranges():
         quantize_interval(0.01, 0.02, 24)
 
 
-def test_public_time_helpers_lazily_resolve_to_relocated_units():
-    from astrid.sdk import (
-        frame_time as public_frame_time,
-        grid as public_grid,
-        quantize_interval as public_quantize_interval,
-        quantize_time as public_quantize_time,
-        source_to_timeline_time as public_source_to_timeline_time,
-        timeline_to_source_time as public_timeline_to_source_time,
-    )
-    from astrid.sdk.timeline import units
+def test_ripple_is_track_scoped_and_never_moves_audio():
+    candidate = _candidate()
+    picture = add_track(candidate, kind="visual", track_id="picture")
+    audio = add_track(candidate, kind="audio", track_id="music")
+    first = place_media(candidate, "a", track=picture, start=0, end=1, clip_id="first")
+    second = place_media(candidate, "b", track=picture, start=1, end=2, clip_id="second")
+    music = place_media(candidate, "m", track=audio, start=0, end=2, clip_id="music")
+    candidate["timeline"]["duration"] = 2
 
-    for public, name in (
-        (public_frame_time, "frame_time"),
-        (public_source_to_timeline_time, "source_to_timeline_time"),
-        (public_timeline_to_source_time, "timeline_to_source_time"),
-        (public_quantize_time, "quantize_time"),
-        (public_quantize_interval, "quantize_interval"),
-        (public_grid, "grid"),
-    ):
-        assert public is getattr(units, name)
-        assert public.__module__ == "astrid.sdk.timeline.units"
+    retime_with_ripple(candidate, first["id"], end=1.5, parent_duration="extend")
+    assert (first["at"], first["from"], first["to"]) == (0, 0, 1.5)
+    assert (second["at"], second["from"], second["to"]) == (1.5, 0, 1)
+    assert (music["at"], music["from"], music["to"]) == (0, 0, 2)
+    assert candidate["timeline"]["duration"] == 2.5
+
+    with pytest.raises(TimelineEditError, match="audio/voice/music"):
+        retime_with_ripple(candidate, music["id"], end=3, parent_duration="extend")
+    with pytest.raises(TimelineEditError, match="parent duration"):
+        retime_with_ripple(candidate, first["id"], end=3, parent_duration="preserve")
 
 
-def test_canonical_source_trim_speed_and_move_intervals():
+def test_canonical_source_trim_speed_move_and_retime_intervals():
     candidate = _candidate()
     track = add_track(candidate, kind="visual")
     clip = place_media(candidate, "trimmed", track=track, start=4, end=5,
@@ -129,7 +125,9 @@ def test_canonical_source_trim_speed_and_move_intervals():
                     source_start=2, source_end=4, speed=2)
     moved = move(candidate, clip["id"], track=track, start=10)
     assert (moved["at"], moved["from"], moved["to"], moved["speed"]) == (10, 2, 4, 2)
-    move(candidate, moved["id"], track=track, start=20, end=21.5)
+    retime(moved, start=20)
+    assert (moved["at"], moved["from"], moved["to"], moved["speed"]) == (20, 2, 4, 2)
+    retime(moved, end=21.5)
     assert (moved["at"], moved["from"], moved["to"], moved["speed"]) == (20, 2, 5, 2)
 
 
@@ -142,6 +140,19 @@ def test_place_media_rejects_timing_overrides_after_validation():
         place_media(candidate, "asset", track=track, start=0, end=1, to=5)
     clip = place_media(candidate, "asset", track=track, start=0, end=1, speed=2, hold=2)
     assert clip["hold"] == 2
+
+
+def test_ripple_shifts_canonical_intervals_without_touching_audio():
+    candidate = _candidate()
+    picture = add_track(candidate, kind="visual", track_id="picture")
+    audio = add_track(candidate, kind="audio", track_id="music")
+    first = place_media(candidate, "a", track=picture, start=0, end=1, source_start=3, source_end=4)
+    second = place_media(candidate, "b", track=picture, start=1, end=2, source_start=8, source_end=9)
+    music = place_media(candidate, "m", track=audio, start=0, end=2)
+    before_audio = dict(music)
+    retime_with_ripple(candidate, first["id"], end=1.5, parent_duration="extend")
+    assert (second["at"], second["from"], second["to"]) == (1.5, 8, 9)
+    assert music == before_audio
 
 
 def test_track_ownership_and_removal_cannot_leave_dangling_clips():
@@ -176,62 +187,3 @@ def test_place_and_replace_media_use_direct_digest_selectors():
     assert "asset" not in clip
     replace_media(candidate, clip["id"], "b" * 64)
     assert clip["media_id"] == "b" * 64
-
-
-# Parent coverage retained during the Release-1 + Timeline merge.
-def test_ripple_is_track_scoped_and_never_moves_audio():
-    from astrid.sdk.timeline_editing import retime_with_ripple
-
-    candidate = _candidate()
-    picture = add_track(candidate, kind="visual", track_id="picture")
-    audio = add_track(candidate, kind="audio", track_id="music")
-    first = place_media(candidate, "a", track=picture, start=0, end=1, clip_id="first")
-    second = place_media(candidate, "b", track=picture, start=1, end=2, clip_id="second")
-    music = place_media(candidate, "m", track=audio, start=0, end=2, clip_id="music")
-    candidate["timeline"]["duration"] = 2
-
-    retime_with_ripple(candidate, first["id"], end=1.5, parent_duration="extend")
-    assert (first["at"], first["from"], first["to"]) == (0, 0, 1.5)
-    assert (second["at"], second["from"], second["to"]) == (1.5, 0, 1)
-    assert (music["at"], music["from"], music["to"]) == (0, 0, 2)
-    assert candidate["timeline"]["duration"] == 2.5
-
-    with pytest.raises(TimelineEditError, match="audio/voice/music"):
-        retime_with_ripple(candidate, music["id"], end=3, parent_duration="extend")
-    with pytest.raises(TimelineEditError, match="parent duration"):
-        retime_with_ripple(candidate, first["id"], end=3, parent_duration="preserve")
-
-def test_canonical_source_trim_speed_move_and_retime_intervals():
-    from astrid.sdk.timeline_editing import retime
-
-    candidate = _candidate()
-    track = add_track(candidate, kind="visual")
-    clip = place_media(candidate, "trimmed", track=track, start=4, end=5,
-                       source_start=2, source_end=4, speed=2)
-    assert (clip["at"], clip["from"], clip["to"], clip["speed"]) == (4, 2, 4, 2)
-    assert "source_start" not in clip and "source_end" not in clip
-    interval = quantize_interval(clip["at"], clip["at"] + (clip["to"] - clip["from"]) / clip["speed"], 30)
-    assert (interval["start_frame"], interval["end_frame"]) == (120, 150)
-    with pytest.raises(TimelineEditError, match="inconsistent"):
-        place_media(candidate, "bad", track=track, start=0, end=3,
-                    source_start=2, source_end=4, speed=2)
-    moved = move(candidate, clip["id"], track=track, start=10)
-    assert (moved["at"], moved["from"], moved["to"], moved["speed"]) == (10, 2, 4, 2)
-    retime(moved, start=20)
-    assert (moved["at"], moved["from"], moved["to"], moved["speed"]) == (20, 2, 4, 2)
-    retime(moved, end=21.5)
-    assert (moved["at"], moved["from"], moved["to"], moved["speed"]) == (20, 2, 5, 2)
-
-def test_ripple_shifts_canonical_intervals_without_touching_audio():
-    from astrid.sdk.timeline_editing import retime_with_ripple
-
-    candidate = _candidate()
-    picture = add_track(candidate, kind="visual", track_id="picture")
-    audio = add_track(candidate, kind="audio", track_id="music")
-    first = place_media(candidate, "a", track=picture, start=0, end=1, source_start=3, source_end=4)
-    second = place_media(candidate, "b", track=picture, start=1, end=2, source_start=8, source_end=9)
-    music = place_media(candidate, "m", track=audio, start=0, end=2)
-    before_audio = dict(music)
-    retime_with_ripple(candidate, first["id"], end=1.5, parent_duration="extend")
-    assert (second["at"], second["from"], second["to"]) == (1.5, 8, 9)
-    assert music == before_audio

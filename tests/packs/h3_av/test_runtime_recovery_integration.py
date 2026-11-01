@@ -45,7 +45,7 @@ def _synthetic_av(path: Path, *, color: str) -> None:
     subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "lavfi", "-i", f"color=c={color}:s=1024x576:r=24",
+            "-f", "lavfi", "-i", f"color=c={color}:s=32x32:r=24",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-c:a", "aac", str(path),
@@ -175,9 +175,7 @@ def test_runtime_response_loss_resumes_canonical_run_into_h3_verified_receipt(tm
                     from astrid.sdk.invocation import invoke_result
 
                     kwargs.pop("kind", None)
-                    assert kwargs.pop("client", self) is self
-                    if kwargs.get("project_root") is None:
-                        kwargs["project_root"] = ASTRID_ROOT
+                    kwargs.setdefault("project_root", ASTRID_ROOT)
                     kwargs.setdefault("timeout_seconds", 5)
                     kwargs.setdefault("poll_seconds", 0.005)
                     return invoke_result(capability_id, kind="executor", client=client, **kwargs)

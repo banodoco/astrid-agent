@@ -34,7 +34,6 @@ from astrid.core.gateway.dispatch import (
     _build_dispatch_parser,
     _dispatch_backup,
     _dispatch_doctor,
-    _dispatch_generate,
     _dispatch_product,
     _dispatch_status,
     _top_level_commands,
@@ -98,21 +97,6 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main_impl(raw: list[str]) -> int:
     first_arg = next(iter(raw), None)
-    if first_arg == "h3":
-        from astrid.packs.h3_av.cli import main as h3_main
-
-        return h3_main(raw[1:])
-
-    if first_arg == "generate":
-        return _dispatch_generate(raw[1:])
-    if first_arg == "engines":
-        from astrid.core.engine_cli import main as engines_main
-
-        return engines_main(raw[1:])
-    if first_arg == "action":
-        from astrid.core.action_cli import main as action_main
-
-        return action_main(raw[1:])
     if first_arg == "--agent-context":
         # This public helper is intentionally session-light: agent_context
         # opens an already-running Runtime and turns unavailability into a
@@ -151,8 +135,7 @@ def _main_impl(raw: list[str]) -> int:
 
 
 def _dispatch(raw: list[str]) -> int:
-    if not any(token in {"-h", "--help"} for token in raw):
-        _configure_process_control()
+    _configure_process_control()
     return _gateway_dispatch._dispatch(raw)
 
 

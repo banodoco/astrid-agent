@@ -49,22 +49,7 @@ Portable (part of capability digest): `prompt`, `negative_prompt`, `model`, `res
 
 Machine-local (excluded from digest, part of reuse fingerprint): `wan2gp_path`, `attempt_root`, `device`, `output_dir`.
 
-## Generate discovery
-
-Select Wan2GP explicitly as the native local engine. The shared Generate list
-and describe commands show the declared entry and its inputs; validation remains
-a supporting settings action and does not execute the engine.
-
-```sh
-astrid generate list --json
-astrid generate describe --entry wan2gp.generate_video --json
-astrid generate run --entry wan2gp.generate_video --inputs-json FILE
-```
-
-Use the selected entry's `describe` output to prepare `FILE`. The SDK routes below
-remain available as compatibility conveniences for existing callers.
-
-## SDK compatibility quick-start
+## Quick-start
 
 ```python
 import astrid.sdk as sdk

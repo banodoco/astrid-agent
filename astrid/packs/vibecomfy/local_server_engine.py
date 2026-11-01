@@ -6,7 +6,6 @@ save prefixes, image upload, owned-prompt cleanup) reads as one unit.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 from collections.abc import Mapping
@@ -26,74 +25,17 @@ from astrid.packs.vibecomfy.production_engine import (
 _LOCAL_PROMPT_TIMEOUT_SEC = 3300  # leave containment time below the host's 3600s deadline
 
 
-class _UploadedMediaSchema:
-    """Live schema view whose managed media file pickers accept uploaded names.
-
-    A managed image, mask, video or audio value is a staged basename, then an uploaded
-    ``astrid/<task>/<name>`` reference; neither can appear in the picker's
-    choices read before the upload. Everything else is delegated unchanged, and only
-    the classes and fields that managed media public inputs name are exempt.
-    """
-
-    def __init__(self, provider: Any, targets: set[tuple[str, str]]) -> None:
-        self._provider = provider
-        self._targets = targets
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._provider, name)
-
-    def get_schema(self, class_type: str) -> Any:
-        schema = self._provider.get_schema(class_type)
-        fields = {field for kind, field in self._targets if kind == class_type}
-        if schema is None or not fields.intersection(schema.inputs):
-            return schema
-        inputs = dict(schema.inputs)
-        for field in fields.intersection(inputs):
-            inputs[field] = dataclasses.replace(inputs[field], choices=None, unresolved_choices=True)
-        return dataclasses.replace(schema, inputs=inputs)
-
-
-def _uploaded_media_targets(bundle: Any, run_inputs: Mapping[str, Any] | None) -> set[tuple[str, str]]:
-    targets: set[tuple[str, str]] = set()
-    for name in run_inputs or {}:
-        spec = bundle.workflow.inputs.get(name)
-        media = str(getattr(spec, "media_semantics", "") or "").lower()
-        node = bundle.workflow.nodes.get(str(getattr(spec, "node_id", ""))) if spec is not None else None
-        if media in {"image", "mask", "video", "audio"} and node is not None:
-            targets.add((node.class_type, str(spec.field)))
-    return targets
-
-
 def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str, destination: Path) -> Any:
     """Read the live schema, without preparing or installing dependencies."""
     from vibecomfy.node_packs import missing_packs_for_workflow, resolve_node_packs
-    from vibecomfy.schema.provider import TargetSchemaProvider
+    from vibecomfy.schema.provider import get_target_schema_provider
     from vibecomfy.schema.validate import (
         _choice_scope,
         validate_api_against_schema,
         validate_api_link_shapes,
     )
 
-    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
-
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
-    targets = _uploaded_media_targets(bundle, run_inputs)
-
-    class UploadedTargetSchema(TargetSchemaProvider):
-        def get_schema(self, class_type: str) -> Any:
-            schema = super().get_schema(class_type)
-            fields = {field for kind, field in targets if kind == class_type}
-            if schema is None or not fields.intersection(schema.inputs):
-                return schema
-            inputs = dict(schema.inputs)
-            for field in fields.intersection(inputs):
-                inputs[field] = dataclasses.replace(inputs[field], choices=None, unresolved_choices=True)
-            return dataclasses.replace(schema, inputs=inputs)
-
-    provider = UploadedTargetSchema.from_object_info(
-        client.object_info(), server_url=url, model_availability="target",
-        refresh_object_info=client.object_info,
-    )
+    provider = get_target_schema_provider(url, cache_dir=destination / ".vibecomfy-schema")
     # Inspect an unapproved projection first, so a missing live class gets
     # our actionable gap report before the approval gate can reject it.
     api = bundle.workflow.compile("api", run_inputs=dict(run_inputs or {}))
@@ -146,9 +88,30 @@ def _live_preflight(bundle: Any, run_inputs: Mapping[str, Any] | None, url: str,
 
 
 def _approve_live(bundle: Any, bindings: dict[str, Any], provider: Any) -> Any:
-    """Approve canonically against the selected target's exact model choices."""
-    bundle.require_canonical_authority("attached target execution")
-    return bundle.compile(run_inputs=bindings, schema_provider=provider)
+    """Bind the canonical projections to the live target's inventory.
+
+    The pinned bundle.compile() also requires every model in the agent's
+    local model registry/filesystem, even with a live target provider. Those
+    files belong to the user's server. Our read-only live preflight replaces
+    that local inventory gate; VibeComfy still verifies the record against
+    the unchanged canonical bundle at its production queue boundary.
+    """
+    from vibecomfy.workflow_bundle import ApprovedProjectionRecord, canonical_digest
+
+    api = bundle.workflow.compile("api", run_inputs=bindings)
+    record = ApprovedProjectionRecord(
+        revision_id=bundle.revision_id,
+        selected_variant=bundle.workflow.default_variant,
+        input_binding=bindings,
+        api_projection=api,
+        ui_projection=bundle.materialize_ui(schema_provider=provider),
+        api_digest=canonical_digest(api),
+    )
+    record.assert_matches(
+        bundle, run_inputs=bindings, api_projection=api,
+        ui_projection=bundle.materialize_ui(schema_provider=provider),
+    )
+    return record
 
 
 def local_server_bundle(resolved: Any, destination: Path, *, output_identity: str | None = None) -> Any:
@@ -195,41 +158,15 @@ def local_server_bundle(resolved: Any, destination: Path, *, output_identity: st
     root = destination / "local-server-workflow"
     root.mkdir(parents=True, exist_ok=True)
     source = bundle.python_path.with_name("source.json") if bundle.python_path else None
-    from vibecomfy.workflow_bundle import WorkflowBundleError
-
-    # A full path: a bare name is published relative to the process cwd.
-    extra_members = {root / "source.json": source.read_bytes()} if source and source.is_file() else None
-    derived = None
-    # The ready-template renderer rebuilds ``requirements`` from the workflow and drops the pinned
-    # ``runtime`` block of a materialized template (the H3 graph carries one), so the publish check
-    # refuses the pair; the scratchpad renderer keeps it.  Publication verifies the semantic digest
-    # either way, so whichever renderer round-trips the graph exactly is the one that is used.
-    for source_format in ("ready_template", "scratchpad"):
-        try:
-            derived = emit_bundle_with_candidate(
-                workflow, root / "workflow.py", Provenance.USER_CONFIRMED, bundle.ui_sidecar,
-                parent_revision=bundle.revision_id, operation="authored",
-                parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
-                source_format=source_format, extra_members=extra_members,
-            )
-            break
-        except WorkflowBundleError:
-            if source_format == "scratchpad":
-                raise
+    derived = emit_bundle_with_candidate(
+        workflow, root / "workflow.py", Provenance.USER_CONFIRMED, bundle.ui_sidecar,
+        parent_revision=bundle.revision_id, operation="authored",
+        parent_evidence={"revision_id": bundle.revision_id, "workflow_identity": bundle.workflow_identity},
+        source_format="ready_template",
+        # A full path: a bare name is published relative to the process cwd.
+        extra_members={root / "source.json": source.read_bytes()} if source and source.is_file() else None,
+    )
     return load_bundle(derived.python_path, trust=Provenance.USER_CONFIRMED)
-
-
-def _staged_digest(destination: Path, name: str) -> str | None:
-    """Digest recorded by managed-asset staging for one engine-input file."""
-    path = destination / "engine-input" / ".managed-asset-digests.json"
-    if path.is_symlink() or not path.is_file():
-        return None
-    try:
-        digests = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    value = digests.get(name) if isinstance(digests, dict) else None
-    return value if isinstance(value, str) else None
 
 
 def run_local_server(
@@ -241,11 +178,8 @@ def run_local_server(
     from vibecomfy.runtime.session import SessionConfig
 
     from astrid.core.generation.backends.vibecomfy_local_server import (
-        AttachedArtifacts,
-        TargetRuntimeClient,
         cleanup_prompts,
         upload_image,
-        upload_media,
         validate_comfy_url,
         validate_identity,
         validate_output_directory,
@@ -265,15 +199,11 @@ def run_local_server(
         "schema_warn_only": False, "prompt_timeout_sec": _LOCAL_PROMPT_TIMEOUT_SEC,
         "task_id": task_identity,
     })
-    # An attached server owns its filesystem. Even the legacy optional output
-    # directory cannot grant local-folder access; artifacts arrive over /view.
-    values.pop("output_directory", None)
+    if output_directory:
+        values["output_directory"] = output_directory
     if attempt_identity is not None:
         values["attempt_id"] = attempt_identity
     config = SessionConfig.from_dict(values)
-    from astrid.core.generation.backends.comfy_target import ComfyTarget, ComfyTargetClient
-
-    client = ComfyTargetClient(ComfyTarget(url, "attached"))
     provider = _live_preflight(bundle, run_inputs, url, destination)
     # Unknown connected classes may not survive a canonical rewrite. Report
     # live dependency gaps before deriving the attempt's private save prefixes.
@@ -286,15 +216,9 @@ def run_local_server(
         media = str(getattr(spec, "media_semantics", "") or "").lower()
         if media in {"image", "mask", "video", "audio"}:
             source = destination / "engine-input" / str(value)
-            if media in {"image", "mask"}:
-                bindings[name] = upload_image(url, source, task_id=task_identity)
-            else:
-                # Same custody as images, plus the digest the managed-assets
-                # archive was verified against when it was staged.
-                bindings[name] = upload_media(
-                    url, source, task_id=task_identity, kind=media,
-                    expected_sha256=_staged_digest(destination, str(value)),
-                )
+            if media not in {"image", "mask"}:
+                raise ProductionEngineError("local_server managed assets must be images")
+            bindings[name] = upload_image(url, source, task_id=task_identity)
     record = _approve_live(bundle, bindings, provider)
 
     def stop(signum: int, _frame: Any) -> None:
@@ -307,15 +231,12 @@ def run_local_server(
     try:
         os.environ.update(pins)
         try:
-            result = run_sync(
-                record, bundle, server_url=url, config=config, schema_provider=provider,
-                server_client=TargetRuntimeClient(client),
-                artifact_client=AttachedArtifacts(client, legacy_output_directory=output_directory),
-            )
+            result = run_sync(record, bundle, server_url=url, config=config, schema_provider=provider)
             if not getattr(result, "managed_generation_result_path", None):
                 raise ProductionEngineError(
                     "local_server requires VibeComfy managed_generation_result_path; "
-                    "check that the selected target exposes /view and declares its final output nodes"
+                    "set comfy_output_dir to the server's output directory and give each "
+                    "save node a filename_prefix when the workflow has multiple outputs"
                 )
             result_path = Path(result.managed_generation_result_path)
             if (result_path.is_symlink() or not result_path.resolve().is_relative_to(destination.resolve())

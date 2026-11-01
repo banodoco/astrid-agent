@@ -993,7 +993,7 @@ def test_json_selection_uses_production_composition_and_real_cpu_staging(
     result = preparer._stage(reference)
 
     assert credential_calls == [("runpod", "RUNPOD_API_KEY")]
-    assert config_calls == [{"api_key": "fixture-secret-never-logged", "transport": "ssh", "https_token": None}]
+    assert config_calls == [{"api_key": "fixture-secret-never-logged"}]
     assert result["status"] == "cpu_ready"
     assert result["gpu_qualified"] is False
     assert result["worker_qualified"] is False

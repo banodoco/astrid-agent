@@ -36,11 +36,6 @@ MATRIX = ROOT / "config" / "astrid-beta-capabilities.json"
 # emitted in the report.  The direct rule below prevents the canonical
 # Remotion compositor from being hidden behind the offline render helpers.
 FAMILY_PROOFS: dict[str, dict[str, str]] = {
-    "orchestration": {
-        "kind": "family_representative",
-        "selector": "tests/packs/h3_av/test_parent_scheduling_122.py::test_h3_parent_and_cpu_children_progress_with_attempt_fences",
-        "rationale": "the focused Runtime test proves tracked-parent progress alongside exclusive CPU children, settlement and stale-attempt fencing using the actual H3 declaration and resource mapping",
-    },
     "cpu": {
         "kind": "family_representative",
         "selector": "tests/stage1/test_runtime_client_cutover.py::test_generic_host_cpu_route_claims_settles_and_fences_stale_attempt_across_restart",
@@ -155,10 +150,10 @@ def test_stage1_capability_parity_is_explicit_and_family_proven(tmp_path: Path) 
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     assert report["schema"] == "astrid.stage1.capability_parity.v1"
-    assert report["discovered_count"] == 108
+    assert report["discovered_count"] == 107
     discovered_ids = {record.id for record in records}
     assert discovered_ids <= set(host.matrix)
-    assert len(set(host.matrix) - discovered_ids) == 7
+    assert len(set(host.matrix) - discovered_ids) == 8
 
     allowed = {"required", "optional", "unsupported", "retired"}
     for record in records:

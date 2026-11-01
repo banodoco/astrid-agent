@@ -9,12 +9,7 @@
         "event_type": "task.admitted",
         "occurred_at": "<timestamp>",
         "payload": {
-          "capability": "render.recorded",
-          "classification": {
-            "is_generation": false,
-            "is_root": true,
-            "version": 1
-          }
+          "capability": "render.recorded"
         },
         "sequence": 1
       },

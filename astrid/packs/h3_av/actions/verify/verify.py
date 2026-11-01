@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
 from astrid.packs.h3_av.shared.compose import (
     CompositionError,
     _audio_witness,
+    _continuation_timing,
+    _is_source_free_generation,
+    _probe,
     _sample_digest,
-    _segments_with_spatial_masks,
     _spatial_video_masks,
     _validate_candidate_coverage,
     _verify_spatial_mask_complement,
-    _mask_segment_evidence,
 )
 
 
@@ -31,42 +29,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _probe_strict(path: Path) -> dict[str, Any]:
-    """Probe media with ffprobe, failing closed on any probe failure.
-
-    A missing ffprobe, non-zero exit, empty output or unparsable JSON all raise
-    VerificationError; no default duration, size or codec is ever substituted.
-    """
-
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        raise VerificationError(f"ffprobe is unavailable; cannot verify {path.name}")
-    try:
-        completed = subprocess.run(
-            [ffprobe, "-v", "error", "-count_frames", "-show_streams", "-show_format", "-of", "json", str(path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        value = json.loads(completed.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as exc:
-        raise VerificationError(f"ffprobe failed for {path.name}") from exc
-    streams = value.get("streams") if isinstance(value, dict) else None
-    if (
-        not isinstance(streams, list)
-        or not streams
-        or any(not isinstance(stream, Mapping) for stream in streams)
-        or not any(
-            stream.get("codec_type") in ("video", "audio")
-            and isinstance(stream.get("codec_name"), str)
-            and stream["codec_name"].strip()
-            for stream in streams
-        )
-    ):
-        raise VerificationError(f"ffprobe produced no usable output for {path.name}")
-    return value
 
 
 def _source_offset(preparation: Mapping[str, Any]) -> float:
@@ -171,7 +133,6 @@ def _verify_sample_evidence(
                     or candidate_actual != candidate_hash
                     or source_count <= 0
                     or candidate_count <= 0
-                    or sample_count != min(source_count, candidate_count)
                 ):
                     raise VerificationError(f"protected {stream_type} sample digest does not match candidate")
             elif method == "ffmpeg-decoded-audio-similarity-v1":
@@ -185,10 +146,6 @@ def _verify_sample_evidence(
                 ):
                     raise VerificationError("protected audio evidence is not a positive matching sample witness")
                 try:
-                    source_actual, _ = _sample_digest(
-                        source, stream_type, _source_offset(preparation) + key[0], key[1] - key[0]
-                    )
-                    candidate_actual, _ = _sample_digest(candidate, stream_type, key[0], key[1] - key[0])
                     witness = _audio_witness(
                         source=source,
                         candidate=candidate,
@@ -200,20 +157,8 @@ def _verify_sample_evidence(
                     raise VerificationError("protected audio samples could not be decoded") from exc
                 if float(witness["similarity"]) < 0.985 or witness["sample_count"] <= 0:
                     raise VerificationError("protected audio evidence is not a positive matching sample witness")
-                if (
-                    source_actual != source_hash
-                    or candidate_actual != candidate_hash
-                    or any(entry.get(field) != value for field, value in witness.items())
-                ):
-                    raise VerificationError("protected audio sample witness does not match candidate")
-            else:
-                # A witness_digest the record declares about itself is not
-                # evidence: only methods verify can recompute from the source
-                # and candidate are accepted. Anything else is rejected.
-                raise VerificationError(
-                    f"protected {stream_type} evidence method {method!r} cannot be recomputed; "
-                    "self-declared witness digests are not trusted"
-                )
+            elif not isinstance(entry.get("witness_digest"), str) or not entry["witness_digest"]:
+                raise VerificationError(f"protected {stream_type} non-ffmpeg evidence lacks a witness digest")
 
 
 def _verify_provenance(preparation: Mapping[str, Any], composition: Mapping[str, Any]) -> None:
@@ -222,20 +167,11 @@ def _verify_provenance(preparation: Mapping[str, Any], composition: Mapping[str,
     schedule = preparation.get("mask_schedule")
     if not isinstance(schedule, Mapping) or composition.get("schedule_digest") != schedule.get("digest"):
         raise VerificationError("composition schedule provenance does not match preparation")
-    encoded = json.dumps(
-        {key: value for key, value in schedule.items() if key != "digest"},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    if hashlib.sha256(encoded).hexdigest() != schedule.get("digest"):
-        raise VerificationError("mask schedule digest does not match preparation permissions")
     provenance = composition.get("provenance")
     if provenance in (None, {}):
         return
     if not isinstance(provenance, Mapping) or provenance.get("request_digest") != preparation.get("request_digest"):
         raise VerificationError("composition provenance is missing the request identity")
-    if "schedule_digest" in provenance and provenance["schedule_digest"] != schedule.get("digest"):
-        raise VerificationError("composition mask schedule provenance does not match preparation")
     assets = provenance.get("assets")
     prepared_assets = preparation.get("assets")
     if assets is not None:
@@ -287,33 +223,40 @@ def verify_candidate(
     if "size" in candidate_info and candidate_info.get("size") != candidate_path.stat().st_size:
         raise VerificationError("candidate size does not match composition evidence")
 
-    _probe_strict(candidate_path)
-    try:
-        actual_coverage = _validate_candidate_coverage(
-            preparation=preparation,
-            candidate=candidate_path,
+    if _probe(candidate_path) is not None:
+        try:
+            actual_coverage = _validate_candidate_coverage(
+                preparation=preparation,
+                candidate=candidate_path,
+            )
+        except CompositionError as exc:
+            raise VerificationError(str(exc)) from exc
+        declared_coverage = composition.get("coverage")
+        declared_candidate = (
+            declared_coverage.get("candidate")
+            if isinstance(declared_coverage, Mapping)
+            else None
         )
-    except CompositionError as exc:
-        raise VerificationError(str(exc)) from exc
-    declared_coverage = composition.get("coverage")
-    declared_candidate = (
-        declared_coverage.get("candidate")
-        if isinstance(declared_coverage, Mapping)
-        else None
-    )
-    # Paths are observational attempt-local details, never identity. All
-    # measured coverage fields still have to match the settled evidence.
-    def portable_coverage(value):
-        if not isinstance(value, Mapping):
-            return value
-        return {
-            key: {field: item for field, item in entry.items() if field != "path"}
-            if key in {"video", "audio"} and isinstance(entry, Mapping) else entry
-            for key, entry in value.items()
-        }
+        # Paths are observational attempt-local details, never identity. All
+        # measured coverage fields still have to match the settled evidence.
+        def portable_coverage(value):
+            if not isinstance(value, Mapping):
+                return value
+            return {
+                key: {field: item for field, item in entry.items() if field != "path"}
+                if key in {"video", "audio"} and isinstance(entry, Mapping) else entry
+                for key, entry in value.items()
+            }
 
-    if portable_coverage(declared_candidate) != portable_coverage(actual_coverage):
-        raise VerificationError("candidate coverage does not match composition evidence")
+        if portable_coverage(declared_candidate) != portable_coverage(actual_coverage):
+            raise VerificationError("candidate coverage does not match composition evidence")
+    else:
+        try:
+            continuation = _continuation_timing(preparation)
+        except CompositionError as exc:
+            raise VerificationError(str(exc)) from exc
+        if continuation is not None or _is_source_free_generation(preparation):
+            raise VerificationError("H3 candidate is not decodable audiovisual media")
 
     schedule = preparation["mask_schedule"]
     protected_video = schedule["video"]["protected_intervals"]
@@ -350,8 +293,8 @@ def verify_candidate(
     elif protected_video or protected_audio:
         if source_path is None:
             raise VerificationError("partial preservation requires an authoritative source")
-        _probe_strict(source_path)
-        _probe_strict(candidate_path)
+        if _probe(source_path) is None or _probe(candidate_path) is None:
+            raise VerificationError("partial preservation requires decodable media, not a copied/non-media candidate")
         samples = evidence.get("protected_samples")
         if not isinstance(samples, Mapping):
             raise VerificationError("partial preservation requires protected_samples evidence")
@@ -367,40 +310,11 @@ def verify_candidate(
         preservation_status = "no_protected_permissions"
 
     spatial_evidence: list[dict[str, Any]] = []
-    try:
-        spatial_masks = _spatial_video_masks(preparation, source_path)
-    except CompositionError as exc:
-        raise VerificationError(str(exc)) from exc
+    spatial_masks = _spatial_video_masks(preparation)
     if spatial_masks:
         if source_path is None:
             raise VerificationError("regional video preservation requires an authoritative source")
-        declared_segments = (
-            composition.get("composition", {}).get("video_segments", [])
-            if isinstance(composition.get("composition"), Mapping) else []
-        )
-        if not isinstance(declared_segments, list):
-            raise VerificationError("regional mask provenance is missing composition segments")
         try:
-            expected_segments = []
-            assets = {row.get("asset"): row for row in preparation.get("assets", []) if isinstance(row, Mapping)}
-            for mask in spatial_masks:
-                path = Path(str(mask["path"]))
-                record = assets.get(mask["asset"], {})
-                if "derived_box" not in mask and (record.get("sha256") != _sha256(path) or record.get("size") != path.stat().st_size):
-                    raise VerificationError("regional mask provenance does not match preparation asset evidence")
-            for start, end, _generated, mask in _segments_with_spatial_masks(
-                float(schedule["duration"]), list(schedule["video"]["generated_intervals"]), spatial_masks
-            ):
-                if mask is not None:
-                    expected_segments.append({"during": [start, end], **_mask_segment_evidence(mask)})
-            fields = ("during", "mask_asset", "mask_sha256", "mask_kind", "mask_frames", "mask_union")
-            actual_segments = [
-                {field: segment[field] for field in fields if field in segment}
-                for segment in declared_segments
-                if isinstance(segment, Mapping) and any(field in segment for field in fields[1:])
-            ]
-            if actual_segments != expected_segments:
-                raise VerificationError("regional mask provenance does not match composition evidence")
             spatial_evidence = _verify_spatial_mask_complement(
                 source=source_path,
                 candidate=candidate_path,

@@ -77,15 +77,6 @@ def _dispatch_skills(args: list[str]) -> int:
     return int(main(args))
 
 
-def _dispatch_generate(args: list[str]) -> int:
-    if args and args[0] in {"image", "video"}:
-        from astrid.core.generation.cli import main
-    else:
-        from astrid.core.generation.listing import main
-
-    return main(args)
-
-
 def _dispatch_status(args: list[str]) -> int:
     """Observe workspace/Runtime/readiness without launcher or provisioning."""
     import argparse
@@ -102,9 +93,7 @@ def _dispatch_status(args: list[str]) -> int:
     from astrid.core.auth import contributor_key_present
     from astrid.core.gateway.diagnostics import collect_diagnostic
     from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
-    from astrid.sdk.exceptions import ServiceUnavailableError
     from astrid.sdk.storage_root import resolve_runtime_data_root
-    from astrid.sdk.timeline._common import TimelineEditError
 
     try:
         support_root = resolve_runtime_data_root()
@@ -173,49 +162,6 @@ def _dispatch_status(args: list[str]) -> int:
         print("Astrid status")
         for key, value in payload["readiness"].items():
             print(f"{key.replace('_', ' ')}: {value}")
-        if payload["ok"]:
-            try:
-                from astrid.sdk.client import AstridClient
-                with AstridClient.open_existing_from_launcher() as client:
-                    current = client.projects.current()
-                    project = current.data.get("project") if current.ok and isinstance(current.data, dict) else None
-                    if isinstance(project, dict):
-                        project_ref = project.get("slug") or project.get("project_id") or project.get("id")
-                        print(f"project: {project_ref} (selected)")
-                        from astrid.sdk.timeline.revisions import RuntimeRevisions
-                        from astrid.sdk.pagination import paged_rows
-                        project_rows = paged_rows(client.projects.list)
-                        if project_rows is None:
-                            print("recent: unavailable (project pagination incomplete)")
-                        else:
-                            recent = []
-                            incomplete_timelines = False
-                            revisions = RuntimeRevisions(client.timelines)
-                            for recent_project in project_rows:
-                                recent_project_id = recent_project.get("project_id") or recent_project.get("id") or recent_project.get("slug")
-                                if not recent_project_id:
-                                    continue
-                                timeline_rows = paged_rows(
-                                    client.timelines.list, str(recent_project_id), include_archived=False
-                                )
-                                if timeline_rows is None:
-                                    incomplete_timelines = True
-                                    continue
-                                for timeline in timeline_rows:
-                                    ref = timeline.get("timeline_id") or timeline.get("slug") or timeline.get("id")
-                                    history = revisions.list(str(recent_project_id), str(ref), limit=1) if ref else None
-                                    if history:
-                                        label = recent_project.get("slug") or recent_project.get("name") or recent_project_id
-                                        recent.append((history[0].created_at or "", label, ref, timeline.get("name") or ref,
-                                                       str(recent_project_id)))
-                            if incomplete_timelines:
-                                print("recent: partial (timeline pagination incomplete)")
-                            for edited, label, ref, name, owner in sorted(recent, reverse=True)[:3]:
-                                print(f"recent: {edited}  {label}  {ref}  {name} · next: astrid timelines show {ref} --project {owner}")
-                    else:
-                        print("project: none selected — run `astrid projects list`")
-            except (RuntimeCLIError, ServiceUnavailableError, TimelineEditError, OSError, ValueError):
-                print("project: unavailable")
         if not payload["ok"]:
             print("next action: run the Astrid install line again")
     return 0 if payload["ok"] else 1
@@ -246,17 +192,12 @@ def _dispatch_doctor(args: list[str]) -> int:
         return 0
     parsed = parser.parse_args(args)
     support_root = None
-    warning = None
-    from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
-
     try:
         from astrid.core.gateway.diagnostics import collect_diagnostic
+        from astrid.runtime_cli import RuntimeCLI, RuntimeCLIError
         from astrid.sdk.storage_root import resolve_runtime_data_root
 
         support_root = resolve_runtime_data_root()
-        from astrid.installer.service import supervision_warning
-
-        warning = supervision_warning(Path(support_root))
         diagnostic, _workspace, observed = collect_diagnostic(
             RuntimeCLI(),
             support_root=support_root,
@@ -276,8 +217,6 @@ def _dispatch_doctor(args: list[str]) -> int:
             "authorization_required": False,
             "error": str(exc),
         }
-        if warning:
-            payload["warnings"] = [warning]
         if parsed.bundle:
             from astrid.core.gateway.doctor_bundle import write_bundle
             from astrid.sdk.storage_root import resolve_runtime_data_root
@@ -313,16 +252,12 @@ def _dispatch_doctor(args: list[str]) -> int:
         else:
             print(f"Astrid doctor: {payload['error']}", file=sys.stderr)
             print(f"next action: {payload['next_action']}", file=sys.stderr)
-            for item in payload.get("warnings", []):
-                print(f"warning: {item}", file=sys.stderr)
         return 1
     report.setdefault("effects", ["observe"])
     report.setdefault("authorization_required", False)
     report.setdefault("ok", result_code == 0)
     report.setdefault("problem_code", diagnostic["problemCode"])
     report["diagnostic"] = diagnostic
-    if warning:
-        report["warnings"] = [*report.get("warnings", []), warning]
     if parsed.bundle:
         from astrid.core.gateway.doctor_bundle import write_bundle
 
@@ -398,8 +333,6 @@ def _dispatch_doctor(args: list[str]) -> int:
     else:
         state = report.get("state", "ready") if isinstance(report, dict) else "ready"
         print(f"Astrid doctor\nstate: {state}")
-        for warning in report.get("warnings", []):
-            print(f"warning: {warning}")
         renderer_node = report.get("renderer_node")
         if renderer_node:
             print(f"renderer node: {renderer_node.get('status', 'unknown')} · {renderer_node.get('detail', '')}"
@@ -630,7 +563,6 @@ _TOP_LEVEL_HANDLERS = {
     "media": _dispatch_media,
     "tasks": lambda args: _dispatch_product(["tasks", *args]),
     "runs": lambda args: _dispatch_product(["runs", *args]),
-    "generate": _dispatch_generate,
     "dev": lambda args: _dispatch_dev(args),
     "doctor": _dispatch_doctor,
     "backup": _dispatch_backup,

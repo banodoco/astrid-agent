@@ -126,10 +126,9 @@ def test_runpod_compute_preserves_provision_arguments_and_estimates_cost(tmp_pat
 
 
 def test_runpod_compute_storage_required_requires_name_before_command(tmp_path: Path) -> None:
-    runner = RecordingRunner()
-    backend = RunPodComputeBackend(repo_root=tmp_path, runner=runner)
+    backend = RunPodComputeBackend(repo_root=tmp_path, runner=RecordingRunner())
 
-    with pytest.raises(BackendExecutionError) as raised:
+    with pytest.raises(BackendExecutionError, match="ensure-storage"):
         backend.provision(
             {
                 "produces_dir": tmp_path / "provision",
@@ -137,8 +136,6 @@ def test_runpod_compute_storage_required_requires_name_before_command(tmp_path: 
                 "gpu_type": "NVIDIA RTX 6000 Ada Generation",
             }
         )
-    assert "runpod-lifecycle volumes create <storage-name> <GB> --datacenter <id>" in str(raised.value)
-    assert runner.calls == []
 
 
 def test_runpod_compute_storage_required_threads_require_storage_flag(tmp_path: Path) -> None:

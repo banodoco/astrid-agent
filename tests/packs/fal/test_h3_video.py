@@ -6,8 +6,6 @@ import hashlib
 import os
 from pathlib import Path
 
-import pytest
-
 os.environ.setdefault("ASTRID_INTERNAL_INVOCATION", "1")
 
 from astrid.core.pack.canonical import validate_canonical_pack
@@ -185,37 +183,3 @@ def test_text_mode_uses_exact_h3_endpoint_and_fixed_2k(tmp_path: Path) -> None:
         "resolution": "2K",
         "aspect_ratio": "4:3",
     }
-
-
-@pytest.mark.parametrize("failed", [False, True], ids=["success", "failure"])
-def test_domain_receipt_preserves_host_result(tmp_path: Path, failed: bool) -> None:
-    args = _args(tmp_path)
-    args.out.mkdir()
-    host_result = args.out / "result.json"
-    host_payload = {"status": "host-owned", "task_id": "task-1"}
-    host_result.write_text(json.dumps(host_payload), encoding="utf-8")
-
-    def submitter(*_args: object, **_kwargs: object) -> dict[str, object]:
-        if failed:
-            raise RuntimeError("provider failed")
-        return {"video": {"url": "https://example.test/output.mp4"}}
-
-    code, manifest = run.execute(
-        args,
-        client=FakeHttpClient(),
-        api_key="test-key",
-        submitter=submitter,
-        downloader=_downloader,
-    )
-
-    assert code == int(failed)
-    assert json.loads(host_result.read_text()) == host_payload
-    receipt = json.loads((args.out / "h3_video_receipt.json").read_text())
-    assert receipt["schema_version"] == 1
-    assert receipt["endpoint"] == "minimax/h3/text-to-video"
-    assert receipt["status"] == manifest["status"] == ("failed" if failed else "completed")
-    if failed:
-        assert receipt["error"] == manifest["error"] == "RuntimeError: provider failed"
-    else:
-        assert receipt["output"]["path"] == "outputs/minimax-h3-text-to-video.mp4"
-        assert receipt["duration_ms"] == manifest["provider_extension"]["duration_ms"]

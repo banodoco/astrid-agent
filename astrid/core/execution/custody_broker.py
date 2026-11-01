@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import re
+import select
 import shutil
 import socket
 import stat
@@ -1252,17 +1253,11 @@ class RoleCustodyAuthority:
             if (record["state"] != "active" or self._reference(record) != dict(reference)
                     or record["actor"] != dict(expected_actor) or record["owner_epoch"] != owner_epoch):
                 raise CustodyError("custody designation differs from selected owner/reference")
-            for subject, identity in (("actor", record["actor"]), ("target", reference["target"])):
+            for identity in (record["actor"], reference["target"]):
                 observed = identity_provider(int(identity["pid"]))
-                incarnation = (None if observed is None else
-                               _incarnation(observed, token_provider(int(identity["pid"]))))
-                if incarnation != dict(identity):
-                    # Report the exact failed comparison, never kernel token words.
-                    # These observations grant no authority or token refresh.
-                    evidence = {"role": self.role, "subject": subject,
-                                "expected": dict(identity), "observed": incarnation}
-                    raise CustodyError("custody designation has unavailable or changed kernel identity: "
-                                       + _canonical(evidence).decode("utf-8"))
+                if (observed is None
+                        or _incarnation(observed, token_provider(int(identity["pid"]))) != dict(identity)):
+                    raise CustodyError("custody designation has unavailable or changed kernel identity")
             return self._reference(record)
 
     def signal(self, *, actor: AuthenticatedCleanupActor, generation: int,
@@ -2916,20 +2911,8 @@ def _checked_pid_target(pid: int, birth: str, *, held: bool) -> _CheckedPidTarge
     if held:
         return _CheckedPidTarget(None)
     identity = platform.process_identity(pid)
-    if identity is None:
+    if identity is None or identity.get("birth_id") != "proc-start-ticks:" + birth.rpartition(":")[2]:
         return None
-    # Agent records boot UUID:start ticks; Runtime also captures the target's
-    # PID namespace. Require the complete, unambiguous native scope at admission
-    # and agree on BOTH Agent fields. Tick-only evidence cannot prove the boot.
-    runtime_birth = identity.get("birth_id")
-    scoped = (
-        re.fullmatch(r"proc-start-ticks:([0-9]+);boot:([^;:]+);pidns:[1-9][0-9]*", runtime_birth)
-        if isinstance(runtime_birth, str) else None
-    )
-    if scoped is None or f"{scoped[2]}:{scoped[1]}" != birth:
-        return None
-    # Keep every scope for Runtime's exact recheck immediately before signalling;
-    # a changed or unreadable boot/namespace must never become signal authority.
     return _CheckedPidTarget(identity)
 
 
@@ -2955,8 +2938,6 @@ class ProcessCustody:
         self._command_observations: list[dict[str, Any]] = []
         self._actor_birth: str | None = None
         self._handles: dict[int, tuple[str, Any]] = {}
-        self._pidfd_exit_proofs: dict[int, Any] = {}
-        self._pidfd_terminal_births: dict[int, str] = {}
         self._unadmitted_absent: dict[int, dict[str, Any]] = {}
         self._census_sequence = 0
         self._uncertain: BaseException | None = None
@@ -3209,7 +3190,6 @@ class ProcessCustody:
                             self._command_diagnostic_persist_error = type(diagnostic_error).__name__
                 else:
                     from astrid.core.execution.process_group import (
-                        _PidfdExitProof,
                         held_child_birth_identity,
                         process_birth_identity,
                     )
@@ -3241,33 +3221,16 @@ class ProcessCustody:
                         self._handles[pid] = (birth, target)
                         return
                     retained = False
-                    proof = None
-                    proofs = None
-                    proof_registered = False
                     try:
                         if identify(pid) != birth:
                             if held:
                                 raise CustodyError("descendant changed during pidfd binding")
                             return
                         os.set_inheritable(descriptor, False)
-                        proofs = getattr(self, "_pidfd_exit_proofs", None)
-                        if proofs is None:
-                            proofs = self._pidfd_exit_proofs = {}
-                        terminal_births = getattr(self, "_pidfd_terminal_births", None)
-                        if terminal_births is None:
-                            terminal_births = self._pidfd_terminal_births = {}
-                        proof = _PidfdExitProof(descriptor)
-                        proofs[pid] = proof
-                        proof_registered = True
-                        terminal_births.pop(pid, None)
                         self._handles[pid] = (birth, descriptor)
                         retained = True
                     finally:
                         if not retained:
-                            if proof_registered and proofs is not None and proofs.get(pid) is proof:
-                                proofs.pop(pid, None)
-                            if proof is not None:
-                                proof.close()
                             os.close(descriptor)
             except Exception as exc:
                 if sys.platform != "darwin":
@@ -4054,34 +4017,15 @@ class ProcessCustody:
                 if type(handle) is not int:
                     continue
                 if only_exited:
-                    if not self._retained_pidfd_exit_proven(pid, birth, handle):
+                    poller = select.poll()
+                    poller.register(handle, select.POLLIN)
+                    if not poller.poll(0):
                         continue
-                    self._pidfd_terminal_births[pid] = birth
                 self._handles[pid] = (birth, _PIDFD_RELEASED)
-                proof = getattr(self, "_pidfd_exit_proofs", {}).pop(pid, None)
-                if proof is not None:
-                    proof.close()
                 try:
                     os.close(handle)
                 except OSError:
                     pass
-
-    def retained_incarnation_exited(self, pid: int, birth: str) -> bool:
-        """Return whether this exact retained incarnation has exited."""
-        with self._lock:
-            entry = self._handles.get(pid)
-            if entry is None or entry[0] != birth:
-                return False
-            handle = entry[1]
-            if handle is _PIDFD_RELEASED:
-                return getattr(self, "_pidfd_terminal_births", {}).get(pid) == birth
-            return self._retained_pidfd_exit_proven(pid, birth, handle)
-
-    def _retained_pidfd_exit_proven(self, pid: int, birth: str, handle: Any) -> bool:
-        if type(handle) is not int:
-            return False
-        proof = getattr(self, "_pidfd_exit_proofs", {}).get(pid)
-        return proof is not None and proof.exited(handle)
 
     def _checked_pid_target_exited(self, target: _CheckedPidTarget) -> bool:
         if target.identity is None:

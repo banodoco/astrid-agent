@@ -25,7 +25,12 @@ class AnimateImageDryRunTest(unittest.TestCase):
             ),
             mock.patch.object(
                 animate_image,
-                "fal_submit_and_poll",
+                "_submit_fal",
+                side_effect=AssertionError("network call in dry-run"),
+            ),
+            mock.patch.object(
+                animate_image,
+                "_poll_fal_result",
                 side_effect=AssertionError("network call in dry-run"),
             ),
             mock.patch.object(

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
-from astrid.core.generation.availability import require_action_available
 from astrid.packs.training.shared.interfaces import (
     ArtifactPullResult,
     ComputeHandle,
@@ -56,7 +55,6 @@ def generate_review_samples(
     timeout: int | None = None,
 ) -> ReviewResult:
     """Generate remote sample MP4s, pull them locally, and write local-only HTML."""
-    require_action_available("training.checkpoint_review_sampler")
     if not checkpoints:
         raise ValueError("at least one checkpoint is required for review")
     if not prompts:

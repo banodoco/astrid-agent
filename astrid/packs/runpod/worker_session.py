@@ -1,8 +1,7 @@
 """Exact, CPU-observed custody for a managed VibeComfy session on RunPod.
 
-Legacy references use VibeComfy's managed ``session start/status/stop`` contract;
-the reserved engine-ID reference attaches through installed_session instead.
-The transport's status observation must include the managed
+The injected transport runs VibeComfy's managed ``session start/status/stop``
+contract on the selected pod. Its status observation must include the managed
 session's config.json and positive daemon/Comfy ownership evidence (the same
 launch marker, birth identities and listener ownership checked by VibeComfy).
 This owner never probes CUDA or qualifies a GPU.
@@ -234,7 +233,7 @@ class RunPodVibeComfySessionTransport:
 
 
 class RunPodManagedVibeComfySessionOwner:
-    """Select exact config and guard legacy management or installed attachment."""
+    """Materialize selected config and guard start, restart resume, and stop."""
 
     def __init__(self, transport: ManagedSessionTransport, *, session_config_type: Any = None) -> None:
         self.transport = transport
@@ -286,38 +285,6 @@ class RunPodManagedVibeComfySessionOwner:
                 or PurePosixPath(runtime_root).parent != PurePosixPath(candidate)
                 or comfy != str(PurePosixPath(runtime_root) / "ComfyUI")):
             raise ManagedSessionError("managed session paths differ from Runtime selection")
-        # The engine-ID reference is reserved for the canonical installer.
-        # Never reconstruct its config, or fall back to the legacy daemon.
-        if session_ref == "vibecomfy-h3":
-            read_installed = getattr(self.transport, "read_installed", None)
-            if read_installed is None:
-                raise ManagedSessionError("installer-owned session requires installed registry observation")
-            observed = read_installed(runtime_root)
-            config = observed["config"]
-            digest = observed["config_digest"]
-            if (config.get("runtime_root") != runtime_root
-                    or config.get("base_directory") != comfy
-                    or config.get("models_root") != model
-                    or config.get("models_root_normalized") != model
-                    or config.get("output_directory") != output
-                    or config.get("port") != port
-                    or observed.get("python_executable") != python
-                    or observed.get("vibecomfy_root") != vibecomfy
-                    or digest != getattr(reference, "session_config_digest", None)):
-                raise ManagedSessionError("installed registry config or source paths differ from Runtime selection")
-            # Preserve SessionConfig validation, while the digest continues to
-            # cover exact registry bytes, including their original whitespace.
-            parsed = self._session_config(dict(config))
-            if (str(parsed.runtime_root) != runtime_root or str(parsed.cwd) != config["cwd"]
-                    or parsed.port != port or parsed.warm_policy != config["warm_policy"]
-                    or any(parsed.extra.get(key) != config[key] for key in (
-                        "base_directory", "models_root", "models_root_normalized",
-                        "output_directory", "locality", "server_log_path"))):
-                raise ManagedSessionError("SessionConfig changed installed registry configuration")
-            return ManagedSessionSelection(
-                target["provider_account_ref"], target["pod_id"], session_ref,
-                python, runtime_root, vibecomfy, comfy, model, output, port, config, digest,
-            )
         values = {
             "runtime_root": runtime_root,
             "cwd": runtime_root,
@@ -367,9 +334,6 @@ class RunPodManagedVibeComfySessionOwner:
                 or value.get("ownership_verified") is not True
                 or value.get("gpu_qualified") is not False):
             raise ManagedSessionError("live managed session config, output or ownership changed")
-        if (selection.session_ref == "vibecomfy-h3"
-                and value.get("config_digest") != selection.config_digest):
-            raise ManagedSessionError("live installed session config bytes changed")
         daemon_pid, daemon_birth = _process(value.get("daemon"), "managed daemon")
         comfy_pid, comfy_birth = _process(value.get("comfy"), "managed Comfy child")
         if daemon_pid == comfy_pid:
@@ -391,8 +355,6 @@ class RunPodManagedVibeComfySessionOwner:
             # A prior start may have succeeded while its SSH response was
             # lost. Reuse only the same selected config and owned process pair.
             return existing
-        if selection.session_ref == "vibecomfy-h3":
-            raise ManagedSessionError("installer-owned session is absent; legacy start is forbidden")
         try:
             self.transport.start(selection)
         except Exception:
@@ -418,11 +380,6 @@ class RunPodManagedVibeComfySessionOwner:
 
     def stop(self, selection: ManagedSessionSelection,
              receipt: ManagedSessionReceipt | Mapping[str, Any]) -> dict[str, Any]:
-        if selection.session_ref == "vibecomfy-h3":
-            # An attachment cannot assert engine quiescence or acquire native
-            # stop authority from the receipt. Original provider release stays
-            # gated on a real supervisor stop, never a synthetic detach receipt.
-            raise ManagedSessionError("installer-owned session requires original supervisor stop")
         expected = receipt if isinstance(receipt, ManagedSessionReceipt) else ManagedSessionReceipt.from_dict(receipt)
         observed = self._observe(selection)
         if observed is None:
@@ -453,21 +410,8 @@ class RunPodManagedVibeComfySessionOwner:
                 "gpu_qualified": False}
 
 
-def create_managed_session_owner(pod: Any, *, session_ref: str,
-                                 preparation_transport: Any = None) -> RunPodManagedVibeComfySessionOwner:
-    """Original prepared composition; the proof engine ID cannot opt out."""
-    if session_ref == "vibecomfy-h3":
-        from .installed_session import RunPodInstalledVibeComfySessionTransport
-
-        transport = RunPodInstalledVibeComfySessionTransport(pod)
-    else:
-        transport = RunPodVibeComfySessionTransport(pod, preparation_transport=preparation_transport)
-    return RunPodManagedVibeComfySessionOwner(transport)
-
-
 __all__ = [
     "ManagedSessionError", "ManagedSessionReceipt", "ManagedSessionSelection",
     "ManagedSessionTransport", "RunPodManagedVibeComfySessionOwner",
     "RunPodVibeComfySessionTransport",
-    "create_managed_session_owner",
 ]

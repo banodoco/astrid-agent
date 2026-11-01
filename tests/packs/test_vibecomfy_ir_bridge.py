@@ -222,7 +222,6 @@ def test_ir_executors_are_manifested_without_growing_the_gateway() -> None:
         "doctor",
         "backup",
         "skills",
-        "generate",
         "dev",
         }
     )

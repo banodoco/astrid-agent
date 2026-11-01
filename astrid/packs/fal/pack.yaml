@@ -20,14 +20,8 @@ description: fal.ai integration for clip Foley and MiniMax H3 video generation.
 keywords: [fal, foley, audio, hunyuan, minimax, h3, video, api, integration]
 capabilities: [generate_clip_foley, generate_h3_video]
 agent:
-  purpose: Choose fal only when the hosted fal.ai service is explicitly selected
-    for fal.fal_foley or fal.h3_video. These declared hosted actions require fal
-    credential context; fal is never an automatic default provider.
-  do_not_use_for: Do not use fal as an automatic/default provider. Do not use it for
-    full spatial-Foley orchestration (use foley.foley_map) or general image/video
-    generation when the user has not explicitly selected fal.
-  required_context:
-    - docs/SKILL.md
+  purpose: "Use for fal.ai Hunyuan Foley or MiniMax H3 text/reference video generation (requires FAL_KEY)."
+  do_not_use_for: "Full spatial-Foley orchestration (use foley.foley_map) or general image/video generation already covered by the generation pack."
   normal_entrypoints: [fal.fal_foley, fal.h3_video]
 documentation:
   kind: skill
@@ -105,10 +99,6 @@ actions:
       mode: subprocess
       network: true
     metadata:
-      generation_publication:
-        version: 1
-        modality: audio
-        output_port: audio
       env:
         - FAL_KEY
       fal_model_id: fal-ai/hunyuan-video-foley
@@ -284,10 +274,6 @@ actions:
     scoped_configs:
       - credentials.fal
     metadata:
-      generation_publication:
-        version: 1
-        modality: video
-        output_port: generated_videos
       output_result_manifest: true
       requires_timeline: false
       runtime_entrypoint: main

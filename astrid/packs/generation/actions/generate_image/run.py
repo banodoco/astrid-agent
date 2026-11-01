@@ -72,6 +72,7 @@ from astrid.packs.generation.actions.generate_image.task_adapter import (
 logger = logging.getLogger(__name__)
 
 CODEX_BACKEND_ID = "codex"
+CLOUD_BACKEND_ID = "cloud"
 
 _IMAGE_CLI_FEATURES: tuple[str, ...] = (
     "prompt",
@@ -117,12 +118,7 @@ _IMAGE_ARGV_FLAG_NAMES: tuple[str, ...] = (
     "env_file",
     "loras",
     "shot_generation_recipe",
-    "jobs",
-    "n",
-    "output_format",
-    "output_compression",
-    "moderation",
-) + tuple(f"image_ref_{index:02d}" for index in range(16))
+)
 
 
 # ---------------------------------------------------------------------------
@@ -193,30 +189,34 @@ def _parse_loras_arg(raw: str | None) -> list[str | dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Image-only: Codex availability
+# Image-only: Codex fallback
 # ---------------------------------------------------------------------------
 
 
-def _resolve_codex_availability(
+def _resolve_execution_with_codex_fallback(
     args: argparse.Namespace,
-) -> None:
-    """Fail closed when explicitly requested Codex is unavailable."""
+    mode_spec: Any,
+) -> dict[str, str] | None:
+    """Fallback from requested Codex to cloud when local Codex is unavailable."""
     if args.execution != CODEX_BACKEND_ID:
-        return
+        return None
     reason = codex_unavailable_reason()
     if reason is None:
-        return
-    recovery = (
-        "install or enable Codex and retry, or submit a new request explicitly "
-        "targeted to the cloud backend"
+        return None
+    if CLOUD_BACKEND_ID not in mode_spec.backends:
+        available = ", ".join(_available_backend_ids(mode_spec))
+        raise AstridError(
+            f"codex backend requested but unavailable ({reason}) and no cloud fallback is declared",
+            valid_options=list(_available_backend_ids(mode_spec)),
+            recovery_command=f"install/login to Codex or retry with one of: {available}",
+        )
+    args.execution = CLOUD_BACKEND_ID
+    message = (
+        f"codex backend requested but unavailable ({reason}); "
+        "falling back to cloud backend"
     )
-    raise AstridError(
-        f"Codex backend requested but unavailable ({reason})",
-        recovery_command=recovery,
-        code="CODEX_BACKEND_UNAVAILABLE",
-        field="execution",
-        fix=recovery,
-    )
+    logger.warning(message)
+    return {"feature": CODEX_BACKEND_ID, "reason": message}
 
 
 # ---------------------------------------------------------------------------
@@ -258,13 +258,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reference image path or URL for i2i/edit modes.",
     )
     p.add_argument("--style-ref", help="Additional Codex style reference image.")
-    p.add_argument("--jobs", help=argparse.SUPPRESS)
-    p.add_argument("--n", type=int, default=None, help=argparse.SUPPRESS)
-    p.add_argument("--output-format", default=None)
-    p.add_argument("--output-compression", type=int, default=None)
-    p.add_argument("--moderation", default=None)
-    for index in range(16):
-        p.add_argument(f"--image-ref-{index:02d}", dest=f"image_ref_{index:02d}", default=None)
     p.add_argument("--brand-ref", help="Additional Codex brand reference image.")
     p.add_argument(
         "--mask-ref",
@@ -445,16 +438,6 @@ def generate_core(
             recovery_command="check available models and modes with --help and retry with a valid (model, mode) pair",
         ) from exc
 
-    if args.execution == "openai":
-        from astrid.core.generation.backends.openai import OpenAIBackend
-        if "openai" not in mode_spec.backends:
-            raise AstridError("selected model/mode has no OpenAI backend")
-        if args.jobs is None:
-            raise AstridError("managed OpenAI execution requires authenticated frozen jobs")
-        return OpenAIBackend(env_file=args.env_file).generate(
-            entry, mode_name, vars(args), args.out.expanduser().resolve() / "images"
-        )
-
     bounded_profile = getattr(args, "storage_policy_version", None)
     bounded_profiles = {
         CLOUD_T2I_STORAGE_POLICY.version: (None, "t2i"),
@@ -489,7 +472,7 @@ def generate_core(
 
     warnings: list[dict[str, str]] = []
     dropped_features: list[str] = []
-    _resolve_codex_availability(args)
+    fallback_warning = _resolve_execution_with_codex_fallback(args, mode_spec)
     recipe = getattr(args, "shot_generation_recipe", None)
     if recipe is not None:
         validate_shot_generation_recipe(
@@ -499,6 +482,9 @@ def generate_core(
             execution=getattr(args, "execution", None),
             resolved_settings=vars(args),
         )
+    if fallback_warning is not None:
+        warnings.append(fallback_warning)
+
     # --- check backend availability for --execution --------------------------
     if not registry.backend_available(args.model, mode_name, args.execution):
         available = ", ".join(_available_backend_ids(mode_spec))

@@ -94,7 +94,6 @@ def test_explicit_client_path_does_not_bootstrap(monkeypatch: pytest.MonkeyPatch
             return {
                 "status": "ok",
                 "protocol": PROTOCOL,
-                "identity": None,
                 "schema_digest": SCHEMA_DIGEST,
                 "runtime_epoch": 1,
                 "runtime_session_id": "fixture-runtime-session",

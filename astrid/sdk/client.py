@@ -441,16 +441,9 @@ class AstridClient:
         except AutoBootstrapError as exc:
             lifecycle_details = dict(getattr(exc, "details", {}) or {})
             lifecycle_details.setdefault("lifecycle_code", exc.code)
-            message = str(exc)
-            if "no workspace is configured" in message.lower():
-                message = "No workspace is configured; run the Astrid install line again."
-                lifecycle_details.pop("recovery_action", None)
-                lifecycle_details.pop("cause_message", None)
-                lifecycle_details["next_action"] = "run the Astrid install line again"
-            else:
-                lifecycle_details.setdefault("next_action", exc.next_action)
+            lifecycle_details.setdefault("next_action", exc.next_action)
             raise ServiceUnavailableError(
-                message, details=lifecycle_details
+                str(exc), details=lifecycle_details
             ) from exc
         if credential is not None:
             credential_value: str | Path = credential

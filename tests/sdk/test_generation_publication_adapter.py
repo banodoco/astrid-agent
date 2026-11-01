@@ -84,16 +84,10 @@ def test_compose_is_deterministic_and_uses_real_capability_outputs() -> None:
                 ],
             }
         ],
-        "metadata": {"gen": {
-            "kind": "image", "origin": "generated", "generator": CAPABILITY_ID,
-            "model": "z-image", "mode": "t2i", "backend": "cloud", "target": "fal",
-            "seed": 42, "tags": [],
-        }},
     }
     effect = first["settlement_effect"]
     assert effect["effect_type"] == "generation.publish_v1"
     assert effect["target_id"] == request["project"]
-    assert effect["payload"]["metadata"] == intent["metadata"]
     assert effect["payload"]["groups"][0]["selectors"] == [
         {
             "selector": "main-0",
@@ -115,18 +109,6 @@ def test_compose_is_deterministic_and_uses_real_capability_outputs() -> None:
         },
     ]
     assert "image_manifest" not in json.dumps(effect)
-
-
-def test_compose_omits_unavailable_generation_facts() -> None:
-    request = _request(_actual_capability(), count=1)
-    request["params"].pop("seed")
-
-    composed = compose_image_publication_request(request)
-
-    gen = composed["generation_intent"]["metadata"]["gen"]
-    assert gen["model"] == "z-image"
-    assert gen["target"] == "fal"
-    assert not {"seed", "machine", "workflow_digest", "task_id", "run_id", "cost_usd", "duration_ms"} & gen.keys()
 
 
 def test_compose_digest_matches_generic_pack_host_registration() -> None:

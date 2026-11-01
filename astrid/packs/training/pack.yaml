@@ -117,8 +117,8 @@ actions:
   pool_merge:
     name: Pool Merge
     version: "1.0"
-    short_description: Update a candidate clip pool with available generative effect entries.
-    description: Update a candidate clip pool with available generative effect entries for arrangement.
+    short_description: Merge multiple candidate clip pools into a unified pool for arrangement.
+    description: Merge multiple candidate clip pools into a unified pool for arrangement.
     keywords: [pool, merge, clips, video, pipeline, arrange]
     invocation:
       kind: command
@@ -130,10 +130,10 @@ actions:
           - "--out"
           - "{out}/pool.json"
         input_args:
-          - {input: pool, flag: --pool, optional: false}
+          - {input: pool, flag: --pool, optional: true}
           - {input: theme, flag: --theme, optional: true}
     inputs:
-      - {name: pool, type: file, required: true, description: Existing candidate clip pool JSON.}
+      - {name: pool, type: file, required: false, description: Input pool(s) to merge.}
       - {name: theme, type: file, required: false, description: Theme configuration file.}
     outputs:
       - name: pool

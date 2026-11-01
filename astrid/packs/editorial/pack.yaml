@@ -88,11 +88,11 @@ actions:
       provides:
       - arrangement
     inputs:
-    - description: Unified clip pool from training.pool_merge.
+    - description: ''
       name: pool
       required: false
       type: file
-    - description: Creative brief describing the desired output.
+    - description: ''
       name: brief
       required: true
       type: file
@@ -100,11 +100,11 @@ actions:
       name: theme
       required: false
       type: file
-    - description: Target duration in seconds.
+    - description: ''
       name: target_duration
       required: false
       type: number
-    - description: Optional environment file for API credentials.
+    - description: ''
       name: env_file
       required: false
       type: file
@@ -163,11 +163,9 @@ actions:
     inputs:
     - description: Source video.
       name: video
-      required: true
       type: file
     - description: Boundary manifest input.
       name: manifest
-      required: true
       type: file
     isolation:
       mode: subprocess
@@ -243,15 +241,15 @@ actions:
       - editor_review
     description: Run heuristic editorial reviewers over a rendered arrangement and emit notes.
     inputs:
-    - description: Directory with arrangement.json, hype.mp4, and related review artifacts.
+    - description: ''
       name: brief_dir
       required: false
       type: directory
-    - description: Source run directory with pool.json, scenes, and related inputs.
+    - description: ''
       name: run_dir
       required: false
       type: directory
-    - description: Environment file for Claude and OpenAI API credentials.
+    - description: ''
       name: env_file
       required: false
       type: file
@@ -311,7 +309,6 @@ actions:
     inputs:
     - description: Human notes file.
       name: notes
-      required: true
       type: file
     outputs: []
     isolation:
@@ -488,7 +485,6 @@ actions:
     inputs:
     - description: Cut run directory to inspect.
       name: run_dir
-      required: true
       type: directory
     outputs: []
     isolation:
@@ -722,11 +718,11 @@ actions:
       - quote_candidates
     description: Scan a transcript for quotable lines suitable for hype clips.
     inputs:
-    - description: Transcript JSON from editorial.transcribe.
+    - description: ''
       name: transcript
       required: false
       type: file
-    - description: Optional environment file for API credentials.
+    - description: ''
       name: env_file
       required: false
       type: file
@@ -813,17 +809,17 @@ actions:
       - metadata
     description: Apply targeted reviewer-driven refinements using runtime-materialized media.
     inputs:
-    - description: Current shot arrangement JSON.
+    - description: ''
       name: arrangement
       required: false
       type: file
       artifact_type: arrangement
-    - description: Unified clip pool for replacement clips.
+    - description: ''
       name: pool
       required: false
       type: file
       artifact_type: pool
-    - description: Timeline JSON from video_editing.cut.
+    - description: ''
       name: timeline
       required: false
       type: file
@@ -833,16 +829,16 @@ actions:
       required: false
       type: file
       artifact_type: asset_registry
-    - description: Metadata JSON from video_editing.cut.
+    - description: ''
       name: metadata
       required: false
       type: file
-    - description: Original transcript for reference.
+    - description: ''
       name: transcript
       required: false
       type: file
       artifact_type: transcript
-    - description: Optional environment file for API credentials.
+    - description: ''
       name: env_file
       required: false
       type: file
@@ -1364,15 +1360,15 @@ actions:
       - scene_triage
     description: Triage source-video scenes by quality before pool building.
     inputs:
-    - description: Scene boundaries JSON from editorial.scenes.
+    - description: ''
       name: scenes
       required: false
       type: file
-    - description: Shot windows JSON from editorial.shots.
+    - description: ''
       name: shots
       required: false
       type: file
-    - description: Optional environment file for API credentials.
+    - description: ''
       name: env_file
       required: false
       type: file
@@ -1459,19 +1455,19 @@ actions:
       provides:
       - validation
     inputs:
-    - description: Rendered hype.mp4 to validate.
+    - description: ''
       name: video
       required: false
       type: file
-    - description: hype.timeline.json; defaults to the video directory's hype.timeline.json.
+    - description: ''
       name: timeline
       required: false
       type: file
-    - description: hype.metadata.json; defaults to the video directory's hype.metadata.json.
+    - description: ''
       name: metadata
       required: false
       type: file
-    - description: Environment file forwarded to transcription for the Whisper API key.
+    - description: ''
       name: env_file
       required: false
       type: file

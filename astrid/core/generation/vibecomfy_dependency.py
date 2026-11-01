@@ -8,12 +8,9 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
-from astrid.core.generation.engine_recipe import engine_source_revision, load_recipe
-
 VIBECOMFY_CHECKOUT_ENV = "ASTRID_VIBECOMFY_CHECKOUT"
-VIBECOMFY_ENGINE_REVISION = engine_source_revision("vibecomfy", "windows-x86_64-cu130", "vibecomfy")
-VIBECOMFY_FORK_URL = next(source.pin.repository for source in load_recipe(
-    "vibecomfy", "windows-x86_64-cu130").sources if source.name == "vibecomfy")
+VIBECOMFY_ENGINE_REVISION = "ac0ee1b80991f2414dae27d264af4b5e2890a7a6"
+VIBECOMFY_FORK_URL = "https://github.com/peteromallet/VibeComfy.git"
 VIBECOMFY_CANDIDATE_KIND_ENV = "ASTRID_VIBECOMFY_CANDIDATE_KIND"
 VIBECOMFY_CANDIDATE_REVISION_ENV = "ASTRID_VIBECOMFY_CANDIDATE_REVISION"
 VIBECOMFY_CANDIDATE_CONTENT_DIGEST_ENV = "ASTRID_VIBECOMFY_CANDIDATE_CONTENT_DIGEST"

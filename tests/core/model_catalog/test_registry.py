@@ -781,19 +781,8 @@ class TestShippedRegistry:
     """Verify the shipped models.yaml loads correctly with all expected entries."""
 
     EXPECTED_SHIPPED_IDS = {
-        "hunyuan-video-foley",
-        "minimax-h3",
-        "seedance-2.0",
-        "lava-sr",
-        "deepfilternet3",
-        "gpt-image-2",
-        "gpt-image-1.5",
-        "gpt-image-1",
-        "gpt-image-1-mini",
         "seedvr2-upscaler",
         "z-image",
-        "qwen-image-2.1-turbo",
-        "qwen-image-2.1-turbo-edit",
         "qwen-image-2512",
         "qwen-image-edit",
         "qwen-image-edit-2511",
@@ -934,14 +923,8 @@ class TestListByModalityV2:
 
         ids = {m.id for m in image_models}
         assert ids == {
-            "gpt-image-2",
-            "gpt-image-1.5",
-            "gpt-image-1",
-            "gpt-image-1-mini",
             "seedvr2-upscaler",
             "z-image",
-            "qwen-image-2.1-turbo",
-            "qwen-image-2.1-turbo-edit",
             "qwen-image-2512",
             "qwen-image-edit",
             "qwen-image-edit-2511",
@@ -958,8 +941,6 @@ class TestListByModalityV2:
         registry = ModelRegistry.load_default()
         video_models = registry.list_by_modality("video")
         assert {m.id for m in video_models} == {
-            "minimax-h3",
-            "seedance-2.0",
             "wan-2.2",
             "ltx-2.3",
             "ltx-2.3-pro",
@@ -970,9 +951,6 @@ class TestListByModalityV2:
         registry = ModelRegistry.load_default()
         audio_models = registry.list_by_modality("audio")
         assert {m.id for m in audio_models} == {
-            "hunyuan-video-foley",
-            "lava-sr",
-            "deepfilternet3",
             "minimax-music-v2.6",
             "minimax-music-3",
             "minimax-music-3.0",

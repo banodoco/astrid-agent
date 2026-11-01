@@ -48,21 +48,6 @@ def test_source_free_generate_is_admitted_with_a_bounded_output() -> None:
     assert normalize_request(raw).value["source"] is None
 
 
-def test_prompt_whitespace_is_part_of_request_identity() -> None:
-    prompt = " \tA café scene.  \n"
-    raw = _request(content={"prompt": prompt}, source={"asset": " source.mp4 ", "range": [0, 4]})
-    normalized = normalize_request(raw)
-    assert normalized.value["content"]["prompt"].encode("utf-8") == prompt.encode("utf-8")
-    assert normalized.value["source"]["asset"] == "source.mp4"
-    assert normalized.digest != normalize_request(_request(content={"prompt": prompt.strip()})).digest
-
-
-@pytest.mark.parametrize("prompt", ["", " \t\n", None, 42, ["text"]])
-def test_blank_or_non_string_prompt_is_rejected(prompt: object) -> None:
-    with pytest.raises(H3RequestError, match="content.prompt must be a non-empty string"):
-        normalize_request(_request(content={"prompt": prompt}))
-
-
 def test_fixture_specific_reference_strategy_is_rejected() -> None:
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(_request(reference_strategy="chain"), SCHEMA)

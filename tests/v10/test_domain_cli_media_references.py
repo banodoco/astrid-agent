@@ -118,8 +118,8 @@ class _RecordingMedia:
             idempotency_key=key,
         )
 
-    def list(self, project, **filters):
-        self._owner.calls.append(("media.list", {"project": project, **filters}))
+    def list(self, project):
+        self._owner.calls.append(("media.list", {"project": project}))
         return DomainResult.success([{"id": "M-1", "project_id": "P-1"}])
 
     def show(self, project, ref):
@@ -589,28 +589,6 @@ def test_media_list_is_one_sdk_call(capsys) -> None:
     assert envelope["data"] == [{"id": "M-1", "project_id": "P-1"}]
     assert envelope["receipt"] is None
     assert envelope["idempotency_key"] == ""
-
-
-def test_media_list_forwards_all_exact_filters(capsys) -> None:
-    client = _FakeClient()
-    rc = _run(
-        "media",
-        [
-            "list", "--project", "demo", "--kind", "video", "--model", "X",
-            "--target", "runpod", "--tag", "hero", "--json",
-        ],
-        client=client,
-    )
-    assert rc == 0
-    assert client.calls == [
-        (
-            "media.list",
-            {"project": "demo", "kind": "video", "model": "X", "target": "runpod", "tag": "hero"},
-        )
-    ]
-    assert json.loads(capsys.readouterr().out)["data"] == [
-        {"id": "M-1", "project_id": "P-1"}
-    ]
 
 
 def test_media_show_is_one_sdk_call(capsys) -> None:
@@ -1316,8 +1294,8 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
     from astrid.core.gateway import dispatch
 
     assert "media" in dispatch._top_level_commands()
-    # Current gateway surface includes the generation SDK adapter as well as
-    # the product, operational and skills routes.
+    # Current gateway surface: eleven names (five product + operational families;
+    # skills routed by 316e3668).
     assert dispatch._top_level_commands() == frozenset(
         {
             "projects",
@@ -1331,6 +1309,5 @@ def test_dispatch_media_is_a_registered_top_level_command() -> None:
             "backup",
             "dev",
             "skills",
-            "generate",
         }
     )

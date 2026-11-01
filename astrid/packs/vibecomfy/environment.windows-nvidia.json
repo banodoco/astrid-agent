@@ -1,6 +1,6 @@
 {
   "python": "3.12.10",
-  "exclude_newer": "2026-10-31T00:00:00Z",
+  "exclude_newer": "2026-10-19T00:00:00Z",
   "cuda_index": "cu130",
   "torch": {
     "torch": "2.10.0+cu130",
@@ -8,23 +8,22 @@
     "torchaudio": "2.10.0+cu130"
   },
   "source": {
-    "pin": "comfyui"
+    "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+    "revision": "ee71d5c4993f29086b27fde1629a945ae48425bf"
   },
   "vibecomfy_source": {
-    "pin": "vibecomfy"
+    "repository": "https://github.com/peteromallet/VibeComfy.git"
   },
   "custom_nodes": [
     {
       "name": "ComfyUI-H3-Motion-Context-MultiRef",
-      "pin": "h3-motion-context"
+      "repository": "https://github.com/seitanism/ComfyUI-H3-Motion-Context-MultiRef.git",
+      "revision": "361624fb406b63eb6694442eac6c895fc1533a70"
     },
     {
       "name": "ComfyUI-VideoHelperSuite",
-      "pin": "videohelpersuite"
+      "repository": "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git",
+      "revision": "4ee72c065db22c9d96c2427954dc69e7b908444b"
     }
-  ],
-  "pins": {
-    "path": "packs/vibecomfy/pins.json",
-    "sha256": "7aca02677d65905d2c9a4e3adf88c95cabc6542ba59e0a9ae74308ac71de3602"
-  }
+  ]
 }

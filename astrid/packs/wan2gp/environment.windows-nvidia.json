@@ -8,10 +8,7 @@
     "torchaudio": "2.8.0+cu128"
   },
   "source": {
-    "pin": "wan2gp"
-  },
-  "pins": {
-    "path": "packs/wan2gp/pins.json",
-    "sha256": "3ab6d1b2fdcea48b3a84df1cd9a2ee4dc82b08384d6bf0810dd9629c80ac2c9a"
+    "repository": "https://github.com/deepbeepmeep/Wan2GP.git",
+    "revision": "f3f204e50f6eeb73ce40d1dafc93bc97bfaa61e4"
   }
 }

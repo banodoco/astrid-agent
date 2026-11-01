@@ -222,13 +222,6 @@ def test_stage_uses_source_overrides_and_records_manifest(tmp_path, monkeypatch,
         if name == "agent":
             (destination / "remotion/node_modules").mkdir(parents=True)
             (destination / "remotion/package-lock.json").write_text("{}\n")
-            canonical = Path(__file__).parents[1] / "astrid/core/timeline/schema/timeline-config.schema.json"
-            staged_canonical = destination / canonical.relative_to(Path(__file__).parents[1])
-            staged_canonical.parent.mkdir(parents=True)
-            staged_canonical.write_bytes(canonical.read_bytes())
-            (destination / "runtime.lock.json").write_bytes(
-                (Path(__file__).parents[1] / "runtime.lock.json").read_bytes()
-            )
         return destination
 
     monkeypatch.setattr("astrid.installer.backend.source", materialize)

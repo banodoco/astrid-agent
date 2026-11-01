@@ -59,8 +59,8 @@ actions:
     short_description: Author a canonical two-child timeline from runtime-resolved
       visual outputs.
     description: Validate a fenced two-child runtime continuation and emit a deterministic
-      canonical timeline authoring proposal. Captured admissions return guarded native
-      edits for the requester to commit; legacy admissions are refused before execution.
+      canonical timeline authoring proposal. Timeline mutation and rendering remain
+      runtime-owned.
     keywords:
     - timeline
     - assemble
@@ -93,7 +93,7 @@ actions:
       mode: create_or_replace
       path_template: '{out}/authoring-proposal.json'
       artifact_type: timeline/authoring-proposal
-      description: Captured native edit proposal; legacy admissions are refused before execution.
+      description: Typed runtime publication handoff containing the timeline and registry.
     graph:
       consumes:
       - runtime/resolved-children
@@ -402,7 +402,6 @@ actions:
       - ASTRID_NODE_EXECUTABLE
       - ASTRID_REMOTION_PROJECT_DIR
       - ASTRID_TIMELINE_SCHEMA_PYTHONPATH
-      - ASTRID_PACKS_PATH
       - PYTHONPATH
     metadata:
       visibility: internal
@@ -575,10 +574,6 @@ actions:
     - kind: implementation
       path: actions/timeline_visualize/__init__.py
     - kind: implementation
-      path: actions/timeline_visualize/_audio_cache.py
-    - kind: implementation
-      path: actions/timeline_visualize/_filmstrip_cache.py
-    - kind: implementation
       path: actions/timeline_visualize/assets.py
     - kind: implementation
       path: actions/timeline_visualize/audio_analysis.py
@@ -608,8 +603,14 @@ actions:
       path: actions/timeline_visualize/ids.py
     - kind: implementation
       path: actions/timeline_visualize/inspection_contract.py
+    - kind: asset
+      path: actions/timeline_visualize/inspector_assets/inspector.css
+    - kind: asset
+      path: actions/timeline_visualize/inspector_assets/inspector.js
     - kind: implementation
       path: actions/timeline_visualize/inspector_navigation.py
+    - kind: implementation
+      path: actions/timeline_visualize/inspector_viewer.py
     - kind: implementation
       path: actions/timeline_visualize/layers/__init__.py
     - kind: implementation
@@ -675,8 +676,6 @@ actions:
     - kind: schema
       path: actions/timeline_visualize/schemas/view-map.json
     - kind: implementation
-      path: actions/timeline_visualize/scene_only.py
-    - kind: implementation
       path: actions/timeline_visualize/scope.py
     - kind: implementation
       path: actions/timeline_visualize/scorer.py
@@ -712,7 +711,6 @@ actions:
     inputs:
     - name: effect_id
       type: string
-      required: true
       description: Bare effect id to create under the local pack, e.g. glass-product-card.
     outputs:
     - name: report
@@ -1048,7 +1046,7 @@ actions:
       name: timeline_authority
       required: false
       type: json
-    - description: Optional Hype media asset registry JSON for timeline media references; omission supplies an empty registry, suitable when no registry media is referenced.
+    - description: ''
       name: assets_registry
       required: false
       type: file
@@ -1058,7 +1056,7 @@ actions:
       name: media_dependency
       required: false
       type: file
-    - description: Optional theme configuration file; supported renderers may receive a schema-validated, runtime-materialized theme.json from the host.
+    - description: ''
       name: theme
       required: false
       type: file
@@ -1276,11 +1274,9 @@ actions:
     inputs:
     - description: Animation to depict across frames.
       name: animation
-      required: true
       type: string
     - description: Character or object being animated.
       name: subject
-      required: true
       type: string
     - default: ''
       description: Optional reference image for preserving the character/object identity
@@ -1424,21 +1420,39 @@ rendering:
   animations/fade:
     type: element
     path: rendering/elements/animations/fade/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/fade/component.tsx
   animations/fade-up:
     type: element
     path: rendering/elements/animations/fade-up/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/fade-up/component.tsx
   animations/scale-in:
     type: element
     path: rendering/elements/animations/scale-in/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/scale-in/component.tsx
   animations/slide-left:
     type: element
     path: rendering/elements/animations/slide-left/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/slide-left/component.tsx
   animations/slide-up:
     type: element
     path: rendering/elements/animations/slide-up/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/slide-up/component.tsx
   animations/type-on:
     type: element
     path: rendering/elements/animations/type-on/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/animations/type-on/component.tsx
   effects/audio-reactive-colour:
     type: element
     path: rendering/elements/effects/audio-reactive-colour/element.yaml
@@ -1448,12 +1462,21 @@ rendering:
   effects/text-card:
     type: element
     path: rendering/elements/effects/text-card/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/effects/text-card/component.tsx
   transitions/cross-fade:
     type: element
     path: rendering/elements/transitions/cross-fade/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/transitions/cross-fade/component.tsx
   transitions/fade:
     type: element
     path: rendering/elements/transitions/fade/element.yaml
+    resources:
+    - kind: implementation
+      path: rendering/elements/transitions/fade/component.tsx
 ui:
   transcript:
     type: editor

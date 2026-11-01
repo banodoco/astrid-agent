@@ -18,12 +18,7 @@ from astrid.core.generation.backends.base import (
     split_feature_support,
 )
 from astrid.core.model_catalog.schema import BackendSpec, ModelEntry
-from astrid.core.util.generation_helpers import (
-    DEFAULT_OUTPUT_MAX_BYTES,
-    download_output,
-    load_provider_key,
-    output_suffix,
-)
+from astrid.core.util.credentials_scope import CredentialsScope
 from astrid.core.util.http import (
     HttpClient,
     default_client,
@@ -71,7 +66,7 @@ class WavespeedBackend(BackendAdapter):
     def _resolve_api_key(self) -> str:
         """Return ``WAVESPEED_API_KEY`` from Astrid's shared credential resolver."""
         if self._api_key is None:
-            self._api_key = load_provider_key("wavespeed", env_file=self._env_file)
+            self._api_key = CredentialsScope.get_local("wavespeed", env_file=self._env_file)
             self._client.register_secret(self._api_key)
         return self._api_key
 
@@ -146,17 +141,19 @@ class WavespeedBackend(BackendAdapter):
         image_paths: list[Path] = []
         for idx, url in enumerate(asset_urls):
             try:
-                suffix = _guess_suffix(url)
-                dst = out_dir / f"output_{idx:03d}{suffix}"
-                dst, data = download_output(
-                    self._client, url, dst, timeout=300,
-                    max_bytes=DEFAULT_OUTPUT_MAX_BYTES, fallback_suffix=".mp3",
-                    unique=True,
-                )
+                data = self._client.get_bytes(url, timeout=300)
             except Exception as exc:
                 raise ValueError(
                     f"Failed to download wavespeed result output {idx}: {exc}"
                 ) from exc
+            suffix = _guess_suffix(url)
+            dst = out_dir / f"output_{idx:03d}{suffix}"
+            if dst.exists():
+                counter = 1
+                while dst.exists():
+                    dst = out_dir / f"output_{idx:03d}_{counter}{suffix}"
+                    counter += 1
+            dst.write_bytes(data)
             image_paths.append(dst)
 
         return GenerationResult(
@@ -241,4 +238,21 @@ def _extract_asset_urls(result: dict[str, Any]) -> list[str]:
 
 def _guess_suffix(url: str) -> str:
     """Guess a file extension from a URL path."""
-    return output_suffix(url, fallback=".mp3")
+    path = url.split("?")[0]
+    suffix = Path(path).suffix.lower()
+    if suffix in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".m4a",
+    }:
+        return suffix
+    return ".mp3"

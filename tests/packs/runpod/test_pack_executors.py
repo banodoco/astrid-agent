@@ -656,37 +656,6 @@ def test_provision_forwards_and_persists_allowed_cuda_versions(
     assert resolved["allowed_cuda_versions"] == ["13.0"]
 
 
-def test_5090_launch_contract_accepts_the_expanded_13x_list() -> None:
-    from astrid.packs.runpod.cuda_versions import DEFAULT_ALLOWED_CUDA_VERSIONS
-    from astrid.packs.runpod.shared.common import _launch_contract
-
-    image, versions, template_id = _launch_contract(
-        gpu_type="NVIDIA GeForce RTX 5090",
-        image="registry.example/vibecomfy:cu130",
-        allowed_cuda_versions=DEFAULT_ALLOWED_CUDA_VERSIONS,
-    )
-
-    assert image == "registry.example/vibecomfy:cu130"
-    assert versions == ("13.0", "13.1", "13.2", "13.3")
-    assert template_id == ""
-
-
-@pytest.mark.parametrize(
-    "allowed_cuda_versions",
-    [["12.8"], ["12.9", "13.0"], ["9.5"], []],
-    ids=["12x", "mixed-with-12x", "numeric-not-text", "empty"],
-)
-def test_5090_launch_contract_rejects_versions_below_minimum_and_empty(allowed_cuda_versions: list[str]) -> None:
-    from astrid.packs.runpod.shared.common import _launch_contract
-
-    with pytest.raises(AstridError, match=r"13\.0 or newer"):
-        _launch_contract(
-            gpu_type="NVIDIA GeForce RTX 5090",
-            image="registry.example/vibecomfy:cu130",
-            allowed_cuda_versions=allowed_cuda_versions,
-        )
-
-
 def test_empty_explicit_cuda_filter_fails_before_launch(produces_dir: Path) -> None:
     from astrid.packs.runpod.shared.common import _resolve_compute_profile
 
@@ -1601,7 +1570,7 @@ def test_session_nonzero_remote_exit_writes_diagnostics_artifacts_result_and_cos
              patch("runpod_lifecycle.get_pod", AsyncMock(return_value=mock_pod)), \
              patch("runpod_lifecycle.ship_and_run_detached", ship), \
              patch("runpod_lifecycle.RunPodConfig", MagicMock()):
-            from astrid.packs.runpod.shared.common import cmd_session
+            from astrid.packs.runpod.actions.provision.run import cmd_session
 
             class Args:
                 gpu_type = None

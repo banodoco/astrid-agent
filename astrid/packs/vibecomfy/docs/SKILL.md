@@ -9,23 +9,6 @@ description: >
 
 # VibeComfy
 
-## Generate discovery
-
-Use the shared Generate commands to list and inspect registered VibeComfy
-catalog, workflow, and action entries. Authoring operations (`import`, `inspect`,
-`edit`, and `validate`) support workflow preparation but are not Generate entries
-by themselves. `run` executes a selected workflow; it does not make every pack
-action or workflow an entry automatically.
-
-```sh
-astrid generate list --json
-astrid generate describe --entry vibecomfy.video_enhance --json
-astrid generate run --entry vibecomfy.video_enhance --inputs-json FILE
-```
-
-Use the selected entry's `describe` output to prepare `FILE`. The SDK invocation
-routes documented below remain available as compatibility conveniences.
-
 ## Run on your own ComfyUI
 
 Use this when the user wants to generate with their own ComfyUI: "use my

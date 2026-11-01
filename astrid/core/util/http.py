@@ -469,14 +469,10 @@ def fal_submit_and_poll(
     *,
     max_wait_sec: int = 300,
     max_response_bytes: int | None = None,
-    submit_timeout: int | None = None,
 ) -> dict[str, Any]:
     """Submit a job to ``fal-ai/<model_id>``, poll until completion.
 
     Returns the completed job result dictionary.
-
-    ``submit_timeout`` controls only the POST request; ``max_wait_sec`` remains
-    the polling deadline for the submitted job.
     """
     submit_url = f"{FAL_QUEUE_URL}/{model_id}"
     headers = {"authorization": f"Key {api_key}"}
@@ -484,7 +480,6 @@ def fal_submit_and_poll(
         submit_url,
         payload,
         headers=headers,
-        timeout=submit_timeout,
         max_response_bytes=max_response_bytes,
     )
 

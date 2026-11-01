@@ -307,11 +307,11 @@ def import_timeline(client: Any, path: str | Path, project: str | None = None, n
             uploaded_count += 1
             uploaded_bytes += item["size"]
 
-        body: Mapping[str, Any] = {**prepared, "source": {"via": "cli"}}
+        body: Mapping[str, Any] = prepared
         if len(prepared_bytes) > _INLINE_COMMIT_LIMIT:
             digest = hashlib.sha256(prepared_bytes).hexdigest()
             import io
-            body = {"prepared_object_id": "sha256:" + digest, "source": {"via": "cli"}}
+            body = {"prepared_object_id": "sha256:" + digest}
             _upload(client, project_id, io.BytesIO(prepared_bytes), size=len(prepared_bytes),
                     media_type="application/json", filename="prepared-timeline-import.json",
                     digest=digest, key=_derived_key(key, "prepared", digest))
@@ -319,9 +319,6 @@ def import_timeline(client: Any, path: str | Path, project: str | None = None, n
         commit = client.timelines.import_timeline(project_id, body, idempotency_key=key)
         result = _result_data(commit, "timeline import commit")
         result = dict(result)
-        receipt = getattr(commit, "receipt", None)
-        if receipt is not None:
-            result["receipt"] = receipt.as_dict() if hasattr(receipt, "as_dict") else _plain(receipt)
         media_receipt = result.get("media")
         if not isinstance(media_receipt, Mapping):
             media_receipt = {"count": len(media_rows), "bytes": sum(item["size"] for item in media_rows)}

@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -212,7 +211,6 @@ class SyncGatewayTest(unittest.TestCase):
             self.assertTrue(gateway.is_symlink())
             self.assertEqual(gateway.resolve(), view.resolve())
             self.assertTrue((view / "SKILL.md").is_file())
-            self.assertIn(f"Run SDK scripts with `{sys.executable}`.", (view / "SKILL.md").read_text())
             pack_link = view / "packs" / "foley"
             self.assertTrue(pack_link.is_dir())
             self.assertFalse(pack_link.is_symlink())

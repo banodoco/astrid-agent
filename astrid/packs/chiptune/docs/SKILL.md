@@ -51,7 +51,7 @@ with AstridClient.open_from_launcher() as client:  # sdk.invoke needs an explici
             "sections": SECTIONS,
             "hits": [4.5, 60.0],
             "vo_mask": [[2.0, 9.5], [20.0, 33.0]],  # music dips by duck_db
-            "duck_db": -10,
+            "duck_db": -9,
             "master_db": -16,
         },
         client=client,
@@ -85,7 +85,7 @@ after a fix re-run with `python3 -m astrid tasks retry <task-id> --project almos
 | `seed` | 1 | Drives the motif and the drum noise. |
 | `sections` | required | JSON array of {start_s, end_s, energy, mood}. Edges snap to bar lines (about 1.8 s at 132 BPM). Gaps are silent. |
 | `hits` | none | Accent stabs at exact times, voiced on the chord sounding then. |
-| `vo_mask` | none | Speech spans [[start, end], ...]. Music dips by `duck_db` (default -10) with 120 ms in and 300 ms out. |
+| `vo_mask` | none | Speech spans [[start, end], ...]. Music dips by `duck_db` (default -9) with 60 ms in and 300 ms out. |
 | `duck` | none | Explicit {start_s, end_s, gain_db} dips. |
 | `master_db` | -16 | RMS target. The peak ceiling of -1.05 dBFS wins if they conflict. |
 

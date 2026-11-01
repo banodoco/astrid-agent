@@ -17,9 +17,7 @@ permissions:
 - id: accelerator
   reason: May use GPU for ComfyUI model inference.
 description: Import, inspect, edit, validate, and run ComfyUI / VibeComfy workflows
-  using canonical editable bundles. Generate discovery exposes only registered
-  catalog, workflow, or declared action entries; related workflow authoring
-  operations do not become Generate entries by themselves.
+  using canonical editable bundles.
 keywords:
 - comfyui
 - vibecomfy
@@ -39,15 +37,10 @@ capabilities:
 - character_animation
 agent:
   purpose: Choose this pack to import, inspect, typed-edit or capture, validate, or
-    execute a ComfyUI/VibeComfy workflow. Import, inspect, edit, and validate are
-    related workflow-authoring actions; Generate entries come only from registered
-    catalog or workflow modes and declared generation actions such as video_enhance
-    and character_animation.
+    execute a ComfyUI/VibeComfy workflow.
   do_not_use_for: Do not use to understand existing media (use understanding) or to
     cut/render timelines (use video_editing); it runs workflow graphs, not editorial
     pipelines.
-  required_context:
-  - docs/SKILL.md
   normal_entrypoints:
   - vibecomfy.import
   - vibecomfy.inspect
@@ -837,10 +830,6 @@ actions:
       requirements:
       - vibecomfy
     metadata:
-      generation_publication:
-        version: 1
-        modality: video
-        output_port: enhanced_video
       storage_estimate_required: true
       storage_estimate_exact: true
       storage_input_max_bytes:
@@ -959,10 +948,6 @@ actions:
       requirements:
       - vibecomfy
     metadata:
-      generation_publication:
-        version: 1
-        modality: video
-        output_port: animated_video
       storage_estimate_required: true
       storage_estimate_exact: true
       storage_input_max_bytes:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from astrid.core.contracts.errors import AstridValueError
 import argparse
-import hashlib
 import json
 import shutil
 from datetime import datetime, timezone
@@ -33,9 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preparation", type=Path, required=True)
     parser.add_argument("--input-bundle", type=Path)
     parser.add_argument("--generated", type=Path, required=True)
-    parser.add_argument("--generated-audio", type=Path)
-    parser.add_argument("--compilation", type=Path)
-    parser.add_argument("--generation-provenance")
     parser.add_argument("--source", type=Path)
     parser.add_argument("--preservation-evidence", type=Path)
     parser.add_argument("--out", type=Path, required=True)
@@ -50,43 +46,6 @@ def main(argv: list[str] | None = None) -> int:
     if result_manifest_path.exists() or result_manifest_path.is_symlink():
         raise FileExistsError(f"result receipt already exists: {result_manifest_path}; use a fresh output root")
     preparation = json.loads(args.preparation.read_text(encoding="utf-8"))
-    if args.compilation is not None:
-        from astrid.packs.h3_av.actions.transform.run import _provenance
-        compilation = json.loads(args.compilation.read_text(encoding="utf-8"))
-        preparation["provenance"] = _provenance(preparation, compilation)
-    runtime = None
-    if args.generation_provenance is not None:
-        runtime = json.loads(args.generation_provenance)
-        if not isinstance(runtime, dict) or set(runtime) != {"run_id", "task_id", "attempt_id", "output_contract", "generated_outputs"}:
-            raise AstridValueError("invalid generated association evidence")
-        expected = {"video": args.generated, "audio": args.generated_audio} if args.generated_audio else {"muxed_av": args.generated}
-        rows = runtime.get("generated_outputs")
-        if not isinstance(rows, dict) or set(rows) != set(expected):
-            raise AstridValueError("generated association roles do not match compose inputs")
-        for role, path in expected.items():
-            row = rows[role]
-            digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-            if (not isinstance(row, dict) or row.get("object_id") != digest or row.get("digest") != digest
-                    or row.get("size") != path.stat().st_size or row.get("task_id") != runtime["task_id"]
-                    or row.get("run_id") != runtime["run_id"] or row.get("attempt_id") != runtime["attempt_id"]
-                    or not isinstance(row.get("association_id"), str) or not row["association_id"]):
-                raise AstridValueError("generated association evidence does not match compose input")
-        if "provenance" not in preparation:
-            raise AstridValueError("generated association evidence requires compilation provenance")
-        preparation["provenance"]["runtime"] = runtime
-    portable_preparation = dict(preparation)
-    generated = args.generated
-    if args.generated_audio is not None:
-        from astrid.packs.h3_av.actions.transform.run import _write_generated_bundle
-        rows = {}
-        for role, path in (("video", args.generated), ("audio", args.generated_audio)):
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            evidence = runtime["generated_outputs"][role] if runtime is not None else {}
-            producer = evidence.get("producer", {})
-            rows[role] = (path, {**evidence, "sha256": digest, "object_id": "sha256:" + digest,
-                                 "producer_output_id": producer.get("producer_output_id") if isinstance(producer, dict) else None})
-        args.out.mkdir(parents=True, exist_ok=True)
-        generated = _write_generated_bundle(rows, args.out / "generated-av.zip")
     if args.input_bundle is not None:
         preparation = resolve_preparation_assets(
             preparation, args.input_bundle, args.out / "request-assets"
@@ -96,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         evidence = json.loads(args.preservation_evidence.read_text(encoding="utf-8"))
     composition = compose_candidate(
         preparation=preparation,
-        generated=generated,
+        generated=args.generated,
         source=args.source,
         out_dir=args.out,
         preservation_evidence=evidence,
@@ -115,8 +74,6 @@ def main(argv: list[str] | None = None) -> int:
     (args.out / "composition-manifest.json").write_text(
         json.dumps(composition, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    (args.out / "provenance-preparation.json").write_text(
-        json.dumps(portable_preparation, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     write_manifest(
         result_manifest_path,
         build_manifest(
@@ -131,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
             outputs=[
                 {"name": "candidate", "path": "candidate.media", "ordinal": 0, "media_type": media_type},
                 {"name": "composition", "path": "composition-manifest.json", "ordinal": 1},
-                {"name": "preparation", "path": "provenance-preparation.json", "ordinal": 2},
             ],
             created=datetime.now(timezone.utc).isoformat(),
         ),
