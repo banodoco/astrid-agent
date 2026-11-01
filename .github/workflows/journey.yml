@@ -1,9 +1,15 @@
 name: Release-1 installed lifecycle receipts
 
 # This workflow is deliberately a receipt producer, not a release dispatcher.
-# A caller supplies one immutable candidate tuple; the final gate rejects any
-# missing, skipped, failed, duplicate, or foreground-substituted matrix result.
+# A caller or automatic resolver supplies one immutable candidate tuple; the
+# final gate rejects any missing, skipped, failed, duplicate, or
+# foreground-substituted matrix result.
 on:
+  push:
+    branches:
+      - int/r1
+  schedule:
+    - cron: '23 3 * * *'
   workflow_call:
     inputs:
       candidate:
@@ -155,23 +161,86 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: driver
           persist-credentials: false
+      - name: Check out latest App int/r1 manifest for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        uses: actions/checkout@v4
+        with:
+          repository: banodoco/astrid-app
+          ref: int/r1
+          path: automatic-app
+          fetch-depth: 1
+          persist-credentials: false
+      - id: automatic_candidate
+        name: Resolve the checked-out App manifest tuple for automatic runs
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          app = Path("automatic-app")
+          manifest_path = app / "public" / "install-manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          app_ref = subprocess.check_output(
+              ["git", "-C", str(app), "rev-parse", "HEAD"], text=True
+          ).strip()
+          manifest_pinokio = (manifest.get("pinokio") or {}).get("sha")
+          if manifest_pinokio:
+              pinokio_ref = manifest_pinokio
+          else:
+              pinokio_ref = subprocess.check_output(
+                  [
+                      "git", "ls-remote", "https://github.com/banodoco/astrid-pinokio.git",
+                      "refs/heads/int/r1",
+                  ], text=True,
+              ).split()[0]
+          candidate = {
+              "app": app_ref,
+              "agent": (manifest.get("agent") or {}).get("sha"),
+              "runtime": (manifest.get("runtime") or {}).get("sha"),
+              "pinokio": pinokio_ref,
+              "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+              "artifacts": {
+                  path: hashlib.sha256((app / path).read_bytes()).hexdigest()
+                  for path in ("public/install", "public/install.sh", "public/install.ps1")
+              },
+          }
+          if any(not isinstance(candidate.get(key), str) or not candidate[key]
+                 for key in ("app", "agent", "runtime", "pinokio", "manifest_sha256")):
+              raise SystemExit("automatic App manifest resolution produced an incomplete candidate")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print("candidate=" + json.dumps(candidate, separators=(",", ":")), file=output)
+              print("agent=" + candidate["agent"], file=output)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Automatic App manifest resolution\n\n")
+              summary.write(f"- App: {candidate['app']}\n")
+              summary.write(f"- Agent: {candidate['agent']}\n")
+              summary.write(f"- Runtime: {candidate['runtime']}\n")
+              summary.write(f"- Pinokio: {candidate['pinokio']}\n")
+              summary.write(f"- Manifest SHA-256: {candidate['manifest_sha256']}\n")
+          PY
       - id: config
         shell: bash
         env:
-          CANDIDATE: ${{ inputs.candidate }}
+          CANDIDATE: ${{ steps.automatic_candidate.outputs.candidate || inputs.candidate }}
           DRIVER_AGENT_REF: ${{ github.workflow_sha }}
           WORKFLOW_REPOSITORY: ${{ github.repository }}
-          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref }}
-          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref }}
-          M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs }}
-          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only }}
-          M4_5_ENABLED: ${{ inputs.m4_5_enabled }}
-          M4_5_ONLY: ${{ inputs.m4_5_only }}
-          M4_5_BOUNDARY: ${{ inputs.m4_5_boundary }}
-          M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args }}
-          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled }}
-          M4_6_ENABLED: ${{ inputs.m4_6_enabled }}
-          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate }}
+          OLD_LAUNCHER_REF: ${{ inputs.old_launcher_ref || 'bbba620e3d89eeff8021417f365e6ea584203105' }}
+          STOPPED_PATH_AGENT_REF: ${{ inputs.stopped_path_agent_ref || steps.automatic_candidate.outputs.agent }}
+          M4_4A_EXECUTOR_CONFIGS: ${{ inputs.m4_4a_executor_configs || '{"linux":{},"macos":{},"windows":{}}' }}
+          M4_4A_BACKEND_ONLY: ${{ inputs.m4_4a_backend_only || false }}
+          M4_5_ENABLED: ${{ inputs.m4_5_enabled || false }}
+          M4_5_ONLY: ${{ inputs.m4_5_only || false }}
+          M4_5_BOUNDARY: ${{ inputs.m4_5_boundary || '' }}
+          M4_5_BOUNDARY_ARGS: ${{ inputs.m4_5_boundary_args || '[]' }}
+          M4_4B_ENABLED: ${{ inputs.m4_4b_enabled || false }}
+          M4_6_ENABLED: ${{ inputs.m4_6_enabled || false }}
+          M4_6_CANDIDATE: ${{ inputs.m4_6_candidate || '' }}
         run: |
           python3 - <<'PY'
           import json, os, re
@@ -337,11 +406,13 @@ jobs:
         run: |
           {
             echo "## Effective Release-1 journey tuple"
+            echo "- Trigger: ${{ github.event_name }} / ${{ github.sha }}"
             echo "- Driver Agent: $(git -C agent rev-parse HEAD)"
             echo "- Candidate App: $(git -C app rev-parse HEAD)"
             echo "- Candidate Agent: $(git -C candidate-agent rev-parse HEAD)"
             echo "- Candidate Runtime: $(git -C runtime rev-parse HEAD)"
             echo "- Candidate Pinokio: $(git -C pinokio rev-parse HEAD)"
+            echo "- Manifest SHA-256: $(python -c 'import hashlib; print(hashlib.sha256(open("app/public/install-manifest.json", "rb").read()).hexdigest())')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze and validate candidate inputs
         shell: bash
@@ -644,6 +715,7 @@ jobs:
           if-no-files-found: warn
 
   gate:
+    name: Journey evidence (exact tuple)
     if: always()
     needs: [config, journey, release2, m4_4b_local, failure_modes]
     runs-on: ubuntu-24.04
