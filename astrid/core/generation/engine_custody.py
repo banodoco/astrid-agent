@@ -41,8 +41,39 @@ _SCHEMA = "astrid.engine-service.v1"
 _FRAME_LIMIT = 16 * 1024 * 1024
 _OUTPUT_LIMIT = 1024 * 1024
 _CLEANUP_SECONDS = 8.0
+_CAUSE_LIMIT = 600
+_CLEANUP_STAGES = {"terminate", "verify", "stdout_drain", "stderr_drain",
+                   "stdout_close", "stderr_close", "drain"}
+_SECRET_KEY = re.compile(r"token|secret|password|authorization|credential|bearer|key$|owner_id", re.I)
 _ERRORS = {e.code: e for e in (CustodyUnresolved, DeadlineExceeded, EndpointHealthError,
            EndpointOwnershipError, IntegrityError, RecipeValidationError, UnsafePathError)}
+
+
+def _cleanup_failure(stage, exc, secrets=()):
+    """Only bounded diagnostic text crosses the owner boundary, never env/argv."""
+    try:
+        message = str(exc)
+    except BaseException:
+        message = "exception message unavailable"
+    for value in sorted(set(secrets), key=len, reverse=True):
+        if value:
+            message = message.replace(value, "<redacted>")
+    message = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1<redacted>@", message)
+    message = re.sub(
+        r'''(?i)(\b[\w-]*(?:token|secret|password|authorization|credential|api[_-]?key|owner_id|key)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:bearer\s+)?[^\s,;&}]+)''',
+        r"\1<redacted>", message)
+    message = re.sub(r'''(?i)(\bbearer\s+)[^\s,;"'&}]+''', r"\1<redacted>", message)
+    # Also suppress unlabelled opaque tokens, including launch IDs and JWTs.
+    message = re.sub(r"\b[A-Za-z0-9_-]{24,}(?:\.[A-Za-z0-9_-]+)*\b", "<redacted>", message)
+    message = " ".join(message.split())[:_CAUSE_LIMIT]
+    return {"stage": stage, "exception_type": type(exc).__name__[:80], "message": message}
+
+
+def _valid_cleanup_failure(value):
+    return (isinstance(value, dict) and set(value) == {"stage", "exception_type", "message"}
+            and isinstance(value["stage"], str) and value["stage"] in _CLEANUP_STAGES
+            and isinstance(value["exception_type"], str) and 0 < len(value["exception_type"]) <= 80
+            and isinstance(value["message"], str) and len(value["message"]) <= _CAUSE_LIMIT)
 
 
 def _remaining(deadline):
@@ -256,11 +287,20 @@ class LinuxEngineServiceClient:
                     # Keep the connection open while target deadline cleanup is verified.
                     response = _receive(channel, deadline + _CLEANUP_SECONDS)
                 if (not isinstance(response, dict) or response.get("identity") != self.identity
-                        or set(response) not in ({"identity", "result"}, {"identity", "error"})):
+                        or set(response) not in ({"identity", "result"}, {"identity", "error"},
+                                                 {"identity", "error", "cleanup_failure"})):
                     raise IntegrityError("unbound supervisor response")
                 if "error" in response:
                     code = response["error"]
-                    raise _ERRORS.get(code, CustodyUnresolved)("engine supervisor: " + str(code))
+                    cause = response.get("cleanup_failure")
+                    if "cleanup_failure" in response and not _valid_cleanup_failure(cause):
+                        raise IntegrityError("invalid supervisor cleanup diagnostic")
+                    message = "engine supervisor: " + str(code)
+                    if cause is not None:
+                        message += f" ({cause['stage']}: {cause['exception_type']}: {cause['message']})"
+                    error = _ERRORS.get(code, CustodyUnresolved)(message)
+                    error.cleanup_failure = cause
+                    raise error
                 return response["result"]
         except FileNotFoundError:
             if not start:
@@ -309,7 +349,7 @@ class _Output:
 
 
 class _Owned:
-    def __init__(self, request):
+    def __init__(self, request, *, secrets=()):
         from astrid.core.execution.process_group import popen_owned_group
         # The caller's library path is never inherited; request.env (built by
         # engine_child_env) is the only source.
@@ -319,6 +359,14 @@ class _Owned:
                 env.pop(key, None)
             else:
                 env[key] = value
+        self.cleanup_failure = None
+        self._cleanup_secrets = tuple(secrets) + tuple(v for k, v in env.items() if _SECRET_KEY.search(k))
+        for index, arg in enumerate(request.argv):
+            if arg.startswith("-") and _SECRET_KEY.search(arg.partition("=")[0]):
+                if "=" in arg:
+                    self._cleanup_secrets += (arg.partition("=")[2],)
+                elif index + 1 < len(request.argv):
+                    self._cleanup_secrets += (request.argv[index + 1],)
         self.process = None
         try:
             self.process = popen_owned_group(list(request.argv), cwd=request.cwd, env=env,
@@ -337,18 +385,29 @@ class _Owned:
 
     def stop(self, deadline):
         from astrid.core.execution.process_group import terminate_tree, verify_tree_absent
+        stage = "terminate"
         try:
             terminate_tree(self.process, grace_seconds=0.1, cleanup_deadline=deadline)
+            stage = "verify"
             verify_tree_absent(self.process)
-            for output in (getattr(self, "stdout", None), getattr(self, "stderr", None)):
+            for name in ("stdout", "stderr"):
+                output = getattr(self, name, None)
                 if output is None:
                     continue
+                stage = name + "_drain"
                 output.thread.join(timeout=max(0, deadline - time.monotonic()))
                 if output.thread.is_alive():
                     raise CustodyUnresolved("owned output drain unresolved")
+                stage = name + "_close"
                 output.stream.close()
         except BaseException as exc:
-            raise CustodyUnresolved("native owned process cleanup unresolved") from exc
+            if self.cleanup_failure is None:
+                self.cleanup_failure = _cleanup_failure(stage, exc, self._cleanup_secrets)
+            cause = self.cleanup_failure
+            error = CustodyUnresolved(f"native owned process cleanup unresolved "
+                                     f"({cause['stage']}: {cause['exception_type']}: {cause['message']})")
+            error.cleanup_failure = cause
+            raise error from exc
 
 
 def _command(value, deadline):
@@ -462,6 +521,7 @@ class _Supervisor:
         self.stopping = threading.Event()
         self.finished = threading.Event()
         self.unresolved = False
+        self.cleanup_failure = None
         self.work = threading.Lock()
         self.registry = self.root + "/runtime/out/sessions/" + identity["engine"]
         self.registry_names = []
@@ -488,7 +548,7 @@ class _Supervisor:
         owned = _Owned.__new__(_Owned)
         self.commands.append(owned)
         try:
-            owned.__init__(self.child_request(request))
+            owned.__init__(self.child_request(request), secrets=(self.token,))
         except BaseException as exc:
             if getattr(owned, "process", None) is not None:
                 self.unresolved = True
@@ -502,8 +562,15 @@ class _Supervisor:
     def drain(self, owned, deadline):
         try:
             owned.stop(deadline)
-        except BaseException:
+        except BaseException as exc:
             self.unresolved = True
+            if self.cleanup_failure is None:
+                self.cleanup_failure = getattr(owned, "cleanup_failure", None) or _cleanup_failure("drain", exc, (self.token,))
+                try:
+                    with _directory(self.control) as fd:
+                        _write(fd, "cleanup-failure.json", _json(self.cleanup_failure).encode())
+                except (OSError, EngineError):
+                    pass  # The in-memory first cause still survives a persistence failure.
             raise
         self.commands.remove(owned)
 
@@ -720,8 +787,11 @@ class _Supervisor:
                 # recovery; a failed stop never retires its session marker.
                 self.stopping.clear()
             try:
-                _send(channel, {"identity": self.identity, "error": exc.code if isinstance(exc, EngineError)
-                               else CustodyUnresolved.code}, time.monotonic() + 1)
+                response = {"identity": self.identity, "error": exc.code if isinstance(exc, EngineError)
+                            else CustodyUnresolved.code}
+                if self.cleanup_failure is not None:
+                    response["cleanup_failure"] = self.cleanup_failure
+                _send(channel, response, time.monotonic() + 1)
             except (OSError, EngineError):
                 pass
         finally:

@@ -10,7 +10,9 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -206,6 +208,82 @@ def test_failed_stop_reaps_original_child_without_retiring_custody(tmp_path, mon
         for output in (owned.stdout, owned.stderr):
             output.thread.join(timeout=5)
             output.stream.close()
+
+
+@pytest.mark.parametrize("stage", ["terminate", "verify", "stdout_drain", "stderr_drain", "stdout_close", "stderr_close"])
+def test_cleanup_first_cause_survives_private_record_and_client_roundtrip(tmp_path, monkeypatch, stage):
+    from astrid.core.execution import process_group as groups
+
+    token, env_secret, arg_secret = "owner-launch-token-value", "private-env-value", "private-arg-value"
+    supervisor = custody._Supervisor(_identity(tmp_path), load_recipe("vibecomfy-h3", PLATFORM), token)
+    # Exercise secret capture at the real spawn boundary without starting a process.
+    process = SimpleNamespace(stdout=None, stderr=None)
+    monkeypatch.setattr(groups, "popen_owned_group", lambda *args, **kwargs: process)
+    monkeypatch.setattr(custody, "_Output", lambda *args: None)
+    owned = supervisor.spawn(CommandRequest((sys.executable, "--token", arg_secret), str(tmp_path),
+                                           {"SERVICE_API_KEY": env_secret}, time.monotonic() + 5, 1024))
+    supervisor.engine = owned
+    message = (f"injected {stage}; token={token}; env={env_secret}; arg={arg_secret}; "
+               "authorization=Bearer labelled-value; https://user:private-url@example.test; "
+               "sk-abcdefghijklmnopqrstuvwx; " + "detail " * 150)
+    failure = OSError(message)
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(groups, "terminate_tree", fail if stage == "terminate" else lambda *args, **kwargs: None)
+    monkeypatch.setattr(groups, "verify_tree_absent", fail if stage == "verify" else lambda *args, **kwargs: None)
+    for name in ("stdout", "stderr"):
+        setattr(owned, name, SimpleNamespace(
+            thread=SimpleNamespace(join=fail if stage == name + "_drain" else lambda **kwargs: None,
+                                   is_alive=lambda: False),
+            stream=SimpleNamespace(close=fail if stage == name + "_close" else lambda: None)))
+    with custody._directory(supervisor.control) as fd:
+        custody._write(fd, "session.json", b"retained marker")
+    with custody._directory(supervisor.registry) as fd:
+        custody._write(fd, "launch.json", b"retained registry")
+    supervisor.registry_names = ["launch.json"]
+    client = _client(supervisor.identity)
+    threads = []
+
+    def connect(*args, **kwargs):
+        local, remote = socket.socketpair()
+        thread = threading.Thread(target=supervisor.connection, args=(remote,))
+        threads.append(thread)
+        thread.start()
+        return local
+
+    monkeypatch.setattr(client, "_connect", connect)
+    try:
+        with pytest.raises(CustodyUnresolved) as error:
+            client.stop_owned(deadline=time.monotonic() + 5)
+        cause = error.value.cleanup_failure
+        assert error.value.code == "custody_unresolved"
+        assert cause["stage"] == stage and cause["exception_type"] == "OSError"
+        assert f"injected {stage}" in cause["message"] and len(cause["message"]) <= 600
+        record = Path(supervisor.control, "cleanup-failure.json")
+        assert json.loads(record.read_bytes()) == cause == owned.cleanup_failure
+        assert record.stat().st_mode & 0o777 == 0o600
+        assert cause["message"] in str(error.value)
+        for secret in (token, env_secret, arg_secret, "labelled-value", "private-url", "sk-abcdefghijklmnopqrstuvwx"):
+            assert secret not in record.read_text() + str(error.value)
+
+        # A later failed stop cannot replace the original stage/type/message.
+        def later_failure(*args, **kwargs):
+            raise RuntimeError("later cleanup error must not replace first cause")
+        monkeypatch.setattr(groups, "terminate_tree", later_failure)
+        with pytest.raises(CustodyUnresolved) as repeated:
+            client.stop_owned(deadline=time.monotonic() + 5)
+        assert repeated.value.cleanup_failure == cause
+        assert json.loads(record.read_bytes()) == cause
+        assert supervisor.unresolved and supervisor.engine is owned and supervisor.commands == [owned]
+        assert owned.process is process and not supervisor.finished.is_set()
+        assert Path(supervisor.control, "session.json").read_bytes() == b"retained marker"
+        assert Path(supervisor.registry, "launch.json").read_bytes() == b"retained registry"
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
 
 
 def test_constructor_has_no_effects(tmp_path):
