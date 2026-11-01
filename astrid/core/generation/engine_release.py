@@ -43,8 +43,8 @@ REQUIRED = (
 )
 
 
-# The one engine/platform whose recipe-owned managed interpreter a release
-# may hand off to. Expected identity always comes from the verified recipe.
+# Default handoff remains H3. Explicit plain-ComfyUI selection uses its own
+# hash-indexed recipe; expected identity always comes from the verified tree.
 HANDOFF_ENGINE = 'vibecomfy-h3'
 HANDOFF_PLATFORM = 'linux-x86_64-cu130'
 HANDOFF_SCHEMA = 'astrid.release-python.v1'
@@ -423,15 +423,17 @@ def extract_release(archive_path, sha256, retained):
     return target
 
 
-def _handoff_recipe(release):
+def _handoff_recipe(release, *, engine=HANDOFF_ENGINE):
     """Primary environment of the hash-indexed recipe inside a VERIFIED tree."""
+    if engine not in {HANDOFF_ENGINE, 'comfyui'}:
+        raise ReleaseError('unsupported handoff engine')
     site = Path(release) / 'site/astrid'
     try:
         index = _json((site / 'packs/engine-index.json').read_bytes())
         if not isinstance(index, dict) or index.get('schema') != 'astrid.engine-index.v1':
             raise ReleaseError('invalid packaged recipe index')
         entries = [e for e in index['entries'] if isinstance(e, dict)
-                   and e.get('engine') == HANDOFF_ENGINE and e.get('platform') == HANDOFF_PLATFORM]
+                   and e.get('engine') == engine and e.get('platform') == HANDOFF_PLATFORM]
         if len(entries) != 1 or set(entries[0]) != {'engine', 'platform', 'recipe'}:
             raise ReleaseError('release has no unique handoff recipe')
         ref = entries[0]['recipe']
@@ -445,7 +447,7 @@ def _handoff_recipe(release):
             raise ReleaseError('handoff recipe differs from its index digest')
         recipe = _json(raw)
         if (not isinstance(recipe, dict) or recipe.get('schema') != 'astrid.engine-recipe.v1'
-                or recipe.get('engine') != HANDOFF_ENGINE or recipe.get('platform') != HANDOFF_PLATFORM):
+                or recipe.get('engine') != engine or recipe.get('platform') != HANDOFF_PLATFORM):
             raise ReleaseError('handoff recipe identity differs')
         primary = [e for e in recipe['environments']
                    if isinstance(e, dict) and e.get('name') == recipe.get('primary_environment')]
@@ -486,7 +488,7 @@ def _bounded(argv, *, env, end, capture=False):
         raise ReleaseError('python handoff step exceeded its bound') from None
 
 
-def prepare_release_python(*, archive, sha256, retain, root, seconds=1800):
+def prepare_release_python(*, archive, sha256, retain, root, seconds=1800, engine=HANDOFF_ENGINE):
     """Verify a complete release, then return the exact interpreter for it.
 
     Order is fixed: archive digest, member set and every retained file hash;
@@ -504,7 +506,7 @@ def prepare_release_python(*, archive, sha256, retain, root, seconds=1800):
     manifest = verify_tree(release)
     if not manifest['complete'] or manifest['fixture']:
         raise ReleaseError('incomplete release cannot hand off to a managed interpreter')
-    environment = _handoff_recipe(release)
+    environment = _handoff_recipe(release, engine=engine)
     expected = expected_identity(environment['python_version'])
     if manifest['python'] != expected:
         raise ReleaseError('release interpreter differs from the recipe managed Python')
@@ -561,7 +563,7 @@ def _absolute(*paths):
 
 
 def release_cli_argv(*, archive, sha256, retain, root, cli_args, seconds=1800,
-                     python='/usr/bin/python3'):
+                     python='/usr/bin/python3', engine=HANDOFF_ENGINE):
     """Pure argv: verify, hand off, then exec the retained canonical CLI.
 
     For an existing authenticated agent job (one job owns every child). The
@@ -573,11 +575,20 @@ def release_cli_argv(*, archive, sha256, retain, root, cli_args, seconds=1800,
     cli_args = tuple(cli_args)
     if not all(isinstance(a, str) for a in cli_args) or _cli_root(cli_args) != root:
         raise ReleaseError('canonical CLI arguments must select the handoff root')
+    _cli_engine(cli_args, engine)
     if type(seconds) not in (int, float) or not 0 < seconds <= 604800:
         raise ReleaseError('invalid python handoff budget')
     loader = Path(__file__).read_text(encoding='utf-8')
     return (python, '-I', '-S', '-c', loader, 'cli', '--archive', archive, '--sha256', sha256,
-            '--retain', retain, '--root', root, '--seconds', str(seconds), '--', *cli_args)
+            '--retain', retain, '--root', root, '--seconds', str(seconds),
+            '--engine', engine, '--', *cli_args)
+
+
+def _cli_engine(cli_args, engine):
+    if (engine not in {HANDOFF_ENGINE, 'comfyui'} or len(cli_args) < 3
+            or cli_args[0] != 'engines' or cli_args[1] not in {'install', 'status'}
+            or cli_args[2] != engine):
+        raise ReleaseError('canonical CLI arguments must select the handoff engine')
 
 
 def _cli_root(cli_args):
@@ -633,6 +644,7 @@ def main(argv=None):
             extract.add_argument('--root', required=True)
         if name in ('prepare-python', 'cli'):
             extract.add_argument('--seconds', type=float, default=1800)
+            extract.add_argument('--engine', choices=(HANDOFF_ENGINE, 'comfyui'), default=HANDOFF_ENGINE)
         if name == 'cli':
             extract.add_argument('cli_args', nargs='+')
     args = parser.parse_args(argv)
@@ -650,9 +662,12 @@ def main(argv=None):
                 raise ReleaseError('startup paths must remain below the selected volume')
             if args.operation == 'cli' and _cli_root(tuple(args.cli_args)) != args.root:
                 raise ReleaseError('canonical CLI arguments must select the handoff root')
+            if args.operation == 'cli':
+                _cli_engine(tuple(args.cli_args), args.engine)
             prepared = prepare_release_python(archive=args.archive, sha256=args.sha256,
                                               retain=args.retain, root=args.root,
-                                              seconds=args.seconds)
+                                              seconds=args.seconds,
+                                              engine=getattr(args, 'engine', HANDOFF_ENGINE))
             if args.operation == 'prepare-python':
                 print(json.dumps(prepared, sort_keys=True, separators=(',', ':')))
                 return 0

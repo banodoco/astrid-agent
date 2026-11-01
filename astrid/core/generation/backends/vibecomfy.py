@@ -1809,7 +1809,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
         if not isinstance(binding, Mapping):
             raise ValueError("checkout_server restart requires a managed session")
         session_dir = _strict_absolute_directory(binding.get("session_dir"), "session_dir")
-        if session_dir.name == "vibecomfy-h3":
+        if session_dir.name in {"vibecomfy-h3", "comfyui"}:
             raise ValueError("installer-owned session capacity replacement is unsupported")
         old_pid = int(binding["pid"])
         old_child = int(binding["comfy_pid"])
@@ -2503,7 +2503,7 @@ class CheckoutServerAdapter(VibeComfyBackend):
     ) -> dict[str, Any]:
         """Fence native state before probing and mark the adapter cold."""
         if (reason == "capacity_replacement" and self._host_session is not None
-                and Path(str(self._host_session.get("session_dir", ""))).name == "vibecomfy-h3"):
+                and Path(str(self._host_session.get("session_dir", ""))).name in {"vibecomfy-h3", "comfyui"}):
             raise ValueError("installer-owned session capacity replacement is unsupported")
         if (
             self._host_session is not None
