@@ -1,0 +1,185 @@
+parent pwsh -> Python: 3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]
+command: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <probe>
+PSVersion: 5.1.20348.5756
+PSEdition: Desktop
+inherited PSModulePath: C:\Users\runneradmin\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;c:\program files\powershell\7\Modules;C:\\Modules\az_15.6.1;C:\Users\packer\Documents\WindowsPowerShell\Modules;C:\Program Files\WindowsPowerShell\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\Microsoft SQL Server\130\Tools\PowerShell\Modules\
+effective child PSModulePath: C:\Users\runneradmin\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;c:\program files\powershell\7\Modules;C:\\Modules\az_15.6.1;C:\Users\packer\Documents\WindowsPowerShell\Modules;C:\Program Files\WindowsPowerShell\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules;C:\Program Files\Microsoft SQL Server\130\Tools\PowerShell\Modules\
+Get-Module -ListAvailable Microsoft.PowerShell.Security:
+
+
+Name       : Microsoft.PowerShell.Security
+Version    : 7.0.0.0
+ModuleBase : C:\program files\powershell\7\Modules\Microsoft.PowerShell.Security
+
+Name       : Microsoft.PowerShell.Security
+Version    : 3.0.0.0
+ModuleBase : C:\Windows\system32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Security
+
+
+
+
+module_listing_exit: 0
+import_exit: 1
+
+
+PSMessageDetails      : 
+Exception             : System.Management.Automation.RuntimeException: The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                        
+                           at System.Management.Automation.Runspaces.InitialSessionState.ThrowTypeOrFormatErrors(String resourceString, String errorMsg, String errorId)
+                           at System.Management.Automation.Runspaces.InitialSessionState.UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                           at System.Management.Automation.Runspaces.InitialSessionState.Bind_UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                           at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly, PSModuleInfo module, Boolean noClobber, Boolean local)
+                           at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly)
+                           at Microsoft.PowerShell.Commands.ModuleCmdletBase.LoadModuleManifest(String moduleManifestPath, ExternalScriptInfo manifestScriptInfo, Hashtable data, Hashtable localizedData, ManifestProcessingFlags manifestProcessingFlags, Version minimumVersion, Version maximumVersion, Version requiredVersion, Nullable`1 requiredModuleGuid, ImportModuleOptions& options, Boolean& containedErrors)
+TargetObject          : 
+CategoryInfo          : InvalidOperation: (:) [Import-Module], RuntimeException
+FullyQualifiedErrorId : FormatXmlUpdateException,Microsoft.PowerShell.Commands.ImportModuleCommand
+ErrorDetails          : 
+InvocationInfo        : System.Management.Automation.InvocationInfo
+ScriptStackTrace      : at <ScriptBlock>, D:\a\_temp\probe\child.ps1: line 18
+PipelineIterationInfo : {}
+
+
+
+
+
+
+ErrorRecord                 : The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                              
+WasThrownFromThrowStatement : False
+Message                     : The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                              
+Data                        : {}
+InnerException              : 
+TargetSite                  : Void ThrowTypeOrFormatErrors(System.String, System.String, System.String)
+StackTrace                  :    at System.Management.Automation.Runspaces.InitialSessionState.ThrowTypeOrFormatErrors(String resourceString, String errorMsg, String errorId)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.Bind_UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly, PSModuleInfo module, Boolean noClobber, Boolean local)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly)
+                                 at Microsoft.PowerShell.Commands.ModuleCmdletBase.LoadModuleManifest(String moduleManifestPath, ExternalScriptInfo manifestScriptInfo, Hashtable data, Hashtable localizedData, ManifestProcessingFlags manifestProcessingFlags, Version minimumVersion, Version maximumVersion, Version requiredVersion, Nullable`1 requiredModuleGuid, ImportModuleOptions& options, Boolean& containedErrors)
+HelpLink                    : 
+Source                      : System.Management.Automation
+HResult                     : -2146233087
+
+
+
+
+Get-Acl_exit: 1
+private_owner_protected_full_check_exit: 1
+
+
+PSMessageDetails      : 
+Exception             : System.Management.Automation.CommandNotFoundException: The 'Get-Acl' command was found in the module 'Microsoft.PowerShell.Security', but the module could not be loaded. For more information, run 'Import-Module Microsoft.PowerShell.Security'. ---> System.Management.Automation.CmdletInvocationException: The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                         ---> System.Management.Automation.RuntimeException: The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                        Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                        
+                           at System.Management.Automation.Runspaces.InitialSessionState.ThrowTypeOrFormatErrors(String resourceString, String errorMsg, String errorId)
+                           at System.Management.Automation.Runspaces.InitialSessionState.UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                           at System.Management.Automation.Runspaces.InitialSessionState.Bind_UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                           at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly, PSModuleInfo module, Boolean noClobber, Boolean local)
+                           at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly)
+                           at Microsoft.PowerShell.Commands.ModuleCmdletBase.LoadModuleManifest(String moduleManifestPath, ExternalScriptInfo manifestScriptInfo, Hashtable data, Hashtable localizedData, ManifestProcessingFlags manifestProcessingFlags, Version minimumVersion, Version maximumVersion, Version requiredVersion, Nullable`1 requiredModuleGuid, ImportModuleOptions& options, Boolean& containedErrors)
+                           --- End of inner exception stack trace ---
+                           at System.Management.Automation.Runspaces.PipelineBase.Invoke(IEnumerable input)
+                           at System.Management.Automation.PowerShell.Worker.ConstructPipelineAndDoWork(Runspace rs, Boolean performSyncInvoke)
+                           at System.Management.Automation.PowerShell.CoreInvokeHelper[TInput,TOutput](PSDataCollection`1 input, PSDataCollection`1 output, PSInvocationSettings settings)
+                           at System.Management.Automation.PowerShell.CoreInvoke[TInput,TOutput](PSDataCollection`1 input, PSDataCollection`1 output, PSInvocationSettings settings)
+                           at System.Management.Automation.PowerShell.Invoke[T]()
+                           at System.Management.Automation.CommandDiscovery.AutoloadSpecifiedModule(String moduleName, ExecutionContext context, SessionStateEntryVisibility visibility, Exception& exception)
+                           --- End of inner exception stack trace ---
+                           at System.Management.Automation.ExceptionHandlingOps.CheckActionPreference(FunctionContext funcContext, Exception exception)
+                           at System.Management.Automation.Interpreter.ActionCallInstruction`2.Run(InterpretedFrame frame)
+                           at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)
+                           at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)
+TargetObject          : Get-Acl
+CategoryInfo          : ObjectNotFound: (Get-Acl:String) [], CommandNotFoundException
+FullyQualifiedErrorId : CouldNotAutoloadMatchingModule
+ErrorDetails          : 
+InvocationInfo        : System.Management.Automation.InvocationInfo
+ScriptStackTrace      : at Initialize-PrivateDirectory, D:\a\_temp\probe\child.ps1: line 63
+                        at <ScriptBlock>, D:\a\_temp\probe\child.ps1: line 82
+PipelineIterationInfo : {}
+
+
+
+
+
+
+ErrorRecord                 : The 'Get-Acl' command was found in the module 'Microsoft.PowerShell.Security', but the module could not be loaded. For more information, run 'Import-Module Microsoft.PowerShell.Security'.
+CommandName                 : Get-Acl
+WasThrownFromThrowStatement : False
+Message                     : The 'Get-Acl' command was found in the module 'Microsoft.PowerShell.Security', but the module could not be loaded. For more information, run 'Import-Module Microsoft.PowerShell.Security'.
+Data                        : {System.Management.Automation.Interpreter.InterpretedFrameInfo}
+InnerException              : System.Management.Automation.CmdletInvocationException: The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                               ---> System.Management.Automation.RuntimeException: The following error occurred while loading the extended type data file: Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AuditToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+                              Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+                              
+                                 at System.Management.Automation.Runspaces.InitialSessionState.ThrowTypeOrFormatErrors(String resourceString, String errorMsg, String errorId)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.Bind_UpdateTypes(ExecutionContext context, Boolean updateOnly)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly, PSModuleInfo module, Boolean noClobber, Boolean local)
+                                 at System.Management.Automation.Runspaces.InitialSessionState.Bind(ExecutionContext context, Boolean updateOnly)
+                                 at Microsoft.PowerShell.Commands.ModuleCmdletBase.LoadModuleManifest(String moduleManifestPath, ExternalScriptInfo manifestScriptInfo, Hashtable data, Hashtable localizedData, ManifestProcessingFlags manifestProcessingFlags, Version minimumVersion, Version maximumVersion, Version requiredVersion, Nullable`1 requiredModuleGuid, ImportModuleOptions& options, Boolean& containedErrors)
+                                 --- End of inner exception stack trace ---
+                                 at System.Management.Automation.Runspaces.PipelineBase.Invoke(IEnumerable input)
+                                 at System.Management.Automation.PowerShell.Worker.ConstructPipelineAndDoWork(Runspace rs, Boolean performSyncInvoke)
+                                 at System.Management.Automation.PowerShell.CoreInvokeHelper[TInput,TOutput](PSDataCollection`1 input, PSDataCollection`1 output, PSInvocationSettings settings)
+                                 at System.Management.Automation.PowerShell.CoreInvoke[TInput,TOutput](PSDataCollection`1 input, PSDataCollection`1 output, PSInvocationSettings settings)
+                                 at System.Management.Automation.PowerShell.Invoke[T]()
+                                 at System.Management.Automation.CommandDiscovery.AutoloadSpecifiedModule(String moduleName, ExecutionContext context, SessionStateEntryVisibility visibility, Exception& exception)
+TargetSite                  : Void CheckActionPreference(System.Management.Automation.Language.FunctionContext, System.Exception)
+StackTrace                  :    at System.Management.Automation.ExceptionHandlingOps.CheckActionPreference(FunctionContext funcContext, Exception exception)
+                                 at System.Management.Automation.Interpreter.ActionCallInstruction`2.Run(InterpretedFrame frame)
+                                 at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)
+                                 at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(InterpretedFrame frame)
+HelpLink                    : 
+Source                      : System.Management.Automation
+HResult                     : -2146233087
+
+
+
+
+
+child_exit: 1
+python_exit: 0

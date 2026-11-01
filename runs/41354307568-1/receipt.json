@@ -1,0 +1,34 @@
+{
+  "inner_exits": {
+    "Get-Acl_exit": "1",
+    "child_exit": "1",
+    "import_exit": "1",
+    "module_listing_exit": "0",
+    "private_owner_protected_full_check_exit": "1",
+    "python_exit": "0"
+  },
+  "job": {
+    "completed_at": "2026-11-01T21:54:04Z",
+    "id": 124990976714,
+    "name": "windows",
+    "runner_id": 1000016592,
+    "runner_name": "GitHub Actions 1000016592",
+    "started_at": "2026-11-01T21:53:38Z",
+    "status": "success"
+  },
+  "repository": "banodoco/astrid-agent",
+  "run_attempt": 1,
+  "run_id": 41354307568,
+  "run_status": null,
+  "run_url": "https://github.com/banodoco/astrid-agent/actions/runs/41354307568",
+  "schema_version": 1,
+  "sha256": {
+    "probes/windows.log": "ea0bd04e7699e5f876cf7270131c86da4063035068ae1096a07f7e3e335667d1"
+  },
+  "source_branch": "venue/M-VENUE-R51-WIN-MODULE-VERSION-1",
+  "source_commit": "122af5b3eb492f63ff61022becc862263a7bc154",
+  "workflow": ".github/workflows/r51-windows-module-version.yml",
+  "workflow_blob": "e2cb49b44436f8bf54f4dafd131131ae81c76c6f",
+  "workflow_ref": "banodoco/astrid-agent/venue/M-VENUE-R51-WIN-MODULE-VERSION-1",
+  "workflow_sha256": "9215015ba9938dd5ef23e8f3b13c85369da87784e2b3f92ad33e33ba055786fa"
+}
