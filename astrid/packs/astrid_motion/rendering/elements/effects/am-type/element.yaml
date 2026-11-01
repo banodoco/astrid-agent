@@ -30,7 +30,7 @@ defaults:
   text: ""
   font: display
   size: 96
-  color: "#25241F"
+  color: "#FAFAFA"
   align: left
   x: 96
   y: 96

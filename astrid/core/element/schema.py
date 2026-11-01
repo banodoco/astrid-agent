@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # Single source of truth for element kinds lives in astrid.core.pack to avoid a
@@ -161,6 +162,25 @@ def load_element_definition(
     if manifest_path is None:
         raise ElementValidationError(f"missing element manifest in {element_root}")
     payload = _read_manifest(manifest_path)
+    definition = element_definition_from_payload(
+        payload, root=element_root.resolve(), kind=folder_kind, source=source,
+        editable=editable, priority=priority, manifest_path=manifest_path,
+        element_kind_registry=element_kind_registry,
+    )
+    return definition
+
+
+def element_definition_from_payload(
+    payload, *, root, kind, source, editable, priority, manifest_path,
+    files=None, element_kind_registry=None,
+):
+    """Parse the same declaration from a bounded immutable resource snapshot.
+
+    ``files`` contains pack-relative resource names; when supplied this path
+    performs no filesystem reads. Admission remains responsible for the tree.
+    """
+    element_root = root
+    folder_kind = _normalize_kind(kind, element_kind_registry=element_kind_registry)
     element_id = str(payload.get("id") or element_root.name)
     declared_kind = payload.get("kind")
     if declared_kind is not None:
@@ -187,12 +207,15 @@ def load_element_definition(
     if not isinstance(defaults_section, dict):
         raise ElementValidationError(f"{manifest_path}: defaults must be an object")
     dependencies = _parse_dependencies(payload.get("dependencies", {}), path=f"{manifest_path}.dependencies")
-    component = (element_root / "component.tsx").resolve()
+    component = element_root / "component.tsx"
+    if files is None:
+        component = component.resolve()
     # component.tsx is optional when runtime.adapter is declared in the manifest
     _has_runtime_adapter = isinstance(payload.get("runtime"), dict) and bool(
         payload["runtime"].get("adapter")
     )
-    if not _has_runtime_adapter and not component.is_file():
+    if not _has_runtime_adapter and not (
+            component.is_file() if files is None else component.as_posix() in files):
         raise ElementValidationError(f"element {element_id!r} missing component.tsx")
     description = _optional_capability_string(payload, "description", manifest_path)
     short_description = _optional_capability_string(payload, "short_description", manifest_path)
@@ -206,11 +229,11 @@ def load_element_definition(
         for index, item in enumerate(payload.get("outputs") or ())
     )
     runtime = _parse_runtime(payload.get("runtime"), path=f"{manifest_path}.runtime")
-    assets = _parse_assets(payload.get("assets"), element_root=element_root, path=f"{manifest_path}.assets")
+    assets = _parse_assets(payload.get("assets"), element_root=element_root, path=f"{manifest_path}.assets", files=files)
     definition = ElementDefinition(
         id=element_id,
         kind=folder_kind,
-        root=element_root.resolve(),
+        root=element_root,
         source=source,
         editable=editable,
         priority=priority,
@@ -228,8 +251,7 @@ def load_element_definition(
         assets=assets,
     )
     return validate_element_definition(
-        definition,
-        element_kind_registry=element_kind_registry,
+        definition, element_kind_registry=element_kind_registry, files=files,
     )
 
 
@@ -237,6 +259,7 @@ def validate_element_definition(
     raw: ElementDefinition | dict[str, Any],
     *,
     element_kind_registry: ElementKindRegistry | None = None,
+    files=None,
 ) -> ElementDefinition:
     if isinstance(raw, ElementDefinition):
         definition = raw
@@ -247,12 +270,19 @@ def validate_element_definition(
         definition.kind,
         element_kind_registry=element_kind_registry,
     )
-    if not definition.root.is_dir():
+    if files is None and not definition.root.is_dir():
         raise ElementValidationError(f"element root is not a directory: {definition.root}")
     # component.tsx is optional when runtime.adapter is declared
-    if not definition.runtime.get("adapter") and not (definition.root / "component.tsx").is_file():
+    if not definition.runtime.get("adapter") and not (
+            (definition.root / "component.tsx").is_file() if files is None
+            else (definition.root / "component.tsx").as_posix() in files):
         raise ElementValidationError(f"element {definition.id!r} missing component.tsx")
-    if _element_manifest_path(definition.root) is None:
+    if files is None:
+        has_manifest = _element_manifest_path(definition.root) is not None
+    else:
+        has_manifest = any((definition.root / name).as_posix() in files
+                           for name in ELEMENT_MANIFEST_NAMES)
+    if not has_manifest:
         raise ElementValidationError(f"element {definition.id!r} missing element.yaml")
     if definition.metadata.get("id") not in (None, definition.id):
         raise ElementValidationError(f"element {definition.id!r} metadata.id does not match")
@@ -264,7 +294,7 @@ def validate_element_definition(
         raise ElementValidationError("element.metadata must be an object")
     if not isinstance(definition.runtime, dict):
         raise ElementValidationError("element.runtime must be an object")
-    _validate_assets(definition.assets, element_root=definition.root, path="element.assets")
+    _validate_assets(definition.assets, element_root=definition.root, path="element.assets", files=files)
     _validate_runtime_adapter(definition.runtime, f"{definition.kind}/{definition.id}")
     _validate_capability_text(
         definition.description,
@@ -327,7 +357,7 @@ def _parse_dependencies(raw: Any, *, path: str) -> ElementDependencies:
     )
 
 
-def _parse_assets(raw: Any, *, element_root: Path, path: str) -> tuple[ElementAsset, ...]:
+def _parse_assets(raw: Any, *, element_root: Path, path: str, files=None) -> tuple[ElementAsset, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, dict):
@@ -343,13 +373,13 @@ def _parse_assets(raw: Any, *, element_root: Path, path: str) -> tuple[ElementAs
         parsed.append(
             ElementAsset(
                 name=name,
-                path=_normalize_asset_path(value, element_root=element_root, path=asset_path),
+                path=_normalize_asset_path(value, element_root=element_root, path=asset_path, files=files),
             )
         )
     return tuple(parsed)
 
 
-def _validate_assets(assets: Any, *, element_root: Path, path: str) -> None:
+def _validate_assets(assets: Any, *, element_root: Path, path: str, files=None) -> None:
     if not isinstance(assets, tuple):
         raise ElementValidationError(f"{path} must be an immutable tuple")
     names: set[str] = set()
@@ -361,10 +391,18 @@ def _validate_assets(assets: Any, *, element_root: Path, path: str) -> None:
         if asset.name in names:
             raise ElementValidationError(f"{item_path}.name duplicates asset {asset.name!r}")
         names.add(asset.name)
-        _normalize_asset_path(asset.path, element_root=element_root, path=f"{item_path}.path")
+        _normalize_asset_path(asset.path, element_root=element_root, path=f"{item_path}.path", files=files)
 
 
-def _normalize_asset_path(value: str | Path, *, element_root: Path, path: str) -> Path:
+def _normalize_asset_path(value: str | Path, *, element_root: Path, path: str, files=None) -> Path:
+    if files is not None:
+        portable_candidate = PurePosixPath(value)
+        normalized = PurePosixPath(posixpath.normpath(portable_candidate.as_posix()))
+        if portable_candidate.is_absolute() or normalized.parts[:1] == ('..',):
+            raise ElementValidationError(f"{path} must stay inside the element root")
+        if (element_root / normalized).as_posix() not in files:
+            raise ElementValidationError(f"{path} file does not exist: {normalized}")
+        return Path(normalized)
     candidate = Path(value)
     if candidate.is_absolute():
         raise ElementValidationError(f"{path} must be relative to the element root")
@@ -373,12 +411,12 @@ def _normalize_asset_path(value: str | Path, *, element_root: Path, path: str) -
     root = element_root.resolve()
     resolved = (root / candidate).resolve()
     try:
-        normalized = resolved.relative_to(root)
+        normalized_path = resolved.relative_to(root)
     except ValueError as exc:
         raise ElementValidationError(f"{path} must stay inside the element root") from exc
     if not resolved.is_file():
-        raise ElementValidationError(f"{path} file does not exist: {normalized.as_posix()}")
-    return normalized
+        raise ElementValidationError(f"{path} file does not exist: {normalized_path.as_posix()}")
+    return normalized_path
 
 
 def _string_list(raw: Any, *, path: str) -> list[str]:

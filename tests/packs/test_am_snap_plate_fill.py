@@ -19,7 +19,12 @@ class AmSnapPlateFillTest(unittest.TestCase):
         self.assertEqual(definition.defaults["background"], "#F7F4ED")
 
     def test_component_renders_without_an_asset_when_fill_is_set(self) -> None:
-        source = (PLATE / "component.tsx").read_text(encoding="utf-8")
+        source = "\n".join(
+            (
+                (PLATE / "component.tsx").read_text(encoding="utf-8"),
+                (PLATE / "surface.ts").read_text(encoding="utf-8"),
+            )
+        )
         # Returns null only when there is neither a source nor a fill.
         self.assertIn("if (!url && !fill) {", source)
         self.assertIn("FILL_TOKENS", source)

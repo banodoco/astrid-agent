@@ -1,0 +1,770 @@
+{
+  "input": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "parent_revision": {
+      "revision_id": "empty-1",
+      "payload": {
+        "config": {
+          "tracks": [],
+          "clips": [],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "unknown": [
+            null,
+            false,
+            {
+              "literal": "first-clip"
+            }
+          ]
+        },
+        "clips": [],
+        "occurrences": [],
+        "registry": {
+          "assets": {}
+        },
+        "opaque": {
+          "keep": null
+        }
+      },
+      "content_digest": "sha256:bb26905b3451682b6fc1ec71ca473e4b106b513431bbd101f39c2cbb68362358"
+    },
+    "shot_revisions": [],
+    "internal_timeline_revisions": [],
+    "dependency_manifest": {
+      "shots": [],
+      "internal_timelines": [],
+      "media": [],
+      "documents": []
+    }
+  },
+  "commands": [
+    {
+      "schema_version": 1,
+      "op": "track.create",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "row": {
+          "id": "first-track",
+          "kind": "visual",
+          "role": "output",
+          "unknown": [
+            null,
+            false
+          ]
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent/track:first-track",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "track.create",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {},
+      "created": [
+        "parent/track:first-track"
+      ],
+      "expect": {
+        "parent/track:first-track::": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent/track:first-track::": "direct"
+      }
+    },
+    {
+      "schema_version": 1,
+      "op": "clip.add",
+      "version": "1",
+      "select": "parent",
+      "args": {
+        "row": {
+          "id": "first-clip",
+          "clipType": "text",
+          "track": "first-track",
+          "at": 0.017,
+          "hold": 1.013,
+          "params": {
+            "text": "First"
+          },
+          "app": {
+            "astrid": {
+              "on": null,
+              "opaque": [
+                "first-clip",
+                null
+              ]
+            },
+            "future": false
+          },
+          "nullable": null,
+          "sourceURL": null,
+          "from": null,
+          "opaque": {
+            "id": "first-clip",
+            "ordered": [
+              null,
+              false,
+              0,
+              {},
+              []
+            ]
+          }
+        }
+      },
+      "intent": {},
+      "resolved": [],
+      "reads": [
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "id"
+          ],
+          "state": {
+            "state": "present",
+            "value": "first-track"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "kind"
+          ],
+          "state": {
+            "state": "present",
+            "value": "visual"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "role"
+          ],
+          "state": {
+            "state": "present",
+            "value": "output"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "enabled"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "active"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "disabled"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "hidden"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/track:first-track",
+          "path": [
+            "deleted"
+          ],
+          "state": {
+            "state": "absent"
+          }
+        },
+        {
+          "ref": "parent/collection:clip",
+          "path": [],
+          "state": {
+            "state": "present",
+            "value": {
+              "members": {
+                "state": "present",
+                "value": []
+              },
+              "config": {
+                "state": "present",
+                "value": {}
+              },
+              "payload_members": {
+                "state": "present",
+                "value": []
+              }
+            }
+          }
+        },
+        {
+          "ref": "parent/clip:first-clip",
+          "path": [],
+          "state": {
+            "state": "absent"
+          }
+        }
+      ],
+      "selections": [
+        {
+          "key": "collection.clips",
+          "query_version": 1,
+          "owner": "parent",
+          "members": [],
+          "order": [],
+          "boundaries": [],
+          "policy": "guard-membership"
+        }
+      ],
+      "bindings": {
+        "add.track": "parent/track:first-track"
+      },
+      "created": [
+        "parent/clip:first-clip"
+      ],
+      "expect": {
+        "parent/clip:first-clip::": {
+          "state": "absent"
+        }
+      },
+      "authorship": {
+        "parent/clip:first-clip::": "direct"
+      }
+    }
+  ],
+  "records": [
+    {
+      "ordinal": 0,
+      "command": {
+        "schema_version": 1,
+        "op": "track.create",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "row": {
+            "id": "first-track",
+            "kind": "visual",
+            "role": "output",
+            "unknown": [
+              null,
+              false
+            ]
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent/track:first-track",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "track.create",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {},
+        "created": [
+          "parent/track:first-track"
+        ],
+        "expect": {
+          "parent/track:first-track::": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent/track:first-track::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/track:first-track",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "id": "first-track",
+              "kind": "visual",
+              "role": "output",
+              "unknown": [
+                null,
+                false
+              ]
+            }
+          }
+        }
+      ],
+      "bindings": [],
+      "created": [
+        {
+          "ref": "parent/track:first-track",
+          "kind": "track",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [],
+      "derived_writes": []
+    },
+    {
+      "ordinal": 1,
+      "command": {
+        "schema_version": 1,
+        "op": "clip.add",
+        "version": "1",
+        "select": "parent",
+        "args": {
+          "row": {
+            "id": "first-clip",
+            "clipType": "text",
+            "track": "first-track",
+            "at": 0.017,
+            "hold": 1.013,
+            "params": {
+              "text": "First"
+            },
+            "app": {
+              "astrid": {
+                "on": null,
+                "opaque": [
+                  "first-clip",
+                  null
+                ]
+              },
+              "future": false
+            },
+            "nullable": null,
+            "sourceURL": null,
+            "from": null,
+            "opaque": {
+              "id": "first-clip",
+              "ordered": [
+                null,
+                false,
+                0,
+                {},
+                []
+              ]
+            }
+          }
+        },
+        "intent": {},
+        "resolved": [],
+        "reads": [
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "id"
+            ],
+            "state": {
+              "state": "present",
+              "value": "first-track"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "kind"
+            ],
+            "state": {
+              "state": "present",
+              "value": "visual"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "role"
+            ],
+            "state": {
+              "state": "present",
+              "value": "output"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "enabled"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "active"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "disabled"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "hidden"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/track:first-track",
+            "path": [
+              "deleted"
+            ],
+            "state": {
+              "state": "absent"
+            }
+          },
+          {
+            "ref": "parent/collection:clip",
+            "path": [],
+            "state": {
+              "state": "present",
+              "value": {
+                "members": {
+                  "state": "present",
+                  "value": []
+                },
+                "config": {
+                  "state": "present",
+                  "value": {}
+                },
+                "payload_members": {
+                  "state": "present",
+                  "value": []
+                }
+              }
+            }
+          },
+          {
+            "ref": "parent/clip:first-clip",
+            "path": [],
+            "state": {
+              "state": "absent"
+            }
+          }
+        ],
+        "selections": [
+          {
+            "key": "collection.clips",
+            "query_version": 1,
+            "owner": "parent",
+            "members": [],
+            "order": [],
+            "boundaries": [],
+            "policy": "guard-membership"
+          }
+        ],
+        "bindings": {
+          "add.track": "parent/track:first-track"
+        },
+        "created": [
+          "parent/clip:first-clip"
+        ],
+        "expect": {
+          "parent/clip:first-clip::": {
+            "state": "absent"
+          }
+        },
+        "authorship": {
+          "parent/clip:first-clip::": "direct"
+        }
+      },
+      "writes": [
+        {
+          "ref": "parent/clip:first-clip",
+          "path": [],
+          "before": {
+            "state": "absent"
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "id": "first-clip",
+              "clipType": "text",
+              "track": "first-track",
+              "at": 0.017,
+              "hold": 1.013,
+              "params": {
+                "text": "First"
+              },
+              "app": {
+                "astrid": {
+                  "on": null,
+                  "opaque": [
+                    "first-clip",
+                    null
+                  ]
+                },
+                "future": false
+              },
+              "nullable": null,
+              "sourceURL": null,
+              "from": null,
+              "opaque": {
+                "id": "first-clip",
+                "ordered": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "key": "add.track",
+          "ref": "parent/track:first-track",
+          "policy": "fixed",
+          "dependencies": []
+        }
+      ],
+      "created": [
+        {
+          "ref": "parent/clip:first-clip",
+          "kind": "clip",
+          "owner": "parent"
+        }
+      ],
+      "dependencies": [],
+      "derived_writes": [
+        {
+          "ref": "parent",
+          "path": [
+            "config",
+            "clips"
+          ],
+          "before": {
+            "state": "present",
+            "value": []
+          },
+          "after": {
+            "state": "present",
+            "value": [
+              {
+                "id": "first-clip",
+                "clipType": "text",
+                "track": "first-track",
+                "at": 0.017,
+                "hold": 1.013,
+                "params": {
+                  "text": "First"
+                },
+                "app": {
+                  "astrid": {
+                    "on": null,
+                    "opaque": [
+                      "first-clip",
+                      null
+                    ]
+                  },
+                  "future": false
+                },
+                "nullable": null,
+                "sourceURL": null,
+                "from": null,
+                "opaque": {
+                  "id": "first-clip",
+                  "ordered": [
+                    null,
+                    false,
+                    0,
+                    {},
+                    []
+                  ]
+                }
+              }
+            ]
+          },
+          "cause": 1
+        }
+      ]
+    }
+  ],
+  "output": {
+    "schema_version": 1,
+    "project_id": "project-1",
+    "timeline_id": "film",
+    "parent_revision": {
+      "revision_id": "authoring-parent-revision-9ad94eec3752b52a116e4bd204a05f4ef2a90558842bf0fd081cc84627613019",
+      "content_digest": "sha256:00a91136161ad3777f50f8c0cfaa41e2d2f17807b4c7c4649ab1d8babe61f853",
+      "payload": {
+        "config": {
+          "tracks": [
+            {
+              "id": "first-track",
+              "kind": "visual",
+              "role": "output",
+              "unknown": [
+                null,
+                false
+              ]
+            }
+          ],
+          "clips": [
+            {
+              "id": "first-clip",
+              "clipType": "text",
+              "track": "first-track",
+              "at": 0.017,
+              "hold": 1.013,
+              "params": {
+                "text": "First"
+              },
+              "app": {
+                "astrid": {
+                  "on": null,
+                  "opaque": [
+                    "first-clip",
+                    null
+                  ]
+                },
+                "future": false
+              },
+              "nullable": null,
+              "sourceURL": null,
+              "from": null,
+              "opaque": {
+                "id": "first-clip",
+                "ordered": [
+                  null,
+                  false,
+                  0,
+                  {},
+                  []
+                ]
+              }
+            }
+          ],
+          "output": {
+            "fps": {
+              "numerator": 30000,
+              "denominator": 1001
+            }
+          },
+          "unknown": [
+            null,
+            false,
+            {
+              "literal": "first-clip"
+            }
+          ]
+        },
+        "clips": [
+          {
+            "id": "first-clip",
+            "clipType": "text",
+            "track": "first-track",
+            "at": 0.017,
+            "hold": 1.013,
+            "params": {
+              "text": "First"
+            },
+            "app": {
+              "astrid": {
+                "on": null,
+                "opaque": [
+                  "first-clip",
+                  null
+                ]
+              },
+              "future": false
+            },
+            "nullable": null,
+            "sourceURL": null,
+            "from": null,
+            "opaque": {
+              "id": "first-clip",
+              "ordered": [
+                null,
+                false,
+                0,
+                {},
+                []
+              ]
+            }
+          }
+        ],
+        "registry": {
+          "assets": {}
+        },
+        "opaque": {
+          "keep": null
+        },
+        "occurrences": []
+      }
+    },
+    "shot_revisions": [],
+    "internal_timeline_revisions": [],
+    "dependency_manifest": {
+      "shots": [],
+      "internal_timelines": [],
+      "media": [],
+      "documents": []
+    }
+  }
+}

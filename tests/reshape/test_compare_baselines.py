@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -109,10 +111,17 @@ def test_structure_baseline_script_runs_directly_from_outside_the_checkout(tmp_p
 
     from scripts.reshape.compare_structure_baseline import REPO_ROOT
 
+    runtime_spec = importlib.util.find_spec("runtime_protocol")
+    assert runtime_spec is not None
+    assert runtime_spec.submodule_search_locations
+    runtime_root = str(Path(next(iter(runtime_spec.submodule_search_locations))).parent)
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts/reshape/compare_structure_baseline.py")],
         cwd=tmp_path,
-        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+        env={
+            **{key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+            "PYTHONPATH": runtime_root,
+        },
         capture_output=True,
         text=True,
         check=False,

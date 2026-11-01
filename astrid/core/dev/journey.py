@@ -1097,11 +1097,20 @@ class Journey:
         key = f"v6-{uuid.uuid4().hex[:8]}"
         def edit():
             base = self.astrid + ["timelines"]
-            tl = ["--project", self.project]
-            r.command("edit", base + ["checkout", self.timeline, *tl, "--draft", key, "--fresh", "--json"], self.env)
-            r.command("edit", base + ["edit", self.timeline, *tl, "--replace-asset", f"{replace_slot}=run:{sprites}/sprites#0", "--json"], self.env)
-            r.command("edit", base + ["check", self.timeline, *tl, "--no-sweep", "--json"], self.env)
-            r.command("edit", base + ["publish", self.timeline, *tl, "-m", f"journey {key}", "--idempotency-key", key, "--json"], self.env)
+            tl = ["--project", self.project, "--draft", key]
+            r.command("edit", base + ["checkout", self.timeline, *tl, "--fresh"], self.env, json_result=False)
+            r.command("edit", base + ["edit", self.timeline, *tl, "--replace-asset", f"{replace_slot}=run:{sprites}/sprites#0"], self.env, json_result=False)
+            r.command("edit", base + ["check", self.timeline, *tl, "--no-sweep"], self.env, json_result=False)
+            candidate = self.root / f"{key}.commit.json"
+            export = (
+                "import json, sys; from pathlib import Path; "
+                "from astrid.sdk.timeline_checkout import Checkout, find_draft; "
+                "checkout = Checkout.load(find_draft(sys.argv[1], sys.argv[2], sys.argv[3])); "
+                "Path(sys.argv[4]).write_text(json.dumps(checkout.document()) + '\\n', encoding='utf-8')"
+            )
+            r.command("edit", [sys.executable, "-c", export, self.project, self.timeline, key, str(candidate)], self.env, json_result=False)
+            r.command("edit", base + ["commit", self.timeline, "--project", self.project, "--file", str(candidate),
+                                       "-m", f"journey {key}", "--idempotency-key", key, "--json"], self.env)
         r.phase("edit", edit)
         def full_render():
             name = f"v6-full-{key}.mp4"

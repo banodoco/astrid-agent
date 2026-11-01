@@ -109,6 +109,13 @@ Both lock checks must retain the hash above. The former 17.4.0 producer's
 qualification does not qualify this release, GitHub availability, or a deployed
 manifest. Native macOS and Windows require separate qualification.
 
+The historical live installer qualification used the former 17.4.0 producer
+commit `9e282751c0059e37d2f6fbc14ffa0b450710bd23` locally. That evidence is
+limited to the local installer qualification and does not certify GitHub
+availability, the deployed app manifest, or the 18.12.6 fork release; see the
+lead-agent installer report and its per-action evidence for reproduction
+details.
+
 To refresh the build recipe from a reviewed commit, run in the agent checkout:
 
 ```sh
