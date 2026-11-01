@@ -5033,3 +5033,19 @@ def test_host_execution_failure_keeps_coded_fields_and_recovery(tmp_path, monkey
         "attempt_id": "attempt-coded", "fence": 1, "retryable": False,
         "failure_diagnostic": None, "structured_error": expected[kind],
     }
+
+
+def test_wan_qualification_refuses_before_host_preflight(tmp_path, monkeypatch):
+    _write_manifest(tmp_path / 'wan', capability_id='wan2gp.generate_video')
+    runtime = FakeRuntime()
+    host = GenericPackHost(pack_roots=[tmp_path], client=runtime)
+    host.discover()
+    task = {'task': {'id': 'wan-task', 'capability': 'wan2gp.generate_video', 'project_id': 'demo',
+                     'attempt_id': 'wan-attempt', 'fence': 1, 'spec': {'spec': {'inputs': {}}}}}
+    runtime.tasks['wan-task'] = task
+    monkeypatch.setattr(host, 'preflight', lambda *_: pytest.fail('host preflight started'))
+    monkeypatch.setattr(host, 'prepare_wan_session', lambda **_: pytest.fail('session started'))
+    with pytest.raises(HostError, match='not been qualified'):
+        host.run_task(task, lease_token='lease')
+    assert runtime.failures[0][3]['structured_error']['code'] == 'generation_route_unqualified'
+    assert not runtime.settlements

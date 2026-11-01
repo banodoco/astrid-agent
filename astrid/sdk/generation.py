@@ -348,24 +348,30 @@ def _resolve_invoke_destination(
     return out, selected
 
 
-def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str,
-                                     modality: str, inputs: dict[str, Any],
-                                     target_client: Any, backend: Any, retain_source=None):
-    """Shared installed-catalog resolution and binding, without admission."""
-    from astrid.core.generation.preflight import (
-        require_generation_target_readiness, validate_generation_request,
-    )
-
-    require_generation_target_readiness(candidate, mode, target_client)
-    spec = candidate.modes[mode].backends['local']
+def _validate_catalog_target_request(*, registry, candidate, mode, modality, inputs):
+    """Keep matrix/input validation ahead of qualification and target probes."""
+    from astrid.core.generation.preflight import validate_generation_request
+    mode_spec = candidate.modes.get(mode)
+    spec = mode_spec.backends.get('local') if mode_spec is not None else None
     from astrid.core.generation.backends.vibecomfy import VibeComfyBackend
-    translation = spec.param_map or VibeComfyBackend.DEFAULT_PARAM_MAP.get(mode, {})
+    translation = getattr(spec, 'param_map', None) or VibeComfyBackend.DEFAULT_PARAM_MAP.get(mode, {})
     required_inputs = {**inputs}
     for canonical, public in translation.items():
         if canonical not in required_inputs and public in inputs:
             required_inputs[canonical] = inputs[public]
     validate_generation_request(registry, model=candidate.id, mode=mode,
                                 execution="local", inputs=required_inputs, modality=modality)
+    return translation
+
+
+def _prepare_catalog_target_workflow(*, registry: Any, candidate: Any, mode: str,
+                                     modality: str, inputs: dict[str, Any],
+                                     target_client: Any, backend: Any, retain_source=None):
+    """Shared installed-catalog resolution and binding, without admission."""
+    from astrid.core.generation.preflight import require_generation_target_readiness
+    require_generation_target_readiness(candidate, mode, target_client)
+    translation = _validate_catalog_target_request(
+        registry=registry, candidate=candidate, mode=mode, modality=modality, inputs=inputs)
     workflow, plan, schema = backend.prepare_catalog_workflow(
         candidate, mode, inputs, resolve_target=target_client is not None,
         **({'retain_source': retain_source} if retain_source is not None else {}),
@@ -684,6 +690,11 @@ class GenerationFacade:
             source_controls = {'client': client, 'project': project, 'out': out,
                                'project_root': project_root}
             with _snapshot_generation_workflow(Path(workflow)) as frozen:
+                from astrid.core.generation.availability import require_bundled_workflow_available
+                original = Path(workflow).expanduser().resolve()
+                if original.is_dir():
+                    original = original / 'workflow.py'
+                require_bundled_workflow_available(frozen, source_path=original)
                 retained_source = None
                 if not dry_run:
                     retained_source = _retain_generation_source(frozen, source_controls)
@@ -723,6 +734,10 @@ class GenerationFacade:
             GenerationBackendRegistry(), placement=placement,
             execution_request=execution_request,
         )
+        from astrid.core.generation.availability import require_bundled_workflow_available
+        for member in (workflow, python):
+            if isinstance(member, (str, Path)):
+                require_bundled_workflow_available(member)
         inputs = {
             name: value for name, value in {
                 "workflow": workflow, "python": python, "companion": companion,
@@ -806,7 +821,6 @@ class GenerationFacade:
         from astrid.core.generation import entries as workflow_entries
         from astrid.packs.vibecomfy.production_engine import ProductionEngineError
 
-        target_client = select_generation_target(target, repo=controls.get("project_root"))
         # Catalog priority is explicit, stable and per modality/mode. Unknown
         # catalog entries and user entries remain eligible in lexical order.
         preferred = {
@@ -832,10 +846,43 @@ class GenerationFacade:
             candidates = [("catalog", entry) for entry in registry.list_by_modality(modality)
                           if mode in entry.modes and getattr(entry.modes[mode].backends.get("local"), "template", "")]
             candidates += [("workflow", entry) for entry in
-                           [*workflow_entries.user_entries(), *workflow_entries.ready_entries()]
+                           [*({**entry, 'source': 'user-entry'} for entry in workflow_entries.user_entries()),
+                            *({**entry, 'source': 'ready-template'} for entry in workflow_entries.ready_entries())]
                            if entry["kind"] == modality and mode in entry["modes"]
                            and not entry.get("registry_id")]
             candidates.sort(key=rank)
+        from astrid.core.generation.availability import (
+            require_model_available, require_entry_available,
+        )
+        automatic = model is None and workflow_entry is None
+        qualified = []
+        filtered = []
+        for source, candidate in candidates:
+            identifier = candidate.id if source == 'catalog' else candidate['id']
+            try:
+                if source == 'catalog':
+                    if automatic:
+                        require_model_available(identifier, mode, 'local')
+                    else:
+                        _validate_catalog_target_request(registry=registry, candidate=candidate,
+                            mode=mode, modality=modality, inputs=inputs)
+                else:
+                    if not automatic and (candidate['kind'] != modality or mode not in candidate['modes']):
+                        raise CapabilityValidationError(f"entry {identifier!r} does not support {modality}/{mode}")
+                    require_entry_available(candidate, mode)
+            except AstridError as exc:
+                if not automatic or exc.code != 'generation_route_unqualified':
+                    raise
+                filtered.append((identifier, exc))
+                continue
+            qualified.append((source, candidate))
+        if automatic and filtered and not qualified:
+            raise AstridError(
+                'No qualified generation candidate remains; filtered routes: '
+                + '; '.join(f'{identifier}: {exc}' for identifier, exc in filtered),
+                code='generation_route_unqualified', recovery_command=filtered[0][1].fix)
+        candidates = qualified
+        target_client = select_generation_target(target, repo=controls.get("project_root"))
         backend = VibeComfyBackend(target_client=target_client)
 
         def import_member(path: Path) -> dict[str, Any]:
@@ -920,7 +967,7 @@ class GenerationFacade:
                     approval = bundle.compile(schema_provider=schema) if schema is not None and not assets else None
             except (AstridError, ValueError, KeyError, OSError, CapabilityValidationError, ProductionEngineError) as exc:
                 if (model is not None or workflow_entry is not None
-                        or getattr(exc, "code", None) == "COMFY_TARGET_NOT_READY"):
+                        or getattr(exc, "code", None) in {"COMFY_TARGET_NOT_READY", "engine_not_found"}):
                     # Package/runtime prerequisites apply to every local
                     # candidate; retain their existing error and guidance.
                     if isinstance(exc, AstridError):
@@ -1059,6 +1106,8 @@ class GenerationFacade:
                 )
         except (ValueError, KeyError) as exc:
             raise GenerationInputError(str(exc), entry=locals().get('description')) from exc
+        from astrid.core.generation.availability import require_entry_available
+        require_entry_available(description, description['mode'])
         if description.get("action") and (not producer or description.get("runtime_parent_required")):
             raise CapabilityPreconditionError(
                 "action-backed generation requires a Runtime-admitted parent; "
