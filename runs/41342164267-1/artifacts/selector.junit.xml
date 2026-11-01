@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="3" time="1.707" timestamp="2026-11-01T19:53:45.934852+00:00" hostname="runnervm48cm3"><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_origins_are_real_and_reject_mixed_source" time="0.960" /><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_actions_retain_candidate_content_pins" time="0.004" /><testcase classname="tests.packs.h3_av.test_character_swap_cpu_boundary" name="test_installed_cpu_renderer_uses_real_provisioned_outputs" time="0.272"><failure message="assert False&#10; +  where False = all(&lt;generator object test_installed_cpu_renderer_uses_real_provisioned_outputs.&lt;locals&gt;.&lt;genexpr&gt; at 0x7fb354ae0ba0&gt;)">@pytest.mark.installed
+    def test_installed_cpu_renderer_uses_real_provisioned_outputs():
+        from astrid.packs.rendering.rendering.renderers.remotion import run
+        from tests.helpers import h3_cpu_runtime as helper
+    
+        assert Path(run.__file__).is_relative_to(helper._INSTALLED_EXECUTION_ROOT)
+        assert run.gen_effect_registry is None
+        project = Path(os.environ["ASTRID_REMOTION_PROJECT_DIR"])
+        paths = run._registry_output_paths(project)
+        assert len(paths) == 3
+        assert {p.name for p in paths} == {"effects.generated.ts", "animations.generated.ts", "transitions.generated.ts"}
+&gt;       assert all(p.is_file() and p.stat().st_size &gt; 0 for p in paths)
+E       assert False
+E        +  where False = all(&lt;generator object test_installed_cpu_renderer_uses_real_provisioned_outputs.&lt;locals&gt;.&lt;genexpr&gt; at 0x7fb354ae0ba0&gt;)
+
+tests/packs/h3_av/test_character_swap_cpu_boundary.py:204: AssertionError</failure></testcase></testsuite></testsuites>

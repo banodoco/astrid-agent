@@ -1,0 +1,6 @@
+composition_identity=0
+apt_install=0
+build_wheel=0
+install_noneditable=0
+npm_ci=0
+pytest_selector=1

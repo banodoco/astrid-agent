@@ -1,0 +1,17 @@
+{
+  "effective": {
+    "agent": "c458587841e310098621245425f9c24bac046fda",
+    "app": "not checked out; not required by installed-wheel job",
+    "pinokio": "not checked out; not required by installed-wheel job",
+    "runtime": "3b12fface79a3be029f3b6623765a7f3e1e5e24f"
+  },
+  "requested": {
+    "agent_ref": "c458587841e310098621245425f9c24bac046fda",
+    "app_ref": "9d3ccda1e81383082258943207745086da2aabe4",
+    "artifact_paths": "venue-c07-output/runs/**\n",
+    "command": "\"$RUNNER_TEMP/installed-venv/bin/pytest\" -q -m installed --import-mode=importlib tests/packs/h3_av/test_character_swap_cpu_boundary.py",
+    "pinokio_ref": "89ed7aacae72bb48eb97ff9ff95c222bdd7e71e4",
+    "runtime_ref": "3b12fface79a3be029f3b6623765a7f3e1e5e24f",
+    "slot": "1"
+  }
+}
