@@ -474,7 +474,13 @@ def run_scope(run_root: Path, root: Path, data: Path, leg: str) -> tuple[Path, P
     owner_path = run_root / OWNER_FILE
     if leg == "fresh-install" or leg in VERSION_JUMP_LEGS:
         if run_root.exists() and any(run_root.iterdir()):
-            raise ValueError("A fresh journey requires an empty run-owned directory")
+            # A disposable Linux user manager needs its passwd home before it starts.
+            # Only its home may exist; all installation roots remain fresh.
+            entries = list(run_root.iterdir())
+            if not (sys.platform == "linux" and os.environ.get("ASTRID_CI_DISPOSABLE_USER") == "1"
+                    and entries == [run_root / "home"] and entries[0].is_dir()
+                    and not entries[0].is_symlink() and entries[0].stat().st_uid == os.getuid()):
+                raise ValueError("A fresh journey requires an empty run-owned directory")
         run_root.mkdir(parents=True, exist_ok=True)
         with owner_path.open("x", encoding="utf-8") as stream:
             json.dump({"schema_version": 1, "run_id": uuid.uuid4().hex,
@@ -761,6 +767,25 @@ def release1_manager_prerequisite(args: argparse.Namespace, evidence: Path) -> d
         if matched is None or int(matched.group(1)) < 254:
             raise RuntimeError("Required native service manager systemd --user must be version 254 or newer")
         _manager_probe(["systemctl", "--user", "show-environment"], label="systemd --user session")
+        if os.environ.get("ASTRID_CI_DISPOSABLE_USER") != "1":
+            raise RuntimeError("Linux direct journey requires a disposable user manager")
+        import pwd
+        home = str(args.run_root / "home")
+        if pwd.getpwuid(os.getuid()).pw_dir != home or os.environ.get("HOME") != home:
+            raise RuntimeError("Disposable user home does not match journey home")
+        environment = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True,
+                                     text=True, timeout=30, check=True).stdout.splitlines()
+        unit_path = subprocess.run(["systemctl", "--user", "show", "--property=UnitPath", "--value"],
+                                   capture_output=True, text=True, timeout=30, check=True).stdout.split()
+        if f"HOME={home}" not in environment or str(Path(home) / ".config/systemd/user") not in unit_path:
+            raise RuntimeError("Disposable manager HOME or UnitPath does not match journey home")
+        # Test the environment of an actual manager-spawned service, without
+        # printing its environment (which could include credentials).
+        probe = subprocess.run(["systemd-run", "--user", "--wait", "--pipe", "--quiet",
+                                "/bin/sh", "-c", 'test "$HOME" = "$1"', "sh", home],
+                               capture_output=True, text=True, timeout=30, check=False)
+        if probe.returncode:
+            raise RuntimeError("Disposable manager service HOME does not match journey home")
         manager = "systemd-user"
     elif sys.platform == "darwin":
         version = _manager_probe(["launchctl", "version"], label="launchd")

@@ -100,7 +100,12 @@ jobs:
       run: |
         printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
         python agent/scripts/check_journey_evidence.py --candidate "$RUNNER_TEMP/candidate.json" --app-checkout app --prepare-only
+    - name: Run Linux lifecycle under a disposable native user manager
+      if: matrix.os == 'linux'
+      shell: bash
+      run: agent/scripts/ci_linux_disposable_journey.sh
     - name: Run authentic direct release-0 to release-1 lifecycle
+      if: matrix.os != 'linux'
       env:
         ASTRID_CI_EXPECTED_RUNNER: ${{ matrix.runner }}
       run: |

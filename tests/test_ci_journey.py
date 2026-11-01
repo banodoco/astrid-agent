@@ -427,3 +427,31 @@ def test_windows_preflight_accepts_explicit_absence_and_rejects_unknown(tmp_path
     monkeypatch.setattr(journey.windows, "powershell", lambda *unused, **kwargs: "")
     with pytest.raises(RuntimeError, match="Scheduled Task"):
         journey.assert_host_available("fresh-install", tmp_path / "program", tmp_path / "data")
+
+
+def test_linux_manager_preflight_checks_manager_and_service_home(tmp_path, monkeypatch):
+    import pwd
+    monkeypatch.setattr(journey.sys, "platform", "linux")
+    monkeypatch.setenv("ASTRID_CI_DISPOSABLE_USER", "1")
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(home)))
+    monkeypatch.setattr(journey, "validate_job", lambda *args: {"mode": "direct"})
+    monkeypatch.setattr(journey, "_manager_probe", lambda argv, **kwargs: "systemd 255")
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "show-environment" in argv:
+            return SimpleNamespace(returncode=0, stdout=f"HOME={home}\n")
+        if "UnitPath" in " ".join(argv):
+            return SimpleNamespace(returncode=0, stdout=f"{home}/.config/systemd/user /usr/lib/systemd/user\n")
+        return SimpleNamespace(returncode=0, stdout="")
+    monkeypatch.setattr(journey.subprocess, "run", run)
+    args = argparse.Namespace(job_id="direct-linux", mode="direct", run_root=tmp_path)
+    assert journey.release1_manager_prerequisite(args, tmp_path)["outcome"] == "pass"
+    assert any(argv[0] == "systemd-run" for argv in calls)
+    monkeypatch.setattr(journey.subprocess, "run", lambda argv, **kwargs: SimpleNamespace(
+        returncode=1 if argv[0] == "systemd-run" else 0,
+        stdout=(f"HOME={home}\n" if "show-environment" in argv else f"{home}/.config/systemd/user\n")))
+    with pytest.raises(RuntimeError, match="service HOME"):
+        journey.release1_manager_prerequisite(args, tmp_path)
