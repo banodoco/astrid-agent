@@ -35,6 +35,11 @@ def _mock_host_launch(monkeypatch, fake_popen) -> None:
 
 
 def _materialize_source_closure(source: Path) -> None:
+    resources = source / "astrid" / "resources"
+    resources.mkdir(parents=True)
+    (resources / "astrid-beta-capabilities.json").write_bytes(
+        (Path(__file__).resolve().parents[2] / "astrid" / "resources" / "astrid-beta-capabilities.json").read_bytes()
+    )
     (source / "astrid" / "core" / "execution").mkdir(parents=True)
     (source / "astrid" / "core" / "execution" / "generic_host.py").write_text(
         "# host fixture\n", encoding="utf-8"
